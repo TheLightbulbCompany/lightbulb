@@ -528,7 +528,7 @@ feat(teams): port OrgChart (positioned cards + SVG edges)
 - Modify: `apps/frontend/src/components/teams/TeamsPanelRouter.tsx` — register the new panel
 - Test: `apps/frontend/src/__tests__/components/teams/panels/OrgChartPanel.test.tsx`
 
-- [ ] **Step 1: OrgChartPanel**
+- [x] **Step 1: OrgChartPanel**
 
 ```tsx
 "use client";
@@ -578,7 +578,7 @@ export function OrgChartPanel() {
 }
 ```
 
-- [ ] **Step 2: TeamsSidebar — add entry**
+- [x] **Step 2: TeamsSidebar — add entry**
 
 In `TeamsSidebar.tsx`, add a `Network` icon import (from lucide-react) and a new entry in ITEMS:
 
@@ -588,7 +588,7 @@ In `TeamsSidebar.tsx`, add a `Network` icon import (from lucide-react) and a new
 
 Place it between the `agents` and `inbox` entries.
 
-- [ ] **Step 3: TeamsPanelRouter — register**
+- [x] **Step 3: TeamsPanelRouter — register**
 
 In `TeamsPanelRouter.tsx`, add to PANELS:
 
@@ -598,11 +598,11 @@ In `TeamsPanelRouter.tsx`, add to PANELS:
 ),
 ```
 
-- [ ] **Step 4: Tests for the panel**
+- [x] **Step 4: Tests for the panel**
 
 3 cases: loading, error, renders OrgChart with normalized agents.
 
-- [ ] **Step 5: Run full test suite + lint + typecheck**
+- [x] **Step 5: Run full test suite + lint + typecheck**
 
 ```bash
 cd apps/frontend && pnpm test 2>&1 | tail -30
@@ -612,7 +612,7 @@ pnpm --filter @isol8/frontend exec tsc --noEmit 2>&1 | grep error | head
 
 Expected: NO new failures (pre-existing 4-file failures ignored). Lint + typecheck clean for our files.
 
-- [ ] **Step 6: Update roadmap row #5**
+- [x] **Step 6: Update roadmap row #5**
 
 `docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md` row #5:
 - Status: `Done`

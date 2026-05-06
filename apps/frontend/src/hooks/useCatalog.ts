@@ -64,6 +64,9 @@ export function useCatalog() {
 
   return {
     agents: visibleAgents,
+    allAgents: catalogData?.agents ?? [],
+    deployedSlugs,
+    deployed: deployedData?.deployed ?? [],
     isLoading: !catalogData || !deployedData,
     deploy,
     refresh: () => Promise.all([mutateCatalog(), mutateDeployed()]),

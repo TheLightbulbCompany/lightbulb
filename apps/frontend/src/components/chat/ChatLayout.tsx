@@ -6,7 +6,7 @@ import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Users } from "lucide-react";
+import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Grid2X2 } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -22,6 +22,8 @@ import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { FileViewer } from "@/components/chat/FileViewer";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/components/chat/AgentDialogs";
+import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
+import { fromInstalledAgent } from "@/lib/agentDesign";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -213,16 +215,18 @@ export function ChatLayout({
           {/* Header */}
           <div className="sidebar-header">
             <div className="sidebar-logo">
-              <span className="sidebar-logo-8">8</span>
+              <span className="sidebar-logo-word">ISOL8</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <Link
                 href="/teams"
-                className="sidebar-settings-link"
+                className="teams-pill"
                 aria-label="Teams"
                 title="Teams"
               >
-                <Users size={18} />
+                <Grid2X2 size={12} />
+                <span>Teams</span>
+                <b>3</b>
               </Link>
               <Link href="/settings" className="sidebar-settings-link">
                 <Settings size={18} />
@@ -281,24 +285,27 @@ export function ChatLayout({
           {activeView === "chat" ? (
             <>
               {/* New Agent Button */}
-              <button className="new-agent-btn" onClick={handleCreateAgent}>
+              <button className="new-agent-btn new-agent-btn--primary" onClick={handleCreateAgent}>
                 <Plus size={14} />
-                New Agent
+                New chat
               </button>
 
               {/* Agent List */}
               <div className="agent-list">
+                <div className="agent-section-label">
+                  <span>My Agents</span>
+                  <b>{agents.length}</b>
+                </div>
                 {agents.map((agent) => {
                   const isDefault = agent.id === defaultId;
+                  const displayAgent = fromInstalledAgent(agent);
                   return (
                     <div
                       key={agent.id}
                       className={`agent-item${currentAgentId === agent.id ? " active" : ""}`}
                       onClick={() => handleSelectAgent(agent.id)}
                     >
-                      <div className="agent-avatar">
-                        <Bot />
-                      </div>
+                      <Monogram agent={displayAgent} size={28} radius={8} />
                       <div className="agent-info">
                         <div className="agent-name">{agentDisplayName(agent)}</div>
                         {(() => {
@@ -334,7 +341,7 @@ export function ChatLayout({
                           </button>
                         )}
                       </div>
-                      <div className="agent-status-dot" />
+                      <StatusDot status="active" />
                     </div>
                   );
                 })}

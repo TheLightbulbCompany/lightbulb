@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 
 import { AgentDetailPanel } from "@/components/chat/AgentDetailPanel";
 import { GalleryItemRow } from "@/components/chat/GalleryItemRow";
@@ -34,9 +35,15 @@ export function GallerySection({ onAgentDeployed }: GallerySectionProps) {
   return (
     <>
       <div className="mt-4 border-t border-[#e0dbd0] pt-3">
-        <h3 className="px-2 text-xs uppercase tracking-wide text-[#8a8578] mb-1">
-          Gallery
-        </h3>
+        <div className="px-2 mb-2 flex items-baseline justify-between">
+          <h3 className="font-editorial-serif text-sm italic text-[#1a1a1a]">Gallery</h3>
+          <Link href="/marketplace" className="text-[10px] font-bold uppercase tracking-wide text-[#06402B] no-underline">
+            Browse all →
+          </Link>
+        </div>
+        <p className="px-2 mb-2 text-[11px] leading-4 text-[#8a8578]">
+          One-click hires from the marketplace.
+        </p>
         <div className="space-y-0.5">
           {agents.map((a) => (
             <GalleryItemRow

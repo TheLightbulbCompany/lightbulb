@@ -74,7 +74,7 @@ export default function Dashboard() {
             {onboardLoading ? "Redirecting to Stripe…" : "Onboard for payouts"}
           </button>
           {onboardError && (
-            <p className="mt-3 text-sm text-red-400" role="alert">
+            <p className="mt-3 text-sm text-[var(--danger)]" role="alert">
               {onboardError}
             </p>
           )}

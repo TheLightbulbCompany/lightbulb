@@ -30,7 +30,7 @@ export function MarkdownDescription({ source }: { source: string }) {
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="underline text-zinc-200 hover:text-zinc-50"
+              className="underline"
             >
               {children}
             </a>

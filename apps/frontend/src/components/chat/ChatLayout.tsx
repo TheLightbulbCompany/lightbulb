@@ -400,12 +400,6 @@ export function ChatLayout({
               </button>
             )}
             <div style={{ flex: 1 }} />
-            <Link
-              href="/teams"
-              className="text-sm text-zinc-700 hover:underline mr-3"
-            >
-              Teams
-            </Link>
             <UserButton
               appearance={{
                 elements: {

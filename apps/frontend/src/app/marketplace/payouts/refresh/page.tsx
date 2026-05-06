@@ -61,8 +61,8 @@ export default function PayoutsRefreshPage() {
         </p>
       )}
       {status === "error" && (
-        <div className="rounded border border-red-700/50 bg-red-900/30 p-4 text-left">
-          <p className="text-red-200 font-medium">Couldn&apos;t refresh onboarding.</p>
+        <div className="rounded border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] p-4 text-left">
+          <p className="text-[var(--danger)] font-medium">Couldn&apos;t refresh onboarding.</p>
           {errorMsg && <p className="text-[var(--mute)] text-sm mt-2">{errorMsg}</p>}
         </div>
       )}

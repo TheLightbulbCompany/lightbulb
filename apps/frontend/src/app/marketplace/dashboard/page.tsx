@@ -3,16 +3,16 @@ import { useAuth } from "@clerk/nextjs";
 import { useState } from "react";
 import useSWR from "swr";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export default function Dashboard() {
   const { getToken } = useAuth();
-  const { data } = useSWR(
-    `${API}/api/v1/marketplace/payouts/dashboard`,
+  const { data, error } = useSWR(
+    `${API}/marketplace/payouts/dashboard`,
     async (url) => {
       const jwt = await getToken();
       const resp = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
-      if (!resp.ok) return null;
+      if (!resp.ok) throw new Error(`payouts/dashboard failed (${resp.status})`);
       return resp.json();
     }
   );
@@ -24,7 +24,7 @@ export default function Dashboard() {
     setOnboardLoading(true);
     try {
       const jwt = await getToken();
-      const resp = await fetch(`${API}/api/v1/marketplace/payouts/onboard`, {
+      const resp = await fetch(`${API}/marketplace/payouts/onboard`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${jwt}`,
@@ -48,6 +48,7 @@ export default function Dashboard() {
     }
   }
 
+  if (error) return <p className="p-8 text-[var(--danger)]">Couldn&apos;t load dashboard: {error.message}</p>;
   if (!data) return <p className="p-8">Loading…</p>;
   return (
     <main className="max-w-3xl mx-auto px-6 py-12">

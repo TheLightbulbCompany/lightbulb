@@ -1,6 +1,6 @@
 import type { Listing, ListingDetailResponse } from "@/lib/marketplace/types";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export async function browseListings(
   opts: { query?: string; limit?: number; format?: "openclaw" | "skillmd" } = {},
@@ -12,7 +12,7 @@ export async function browseListings(
   if (opts.format) params.set("format", opts.format);
   params.set("limit", String(opts.limit ?? 24));
 
-  const resp = await fetch(`${API}/api/v1/marketplace/listings/search?${params}`, {
+  const resp = await fetch(`${API}/marketplace/listings/search?${params}`, {
     next: { revalidate: 60 },
   });
   if (!resp.ok) throw new Error(`browseListings failed: ${resp.status}`);
@@ -21,7 +21,7 @@ export async function browseListings(
 }
 
 export async function getListing(slug: string): Promise<ListingDetailResponse | null> {
-  const resp = await fetch(`${API}/api/v1/marketplace/listings/${encodeURIComponent(slug)}`, {
+  const resp = await fetch(`${API}/marketplace/listings/${encodeURIComponent(slug)}`, {
     next: { revalidate: 60 },
   });
   if (resp.status === 404) return null;
@@ -36,7 +36,7 @@ export async function checkout(opts: {
   jwt: string;
   email?: string;
 }) {
-  const resp = await fetch(`${API}/api/v1/marketplace/checkout`, {
+  const resp = await fetch(`${API}/marketplace/checkout`, {
     method: "POST",
     headers: {
       "content-type": "application/json",

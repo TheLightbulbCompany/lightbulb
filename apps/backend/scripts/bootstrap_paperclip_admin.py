@@ -32,11 +32,28 @@ How to run
 Idempotency
 -----------
 
-If the secret already exists, the script aborts unless ``--force`` is
-passed. With ``--force`` it overwrites the secret AND attempts to sign
-up admin again — Better Auth will reject with "user already exists",
-in which case the operator should reset Paperclip's user table or use
-a different admin email.
+The script keys idempotency off the secret payload shape, NOT the email
+inside it:
+
+* **Unpopulated env** (CDK placeholder — secret is a raw string, not
+  JSON): the script proceeds, signs up ``ADMIN_EMAIL`` in Paperclip,
+  and writes the proper JSON. This is the post-CDK-deploy first-run
+  case.
+* **Already-bootstrapped env** (secret holds valid
+  ``{email, password}`` JSON): the script aborts unless ``--force`` is
+  passed. With ``--force`` it overwrites the secret AND attempts to
+  sign up the current ``ADMIN_EMAIL`` again — Better Auth will reject
+  with "user already exists" if that email's user is still in the
+  Paperclip DB, in which case the operator must first delete the old
+  Better Auth user from Paperclip's Aurora DB (or pick a different
+  ``ADMIN_EMAIL``).
+
+Note that **changing ``ADMIN_EMAIL`` between runs does not by itself
+trigger a re-bootstrap** — the script doesn't compare the constant
+against the secret's email field. To migrate an already-bootstrapped
+env to a new admin email: (1) delete the old Better Auth user, (2) run
+with ``--force``. Today only dev is in the "already bootstrapped" state
+and there's no plan to migrate it.
 """
 
 from __future__ import annotations

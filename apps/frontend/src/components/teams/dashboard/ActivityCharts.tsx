@@ -5,9 +5,46 @@
 // 4 charts (Run Activity / Priority / Issue Status / Success Rate) +
 // shared helpers (ChartCard, DateLabels, ChartLegend, getLast14Days).
 // Vanilla flexbox + percentage heights — no chart library.
+// Colors mapped onto the editorial palette (forest / forest-soft /
+// warn / mute / mute-soft / ink / ink-soft / edge) — class-only swap,
+// chart axis + height logic untouched.
 // See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import type { DashboardRunActivityDay, HeartbeatRun } from "@/components/teams/shared/types";
+
+/* ---- Editorial color tokens (used inline via CSS var(...)) ----
+ * Centralized so every chart pulls from the same semantic mapping.
+ * Run-status semantics:
+ *   succeeded -> forest      (deep green, success)
+ *   failed    -> warn        (amber, alert)
+ *   other     -> mute        (neutral)
+ * Priority semantics (ordered crit -> low):
+ *   critical  -> warn        (amber alert)
+ *   high      -> forest      (deep, weighty)
+ *   medium    -> mute        (neutral)
+ *   low       -> mute-soft   (faint)
+ * Status semantics:
+ *   todo         -> mute-soft (waiting)
+ *   in_progress  -> forest-soft (active)
+ *   in_review    -> ink-soft  (consideration)
+ *   done         -> forest    (completed)
+ *   blocked      -> warn      (alert)
+ *   cancelled    -> mute      (neutral)
+ *   backlog      -> edge      (parked)
+ * Success-rate thresholds:
+ *   >= 80%      -> forest
+ *   >= 50%      -> warn
+ *   < 50%       -> ink        (dark, somber)
+ */
+const COLOR = {
+  succeeded: "var(--forest)",
+  failed: "var(--warn)",
+  other: "var(--mute)",
+  emptyBar: "var(--edge-soft)",
+  rateHigh: "var(--forest)",
+  rateMid: "var(--warn)",
+  rateLow: "var(--ink)",
+} as const;
 
 /* ---- Utilities ---- */
 
@@ -28,11 +65,19 @@ function formatDayLabel(dateStr: string): string {
 
 function DateLabels({ days }: { days: string[] }) {
   return (
-    <div className="flex gap-[2px] mt-2 border-t border-border/40 pt-1.5">
+    <div
+      className="flex gap-[2px] mt-2 pt-1.5"
+      style={{ borderTop: "1px solid var(--edge)" }}
+    >
       {days.map((day, i) => (
         <div key={day} className="flex-1 text-center">
           {(i === 0 || i === 6 || i === 13) ? (
-            <span className="text-[9px] text-muted-foreground/80 tabular-nums font-mono">{formatDayLabel(day)}</span>
+            <span
+              className="text-[9px] tabular-nums font-mono"
+              style={{ color: "var(--mute)" }}
+            >
+              {formatDayLabel(day)}
+            </span>
           ) : null}
         </div>
       ))}
@@ -44,8 +89,15 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
     <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2.5">
       {items.map(item => (
-        <span key={item.label} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-          <span className="h-1.5 w-1.5 rounded-full shrink-0 ring-1 ring-inset ring-black/5 dark:ring-white/5" style={{ backgroundColor: item.color }} />
+        <span
+          key={item.label}
+          className="flex items-center gap-1.5 text-[10px]"
+          style={{ color: "var(--mute)" }}
+        >
+          <span
+            className="h-1.5 w-1.5 rounded-full shrink-0"
+            style={{ backgroundColor: item.color }}
+          />
           {item.label}
         </span>
       ))}
@@ -55,10 +107,22 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="group relative border border-border/70 rounded-lg p-4 space-y-3 bg-card transition-colors hover:border-border">
+    <div className="editorial-card group relative p-4 space-y-3 transition-colors">
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-[11px] font-semibold text-foreground uppercase tracking-[0.06em]">{title}</h3>
-        {subtitle && <span className="text-[10px] text-muted-foreground/70 tabular-nums">{subtitle}</span>}
+        <h3
+          className="font-editorial-serif text-2xl"
+          style={{ color: "var(--ink)" }}
+        >
+          {title}
+        </h3>
+        {subtitle && (
+          <span
+            className="text-[10px] tabular-nums"
+            style={{ color: "var(--mute)" }}
+          >
+            {subtitle}
+          </span>
+        )}
       </div>
       {children}
     </div>
@@ -95,6 +159,17 @@ function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
   return [];
 }
 
+function EmptyChartCopy({ children }: { children: React.ReactNode }) {
+  return (
+    <p
+      className="font-editorial-serif text-base italic"
+      style={{ color: "var(--mute)" }}
+    >
+      {children}
+    </p>
+  );
+}
+
 export function RunActivityChart(props: RunChartProps) {
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
@@ -103,7 +178,7 @@ export function RunActivityChart(props: RunChartProps) {
   const maxValue = Math.max(...activity.map(v => v.total), 1);
   const hasData = activity.some(v => v.total > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground/70 italic">No runs yet</p>;
+  if (!hasData) return <EmptyChartCopy>No runs yet</EmptyChartCopy>;
 
   return (
     <div>
@@ -113,15 +188,37 @@ export function RunActivityChart(props: RunChartProps) {
           const total = entry.total;
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] hover:bg-foreground/[0.04] transition-colors" title={`${day}: ${total} runs`}>
+            <div
+              key={day}
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              title={`${day}: ${total} runs`}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]" style={{ height: `${heightPct}%`, minHeight: 3 }}>
-                  {entry.succeeded > 0 && <div className="bg-emerald-500 opacity-90 group-hover/bar:opacity-100 transition-opacity" style={{ flex: entry.succeeded }} />}
-                  {entry.failed > 0 && <div className="bg-red-500 opacity-90 group-hover/bar:opacity-100 transition-opacity" style={{ flex: entry.failed }} />}
-                  {entry.other > 0 && <div className="bg-neutral-500 opacity-80 group-hover/bar:opacity-100 transition-opacity" style={{ flex: entry.other }} />}
+                  {entry.succeeded > 0 && (
+                    <div
+                      className="opacity-90 group-hover/bar:opacity-100 transition-opacity"
+                      style={{ flex: entry.succeeded, backgroundColor: COLOR.succeeded }}
+                    />
+                  )}
+                  {entry.failed > 0 && (
+                    <div
+                      className="opacity-90 group-hover/bar:opacity-100 transition-opacity"
+                      style={{ flex: entry.failed, backgroundColor: COLOR.failed }}
+                    />
+                  )}
+                  {entry.other > 0 && (
+                    <div
+                      className="opacity-80 group-hover/bar:opacity-100 transition-opacity"
+                      style={{ flex: entry.other, backgroundColor: COLOR.other }}
+                    />
+                  )}
                 </div>
               ) : (
-                <div className="bg-muted/40 rounded-[1px]" style={{ height: 2 }} />
+                <div
+                  className="rounded-[1px]"
+                  style={{ height: 2, backgroundColor: COLOR.emptyBar }}
+                />
               )}
             </div>
           );
@@ -133,10 +230,10 @@ export function RunActivityChart(props: RunChartProps) {
 }
 
 const priorityColors: Record<string, string> = {
-  critical: "#ef4444",
-  high: "#f97316",
-  medium: "#eab308",
-  low: "#6b7280",
+  critical: "var(--warn)",
+  high: "var(--forest)",
+  medium: "var(--mute)",
+  low: "var(--mute-soft)",
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
@@ -155,7 +252,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground/70 italic">No issues</p>;
+  if (!hasData) return <EmptyChartCopy>No issues</EmptyChartCopy>;
 
   return (
     <div>
@@ -165,7 +262,11 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] hover:bg-foreground/[0.04] transition-colors" title={`${day}: ${total} issues`}>
+            <div
+              key={day}
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              title={`${day}: ${total} issues`}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]" style={{ height: `${heightPct}%`, minHeight: 3 }}>
                   {priorityOrder.map(p => entry[p] > 0 ? (
@@ -173,7 +274,10 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
                   ) : null)}
                 </div>
               ) : (
-                <div className="bg-muted/40 rounded-[1px]" style={{ height: 2 }} />
+                <div
+                  className="rounded-[1px]"
+                  style={{ height: 2, backgroundColor: COLOR.emptyBar }}
+                />
               )}
             </div>
           );
@@ -186,13 +290,13 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 }
 
 const statusColors: Record<string, string> = {
-  todo: "#3b82f6",
-  in_progress: "#8b5cf6",
-  in_review: "#a855f7",
-  done: "#10b981",
-  blocked: "#ef4444",
-  cancelled: "#6b7280",
-  backlog: "#64748b",
+  todo: "var(--mute-soft)",
+  in_progress: "var(--forest-soft)",
+  in_review: "var(--ink-soft)",
+  done: "var(--forest)",
+  blocked: "var(--warn)",
+  cancelled: "var(--mute)",
+  backlog: "var(--edge)",
 };
 
 const statusLabels: Record<string, string> = {
@@ -222,7 +326,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground/70 italic">No issues</p>;
+  if (!hasData) return <EmptyChartCopy>No issues</EmptyChartCopy>;
 
   return (
     <div>
@@ -232,22 +336,29 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] hover:bg-foreground/[0.04] transition-colors" title={`${day}: ${total} issues`}>
+            <div
+              key={day}
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              title={`${day}: ${total} issues`}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]" style={{ height: `${heightPct}%`, minHeight: 3 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
-                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "#6b7280" }} />
+                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "var(--mute)" }} />
                   ) : null)}
                 </div>
               ) : (
-                <div className="bg-muted/40 rounded-[1px]" style={{ height: 2 }} />
+                <div
+                  className="rounded-[1px]"
+                  style={{ height: 2, backgroundColor: COLOR.emptyBar }}
+                />
               )}
             </div>
           );
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--mute)", label: statusLabels[s] ?? s }))} />
     </div>
   );
 }
@@ -258,7 +369,7 @@ export function SuccessRateChart(props: RunChartProps) {
   const grouped = new Map(activity.map((day) => [day.date, day]));
 
   const hasData = activity.some(v => v.total > 0);
-  if (!hasData) return <p className="text-xs text-muted-foreground/70 italic">No runs yet</p>;
+  if (!hasData) return <EmptyChartCopy>No runs yet</EmptyChartCopy>;
 
   return (
     <div>
@@ -266,13 +377,20 @@ export function SuccessRateChart(props: RunChartProps) {
         {days.map(day => {
           const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
-          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
+          const color = entry.total === 0 ? undefined : rate >= 0.8 ? COLOR.rateHigh : rate >= 0.5 ? COLOR.rateMid : COLOR.rateLow;
           return (
-            <div key={day} className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] hover:bg-foreground/[0.04] transition-colors" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
+            <div
+              key={day}
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}
+            >
               {entry.total > 0 ? (
                 <div className="rounded-[2px]" style={{ height: `${rate * 100}%`, minHeight: 3, backgroundColor: color }} />
               ) : (
-                <div className="bg-muted/40 rounded-[1px]" style={{ height: 2 }} />
+                <div
+                  className="rounded-[1px]"
+                  style={{ height: 2, backgroundColor: COLOR.emptyBar }}
+                />
               )}
             </div>
           );

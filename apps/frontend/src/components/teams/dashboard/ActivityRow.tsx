@@ -59,19 +59,19 @@ function entityLink(entityType: string | null | undefined, entityId: string | nu
 
 /**
  * Subtle 6px dot color-coded by entity type; gives the otherwise-uniform
- * activity feed a quick scannable left rail. Uses semantic tokens where
- * possible so dark mode auto-adapts; falls back to muted for unknown
- * types and system events.
+ * activity feed a quick scannable left rail. Mapped onto the editorial
+ * palette so the dots stay legible against cream and don't introduce
+ * dark-mode-only brand colors.
  */
 function entityDotColor(entityType: string | null | undefined): string {
   switch (entityType) {
-    case "issue":      return "bg-blue-500/80";
-    case "agent":      return "bg-violet-500/80";
-    case "approval":   return "bg-amber-500/80";
-    case "project":    return "bg-emerald-500/80";
-    case "goal":       return "bg-fuchsia-500/80";
-    case "heartbeat":  return "bg-cyan-500/80";
-    default:           return "bg-muted-foreground/40";
+    case "issue":      return "var(--forest-soft)";
+    case "agent":      return "var(--forest)";
+    case "approval":   return "var(--warn)";
+    case "project":    return "var(--ink-soft)";
+    case "goal":       return "var(--mute)";
+    case "heartbeat":  return "var(--forest-soft)";
+    default:           return "var(--mute-soft)";
   }
 }
 
@@ -96,31 +96,32 @@ export function ActivityRow({ event, className }: ActivityRowProps) {
   const inner = (
     <div className="flex items-start gap-3">
       <span
-        className={cn(
-          "mt-[7px] h-1.5 w-1.5 rounded-full shrink-0 ring-1 ring-inset ring-black/5 dark:ring-white/5",
-          dotColor,
-        )}
+        className="mt-[7px] h-1.5 w-1.5 rounded-full shrink-0"
+        style={{ backgroundColor: dotColor }}
         aria-hidden
       />
-      <p className="flex-1 min-w-0 truncate leading-relaxed">
+      <p className="flex-1 min-w-0 truncate leading-relaxed" style={{ color: "var(--ink)" }}>
         <Identity name={actorName} size="xs" className="align-middle" />
-        <span className="text-muted-foreground ml-1">{verb}</span>
+        <span className="ml-1" style={{ color: "var(--mute)" }}>{verb}</span>
         {event.entityType && event.entityId && (
-          <span className="font-medium ml-1 text-foreground/90">
-            <span className="text-muted-foreground/70">{event.entityType}:</span>
+          <span className="font-medium ml-1" style={{ color: "var(--ink)" }}>
+            <span style={{ color: "var(--mute)" }}>{event.entityType}:</span>
             <span className="font-mono text-[0.85em] tracking-tight">{event.entityId}</span>
           </span>
         )}
       </p>
-      <span className="text-[11px] text-muted-foreground/80 shrink-0 pt-[3px] tabular-nums font-mono">
+      <span
+        className="text-[11px] shrink-0 pt-[3px] tabular-nums font-mono"
+        style={{ color: "var(--mute)" }}
+      >
         {timeAgo(event.createdAt)}
       </span>
     </div>
   );
 
   const classes = cn(
-    "px-4 py-2.5 text-sm",
-    link && "cursor-pointer hover:bg-accent/40 transition-colors",
+    "px-4 py-2.5 text-sm transition-colors",
+    link && "cursor-pointer hover:bg-[color:var(--cream-deeper)]",
     className,
   );
 

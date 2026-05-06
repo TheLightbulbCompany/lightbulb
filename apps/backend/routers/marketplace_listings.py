@@ -90,7 +90,7 @@ async def search_listings(
     return {"items": items}
 
 
-@router.get("/listings/featured")
+@router.get("/featured-listings")
 async def featured_listings(
     response: Response,
     limit: int = Query(default=24, ge=1, le=100),
@@ -104,6 +104,12 @@ async def featured_listings(
     holds the configured curator email in Clerk. Returns an empty list
     when the curator account doesn't exist yet — the sidebar renders that
     as the empty-state.
+
+    Lives outside the ``/listings/{slug}`` namespace so a seller can't
+    create a listing with slug ``"featured"`` and shadow this route — the
+    earlier ``/listings/featured`` placement would have made
+    ``GET /listings/featured`` match this static route instead of the
+    detail endpoint for that listing.
     """
     response.headers["Cache-Control"] = "public, max-age=60"
     curator_id = await curator.get_curator_user_id()

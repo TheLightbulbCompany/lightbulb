@@ -6,7 +6,7 @@ import { useApi } from "@/lib/api";
 /**
  * Source of the chat sidebar's "From the marketplace" gallery.
  *
- * Reads ``/marketplace/listings/featured`` (curator's published listings —
+ * Reads ``/marketplace/featured-listings`` (curator's published listings —
  * admin@isol8.co treated as a regular seller, no special flag) and
  * ``/marketplace/me/installed-templates`` (this user's installed templates,
  * derived from EFS .template sidecars), then renders the difference.
@@ -81,8 +81,8 @@ export function useCatalog() {
   const api = useApi();
 
   const { data: featuredData, mutate: mutateFeatured } = useSWR<{ items: MarketplaceListing[] }>(
-    "/marketplace/listings/featured",
-    () => api.get("/marketplace/listings/featured") as Promise<{ items: MarketplaceListing[] }>,
+    "/marketplace/featured-listings",
+    () => api.get("/marketplace/featured-listings") as Promise<{ items: MarketplaceListing[] }>,
   );
   const { data: installedData, mutate: mutateInstalled } = useSWR<{ installed: DeployedAgent[] }>(
     "/marketplace/me/installed-templates",

@@ -16,7 +16,7 @@ function wrapper({ children }: { children: ReactNode }) {
   return <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>;
 }
 
-const FEATURED = "/marketplace/listings/featured";
+const FEATURED = "/marketplace/featured-listings";
 const INSTALLED = "/marketplace/me/installed-templates";
 
 describe("useCatalog", () => {

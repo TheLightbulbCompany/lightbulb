@@ -1,41 +1,45 @@
 import Link from "next/link";
+
+import { Monogram, AgentPill } from "@/components/agents/AgentIdentity";
+import { fromListing } from "@/lib/agentDesign";
 import type { Listing } from "@/lib/marketplace/types";
 
-// Strip markdown noise for the card preview — full markdown render lives on
-// the detail page. This keeps cards visually consistent (no headings/lists
-// poking out) without dragging react-markdown into the home/browse bundle.
-function stripMarkdown(md: string): string {
-  return md
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`[^`]*`/g, " ")
-    .replace(/!?\[([^\]]*)\]\([^)]+\)/g, "$1")
-    .replace(/^[#>*\-+]+\s*/gm, "")
-    .replace(/\*\*|__|\*|_/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export function ListingCard({ listing }: { listing: Listing }) {
-  const price = listing.price_cents === 0
-    ? "Free"
-    : `$${(listing.price_cents / 100).toFixed(2)}`;
-  const preview = stripMarkdown(listing.description_md);
+  const editorial = fromListing(listing);
   return (
     <Link
       href={`/marketplace/listing/${listing.slug}`}
-      className="block rounded-xl border border-zinc-800 p-5 hover:border-zinc-600 transition"
+      className="editorial-card editorial-card-hover group block p-5 no-underline"
     >
-      <div className="flex items-start justify-between mb-2">
-        <h3 className="font-semibold text-lg text-zinc-100">{listing.name}</h3>
-        <span className="text-sm text-zinc-400">{price}</span>
+      <div className="flex items-start gap-4">
+        <Monogram agent={editorial} size={52} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="font-editorial-serif text-[22px] leading-tight text-[var(--ink)]">
+              {editorial.name}
+            </h3>
+            <AgentPill tone={editorial.isFree ? "forest" : "neutral"}>{editorial.price}</AgentPill>
+          </div>
+          <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mute)]">
+            {editorial.role}
+          </p>
+        </div>
       </div>
-      <p className="text-sm text-zinc-400 mb-3 line-clamp-2">{preview}</p>
-      <div className="flex flex-wrap gap-1">
-        {listing.tags.map((t) => (
-          <span key={t} className="text-xs px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
-            {t}
-          </span>
-        ))}
+      <p className="mt-4 line-clamp-2 font-editorial-serif text-[13.5px] italic leading-6 text-[var(--ink-soft)]">
+        &ldquo;{editorial.vibe}&rdquo;
+      </p>
+      {editorial.tags.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {editorial.tags.slice(0, 3).map((tag) => (
+            <AgentPill key={tag}>{tag}</AgentPill>
+          ))}
+        </div>
+      )}
+      <div className="mt-5 flex items-center justify-between border-t border-[var(--edge)] pt-3 text-[12px] text-[var(--mute)]">
+        <span className="font-mono uppercase tracking-[0.12em]">View detail</span>
+        <span className="font-bold text-[var(--forest)] transition group-hover:translate-x-0.5">
+          →
+        </span>
       </div>
     </Link>
   );

@@ -80,11 +80,21 @@ export function IssueRow({
   const blockerAttention =
     typeof issue.blockerAttention === "object" ? issue.blockerAttention : null;
   const productivityReviewIndicator = productivityReview ? (
+    // Retheme: amber-500 productivity-review chip → editorial warn token.
     <span
       className={cn(
-        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300",
+        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
         selected ? "border-muted-foreground text-muted-foreground" : null,
       )}
+      style={
+        selected
+          ? undefined
+          : {
+              borderColor: "rgba(196, 122, 29, 0.4)",
+              background: "rgba(196, 122, 29, 0.1)",
+              color: "var(--warn)",
+            }
+      }
       title={`Productivity review: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
       aria-label="Productivity review open"
     >
@@ -207,16 +217,23 @@ export function IssueRow({
               }}
               className={cn(
                 "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-                selected ? "hover:bg-muted/80" : "hover:bg-amber-700/20 dark:hover:bg-amber-400/20",
+                selected
+                  ? "hover:bg-muted/80"
+                  : "hover:bg-[var(--forest-tint)]",
               )}
               aria-label="Mark as read"
             >
+              {/* Retheme: amber-700 unread dot → editorial forest token. */}
               <span
                 className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
-                  selected ? "bg-muted-foreground/70" : "bg-amber-700 dark:bg-amber-400",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )}
+                style={{
+                  background: selected
+                    ? "var(--mute-soft)"
+                    : "var(--forest)",
+                }}
               />
             </button>
           ) : onArchive ? (

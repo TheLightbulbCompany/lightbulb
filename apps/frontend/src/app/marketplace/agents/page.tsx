@@ -1,5 +1,5 @@
 import { browseListings } from "@/lib/marketplace/api";
-import { ListingCard } from "@/components/marketplace/storefront/Listing/ListingCard";
+import { AgentsBrowse } from "./AgentsBrowse";
 
 export default async function Agents() {
   let items: Awaited<ReturnType<typeof browseListings>>["items"] = [];
@@ -9,18 +9,25 @@ export default async function Agents() {
   } catch {
     // Best-effort during local dev.
   }
+
   return (
-    <main className="max-w-6xl mx-auto px-6 py-12">
-      <h1 className="text-3xl font-bold mb-6">Browse agents</h1>
-      {items.length === 0 ? (
-        <p className="text-zinc-400">No agents listed yet.</p>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {items.map((a) => (
-            <ListingCard key={a.listing_id} listing={a} />
-          ))}
+    <main>
+      <section className="border-b border-[var(--edge)] px-6 py-14">
+        <div className="mx-auto max-w-6xl">
+          <div className="mb-4 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--mute)]">
+            Browse the marketplace
+          </div>
+          <h1 className="font-editorial-serif text-5xl leading-[1.0] text-[var(--ink)] md:text-6xl">
+            Browse <em className="text-[var(--forest)]">agents.</em>
+          </h1>
+          <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--ink-soft)]">
+            {items.length} {items.length === 1 ? "agent" : "agents"} ready to deploy into your Isol8
+            container.
+          </p>
         </div>
-      )}
+      </section>
+
+      <AgentsBrowse items={items} />
     </main>
   );
 }

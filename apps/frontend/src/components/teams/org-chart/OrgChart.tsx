@@ -28,7 +28,10 @@ export function OrgChart({ agents, className }: OrgChartProps) {
   if (agents.length === 0) {
     return (
       <div className={className}>
-        <div className="flex flex-col items-center justify-center py-12 text-sm text-muted-foreground">
+        <div
+          className="flex flex-col items-center justify-center py-12 text-sm"
+          style={{ color: "var(--mute)" }}
+        >
           No agents yet.
         </div>
       </div>
@@ -63,9 +66,8 @@ export function OrgChart({ agents, className }: OrgChartProps) {
                   key={`${from.id}-${to.id}`}
                   d={`M ${fromX} ${fromY} L ${fromX} ${midY} L ${toX} ${midY} L ${toX} ${toY}`}
                   fill="none"
-                  stroke="currentColor"
+                  stroke="var(--edge)"
                   strokeWidth={1.5}
-                  className="text-border"
                   data-org-edge={`${from.id}->${to.id}`}
                 />
               );

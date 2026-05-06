@@ -137,7 +137,10 @@ export function InboxToolbar(props: InboxToolbarProps) {
     <div className="space-y-2">
       {/* Mobile-only search row */}
       <div className="relative sm:hidden">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Search
+          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
+          style={{ color: "var(--mute)" }}
+        />
         <Input
           type="search"
           placeholder="Search inbox..."
@@ -151,10 +154,12 @@ export function InboxToolbar(props: InboxToolbarProps) {
       {/* Desktop toolbar row */}
       <div className="hidden flex-wrap items-center justify-between gap-2 sm:flex">
         {/* Tab bar — plain styled buttons (no shadcn Tabs primitive vendored). */}
+        {/* Retheme: prior amber-700 active swap → forest editorial token. */}
         <div
           role="tablist"
           aria-label="Inbox tabs"
-          className="inline-flex items-center gap-1 rounded-md bg-muted/40 p-0.5"
+          className="inline-flex items-center gap-1 rounded-md p-0.5"
+          style={{ background: "var(--cream-deeper)" }}
         >
           {TABS.map((t) => {
             const isActive = tab === t.value;
@@ -167,10 +172,15 @@ export function InboxToolbar(props: InboxToolbarProps) {
                 onClick={() => onTabChange(t.value)}
                 className={cn(
                   "h-7 rounded-sm px-3 text-xs font-medium transition-colors",
-                  isActive
-                    ? "bg-amber-700/10 text-amber-700 dark:text-amber-400"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                 )}
+                style={
+                  isActive
+                    ? {
+                        background: "var(--forest-tint)",
+                        color: "var(--forest)",
+                      }
+                    : { color: "var(--mute)" }
+                }
               >
                 {t.label}
               </button>
@@ -181,7 +191,10 @@ export function InboxToolbar(props: InboxToolbarProps) {
         <div className="flex flex-1 items-center justify-end gap-2">
           {/* Desktop search input */}
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
+              style={{ color: "var(--mute)" }}
+            />
             <Input
               type="search"
               placeholder="Search inbox..."
@@ -206,16 +219,14 @@ export function InboxToolbar(props: InboxToolbarProps) {
           />
 
           {/* Primary action: open the New Issue dialog. */}
-          <Button
+          <button
             type="button"
-            variant="default"
-            size="sm"
             onClick={onNewIssue}
-            className="h-8 shrink-0 gap-1.5 text-xs"
+            className="editorial-btn editorial-btn--primary editorial-btn--sm shrink-0"
           >
             <Plus className="h-3 w-3" />
             <span>New issue</span>
-          </Button>
+          </button>
 
           {/* Mark all as read with confirmation dialog. */}
           <AlertDialog>
@@ -224,7 +235,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-8 shrink-0"
+                className="editorial-btn editorial-btn--secondary editorial-btn--sm shrink-0"
                 disabled={markDisabled}
                 title={
                   markDisabled

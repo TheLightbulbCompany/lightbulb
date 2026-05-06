@@ -15,41 +15,55 @@ export function AgentsListPanel() {
   const { data, isLoading, error, mutate } = read<{ agents: Agent[] }>("/agents");
   const [creating, setCreating] = useState(false);
 
-  if (isLoading) return <div className="p-8">Loading…</div>;
-  if (error) return <div className="p-8 text-red-600">Error: {String(error)}</div>;
+  if (isLoading)
+    return (
+      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
+        Loading…
+      </div>
+    );
+  if (error)
+    return (
+      <div className="editorial-page p-8 text-[var(--danger)]">
+        Error: {String(error)}
+      </div>
+    );
+
+  const agents = data?.agents ?? [];
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="editorial-page p-8 max-w-4xl">
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-semibold">Agents</h1>
+        <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Agents</h1>
         <button
           onClick={() => setCreating(true)}
-          className="px-4 py-2 bg-zinc-900 text-white rounded text-sm"
+          className="editorial-btn editorial-btn--primary"
         >
           New agent
         </button>
       </div>
 
-      <ul className="divide-y border rounded">
-        {(data?.agents ?? []).map((a) => (
+      <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
+        {agents.map((a) => (
           <li
             key={a.id}
             className="flex justify-between items-center p-4"
           >
             <div>
-              <div className="font-medium">{a.name}</div>
-              <div className="text-xs text-zinc-500">{a.role}</div>
+              <div className="font-medium text-[var(--ink)]">{a.name}</div>
+              <div className="text-xs text-[var(--mute)]">{a.role}</div>
             </div>
             <a
               href={`/teams/agents/${a.id}`}
-              className="text-sm text-zinc-600 hover:underline"
+              className="text-sm text-[var(--ink-soft)] hover:underline"
             >
               Open →
             </a>
           </li>
         ))}
-        {(data?.agents ?? []).length === 0 && (
-          <li className="p-4 text-sm text-zinc-500">No agents yet.</li>
+        {agents.length === 0 && (
+          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
+            No agents yet.
+          </li>
         )}
       </ul>
 
@@ -97,41 +111,45 @@ function CreateAgentDialog({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center">
-      <div className="bg-white rounded-lg p-6 w-96">
-        <h2 className="text-lg font-semibold mb-4">New agent</h2>
+    <div className="fixed inset-0 bg-[rgba(26,26,26,0.35)] flex items-center justify-center">
+      <div className="editorial-card p-6 w-96">
+        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">New agent</h2>
         <label className="block mb-3">
-          <span className="text-sm">Name</span>
+          <span className="text-sm text-[var(--ink-soft)]">Name</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
         <label className="block mb-4">
-          <span className="text-sm">Role</span>
+          <span className="text-sm text-[var(--ink-soft)]">Role</span>
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           >
             <option value="engineer">Engineer</option>
             <option value="ceo">CEO</option>
             <option value="manager">Manager</option>
           </select>
         </label>
-        {err && <div className="text-red-600 text-sm mb-2">{err}</div>}
+        {err && (
+          <div className="text-[var(--danger)] text-sm mb-2 border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+            {err}
+          </div>
+        )}
         <div className="flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="px-3 py-1 border rounded"
+            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
           >
             Cancel
           </button>
           <button
             onClick={submit}
             disabled={submitting || !name}
-            className="px-3 py-1 bg-zinc-900 text-white rounded"
+            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create"}
           </button>

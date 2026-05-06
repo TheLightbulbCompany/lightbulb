@@ -1,9 +1,11 @@
 // Ported from upstream Paperclip's IssueColumns.tsx
 // (paperclip/ui/src/components/IssueColumns.tsx) (MIT, (c) 2025 Paperclip AI).
 // Three deviations from upstream:
-//   * Retheme: upstream `bg-blue-{500,600}` / `text-blue-{400,600}` are
-//     swapped to amber-700 per the deep-port retheme map. Amber + status
-//     colors (green/red/violet/yellow/neutral) are KEEP-list and unchanged.
+//   * Retheme: upstream `bg-blue-{500,600}` / `text-blue-{400,600}` were
+//     first swapped to amber-700, and now to the editorial forest token.
+//     Status colors (forest/danger/warn/mute) are KEEP-list and centralized
+//     via StatusIcon's editorial color map (T16). Hardcoded fallback hexes
+//     (EDITORIAL_NEUTRAL_PILL) map to var(--mute).
 //   * Tooltip degradation: upstream wraps the workspace filter button in
 //     <Tooltip><TooltipTrigger asChild>...</TooltipContent></Tooltip>, but
 //     the shadcn tooltip primitive + @radix-ui/react-tooltip don't ship in
@@ -14,6 +16,10 @@
 //     `null` / `false`) so callers can render minimal-fidelity rows
 //     without funneling every metadata field through the BFF on day one.
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+
+// Editorial neutral pill fallback (replaces upstream EDITORIAL_NEUTRAL_PILL slate fallback
+// for project + label color slots when the BFF doesn't provide one).
+const EDITORIAL_NEUTRAL_PILL = "#8a8578"; // == --mute
 
 import type { ReactNode } from "react";
 import { Columns3 } from "lucide-react";
@@ -31,7 +37,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { formatAssigneeUserLabel } from "@/components/teams/shared/lib/assignees";
 import type { InboxIssueColumn } from "@/components/teams/shared/lib/inboxColumns";
-import { cn } from "@/lib/utils";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
@@ -212,26 +217,24 @@ export function InboxIssueMetaLeading({
         </span>
       ) : null}
       {isLive && (
+        // Retheme: prior amber-700 live pill → editorial forest tint.
         <span
-          className={cn(
-            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
-            "bg-amber-700/10 dark:bg-amber-400/10",
-          )}
+          className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2"
+          style={{ background: "var(--forest-tint)" }}
         >
           <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-amber-700 dark:bg-amber-400 opacity-75" />
             <span
-              className={cn(
-                "relative inline-flex h-2 w-2 rounded-full",
-                "bg-amber-700 dark:bg-amber-400",
-              )}
+              className="absolute inline-flex h-full w-full animate-pulse rounded-full opacity-75"
+              style={{ background: "var(--forest)" }}
+            />
+            <span
+              className="relative inline-flex h-2 w-2 rounded-full"
+              style={{ background: "var(--forest)" }}
             />
           </span>
           <span
-            className={cn(
-              "hidden text-[11px] font-medium sm:inline",
-              "text-amber-700 dark:text-amber-400",
-            )}
+            className="hidden text-[11px] font-medium sm:inline"
+            style={{ color: "var(--forest)" }}
           >
             Live
           </span>
@@ -331,7 +334,7 @@ export function InboxIssueTrailingColumns({
 
         if (column === "project") {
           if (projectName) {
-            const accentColor = projectColor ?? "#64748b";
+            const accentColor = projectColor ?? EDITORIAL_NEUTRAL_PILL;
             return (
               <span
                 key={column}
@@ -365,7 +368,7 @@ export function InboxIssueTrailingColumns({
                 className="flex min-w-0 items-center gap-1 overflow-hidden"
               >
                 {(issue.labels ?? []).slice(0, 2).map((label) => {
-                  const labelColor = label.color ?? "#64748b";
+                  const labelColor = label.color ?? EDITORIAL_NEUTRAL_PILL;
                   return (
                     <span
                       key={label.id}

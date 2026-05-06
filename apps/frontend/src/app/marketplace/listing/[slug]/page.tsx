@@ -1,8 +1,11 @@
+import { notFound } from "next/navigation";
+
 import { getListing } from "@/lib/marketplace/api";
 import { BuyButton } from "@/components/marketplace/storefront/Listing/BuyButton";
 import { MarkdownDescription } from "@/components/marketplace/storefront/Listing/MarkdownDescription";
+import { Monogram, AgentPill, SectionLabel } from "@/components/agents/AgentIdentity";
+import { fromListing } from "@/lib/agentDesign";
 import type { ListingManifest } from "@/lib/marketplace/types";
-import { notFound } from "next/navigation";
 
 export default async function ListingDetail({
   params,
@@ -18,93 +21,111 @@ export default async function ListingDetail({
   }
   if (!detail) notFound();
   const { listing, manifest } = detail;
-
+  const editorial = fromListing(listing);
   const isPaid = listing.price_cents > 0;
 
   return (
-    <main className="max-w-4xl mx-auto px-6 py-12">
-      <header className="mb-8">
-        <span className="text-sm text-zinc-400 uppercase tracking-wider">
-          {/* v0 only publishes openclaw, so this is always "Agent". */}
-          Agent
-        </span>
-        <h1 className="text-4xl font-bold mt-2">
-          {manifest?.emoji ? <span className="mr-2">{manifest.emoji}</span> : null}
-          {listing.name}
-        </h1>
-        <div className="flex gap-2 mt-3">
-          {listing.tags.map((t) => (
-            <span key={t} className="text-xs px-2 py-1 bg-zinc-800 rounded">
-              {t}
-            </span>
-          ))}
-        </div>
-      </header>
-
-      <article className="mb-12 text-zinc-300">
-        <MarkdownDescription source={listing.description_md} />
-      </article>
-
-      {manifest && <ManifestSummary manifest={manifest} />}
-
-      <BuyButton listing={listing} />
-
-      {isPaid && (
-        <section className="mt-10 rounded-lg border border-zinc-800 p-5">
-          <h2 className="text-lg font-semibold mb-3">After purchase</h2>
-          <p className="text-sm text-zinc-400">
-            After Stripe Checkout completes, your purchased agent will be
-            deployed to your Isol8 container automatically. You&apos;ll be
-            redirected to a confirmation page with a deep-link to open it in
-            chat.
+    <main className="mx-auto grid max-w-6xl gap-10 px-6 py-12 lg:grid-cols-[360px_1fr]">
+      <aside className="lg:sticky lg:top-24 lg:self-start">
+        <div className="editorial-card p-7">
+          <Monogram agent={editorial} size={96} radius={20} />
+          <h1 className="mt-6 font-editorial-serif text-5xl leading-none text-[var(--ink)]">
+            {listing.name}
+          </h1>
+          <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--mute)]">
+            {editorial.role}
           </p>
-        </section>
-      )}
+          <p className="mt-5 font-editorial-serif text-lg italic leading-7 text-[var(--forest)]">
+            &ldquo;{editorial.vibe}&rdquo;
+          </p>
+          <div className="mt-6 flex items-center gap-3">
+            <AgentPill tone={editorial.isFree ? "forest" : "neutral"}>{editorial.price}</AgentPill>
+            {listing.tags.slice(0, 3).map((tag) => (
+              <AgentPill key={tag}>{tag}</AgentPill>
+            ))}
+          </div>
+          <div className="mt-6">
+            <BuyButton listing={listing} />
+          </div>
+        </div>
+      </aside>
+
+      <section className="min-w-0">
+        <article className="editorial-card bg-[var(--cream-deeper)] p-8">
+          <SectionLabel label="About" />
+          <MarkdownDescription source={listing.description_md} />
+        </article>
+
+        {manifest && <ManifestSummary manifest={manifest} />}
+
+        {isPaid && (
+          <section className="mt-8 editorial-card p-6">
+            <SectionLabel label="After purchase" />
+            <p className="text-sm leading-7 text-[var(--ink-soft)]">
+              After Stripe Checkout completes, your purchased agent deploys to your Isol8 container
+              automatically. You&apos;ll be redirected to a confirmation page with a deep link to
+              open it in chat.
+            </p>
+          </section>
+        )}
+      </section>
     </main>
   );
 }
 
 function ManifestSummary({ manifest }: { manifest: ListingManifest }) {
-  const noneIfEmpty = (xs: string[] | undefined) =>
-    xs && xs.length > 0 ? xs.join(", ") : "None";
-
-  const identityBits: string[] = [];
-  if (manifest.vibe) identityBits.push(manifest.vibe);
-  else identityBits.push("an agent");
-  if (manifest.suggested_model) identityBits.push(manifest.suggested_model);
+  const sections: Array<{ label: string; items: string[] | undefined }> = [
+    { label: "Required skills", items: manifest.required_skills },
+    { label: "Required plugins", items: manifest.required_plugins },
+    { label: "Required tools", items: manifest.required_tools },
+    { label: "Suggested channels", items: manifest.suggested_channels },
+  ];
 
   return (
-    <section className="mb-10 rounded-lg border border-zinc-800 p-5">
-      <h2 className="text-lg font-semibold mb-3">What&apos;s bundled</h2>
-      <ul className="space-y-1.5 text-sm text-zinc-300">
-        <li>
-          <span className="text-zinc-500">Identity:</span>{" "}
-          {identityBits.join(" — ")}
-        </li>
-        <li>
-          <span className="text-zinc-500">Required skills:</span>{" "}
-          {noneIfEmpty(manifest.required_skills)}
-        </li>
-        <li>
-          <span className="text-zinc-500">Required plugins:</span>{" "}
-          {noneIfEmpty(manifest.required_plugins)}
-        </li>
-        <li>
-          <span className="text-zinc-500">Required tools:</span>{" "}
-          {noneIfEmpty(manifest.required_tools)}
-        </li>
-        <li>
-          <span className="text-zinc-500">Suggested channels:</span>{" "}
-          {noneIfEmpty(manifest.suggested_channels)}
-        </li>
-      </ul>
-      <p className="mt-4 text-xs text-zinc-500">
-        Some skills referenced by this agent may not be bundled in the
-        artifact. After deploy, your container&apos;s{" "}
-        <code className="bg-zinc-900 px-1 py-0.5 rounded">openclaw.json</code>{" "}
-        may need a manual entry registering the agent — openclaw-slice
-        synthesis is not yet automated for marketplace publishes.
+    <section className="mt-8 editorial-card p-7">
+      <SectionLabel label="What's bundled" />
+      <div className="grid gap-5 md:grid-cols-2">
+        {manifest.vibe && (
+          <Field label="Identity">
+            <p className="font-editorial-serif text-base italic text-[var(--ink)]">
+              &ldquo;{manifest.vibe}&rdquo;
+            </p>
+          </Field>
+        )}
+        {manifest.suggested_model && (
+          <Field label="Suggested model">
+            <p className="font-mono text-sm text-[var(--forest)]">{manifest.suggested_model}</p>
+          </Field>
+        )}
+        {sections.map((section) => (
+          <Field key={section.label} label={section.label}>
+            {section.items && section.items.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {section.items.map((item) => (
+                  <AgentPill key={item}>{item}</AgentPill>
+                ))}
+              </div>
+            ) : (
+              <span className="text-sm italic text-[var(--mute)]">None</span>
+            )}
+          </Field>
+        ))}
+      </div>
+      <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
+        Some skills referenced by this agent may not be bundled in the artifact. After deploy,
+        your container&apos;s <code className="rounded bg-[var(--cream-deeper)] px-1 py-0.5 font-mono text-[var(--forest)]">openclaw.json</code> may need a manual entry registering the agent.
       </p>
     </section>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mute)]">
+        {label}
+      </div>
+      <div>{children}</div>
+    </div>
   );
 }

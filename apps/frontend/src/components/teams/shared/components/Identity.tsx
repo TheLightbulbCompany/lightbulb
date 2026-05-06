@@ -61,9 +61,14 @@ export function Identity({
     >
       <span
         className={cn(
-          "relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full bg-muted text-muted-foreground",
+          "relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full",
           avatarSize[size],
         )}
+        style={{
+          backgroundColor: "var(--cream-deeper)",
+          color: "var(--mute)",
+          border: "1px solid var(--edge)",
+        }}
         aria-hidden={avatarUrl ? undefined : true}
       >
         {avatarUrl ? (
@@ -77,7 +82,12 @@ export function Identity({
           <span>{displayInitials}</span>
         )}
       </span>
-      <span className={cn("truncate", textSize[size])}>{name}</span>
+      <span
+        className={cn("truncate", textSize[size])}
+        style={{ color: "var(--ink)" }}
+      >
+        {name}
+      </span>
     </span>
   );
 }

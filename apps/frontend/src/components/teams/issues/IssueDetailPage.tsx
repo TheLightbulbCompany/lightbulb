@@ -25,7 +25,13 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
 
   if (isLoading && !issue) {
     return (
-      <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
+      <div
+        className="flex h-full items-center justify-center p-8 text-sm italic"
+        style={{
+          fontFamily: "var(--font-lora-serif), serif",
+          color: "var(--mute)",
+        }}
+      >
         Loading…
       </div>
     );
@@ -35,11 +41,14 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
     return (
       <div
         role="alert"
-        className="flex h-full flex-col items-center justify-center p-8 text-sm text-destructive"
+        className="flex h-full flex-col items-center justify-center p-8 text-sm"
+        style={{ color: "var(--danger)" }}
       >
         <p>Failed to load issue.</p>
         {error?.message && (
-          <p className="text-muted-foreground mt-1">{error.message}</p>
+          <p className="mt-1" style={{ color: "var(--mute)" }}>
+            {error.message}
+          </p>
         )}
       </div>
     );
@@ -47,14 +56,23 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
 
   if (!issue) {
     return (
-      <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
+      <div
+        className="flex h-full items-center justify-center p-8 text-sm italic"
+        style={{
+          fontFamily: "var(--font-lora-serif), serif",
+          color: "var(--mute)",
+        }}
+      >
         Issue not found.
       </div>
     );
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6">
+    <div
+      className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
+      style={{ background: "var(--cream)", color: "var(--ink)" }}
+    >
       <main className="flex flex-col gap-6 min-w-0">
         <IssueHeader
           issue={issue}
@@ -69,12 +87,20 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           }}
         />
         {issue.description && (
-          <div className="text-sm whitespace-pre-wrap text-muted-foreground border-l-2 border-border pl-3">
+          <div
+            className="text-sm whitespace-pre-wrap pl-3"
+            style={{
+              borderLeft: "2px solid var(--edge)",
+              color: "var(--ink-soft)",
+            }}
+          >
             {issue.description}
           </div>
         )}
-        <div className="border-t pt-4">
-          <h2 className="text-sm font-medium mb-3">Conversation</h2>
+        <div className="pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
+          <h2 className="section-label mb-3">
+            <b>Conversation</b>
+          </h2>
           <IssueComments
             comments={comments}
             isLoading={isLoading}

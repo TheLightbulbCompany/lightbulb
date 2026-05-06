@@ -36,14 +36,25 @@ function PropertyRow({
   children: ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-1.5 text-sm">
-      <dt className="text-xs text-muted-foreground uppercase tracking-wide">
-        {label}
+    <div
+      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
+      style={{
+        color: "var(--ink-soft)",
+        borderBottom: "1px solid var(--edge)",
+      }}
+    >
+      <dt
+        className="section-label"
+        style={{ marginTop: 0, marginBottom: 0 }}
+      >
+        <b>{label}</b>
       </dt>
       <dd className="min-w-0 truncate">{children}</dd>
     </div>
   );
 }
+
+const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
 
 export function IssueProperties({
   issue,
@@ -63,7 +74,7 @@ export function IssueProperties({
   const labels = issue.labels ?? [];
 
   return (
-    <dl className={cn("flex flex-col divide-y divide-border", className)}>
+    <dl className={cn("flex flex-col", className)}>
       <PropertyRow label="Status">
         <span className="inline-flex items-center gap-2">
           <StatusIcon status={issue.status} />
@@ -79,11 +90,13 @@ export function IssueProperties({
             <span className="capitalize">{issue.priority}</span>
           </span>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span data-empty="true" style={EMPTY_DASH_STYLE}>
+            —
+          </span>
         )}
       </PropertyRow>
       <PropertyRow label="Assignee">
-        <span className={cn(!issue.assigneeAgentId && "text-muted-foreground")}>
+        <span style={!issue.assigneeAgentId ? EMPTY_DASH_STYLE : undefined}>
           {assigneeName}
         </span>
       </PropertyRow>
@@ -91,7 +104,9 @@ export function IssueProperties({
         {project ? (
           <span>{project.name}</span>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span data-empty="true" style={EMPTY_DASH_STYLE}>
+            —
+          </span>
         )}
       </PropertyRow>
       <PropertyRow label="Labels">
@@ -100,28 +115,43 @@ export function IssueProperties({
             {labels.map((l) => (
               <span
                 key={l.id}
-                className="rounded bg-accent/50 px-1.5 py-0.5 text-xs"
+                className="rounded px-1.5 py-0.5 text-xs"
+                style={{
+                  background: "var(--cream-deeper)",
+                  color: "var(--ink-soft)",
+                  border: "1px solid var(--edge)",
+                }}
               >
                 {l.name}
               </span>
             ))}
           </span>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span data-empty="true" style={EMPTY_DASH_STYLE}>
+            —
+          </span>
         )}
       </PropertyRow>
       <PropertyRow label="Created">
         {issue.createdAt ? (
-          <time dateTime={issue.createdAt}>{timeAgo(issue.createdAt)}</time>
+          <time dateTime={issue.createdAt} style={{ color: "var(--mute)" }}>
+            {timeAgo(issue.createdAt)}
+          </time>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span data-empty="true" style={EMPTY_DASH_STYLE}>
+            —
+          </span>
         )}
       </PropertyRow>
       <PropertyRow label="Updated">
         {issue.updatedAt ? (
-          <time dateTime={issue.updatedAt}>{timeAgo(issue.updatedAt)}</time>
+          <time dateTime={issue.updatedAt} style={{ color: "var(--mute)" }}>
+            {timeAgo(issue.updatedAt)}
+          </time>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span data-empty="true" style={EMPTY_DASH_STYLE}>
+            —
+          </span>
         )}
       </PropertyRow>
     </dl>

@@ -7,7 +7,7 @@
 import Link from "next/link";
 import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { statusDotClass } from "./statusColors";
+import { statusDotClass, statusDotColor } from "./statusColors";
 import { CARD_W, CARD_H } from "./orgChartLayout";
 
 export interface AgentCardProps {
@@ -25,26 +25,39 @@ export function AgentCard({ id, name, role, status, x, y }: AgentCardProps) {
       href={`/teams/agents/${id}`}
       data-agent-card-id={id}
       className={cn(
-        "absolute flex flex-col gap-1 rounded-lg border border-border bg-background p-3 shadow-sm transition-shadow hover:shadow-md",
-        "no-underline text-foreground"
+        "editorial-card editorial-card-hover absolute flex flex-col gap-1 p-3",
+        "no-underline"
       )}
       style={{
         left: `${x}px`,
         top: `${y}px`,
         width: `${CARD_W}px`,
         height: `${CARD_H}px`,
+        color: "var(--ink)",
       }}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <Bot className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
-        <span className="font-medium text-sm truncate flex-1">{name}</span>
+        <Bot
+          className="h-4 w-4 shrink-0"
+          style={{ color: "var(--mute)" }}
+          aria-hidden="true"
+        />
+        <span className="font-editorial-serif text-base truncate flex-1">
+          {name}
+        </span>
         <span
           className={cn("h-2 w-2 rounded-full shrink-0", statusDotClass(status))}
+          style={{ backgroundColor: statusDotColor(status) }}
           aria-label={`Status: ${status}`}
           title={status}
         />
       </div>
-      <div className="text-xs text-muted-foreground capitalize">{role}</div>
+      <div
+        className="text-xs capitalize"
+        style={{ color: "var(--mute)" }}
+      >
+        {role}
+      </div>
     </Link>
   );
 }

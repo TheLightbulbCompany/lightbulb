@@ -40,34 +40,38 @@ export function SettingsPanel() {
   }
 
   return (
-    <div className="p-8 max-w-2xl space-y-4">
-      <h1 className="text-2xl font-semibold">Settings</h1>
+    <div className="editorial-page p-8 max-w-2xl space-y-4">
+      <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Settings</h1>
       <label className="block">
-        <span className="text-sm">Display name</span>
+        <span className="text-sm text-[var(--ink-soft)]">Display name</span>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="w-full border rounded px-3 py-2 mt-1"
+          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
         />
       </label>
       <label className="block">
-        <span className="text-sm">Description</span>
+        <span className="text-sm text-[var(--ink-soft)]">Description</span>
         <textarea
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
-          className="w-full border rounded px-3 py-2 mt-1"
+          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           rows={4}
         />
       </label>
-      {err && <div className="text-red-600 text-sm">{err}</div>}
+      {err && (
+        <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          {err}
+        </div>
+      )}
       <button
         onClick={save}
         disabled={saving}
-        className="px-4 py-2 bg-zinc-900 text-white rounded text-sm"
+        className="editorial-btn editorial-btn--primary"
       >
         {saving ? "Saving…" : "Save"}
       </button>
-      <p className="text-xs text-zinc-500 pt-4 border-t">
+      <p className="text-xs text-[var(--mute)] pt-4 border-t border-[var(--edge)] italic">
         Adapter, plugin, and instance settings are operator-controlled and not
         editable here.
       </p>

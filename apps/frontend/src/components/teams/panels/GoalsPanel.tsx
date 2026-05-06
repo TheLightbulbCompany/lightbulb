@@ -36,12 +36,12 @@ function GoalRow({ node, depth }: { node: GoalNode; depth: number }) {
   return (
     <>
       <li
-        className="p-3 border-b last:border-b-0"
+        className="p-3 border-b border-[var(--edge)] last:border-b-0"
         style={{ paddingLeft: `${depth * 1.5 + 0.75}rem` }}
       >
-        <div className="font-medium">{node.title}</div>
+        <div className="font-medium text-[var(--ink)]">{node.title}</div>
         {node.description && (
-          <div className="text-xs text-zinc-500 mt-0.5">{node.description}</div>
+          <div className="text-xs text-[var(--mute)] mt-0.5">{node.description}</div>
         )}
       </li>
       {node.children.map((c) => (
@@ -58,27 +58,39 @@ export function GoalsPanel() {
 
   const tree = useMemo(() => buildTree(data?.goals ?? []), [data]);
 
-  if (isLoading) return <div className="p-8">Loading…</div>;
-  if (error) return <div className="p-8 text-red-600">Error: {String(error)}</div>;
+  if (isLoading)
+    return (
+      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
+        Loading…
+      </div>
+    );
+  if (error)
+    return (
+      <div className="editorial-page p-8 text-[var(--danger)]">
+        Error: {String(error)}
+      </div>
+    );
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="editorial-page p-8 max-w-4xl">
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-semibold">Goals</h1>
+        <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Goals</h1>
         <button
           onClick={() => setCreating(true)}
-          className="px-4 py-2 bg-zinc-900 text-white rounded text-sm"
+          className="editorial-btn editorial-btn--primary"
         >
           New goal
         </button>
       </div>
 
-      <ul className="border rounded">
+      <ul className="editorial-card overflow-hidden">
         {tree.map((root) => (
           <GoalRow key={root.id} node={root} depth={0} />
         ))}
         {tree.length === 0 && (
-          <li className="p-4 text-sm text-zinc-500">No goals yet.</li>
+          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
+            No goals yet.
+          </li>
         )}
       </ul>
 
@@ -126,43 +138,50 @@ function CreateGoalDialog({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center">
-      <div className="bg-white rounded-lg p-6 w-[28rem]">
-        <h2 className="text-lg font-semibold mb-4">New goal</h2>
+    <div className="fixed inset-0 bg-[rgba(26,26,26,0.35)] flex items-center justify-center">
+      <div className="editorial-card p-6 w-[28rem]">
+        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">New goal</h2>
         <label className="block mb-3">
-          <span className="text-sm">Title</span>
+          <span className="text-sm text-[var(--ink-soft)]">Title</span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
         <label className="block mb-3">
-          <span className="text-sm">Description</span>
+          <span className="text-sm text-[var(--ink-soft)]">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
             rows={3}
           />
         </label>
         <label className="block mb-4">
-          <span className="text-sm">Parent goal ID (optional)</span>
+          <span className="text-sm text-[var(--ink-soft)]">Parent goal ID (optional)</span>
           <input
             value={parentId}
             onChange={(e) => setParentId(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
-        {err && <div className="text-red-600 text-sm mb-2">{err}</div>}
+        {err && (
+          <div className="text-[var(--danger)] text-sm mb-2 border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+            {err}
+          </div>
+        )}
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="px-3 py-1 border rounded">
+          <button
+            onClick={onClose}
+            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
+          >
             Cancel
           </button>
           <button
             onClick={submit}
             disabled={submitting || !title}
-            className="px-3 py-1 bg-zinc-900 text-white rounded"
+            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create"}
           </button>

@@ -1,6 +1,9 @@
 // Tests for ActivityCharts: ChartCard wrapper, getLast14Days helper, and the
 // 4 chart components (RunActivity / Priority / IssueStatus / SuccessRate).
 // Empty-state copy + rendered bar segments are verified per component.
+//
+// Color assertions use the editorial palette tokens (--forest, --warn, --mute,
+// etc.) which the chart components emit via inline style attributes.
 
 import { describe, test, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -59,23 +62,26 @@ describe("RunActivityChart", () => {
     expect(screen.getByText(/no runs yet/i)).toBeInTheDocument();
   });
 
-  test("renders bar segments for days with runs", () => {
+  test("renders bar segments for days with runs (succeeded + failed tokens)", () => {
     const today = new Date().toISOString().slice(0, 10);
     const activity: DashboardRunActivityDay[] = [
       { date: today, succeeded: 3, failed: 1, other: 0, total: 4 },
     ];
     const { container } = render(<RunActivityChart activity={activity} />);
-    expect(container.querySelector(".bg-emerald-500")).not.toBeNull();
-    expect(container.querySelector(".bg-red-500")).not.toBeNull();
+    const succeededBar = container.querySelector('[style*="var(--forest)"]');
+    const failedBar = container.querySelector('[style*="var(--warn)"]');
+    expect(succeededBar).not.toBeNull();
+    expect(failedBar).not.toBeNull();
   });
 
-  test("renders 'other' segment when other > 0", () => {
+  test("renders 'other' segment when other > 0 (mute token)", () => {
     const today = new Date().toISOString().slice(0, 10);
     const activity: DashboardRunActivityDay[] = [
       { date: today, succeeded: 0, failed: 0, other: 2, total: 2 },
     ];
     const { container } = render(<RunActivityChart activity={activity} />);
-    expect(container.querySelector(".bg-neutral-500")).not.toBeNull();
+    const otherBar = container.querySelector('[style*="var(--mute)"]');
+    expect(otherBar).not.toBeNull();
   });
 });
 
@@ -92,11 +98,10 @@ describe("PriorityChart", () => {
       { priority: "high", createdAt: today },
     ];
     const { container } = render(<PriorityChart issues={issues} />);
-    // Critical bar segment
-    const critical = container.querySelector('[style*="rgb(239, 68, 68)"], [style*="#ef4444"]');
-    // High bar segment
-    const high = container.querySelector('[style*="rgb(249, 115, 22)"], [style*="#f97316"]');
-    expect(critical || high).not.toBeNull();
+    // critical -> warn, high -> forest in the editorial mapping
+    const criticalSegment = container.querySelector('[style*="var(--warn)"]');
+    const highSegment = container.querySelector('[style*="var(--forest)"]');
+    expect(criticalSegment || highSegment).not.toBeNull();
   });
 
   test("renders priority legend labels", () => {
@@ -149,31 +154,27 @@ describe("SuccessRateChart", () => {
     expect(screen.getByText(/no runs yet/i)).toBeInTheDocument();
   });
 
-  test("computes success rate per day and uses green for >= 80%", () => {
+  test("computes success rate per day and uses forest token for >= 80%", () => {
     const today = new Date().toISOString().slice(0, 10);
     const activity: DashboardRunActivityDay[] = [
       { date: today, succeeded: 8, failed: 2, other: 0, total: 10 },
     ];
     const { container } = render(<SuccessRateChart activity={activity} />);
-    // 80% rate -> green (#10b981)
-    const greenBar = container.querySelector(
-      '[style*="rgb(16, 185, 129)"], [style*="#10b981"]'
-    );
-    expect(greenBar).not.toBeNull();
+    // 80% rate -> forest token
+    const forestBar = container.querySelector('[style*="var(--forest)"]');
+    expect(forestBar).not.toBeNull();
     // tooltip should encode the percentage
     const tooltipNode = container.querySelector('[title*="80%"]');
     expect(tooltipNode).not.toBeNull();
   });
 
-  test("uses red for low success rate", () => {
+  test("uses ink token for low success rate (< 50%)", () => {
     const today = new Date().toISOString().slice(0, 10);
     const activity: DashboardRunActivityDay[] = [
       { date: today, succeeded: 1, failed: 9, other: 0, total: 10 },
     ];
     const { container } = render(<SuccessRateChart activity={activity} />);
-    const redBar = container.querySelector(
-      '[style*="rgb(239, 68, 68)"], [style*="#ef4444"]'
-    );
-    expect(redBar).not.toBeNull();
+    const lowBar = container.querySelector('[style*="var(--ink)"]');
+    expect(lowBar).not.toBeNull();
   });
 });

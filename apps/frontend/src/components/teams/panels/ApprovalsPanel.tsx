@@ -40,36 +40,40 @@ export function ApprovalsPanel() {
     }
   }
 
+  const approvals = data?.approvals ?? [];
+
   return (
-    <div className="p-8 max-w-4xl">
-      <h1 className="text-2xl font-semibold mb-6">Approvals</h1>
+    <div className="editorial-page p-8 max-w-4xl">
+      <h1 className="font-editorial-serif text-4xl mb-6 text-[var(--ink)]">Approvals</h1>
       <ul className="space-y-3">
-        {(data?.approvals ?? []).map((a) => (
-          <li key={a.id} className="border rounded p-4">
-            <div className="font-medium">{a.title}</div>
+        {approvals.map((a) => (
+          <li key={a.id} className="editorial-card p-4">
+            <div className="font-medium text-[var(--ink)]">{a.title}</div>
             {a.description && (
-              <div className="text-sm text-zinc-600 mt-1">{a.description}</div>
+              <div className="text-sm text-[var(--ink-soft)] mt-1">{a.description}</div>
             )}
             <div className="flex gap-2 mt-3">
               <button
                 onClick={() => approve(a.id)}
                 disabled={busy === a.id}
-                className="px-3 py-1 bg-zinc-900 text-white rounded text-sm"
+                className="editorial-btn editorial-btn--primary editorial-btn--sm"
               >
                 Approve
               </button>
               <button
                 onClick={() => reject(a.id)}
                 disabled={busy === a.id}
-                className="px-3 py-1 border rounded text-sm"
+                className="editorial-btn editorial-btn--secondary editorial-btn--sm"
               >
                 Reject
               </button>
             </div>
           </li>
         ))}
-        {(data?.approvals ?? []).length === 0 && (
-          <li className="text-sm text-zinc-500">No pending approvals.</li>
+        {approvals.length === 0 && (
+          <li className="font-editorial-serif text-xl italic text-[var(--mute)]">
+            No pending approvals.
+          </li>
         )}
       </ul>
     </div>

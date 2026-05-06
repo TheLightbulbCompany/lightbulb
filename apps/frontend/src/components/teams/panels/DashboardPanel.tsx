@@ -7,6 +7,8 @@
 // 4 metric tiles + 4 charts + recent activity feed. Drops upstream's
 // ActiveAgentsPanel, plugin slots, onboarding empty-state (handled
 // elsewhere in our TeamsLayout), and configurable date ranges (14d hardcoded).
+// Editorial reskin: tokens (cream/ink/mute/forest/edge) + Lora display
+// for masthead H1 + section H2s; class-only swap, hooks/data preserved.
 // See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import Link from "next/link";
@@ -97,12 +99,21 @@ export function DashboardPanel() {
 
   if (dashboardQuery.isLoading && !dashboardQuery.data) {
     return (
-      <div className="p-6 sm:p-8 text-sm text-muted-foreground">Loading…</div>
+      <div
+        className="editorial-page p-6 sm:p-8 font-editorial-serif text-xl italic"
+        style={{ color: "var(--mute)" }}
+      >
+        Loading…
+      </div>
     );
   }
   if (dashboardQuery.error && !dashboardQuery.data) {
     return (
-      <div role="alert" className="p-6 sm:p-8 text-sm text-destructive">
+      <div
+        role="alert"
+        className="editorial-page p-6 sm:p-8 font-editorial-serif text-xl italic"
+        style={{ color: "var(--warn)" }}
+      >
         Failed to load dashboard.
       </div>
     );
@@ -129,18 +140,30 @@ export function DashboardPanel() {
   });
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 flex flex-col gap-7 max-w-[1600px] mx-auto w-full">
+    <div className="editorial-page p-4 sm:p-6 lg:p-8 flex flex-col gap-7 max-w-[1600px] mx-auto w-full">
       {/* Header — editorial-grid masthead */}
-      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 pb-1 border-b border-border/60">
+      <header
+        className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 pb-3"
+        style={{ borderBottom: "1px solid var(--edge)" }}
+      >
         <div className="space-y-1">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.12em]">
+          <p
+            className="text-[10px] font-semibold uppercase tracking-[0.12em]"
+            style={{ color: "var(--mute)" }}
+          >
             Overview
           </p>
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight leading-none">
+          <h1
+            className="font-editorial-serif text-5xl leading-none"
+            style={{ color: "var(--ink)" }}
+          >
             Dashboard
           </h1>
         </div>
-        <p className="text-xs text-muted-foreground tabular-nums font-mono pb-1">
+        <p
+          className="text-xs tabular-nums font-mono pb-1"
+          style={{ color: "var(--mute)" }}
+        >
           {today}
         </p>
       </header>
@@ -148,7 +171,7 @@ export function DashboardPanel() {
       {/* Metric tiles — single continuous strip with internal hairlines */}
       <section
         aria-label="Key metrics"
-        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border border-border/70 rounded-lg bg-card overflow-hidden divide-y divide-border/70 sm:divide-y-0 lg:divide-x lg:divide-y-0"
+        className="editorial-card grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 overflow-hidden"
       >
         <MetricCard
           icon={Bot}
@@ -229,29 +252,51 @@ export function DashboardPanel() {
       {/* Recent activity */}
       <section aria-label="Recent activity" className="min-w-0">
         <div className="flex items-baseline justify-between mb-3">
-          <h2 className="text-[11px] font-semibold text-foreground uppercase tracking-[0.06em]">
+          <h2
+            className="font-editorial-serif text-2xl"
+            style={{ color: "var(--ink)" }}
+          >
             Recent activity
           </h2>
           {events.length > 0 && (
             <Link
               href="/teams/activity"
-              className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              className="text-[11px] transition-colors hover:underline"
+              style={{ color: "var(--forest)" }}
             >
               View all →
             </Link>
           )}
         </div>
-        <div className="border border-border/70 rounded-lg divide-y divide-border/70 bg-card overflow-hidden">
+        <div
+          className="editorial-card overflow-hidden"
+          style={{ borderColor: "var(--edge)" }}
+        >
           {activityLoading && events.length === 0 ? (
-            <div className="px-4 py-3 text-sm text-muted-foreground/70 italic">
+            <div
+              className="px-4 py-3 font-editorial-serif text-base italic"
+              style={{ color: "var(--mute)" }}
+            >
               Loading activity…
             </div>
           ) : events.length === 0 ? (
-            <div className="px-4 py-3 text-sm text-muted-foreground/70 italic">
+            <div
+              className="px-4 py-3 font-editorial-serif text-base italic"
+              style={{ color: "var(--mute)" }}
+            >
               No recent activity.
             </div>
           ) : (
-            events.map((evt) => <ActivityRow key={evt.id} event={evt} />)
+            <div>
+              {events.map((evt, i) => (
+                <div
+                  key={evt.id}
+                  style={i === 0 ? undefined : { borderTop: "1px solid var(--edge)" }}
+                >
+                  <ActivityRow event={evt} />
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </section>

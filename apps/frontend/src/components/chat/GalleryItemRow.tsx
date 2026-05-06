@@ -4,6 +4,8 @@ import { Info, Loader2, Plus } from "lucide-react";
 import { useState } from "react";
 
 import type { CatalogAgent } from "@/hooks/useCatalog";
+import { Monogram } from "@/components/agents/AgentIdentity";
+import { fromCatalogAgent } from "@/lib/agentDesign";
 
 interface GalleryItemRowProps {
   agent: CatalogAgent;
@@ -14,6 +16,7 @@ interface GalleryItemRowProps {
 export function GalleryItemRow({ agent, onDeploy, onOpenInfo }: GalleryItemRowProps) {
   const [deploying, setDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const displayAgent = fromCatalogAgent(agent);
 
   const handleDeploy = async () => {
     setDeploying(true);
@@ -30,20 +33,24 @@ export function GalleryItemRow({ agent, onDeploy, onOpenInfo }: GalleryItemRowPr
 
   return (
     <div className="px-2 py-1">
-      <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-white/60 transition-colors">
-        <span
-          aria-hidden
-          className="flex items-center justify-center w-8 h-8 rounded-md bg-[#2d8a4e] text-white text-base flex-shrink-0"
+      <div className="flex items-center gap-2 rounded-[10px] px-2 py-1.5 transition-colors hover:bg-white/80 hover:shadow-[0_1px_4px_rgba(26,26,26,0.04)]">
+        <Monogram agent={displayAgent} size={28} radius={8} />
+        <button
+          type="button"
+          onClick={() => onOpenInfo(agent)}
+          className="min-w-0 flex-1 text-left"
         >
-          {agent.emoji || "🤖"}
-        </span>
-        <span className="flex-1 text-sm text-[#1a1a1a] truncate">{agent.name}</span>
+          <span className="block truncate text-[13px] font-medium text-[#1a1a1a]">{displayAgent.name}</span>
+          <span className="block truncate font-mono text-[9px] uppercase tracking-[0.1em] text-[#8a8578]">
+            {displayAgent.role}
+          </span>
+        </button>
         <button
           type="button"
           aria-label={`Deploy ${agent.name}`}
           onClick={handleDeploy}
           disabled={deploying}
-          className="p-1 rounded text-[#1a1a1a] hover:bg-white/60 disabled:opacity-50 transition-colors"
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#e0dbd0] text-[#06402B] transition-colors hover:bg-[#06402B] hover:text-white disabled:opacity-50"
         >
           {deploying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
         </button>
@@ -51,7 +58,7 @@ export function GalleryItemRow({ agent, onDeploy, onOpenInfo }: GalleryItemRowPr
           type="button"
           aria-label={`Info about ${agent.name}`}
           onClick={() => onOpenInfo(agent)}
-          className="p-1 rounded text-[#1a1a1a] hover:bg-white/60 transition-colors"
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[#8a8578] transition-colors hover:bg-white/80 hover:text-[#1a1a1a]"
         >
           <Info className="w-4 h-4" />
         </button>

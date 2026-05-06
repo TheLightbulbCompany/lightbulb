@@ -35,9 +35,9 @@ describe("TeamsSidebar", () => {
     });
   });
 
-  it("← Back to chat link points to /chat", () => {
+  it("Back to chat link points to /chat", () => {
     render(<TeamsSidebar />);
-    const link = screen.getByText("← Back to chat");
+    const link = screen.getByText("Back to chat");
     expect(link.closest("a")).toHaveAttribute("href", "/chat");
   });
 });

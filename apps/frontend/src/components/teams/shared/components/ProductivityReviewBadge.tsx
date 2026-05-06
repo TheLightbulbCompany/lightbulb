@@ -12,7 +12,10 @@
 //     inline-hidden — once Tooltip is vendored, swap the `<>` wrapper for
 //     <Tooltip><TooltipTrigger asChild>...</TooltipTrigger><TooltipContent>
 //     ...</TooltipContent></Tooltip> and drop the title attribute.
-// Amber tokens are KEEP-list per the deep-port retheme mapping.
+// Editorial retheme: the upstream amber tokens (border-amber-500/40,
+// bg-amber-500/10, text-amber-700) map onto `--warn` in the editorial
+// palette — the badge still reads as "attention required" against the
+// cream surface, but in the right hue for the new chrome.
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import Link from "next/link";
@@ -78,9 +81,14 @@ export function ProductivityReviewBadge({
     <Link
       href={reviewPath}
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0 hover:bg-amber-500/20 transition-colors",
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0 transition-colors",
         className,
       )}
+      style={{
+        borderColor: "color-mix(in srgb, var(--warn) 40%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--warn) 12%, transparent)",
+        color: "var(--warn)",
+      }}
       aria-label={`Under review · productivity review ${reviewIdentifier} (${label})`}
       title={titleText}
     >

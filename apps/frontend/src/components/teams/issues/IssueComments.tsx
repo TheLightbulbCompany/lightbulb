@@ -9,7 +9,6 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { IssueComment } from "@/components/teams/shared/types";
 
@@ -55,31 +54,59 @@ export function IssueComments({
     <div className="flex flex-col gap-4">
       {/* List */}
       {isLoading && comments.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Loading comments…</p>
+        <p
+          className="text-sm italic"
+          style={{
+            fontFamily: "var(--font-lora-serif), serif",
+            color: "var(--mute)",
+          }}
+        >
+          Loading comments…
+        </p>
       ) : comments.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No comments yet.</p>
+        <p
+          className="text-sm italic"
+          style={{
+            fontFamily: "var(--font-lora-serif), serif",
+            color: "var(--mute)",
+          }}
+        >
+          No comments yet.
+        </p>
       ) : (
         <ul className="flex flex-col gap-3">
           {comments.map((c) => (
             <li
               key={c.id}
-              className="flex flex-col gap-1 border-l-2 border-border pl-3"
+              className="flex flex-col gap-1 pl-3"
+              style={{ borderLeft: "2px solid var(--edge)" }}
             >
-              <div className="flex items-baseline gap-2 text-xs text-muted-foreground">
+              <div
+                className="flex items-baseline gap-2 text-xs"
+                style={{ color: "var(--mute)" }}
+              >
                 <span>{authorLabel(c)}</span>
                 <span aria-hidden="true">·</span>
                 <time dateTime={c.createdAt}>
                   {new Date(c.createdAt).toLocaleString()}
                 </time>
               </div>
-              <div className="text-sm whitespace-pre-wrap">{c.body}</div>
+              <div
+                className="text-sm whitespace-pre-wrap"
+                style={{ color: "var(--ink-soft)" }}
+              >
+                {c.body}
+              </div>
             </li>
           ))}
         </ul>
       )}
 
       {/* Composer */}
-      <div className="flex flex-col gap-2 border-t pt-4">
+      <div
+        className="flex flex-col gap-2 pt-4"
+        style={{ borderTop: "1px solid var(--edge)" }}
+      >
         <Textarea
           rows={3}
           placeholder="Add a comment..."
@@ -92,19 +119,30 @@ export function IssueComments({
             }
           }}
           disabled={submitting}
+          style={{
+            background: "var(--cream-deeper)",
+            border: "1px solid var(--edge)",
+            color: "var(--ink)",
+          }}
         />
         {error && (
-          <p role="alert" className="text-sm text-destructive">
+          <p
+            role="alert"
+            className="text-sm"
+            style={{ color: "var(--danger)" }}
+          >
             {error}
           </p>
         )}
         <div className="flex justify-end gap-2">
-          <Button
+          <button
+            type="button"
             onClick={submit}
             disabled={!body.trim() || submitting}
+            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Posting…" : "Comment"}
-          </Button>
+          </button>
         </div>
       </div>
     </div>

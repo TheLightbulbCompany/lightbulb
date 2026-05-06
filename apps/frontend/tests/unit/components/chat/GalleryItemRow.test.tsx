@@ -18,10 +18,10 @@ const baseAgent = {
 };
 
 describe("GalleryItemRow", () => {
-  it("renders name and emoji", () => {
+  it("renders name and monogram", () => {
     render(<GalleryItemRow agent={baseAgent} onDeploy={vi.fn()} onOpenInfo={vi.fn()} />);
     expect(screen.getByText("Pitch")).toBeInTheDocument();
-    expect(screen.getByText("🎯")).toBeInTheDocument();
+    expect(screen.getByText("Pi")).toBeInTheDocument();
   });
 
   it("calls onDeploy when + clicked", async () => {

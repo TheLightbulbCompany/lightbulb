@@ -51,7 +51,7 @@ export default function Dashboard() {
   if (!data) return <p className="p-8">Loading…</p>;
   return (
     <main className="max-w-3xl mx-auto px-6 py-12">
-      <h1 className="text-3xl font-bold mb-8">Creator dashboard</h1>
+      <h1 className="font-editorial-serif text-4xl mb-8">Creator dashboard</h1>
       <div className="grid grid-cols-2 gap-4 mb-8">
         <Stat label="Held balance" value={`$${((data.balance_held_cents ?? 0) / 100).toFixed(2)}`} />
         <Stat
@@ -60,7 +60,7 @@ export default function Dashboard() {
         />
       </div>
       {data.dashboard_url ? (
-        <a href={data.dashboard_url} className="text-zinc-100 underline">
+        <a href={data.dashboard_url} className="text-[var(--ink)] underline">
           Open Stripe dashboard →
         </a>
       ) : (
@@ -69,12 +69,12 @@ export default function Dashboard() {
             type="button"
             onClick={startOnboarding}
             disabled={onboardLoading}
-            className="px-4 py-2 bg-zinc-100 text-zinc-950 rounded font-semibold disabled:opacity-50"
+            className="editorial-btn editorial-btn--primary disabled:opacity-50"
           >
             {onboardLoading ? "Redirecting to Stripe…" : "Onboard for payouts"}
           </button>
           {onboardError && (
-            <p className="mt-3 text-sm text-red-400" role="alert">
+            <p className="mt-3 text-sm text-[var(--danger)]" role="alert">
               {onboardError}
             </p>
           )}
@@ -86,8 +86,8 @@ export default function Dashboard() {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-zinc-800 p-4">
-      <p className="text-sm text-zinc-400">{label}</p>
+    <div className="editorial-card p-4">
+      <p className="text-sm text-[var(--mute)]">{label}</p>
       <p className="text-2xl font-bold mt-1">{value}</p>
     </div>
   );

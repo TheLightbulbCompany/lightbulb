@@ -112,16 +112,16 @@ function FreeDeployButton({
       <button
         onClick={deploy}
         disabled={loading}
-        className="px-6 py-3 bg-zinc-100 text-zinc-950 rounded-lg font-semibold disabled:opacity-50"
+        className="editorial-btn editorial-btn--primary h-12 px-6 text-sm"
       >
         {loading ? "Deploying…" : "Deploy to my Isol8 container"}
       </button>
       {error && (
-        <p className="mt-3 text-sm text-red-400" role="alert">
+        <p className="mt-3 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-3 py-2 text-sm text-[var(--danger)]" role="alert">
           {error}{" "}
           <button
             onClick={deploy}
-            className="underline hover:text-red-300"
+            className="font-bold underline hover:opacity-80"
             type="button"
           >
             Try again
@@ -189,16 +189,16 @@ function PaidBuyButton({
       <button
         onClick={purchase}
         disabled={loading}
-        className="px-6 py-3 bg-zinc-100 text-zinc-950 rounded-lg font-semibold disabled:opacity-50"
+        className="editorial-btn editorial-btn--primary h-12 px-6 text-sm"
       >
         {loading ? "Loading…" : `Buy for ${price}`}
       </button>
       {error && (
-        <p className="mt-3 text-sm text-red-400" role="alert">
+        <p className="mt-3 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-3 py-2 text-sm text-[var(--danger)]" role="alert">
           {error}{" "}
           <button
             onClick={purchase}
-            className="underline hover:text-red-300"
+            className="font-bold underline hover:opacity-80"
             type="button"
           >
             Try again

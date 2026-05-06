@@ -146,23 +146,27 @@ export function SwipeToArchive({
         suppressClickRef.current = false;
       }}
     >
+      {/* Retheme: emerald-600 archive reveal → editorial forest token. */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 flex items-center justify-end bg-emerald-600 px-4 text-white"
-        style={{ opacity: Math.max(archiveReveal, 0.2) }}
+        className="pointer-events-none absolute inset-0 flex items-center justify-end px-4"
+        style={{
+          background: "var(--forest)",
+          color: "var(--cream)",
+          opacity: Math.max(archiveReveal, 0.2),
+        }}
       >
         <span className="inline-flex items-center gap-2 text-sm font-medium">
           <Archive className="h-4 w-4" />
           Archive
         </span>
       </div>
+      {/* Retheme: stone-100 selected highlight → editorial cream-deeper. */}
       <div
         data-inbox-row-surface
-        className={cn(
-          "relative will-change-transform",
-          selected ? "bg-stone-100 dark:bg-stone-800" : "bg-background",
-        )}
+        className={cn("relative will-change-transform")}
         style={{
+          background: selected ? "var(--cream-deeper)" : "var(--cream)",
           transform: `translate3d(${offsetX}px, 0, 0)`,
           transition: isDragging ? "none" : "transform 180ms ease-out",
         }}

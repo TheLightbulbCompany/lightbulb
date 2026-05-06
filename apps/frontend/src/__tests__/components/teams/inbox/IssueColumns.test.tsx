@@ -34,14 +34,17 @@ test("InboxIssueMetaLeading renders the identifier when not live", () => {
   expect(getByText("PAP-1")).toBeInTheDocument();
 });
 
-test("InboxIssueMetaLeading renders a Live badge with the rethemed amber palette", () => {
+test("InboxIssueMetaLeading renders a Live badge with the editorial forest palette", () => {
   const { container, getByText } = render(
     <InboxIssueMetaLeading issue={issue} isLive />,
   );
   expect(getByText("Live")).toBeInTheDocument();
-  // Retheme assertion: amber, not blue.
+  // Editorial retheme assertion: forest tokens, not amber and not blue.
+  // The Live pill now uses inline `style="background: var(--forest-tint)"`
+  // and inner spans `background: var(--forest)` / `color: var(--forest)`.
   const html = container.innerHTML;
-  expect(html).toMatch(/amber-700/);
+  expect(html).toMatch(/var\(--forest/);
+  expect(html).not.toMatch(/amber-\d/);
   expect(html).not.toMatch(/blue-\d/);
 });
 

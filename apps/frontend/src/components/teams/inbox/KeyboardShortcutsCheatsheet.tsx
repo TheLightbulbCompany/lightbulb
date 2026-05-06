@@ -106,7 +106,9 @@ export function KeyboardShortcutsCheatsheet({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent className="sm:max-w-md gap-0 p-0 overflow-hidden">
         <AlertDialogHeader className="px-5 pt-5 pb-3">
-          <AlertDialogTitle className="text-base">Keyboard shortcuts</AlertDialogTitle>
+          <AlertDialogTitle className="font-editorial-serif text-xl text-[var(--ink)]">
+            Keyboard shortcuts
+          </AlertDialogTitle>
         </AlertDialogHeader>
         <KeyboardShortcutsCheatsheetContent />
       </AlertDialogContent>

@@ -2,7 +2,9 @@
 
 // Ported from upstream Paperclip's IssueFiltersPopover.tsx
 // (paperclip/ui/src/components/IssueFiltersPopover.tsx) (MIT, (c) 2025 Paperclip AI).
-// Retheme: blue active-state classes -> amber-700 (Isol8 brand).
+// Retheme: blue active-state classes -> amber-700 (prior) -> editorial forest
+// (current). The active filter chip + count badge use --forest / --cream so
+// the popover matches the rest of the editorial Teams surface.
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import { useMemo, useState } from "react";
@@ -119,7 +121,10 @@ export function IssueFiltersPopover({
         <Button
           variant={buttonVariant}
           size={iconOnly ? "icon" : "sm"}
-          className={`text-xs ${iconOnly ? "relative h-8 w-8 shrink-0" : ""} ${activeFilterCount > 0 ? "text-amber-700 dark:text-amber-400" : ""}`}
+          className={`text-xs ${iconOnly ? "relative h-8 w-8 shrink-0" : ""}`}
+          style={
+            activeFilterCount > 0 ? { color: "var(--forest)" } : undefined
+          }
           title={iconOnly ? (activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter") : undefined}
         >
           <Filter className={iconOnly ? "h-3.5 w-3.5" : "h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1"} />
@@ -132,7 +137,10 @@ export function IssueFiltersPopover({
             <span className="ml-0.5 text-[10px] font-medium sm:hidden">{activeFilterCount}</span>
           ) : null}
           {iconOnly && activeFilterCount > 0 ? (
-            <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-600 dark:bg-amber-500 text-[9px] font-bold text-white">
+            <span
+              className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] font-bold"
+              style={{ background: "var(--forest)", color: "var(--cream)" }}
+            >
               {activeFilterCount}
             </span>
           ) : null}

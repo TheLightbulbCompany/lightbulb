@@ -78,7 +78,11 @@ export function InboxList({
         if (issueItems.length === 0) return null;
         return (
           <Fragment key={`${section.kind}-${sectionIndex}`}>
-            <h3 className="px-3 pt-3 pb-1 text-xs font-medium text-muted-foreground sm:px-4">
+            {/* Retheme: muted-foreground section header → editorial mute mono caps. */}
+            <h3
+              className="section-label px-3 pt-3 pb-1 sm:px-4"
+              style={{ marginBottom: 0 }}
+            >
               {sectionHeaderLabel(section.kind, searchQuery)}
             </h3>
             <div className="flex flex-col">

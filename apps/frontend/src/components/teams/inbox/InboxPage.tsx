@@ -223,7 +223,8 @@ export function InboxPage({
   }, [tab, searchQuery]);
 
   return (
-    <div className="flex flex-col p-4 sm:p-6">
+    <div className="flex flex-col p-4 sm:p-6 editorial-page">
+      <h1 className="font-editorial-serif text-3xl mb-4 text-[var(--ink)]">Inbox</h1>
       <InboxToolbar
         tab={tab}
         onTabChange={setTab}
@@ -243,7 +244,12 @@ export function InboxPage({
       {isError && (
         <div
           role="alert"
-          className="mt-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+          className="mt-4 rounded-md border px-4 py-3 text-sm"
+          style={{
+            borderColor: "rgba(179, 36, 36, 0.25)",
+            background: "rgba(179, 36, 36, 0.06)",
+            color: "var(--danger)",
+          }}
         >
           Failed to load inbox. Try refreshing.
         </div>
@@ -253,7 +259,7 @@ export function InboxPage({
           <PageSkeleton variant="inbox" />
         </div>
       ) : sections.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-12 text-sm text-muted-foreground">
+        <div className="flex flex-col items-center justify-center py-12 font-editorial-serif text-xl italic text-[var(--mute)]">
           {emptyMessage}
         </div>
       ) : (

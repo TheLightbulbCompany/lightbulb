@@ -41,13 +41,18 @@ describe("InboxToolbar", () => {
   });
 
   test("active tab gets the active styling", () => {
+    // Editorial retheme: active tab uses inline `style={{background:
+    // var(--forest-tint), color: var(--forest)}}` rather than amber Tailwind
+    // classes. Assert via the inline style attribute and aria-selected.
     const { rerender } = render(<InboxToolbar {...baseProps} tab="mine" />);
     const mineBtn = screen.getByRole("tab", { name: /mine/i });
-    expect(mineBtn.className).toMatch(/amber/);
+    expect(mineBtn).toHaveAttribute("aria-selected", "true");
+    expect(mineBtn.getAttribute("style") ?? "").toMatch(/forest-tint/);
 
     rerender(<InboxToolbar {...baseProps} tab="recent" />);
     const recentBtn = screen.getByRole("tab", { name: /recent/i });
-    expect(recentBtn.className).toMatch(/amber/);
+    expect(recentBtn).toHaveAttribute("aria-selected", "true");
+    expect(recentBtn.getAttribute("style") ?? "").toMatch(/forest-tint/);
   });
 
   test("typing in search fires onSearchChange (each keystroke)", () => {

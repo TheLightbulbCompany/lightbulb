@@ -242,7 +242,8 @@ export class ServiceStack extends cdk.Stack {
     // Bootstrap admin credentials write (Paperclip service account):
     // apps/backend/scripts/bootstrap_paperclip_admin.py is invoked via
     // `aws ecs execute-command` against the backend task. It signs up
-    // admin@isol8.co in Paperclip, then calls PutSecretValue on
+    // the bootstrap admin email (see ADMIN_EMAIL constant in the
+    // script) in Paperclip, then calls PutSecretValue on
     // isol8/{env}/paperclip_admin_credentials. Without this scoped
     // grant the put fails with AccessDeniedException after the
     // Paperclip user is already created — leaves an inconsistent

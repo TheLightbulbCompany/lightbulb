@@ -313,9 +313,7 @@ def test_deploy_free_listing_succeeds(mock_get_by_slug, mock_get_catalog, mock_b
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
-def test_deploy_legacy_listing_without_slice_falls_back(
-    mock_get_by_slug, mock_get_catalog, mock_boto, client
-):
+def test_deploy_legacy_listing_without_slice_falls_back(mock_get_by_slug, mock_get_catalog, mock_boto, client):
     """Listings published before slice-synthesis shipped have no
     openclaw-slice.json key. The deploy must tolerate NoSuchKey on the
     slice fetch and fall through to the no-config-registration path

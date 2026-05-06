@@ -193,9 +193,7 @@ def export_agent_from_efs(seller_id: str, agent_id: str) -> CatalogPackage:
         raise AgentNotInConfigError(
             f"agent {agent_id!r} is not registered in seller's openclaw.json agents.list"
         ) from exc
-    slice_["cron_jobs"] = filter_cron_jobs_for_agent(
-        workspace.read_cron_jobs(seller_id), agent_id
-    )
+    slice_["cron_jobs"] = filter_cron_jobs_for_agent(workspace.read_cron_jobs(seller_id), agent_id)
 
     summary = _summarize_openclaw_config(agent_dir)
     manifest = {

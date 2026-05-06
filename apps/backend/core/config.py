@@ -58,7 +58,6 @@ class Settings(BaseSettings):
 
     # --- S3 Config ---
     S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")
-    AGENT_CATALOG_BUCKET: str = os.getenv("AGENT_CATALOG_BUCKET", "")
 
     # --- PostHog (server-side, distinct from NEXT_PUBLIC_POSTHOG_KEY) ---
     # Used by core/services/posthog_admin.py to query the Persons API for the

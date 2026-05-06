@@ -111,6 +111,7 @@ async def search(
     query: str | None,
     format: str | None = None,
     limit: int = 24,
+    seller_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search the cached published-listing snapshot.
 
@@ -119,6 +120,9 @@ async def search(
             most-recent-published-first.
         format: "openclaw" | "skillmd" filter. None disables the filter.
         limit: Max results to return.
+        seller_id: Optional Clerk user_id filter. The chat sidebar's
+            featured-listings endpoint passes the curator's user_id here
+            so the gallery only shows admin@isol8.co's published agents.
 
     Returns:
         Plain listing dicts (caller threads through Pydantic).
@@ -130,6 +134,8 @@ async def search(
     candidates = [li for li in snapshot if li.get("status") == "published"]
     if format:
         candidates = [li for li in candidates if li.get("format") == format]
+    if seller_id:
+        candidates = [li for li in candidates if li.get("seller_id") == seller_id]
 
     tokens = [t.lower() for t in (query or "").split() if t]
     if not tokens:

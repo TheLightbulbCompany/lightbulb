@@ -20,44 +20,87 @@ export function IssuesPanel() {
   );
   const [creating, setCreating] = useState(false);
 
-  if (isLoading) return <div className="p-8">Loading…</div>;
-  if (error) return <div className="p-8 text-red-600">Error: {String(error)}</div>;
+  if (isLoading)
+    return (
+      <div
+        className="p-8 italic"
+        style={{
+          fontFamily: "var(--font-lora-serif), serif",
+          color: "var(--mute)",
+        }}
+      >
+        Loading…
+      </div>
+    );
+  if (error)
+    return (
+      <div className="p-8" style={{ color: "var(--danger)" }}>
+        Error: {String(error)}
+      </div>
+    );
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-8 max-w-4xl" style={{ color: "var(--ink)" }}>
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-semibold">Issues</h1>
+        <h1
+          className="font-editorial-serif text-3xl"
+          style={{ color: "var(--ink)" }}
+        >
+          Issues
+        </h1>
         <button
           onClick={() => setCreating(true)}
-          className="px-4 py-2 bg-zinc-900 text-white rounded text-sm"
+          className="editorial-btn editorial-btn--primary editorial-btn--sm"
         >
           New issue
         </button>
       </div>
 
-      <ul className="divide-y border rounded">
-        {(data?.issues ?? []).map((it) => (
+      <ul
+        className="rounded"
+        style={{
+          border: "1px solid var(--edge)",
+          background: "var(--cream)",
+        }}
+      >
+        {(data?.issues ?? []).map((it, idx, arr) => (
           <li
             key={it.id}
             className="flex justify-between items-center p-4"
+            style={
+              idx < arr.length - 1
+                ? { borderBottom: "1px solid var(--edge)" }
+                : undefined
+            }
           >
             <div>
-              <div className="font-medium">{it.title}</div>
-              <div className="text-xs text-zinc-500">
+              <div className="font-medium" style={{ color: "var(--ink)" }}>
+                {it.title}
+              </div>
+              <div className="text-xs" style={{ color: "var(--mute)" }}>
                 {it.status ?? "open"}
                 {it.priority ? ` · ${it.priority}` : ""}
               </div>
             </div>
             <a
               href={`/teams/issues/${it.id}`}
-              className="text-sm text-zinc-600 hover:underline"
+              className="text-sm hover:underline"
+              style={{ color: "var(--forest)" }}
             >
               Open →
             </a>
           </li>
         ))}
         {(data?.issues ?? []).length === 0 && (
-          <li className="p-4 text-sm text-zinc-500">No issues yet.</li>
+          <li
+            className="p-4 text-sm italic"
+            style={{
+              fontFamily: "var(--font-lora-serif), serif",
+              color: "var(--mute)",
+            }}
+          >
+            No issues yet.
+          </li>
         )}
       </ul>
 
@@ -109,49 +152,85 @@ function CreateIssueDialog({
     }
   }
 
+  const inputStyle = {
+    background: "var(--cream-deeper)",
+    border: "1px solid var(--edge)",
+    color: "var(--ink)",
+  } as const;
+
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center">
-      <div className="bg-white rounded-lg p-6 w-[28rem]">
-        <h2 className="text-lg font-semibold mb-4">New issue</h2>
+    <div
+      className="fixed inset-0 flex items-center justify-center"
+      style={{ background: "rgba(26, 26, 26, 0.45)" }}
+    >
+      <div
+        className="rounded-lg p-6 w-[28rem]"
+        style={{
+          background: "var(--cream)",
+          border: "1px solid var(--edge)",
+          color: "var(--ink)",
+        }}
+      >
+        <h2
+          className="font-editorial-serif text-2xl mb-4"
+          style={{ color: "var(--ink)" }}
+        >
+          New issue
+        </h2>
         <label className="block mb-3">
-          <span className="text-sm">Title</span>
+          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
+            Title
+          </span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full rounded px-3 py-2 mt-1"
+            style={inputStyle}
           />
         </label>
         <label className="block mb-3">
-          <span className="text-sm">Description</span>
+          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
+            Description
+          </span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full rounded px-3 py-2 mt-1"
             rows={3}
+            style={inputStyle}
           />
         </label>
         <label className="block mb-3">
-          <span className="text-sm">Project ID (optional)</span>
+          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
+            Project ID (optional)
+          </span>
           <input
             value={projectId}
             onChange={(e) => setProjectId(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full rounded px-3 py-2 mt-1"
+            style={inputStyle}
           />
         </label>
         <label className="block mb-3">
-          <span className="text-sm">Assignee agent ID (optional)</span>
+          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
+            Assignee agent ID (optional)
+          </span>
           <input
             value={assigneeAgentId}
             onChange={(e) => setAssigneeAgentId(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full rounded px-3 py-2 mt-1"
+            style={inputStyle}
           />
         </label>
         <label className="block mb-4">
-          <span className="text-sm">Priority</span>
+          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
+            Priority
+          </span>
           <select
             value={priority}
             onChange={(e) => setPriority(e.target.value as IssuePriority | "")}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full rounded px-3 py-2 mt-1"
+            style={inputStyle}
           >
             <option value="">None</option>
             <option value="low">Low</option>
@@ -160,15 +239,25 @@ function CreateIssueDialog({
             <option value="critical">Critical</option>
           </select>
         </label>
-        {err && <div className="text-red-600 text-sm mb-2">{err}</div>}
+        {err && (
+          <div
+            className="text-sm mb-2"
+            style={{ color: "var(--danger)" }}
+          >
+            {err}
+          </div>
+        )}
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="px-3 py-1 border rounded">
+          <button
+            onClick={onClose}
+            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
+          >
             Cancel
           </button>
           <button
             onClick={submit}
             disabled={submitting || !title}
-            className="px-3 py-1 bg-zinc-900 text-white rounded"
+            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create"}
           </button>

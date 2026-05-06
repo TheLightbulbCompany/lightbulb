@@ -79,7 +79,10 @@ export function IssueHeader({
   return (
     <div className="flex flex-wrap items-center gap-3">
       {issue.identifier && (
-        <span className="text-xs font-mono text-muted-foreground shrink-0">
+        <span
+          className="text-xs font-mono shrink-0"
+          style={{ color: "var(--mute)" }}
+        >
           {issue.identifier}
         </span>
       )}
@@ -99,7 +102,11 @@ export function IssueHeader({
               cancel();
             }
           }}
-          className="flex-1 min-w-0 bg-transparent border-b border-border outline-none text-xl font-medium"
+          className="font-editorial-serif flex-1 min-w-0 bg-transparent outline-none text-2xl font-medium"
+          style={{
+            borderBottom: "1px solid var(--edge)",
+            color: "var(--ink)",
+          }}
           disabled={saving}
         />
       ) : (
@@ -107,9 +114,16 @@ export function IssueHeader({
           type="button"
           onClick={() => setEditing(true)}
           className={cn(
-            "flex-1 min-w-0 text-left text-xl font-medium hover:bg-accent/30 rounded px-1 -mx-1 transition-colors",
+            "font-editorial-serif flex-1 min-w-0 text-left text-2xl font-medium rounded px-1 -mx-1 transition-colors",
             saving && "opacity-50",
           )}
+          style={{ color: "var(--ink)" }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "var(--cream-deeper)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+          }}
         >
           {issue.title}
         </button>

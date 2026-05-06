@@ -50,7 +50,9 @@ describe("IssueProperties", () => {
   test("renders '—' for null priority", () => {
     const issue: Issue = { ...baseIssue, priority: null };
     const { container } = render(<IssueProperties issue={issue} />);
-    const dashes = container.querySelectorAll(".text-muted-foreground");
+    // Editorial reskin: muted dashes are tagged via data-empty rather than a
+    // tailwind utility class.
+    const dashes = container.querySelectorAll('[data-empty="true"]');
     expect(Array.from(dashes).some((el) => el.textContent === "—")).toBe(true);
   });
 

@@ -16,7 +16,6 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useIssueMutations } from "./hooks/useIssueMutations";
@@ -107,19 +106,34 @@ export function NewIssueDialog({
     }
   };
 
+  const labelStyle = { color: "var(--mute)" } as const;
+  const selectStyle = {
+    background: "var(--cream-deeper)",
+    border: "1px solid var(--edge)",
+    color: "var(--ink)",
+  } as const;
+
   return (
     <AlertDialog open={open} onOpenChange={handleClose}>
-      <AlertDialogContent>
+      <AlertDialogContent
+        style={{ background: "var(--cream)", color: "var(--ink)" }}
+      >
         <AlertDialogHeader>
-          <AlertDialogTitle>New issue</AlertDialogTitle>
+          <AlertDialogTitle
+            className="font-editorial-serif text-2xl"
+            style={{ color: "var(--ink)" }}
+          >
+            New issue
+          </AlertDialogTitle>
         </AlertDialogHeader>
         <div className="flex flex-col gap-3">
           <div>
             <label
               htmlFor="new-issue-title"
-              className="text-xs uppercase text-muted-foreground tracking-wide"
+              className="section-label"
+              style={{ ...labelStyle, marginTop: 0 }}
             >
-              Title
+              <b>Title</b>
             </label>
             <Input
               id="new-issue-title"
@@ -129,14 +143,16 @@ export function NewIssueDialog({
               onChange={(e) => setTitle(e.target.value)}
               disabled={submitting}
               maxLength={200}
+              style={selectStyle}
             />
           </div>
           <div>
             <label
               htmlFor="new-issue-description"
-              className="text-xs uppercase text-muted-foreground tracking-wide"
+              className="section-label"
+              style={{ ...labelStyle, marginTop: 0 }}
             >
-              Description
+              <b>Description</b>
             </label>
             <Textarea
               id="new-issue-description"
@@ -146,22 +162,25 @@ export function NewIssueDialog({
               rows={4}
               disabled={submitting}
               maxLength={20000}
+              style={selectStyle}
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label
                 htmlFor="new-issue-status"
-                className="text-xs uppercase text-muted-foreground tracking-wide"
+                className="section-label"
+                style={{ ...labelStyle, marginTop: 0 }}
               >
-                Status
+                <b>Status</b>
               </label>
               <select
                 id="new-issue-status"
                 value={status}
                 onChange={(e) => setStatus(e.target.value as IssueStatus)}
                 disabled={submitting}
-                className="w-full rounded border border-input bg-background px-3 py-2 text-sm"
+                className="w-full rounded px-3 py-2 text-sm"
+                style={selectStyle}
               >
                 {STATUS_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -173,16 +192,18 @@ export function NewIssueDialog({
             <div>
               <label
                 htmlFor="new-issue-priority"
-                className="text-xs uppercase text-muted-foreground tracking-wide"
+                className="section-label"
+                style={{ ...labelStyle, marginTop: 0 }}
               >
-                Priority
+                <b>Priority</b>
               </label>
               <select
                 id="new-issue-priority"
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as IssuePriority)}
                 disabled={submitting}
-                className="w-full rounded border border-input bg-background px-3 py-2 text-sm"
+                className="w-full rounded px-3 py-2 text-sm"
+                style={selectStyle}
               >
                 {PRIORITY_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -196,16 +217,18 @@ export function NewIssueDialog({
             <div>
               <label
                 htmlFor="new-issue-project"
-                className="text-xs uppercase text-muted-foreground tracking-wide"
+                className="section-label"
+                style={{ ...labelStyle, marginTop: 0 }}
               >
-                Project
+                <b>Project</b>
               </label>
               <select
                 id="new-issue-project"
                 value={projectId}
                 onChange={(e) => setProjectId(e.target.value)}
                 disabled={submitting}
-                className="w-full rounded border border-input bg-background px-3 py-2 text-sm"
+                className="w-full rounded px-3 py-2 text-sm"
+                style={selectStyle}
               >
                 <option value="">No project</option>
                 {projects.map((p) => (
@@ -220,16 +243,18 @@ export function NewIssueDialog({
             <div>
               <label
                 htmlFor="new-issue-assignee"
-                className="text-xs uppercase text-muted-foreground tracking-wide"
+                className="section-label"
+                style={{ ...labelStyle, marginTop: 0 }}
               >
-                Assign to agent
+                <b>Assign to agent</b>
               </label>
               <select
                 id="new-issue-assignee"
                 value={assigneeAgentId}
                 onChange={(e) => setAssigneeAgentId(e.target.value)}
                 disabled={submitting}
-                className="w-full rounded border border-input bg-background px-3 py-2 text-sm"
+                className="w-full rounded px-3 py-2 text-sm"
+                style={selectStyle}
               >
                 <option value="">Unassigned</option>
                 {agents.map((a) => (
@@ -241,16 +266,30 @@ export function NewIssueDialog({
             </div>
           )}
           {error && (
-            <p role="alert" className="text-sm text-destructive">
+            <p
+              role="alert"
+              className="text-sm"
+              style={{ color: "var(--danger)" }}
+            >
               {error}
             </p>
           )}
         </div>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
-          <Button onClick={submit} disabled={!title.trim() || submitting}>
+          <AlertDialogCancel
+            disabled={submitting}
+            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
+          >
+            Cancel
+          </AlertDialogCancel>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!title.trim() || submitting}
+            className="editorial-btn editorial-btn--primary editorial-btn--sm"
+          >
             {submitting ? "Creating…" : "Create issue"}
-          </Button>
+          </button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

@@ -94,7 +94,7 @@ async def search_listings(
 async def featured_listings(
     response: Response,
     limit: int = Query(default=24, ge=1, le=100),
-    format: str | None = Query(default=None, pattern="^(openclaw|skillmd)$"),
+    format: str = Query(default="openclaw", pattern="^(openclaw|skillmd)$"),
 ):
     """Curated listings — admin@isol8.co's published agents.
 
@@ -104,6 +104,11 @@ async def featured_listings(
     holds the configured curator email in Clerk. Returns an empty list
     when the curator account doesn't exist yet — the sidebar renders that
     as the empty-state.
+
+    ``format`` defaults to ``openclaw`` rather than no-filter so the sidebar
+    can never receive a non-agent listing the chat-side ``CatalogAgent``
+    deploy flow can't honour (the only other format today is ``skillmd``,
+    which was decommissioned in v0 — defending against any reintroduction).
 
     Lives outside the ``/listings/{slug}`` namespace so a seller can't
     create a listing with slug ``"featured"`` and shadow this route — the

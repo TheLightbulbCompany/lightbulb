@@ -9,6 +9,9 @@ const PANELS: Record<string, React.ComponentType> = {
   agents: dynamic(() =>
     import("./panels/AgentsListPanel").then((m) => m.AgentsListPanel),
   ),
+  "org-chart": dynamic(() =>
+    import("./panels/OrgChartPanel").then((m) => m.OrgChartPanel),
+  ),
   inbox: dynamic(() =>
     import("./panels/InboxPanel").then((m) => m.InboxPanel),
   ),

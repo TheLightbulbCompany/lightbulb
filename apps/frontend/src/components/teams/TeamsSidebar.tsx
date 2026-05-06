@@ -16,6 +16,7 @@ import {
   UsersRound,
   Settings,
   Inbox,
+  Network,
 } from "lucide-react";
 
 const ITEMS: {
@@ -25,6 +26,7 @@ const ITEMS: {
 }[] = [
   { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
   { key: "agents", label: "Agents", Icon: Users },
+  { key: "org-chart", label: "Org chart", Icon: Network },
   { key: "inbox", label: "Inbox", Icon: Inbox },
   { key: "approvals", label: "Approvals", Icon: ClipboardCheck },
   { key: "issues", label: "Issues", Icon: ListTodo },

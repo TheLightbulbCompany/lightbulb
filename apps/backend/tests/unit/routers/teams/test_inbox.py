@@ -57,7 +57,7 @@ def test_list_inbox_proxies_to_company_issues(client, monkeypatch):
         params={
             "touchedByUserId": "me",
             "inboxArchivedByUserId": "me",
-            "status": "in_review,pending,review,todo,in_progress",
+            "status": "backlog,todo,in_progress,in_review,blocked,done",
         },
     )
 
@@ -130,7 +130,8 @@ def test_dismiss_proxies_with_session(client, monkeypatch):
 def test_list_inbox_translates_tab_mine_to_upstream_filters(client, monkeypatch):
     """tab=mine derives the upstream filter composition that Paperclip's
     own Inbox.tsx uses: touchedByUserId=me + inboxArchivedByUserId=me +
-    status=in_review,pending,review,todo,in_progress."""
+    status=INBOX_MINE_ISSUE_STATUSES (paperclip/packages/shared/src/
+    constants.ts)."""
     admin = MagicMock()
     admin.list_issues = AsyncMock(return_value=[])
     from routers.teams import agents as agents_mod
@@ -148,7 +149,39 @@ def test_list_inbox_translates_tab_mine_to_upstream_filters(client, monkeypatch)
     assert call.kwargs["params"] == {
         "touchedByUserId": "me",
         "inboxArchivedByUserId": "me",
-        "status": "in_review,pending,review,todo,in_progress",
+        "status": "backlog,todo,in_progress,in_review,blocked,done",
+    }
+
+
+@pytest.mark.parametrize("tab", ["mine", "recent", "unread"])
+def test_inbox_status_filter_matches_upstream_constants(client, monkeypatch, tab):
+    """Status filter for issue-bearing tabs MUST match upstream's
+    INBOX_MINE_ISSUE_STATUSES (paperclip/packages/shared/src/constants.ts).
+
+    Regression guard: the prior string contained ``pending`` and ``review``
+    which aren't members of upstream's ``ISSUE_STATUSES`` enum, and omitted
+    ``backlog`` — the default status for newly-created issues — so a
+    user's freshly-created issue never appeared in their own Mine tab.
+    """
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value=[])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        f"/api/v1/teams/inbox?tab={tab}",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    statuses = admin.list_issues.call_args.kwargs["params"]["status"].split(",")
+    assert set(statuses) == {
+        "backlog",
+        "todo",
+        "in_progress",
+        "in_review",
+        "blocked",
+        "done",
     }
 
 

@@ -26,19 +26,28 @@ _ctx = _agents._ctx
 
 # Tab → upstream filter composition. Mirrors what Paperclip's own Inbox.tsx
 # does for board users (GET /api/companies/{co}/issues with these filters).
+#
+# Status set must match upstream's INBOX_MINE_ISSUE_STATUSES at
+# paperclip/packages/shared/src/constants.ts (backlog,todo,in_progress,
+# in_review,blocked,done). The previous string contained `pending`/`review`
+# which aren't members of upstream's ISSUE_STATUSES enum, and omitted
+# `backlog` — the default status for newly-created issues — so freshly
+# created items never showed up in the creator's Mine tab.
+_INBOX_MINE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done"
+
 _TAB_FILTERS: dict[str, dict[str, str]] = {
     "mine": {
         "touchedByUserId": "me",
         "inboxArchivedByUserId": "me",
-        "status": "in_review,pending,review,todo,in_progress",
+        "status": _INBOX_MINE_STATUSES,
     },
     "recent": {
-        "status": "in_review,pending,review,todo,in_progress",
+        "status": _INBOX_MINE_STATUSES,
     },
     "all": {},
     "unread": {
         "inboxArchivedByUserId": "me",
-        "status": "in_review,pending,review,todo,in_progress",
+        "status": _INBOX_MINE_STATUSES,
     },
 }
 # Tabs that don't fetch from issues at all — they live at sibling routes.

@@ -117,9 +117,7 @@ def test_list_goals(client, admin):
         ("/api/v1/teams/projects", "list_projects", "projects"),
     ],
 )
-def test_list_endpoints_wrap_bare_array_upstream(
-    client, monkeypatch, path, upstream_method, key
-):
+def test_list_endpoints_wrap_bare_array_upstream(client, monkeypatch, path, upstream_method, key):
     """Upstream returns bare JSON arrays for goals / routines / projects;
     each frontend panel reads ``data?.<key>``. Without server-side
     wrapping the panel silently shows "No <key> yet" even when rows

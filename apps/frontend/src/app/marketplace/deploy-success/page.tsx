@@ -1,29 +1,26 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+
+import { Monogram, AgentPill } from "@/components/agents/AgentIdentity";
+import { fromListing, initialsFor, paletteFor } from "@/lib/agentDesign";
+import { getListing } from "@/lib/marketplace/api";
+import type { ListingDetailResponse } from "@/lib/marketplace/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.isol8.co";
 
-/**
- * Post-purchase / post-deploy landing page.
- *
- * Two entry shapes:
- *   1. Free deploy: BuyButton already POSTed /deploy and got an agent_uuid
- *      back. URL is /deploy-success?listing_slug=…&agent_uuid=…
- *      We render the success card immediately.
- *
- *   2. Paid checkout return: Stripe redirects here on completion with
- *      session_id={CHECKOUT_SESSION_ID} substituted. URL is
- *      /deploy-success?listing_slug=…&session_id=…
- *      We fire the deploy on mount. If the entitlement check 403s
- *      (Stripe webhook hasn't written the marketplace-purchases row yet),
- *      we surface a "refresh in a few seconds" message — Phase 2 could
- *      add automatic retry-with-backoff, but for v0 a manual refresh
- *      is acceptable.
- */
+function titleCase(slug: string): string {
+  return slug
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 export default function DeploySuccessPage() {
   return (
     <Suspense fallback={<Loading />}>
@@ -34,8 +31,8 @@ export default function DeploySuccessPage() {
 
 function Loading() {
   return (
-    <main className="max-w-md mx-auto px-6 py-16 text-center">
-      <h1 className="text-2xl font-bold mb-4">Loading…</h1>
+    <main className="mx-auto flex min-h-[60vh] max-w-md items-center justify-center px-6 py-16">
+      <p className="font-editorial-serif text-2xl italic text-[var(--mute)]">Loading…</p>
     </main>
   );
 }
@@ -53,23 +50,64 @@ function DeploySuccessInner() {
     "idle" | "deploying" | "ready" | "entitlement_pending" | "error"
   >(initialAgentUuid ? "ready" : "idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ListingDetailResponse | null>(null);
 
-  // Not signed in on this domain — Stripe shouldn't ever land us here without
-  // a Clerk session, but if it happens send the user to sign-in with a
-  // redirect back to this same URL. Side effect lives in useEffect so it
-  // doesn't fire during render (Strict Mode would double-invoke; the redirect
-  // is also an anti-pattern in render bodies).
+  // Editorial identity — uses the fetched listing if available, otherwise
+  // derives a placeholder from the slug so the celebration still has shape
+  // even before the listing fetch completes.
+  const editorial = useMemo(() => {
+    if (detail) {
+      const fromList = fromListing(detail.listing);
+      const vibe = detail.manifest?.vibe || fromList.vibe;
+      return { ...fromList, vibe };
+    }
+    const palette = paletteFor(listingSlug || "agent");
+    return {
+      slug: listingSlug,
+      name: titleCase(listingSlug) || "Your agent",
+      role: "Agent",
+      monogram: initialsFor(listingSlug.replace(/[-_]/g, " ") || "Agent"),
+      accent: palette.accent,
+      tint: palette.tint,
+      vibe: "Settling into your container.",
+      isFree: false,
+      price: "",
+      skills: [] as string[],
+      tags: [] as string[],
+    };
+  }, [detail, listingSlug]);
+
+  // Send unauthed users to sign-in.
   useEffect(() => {
     if (isLoaded && !isSignedIn) {
       window.location.href = `/sign-in?redirect_url=${encodeURIComponent(window.location.href)}`;
     }
   }, [isLoaded, isSignedIn]);
 
+  // Fetch listing details for the celebration. Best-effort; if it fails, we
+  // fall back to slug-derived identity.
+  useEffect(() => {
+    if (!listingSlug) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await getListing(listingSlug);
+        if (cancelled) return;
+        setDetail(result);
+      } catch {
+        // Fall back to slug-derived identity.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [listingSlug]);
+
   // Paid-return path: fire deploy on mount once Clerk auth is loaded.
   useEffect(() => {
     if (!isLoaded || !isSignedIn) return;
-    if (initialAgentUuid) return; // free-deploy path already has the result
-    if (!sessionId) return; // no session_id → nothing to verify
+    if (initialAgentUuid) return;
+    if (!sessionId) return;
     if (!listingSlug) return;
     if (phase !== "idle") return;
 
@@ -86,11 +124,10 @@ function DeploySuccessInner() {
               "content-type": "application/json",
               Authorization: `Bearer ${jwt}`,
             },
-          }
+          },
         );
         if (cancelled) return;
         if (resp.status === 403) {
-          // Webhook race — purchase row not yet written. Tell the user to refresh.
           setPhase("entitlement_pending");
           return;
         }
@@ -112,35 +149,38 @@ function DeploySuccessInner() {
     };
   }, [isLoaded, isSignedIn, getToken, listingSlug, sessionId, initialAgentUuid, phase]);
 
-  // While the redirect effect above is firing (or auth is still loading),
-  // render a placeholder. The effect handles the actual navigation.
-  if (isLoaded && !isSignedIn) {
-    return <Loading />;
-  }
+  if (isLoaded && !isSignedIn) return <Loading />;
 
   return (
-    <main className="max-w-md mx-auto px-6 py-16">
+    <main className="mx-auto max-w-xl px-6 py-20">
       {phase === "deploying" && (
         <div className="text-center">
-          <h1 className="text-2xl font-bold mb-4">Verifying purchase and deploying…</h1>
-          <p className="text-zinc-400">
-            Hang tight — this only takes a second.
+          <div className="mb-6 flex justify-center">
+            <Monogram agent={editorial} size={96} radius={20} />
+          </div>
+          <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--ink)]">
+            Hiring <em className="text-[var(--forest)]">{editorial.name}</em>…
+          </h1>
+          <p className="mt-4 font-editorial-serif text-lg italic text-[var(--mute)]">
+            Setting up the workspace.
           </p>
         </div>
       )}
 
       {phase === "entitlement_pending" && (
-        <div className="text-center">
-          <h1 className="text-2xl font-bold mb-4">Almost there</h1>
-          <p className="text-zinc-400 mb-6">
-            Purchase verification is taking a moment — refresh in a few
-            seconds. Stripe&apos;s confirmation webhook may not have completed
-            yet.
+        <div className="editorial-card p-8 text-center">
+          <div className="mb-5 flex justify-center">
+            <Monogram agent={editorial} size={72} radius={16} />
+          </div>
+          <h1 className="font-editorial-serif text-4xl italic text-[var(--ink)]">Almost there.</h1>
+          <p className="mt-4 text-base leading-7 text-[var(--ink-soft)]">
+            Stripe&apos;s confirmation webhook is taking a moment. Refresh in a few seconds and
+            we&apos;ll finish hiring {editorial.name}.
           </p>
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="px-6 py-3 bg-zinc-100 text-zinc-950 rounded-lg font-semibold"
+            className="editorial-btn editorial-btn--primary mt-6 h-11 px-6"
           >
             Refresh
           </button>
@@ -148,16 +188,20 @@ function DeploySuccessInner() {
       )}
 
       {phase === "error" && (
-        <div className="text-center">
-          <h1 className="text-2xl font-bold mb-4">Deploy failed</h1>
-          <p className="text-red-400 mb-6">{errorMsg}</p>
+        <div className="editorial-card p-8 text-center">
+          <h1 className="font-editorial-serif text-4xl italic text-[var(--ink)]">
+            Something went sideways.
+          </h1>
+          <p className="mt-4 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-4 py-3 text-sm text-[var(--danger)]">
+            {errorMsg}
+          </p>
           <button
             type="button"
             onClick={() => {
               setErrorMsg(null);
               setPhase("idle");
             }}
-            className="px-6 py-3 bg-zinc-100 text-zinc-950 rounded-lg font-semibold"
+            className="editorial-btn editorial-btn--primary mt-6 h-11 px-6"
           >
             Try again
           </button>
@@ -165,35 +209,42 @@ function DeploySuccessInner() {
       )}
 
       {phase === "ready" && (
-        <div>
-          <h1 className="text-3xl font-bold mb-4">Deployed!</h1>
-          <p className="text-zinc-400 mb-6">
-            <span className="font-mono text-zinc-300">{listingSlug}</span> is
-            now in your Isol8 container.
+        <div className="text-center">
+          <div className="mb-6 flex justify-center">
+            <Monogram agent={editorial} size={96} radius={20} />
+          </div>
+          <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--ink)]">
+            You hired <em className="text-[var(--forest)]">{editorial.name}.</em>
+          </h1>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <AgentPill>{editorial.role}</AgentPill>
+            <AgentPill tone="forest">Active in your container</AgentPill>
+          </div>
+          <p className="mx-auto mt-6 max-w-md font-editorial-serif text-lg italic leading-8 text-[var(--ink-soft)]">
+            &ldquo;{editorial.vibe}&rdquo;
           </p>
-          {agentUuid && (
-            <p className="text-xs text-zinc-500 mb-6">
-              Agent ID: <code className="bg-zinc-900 px-2 py-0.5 rounded">{agentUuid}</code>
-            </p>
-          )}
-          <a
+          <p className="mt-3 text-sm leading-6 text-[var(--mute)]">
+            {editorial.name} is settling in. Open chat to introduce yourself.
+          </p>
+          <Link
             href={
               agentUuid
                 ? `${APP_URL}/chat?agent=${encodeURIComponent(agentUuid)}`
                 : `${APP_URL}/chat`
             }
-            className="inline-block px-6 py-3 bg-zinc-100 text-zinc-950 rounded-lg font-semibold"
+            className="editorial-btn editorial-btn--primary mt-8 inline-flex h-12 px-8 text-sm"
           >
-            Open in chat →
-          </a>
+            Open chat with {editorial.name} →
+          </Link>
+          {agentUuid && (
+            <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mute-soft)]">
+              Agent ID · {agentUuid}
+            </p>
+          )}
         </div>
       )}
 
-      {phase === "idle" && (
-        // Should be transient — useEffect transitions to "deploying" or
-        // "ready" almost immediately. Render a soft loading state.
-        <Loading />
-      )}
+      {phase === "idle" && <Loading />}
     </main>
   );
 }

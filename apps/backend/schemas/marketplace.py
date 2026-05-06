@@ -99,13 +99,6 @@ class ArtifactFromAgentRequest(BaseModel):
     agent_id: str = Field(..., min_length=4, max_length=64)
 
 
-class SellerEligibilityResponse(BaseModel):
-    tier: str  # "free" | "starter" | "pro" | "enterprise" | "none"
-    can_sell_skillmd: bool
-    can_sell_openclaw: bool
-    reason: str | None = None  # populated when can_sell_openclaw=False
-
-
 class PurchaseSummary(BaseModel):
     purchase_id: str
     listing_id: str

@@ -17,6 +17,7 @@ import {
   Settings,
   Inbox,
   Network,
+  ArrowLeft,
 } from "lucide-react";
 
 const ITEMS: {
@@ -43,31 +44,46 @@ const ITEMS: {
 export function TeamsSidebar() {
   const pathname = usePathname();
   return (
-    <aside className="w-60 border-r bg-zinc-50 flex flex-col">
-      <div className="p-4 border-b">
-        <Link href="/chat" className="text-sm text-zinc-600 hover:underline">
-          ← Back to chat
+    <aside className="flex w-60 flex-col border-r border-[var(--edge)] bg-[var(--cream-deeper)]">
+      <div className="border-b border-[var(--edge)] px-5 py-5">
+        <Link
+          href="/teams/dashboard"
+          className="font-editorial-serif text-[18px] font-bold uppercase tracking-[0.14em] text-[var(--ink)] no-underline"
+        >
+          ISOL8
         </Link>
+        <div className="mt-0.5 text-[11px] uppercase tracking-[0.14em] text-[var(--mute)]">
+          Teams
+        </div>
       </div>
-      <nav className="flex-1 overflow-y-auto p-2">
+      <nav className="flex-1 overflow-y-auto px-2 py-3">
         {ITEMS.map(({ key, label, Icon }) => {
           const active = pathname?.startsWith(`/teams/${key}`);
           return (
             <Link
               key={key}
               href={`/teams/${key}`}
-              className={`flex items-center gap-2 px-3 py-2 rounded text-sm ${
+              className={`mb-0.5 flex items-center gap-2.5 rounded-full px-3 py-2 text-sm no-underline transition-colors ${
                 active
-                  ? "bg-zinc-200 text-zinc-900"
-                  : "text-zinc-700 hover:bg-zinc-100"
+                  ? "bg-[var(--cream)] text-[var(--forest)]"
+                  : "text-[var(--ink-soft)] hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
               }`}
             >
-              <Icon className="w-4 h-4" />
+              <Icon className="h-4 w-4" />
               {label}
             </Link>
           );
         })}
       </nav>
+      <div className="border-t border-[var(--edge)] p-3">
+        <Link
+          href="/chat"
+          className="flex items-center gap-2 rounded-full px-3 py-2 text-sm text-[var(--mute)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to chat
+        </Link>
+      </div>
     </aside>
   );
 }

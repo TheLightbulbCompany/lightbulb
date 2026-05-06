@@ -26,14 +26,17 @@ describe("AgentCard", () => {
     render(<AgentCard {...baseProps} status="running" />);
     const dot = screen.getByLabelText(/status: running/i);
     expect(dot).toBeInTheDocument();
+    // Active states pulse to indicate live activity.
     expect(dot.className).toMatch(/animate-pulse/);
+    // 'running' resolves to the editorial forest token.
+    expect(dot).toHaveStyle({ backgroundColor: "var(--forest)" });
   });
 
   test("status dot uses default color for unknown status", () => {
     render(<AgentCard {...baseProps} status="weird" />);
     const dot = screen.getByLabelText(/status: weird/i);
-    // DEFAULT is bg-zinc-400 / dark:bg-zinc-500
-    expect(dot.className).toMatch(/bg-zinc-400/);
+    // Unknown statuses fall back to the editorial mute token.
+    expect(dot).toHaveStyle({ backgroundColor: "var(--mute)" });
   });
 
   test("link href points to /teams/agents/{id}", () => {

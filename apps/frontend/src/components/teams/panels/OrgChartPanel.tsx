@@ -24,11 +24,19 @@ export function OrgChartPanel() {
   const { data, isLoading, error } = read<unknown>("/agents");
 
   if (isLoading) {
-    return <div className="p-8 text-sm text-muted-foreground">Loading...</div>;
+    return (
+      <div className="p-8 text-sm" style={{ color: "var(--mute)" }}>
+        Loading...
+      </div>
+    );
   }
   if (error) {
     return (
-      <div role="alert" className="p-8 text-sm text-destructive">
+      <div
+        role="alert"
+        className="p-8 text-sm"
+        style={{ color: "var(--danger)" }}
+      >
         Failed to load agents.
       </div>
     );
@@ -37,7 +45,12 @@ export function OrgChartPanel() {
   const agents = normalizeAgents(data);
   return (
     <div className="p-4">
-      <h1 className="text-lg font-medium mb-4">Org chart</h1>
+      <h1
+        className="font-editorial-serif text-2xl mb-4"
+        style={{ color: "var(--ink)" }}
+      >
+        Org chart
+      </h1>
       <OrgChart agents={agents} />
     </div>
   );

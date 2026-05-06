@@ -55,7 +55,8 @@ export function CatalogPageClient({ catalog }: CatalogPageClientProps) {
             No agents published yet. Publish one from its admin detail page.
           </p>
         ) : (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
             <thead className="text-left text-neutral-500">
               <tr>
                 <th className="py-2 px-3">Slug</th>
@@ -97,6 +98,7 @@ export function CatalogPageClient({ catalog }: CatalogPageClientProps) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
 
@@ -109,7 +111,8 @@ export function CatalogPageClient({ catalog }: CatalogPageClientProps) {
           {retiredOpen ? "▾" : "▸"} Retired ({catalog.retired.length})
         </button>
         {retiredOpen && catalog.retired.length > 0 && (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-sm">
             <thead className="text-left text-neutral-500">
               <tr>
                 <th className="py-2 px-3">Slug</th>
@@ -132,6 +135,7 @@ export function CatalogPageClient({ catalog }: CatalogPageClientProps) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
 

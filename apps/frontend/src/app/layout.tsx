@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Host_Grotesk, DM_Sans, Lora, Press_Start_2P, Epilogue } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -50,6 +50,11 @@ const epilogue = Epilogue({
 export const metadata: Metadata = {
   title: "isol8 - Your AI Pod",
   description: "Your own isolated AI pod with persistent memory, custom personality, and skills that grow with you.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({

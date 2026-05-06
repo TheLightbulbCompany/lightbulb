@@ -171,8 +171,8 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
         {skills.length === 0 ? (
           <p className="text-sm text-zinc-500">No skills installed.</p>
         ) : (
-          <div className="overflow-hidden rounded-md border border-white/5">
-            <table className="w-full table-fixed text-xs">
+          <div className="overflow-x-auto rounded-md border border-white/5">
+            <table className="w-full min-w-[560px] table-fixed text-xs sm:text-sm">
               <thead className="bg-zinc-900 text-left text-zinc-400">
                 <tr>
                   <th className="px-3 py-2 font-medium">Name</th>
@@ -224,8 +224,8 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
         {sessions.length === 0 ? (
           <p className="text-sm text-zinc-500">No recent sessions.</p>
         ) : (
-          <div className="overflow-hidden rounded-md border border-white/5">
-            <table className="w-full table-fixed text-xs">
+          <div className="overflow-x-auto rounded-md border border-white/5">
+            <table className="w-full min-w-[640px] table-fixed text-xs sm:text-sm">
               <thead className="bg-zinc-900 text-left text-zinc-400">
                 <tr>
                   <th className="w-48 px-3 py-2 font-medium">Timestamp</th>

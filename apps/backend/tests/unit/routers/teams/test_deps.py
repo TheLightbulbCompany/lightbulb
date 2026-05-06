@@ -5,9 +5,39 @@ from datetime import datetime, timezone
 from core.repositories.paperclip_repo import PaperclipCompany
 from routers.teams.deps import (
     TeamsContext,
+    envelope_list,
     resolve_teams_context,
     TeamsContextError,
 )
+
+
+# ─── envelope_list ────────────────────────────────────────────────────────
+
+
+def test_envelope_list_wraps_bare_array():
+    rows = [{"id": "a"}, {"id": "b"}]
+    assert envelope_list(rows, "goals") == {"goals": rows}
+
+
+def test_envelope_list_passes_through_matching_envelope():
+    upstream = {"goals": [{"id": "a"}]}
+    assert envelope_list(upstream, "goals") == {"goals": [{"id": "a"}]}
+
+
+def test_envelope_list_renames_items_envelope_to_target_key():
+    upstream = {"items": [{"id": "a"}]}
+    assert envelope_list(upstream, "goals") == {"goals": [{"id": "a"}]}
+
+
+def test_envelope_list_drops_non_dict_rows():
+    rows = [{"id": "a"}, "stray-string", None, {"id": "b"}]
+    assert envelope_list(rows, "x") == {"x": [{"id": "a"}, {"id": "b"}]}
+
+
+def test_envelope_list_handles_garbage_response():
+    assert envelope_list(None, "x") == {"x": []}
+    assert envelope_list("not-a-list", "x") == {"x": []}
+    assert envelope_list(42, "x") == {"x": []}
 
 
 @pytest.fixture

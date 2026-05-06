@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from . import agents as _agents
-from .deps import TeamsContext
+from .deps import TeamsContext, envelope_list
 from .schemas import AddIssueCommentBody, CreateIssueBody, PatchIssueBody
 
 router = APIRouter()
@@ -29,13 +29,7 @@ async def list_issues(ctx: TeamsContext = Depends(_ctx)):
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
-    if isinstance(rows, list):
-        items = rows
-    elif isinstance(rows, dict):
-        items = rows.get("issues") or rows.get("items") or []
-    else:
-        items = []
-    return {"issues": [row for row in items if isinstance(row, dict)]}
+    return envelope_list(rows, "issues")
 
 
 @router.get("/issues/{issue_id}")

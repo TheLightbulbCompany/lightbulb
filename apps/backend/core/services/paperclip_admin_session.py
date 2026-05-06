@@ -1,11 +1,13 @@
 """Admin session manager for the Paperclip service account.
 
-Maintains a long-lived Better Auth session for ``admin@isol8.co`` —
-the only user with the ``instance_admin`` role on the Paperclip
-deployment. Used by ``paperclip_provisioning`` to call privileged
-endpoints (``POST /api/companies``, ``approve_join_request``, etc.)
-that regular signed-up users can't reach in Paperclip's
-``authenticated`` deployment mode.
+Maintains a long-lived Better Auth session for the Paperclip bootstrap
+admin (``admin+paperclip@isol8.co`` in new envs, ``admin@isol8.co`` in
+legacy envs — the email is read from Secrets Manager, never hardcoded
+here). The bootstrap admin is the only user with the ``instance_admin``
+role on the Paperclip deployment. Used by ``paperclip_provisioning`` to
+call privileged endpoints (``POST /api/companies``,
+``approve_join_request``, etc.) that regular signed-up users can't reach
+in Paperclip's ``authenticated`` deployment mode.
 
 **Why a service account instead of granting every user instance_admin:**
 the alternative — putting Paperclip in ``local_trusted`` mode — would
@@ -103,7 +105,7 @@ def _load_credentials_from_secrets_manager(env: str) -> tuple[str, str]:
 
 
 async def get_admin_session_cookie(http_client: httpx.AsyncClient) -> str:
-    """Return a fresh Better Auth session cookie for admin@isol8.co.
+    """Return a fresh Better Auth session cookie for the bootstrap admin.
 
     Returns the bare ``name=value`` cookie line ready to drop into a
     ``Cookie:`` header. Uses the caller-provided httpx client (so the

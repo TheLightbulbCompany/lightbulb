@@ -100,21 +100,30 @@ export class AuthStack extends cdk.Stack {
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
     );
 
-    // Bootstrap admin (admin@isol8.co) Better Auth credentials. CDK
-    // creates the secret with a placeholder; the operator populates
-    // it via apps/backend/scripts/bootstrap_paperclip_admin.py
-    // (run as a one-shot ECS task — see paperclip-stack.ts for the
-    // task definition). Backend reads it at first provisioning call
-    // via core/services/paperclip_admin_session.py. Encrypted with
-    // the same CMK as other auth secrets so the existing
+    // Bootstrap admin Better Auth credentials. CDK creates the secret
+    // with a placeholder; the operator populates it via
+    // apps/backend/scripts/bootstrap_paperclip_admin.py (run via
+    // `aws ecs execute-command` against the backend task — see the
+    // script's docstring for the runbook). Backend reads it at first
+    // provisioning call via core/services/paperclip_admin_session.py.
+    // Encrypted with the same CMK as other auth secrets so the existing
     // KmsDecryptForSecrets policy on the backend task role covers it.
+    //
+    // The email written into this secret is whatever ADMIN_EMAIL the
+    // bootstrap script holds at run time — currently
+    // ``admin+paperclip@isol8.co`` (a plus-addressed alias of
+    // admin@isol8.co, kept distinct so the bootstrap admin's
+    // instance_admin role doesn't leak into admin@isol8.co's regular
+    // Isol8 user identity). Legacy envs (dev) carry the bare
+    // ``admin@isol8.co`` from before the rename — safe there only
+    // because no dev user has signed up with that email.
     this.paperclipAdminCredentials = createSecret(
       "PaperclipAdminCredentials",
       "paperclip_admin_credentials",
       // Placeholder string — bootstrap script overwrites with
-      // {"email": "admin@isol8.co", "password": "<32-byte-random>"}.
+      // {"email": "<ADMIN_EMAIL>", "password": "<32-byte-random>"}.
       { passwordLength: 16, excludePunctuation: true },
-      "Paperclip admin (admin@isol8.co) Better Auth credentials. Populated by bootstrap_paperclip_admin.py — placeholder until then.",
+      "Paperclip bootstrap admin Better Auth credentials (JSON: {email,password}). Populated by bootstrap_paperclip_admin.py — placeholder until then.",
     );
 
     // CDK's default GenerateSecretString produces a hex-ish placeholder that

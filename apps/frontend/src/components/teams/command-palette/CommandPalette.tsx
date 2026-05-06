@@ -9,13 +9,8 @@
 
 import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import {
-  Dialog,
-  DialogContent,
-  DialogOverlay,
-  DialogPortal,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
@@ -36,19 +31,22 @@ export interface CommandPaletteProps {
 // every open transition is what gives us "reset query + selectedIndex on
 // reopen" without needing a setState-in-effect.
 //
-// Overlay/content are wired manually (not via the default DialogContent
-// wrapper) so we can override the dark backdrop with the editorial
-// rgba(26,26,26,0.45) tint that matches NewIssueDialog (T20).
+// Overlay + content are wired against the radix primitive directly (not via
+// the shadcn DialogContent wrapper) because that wrapper bakes in its own
+// DialogPortal + a dark bg-black/80 DialogOverlay. Using the wrapper here
+// would render two backdrops on top of each other and the dark one would
+// cover the editorial rgba(26,26,26,0.45) tint we want (matches T20's
+// NewIssueDialog backdrop). Codex flagged this in PR #542 review.
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPortal>
-        <DialogOverlay
-          className="bg-transparent"
+        <DialogPrimitive.Overlay
+          className="fixed inset-0 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
           style={{ background: "rgba(26, 26, 26, 0.45)" }}
         />
-        <DialogContent
-          className="editorial-card p-0 max-w-xl gap-0 overflow-hidden border-0"
+        <DialogPrimitive.Content
+          className="editorial-card fixed left-[50%] top-[50%] z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg"
           style={{
             background: "var(--cream)",
             border: "1px solid var(--edge)",
@@ -57,7 +55,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         >
           <DialogTitle className="sr-only">Command palette</DialogTitle>
           {open ? <CommandPaletteContent open={open} onOpenChange={onOpenChange} /> : null}
-        </DialogContent>
+        </DialogPrimitive.Content>
       </DialogPortal>
     </Dialog>
   );

@@ -18,6 +18,10 @@ from core.services import agent_export  # noqa: E402
 def fake_efs(tmp_path: Path):
     """Builds /tmp/<root>/users/<seller>/agents/<agent-id>/ with sample files
     and patches get_workspace() to return a Workspace anchored at <root>.
+
+    Also writes the seller's per-user openclaw.json with an agents.list[]
+    entry for ``agent_id`` so ``export_agent_from_efs`` can synthesize a
+    real openclaw_slice (matching the admin-catalog publish behavior).
     """
     seller_id = "user_seller_abc"
     agent_id = "my-agent-001"
@@ -26,6 +30,32 @@ def fake_efs(tmp_path: Path):
     agent_dir = user_root / "agents" / agent_id
     agent_dir.mkdir(parents=True)
 
+    # Per-user openclaw.json — what the slice extraction reads.
+    (user_root / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "list": [
+                        {
+                            "id": agent_id,
+                            "name": "MyAgent",
+                            "identity": {"name": "MyAgent", "emoji": "🤖"},
+                            "skills": ["search", "code-review"],
+                            "model": "anthropic.claude-3-5-sonnet",
+                            "channels": {"telegram": {"chatId": "123"}},
+                            "workspace": ".openclaw/workspaces/old-id",
+                        },
+                    ],
+                },
+                "plugins": {"entries": {"memory": {"enabled": True}}},
+                "tools": {"profile": "default", "allow": ["bash", "read"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Per-agent openclaw.json — used only by _summarize_openclaw_config for
+    # the manifest's display name + description.
     (agent_dir / "openclaw.json").write_text(
         json.dumps(
             {
@@ -135,3 +165,104 @@ def test_export_invalid_seller_id_rejected(tmp_path):
     with pytest.raises(agent_export.InvalidAgentIdError):
         # WorkspaceError wraps to InvalidAgentIdError.
         agent_export.export_agent_from_efs(seller_id="../bad", agent_id="x")
+
+
+def test_export_synthesizes_slice_from_seller_config(fake_efs):
+    """The CatalogPackage's openclaw_slice carries the seller's agent entry
+    with user-specific fields stripped (model, channels, workspace, id) and
+    the publisher's plugins + tools blocks intact. This is what makes the
+    buyer-side deploy auto-register the new agent in their openclaw.json.
+    """
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+
+    slice_ = pkg.openclaw_slice
+    assert slice_, "openclaw_slice must be populated, not empty"
+
+    agent = slice_["agent"]
+    # Stripped fields (user/tier-specific):
+    assert "model" not in agent, "model must be stripped from slice"
+    assert "channels" not in agent, "channels must be stripped from slice"
+    assert "workspace" not in agent, "workspace must be stripped from slice"
+    assert "id" not in agent, "id must be stripped (regenerated per-deploy)"
+    # Carried fields:
+    assert agent.get("name") == "MyAgent"
+    assert agent.get("skills") == ["search", "code-review"]
+    assert agent.get("identity", {}).get("emoji") == "🤖"
+
+    # Plugins + tools blocks travel verbatim.
+    assert slice_["plugins"] == {"entries": {"memory": {"enabled": True}}}
+    assert slice_["tools"] == {"profile": "default", "allow": ["bash", "read"]}
+
+    # cron_jobs key always present (empty list when seller has none).
+    assert slice_["cron_jobs"] == []
+
+
+def test_export_carries_seller_cron_jobs_targeting_this_agent(fake_efs, tmp_path):
+    """Cron jobs that target this agent get carried into the slice with
+    runtime fields (id, sessionKey, state, createdAtMs, updatedAtMs)
+    stripped — they're regenerated at deploy time.
+    """
+    seller_id, agent_id, _ = fake_efs
+    cron_dir = tmp_path / "users" / seller_id / "cron"
+    cron_dir.mkdir()
+    (cron_dir / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "stale-uuid-to-strip",
+                        "agentId": agent_id,
+                        "sessionKey": "agent:old:user_seller_abc",
+                        "state": {"nextRunAtMs": 999},
+                        "createdAtMs": 111,
+                        "updatedAtMs": 222,
+                        "name": "morning standup",
+                        "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+                        "delivery": {"channel": "telegram", "mode": "message"},
+                    },
+                    {
+                        "id": "different-agent-job",
+                        "agentId": "some-other-agent",
+                        "name": "irrelevant",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    cron = pkg.openclaw_slice["cron_jobs"]
+    assert len(cron) == 1, "only this agent's cron jobs should ride along"
+    job = cron[0]
+    # Runtime fields stripped; non-runtime fields preserved.
+    for stripped in ("id", "sessionKey", "state", "createdAtMs", "updatedAtMs"):
+        assert stripped not in job, f"{stripped} must be stripped at slice time"
+    assert job.get("name") == "morning standup"
+    assert job.get("agentId") == agent_id
+
+
+def test_export_missing_user_config_raises(fake_efs, tmp_path):
+    """If the seller has no per-user openclaw.json, publish must fail with a
+    clear error rather than shipping an empty slice.
+    """
+    seller_id, agent_id, _ = fake_efs
+    user_config = tmp_path / "users" / seller_id / "openclaw.json"
+    user_config.unlink()
+    with pytest.raises(agent_export.AgentNotInConfigError, match="no openclaw.json"):
+        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+
+
+def test_export_agent_not_in_config_raises(fake_efs, tmp_path):
+    """If the agent dir exists but the agent_id isn't in the seller's
+    openclaw.json agents.list, fail loudly — we can't synthesize a slice
+    without the agent's identity/skills/tools.
+    """
+    seller_id, _, _ = fake_efs
+    # Plant a workspace dir for an agent that isn't in the user-level config.
+    orphan_dir = tmp_path / "users" / seller_id / "agents" / "orphan-agent-99"
+    orphan_dir.mkdir()
+    (orphan_dir / "README.md").write_text("orphan", encoding="utf-8")
+    with pytest.raises(agent_export.AgentNotInConfigError, match="not registered"):
+        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id="orphan-agent-99")

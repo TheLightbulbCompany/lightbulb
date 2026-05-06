@@ -23,6 +23,10 @@ from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
 from core.observability.metrics import put_metric
 from core.services.catalog_package import CatalogPackage
+from core.services.catalog_slice import (
+    extract_agent_slice,
+    filter_cron_jobs_for_agent,
+)
 
 
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$")
@@ -49,6 +53,12 @@ class AgentNotFoundError(Exception):
 
 class InvalidAgentIdError(Exception):
     """agent_id failed format validation or path-traversal guard."""
+
+
+class AgentNotInConfigError(Exception):
+    """agent_id has a workspace dir on EFS but no entry in the seller's openclaw.json
+    agents.list — can't synthesize a slice without the agent's identity/skills/tools.
+    """
 
 
 def _resolve_agent_dir(seller_id: str, agent_id: str) -> Path:
@@ -152,6 +162,12 @@ def _summarize_openclaw_config(agent_dir: Path) -> dict:
 def export_agent_from_efs(seller_id: str, agent_id: str) -> CatalogPackage:
     """Read the seller's agent dir from EFS, tar it, return a CatalogPackage.
 
+    The CatalogPackage carries an ``openclaw_slice`` synthesized from the
+    seller's per-user openclaw.json so the buyer-side deploy can register
+    the new agent in their config (matching the admin-catalog publish
+    behavior). Without the slice, deploy_from_artifact extracts files but
+    leaves the buyer's openclaw.json untouched.
+
     Args:
         seller_id: Clerk user id of the seller (also the EFS dir owner).
         agent_id: Subdirectory name under ``agents/`` to publish.
@@ -159,9 +175,27 @@ def export_agent_from_efs(seller_id: str, agent_id: str) -> CatalogPackage:
     Raises:
         InvalidAgentIdError: agent_id failed format / path-traversal check.
         AgentNotFoundError: agent_id not found on EFS for this seller.
+        AgentNotInConfigError: agent dir exists but agent_id isn't registered
+            in the seller's openclaw.json (or the config file is missing).
     """
     agent_dir = _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id)
     tarball_bytes, contents = _build_tarball(agent_dir)
+
+    workspace = get_workspace()
+    config = workspace.read_openclaw_config(seller_id)
+    if not config:
+        raise AgentNotInConfigError(
+            f"seller {seller_id!r} has no openclaw.json — publish the agent from a container that has been provisioned"
+        )
+    try:
+        slice_ = extract_agent_slice(config, agent_id)
+    except KeyError as exc:
+        raise AgentNotInConfigError(
+            f"agent {agent_id!r} is not registered in seller's openclaw.json agents.list"
+        ) from exc
+    slice_["cron_jobs"] = filter_cron_jobs_for_agent(
+        workspace.read_cron_jobs(seller_id), agent_id
+    )
 
     summary = _summarize_openclaw_config(agent_dir)
     manifest = {
@@ -176,7 +210,7 @@ def export_agent_from_efs(seller_id: str, agent_id: str) -> CatalogPackage:
     return CatalogPackage(
         format="openclaw",
         manifest=manifest,
-        openclaw_slice={},
+        openclaw_slice=slice_,
         tarball_bytes=tarball_bytes,
         tarball_contents=contents,
     )

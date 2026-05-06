@@ -6,6 +6,9 @@ import type {
   IssueComment,
   IssueCreateInput,
   IssueUpdateInput,
+  DashboardRunActivityDay,
+  DashboardSummary,
+  DashboardResponse,
 } from "@/components/teams/shared/types";
 import { ISSUE_STATUSES } from "@/components/teams/shared/types";
 
@@ -39,4 +42,44 @@ test("IssueCreateInput requires only title", () => {
 test("IssueUpdateInput allows all-optional fields", () => {
   const input: IssueUpdateInput = {};
   expect(Object.keys(input).length).toBe(0);
+});
+
+test("DashboardRunActivityDay shape compiles", () => {
+  const d: DashboardRunActivityDay = {
+    date: "2026-05-06",
+    succeeded: 4,
+    failed: 1,
+    other: 0,
+    total: 5,
+  };
+  expect(d.date).toBe("2026-05-06");
+  expect(d.succeeded).toBe(4);
+});
+
+test("DashboardSummary minimum-shape construction compiles", () => {
+  const s: DashboardSummary = {
+    agents: {},
+    tasks: {},
+    runActivity: [],
+    costs: { monthSpendCents: 0, monthBudgetCents: 0, monthUtilizationPercent: 0 },
+    pendingApprovals: 0,
+    budgets: { pendingApprovals: 0 },
+  };
+  expect(s.runActivity).toEqual([]);
+});
+
+test("DashboardResponse wraps summary + optional sidebar_badges", () => {
+  const r: DashboardResponse = {
+    dashboard: {
+      agents: { active: 1 },
+      tasks: { open: 2 },
+      runActivity: [{ date: "2026-05-06", succeeded: 1, failed: 0, other: 0, total: 1 }],
+      costs: { monthSpendCents: 100, monthBudgetCents: 0, monthUtilizationPercent: 0 },
+      pendingApprovals: 0,
+      budgets: { pendingApprovals: 0 },
+    },
+    sidebar_badges: { inbox: 3 },
+  };
+  expect(r.dashboard.agents.active).toBe(1);
+  expect(r.sidebar_badges?.inbox).toBe(3);
 });

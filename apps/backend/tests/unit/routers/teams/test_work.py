@@ -109,6 +109,40 @@ def test_list_goals(client, admin):
     )
 
 
+@pytest.mark.parametrize(
+    "path,upstream_method,key",
+    [
+        ("/api/v1/teams/goals", "list_goals", "goals"),
+        ("/api/v1/teams/routines", "list_routines", "routines"),
+        ("/api/v1/teams/projects", "list_projects", "projects"),
+    ],
+)
+def test_list_endpoints_wrap_bare_array_upstream(
+    client, monkeypatch, path, upstream_method, key
+):
+    """Upstream returns bare JSON arrays for goals / routines / projects;
+    each frontend panel reads ``data?.<key>``. Without server-side
+    wrapping the panel silently shows "No <key> yet" even when rows
+    exist. Regression guard for the envelope contract.
+    """
+    a = MagicMock()
+    setattr(
+        a,
+        upstream_method,
+        AsyncMock(return_value=[{"id": "1", "name": "alpha"}, {"id": "2", "name": "beta"}]),
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: a)
+
+    r = client.get(path, headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    body = r.json()
+    assert list(body.keys()) == [key]
+    assert len(body[key]) == 2
+    assert body[key][0]["name"] == "alpha"
+
+
 def test_create_project(client, admin):
     r = client.post(
         "/api/v1/teams/projects",

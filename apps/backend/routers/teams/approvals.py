@@ -13,7 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from . import agents as _agents
-from .deps import TeamsContext
+from .deps import TeamsContext, envelope_list
 from .schemas import ApproveApprovalBody, RejectApprovalBody
 
 router = APIRouter()
@@ -23,10 +23,11 @@ _ctx = _agents._ctx
 @router.get("/approvals")
 async def list_approvals(ctx: TeamsContext = Depends(_ctx)):
     """List pending approvals for the caller's company."""
-    return await _agents._admin().list_approvals(
+    upstream = await _agents._admin().list_approvals(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
+    return envelope_list(upstream, "approvals")
 
 
 @router.post("/approvals/{approval_id}/approve")

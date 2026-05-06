@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, Query
 
 from . import agents as _agents
-from .deps import TeamsContext
+from .deps import TeamsContext, envelope_list
 
 router = APIRouter()
 _ctx = _agents._ctx
@@ -128,22 +128,12 @@ async def list_inbox(
 
     rows = await _agents._admin().list_issues(**kwargs)
 
-    # Upstream returns either a list or an envelope. Normalize to {items}.
-    # Forward the rich row verbatim — the InboxPage deep port (PR #3c) needs
-    # status / identifier / priority / lastActivityAt / unread etc. to render
-    # IssueRow without crashing in StatusIcon (`status.replace(...)` on
-    # undefined). The earlier 4-field reshape ({id, type, title, createdAt})
-    # was for the tier-1 stub InboxPanel that no longer exists; it's been
-    # replaced by InboxPage which consumes the upstream Issue shape directly.
-    if isinstance(rows, list):
-        items_in = rows
-    elif isinstance(rows, dict):
-        items_in = rows.get("issues") or rows.get("items") or []
-    else:
-        items_in = []
-
-    items = [row for row in items_in if isinstance(row, dict)]
-    return {"items": items}
+    # Forward rich rows verbatim — the InboxPage deep port (PR #3c) needs
+    # status / identifier / priority / lastActivityAt / unread etc. to
+    # render IssueRow without crashing in StatusIcon (`status.replace(...)`
+    # on undefined). The earlier 4-field reshape ({id, type, title,
+    # createdAt}) was for the tier-1 stub InboxPanel that no longer exists.
+    return envelope_list(rows, "items")
 
 
 @router.post("/inbox/{item_id}/dismiss")

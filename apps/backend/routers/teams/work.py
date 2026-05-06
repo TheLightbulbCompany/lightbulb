@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from . import agents as _agents
-from .deps import TeamsContext
+from .deps import TeamsContext, envelope_list
 from .schemas import (
     CreateGoalBody,
     CreateProjectBody,
@@ -31,10 +31,11 @@ _ctx = _agents._ctx
 @router.get("/routines")
 async def list_routines(ctx: TeamsContext = Depends(_ctx)):
     """List routines in the caller's company."""
-    return await _agents._admin().list_routines(
+    upstream = await _agents._admin().list_routines(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
+    return envelope_list(upstream, "routines")
 
 
 @router.post("/routines")
@@ -79,10 +80,11 @@ async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
 @router.get("/goals")
 async def list_goals(ctx: TeamsContext = Depends(_ctx)):
     """List goals in the caller's company."""
-    return await _agents._admin().list_goals(
+    upstream = await _agents._admin().list_goals(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
+    return envelope_list(upstream, "goals")
 
 
 @router.post("/goals")
@@ -118,10 +120,11 @@ async def patch_goal(
 @router.get("/projects")
 async def list_projects(ctx: TeamsContext = Depends(_ctx)):
     """List projects in the caller's company."""
-    return await _agents._admin().list_projects(
+    upstream = await _agents._admin().list_projects(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
+    return envelope_list(upstream, "projects")
 
 
 @router.get("/projects/{project_id}")

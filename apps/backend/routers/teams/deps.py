@@ -8,12 +8,36 @@ as a class + a resolver so we can unit-test without a FastAPI request.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from fastapi import HTTPException
 
 from core.auth import AuthContext, resolve_owner_id
 from core.repositories.paperclip_repo import PaperclipCompany
+
+
+def envelope_list(upstream: Any, key: str) -> dict[str, list[dict]]:
+    """Wrap an upstream list response in a ``{key: [...]}`` envelope.
+
+    Upstream Paperclip's ``GET /api/companies/:co/<resource>`` endpoints
+    return bare JSON arrays (``res.json(result)``). The Teams frontend
+    panels read ``data?.<resource>`` (envelope shape) so without
+    server-side wrapping each panel silently renders empty.
+
+    Tolerates either upstream shape — bare list, or a dict with the
+    expected key / a generic ``items`` key — so a future upstream
+    change to envelope shape won't 5xx the panel.
+
+    Drops non-dict rows (defensive: some upstream paths can splice in
+    error markers).
+    """
+    if isinstance(upstream, list):
+        rows = upstream
+    elif isinstance(upstream, dict):
+        rows = upstream.get(key) or upstream.get("items") or []
+    else:
+        rows = []
+    return {key: [row for row in rows if isinstance(row, dict)]}
 
 
 class TeamsContextError(HTTPException):

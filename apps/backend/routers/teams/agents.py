@@ -34,7 +34,7 @@ from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 â
 from core.services.paperclip_user_session import get_user_session_cookie
 
 from . import deps as deps_mod
-from .deps import TeamsContext, TeamsContextError
+from .deps import TeamsContext, TeamsContextError, envelope_list
 from .schemas import CreateAgentBody, PatchAgentBody
 
 router = APIRouter()
@@ -225,9 +225,8 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
-    if isinstance(upstream, dict) and isinstance(upstream.get("agents"), list):
-        return {**upstream, "agents": [_redact_agent(a) for a in upstream["agents"]]}
-    return upstream
+    envelope = envelope_list(upstream, "agents")
+    return {"agents": [_redact_agent(a) for a in envelope["agents"]]}
 
 
 @router.post("/agents")

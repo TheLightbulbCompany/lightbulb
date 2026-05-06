@@ -14,33 +14,49 @@ export function MembersPanel() {
   const { read } = useTeamsApi();
   const { data, isLoading, error } = read<{ members: Member[] }>("/members");
 
-  if (isLoading) return <div className="p-8">Loading…</div>;
-  if (error) return <div className="p-8 text-red-600">Error: {String(error)}</div>;
+  if (isLoading)
+    return (
+      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
+        Loading…
+      </div>
+    );
+  if (error)
+    return (
+      <div className="editorial-page p-8 text-[var(--danger)]">
+        Error: {String(error)}
+      </div>
+    );
+
+  const members = data?.members ?? [];
 
   return (
-    <div className="p-8 max-w-4xl">
-      <h1 className="text-2xl font-semibold mb-6">Members</h1>
-      <ul className="divide-y border rounded">
-        {(data?.members ?? []).map((m) => (
+    <div className="editorial-page p-8 max-w-4xl">
+      <h1 className="font-editorial-serif text-4xl mb-6 text-[var(--ink)]">Members</h1>
+      <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
+        {members.map((m) => (
           <li
             key={m.id}
             className="p-4 flex justify-between items-center"
           >
             <div>
-              <div className="text-sm">
+              <div className="text-sm text-[var(--ink)]">
                 {m.email_via_clerk ?? m.user_id ?? m.id}
               </div>
               {m.role && (
-                <div className="text-xs text-zinc-500">{m.role}</div>
+                <div className="text-xs uppercase tracking-wide text-[var(--mute)] mt-0.5">
+                  {m.role}
+                </div>
               )}
             </div>
             {m.joined_at && (
-              <div className="text-xs text-zinc-400">{m.joined_at}</div>
+              <div className="text-xs text-[var(--mute)] font-mono">{m.joined_at}</div>
             )}
           </li>
         ))}
-        {(data?.members ?? []).length === 0 && (
-          <li className="p-4 text-sm text-zinc-500">No members yet.</li>
+        {members.length === 0 && (
+          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
+            No members yet.
+          </li>
         )}
       </ul>
     </div>

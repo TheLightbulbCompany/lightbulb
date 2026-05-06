@@ -20,8 +20,18 @@ export function RoutinesPanel() {
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
-  if (isLoading) return <div className="p-8">Loading…</div>;
-  if (error) return <div className="p-8 text-red-600">Error: {String(error)}</div>;
+  if (isLoading)
+    return (
+      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
+        Loading…
+      </div>
+    );
+  if (error)
+    return (
+      <div className="editorial-page p-8 text-[var(--danger)]">
+        Error: {String(error)}
+      </div>
+    );
 
   async function toggle(id: string, enabled: boolean) {
     setBusy(id);
@@ -44,32 +54,34 @@ export function RoutinesPanel() {
     }
   }
 
+  const routines = data?.routines ?? [];
+
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="editorial-page p-8 max-w-4xl">
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-semibold">Routines</h1>
+        <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Routines</h1>
         <button
           onClick={() => setCreating(true)}
-          className="px-4 py-2 bg-zinc-900 text-white rounded text-sm"
+          className="editorial-btn editorial-btn--primary"
         >
           New routine
         </button>
       </div>
 
-      <ul className="divide-y border rounded">
-        {(data?.routines ?? []).map((r) => (
+      <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
+        {routines.map((r) => (
           <li
             key={r.id}
             className="flex justify-between items-center p-4 gap-3"
           >
             <div>
-              <div className="font-medium">{r.name}</div>
-              <div className="text-xs text-zinc-500">
-                {r.cron} · agent {r.agent_id}
+              <div className="font-medium text-[var(--ink)]">{r.name}</div>
+              <div className="text-xs text-[var(--mute)]">
+                <span className="font-mono">{r.cron}</span> · agent {r.agent_id}
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
                 <input
                   type="checkbox"
                   checked={r.enabled}
@@ -81,15 +93,17 @@ export function RoutinesPanel() {
               <button
                 onClick={() => remove(r.id)}
                 disabled={busy === r.id}
-                className="text-sm text-zinc-500 hover:underline"
+                className="text-sm text-[var(--mute)] hover:text-[var(--danger)] hover:underline"
               >
                 Delete
               </button>
             </div>
           </li>
         ))}
-        {(data?.routines ?? []).length === 0 && (
-          <li className="p-4 text-sm text-zinc-500">No routines yet.</li>
+        {routines.length === 0 && (
+          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
+            No routines yet.
+          </li>
         )}
       </ul>
 
@@ -142,43 +156,43 @@ function CreateRoutineDialog({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center">
-      <div className="bg-white rounded-lg p-6 w-[28rem]">
-        <h2 className="text-lg font-semibold mb-4">New routine</h2>
+    <div className="fixed inset-0 bg-[rgba(26,26,26,0.35)] flex items-center justify-center">
+      <div className="editorial-card p-6 w-[28rem]">
+        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">New routine</h2>
         <label className="block mb-3">
-          <span className="text-sm">Name</span>
+          <span className="text-sm text-[var(--ink-soft)]">Name</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
         <label className="block mb-3">
-          <span className="text-sm">Cron</span>
+          <span className="text-sm text-[var(--ink-soft)]">Cron</span>
           <input
             value={cron}
             onChange={(e) => setCron(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1 font-mono"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
           />
         </label>
         <label className="block mb-3">
-          <span className="text-sm">Agent ID</span>
+          <span className="text-sm text-[var(--ink-soft)]">Agent ID</span>
           <input
             value={agentId}
             onChange={(e) => setAgentId(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
         <label className="block mb-3">
-          <span className="text-sm">Prompt</span>
+          <span className="text-sm text-[var(--ink-soft)]">Prompt</span>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
             rows={3}
           />
         </label>
-        <label className="flex items-center gap-2 mb-4 text-sm">
+        <label className="flex items-center gap-2 mb-4 text-sm text-[var(--ink-soft)]">
           <input
             type="checkbox"
             checked={enabled}
@@ -186,15 +200,22 @@ function CreateRoutineDialog({
           />
           <span>Enabled</span>
         </label>
-        {err && <div className="text-red-600 text-sm mb-2">{err}</div>}
+        {err && (
+          <div className="text-[var(--danger)] text-sm mb-2 border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+            {err}
+          </div>
+        )}
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="px-3 py-1 border rounded">
+          <button
+            onClick={onClose}
+            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
+          >
             Cancel
           </button>
           <button
             onClick={submit}
             disabled={submitting || !name || !cron || !agentId || !prompt}
-            className="px-3 py-1 bg-zinc-900 text-white rounded"
+            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create"}
           </button>

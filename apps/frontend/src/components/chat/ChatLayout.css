@@ -356,7 +356,8 @@
   background: none;
   border: none;
   cursor: pointer;
-  padding: 4px;
+  padding: 10px;
+  margin: -6px;
   color: #8a8578;
   transition: color 0.15s;
 }
@@ -406,7 +407,7 @@
     top: 0;
     left: 0;
     bottom: 0;
-    width: 280px;
+    width: min(280px, 85vw);
     z-index: 50;
     box-shadow: 4px 0 24px rgba(0,0,0,0.15);
   }

@@ -57,6 +57,24 @@ function entityLink(entityType: string | null | undefined, entityId: string | nu
   }
 }
 
+/**
+ * Subtle 6px dot color-coded by entity type; gives the otherwise-uniform
+ * activity feed a quick scannable left rail. Uses semantic tokens where
+ * possible so dark mode auto-adapts; falls back to muted for unknown
+ * types and system events.
+ */
+function entityDotColor(entityType: string | null | undefined): string {
+  switch (entityType) {
+    case "issue":      return "bg-blue-500/80";
+    case "agent":      return "bg-violet-500/80";
+    case "approval":   return "bg-amber-500/80";
+    case "project":    return "bg-emerald-500/80";
+    case "goal":       return "bg-fuchsia-500/80";
+    case "heartbeat":  return "bg-cyan-500/80";
+    default:           return "bg-muted-foreground/40";
+  }
+}
+
 function actorDisplayName(event: ActivityEvent): string {
   if (event.actorType === "system") return "System";
   if (event.actorType === "agent") return event.actorId ?? "Agent";
@@ -73,29 +91,36 @@ export function ActivityRow({ event, className }: ActivityRowProps) {
   const verb = VERBS[event.action] ?? event.action;
   const link = entityLink(event.entityType, event.entityId);
   const actorName = actorDisplayName(event);
+  const dotColor = entityDotColor(event.entityType);
 
   const inner = (
-    <div className="space-y-1">
-      <div className="flex gap-3">
-        <p className="flex-1 min-w-0 truncate">
-          <Identity name={actorName} size="xs" className="align-middle" />
-          <span className="text-muted-foreground ml-1">{verb}</span>
-          {event.entityType && event.entityId && (
-            <span className="font-medium ml-1">
-              {event.entityType}:{event.entityId}
-            </span>
-          )}
-        </p>
-        <span className="text-xs text-muted-foreground shrink-0 pt-0.5">
-          {timeAgo(event.createdAt)}
-        </span>
-      </div>
+    <div className="flex items-start gap-3">
+      <span
+        className={cn(
+          "mt-[7px] h-1.5 w-1.5 rounded-full shrink-0 ring-1 ring-inset ring-black/5 dark:ring-white/5",
+          dotColor,
+        )}
+        aria-hidden
+      />
+      <p className="flex-1 min-w-0 truncate leading-relaxed">
+        <Identity name={actorName} size="xs" className="align-middle" />
+        <span className="text-muted-foreground ml-1">{verb}</span>
+        {event.entityType && event.entityId && (
+          <span className="font-medium ml-1 text-foreground/90">
+            <span className="text-muted-foreground/70">{event.entityType}:</span>
+            <span className="font-mono text-[0.85em] tracking-tight">{event.entityId}</span>
+          </span>
+        )}
+      </p>
+      <span className="text-[11px] text-muted-foreground/80 shrink-0 pt-[3px] tabular-nums font-mono">
+        {timeAgo(event.createdAt)}
+      </span>
     </div>
   );
 
   const classes = cn(
-    "px-4 py-2 text-sm",
-    link && "cursor-pointer hover:bg-accent/50 transition-colors",
+    "px-4 py-2.5 text-sm",
+    link && "cursor-pointer hover:bg-accent/40 transition-colors",
     className,
   );
 

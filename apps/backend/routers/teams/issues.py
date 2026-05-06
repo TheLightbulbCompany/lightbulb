@@ -19,11 +19,23 @@ _ctx = _agents._ctx
 
 @router.get("/issues")
 async def list_issues(ctx: TeamsContext = Depends(_ctx)):
-    """List issues in the caller's company."""
-    return await _agents._admin().list_issues(
+    """List issues in the caller's company.
+
+    Upstream ``GET /api/companies/{co}/issues`` returns a bare JSON
+    array. The frontend ``IssuesPanel`` reads ``data?.issues`` (envelope
+    shape) so without this wrap the list silently renders empty.
+    """
+    rows = await _agents._admin().list_issues(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
+    if isinstance(rows, list):
+        items = rows
+    elif isinstance(rows, dict):
+        items = rows.get("issues") or rows.get("items") or []
+    else:
+        items = []
+    return {"issues": [row for row in items if isinstance(row, dict)]}
 
 
 @router.get("/issues/{issue_id}")

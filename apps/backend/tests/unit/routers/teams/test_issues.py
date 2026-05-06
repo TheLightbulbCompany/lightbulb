@@ -50,6 +50,33 @@ def test_list_issues_proxies_with_session(client, monkeypatch):
     )
 
 
+def test_list_issues_wraps_bare_array_response(client, monkeypatch):
+    """Upstream's ``GET /api/companies/:co/issues`` returns a bare JSON
+    array, but the frontend ``IssuesPanel`` reads ``data?.issues``.
+    Without server-side wrapping the panel silently shows "No issues
+    yet" even when issues exist.
+    """
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(
+        return_value=[
+            {"id": "iss_1", "title": "x", "status": "todo"},
+            {"id": "iss_2", "title": "y", "status": "in_progress"},
+        ]
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get("/api/v1/teams/issues", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    body = r.json()
+    assert list(body.keys()) == ["issues"]
+    assert len(body["issues"]) == 2
+    # Rich fields survive — IssuesPanel renders status / identifier / etc.
+    assert body["issues"][0]["status"] == "todo"
+    assert body["issues"][1]["status"] == "in_progress"
+
+
 def test_create_issue_passes_whitelisted_body(client, monkeypatch):
     admin = MagicMock()
     admin.create_issue = AsyncMock(return_value={"id": "iss_1"})

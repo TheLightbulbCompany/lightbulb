@@ -129,6 +129,12 @@ async def list_inbox(
     rows = await _agents._admin().list_issues(**kwargs)
 
     # Upstream returns either a list or an envelope. Normalize to {items}.
+    # Forward the rich row verbatim — the InboxPage deep port (PR #3c) needs
+    # status / identifier / priority / lastActivityAt / unread etc. to render
+    # IssueRow without crashing in StatusIcon (`status.replace(...)` on
+    # undefined). The earlier 4-field reshape ({id, type, title, createdAt})
+    # was for the tier-1 stub InboxPanel that no longer exists; it's been
+    # replaced by InboxPage which consumes the upstream Issue shape directly.
     if isinstance(rows, list):
         items_in = rows
     elif isinstance(rows, dict):
@@ -136,16 +142,7 @@ async def list_inbox(
     else:
         items_in = []
 
-    items = [
-        {
-            "id": row.get("id"),
-            "type": row.get("status") or "issue",
-            "title": row.get("title") or row.get("identifier") or "(untitled)",
-            "createdAt": row.get("updatedAt"),
-        }
-        for row in items_in
-        if isinstance(row, dict)
-    ]
+    items = [row for row in items_in if isinstance(row, dict)]
     return {"items": items}
 
 

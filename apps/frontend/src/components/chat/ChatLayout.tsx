@@ -94,6 +94,9 @@ export function ChatLayout({
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
 
+  // TODO: wire to real approvals count when /teams/approvals BFF lands
+  const approvalsCount = 0;
+
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
 
@@ -226,7 +229,7 @@ export function ChatLayout({
               >
                 <Grid2X2 size={12} />
                 <span>Teams</span>
-                <b>3</b>
+                {approvalsCount > 0 && <b>{approvalsCount}</b>}
               </Link>
               <Link href="/settings" className="sidebar-settings-link">
                 <Settings size={18} />

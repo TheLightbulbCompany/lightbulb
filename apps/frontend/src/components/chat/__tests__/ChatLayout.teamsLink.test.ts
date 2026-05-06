@@ -44,4 +44,28 @@ describe("ChatLayout Teams link", () => {
     expect(source).not.toMatch(/\$\{env\}\.company/);
     expect(source).not.toMatch(/NEXT_PUBLIC_COMPANY_URL/);
   });
+
+  it("renders the sidebar Teams pill with the teams-pill className", () => {
+    expect(source).toMatch(/className="teams-pill"/);
+  });
+
+  it("renders the literal text 'Teams' inside the sidebar pill", () => {
+    // The pill markup wraps the label in a <span>, e.g. <span>Teams</span>.
+    expect(source).toMatch(/<span>Teams<\/span>/);
+  });
+
+  it("does not hardcode a placeholder badge count of 3 on the Teams pill", () => {
+    // The earlier baseline rendered a static <b>3</b>. The badge must now
+    // be conditional on approvalsCount > 0 so an empty state hides it.
+    expect(source).not.toMatch(/<b>3<\/b>/);
+  });
+
+  it("declares an approvalsCount source the badge is gated on", () => {
+    // Source-level guard: ensures the placeholder constant (or future hook
+    // assignment) exists and the badge JSX gates on it. When the
+    // /teams/approvals BFF lands and we swap the constant for a hook, this
+    // assertion still holds — the gate stays the same.
+    expect(source).toMatch(/approvalsCount/);
+    expect(source).toMatch(/approvalsCount\s*>\s*0\s*&&\s*<b>\{approvalsCount\}<\/b>/);
+  });
 });

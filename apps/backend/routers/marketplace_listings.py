@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.repositories import billing_repo
-from core.services import agent_export, marketplace_search, marketplace_service
+from core.services import agent_export, curator, marketplace_search, marketplace_service
 from core.services.catalog_service import get_catalog_service
 from schemas import marketplace as schemas
 
@@ -88,6 +88,46 @@ async def search_listings(
     response.headers["Cache-Control"] = "public, max-age=60"
     items = await marketplace_search.search(query=q, format=format, limit=limit)
     return {"items": items}
+
+
+@router.get("/listings/featured")
+async def featured_listings(
+    response: Response,
+    limit: int = Query(default=24, ge=1, le=100),
+    format: str | None = Query(default=None, pattern="^(openclaw|skillmd)$"),
+):
+    """Curated listings — admin@isol8.co's published agents.
+
+    The chat sidebar's "From the marketplace" gallery hits this. The curator
+    publishes through the same /listings flow as any other seller; this
+    endpoint just filters the published-listings snapshot down to whoever
+    holds the configured curator email in Clerk. Returns an empty list
+    when the curator account doesn't exist yet — the sidebar renders that
+    as the empty-state.
+    """
+    response.headers["Cache-Control"] = "public, max-age=60"
+    curator_id = await curator.get_curator_user_id()
+    if not curator_id:
+        return {"items": []}
+    items = await marketplace_search.search(query=None, format=format, limit=limit, seller_id=curator_id)
+    return {"items": items}
+
+
+@router.get("/me/installed-templates")
+async def my_installed_templates(
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+):
+    """Templates the caller has already deployed into their container.
+
+    Used by the chat sidebar gallery to filter out rows the user has
+    already hired (so they don't appear as deployable). Backed by EFS
+    sidecar files at ``workspaces/{agent_id}/.template`` written by
+    ``catalog_service.deploy_from_artifact`` on every deploy. Replaces
+    the legacy ``GET /catalog/deployed`` endpoint that was tied to the
+    deleted admin-catalog router.
+    """
+    catalog_svc = get_catalog_service()
+    return {"installed": catalog_svc.list_deployed_for_user(resolve_owner_id(auth))}
 
 
 @router.get("/listings/{slug}")

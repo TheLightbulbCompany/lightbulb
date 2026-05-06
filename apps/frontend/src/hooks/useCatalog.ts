@@ -3,6 +3,19 @@ import { useCallback, useMemo } from "react";
 
 import { useApi } from "@/lib/api";
 
+/**
+ * Source of the chat sidebar's "From the marketplace" gallery.
+ *
+ * Reads ``/marketplace/listings/featured`` (curator's published listings —
+ * admin@isol8.co treated as a regular seller, no special flag) and
+ * ``/marketplace/me/installed-templates`` (this user's installed templates,
+ * derived from EFS .template sidecars), then renders the difference.
+ *
+ * Replaces the old admin-catalog ``/catalog`` endpoints. The hook + return
+ * shape are unchanged so consumers (GallerySection, AgentDetailPanel) don't
+ * need to change.
+ */
+
 export interface CatalogAgent {
   slug: string;
   name: string;
@@ -31,41 +44,81 @@ export interface DeployResult {
   plugins_enabled: string[];
 }
 
+interface MarketplaceListing {
+  slug: string;
+  name?: string;
+  version?: number;
+  description_md?: string;
+  manifest_json?: {
+    name?: string;
+    description?: string;
+    emoji?: string;
+    vibe?: string;
+    suggested_model?: string;
+    suggested_channels?: string[];
+    required_skills?: string[];
+    required_plugins?: string[];
+  };
+}
+
+function listingToCatalogAgent(li: MarketplaceListing): CatalogAgent {
+  const m = li.manifest_json ?? {};
+  return {
+    slug: li.slug,
+    name: m.name ?? li.name ?? li.slug,
+    version: li.version ?? 1,
+    emoji: m.emoji ?? "",
+    vibe: m.vibe ?? "",
+    description: m.description ?? li.description_md ?? "",
+    suggested_model: m.suggested_model ?? "",
+    suggested_channels: m.suggested_channels ?? [],
+    required_skills: m.required_skills ?? [],
+    required_plugins: m.required_plugins ?? [],
+  };
+}
+
 export function useCatalog() {
   const api = useApi();
 
-  const { data: catalogData, mutate: mutateCatalog } = useSWR<{ agents: CatalogAgent[] }>(
-    "/catalog",
-    () => api.get("/catalog") as Promise<{ agents: CatalogAgent[] }>,
+  const { data: featuredData, mutate: mutateFeatured } = useSWR<{ items: MarketplaceListing[] }>(
+    "/marketplace/listings/featured",
+    () => api.get("/marketplace/listings/featured") as Promise<{ items: MarketplaceListing[] }>,
   );
-  const { data: deployedData, mutate: mutateDeployed } = useSWR<{ deployed: DeployedAgent[] }>(
-    "/catalog/deployed",
-    () => api.get("/catalog/deployed") as Promise<{ deployed: DeployedAgent[] }>,
+  const { data: installedData, mutate: mutateInstalled } = useSWR<{ installed: DeployedAgent[] }>(
+    "/marketplace/me/installed-templates",
+    () =>
+      api.get("/marketplace/me/installed-templates") as Promise<{ installed: DeployedAgent[] }>,
   );
 
-  const deployedSlugs = useMemo(
-    () => new Set((deployedData?.deployed ?? []).map((d) => d.template_slug)),
-    [deployedData],
+  const installedSlugs = useMemo(
+    () => new Set((installedData?.installed ?? []).map((d) => d.template_slug)),
+    [installedData],
   );
 
   const visibleAgents = useMemo(
-    () => (catalogData?.agents ?? []).filter((a) => !deployedSlugs.has(a.slug)),
-    [catalogData, deployedSlugs],
+    () =>
+      (featuredData?.items ?? [])
+        .map(listingToCatalogAgent)
+        .filter((a) => !installedSlugs.has(a.slug)),
+    [featuredData, installedSlugs],
   );
 
   const deploy = useCallback(
     async (slug: string): Promise<DeployResult> => {
-      const result = (await api.post("/catalog/deploy", { slug })) as DeployResult;
-      await Promise.all([mutateCatalog(), mutateDeployed()]);
+      const result = (await api.post(
+        `/marketplace/listings/${encodeURIComponent(slug)}/deploy`,
+        {},
+      )) as DeployResult;
+      await Promise.all([mutateFeatured(), mutateInstalled()]);
       return result;
     },
-    [api, mutateCatalog, mutateDeployed],
+    [api, mutateFeatured, mutateInstalled],
   );
 
   return {
     agents: visibleAgents,
-    isLoading: !catalogData || !deployedData,
+    isLoading: !featuredData || !installedData,
     deploy,
-    refresh: () => Promise.all([mutateCatalog(), mutateDeployed()]),
+    refresh: () => Promise.all([mutateFeatured(), mutateInstalled()]),
   };
 }

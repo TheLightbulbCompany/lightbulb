@@ -16,49 +16,62 @@ function wrapper({ children }: { children: ReactNode }) {
   return <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>;
 }
 
+const FEATURED = "/marketplace/listings/featured";
+const INSTALLED = "/marketplace/me/installed-templates";
+
 describe("useCatalog", () => {
   beforeEach(() => {
     mockGet.mockReset();
     mockPost.mockReset();
   });
 
-  it("fetches catalog agents and deployed provenance in parallel", async () => {
+  it("maps marketplace listings into the CatalogAgent shape", async () => {
     mockGet.mockImplementation((path: string) => {
-      if (path === "/catalog") {
+      if (path === FEATURED) {
         return Promise.resolve({
-          agents: [{ slug: "pitch", name: "Pitch", version: 3, emoji: "🎯",
-                     vibe: "Direct", description: "Sales", suggested_model: "qwen",
-                     suggested_channels: [], required_skills: [], required_plugins: [] }],
+          items: [
+            {
+              slug: "pitch",
+              name: "Pitch",
+              version: 3,
+              description_md: "Sales",
+              manifest_json: {
+                emoji: "🎯",
+                vibe: "Direct",
+                suggested_model: "qwen",
+              },
+            },
+          ],
         });
       }
-      if (path === "/catalog/deployed") {
-        return Promise.resolve({ deployed: [] });
-      }
+      if (path === INSTALLED) return Promise.resolve({ installed: [] });
       throw new Error(`Unexpected GET ${path}`);
     });
 
     const { result } = renderHook(() => useCatalog(), { wrapper });
     await waitFor(() => expect(result.current.agents.length).toBe(1));
-    expect(result.current.agents[0].slug).toBe("pitch");
+    const agent = result.current.agents[0];
+    expect(agent.slug).toBe("pitch");
+    expect(agent.name).toBe("Pitch");
+    expect(agent.emoji).toBe("🎯");
+    expect(agent.vibe).toBe("Direct");
+    expect(agent.suggested_model).toBe("qwen");
+    expect(agent.description).toBe("Sales");
   });
 
-  it("filters out agents already deployed", async () => {
+  it("filters out templates already installed", async () => {
     mockGet.mockImplementation((path: string) => {
-      if (path === "/catalog") {
+      if (path === FEATURED) {
         return Promise.resolve({
-          agents: [
-            { slug: "pitch", name: "Pitch", version: 3, emoji: "", vibe: "",
-              description: "", suggested_model: "", suggested_channels: [],
-              required_skills: [], required_plugins: [] },
-            { slug: "echo", name: "Echo", version: 1, emoji: "", vibe: "",
-              description: "", suggested_model: "", suggested_channels: [],
-              required_skills: [], required_plugins: [] },
+          items: [
+            { slug: "pitch", name: "Pitch", version: 3, description_md: "" },
+            { slug: "echo", name: "Echo", version: 1, description_md: "" },
           ],
         });
       }
-      if (path === "/catalog/deployed") {
+      if (path === INSTALLED) {
         return Promise.resolve({
-          deployed: [{ agent_id: "agent_1", template_slug: "pitch", template_version: 3 }],
+          installed: [{ agent_id: "agent_1", template_slug: "pitch", template_version: 3 }],
         });
       }
       throw new Error();
@@ -69,13 +82,18 @@ describe("useCatalog", () => {
     expect(result.current.agents[0].slug).toBe("echo");
   });
 
-  it("deploy() posts and triggers revalidation", async () => {
+  it("deploy() POSTs the marketplace deploy URL and revalidates", async () => {
     mockGet.mockImplementation((path: string) => {
-      if (path === "/catalog") return Promise.resolve({ agents: [] });
-      if (path === "/catalog/deployed") return Promise.resolve({ deployed: [] });
+      if (path === FEATURED) return Promise.resolve({ items: [] });
+      if (path === INSTALLED) return Promise.resolve({ installed: [] });
       throw new Error();
     });
-    mockPost.mockResolvedValue({ agent_id: "agent_new", slug: "pitch", version: 3, skills_added: [] });
+    mockPost.mockResolvedValue({
+      agent_id: "agent_new",
+      slug: "pitch",
+      version: 3,
+      skills_added: [],
+    });
 
     const { result } = renderHook(() => useCatalog(), { wrapper });
     await waitFor(() => expect(result.current.agents).toBeDefined());
@@ -84,7 +102,27 @@ describe("useCatalog", () => {
     await act(async () => {
       deployResult = await result.current.deploy("pitch");
     });
-    expect(mockPost).toHaveBeenCalledWith("/catalog/deploy", { slug: "pitch" });
+    expect(mockPost).toHaveBeenCalledWith("/marketplace/listings/pitch/deploy", {});
     expect(deployResult).toMatchObject({ agent_id: "agent_new" });
+  });
+
+  it("URL-encodes the slug on deploy", async () => {
+    mockGet.mockImplementation((path: string) => {
+      if (path === FEATURED) return Promise.resolve({ items: [] });
+      if (path === INSTALLED) return Promise.resolve({ installed: [] });
+      throw new Error();
+    });
+    mockPost.mockResolvedValue({ agent_id: "agent_new", slug: "weird/slug", version: 1 });
+
+    const { result } = renderHook(() => useCatalog(), { wrapper });
+    await waitFor(() => expect(result.current.agents).toBeDefined());
+
+    await act(async () => {
+      await result.current.deploy("weird/slug");
+    });
+    expect(mockPost).toHaveBeenCalledWith(
+      "/marketplace/listings/weird%2Fslug/deploy",
+      {},
+    );
   });
 });

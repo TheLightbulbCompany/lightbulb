@@ -48,7 +48,9 @@ describe("GallerySection", () => {
 
   it("renders the header and each agent row", () => {
     render(<GallerySection onAgentDeployed={vi.fn()} />);
-    expect(screen.getByText(/gallery/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /from the marketplace/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Pitch")).toBeInTheDocument();
   });
 

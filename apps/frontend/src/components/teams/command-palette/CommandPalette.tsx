@@ -9,10 +9,14 @@
 
 import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogOverlay,
+  DialogPortal,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Search } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
 
@@ -31,13 +35,30 @@ export interface CommandPaletteProps {
 // Inner component is mounted only while the dialog is open. Remounting on
 // every open transition is what gives us "reset query + selectedIndex on
 // reopen" without needing a setState-in-effect.
+//
+// Overlay/content are wired manually (not via the default DialogContent
+// wrapper) so we can override the dark backdrop with the editorial
+// rgba(26,26,26,0.45) tint that matches NewIssueDialog (T20).
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="p-0 max-w-xl gap-0 overflow-hidden">
-        <DialogTitle className="sr-only">Command palette</DialogTitle>
-        {open ? <CommandPaletteContent open={open} onOpenChange={onOpenChange} /> : null}
-      </DialogContent>
+      <DialogPortal>
+        <DialogOverlay
+          className="bg-transparent"
+          style={{ background: "rgba(26, 26, 26, 0.45)" }}
+        />
+        <DialogContent
+          className="editorial-card p-0 max-w-xl gap-0 overflow-hidden border-0"
+          style={{
+            background: "var(--cream)",
+            border: "1px solid var(--edge)",
+            color: "var(--ink)",
+          }}
+        >
+          <DialogTitle className="sr-only">Command palette</DialogTitle>
+          {open ? <CommandPaletteContent open={open} onOpenChange={onOpenChange} /> : null}
+        </DialogContent>
+      </DialogPortal>
     </Dialog>
   );
 }
@@ -83,20 +104,36 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
 
   return (
     <>
-      <div className="flex items-center gap-2 border-b border-border px-3">
-        <Search className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
-        <Input
+      <div
+        className="flex items-center gap-2 px-3"
+        style={{ borderBottom: "1px solid var(--edge)" }}
+      >
+        <Search
+          className="h-4 w-4 shrink-0"
+          style={{ color: "var(--mute)" }}
+          aria-hidden="true"
+        />
+        <input
           autoFocus
           placeholder="Search agents, issues, projects, or jump to..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="border-0 shadow-none focus-visible:ring-0 px-0 h-11"
+          className="flex-1 h-11 bg-transparent border-0 outline-none px-0 text-sm placeholder:text-[color:var(--mute)] focus-visible:outline-none focus-visible:ring-0"
+          style={{ color: "var(--ink)" }}
         />
       </div>
-      <div className="max-h-[60vh] overflow-y-auto py-2">
+      <div className="max-h-[60vh] overflow-y-auto py-2" style={{ background: "var(--cream)" }}>
           {flatItems.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">No results.</div>
+            <div
+              className="px-4 py-8 text-center text-sm italic"
+              style={{
+                color: "var(--mute)",
+                fontFamily: "var(--font-lora), Georgia, serif",
+              }}
+            >
+              No results.
+            </div>
           ) : (
             <>
               {navResults.length > 0 && (
@@ -177,7 +214,16 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="py-1">
-      <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div
+        className="px-3 py-1 text-[10px] uppercase"
+        style={{
+          color: "var(--mute)",
+          fontFamily: "var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace",
+          letterSpacing: "0.14em",
+        }}
+      >
+        {label}
+      </div>
       <ul role="listbox" className="flex flex-col">
         {children}
       </ul>
@@ -207,14 +253,35 @@ function Row({
       data-cmd-row
       onMouseEnter={onMouseEnter}
       onClick={onClick}
-      className={cn(
-        "flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer transition-colors",
-        selected && "bg-amber-700/10 dark:bg-amber-400/10"
-      )}
+      className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer transition-colors"
+      style={{
+        background: selected ? "var(--cream-deeper)" : "transparent",
+        borderLeft: selected ? "2px solid var(--forest)" : "2px solid transparent",
+        color: "var(--ink)",
+      }}
+      onMouseLeave={(e) => {
+        if (!selected) e.currentTarget.style.background = "transparent";
+      }}
+      onMouseOver={(e) => {
+        if (!selected) e.currentTarget.style.background = "var(--forest-tint)";
+      }}
     >
-      {Icon && <Icon className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />}
+      {Icon && (
+        <Icon
+          className="h-4 w-4 shrink-0"
+          style={{ color: selected ? "var(--forest)" : "var(--mute)" }}
+          aria-hidden="true"
+        />
+      )}
       <span className="flex-1 truncate">{label}</span>
-      {sublabel && <span className="text-xs text-muted-foreground shrink-0">{sublabel}</span>}
+      {sublabel && (
+        <span
+          className="agent-pill shrink-0"
+          style={{ background: "var(--cream-deeper)" }}
+        >
+          {sublabel}
+        </span>
+      )}
     </li>
   );
 }

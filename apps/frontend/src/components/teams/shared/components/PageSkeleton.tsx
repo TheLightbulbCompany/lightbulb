@@ -19,8 +19,9 @@ export interface PageSkeletonProps {
  * IssueRow (status-icon + identifier-pill + title + trailing time) so the
  * shimmer doesn't reflow when real content arrives.
  *
- * Uses semantic shadcn tokens (`bg-muted`, `bg-muted-foreground/10`) instead
- * of literal grays so dark/light themes Just Work.
+ * Uses editorial palette tokens (`--cream-deeper`, `--cream-deepest`,
+ * `--edge`) so the placeholder reads as paper rather than gray on the cream
+ * surface.
  */
 export function PageSkeleton({
   variant = "inbox",
@@ -33,8 +34,14 @@ export function PageSkeleton({
     <div className="space-y-4 animate-pulse" data-testid="page-skeleton">
       {/* Header bar: title placeholder + trailing action placeholder */}
       <div className="flex items-center justify-between">
-        <div className="h-6 w-40 rounded bg-muted" />
-        <div className="h-6 w-24 rounded bg-muted-foreground/10" />
+        <div
+          className="h-6 w-40 rounded"
+          style={{ backgroundColor: "var(--cream-deepest)" }}
+        />
+        <div
+          className="h-6 w-24 rounded"
+          style={{ backgroundColor: "var(--cream-deeper)" }}
+        />
       </div>
 
       {/* Row stack — same h-10 rhythm as IssueRow */}
@@ -43,19 +50,29 @@ export function PageSkeleton({
           <div
             key={i}
             data-skeleton-row
-            className={cn(
-              "flex h-10 items-center gap-3 px-3",
-              "border border-border rounded-none",
-            )}
+            className={cn("flex h-10 items-center gap-3 px-3 border rounded-none")}
+            style={{ borderColor: "var(--edge)" }}
           >
             {/* status-icon placeholder */}
-            <div className="h-4 w-4 shrink-0 rounded-full bg-muted-foreground/20" />
+            <div
+              className="h-4 w-4 shrink-0 rounded-full"
+              style={{ backgroundColor: "var(--cream-deepest)" }}
+            />
             {/* identifier-pill placeholder */}
-            <div className="h-3 w-12 shrink-0 rounded bg-muted-foreground/15" />
+            <div
+              className="h-3 w-12 shrink-0 rounded"
+              style={{ backgroundColor: "var(--cream-deeper)" }}
+            />
             {/* title bar — flex-grow */}
-            <div className="h-3 flex-1 rounded bg-muted" />
+            <div
+              className="h-3 flex-1 rounded"
+              style={{ backgroundColor: "var(--cream-deepest)" }}
+            />
             {/* trailing time placeholder */}
-            <div className="h-3 w-10 shrink-0 rounded bg-muted-foreground/10" />
+            <div
+              className="h-3 w-10 shrink-0 rounded"
+              style={{ backgroundColor: "var(--cream-deeper)" }}
+            />
           </div>
         ))}
       </div>

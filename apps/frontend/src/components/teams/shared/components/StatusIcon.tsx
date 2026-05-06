@@ -24,23 +24,31 @@ export type {
 };
 
 // Inlined copy of the upstream `issueStatusIcon` map from
-// `paperclip/ui/src/lib/status-colors.ts` with the retheme mapping applied:
-//   `text-blue-{600,400}` for `todo`  ->  `text-amber-700 dark:text-amber-400`
-// All other status hues are status-semantic and pass through unchanged
-// (yellow / violet / green / red / neutral / muted-foreground).
-const issueStatusIcon: Record<string, string> = {
-  backlog: "text-muted-foreground border-muted-foreground",
-  todo: "text-amber-700 dark:text-amber-400 border-amber-700 dark:border-amber-400",
-  in_progress:
-    "text-yellow-600 border-yellow-600 dark:text-yellow-400 dark:border-yellow-400",
-  in_review:
-    "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
-  done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
-  cancelled: "text-neutral-500 border-neutral-500",
-  blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
+// `paperclip/ui/src/lib/status-colors.ts`, retheme-mapped onto the editorial
+// palette. Each status resolves to a single CSS-variable color (used for both
+// `color` and `borderColor`) so the swatch matches the rest of the Teams UI.
+//   backlog / cancelled        -> --mute       (inactive / muted)
+//   todo / in_progress         -> --warn       (attention / pending amber)
+//   in_review                  -> --ink-soft   (neutral info)
+//   done                       -> --forest     (success)
+//   blocked                    -> --danger     (error)
+const issueStatusColor: Record<string, string> = {
+  backlog: "var(--mute)",
+  todo: "var(--warn)",
+  in_progress: "var(--warn)",
+  in_review: "var(--ink-soft)",
+  done: "var(--forest)",
+  cancelled: "var(--mute)",
+  blocked: "var(--danger)",
 };
 
-const issueStatusIconDefault = "text-muted-foreground border-muted-foreground";
+const issueStatusColorDefault = "var(--mute)";
+
+// Blocked-state augmentations: covered (active dependency picking up the
+// slack) reads as a softer forest signal; stalled (review without next step)
+// reads as warning amber.
+const blockedCoveredColor = "var(--forest-soft)";
+const blockedStalledColor = "var(--warn)";
 
 const allStatuses = [
   "backlog",
@@ -117,11 +125,11 @@ export function StatusIcon({
     status === "blocked" && blockerAttention?.state === "covered";
   const isStalledBlocked =
     status === "blocked" && blockerAttention?.state === "stalled";
-  const colorClass = isCoveredBlocked
-    ? "text-cyan-600 border-cyan-600 dark:text-cyan-400 dark:border-cyan-400"
+  const swatchColor = isCoveredBlocked
+    ? blockedCoveredColor
     : isStalledBlocked
-      ? "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400"
-      : (issueStatusIcon[status] ?? issueStatusIconDefault);
+      ? blockedStalledColor
+      : (issueStatusColor[status] ?? issueStatusColorDefault);
   const isDone = status === "done";
   const ariaLabel =
     status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
@@ -135,10 +143,10 @@ export function StatusIcon({
     <span
       className={cn(
         "relative inline-flex h-4 w-4 rounded-full border-2 shrink-0",
-        colorClass,
         onChange && !showLabel && "cursor-pointer",
         className,
       )}
+      style={{ color: swatchColor, borderColor: swatchColor }}
       data-blocker-attention-state={blockerAttentionState}
       aria-label={ariaLabel}
       title={ariaLabel}
@@ -147,7 +155,10 @@ export function StatusIcon({
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
       )}
       {isCoveredBlocked && (
-        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-current" />
+        <span
+          className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border bg-current"
+          style={{ borderColor: "var(--cream)" }}
+        />
       )}
       {isStalledBlocked && (
         <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-current" />

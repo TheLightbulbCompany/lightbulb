@@ -62,9 +62,17 @@ def test_list_inbox_proxies_to_company_issues(client, monkeypatch):
     )
 
 
-def test_list_inbox_reshapes_issue_rows(client, monkeypatch):
-    """Confirm the BFF maps Paperclip's issue list into the
-    InboxPanel's ``{items: [{id, type, title, createdAt}]}`` shape."""
+def test_list_inbox_forwards_rich_issue_rows(client, monkeypatch):
+    """The BFF forwards Paperclip's full Issue rows verbatim inside
+    ``{items: [...]}``.
+
+    Regression guard: PR #3c's InboxPage / IssueRow / StatusIcon read
+    ``issue.status``, ``issue.identifier``, ``issue.priority``,
+    ``issue.lastActivityAt`` etc. directly. The previous handler reshaped
+    rows into a 4-field stub (``{id, type, title, createdAt}``) which made
+    StatusIcon throw ``Cannot read properties of undefined (reading
+    'replace')`` because ``issue.status`` was missing.
+    """
     admin = MagicMock()
     admin.list_issues = AsyncMock(
         return_value=[
@@ -91,22 +99,15 @@ def test_list_inbox_reshapes_issue_rows(client, monkeypatch):
 
     r = client.get("/api/v1/teams/inbox", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    assert r.json() == {
-        "items": [
-            {
-                "id": "iss_1",
-                "type": "todo",
-                "title": "Fix the inbox",
-                "createdAt": "2026-05-02T00:00:00Z",
-            },
-            {
-                "id": "iss_2",
-                "type": "in_progress",
-                "title": "Ship it",
-                "createdAt": "2026-05-02T01:00:00Z",
-            },
-        ]
-    }
+    body = r.json()
+    assert list(body.keys()) == ["items"]
+    assert len(body["items"]) == 2
+    # Status / identifier / priority MUST survive the BFF — frontend renders
+    # them directly.
+    assert body["items"][0]["status"] == "todo"
+    assert body["items"][0]["identifier"] == "PAP-1"
+    assert body["items"][0]["priority"] == "high"
+    assert body["items"][1]["status"] == "in_progress"
 
 
 def test_dismiss_proxies_with_session(client, monkeypatch):

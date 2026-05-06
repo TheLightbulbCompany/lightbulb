@@ -10,7 +10,7 @@ import { fromListing, initialsFor, paletteFor } from "@/lib/agentDesign";
 import { getListing } from "@/lib/marketplace/api";
 import type { ListingDetailResponse } from "@/lib/marketplace/types";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.isol8.co";
 
 function titleCase(slug: string): string {
@@ -117,7 +117,7 @@ function DeploySuccessInner() {
       try {
         const jwt = await getToken();
         const resp = await fetch(
-          `${API}/api/v1/marketplace/listings/${encodeURIComponent(listingSlug)}/deploy`,
+          `${API}/marketplace/listings/${encodeURIComponent(listingSlug)}/deploy`,
           {
             method: "POST",
             headers: {

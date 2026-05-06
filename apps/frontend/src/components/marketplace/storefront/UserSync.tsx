@@ -3,7 +3,7 @@
 import { useAuth } from "@clerk/nextjs";
 import { useEffect } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 const SESSION_KEY = "isol8.users.synced";
 
 /**
@@ -29,7 +29,7 @@ export function UserSync() {
       try {
         const jwt = await getToken();
         if (!jwt || cancelled) return;
-        const resp = await fetch(`${API}/api/v1/users/sync`, {
+        const resp = await fetch(`${API}/users/sync`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${jwt}`,

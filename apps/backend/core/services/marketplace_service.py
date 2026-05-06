@@ -50,15 +50,31 @@ class ArtifactNotUploadedError(Exception):
 
 
 async def _upload_artifact_to_s3(
-    *, listing_id: str, version: int, artifact_bytes: bytes, manifest: dict
+    *,
+    listing_id: str,
+    version: int,
+    artifact_bytes: bytes,
+    manifest: dict,
+    openclaw_slice: dict | None = None,
 ) -> tuple[str, str]:
-    """Upload tarball + manifest to the marketplace bucket. Returns (s3_prefix, manifest_sha256)."""
+    """Upload tarball + manifest + openclaw-slice to the marketplace bucket.
+    Returns (s3_prefix, manifest_sha256).
+
+    ``openclaw_slice`` carries the seller's agent entry + plugins/tools/cron
+    sliced from their per-user openclaw.json. Buyers' deploy_from_artifact
+    deep-merges it into their own openclaw.json so the new agent
+    auto-registers (matching the admin-catalog publish path). Pass ``None``
+    or ``{}`` for metadata-only drafts before the seller has uploaded a
+    real artifact.
+    """
     s3 = boto3.client("s3")
     bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET
     prefix = f"listings/{listing_id}/v{version}/"
     s3.put_object(Bucket=bucket, Key=f"{prefix}workspace.tar.gz", Body=artifact_bytes)
     manifest_bytes = json.dumps(manifest, sort_keys=True).encode("utf-8")
     s3.put_object(Bucket=bucket, Key=f"{prefix}manifest.json", Body=manifest_bytes)
+    slice_bytes = json.dumps(openclaw_slice or {}, sort_keys=True).encode("utf-8")
+    s3.put_object(Bucket=bucket, Key=f"{prefix}openclaw-slice.json", Body=slice_bytes)
     sha = hashlib.sha256(manifest_bytes).hexdigest()
     return prefix, sha
 
@@ -74,6 +90,7 @@ async def create_draft(
     tags: list[str],
     artifact_bytes: bytes,
     manifest: dict,
+    openclaw_slice: dict | None = None,
 ) -> dict:
     """Create a new listing in draft state. Slug must be unique.
 
@@ -83,11 +100,19 @@ async def create_draft(
     pre-check and both insert. The reservation row uses listing_id=
     "slug:{slug}" + version=0 (sentinel) so it sits in the same table
     but doesn't appear in any real-listing query (those filter version >= 1).
+
+    ``openclaw_slice`` is optional — metadata-only drafts (created via the
+    /listings POST route) pass nothing because the artifact is uploaded in
+    a follow-up call. Real artifacts populate it via replace_artifact.
     """
     listing_id = str(uuid.uuid4())
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     s3_prefix, sha = await _upload_artifact_to_s3(
-        listing_id=listing_id, version=1, artifact_bytes=artifact_bytes, manifest=manifest
+        listing_id=listing_id,
+        version=1,
+        artifact_bytes=artifact_bytes,
+        manifest=manifest,
+        openclaw_slice=openclaw_slice,
     )
 
     listings_tbl = settings.MARKETPLACE_LISTINGS_TABLE
@@ -174,6 +199,7 @@ async def replace_artifact(
     seller_id: str,
     artifact_bytes: bytes,
     manifest: dict,
+    openclaw_slice: dict | None = None,
 ) -> dict:
     """Replace the v1 artifact for a draft listing.
 
@@ -181,6 +207,12 @@ async def replace_artifact(
     (status='draft'). Re-uploads to the same S3 prefix so the existing
     version is overwritten — artifacts are mutable until the listing
     first transitions out of draft.
+
+    ``openclaw_slice`` is the seller's agent slice synthesized at export
+    time (see ``agent_export.export_agent_from_efs``). Persisted to S3 at
+    ``{prefix}openclaw-slice.json`` so deploy_listing can fetch it and
+    feed it to ``catalog_service.deploy_from_artifact`` for buyer-side
+    config registration.
 
     Returns:
         Dict with the updated listing fields: listing_id, version,
@@ -208,6 +240,7 @@ async def replace_artifact(
         version=1,
         artifact_bytes=artifact_bytes,
         manifest=manifest,
+        openclaw_slice=openclaw_slice,
     )
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 

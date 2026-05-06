@@ -148,15 +148,14 @@ async def deploy_listing(
 
     Resolves the listing by slug, verifies entitlement (free → anyone signed
     in, paid → caller must hold a non-revoked marketplace-purchases row),
-    fetches the artifact tarball from S3, and extracts it into the buyer's
-    EFS at ``workspaces/{agent_uuid}/`` plus (when the artifact carries an
-    openclaw-slice) registers the new agent in their ``openclaw.json``.
+    fetches the artifact tarball + openclaw-slice from S3, and hands them to
+    ``catalog_service.deploy_from_artifact`` which extracts files into the
+    buyer's EFS at ``workspaces/{agent_uuid}/`` and deep-merges the slice
+    into their ``openclaw.json`` so the new agent auto-registers.
 
-    Marketplace artifacts published via ``agent_export.export_agent_from_efs``
-    currently set ``openclaw_slice={}`` — those deploys extract files but
-    leave the buyer's openclaw.json untouched. ``catalog_service.deploy_from_artifact``
-    handles both shapes; the response's ``config_registered`` flag tells
-    the caller which path ran.
+    Listings published before slice-synthesis shipped have an empty
+    openclaw-slice.json (or no key at all on the older write path); the
+    response's ``config_registered`` flag tells the caller which path ran.
     """
     listing = await marketplace_service.get_by_slug(slug=slug)
     if not listing or listing.get("status") != "published":
@@ -172,13 +171,11 @@ async def deploy_listing(
             detail="purchase required to deploy this listing",
         )
 
-    # Fetch the artifact tarball from S3. The listing's ``s3_prefix`` is
-    # written by ``marketplace_service._upload_artifact_to_s3`` and looks
+    # Fetch the artifact tarball + slice from S3. The listing's ``s3_prefix``
+    # is written by ``marketplace_service._upload_artifact_to_s3`` and looks
     # like ``listings/{listing_id}/v{version}/``. We deliberately skip
     # reading manifest.json (the manifest stored on the listing row is
-    # authoritative for slug/name/version) and the openclaw-slice (not
-    # written by the marketplace publish path; see TODO in
-    # catalog_service.deploy_from_artifact).
+    # authoritative for slug/name/version).
     s3_prefix = listing.get("s3_prefix")
     if not s3_prefix:
         raise HTTPException(status_code=500, detail="listing has no artifact prefix")
@@ -209,6 +206,32 @@ async def deploy_listing(
             detail="failed to fetch listing artifact",
         ) from exc
 
+    # Fetch the slice. NoSuchKey is tolerated for legacy listings published
+    # before slice-synthesis shipped — those deploys land workspace files
+    # without registering the agent in openclaw.json (legacy behavior).
+    try:
+        slice_obj = s3.get_object(
+            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
+            Key=f"{s3_prefix}openclaw-slice.json",
+        )
+        slice_ = json.loads(slice_obj["Body"].read())
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+            logger.info(
+                "Marketplace deploy: legacy listing %s has no openclaw-slice; deploying without config registration",
+                listing.get("listing_id"),
+            )
+            slice_ = {}
+        else:
+            logger.exception(
+                "Marketplace deploy: slice fetch failed for listing %s",
+                listing.get("listing_id"),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="failed to fetch listing slice",
+            ) from exc
+
     # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
     # listing's manifest_json column). The marketplace manifest doesn't
     # follow the admin catalog's schema — it uses {name, description,
@@ -227,7 +250,7 @@ async def deploy_listing(
             owner_id=owner_id,
             slug=slug,
             manifest=manifest,
-            slice_={},  # TODO(cut-11-followup): synthesize openclaw-slice
+            slice_=slice_,
             tar_bytes=tar_bytes,
         )
     except Exception as exc:
@@ -327,6 +350,8 @@ async def upload_artifact_from_agent(
         raise HTTPException(status_code=400, detail=str(e))
     except agent_export.AgentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except agent_export.AgentNotInConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         result = await marketplace_service.replace_artifact(
@@ -334,6 +359,7 @@ async def upload_artifact_from_agent(
             seller_id=auth.user_id,
             artifact_bytes=package.tarball_bytes,
             manifest=package.manifest,
+            openclaw_slice=package.openclaw_slice,
         )
     except marketplace_service.InvalidStateError as e:
         raise HTTPException(status_code=409, detail=str(e))

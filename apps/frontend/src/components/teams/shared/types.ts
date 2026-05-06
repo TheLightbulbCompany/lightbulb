@@ -178,3 +178,55 @@ export interface CompanyAgent {
   name: string;
   iconUrl?: string | null;
 }
+
+// ─── Dashboard ────────────────────────────────────────────────────────────
+//
+// Mirrors upstream Paperclip's dashboard summary
+// (paperclip/server/src/services/dashboard.ts:summary). Returned by
+// `GET /teams/dashboard` since the BFF un-flatten in PR #2 task 1.
+
+export interface DashboardRunActivityDay {
+  date: string; // YYYY-MM-DD
+  succeeded: number;
+  failed: number;
+  other: number;
+  total: number;
+}
+
+export interface DashboardAgentBuckets {
+  active?: number;
+  running?: number;
+  paused?: number;
+  error?: number;
+}
+
+export interface DashboardTaskBuckets {
+  open?: number;
+  inProgress?: number;
+  blocked?: number;
+  done?: number;
+}
+
+export interface DashboardCosts {
+  monthSpendCents: number;
+  monthBudgetCents: number;
+  monthUtilizationPercent: number;
+}
+
+export interface DashboardBudgets {
+  pendingApprovals: number;
+}
+
+export interface DashboardSummary {
+  agents: DashboardAgentBuckets;
+  tasks: DashboardTaskBuckets;
+  runActivity: DashboardRunActivityDay[];
+  costs: DashboardCosts;
+  pendingApprovals: number;
+  budgets: DashboardBudgets;
+}
+
+export interface DashboardResponse {
+  dashboard: DashboardSummary;
+  sidebar_badges?: Record<string, number>;
+}

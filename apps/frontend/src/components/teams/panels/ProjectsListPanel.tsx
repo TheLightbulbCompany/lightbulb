@@ -1,6 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { FolderKanban } from "lucide-react";
+import {
+  EditorialButton,
+  EditorialDialog,
+  PanelDataTable,
+  PanelEmptyState,
+  PanelMasthead,
+  PanelToolbar,
+  type PanelDataColumn,
+} from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Project {
@@ -16,60 +26,101 @@ export function ProjectsListPanel() {
     "/projects",
   );
   const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState("");
 
-  if (isLoading)
-    return (
-      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
-        Loading…
-      </div>
-    );
-  if (error)
+  const projects = data?.projects;
+  const filtered = useMemo(() => {
+    const list = projects ?? [];
+    return search
+      ? list.filter((p) =>
+          (p.name + (p.description ?? ""))
+            .toLowerCase()
+            .includes(search.toLowerCase()),
+        )
+      : list;
+  }, [projects, search]);
+
+  if (error) {
     return (
       <div className="editorial-page p-8 text-[var(--danger)]">
         Error: {String(error)}
       </div>
     );
+  }
 
-  const projects = data?.projects ?? [];
+  const columns: PanelDataColumn<Project>[] = [
+    {
+      key: "name",
+      header: "Name",
+      sortable: true,
+      cell: (p) => (
+        <div className="font-medium text-[var(--ink)]">{p.name}</div>
+      ),
+    },
+    {
+      key: "description",
+      header: "Description",
+      cell: (p) => (
+        <span className="text-sm text-[var(--ink-soft)]">
+          {p.description ?? "—"}
+        </span>
+      ),
+    },
+    {
+      key: "open",
+      header: "",
+      align: "right",
+      cell: (p) => (
+        <a
+          href={`/teams/projects/${p.id}`}
+          className="text-sm hover:underline"
+          style={{ color: "var(--forest)" }}
+        >
+          Open →
+        </a>
+      ),
+    },
+  ];
 
   return (
-    <div className="editorial-page p-8 max-w-4xl">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Projects</h1>
-        <button
-          onClick={() => setCreating(true)}
-          className="editorial-btn editorial-btn--primary"
-        >
-          New project
-        </button>
-      </div>
-
-      <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
-        {projects.map((p) => (
-          <li
-            key={p.id}
-            className="flex justify-between items-center p-4"
-          >
-            <div>
-              <div className="font-medium text-[var(--ink)]">{p.name}</div>
-              {p.description && (
-                <div className="text-xs text-[var(--mute)]">{p.description}</div>
-              )}
-            </div>
-            <a
-              href={`/teams/projects/${p.id}`}
-              className="text-sm text-[var(--ink-soft)] hover:underline"
-            >
-              Open →
-            </a>
-          </li>
-        ))}
-        {projects.length === 0 && (
-          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
-            No projects yet.
-          </li>
-        )}
-      </ul>
+    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead
+        overline="Work"
+        title="Projects"
+        actions={
+          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
+            New project
+          </EditorialButton>
+        }
+      />
+      <PanelToolbar
+        searchValue={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Find project..."
+        searchAriaLabel="Search projects"
+      />
+      {isLoading ? (
+        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+          Loading…
+        </div>
+      ) : filtered.length === 0 ? (
+        <PanelEmptyState
+          icon={FolderKanban}
+          headline="No projects yet."
+          supporting={
+            search
+              ? "No projects match your search."
+              : "Create a project to group related issues + measure progress on a deliverable."
+          }
+          action={{ label: "New project", onClick: () => setCreating(true) }}
+        />
+      ) : (
+        <PanelDataTable<Project>
+          rows={filtered}
+          columns={columns}
+          rowKey={(p) => p.id}
+        />
+      )}
 
       {creating && (
         <CreateProjectDialog
@@ -113,10 +164,13 @@ function CreateProjectDialog({
   }
 
   return (
-    <div className="fixed inset-0 bg-[rgba(26,26,26,0.35)] flex items-center justify-center">
-      <div className="editorial-card p-6 w-96">
-        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">New project</h2>
-        <label className="block mb-3">
+    <EditorialDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="New project"
+    >
+      <div className="flex flex-col gap-3">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Name</span>
           <input
             value={name}
@@ -124,7 +178,7 @@ function CreateProjectDialog({
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
-        <label className="block mb-4">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Description</span>
           <textarea
             value={description}
@@ -134,26 +188,23 @@ function CreateProjectDialog({
           />
         </label>
         {err && (
-          <div className="text-[var(--danger)] text-sm mb-2 border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
             {err}
           </div>
         )}
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
-          >
+        <div className="flex justify-end gap-2 mt-2">
+          <EditorialButton variant="secondary" size="sm" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </EditorialButton>
+          <EditorialButton
+            size="sm"
             onClick={submit}
             disabled={submitting || !name}
-            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create"}
-          </button>
+          </EditorialButton>
         </div>
       </div>
-    </div>
+    </EditorialDialog>
   );
 }

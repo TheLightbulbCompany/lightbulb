@@ -1,6 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { CheckCircle2 } from "lucide-react";
+import {
+  EditorialButton,
+  PanelEmptyState,
+  PanelMasthead,
+} from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Approval {
@@ -26,6 +32,7 @@ export function ApprovalsPanel() {
       setBusy(null);
     }
   }
+
   async function reject(id: string) {
     const reason = prompt("Reason for rejection?");
     if (!reason) return;
@@ -43,39 +50,45 @@ export function ApprovalsPanel() {
   const approvals = data?.approvals ?? [];
 
   return (
-    <div className="editorial-page p-8 max-w-4xl">
-      <h1 className="font-editorial-serif text-4xl mb-6 text-[var(--ink)]">Approvals</h1>
-      <ul className="space-y-3">
-        {approvals.map((a) => (
-          <li key={a.id} className="editorial-card p-4">
-            <div className="font-medium text-[var(--ink)]">{a.title}</div>
-            {a.description && (
-              <div className="text-sm text-[var(--ink-soft)] mt-1">{a.description}</div>
-            )}
-            <div className="flex gap-2 mt-3">
-              <button
-                onClick={() => approve(a.id)}
-                disabled={busy === a.id}
-                className="editorial-btn editorial-btn--primary editorial-btn--sm"
-              >
-                Approve
-              </button>
-              <button
-                onClick={() => reject(a.id)}
-                disabled={busy === a.id}
-                className="editorial-btn editorial-btn--secondary editorial-btn--sm"
-              >
-                Reject
-              </button>
-            </div>
-          </li>
-        ))}
-        {approvals.length === 0 && (
-          <li className="font-editorial-serif text-xl italic text-[var(--mute)]">
-            No pending approvals.
-          </li>
-        )}
-      </ul>
+    <div className="editorial-page p-4 sm:p-6 lg:p-8 flex flex-col gap-6 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead overline="Workflow" title="Approvals" />
+      {approvals.length === 0 ? (
+        <PanelEmptyState
+          icon={CheckCircle2}
+          headline="No pending approvals."
+          supporting="When an agent action requires sign-off, it will appear here."
+        />
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {approvals.map((a) => (
+            <li key={a.id} className="editorial-card p-4">
+              <div className="font-medium text-[var(--ink)]">{a.title}</div>
+              {a.description && (
+                <div className="text-sm text-[var(--ink-soft)] mt-1">
+                  {a.description}
+                </div>
+              )}
+              <div className="flex gap-2 mt-3">
+                <EditorialButton
+                  size="sm"
+                  onClick={() => approve(a.id)}
+                  disabled={busy === a.id}
+                >
+                  Approve
+                </EditorialButton>
+                <EditorialButton
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => reject(a.id)}
+                  disabled={busy === a.id}
+                >
+                  Reject
+                </EditorialButton>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

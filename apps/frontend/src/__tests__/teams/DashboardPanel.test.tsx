@@ -52,8 +52,8 @@ import { DashboardPanel } from "@/components/teams/panels/DashboardPanel";
 describe("DashboardPanel", () => {
   it("renders metric cards with values from the un-flattened dashboard shape", () => {
     render(<DashboardPanel />);
-    // Header
-    expect(screen.getByText("Overview")).toBeInTheDocument();
+    // Header — PanelMasthead overline + h1 (editorial atom layer, PR 8)
+    expect(screen.getByText("Operations")).toBeInTheDocument();
     expect(screen.getByText("Dashboard")).toBeInTheDocument();
     // 4 tile labels
     expect(screen.getByText("Agents")).toBeInTheDocument();

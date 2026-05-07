@@ -45,4 +45,16 @@ describe("IssueRow atom contract", () => {
     expect(archive).toBeInTheDocument();
     expect(archive.classList.contains("editorial-btn")).toBe(true);
   });
+
+  it("action buttons stay 16x16 (h-4 w-4) inside the inbox row trailing slot", () => {
+    render(
+      <IssueRow
+        issue={issue}
+        unreadState="visible"
+        onMarkRead={vi.fn()}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /mark as read/i });
+    expect(btn).toHaveClass("h-4", "w-4", "!p-0", "!border-0");
+  });
 });

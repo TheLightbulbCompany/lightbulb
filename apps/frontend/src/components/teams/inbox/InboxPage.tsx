@@ -14,6 +14,7 @@ import { InboxToolbar } from "@/components/teams/inbox/InboxToolbar";
 import { InboxList } from "@/components/teams/inbox/InboxList";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
+import { PanelMasthead } from "@/components/teams/shell";
 
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
@@ -224,7 +225,7 @@ export function InboxPage({
 
   return (
     <div className="flex flex-col p-4 sm:p-6 editorial-page">
-      <h1 className="font-editorial-serif text-3xl mb-4 text-[var(--ink)]">Inbox</h1>
+      <PanelMasthead overline="Inbox" title="Inbox" className="mb-4" />
       <InboxToolbar
         tab={tab}
         onTabChange={setTab}

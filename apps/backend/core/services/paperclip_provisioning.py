@@ -262,7 +262,7 @@ class PaperclipProvisioning:
             try:
                 await self._admin.create_agent(
                     company_id=company_id,
-                    name="Main Agent",
+                    name="Friday",
                     role="ceo",
                     adapter_type=OPENCLAW_GATEWAY_TYPE,
                     adapter_config=synthesize_openclaw_adapter(

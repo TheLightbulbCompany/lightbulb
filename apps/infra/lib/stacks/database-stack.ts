@@ -418,6 +418,14 @@ export class DatabaseStack extends cdk.Stack {
       storageEncryptionKey: props.kmsKey,
       removalPolicy: cdk.RemovalPolicy.SNAPSHOT,
       clusterIdentifier: `isol8-${env}-paperclip-db`,
+      // Enable RDS Data API (HTTPS-callable SQL endpoint, no VPC required).
+      // Lets operator scripts run one-off SQL — e.g.
+      // `aws rds-data execute-statement` to seed a Paperclip bootstrap_ceo
+      // invite row — from outside the VPC without standing up a bastion.
+      // Aurora Postgres supports Data API on 14.7+/16+ provisioned clusters.
+      // Auth is two-secret: caller's IAM principal + the cluster's master
+      // credentials secret (already exists, generated above).
+      enableDataApi: true,
     });
 
     this.paperclipDbSecurityGroup = paperclipDbSecurityGroup;

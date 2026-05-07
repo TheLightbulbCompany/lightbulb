@@ -28,6 +28,7 @@ from core.services.node_proxy import (
     handle_node_disconnect,
     is_node_connection,
 )
+from core.services.paperclip_openclaw_pairing import pair_with_openclaw
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +472,155 @@ async def ws_message(
 # =============================================================================
 
 
+async def _paperclip_create_for_chat(
+    *,
+    creator_user_id: str,
+    owner_id: str,
+    name: str,
+    role: str | None,
+    model: str | None,
+) -> dict:
+    """Create a Paperclip agent invoked from /chat WS RPC interception.
+
+    creator_user_id: the authenticated member triggering the create;
+        baked into adapterConfig.sessionKey as the manual-wake fallback.
+    owner_id: container owner (org_id for orgs, user_id for personal);
+        used to look up the shared Paperclip company.
+
+    The ``model`` parameter is accepted but not currently forwarded to
+    Paperclip's create_agent — Paperclip's adapter selects the model
+    server-side from the agent's role + company defaults. We thread the
+    field through anyway so future schema additions don't require a
+    second signature change.
+    """
+    import httpx
+
+    from core.config import settings as _settings
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services import service_token
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_admin_session import get_admin_session_cookie
+    from core.services.paperclip_adapter_config import (
+        OPENCLAW_GATEWAY_TYPE,
+        synthesize_openclaw_adapter,
+    )
+    from core.services.paperclip_openclaw_pairing import (
+        _resolve_company_id_for_owner,
+    )
+    from core.services.paperclip_provisioning import _ws_gateway_url
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    if company_id is None:
+        raise RuntimeError(
+            f"owner {owner_id} has no Paperclip company — agent create "
+            "blocked. Re-run org provisioning."
+        )
+
+    http = httpx.AsyncClient(
+        base_url=_settings.PAPERCLIP_INTERNAL_URL,
+        timeout=15.0,
+    )
+    try:
+        admin_client = PaperclipAdminClient(http_client=http)
+        admin_cookie = await get_admin_session_cookie(http)
+        adapter_config = synthesize_openclaw_adapter(
+            gateway_url=_ws_gateway_url(_settings.ENVIRONMENT or ""),
+            service_token=service_token.mint(creator_user_id),
+            user_id=creator_user_id,
+        )
+        return await admin_client.create_agent(
+            company_id=company_id,
+            name=name,
+            role=role or "general",
+            adapter_type=OPENCLAW_GATEWAY_TYPE,
+            adapter_config=adapter_config,
+            session_cookie=admin_cookie,
+            idempotency_key=f"{creator_user_id}:chat-agent:{name}",
+        )
+    finally:
+        await http.aclose()
+
+
+async def _intercept_agents_create(
+    *,
+    connection_id: str,
+    req_id: str,
+    user_id: str,
+    owner_id: str,
+    params: dict,
+    ip: str,
+    token: str,
+) -> bool:
+    """Intercept /chat's agents.create RPC.
+
+    Performs the Paperclip-first pairing flow:
+    1. Create a Paperclip agent (under the owner's company), getting
+       a UUID.
+    2. Call ``pair_with_openclaw`` to register it in the OWNER's
+       container.
+    3. Send a ``res`` frame back to the client over the management API
+       with the new agent's UUID as ``payload.agentId``.
+
+    Returns ``True`` when the call has been fully consumed (the
+    dispatcher should NOT forward to the gateway). Returns ``False``
+    when the interception decides to fall through (e.g. the create
+    call has no name — let OpenClaw's validator reject so we don't
+    duplicate validation here).
+
+    user_id is the authenticated member (creator); owner_id is the
+    container owner — these differ for org members.
+
+    Symmetric with the /teams pairing flow in ``routers/teams/agents.py``;
+    see ``_resolve_owner_id`` / ``_container_is_reachable`` there for
+    rationale on the owner-vs-member split.
+    """
+    name = (params or {}).get("name", "").strip() if isinstance((params or {}).get("name"), str) else ""
+    role = (params or {}).get("role")
+    model = (params or {}).get("model")
+    if not name:
+        # Let OpenClaw's validator reject — we don't duplicate validation.
+        return False
+
+    paperclip_agent = await _paperclip_create_for_chat(
+        creator_user_id=user_id,
+        owner_id=owner_id,
+        name=name,
+        role=role,
+        model=model,
+    )
+
+    # pair_with_openclaw issues both agents.create and agents.update RPCs
+    # to the gateway, registering the agent under its Paperclip UUID
+    # with the friendly display name.
+    await pair_with_openclaw(
+        owner_id=owner_id,
+        paperclip_agent=paperclip_agent,
+        gateway_pool=get_gateway_pool(),
+        ip=ip,
+        token=token,
+    )
+
+    # Surface the new agent's UUID back to the frontend over the
+    # management API. The frontend treats this as the resolution of the
+    # original ``agents.create`` req — it will use ``agentId`` to start
+    # chats against the new agent.
+    management_api = await get_management_api_client()
+    management_api.send_message(
+        connection_id,
+        {
+            "type": "res",
+            "id": req_id,
+            "ok": True,
+            "payload": {
+                "agentId": paperclip_agent["id"],
+                "agent": paperclip_agent,
+            },
+        },
+    )
+    return True
+
+
 async def _process_rpc_background(
     connection_id: str,
     user_id: str,
@@ -512,6 +662,49 @@ async def _process_rpc_background(
                 },
             )
             return
+
+        # Paperclip-first pairing for /chat agents.create. The interception
+        # mints a Paperclip UUID, calls pair_with_openclaw to register it
+        # in the owner's container, and emits the WS response itself. When
+        # it consumes the call we must NOT forward to the gateway — pairing
+        # already issued the underlying agents.create + agents.update RPCs
+        # under the canonical UUID, and forwarding the original (browser-
+        # supplied, friendly-named) request would create a phantom second
+        # agent. Symmetric with /teams's create_agent route.
+        if method == "agents.create":
+            try:
+                consumed = await _intercept_agents_create(
+                    connection_id=connection_id,
+                    req_id=req_id,
+                    user_id=user_id,
+                    owner_id=owner_id,
+                    params=params,
+                    ip=ip,
+                    token=container["gateway_token"],
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[%s] agents.create interception failed owner=%s err=%s",
+                    user_id,
+                    owner_id,
+                    exc,
+                )
+                try:
+                    management_api.send_message(
+                        connection_id,
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"message": f"Failed to create agent: {exc}"},
+                        },
+                    )
+                except Exception:
+                    pass
+                return
+            if consumed:
+                return
+            # else fall through to forward the original RPC (validator-reject path).
 
         pool = get_gateway_pool()
         result = await pool.send_rpc(

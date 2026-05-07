@@ -1,6 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import { Repeat } from "lucide-react";
+import {
+  EditorialButton,
+  PanelDataTable,
+  PanelEmptyState,
+  PanelMasthead,
+  PanelToolbar,
+  type PanelDataColumn,
+} from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Routine {
@@ -13,25 +22,20 @@ interface Routine {
 }
 
 export function RoutinesPanel() {
-  const { read, patch, del } = useTeamsApi();
+  const { read, post, patch, del } = useTeamsApi();
   const { data, isLoading, error, mutate } = read<{ routines: Routine[] }>(
     "/routines",
   );
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
-  if (isLoading)
-    return (
-      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
-        Loading…
-      </div>
-    );
-  if (error)
-    return (
-      <div className="editorial-page p-8 text-[var(--danger)]">
-        Error: {String(error)}
-      </div>
-    );
+  const routines = data?.routines ?? [];
+  const filtered = search
+    ? routines.filter((r) =>
+        r.name.toLowerCase().includes(search.toLowerCase()),
+      )
+    : routines;
 
   async function toggle(id: string, enabled: boolean) {
     setBusy(id);
@@ -43,6 +47,7 @@ export function RoutinesPanel() {
       setBusy(null);
     }
   }
+
   async function remove(id: string) {
     if (!confirm("Delete this routine?")) return;
     setBusy(id);
@@ -54,58 +59,122 @@ export function RoutinesPanel() {
     }
   }
 
-  const routines = data?.routines ?? [];
+  async function runNow(routine: Routine) {
+    setBusy(routine.id);
+    try {
+      // Body forwarded to upstream `runRoutineSchema` — `reason: "manual"`
+      // distinguishes UI-fired runs from cron/event-fired runs in upstream
+      // run history.
+      await post(`/routines/${routine.id}/run`, { reason: "manual" });
+      mutate();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (error)
+    return (
+      <div className="editorial-page p-8 text-[var(--danger)]">
+        Error: {String(error)}
+      </div>
+    );
+
+  const columns: PanelDataColumn<Routine>[] = [
+    {
+      key: "name",
+      header: "Name",
+      cell: (r) => (
+        <div>
+          <div className="font-medium text-[var(--ink)]">{r.name}</div>
+          <div className="text-xs text-[var(--mute)]">
+            <span className="font-mono">{r.cron}</span> · agent {r.agent_id}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "enabled",
+      header: "Enabled",
+      cell: (r) => (
+        <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
+          <input
+            type="checkbox"
+            checked={r.enabled}
+            disabled={busy === r.id}
+            onChange={(e) => toggle(r.id, e.target.checked)}
+          />
+          <span>{r.enabled ? "Enabled" : "Disabled"}</span>
+        </label>
+      ),
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      cell: (r) => (
+        <div className="flex items-center justify-end gap-2">
+          <EditorialButton
+            variant="ghost"
+            size="sm"
+            disabled={busy === r.id}
+            aria-label={`Run ${r.name} now`}
+            onClick={() => runNow(r)}
+          >
+            Run now
+          </EditorialButton>
+          <button
+            onClick={() => remove(r.id)}
+            disabled={busy === r.id}
+            className="text-sm text-[var(--mute)] hover:text-[var(--danger)] hover:underline"
+          >
+            Delete
+          </button>
+        </div>
+      ),
+    },
+  ];
 
   return (
-    <div className="editorial-page p-8 max-w-4xl">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Routines</h1>
-        <button
-          onClick={() => setCreating(true)}
-          className="editorial-btn editorial-btn--primary"
-        >
-          New routine
-        </button>
-      </div>
-
-      <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
-        {routines.map((r) => (
-          <li
-            key={r.id}
-            className="flex justify-between items-center p-4 gap-3"
+    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead
+        overline="Routines"
+        title="Routines"
+        actions={
+          <EditorialButton
+            variant="primary"
+            onClick={() => setCreating(true)}
           >
-            <div>
-              <div className="font-medium text-[var(--ink)]">{r.name}</div>
-              <div className="text-xs text-[var(--mute)]">
-                <span className="font-mono">{r.cron}</span> · agent {r.agent_id}
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
-                <input
-                  type="checkbox"
-                  checked={r.enabled}
-                  disabled={busy === r.id}
-                  onChange={(e) => toggle(r.id, e.target.checked)}
-                />
-                <span>{r.enabled ? "Enabled" : "Disabled"}</span>
-              </label>
-              <button
-                onClick={() => remove(r.id)}
-                disabled={busy === r.id}
-                className="text-sm text-[var(--mute)] hover:text-[var(--danger)] hover:underline"
-              >
-                Delete
-              </button>
-            </div>
-          </li>
-        ))}
-        {routines.length === 0 && (
-          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
-            No routines yet.
-          </li>
-        )}
-      </ul>
+            New routine
+          </EditorialButton>
+        }
+      />
+      <PanelToolbar
+        searchValue={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Find routine..."
+        searchAriaLabel="Search routines"
+      />
+      {isLoading ? (
+        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+          Loading…
+        </div>
+      ) : filtered.length === 0 ? (
+        <PanelEmptyState
+          icon={Repeat}
+          headline="No routines yet."
+          supporting={
+            search
+              ? "No routines match your search."
+              : "Create a routine to define a recurring workflow that fires on a schedule or trigger."
+          }
+        />
+      ) : (
+        <PanelDataTable<Routine>
+          rows={filtered}
+          columns={columns}
+          rowKey={(r) => r.id}
+        />
+      )}
 
       {creating && (
         <CreateRoutineDialog
@@ -206,19 +275,21 @@ function CreateRoutineDialog({
           </div>
         )}
         <div className="flex justify-end gap-2">
-          <button
+          <EditorialButton
+            variant="secondary"
+            size="sm"
             onClick={onClose}
-            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
           >
             Cancel
-          </button>
-          <button
+          </EditorialButton>
+          <EditorialButton
+            variant="primary"
+            size="sm"
             onClick={submit}
             disabled={submitting || !name || !cron || !agentId || !prompt}
-            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create"}
-          </button>
+          </EditorialButton>
         </div>
       </div>
     </div>

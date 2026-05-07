@@ -85,6 +85,86 @@ async def test_chat_agents_create_calls_paperclip_first_then_pairs(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_paperclip_create_mints_service_token_with_owner_id(monkeypatch):
+    """Codex P1 regression: when an org member triggers /chat agents.create,
+    the synthesized adapterConfig.authToken must be a JWT minted with
+    sub=owner_id (the org), NOT sub=member_id. The WS authorizer treats
+    sub as the auth principal and puts ``orgId=""`` into the context, so
+    a member-keyed service token routes future Paperclip wakes as the
+    member's personal owner — and the agent could never reach the org's
+    container it was just paired into.
+
+    sessionKey (the adapter's user_id field) is still the member id —
+    that's the per-creator manual-wake fallback session, not auth."""
+
+    # Drive _paperclip_create_for_chat directly so we can inspect the
+    # service_token.mint call args without needing a full ECS / WS stack.
+    mint_mock = MagicMock(return_value="svc.tok.minted")
+    monkeypatch.setattr(
+        "core.services.service_token.mint",
+        mint_mock,
+    )
+
+    # Intercept synthesize_openclaw_adapter to capture the user_id arg too.
+    synth_mock = MagicMock(return_value={"type": "openclaw_gateway"})
+    monkeypatch.setattr(
+        "core.services.paperclip_adapter_config.synthesize_openclaw_adapter",
+        synth_mock,
+    )
+
+    # Stub Paperclip lookup so we never touch DDB / HTTP.
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing._resolve_company_id_for_owner",
+        AsyncMock(return_value="co_xyz"),
+    )
+
+    # Stub the admin session cookie + admin client so the real httpx client
+    # never opens.
+    monkeypatch.setattr(
+        "core.services.paperclip_admin_session.get_admin_session_cookie",
+        AsyncMock(return_value="cookie"),
+    )
+
+    fake_admin = MagicMock()
+    fake_admin.create_agent = AsyncMock(
+        return_value={"id": "pc-uuid", "name": "X"},
+    )
+    monkeypatch.setattr(
+        "core.services.paperclip_admin_client.PaperclipAdminClient",
+        lambda http_client: fake_admin,
+    )
+
+    # Avoid actually constructing an httpx.AsyncClient (it would try to
+    # bind to PAPERCLIP_INTERNAL_URL). The real client is closed in a
+    # ``finally`` block, so the stub needs an awaitable ``aclose``.
+    fake_http = MagicMock()
+    fake_http.aclose = AsyncMock()
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda **kwargs: fake_http,
+    )
+
+    from routers.websocket_chat import _paperclip_create_for_chat
+
+    await _paperclip_create_for_chat(
+        creator_user_id="user_member_b",
+        owner_id="org_xyz",
+        name="Code Reviewer",
+        role="engineer",
+        model=None,
+    )
+
+    # P1: token is minted under the OWNER's id, not the member's.
+    mint_mock.assert_called_once_with("org_xyz")
+
+    # The sessionKey (adapter user_id) still uses the member id — that's
+    # the per-creator manual-wake fallback, not the auth principal.
+    synth_mock.assert_called_once()
+    assert synth_mock.call_args.kwargs["user_id"] == "user_member_b"
+    assert synth_mock.call_args.kwargs["service_token"] == "svc.tok.minted"
+
+
+@pytest.mark.asyncio
 async def test_chat_agents_create_with_no_name_falls_through_to_gateway(monkeypatch):
     """If the RPC has no name, don't try to interpret it — let OpenClaw's
     own validator reject. We don't duplicate validation."""

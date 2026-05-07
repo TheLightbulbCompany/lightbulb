@@ -29,7 +29,6 @@ from typing import Any
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
-    PaperclipApiError,
 )
 from core.services.paperclip_admin_session import get_admin_session_cookie
 
@@ -90,13 +89,19 @@ async def fetch_paperclip_agents_for_owner(
             session_cookie=cookie,
             company_id=company_id,
         )
-    except PaperclipApiError as e:
+    except Exception as e:  # noqa: BLE001 — best-effort fetch; see below.
+        # Broad catch is intentional. The helper's contract is "fall back
+        # to empty list on ANY Paperclip-side issue" so container provision
+        # never breaks because Paperclip is down, the network is flaky,
+        # or admin credentials failed to load. PaperclipApiError, transient
+        # httpx errors (ConnectError/timeouts), and pre-request credential
+        # exceptions all map to the same recovery path.
         logger.warning(
             "paperclip_openclaw_pairing: list_agents failed for owner=%s "
-            "company=%s status=%s -- falling back to empty list",
+            "company=%s -- falling back to empty list: %s",
             owner_id,
             company_id,
-            e.status_code,
+            e,
         )
         return []
 

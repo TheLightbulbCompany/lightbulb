@@ -524,9 +524,18 @@ async def _paperclip_create_for_chat(
     try:
         admin_client = PaperclipAdminClient(http_client=http)
         admin_cookie = await get_admin_session_cookie(http)
+        # Mint the service token with owner_id (NOT creator_user_id). The
+        # WS authorizer puts service tokens into the connection context with
+        # ``orgId=""`` and ``userId=<sub>`` — minting with the member id
+        # would route subsequent Paperclip wakes as the member's PERSONAL
+        # owner instead of the org's shared owner, and the agent could
+        # never reach the container it was just paired into.
+        # ``user_id=creator_user_id`` is still correct: that field is the
+        # adapterConfig.sessionKey fallback (per-creator manual-wake
+        # session key), not the auth principal.
         adapter_config = synthesize_openclaw_adapter(
             gateway_url=_ws_gateway_url(_settings.ENVIRONMENT or ""),
-            service_token=service_token.mint(creator_user_id),
+            service_token=service_token.mint(owner_id),
             user_id=creator_user_id,
         )
         # No idempotency_key: keying on (creator_user_id, name) returns a

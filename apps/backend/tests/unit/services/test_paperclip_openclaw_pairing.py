@@ -2,10 +2,12 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from core.services.paperclip_openclaw_pairing import (
     fetch_paperclip_agents_for_owner,
+    pair_with_openclaw,
 )
 
 
@@ -131,7 +133,56 @@ async def test_fetch_returns_empty_on_paperclip_api_error(monkeypatch):
     assert result == []
 
 
-from core.services.paperclip_openclaw_pairing import pair_with_openclaw
+@pytest.mark.asyncio
+async def test_fetch_returns_empty_on_transient_httpx_error(monkeypatch):
+    """Transient httpx errors (connect timeouts, DNS failures, etc.) raised
+    BEFORE the request reaches Paperclip must also fall back to []. The
+    helper's contract is best-effort: container provision must never fail
+    because Paperclip is down or the network is flaky."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    admin_client = MagicMock()
+    admin_client.list_agents = AsyncMock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
+        AsyncMock(return_value="cookie123"),
+    )
+
+    result = await fetch_paperclip_agents_for_owner(
+        owner_id="user_abc",
+        repo=repo,
+        admin_client=admin_client,
+    )
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_empty_on_admin_cookie_failure(monkeypatch):
+    """If credential loading itself fails (e.g. admin session-cookie fetch
+    raises before the list_agents request goes out), still fall back to
+    []. The fetch must not abort container provision."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    admin_client = MagicMock()
+    admin_client.list_agents = AsyncMock()  # never reached
+
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
+        AsyncMock(side_effect=RuntimeError("admin secret missing")),
+    )
+
+    result = await fetch_paperclip_agents_for_owner(
+        owner_id="user_abc",
+        repo=repo,
+        admin_client=admin_client,
+    )
+
+    assert result == []
+    admin_client.list_agents.assert_not_called()
 
 
 @pytest.mark.asyncio

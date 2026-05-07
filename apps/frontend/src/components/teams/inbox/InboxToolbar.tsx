@@ -138,8 +138,10 @@ export function InboxToolbar(props: InboxToolbarProps) {
 
   const markDisabled = unreadCount === 0;
 
-  // Filters slot — IssueFiltersPopover trigger (iconOnly), shared mobile +
-  // desktop. Lives here so we don't render it twice.
+  // Filters slot — IssueFiltersPopover trigger (iconOnly).
+  // Hoisted out of the JSX for readability — desktop is the only consumer
+  // today (the mobile PanelToolbar renders search-only). If mobile gains an
+  // actions/filters row, both branches can share this single source of truth.
   const filtersSlot = (
     <IssueFiltersPopover
       state={filterState}
@@ -225,7 +227,10 @@ export function InboxToolbar(props: InboxToolbarProps) {
           right. */}
       <div className="hidden flex-wrap items-center gap-3 sm:flex">
         {/* Tab bar — bespoke pill styling, intentionally does not use
-            PanelTabs (which renders an underline-style tab list). */}
+            PanelTabs (which renders an underline-style tab list).
+            TODO(teams-ui-parity): migrate to PanelTabs once that atom
+            supports a pill variant matching this forest-tint active style.
+            Spec at docs/superpowers/specs/2026-05-07-teams-panel-port-editorial-atoms-design.md. */}
         <div
           role="tablist"
           aria-label="Inbox tabs"

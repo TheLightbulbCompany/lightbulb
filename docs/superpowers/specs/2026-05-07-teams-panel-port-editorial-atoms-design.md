@@ -33,8 +33,11 @@ The /teams editorial brand (cream/forest tokens, Lora-italic mastheads) is not t
 
 - Public DNS for `company.isol8.co` / direct browser→Paperclip access (separate question, see PR #552 review).
 - Multi-tenant Paperclip-level role distinctions (upstream's `provision_member` invites all members as `owner` for v1; we keep that simplification).
-- Mobile-first or narrow-viewport optimization (not on critical path; can land panel-by-panel later).
+- **Mobile / narrow-viewport optimization.** Explicit non-goal for v1; can land panel-by-panel later.
+- **Dark mode.** Explicit non-goal for v1; PR #542's editorial tokens are light-theme only and adding dark would multiply atom variants.
 - Accessibility audit beyond what shadcn primitives ship with (deferred to a focused a11y PR).
+- **Visual lab / atom showcase route.** Skipped — design review happens on the dev environment, which is what we maintain it for.
+- **Cost budgets UI.** Upstream has it but our usage-control story is owned by Stripe meters / Bedrock credits, not Paperclip. Surfacing budget config from Paperclip would be either dead UI or a misleading second source of truth. Defer until usage architecture is reconciled.
 
 ## Approach: A + B (port upstream, using a shared editorial atom layer)
 
@@ -89,7 +92,7 @@ Each atom is < 100 LOC, < 6 props, no internal state beyond what shadcn already 
 
 **Token cleanup:** `apps/frontend/src/app/globals.css` already exports the editorial tokens (`--cream`, `--forest`, `--ink`, `--mute`, `--edge`, `--warn`, `--danger`). PR 1 audits any panel-specific custom tokens that should be promoted (or deleted) to keep the surface area small.
 
-**Visual lab:** `apps/frontend/src/app/teams/_atoms/page.tsx`. Renders every atom × every variant in a single scrollable page. Dev-only — production middleware 404s the route. Used during the port PRs to verify we haven't regressed the atom layer.
+**Design review:** the dev environment is the canonical surface for reviewing atom + panel changes during the port. No separate /teams/_atoms route — atoms are reviewed in-context as they're used by panels.
 
 **Testing:** every atom gets a vitest snapshot test + a basic interaction test where applicable (button click, dialog open/close, tab switch, table sort). No e2e for atoms.
 
@@ -209,14 +212,14 @@ Upstream `Approvals.tsx` 135 LOC. Mostly there — restyle with atoms.
 
 ### Costs (medium priority — heavy upstream LOC, low ours)
 
-Upstream `Costs.tsx` 1102 LOC. Features: time-range selector, cost breakdown by agent/project/model, budget alerts config, charts (LineChart + StackedBar), CSV export.
+Upstream `Costs.tsx` 1102 LOC. Features: time-range selector, cost breakdown by agent/project/model, charts (LineChart + StackedBar), CSV export. **Budget alerts UI deliberately scoped out** — see Non-goals; usage control is Stripe-meter / Bedrock-credit-driven on Isol8, not Paperclip-driven. Surfacing Paperclip's budget config would be a misleading second source of truth.
 
 BFF coverage:
 - `GET /costs` ✅ (single endpoint)
-- ⚠️ verify the response shape supports time-range filtering, group-by, and budget config
+- ⚠️ verify the response shape supports time-range filtering and group-by
 
-**Backend PR (Costs-BE):** likely needed to extend `/costs` with `?range=7d|30d|90d&group_by=agent|project|model` query params + a `/costs/budgets` config endpoint. ~200 LOC + tests.
-**Frontend PR (Costs-FE):** port. Estimated ~700 LOC.
+**Backend PR (Costs-BE):** extend `/costs` with `?range=7d|30d|90d&group_by=agent|project|model` query params. ~120 LOC + tests (down from ~200 since budgets are out).
+**Frontend PR (Costs-FE):** port without budget UI. Estimated ~550 LOC (down from ~700).
 
 ### Skills (high priority for marketplace alignment)
 
@@ -241,10 +244,10 @@ BFF coverage:
 - ❌ `DELETE /members/{user_id}`
 - ❌ `PATCH /members/{user_id}/role`
 
-**Note:** member management is already wired via Clerk (org admins invite via Clerk dashboard → `organizationMembership.created` webhook → `provision_member`). Decision needed: surface a Clerk deeplink in the panel ("Manage members in Clerk →") OR proxy Clerk's invite flow through our BFF? Recommend the deeplink for v1 — Clerk owns identity, we just visualize.
+**Decision:** Members panel uses a **Clerk deeplink** for invite/role/revoke flows ("Manage members in Clerk →"). Clerk owns identity; we just visualize who's in the workspace. Avoids duplicating Clerk's UX and keeps invite/role mutations in one place.
 
-**Backend PR:** minimal if deeplink path. ~50 LOC for read enrichment.
-**Frontend PR (Members-FE):** ~300 LOC.
+**Backend PR:** minimal — ~50 LOC to enrich `GET /members` with the data needed for the read-only display (last seen, last activity, role display name). No invite/role mutation routes.
+**Frontend PR (Members-FE):** ~300 LOC. Read-only list + Clerk deeplink CTA.
 
 ## Empty-state pattern
 
@@ -279,8 +282,9 @@ Per-panel empty-state copy is co-located with the panel (not the atom) so each p
 | Approvals | no | 0 |
 | Costs | yes — query params + budgets endpoint | ~200 |
 | Skills | yes — install/uninstall/versions/config | ~250 |
-| Members | small — read enrichment | ~50 |
-| **Total backend** | | **~850 LOC** |
+| Costs | yes — query params (no budgets) | ~120 |
+| Members | small — read enrichment only (no mutations) | ~50 |
+| **Total backend** | | **~770 LOC** |
 
 Each backend PR ships independently of the frontend port, so they can land in parallel. We don't block frontend ports on backend PRs that don't materially gate the panel — e.g., Members can ship the panel with a Clerk deeplink first, then add server-side invite later.
 
@@ -312,13 +316,17 @@ PRs 2-10 can run partially in parallel after PR 1 lands. Each is independently m
 | Cross-org permissions misalignment (a member sees data they shouldn't) | low | Paperclip's authz already filters per-company; we just pass through. Verify each panel respects the BFF's company scoping. |
 | LOC growth slows page load | low | Code-split per panel via Next.js dynamic imports; atoms are tiny |
 
-## Open questions
+## Resolved decisions
 
-1. **Visual lab in production?** Dev-only is the safer default. Worth the small server cost to leave it gated to admins in production for ongoing design review?
-2. **Members panel — Clerk deeplink or BFF-proxied invite?** Affects the Members PR scope.
-3. **Cost budgets — UI now or defer?** Upstream has it; we don't have a budget concept beyond the per-owner Stripe meter we already track. Possibly out of scope.
-4. **Dark-mode story?** PR #542's editorial tokens are light-theme only. Adding dark would multiply atom variants. Recommend explicit non-goal for v1.
-5. **Mobile / narrow viewport?** Same — recommend non-goal for v1; revisit per panel.
+All five open questions answered before implementation:
+
+1. ~~Visual lab in production?~~ → **No visual lab.** Design review happens on dev.
+2. ~~Members — Clerk deeplink or BFF-proxied invite?~~ → **Clerk deeplink.** Identity stays one place.
+3. ~~Cost budgets — UI now or defer?~~ → **Defer.** Usage control is Stripe / Bedrock-credit-driven on Isol8, not Paperclip; surfacing Paperclip's budget UI would be a misleading second source of truth.
+4. ~~Dark mode?~~ → **Non-goal v1.**
+5. ~~Mobile?~~ → **Non-goal v1.**
+
+No remaining open questions before plan-writing.
 
 ## Acceptance criteria (per PR)
 

@@ -43,6 +43,7 @@ def admin(monkeypatch):
         "create_routine",
         "patch_routine",
         "delete_routine",
+        "run_routine",
         "list_goals",
         "create_goal",
         "patch_goal",
@@ -98,6 +99,29 @@ def test_create_routine_rejects_extra(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_run_routine_proxies_upstream(client, monkeypatch):
+    """POST /teams/routines/{id}/run proxies upstream + forwards body."""
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.run_routine = AsyncMock(return_value={"runId": "run_test_123", "status": "queued"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/routines/r1/run",
+        json={"reason": "manual"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200
+    assert r.json()["runId"] == "run_test_123"
+    admin.run_routine.assert_awaited_once_with(
+        routine_id="r1",
+        body={"reason": "manual"},
+        session_cookie="cookie",
+    )
 
 
 def test_list_goals(client, admin):

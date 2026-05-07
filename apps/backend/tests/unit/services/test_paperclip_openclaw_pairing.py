@@ -129,3 +129,72 @@ async def test_fetch_returns_empty_on_paperclip_api_error(monkeypatch):
     )
 
     assert result == []
+
+
+from core.services.paperclip_openclaw_pairing import pair_with_openclaw
+
+
+@pytest.mark.asyncio
+async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name():
+    """pair_with_openclaw sends two RPCs:
+    1. agents.create with name=<paperclip_uuid> (so OpenClaw uses the
+       UUID as the on-disk agentId).
+    2. agents.update with name=<friendly_name> to fix the display."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+
+    await pair_with_openclaw(
+        owner_id="user_abc",
+        paperclip_agent={
+            "id": pc_uuid,
+            "name": "Code Reviewer",
+            "role": "engineer",
+        },
+        gateway_pool=pool,
+        ip="10.0.0.5",
+        token="gw_token",
+    )
+
+    assert pool.send_rpc.await_count == 2
+
+    create_call = pool.send_rpc.await_args_list[0]
+    assert create_call.kwargs["method"] == "agents.create"
+    assert create_call.kwargs["params"]["name"] == pc_uuid
+    assert create_call.kwargs["params"]["workspace"] == (
+        f"/home/node/.openclaw/workspaces/{pc_uuid}"
+    )
+    # The pool's user_id kwarg is actually owner_id under the hood —
+    # the existing gateway pool's signature is what it is.
+    assert create_call.kwargs["user_id"] == "user_abc"
+
+    update_call = pool.send_rpc.await_args_list[1]
+    assert update_call.kwargs["method"] == "agents.update"
+    assert update_call.kwargs["params"]["agentId"] == pc_uuid
+    assert update_call.kwargs["params"]["name"] == "Code Reviewer"
+
+
+@pytest.mark.asyncio
+async def test_pair_skips_if_agent_already_exists():
+    """If agents.create returns 'already exists' (idempotent reprovision
+    path), skip the update — the agent is already paired correctly."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    pool = MagicMock()
+    # OpenClaw returns INVALID_REQUEST with "agent already exists" in message
+    pool.send_rpc = AsyncMock(
+        side_effect=RuntimeError(
+            '{"code":-32602,"message":"agent \\"' + pc_uuid + '\\" already exists"}'
+        )
+    )
+
+    # Should not raise — idempotent.
+    await pair_with_openclaw(
+        owner_id="org_xyz",
+        paperclip_agent={"id": pc_uuid, "name": "Friday", "role": "ceo"},
+        gateway_pool=pool,
+        ip="10.0.0.5",
+        token="gw_token",
+    )
+
+    # Only the create attempt; update was skipped because create raised.
+    assert pool.send_rpc.await_count == 1

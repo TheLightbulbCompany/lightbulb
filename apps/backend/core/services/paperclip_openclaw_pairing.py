@@ -23,6 +23,7 @@ that provisions a container should call
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -109,3 +110,76 @@ async def fetch_paperclip_agents_for_owner(
         return []
 
     return agents
+
+
+async def pair_with_openclaw(
+    *,
+    owner_id: str,
+    paperclip_agent: dict[str, Any],
+    gateway_pool: Any,
+    ip: str,
+    token: str,
+) -> None:
+    """Pair one Paperclip agent with the owner's OpenClaw container.
+
+    Calls OpenClaw's ``agents.create`` RPC with ``name=<paperclip_uuid>``
+    (so OpenClaw derives ``agentId`` from the UUID via
+    ``normalizeAgentId``), then ``agents.update`` to set the human-
+    friendly display name.
+
+    Idempotent: an "agent already exists" error from agents.create is
+    swallowed (the agent was paired by a previous run or by the
+    provision-time openclaw.json write).
+
+    Other errors propagate so the caller (an HTTP handler or RPC
+    interceptor) can return them to the user. Container reachability
+    is the caller's responsibility — this helper assumes the gateway
+    pool can reach the owner's container.
+
+    Note: ``gateway_pool.send_rpc`` takes a ``user_id`` kwarg by name,
+    but the gateway pool is keyed by container owner. Always pass the
+    owner_id there.
+    """
+    pc_uuid = paperclip_agent["id"]
+    friendly_name = paperclip_agent.get("name") or pc_uuid
+
+    create_params = {
+        "name": pc_uuid,
+        "workspace": f"/home/node/.openclaw/workspaces/{pc_uuid}",
+    }
+    if paperclip_agent.get("model"):
+        create_params["model"] = paperclip_agent["model"]
+
+    try:
+        await gateway_pool.send_rpc(
+            user_id=owner_id,  # gateway pool is keyed by owner_id
+            req_id=f"pair-create-{secrets.token_hex(8)}",
+            method="agents.create",
+            params=create_params,
+            ip=ip,
+            token=token,
+        )
+    except RuntimeError as e:
+        # OpenClaw returns INVALID_REQUEST with "already exists" when the
+        # agent is registered. Treat as idempotent success.
+        if "already exists" in str(e):
+            logger.info(
+                "pair_with_openclaw: agent %s already exists in container "
+                "for owner %s — skipping update",
+                pc_uuid,
+                owner_id,
+            )
+            return
+        raise
+
+    await gateway_pool.send_rpc(
+        user_id=owner_id,  # gateway pool is keyed by owner_id
+        req_id=f"pair-update-{secrets.token_hex(8)}",
+        method="agents.update",
+        params={
+            "agentId": pc_uuid,
+            "name": friendly_name,
+        },
+        ip=ip,
+        token=token,
+    )

@@ -1512,7 +1512,13 @@ class EcsManager:
         Writes four files to the user's EFS workspace:
 
         - `openclaw.json` — the gateway config (provider block driven by
-          ``provider_choice``: chatgpt_oauth / byo_key / bedrock_claude)
+          ``provider_choice``: chatgpt_oauth / byo_key / bedrock_claude).
+          ``agents.list`` is now seeded from the owner's live Paperclip
+          agent list so /chat and /teams operate on the same agent
+          population. If the owner has no Paperclip company yet or
+          Paperclip is unreachable, ``fetch_paperclip_agents_for_owner``
+          returns ``[]`` and ``build_openclaw_config_dict`` falls back to
+          the legacy ``main`` agent so provision still succeeds.
         - `.mcporter/mcporter.json` — MCP server registry (currently empty)
         - `devices/.node-device-key.pem` — the node role's private key, read
           by the in-container agent for loopback authentication
@@ -1527,7 +1533,11 @@ class EcsManager:
         openclaw.json that was just patched.
 
         Args:
-            user_id: Clerk user ID (also the EFS subdir).
+            user_id: Container OWNER id (org_id for orgs, user_id for
+                personal users). The parameter name is preserved from the
+                pre-flat-fee API surface — pre-cutover containers were
+                strictly per-user, but post-cutover everything is
+                per-owner. Treated as ``owner_id`` internally.
             gateway_token: Auth token for the OpenClaw gateway HTTP API.
             provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
                 ``"bedrock_claude"``. Drives which provider block lands in
@@ -1536,17 +1546,56 @@ class EcsManager:
                 ``provider_choice == "byo_key"`` so the right model block is
                 emitted; ignored otherwise.
         """
-        config_path = Path(settings.EFS_MOUNT_PATH) / user_id / "openclaw.json"
+        # Treat the inbound parameter as owner_id internally. Naming
+        # mismatch with the API surface is intentional — preserves
+        # callers but makes the multi-tenant intent clear.
+        owner_id = user_id
+
+        # Lazy imports to avoid pulling these into module load (they
+        # transitively touch httpx + DDB clients we don't want at import
+        # time for unit tests).
+        import httpx
+
+        from core.repositories.paperclip_repo import PaperclipRepo
+        from core.services.paperclip_admin_client import PaperclipAdminClient
+        from core.services.paperclip_openclaw_pairing import (
+            fetch_paperclip_agents_for_owner,
+        )
+
+        # Match the construction pattern used elsewhere
+        # (routers/webhooks.py, routers/paperclip_proxy.py): create an
+        # httpx.AsyncClient bound to PAPERCLIP_INTERNAL_URL, hand it to
+        # PaperclipAdminClient, and aclose() the underlying client when
+        # done. PaperclipAdminClient itself has no aclose() — the http
+        # client owns the connection pool lifecycle. Short table name
+        # only; core.dynamodb.get_table prepends the env prefix.
+        http = httpx.AsyncClient(
+            base_url=settings.PAPERCLIP_INTERNAL_URL,
+            timeout=15.0,
+        )
+        try:
+            repo = PaperclipRepo(table_name="paperclip-companies")
+            admin_client = PaperclipAdminClient(http_client=http)
+            paperclip_agents = await fetch_paperclip_agents_for_owner(
+                owner_id=owner_id,
+                repo=repo,
+                admin_client=admin_client,
+            )
+        finally:
+            await http.aclose()
+
+        config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
             gateway_token=gateway_token,
             provider_choice=provider_choice,
-            user_id=user_id,
+            user_id=owner_id,
             byo_provider=byo_provider,
+            paperclip_agents=paperclip_agents,
         )
         workspace = get_workspace()
-        workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
-        await self.ensure_device_identities(user_id, gateway_token)
+        workspace.write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
+        await self.ensure_device_identities(owner_id, gateway_token)
 
     async def ensure_device_identities(self, user_id: str, gateway_token: str) -> None:
         """Idempotently provision node + operator device identities.

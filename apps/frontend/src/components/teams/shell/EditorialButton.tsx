@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 export type EditorialButtonVariant = "primary" | "secondary" | "ghost" | "destructive";
 export type EditorialButtonSize = "sm" | "md" | "lg" | "icon";
 
-interface EditorialButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+export interface EditorialButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: EditorialButtonVariant;
   size?: EditorialButtonSize;
 }
@@ -20,7 +20,7 @@ export const EditorialButton = forwardRef<HTMLButtonElement, EditorialButtonProp
         className={cn(
           "editorial-btn",
           `editorial-btn--${variant}`,
-          `editorial-btn--size-${size}`,
+          `editorial-btn--${size}`,
           className,
         )}
         {...rest}

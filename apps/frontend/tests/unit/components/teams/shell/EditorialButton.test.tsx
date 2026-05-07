@@ -24,7 +24,12 @@ describe("EditorialButton", () => {
 
   it.each(["sm", "md", "lg", "icon"] as const)("applies %s size class", (size) => {
     render(<EditorialButton size={size}>X</EditorialButton>);
-    expect(screen.getByRole("button")).toHaveClass(`editorial-btn--size-${size}`);
+    expect(screen.getByRole("button")).toHaveClass(`editorial-btn--${size}`);
+  });
+
+  it("merges caller className", () => {
+    render(<EditorialButton className="custom-class">X</EditorialButton>);
+    expect(screen.getByRole("button")).toHaveClass("custom-class", "editorial-btn", "editorial-btn--primary");
   });
 
   it("forwards onClick", async () => {
@@ -46,5 +51,6 @@ describe("EditorialButton", () => {
     const ref = { current: null as HTMLButtonElement | null };
     render(<EditorialButton ref={ref}>X</EditorialButton>);
     expect(ref.current).toBeInstanceOf(HTMLButtonElement);
+    expect(ref.current).toBe(screen.getByRole("button"));
   });
 });

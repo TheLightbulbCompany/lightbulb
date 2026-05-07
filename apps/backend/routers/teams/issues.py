@@ -32,6 +32,24 @@ async def list_issues(ctx: TeamsContext = Depends(_ctx)):
     return envelope_list(rows, "issues")
 
 
+@router.get("/issues/labels")
+async def list_labels(ctx: TeamsContext = Depends(_ctx)):
+    """List company labels for the Inbox filter chip dropdown.
+
+    Wraps upstream's bare-array response in ``{labels: [...]}`` envelope so
+    the frontend's panel hooks can read ``data?.labels`` like every other
+    Teams BFF resource. See ``deps.envelope_list`` for the wrapping pattern.
+
+    Registered before ``/issues/{issue_id}`` so FastAPI's path matcher picks
+    the static segment over the parameterized one.
+    """
+    upstream = await _agents._admin().list_company_labels(
+        company_id=ctx.company_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(upstream, "labels")
+
+
 @router.get("/issues/{issue_id}")
 async def get_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single issue by id."""

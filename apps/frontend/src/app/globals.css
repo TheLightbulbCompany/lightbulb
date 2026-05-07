@@ -51,6 +51,24 @@
   --radius-4xl: calc(var(--radius) + 16px);
 }
 
+/*
+ * Editorial design tokens (PR #542 + teams-shell atoms).
+ * Stable surface contract for `apps/frontend/src/components/teams/shell/*`.
+ *   --cream           page background; text on dark surfaces.
+ *   --cream-deeper    secondary cream surface (panels on cream pages).
+ *   --cream-deepest   tertiary cream surface (sunken wells, code blocks).
+ *   --edge            hairline borders, separators, hover wash on dark text.
+ *   --edge-soft       softer edge for nested borders.
+ *   --forest          primary brand color; primary CTA fill, focus ring base, active tab underline.
+ *   --forest-soft     forest-on-light variants (links, secondary chips).
+ *   --forest-tint     subtle forest-tinted surface for hover states without full forest fill.
+ *   --ink             primary text.
+ *   --ink-soft        body-on-cream text (slightly softer than --ink).
+ *   --mute            secondary text, overline, tabular labels.
+ *   --mute-soft       tertiary text (placeholders, helper).
+ *   --warn            warning text + low-priority danger.
+ *   --danger          destructive button fill, error border + helper text.
+ */
 :root {
   --radius: 0.5rem;
   --cream: #faf7f2;

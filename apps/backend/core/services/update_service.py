@@ -353,7 +353,11 @@ async def _paperclip_provision_retry_pass() -> None:
                         retryable_left += 1
                         continue
                     await provisioning.provision_org(
-                        org_id=changes["org_id"],
+                        # Retry payload key stays ``org_id`` — it's
+                        # persisted state in the pending-updates row
+                        # and we don't migrate stored payloads. The
+                        # provisioning kwarg is the new ``owner_id``.
+                        owner_id=changes["org_id"],
                         owner_user_id=changes["owner_user_id"],
                         owner_email=owner_email,
                     )
@@ -369,7 +373,9 @@ async def _paperclip_provision_retry_pass() -> None:
                         retryable_left += 1
                         continue
                     await provisioning.provision_member(
-                        org_id=changes["org_id"],
+                        # Same as above — payload key stays ``org_id``,
+                        # only the kwarg is renamed.
+                        owner_id=changes["org_id"],
                         user_id=changes["user_id"],
                         email=changes["email"],
                         owner_email=owner_email,

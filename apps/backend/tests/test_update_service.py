@@ -192,7 +192,7 @@ async def test_retry_pass_dispatches_provision_org_on_success():
         await update_service._paperclip_provision_retry_pass()
 
     prov.provision_org.assert_awaited_once_with(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -226,7 +226,7 @@ async def test_retry_pass_dispatches_provision_member_on_success():
         await update_service._paperclip_provision_retry_pass()
 
     prov.provision_member.assert_awaited_once_with(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",
@@ -440,7 +440,7 @@ async def test_retry_pass_resolves_owner_email_from_user_repo_when_missing():
 
     user_repo_get.assert_awaited_once_with("user_owner")
     prov.provision_org.assert_awaited_once_with(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -542,7 +542,7 @@ async def test_retry_pass_resolves_owner_email_for_provision_member_when_missing
 
     user_repo_get.assert_awaited_once_with("user_owner")
     prov.provision_member.assert_awaited_once_with(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",
@@ -604,7 +604,7 @@ async def test_retry_pass_prefers_fresh_owner_email_over_cached_payload():
     # Critically: provision_org received the FRESH email, not the
     # stale cached one from the payload.
     prov.provision_org.assert_awaited_once_with(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="new@example.com",
     )

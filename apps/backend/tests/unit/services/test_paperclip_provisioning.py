@@ -3,9 +3,10 @@ heavier moto-backed suite in ``tests/test_paperclip_provisioning.py``.
 
 Currently exercises:
 * The auto-seeded Main Agent name + role (``"Friday"`` / ``"ceo"``).
-* The service-token mint contract: org-owned containers require the
-  JWT ``sub`` claim to equal ``org_id``, NOT the human user's
-  ``user_id`` — see ``service_token.mint`` and the WS Lambda authorizer.
+* The service-token mint contract: containers are keyed by
+  ``owner_id`` and the JWT ``sub`` claim MUST equal that value (NOT
+  the human creator's ``user_id``) — see ``service_token.mint`` and
+  the WS Lambda authorizer.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -96,7 +97,7 @@ async def test_provision_org_seeds_agent_named_friday(monkeypatch):
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     await svc.provision_org(
-        org_id="org_xyz",
+        owner_id="org_xyz",
         owner_user_id="user_owner",
         owner_email="owner@example.com",
     )
@@ -107,15 +108,14 @@ async def test_provision_org_seeds_agent_named_friday(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_provision_org_mints_service_token_with_org_id(monkeypatch):
+async def test_provision_org_mints_service_token_with_owner_id(monkeypatch):
     """The service-token JWT baked into the seeded agent must have
-    ``sub == org_id`` (NOT the human creator's ``owner_user_id``).
+    ``sub == owner_id`` (NOT the human creator's ``owner_user_id``).
 
     The WS Lambda authorizer extracts ``sub`` from the service token
-    and routes the connection to that owner's OpenClaw container. For
-    org-owned containers, ``owner_id == org_id``; minting with the
-    human creator's ``user_id`` was the regression that broke wakes
-    for org-shared agents.
+    and routes the connection to that owner's OpenClaw container.
+    Minting with the human creator's ``user_id`` was the regression
+    that broke wakes for org-shared agents.
     """
     from core.services import service_token
     from core.services.paperclip_provisioning import PaperclipProvisioning
@@ -127,25 +127,25 @@ async def test_provision_org_mints_service_token_with_org_id(monkeypatch):
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     await svc.provision_org(
-        org_id="org_xyz",
+        owner_id="org_xyz",
         owner_user_id="user_owner",
         owner_email="owner@example.com",
     )
 
-    # Mint was called with org_id, NOT the human creator's user_id.
+    # Mint was called with owner_id, NOT the human creator's user_id.
     mint_spy.assert_called_once_with("org_xyz")
     # Belt-and-suspenders: explicit negative — never minted with the
     # human user_id on the org path.
     for call in mint_spy.call_args_list:
         assert call.args[0] != "user_owner", (
             "service_token.mint was called with the human user_id; org members "
-            "share the org's container so the JWT sub MUST be the org_id."
+            "share the org's container so the JWT sub MUST be the owner_id."
         )
 
 
 @pytest.mark.asyncio
-async def test_provision_member_mints_service_token_with_org_id(monkeypatch):
-    """Member provisioning must mint the JWT with ``sub == org_id``,
+async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
+    """Member provisioning must mint the JWT with ``sub == owner_id``,
     NOT the joining member's ``user_id`` — same routing constraint as
     ``provision_org``: org members share the org's container.
     """
@@ -206,7 +206,7 @@ async def test_provision_member_mints_service_token_with_org_id(monkeypatch):
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     await svc.provision_member(
-        org_id="org_xyz",
+        owner_id="org_xyz",
         user_id="user_member",
         email="member@example.com",
         owner_email="owner@example.com",
@@ -216,5 +216,5 @@ async def test_provision_member_mints_service_token_with_org_id(monkeypatch):
     for call in mint_spy.call_args_list:
         assert call.args[0] != "user_member", (
             "service_token.mint was called with the joining member's user_id; "
-            "org members share the org's container so the JWT sub MUST be the org_id."
+            "org members share the org's container so the JWT sub MUST be the owner_id."
         )

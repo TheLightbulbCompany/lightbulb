@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 async def ensure_paperclip_workspace(*, owner_id: str, clerk_user_id: str) -> None:
     """Provision the Paperclip company for this owner if it doesn't exist.
 
-    Personal context: ``owner_id == clerk_user_id`` and we use the user's
-    own id as the Paperclip ``org_id``. Org context: skipped — the Clerk
-    ``organization.created`` webhook owns it.
+    Personal context: ``owner_id == clerk_user_id`` and we pass the
+    user's own id as the Paperclip provisioning ``owner_id``. Org
+    context: skipped — the Clerk ``organization.created`` webhook
+    owns it.
 
     Idempotent: ``PaperclipProvisioning.provision_org`` short-circuits on
     an existing ``status="active"`` row. Safe to call from /users/sync,
@@ -47,7 +48,7 @@ async def ensure_paperclip_workspace(*, owner_id: str, clerk_user_id: str) -> No
         provisioning = await _get_paperclip_provisioning()
         try:
             await provisioning.provision_org(
-                org_id=clerk_user_id,
+                owner_id=clerk_user_id,
                 owner_user_id=clerk_user_id,
                 owner_email=owner_email,
             )

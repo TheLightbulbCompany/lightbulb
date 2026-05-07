@@ -1,6 +1,6 @@
 """Orchestrator for provisioning Paperclip on Clerk webhook events.
 
-Three entry points (all async, all idempotent on user_id / org_id):
+Three entry points (all async, all idempotent on user_id / owner_id):
 
 * ``provision_org`` — for ``organization.created``. Creates the Paperclip
   company AND the org owner's Better Auth account in a single
@@ -120,11 +120,19 @@ class PaperclipProvisioning:
     async def provision_org(
         self,
         *,
-        org_id: str,
+        owner_id: str,
         owner_user_id: str,
         owner_email: str,
     ) -> PaperclipCompany:
         """Provision the Paperclip company + Better Auth user for a new owner.
+
+        ``owner_id`` is the container's owner — Clerk's org_id for orgs
+        and Clerk's user_id for personal owners. It's the same value
+        every other backend layer keys on (``container_repo.get_by_owner_id``,
+        ``_resolve_owner_id`` helpers, ``fetch_paperclip_agents_for_owner``).
+        The DDB column on the persisted row is still called ``org_id`` —
+        that's a Paperclip-side concept and we don't churn the storage
+        layer for the rename.
 
         Paperclip's ``POST /api/companies`` requires
         ``req.actor.isInstanceAdmin`` in ``authenticated`` deployment mode
@@ -142,11 +150,9 @@ class PaperclipProvisioning:
         ``adapterConfig.authToken`` is a JWT whose ``sub`` claim MUST
         equal the container's ``owner_id``, because the WS Lambda
         authorizer uses ``sub`` to route the connection to that owner's
-        OpenClaw container. ``owner_id`` is the org_id when an org owns
-        the container; for personal users ``owner_id == user_id`` and
-        ``paperclip_autoprovision.ensure_paperclip_workspace`` passes
-        ``org_id == clerk_user_id``, so minting with ``org_id`` is also
-        correct for the personal path (it collapses to ``user_id``).
+        OpenClaw container. We mint with ``owner_id`` directly so the
+        token's ``sub`` matches the routing key for both org and
+        personal owners.
 
         Idempotent: if a row already exists for ``owner_user_id`` with
         ``status="active"``, return it unchanged. Other statuses redo
@@ -159,9 +165,9 @@ class PaperclipProvisioning:
         existing = await self._repo.get(owner_user_id)
         if existing is not None and existing.status == "active":
             logger.info(
-                "paperclip_provisioning.provision_org: owner %s already active for org %s",
+                "paperclip_provisioning.provision_org: owner %s already active for owner_id %s",
                 owner_user_id,
-                org_id,
+                owner_id,
             )
             return existing
 
@@ -266,15 +272,13 @@ class PaperclipProvisioning:
             #    The JWT's ``sub`` claim MUST equal the container's
             #    ``owner_id`` — the WS Lambda authorizer extracts ``sub``
             #    and routes the connection to that owner's container.
-            #    For org context, ``owner_id == org_id``; for the
-            #    personal autoprovision path the caller passes
-            #    ``org_id == clerk_user_id``, so this also collapses to
-            #    the right value (``user_id``). Previously this minted
+            #    For orgs ``owner_id`` is the Clerk org_id; for personal
+            #    owners it's the Clerk user_id. Previously this minted
             #    with ``owner_user_id`` (the human creator's user_id),
             #    which broke org wakes: the authorizer then tried to
             #    route to a user-personal container that doesn't exist
             #    for org members.
-            svc_token = service_token.mint(org_id)
+            svc_token = service_token.mint(owner_id)
 
             # 7. Best-effort seed a "Main Agent" pointing at the
             #    user's OpenClaw container. Failure here is not fatal
@@ -302,11 +306,13 @@ class PaperclipProvisioning:
                     e,
                 )
 
-            # 8. Persist
+            # 8. Persist. The DDB column is still ``org_id`` — that's a
+            #    Paperclip-side stored concept; we just feed it from the
+            #    new ``owner_id`` kwarg.
             now = datetime.now(timezone.utc)
             row = PaperclipCompany(
                 user_id=owner_user_id,
-                org_id=org_id,
+                org_id=owner_id,
                 company_id=company_id,
                 paperclip_user_id=paperclip_user_id,
                 paperclip_password_encrypted=encrypt(password),
@@ -317,8 +323,8 @@ class PaperclipProvisioning:
             )
             await self._repo.put(row)
             logger.info(
-                "paperclip_provisioning.provision_org: org %s active (company=%s, owner=%s)",
-                org_id,
+                "paperclip_provisioning.provision_org: owner_id %s active (company=%s, owner=%s)",
+                owner_id,
                 company_id,
                 owner_user_id,
             )
@@ -327,7 +333,7 @@ class PaperclipProvisioning:
         except Exception as e:
             await self._mark_failed(
                 user_id=owner_user_id,
-                org_id=org_id,
+                owner_id=owner_id,
                 reason=f"provision_org failed: {e}",
             )
             # ``retryable`` is now set automatically:
@@ -340,12 +346,19 @@ class PaperclipProvisioning:
     async def provision_member(
         self,
         *,
-        org_id: str,
+        owner_id: str,
         user_id: str,
         email: str,
         owner_email: str,
     ) -> PaperclipCompany:
         """Add a new Isol8 member to the org's existing Paperclip company.
+
+        ``owner_id`` is the container's owner — Clerk's org_id for orgs
+        and Clerk's user_id for personal owners. Since this entry point
+        only runs from ``organizationMembership.created`` it'll always
+        be a Clerk org_id in practice, but the kwarg is named ``owner_id``
+        to align with the rest of the backend. The DDB column is still
+        ``org_id`` (Paperclip-side stored concept).
 
         ``owner_email`` is supplied by the webhook caller (Clerk's
         ``organizationMembership.created`` payload exposes it). We
@@ -354,9 +367,9 @@ class PaperclipProvisioning:
         orchestrator easier to test in isolation.
 
         Service-token contract: org members share the org's container
-        (keyed by ``org_id``), so the member's stored
+        (keyed by ``owner_id``), so the member's stored
         ``service_token_encrypted`` must be a JWT whose ``sub`` claim
-        equals ``org_id`` — not the member's own user_id. The WS Lambda
+        equals ``owner_id`` — not the member's own user_id. The WS Lambda
         authorizer extracts ``sub`` and routes the resulting connection
         to that owner's container; minting with the member's user_id
         would route to a user-personal container that doesn't exist for
@@ -373,19 +386,19 @@ class PaperclipProvisioning:
             )
             return existing
 
-        company_id = await self._repo.get_org_company_id(org_id)
+        company_id = await self._repo.get_org_company_id(owner_id)
         if not company_id:
             raise OrgNotProvisionedError(
-                f"Org {org_id} has no Paperclip company yet. "
+                f"Owner {owner_id} has no Paperclip company yet. "
                 "organization.created webhook may not have run yet — caller should retry."
             )
 
-        owner_row = await self._find_org_owner(org_id)
+        owner_row = await self._find_org_owner(owner_id)
         if owner_row is None:
             # Defensive — get_org_company_id returned a company_id but
             # _find_org_owner couldn't locate the row that produced it.
             # Should be impossible if the GSI is consistent.
-            raise OrgNotProvisionedError(f"Org {org_id} has company {company_id} but no owner row found")
+            raise OrgNotProvisionedError(f"Owner {owner_id} has company {company_id} but no owner row found")
         owner_password = decrypt(owner_row.paperclip_password_encrypted)
 
         member_password = secrets.token_urlsafe(32)
@@ -454,20 +467,22 @@ class PaperclipProvisioning:
             # 6. Mint the member's OpenClaw service-token JWT.
             #
             #    Org members share the org's container (keyed by
-            #    ``org_id``), so the JWT's ``sub`` claim MUST equal
-            #    ``org_id`` — that's the value the WS Lambda authorizer
+            #    ``owner_id``), so the JWT's ``sub`` claim MUST equal
+            #    ``owner_id`` — that's the value the WS Lambda authorizer
             #    pulls out and routes against. Previously this minted
             #    with the joining member's own ``user_id``, which broke
             #    Paperclip wakes for org members: the authorizer would
             #    try to route to a user-personal container that doesn't
             #    exist for org members.
-            svc_token = service_token.mint(org_id)
+            svc_token = service_token.mint(owner_id)
 
-            # 7. Persist the member row.
+            # 7. Persist the member row. DDB column stays ``org_id`` —
+            #    that's a Paperclip-side stored concept; we just feed it
+            #    from the new ``owner_id`` kwarg.
             now = datetime.now(timezone.utc)
             row = PaperclipCompany(
                 user_id=user_id,
-                org_id=org_id,
+                org_id=owner_id,
                 company_id=company_id,
                 paperclip_user_id=member_paperclip_user_id,
                 paperclip_password_encrypted=encrypt(member_password),
@@ -478,9 +493,9 @@ class PaperclipProvisioning:
             )
             await self._repo.put(row)
             logger.info(
-                "paperclip_provisioning.provision_member: member %s added to org %s (company=%s)",
+                "paperclip_provisioning.provision_member: member %s added to owner_id %s (company=%s)",
                 user_id,
-                org_id,
+                owner_id,
                 company_id,
             )
             return row
@@ -488,7 +503,7 @@ class PaperclipProvisioning:
         except Exception as e:  # noqa: F841 — kept for clarity in future logging
             await self._mark_failed(
                 user_id=user_id,
-                org_id=org_id,
+                owner_id=owner_id,
                 reason=f"provision_member failed: {e}",
                 company_id=company_id,
             )
@@ -691,8 +706,8 @@ class PaperclipProvisioning:
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _find_org_owner(self, org_id: str) -> Optional[PaperclipCompany]:
-        """Find the org-owner row (oldest ACTIVE ``created_at`` for this org).
+    async def _find_org_owner(self, owner_id: str) -> Optional[PaperclipCompany]:
+        """Find the owner row (oldest ACTIVE ``created_at`` for this owner_id).
 
         Filters out rows that aren't ``status="active"`` before picking
         the oldest. ``disable()`` flips ``status="disabled"`` but leaves
@@ -714,7 +729,11 @@ class PaperclipProvisioning:
         Both are deferred — the GSI was declared with KEYS_ONLY-style
         projection minimums and the table is small.
 
-        Returns None if the org has no active rows.
+        The DDB column queried by the GSI is still named ``org_id`` —
+        that's a Paperclip-side stored concept; the parameter name
+        ``owner_id`` reflects the platform-wide naming.
+
+        Returns None if the owner has no active rows.
         """
         # Re-query the GSI without a Limit so we can pick the oldest
         # row. This is intentionally a separate code path from
@@ -731,7 +750,7 @@ class PaperclipProvisioning:
         while True:
             kwargs: dict = {
                 "IndexName": "by-org-id",
-                "KeyConditionExpression": Key("org_id").eq(org_id),
+                "KeyConditionExpression": Key("org_id").eq(owner_id),
             }
             if last_evaluated_key is not None:
                 kwargs["ExclusiveStartKey"] = last_evaluated_key
@@ -764,7 +783,7 @@ class PaperclipProvisioning:
         self,
         *,
         user_id: str,
-        org_id: str,
+        owner_id: str,
         reason: str,
         company_id: str = "",
     ) -> None:
@@ -775,6 +794,9 @@ class PaperclipProvisioning:
         placeholder row so subsequent admin tooling can see the
         failure. Truncates the reason to a sane length to keep the
         DynamoDB item small.
+
+        The DDB column ``org_id`` is fed from the ``owner_id`` kwarg —
+        the rename is at the call boundary, not the storage layer.
         """
         truncated = reason[:1000]
         existing = await self._repo.get(user_id)
@@ -790,7 +812,7 @@ class PaperclipProvisioning:
         await self._repo.put(
             PaperclipCompany(
                 user_id=user_id,
-                org_id=org_id,
+                org_id=owner_id,
                 company_id=company_id,
                 paperclip_user_id="",
                 paperclip_password_encrypted="",

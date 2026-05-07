@@ -346,7 +346,7 @@ async def _handle_organization_created(data: dict) -> None:
     provisioning = await _get_paperclip_provisioning()
     try:
         await provisioning.provision_org(
-            org_id=org_id,
+            owner_id=org_id,
             owner_user_id=owner_user_id,
             owner_email=owner_email,
         )
@@ -447,7 +447,7 @@ async def _handle_organization_membership_created(data: dict) -> None:
     provisioning = await _get_paperclip_provisioning()
     try:
         await provisioning.provision_member(
-            org_id=org_id,
+            owner_id=org_id,
             user_id=user_id,
             email=email,
             owner_email=owner_email,

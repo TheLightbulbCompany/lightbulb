@@ -166,7 +166,7 @@ async def test_provision_org_happy_path(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -243,12 +243,12 @@ async def test_provision_org_idempotent_on_second_call(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     first = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
     second = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -267,7 +267,7 @@ async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -283,7 +283,7 @@ async def test_provision_org_signup_failure_marks_failed(repo):
 
     with pytest.raises(PaperclipApiError):
         await prov.provision_org(
-            org_id="org_acme",
+            owner_id="org_acme",
             owner_user_id="user_owner",
             owner_email="owner@acme.test",
         )
@@ -305,7 +305,7 @@ async def test_provision_org_create_company_failure_marks_failed(repo):
 
     with pytest.raises(PaperclipApiError):
         await prov.provision_org(
-            org_id="org_acme",
+            owner_id="org_acme",
             owner_user_id="user_owner",
             owner_email="owner@acme.test",
         )
@@ -324,7 +324,7 @@ async def test_provision_org_retries_after_failure(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
         await prov.provision_org(
-            org_id="org_acme",
+            owner_id="org_acme",
             owner_user_id="user_owner",
             owner_email="owner@acme.test",
         )
@@ -333,7 +333,7 @@ async def test_provision_org_retries_after_failure(repo):
     # Second attempt with healthy admin
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
     row = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -376,7 +376,7 @@ async def test_provision_member_happy_path(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_member(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",
@@ -430,7 +430,7 @@ async def test_provision_member_raises_when_org_not_provisioned(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(OrgNotProvisionedError):
         await prov.provision_member(
-            org_id="org_phantom",
+            owner_id="org_phantom",
             user_id="user_member",
             email="member@phantom.test",
             owner_email="owner@phantom.test",
@@ -448,13 +448,13 @@ async def test_provision_member_idempotent_on_second_call(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     first = await prov.provision_member(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",
     )
     second = await prov.provision_member(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",
@@ -472,7 +472,7 @@ async def test_provision_member_signup_failure_marks_failed(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
         await prov.provision_member(
-            org_id="org_acme",
+            owner_id="org_acme",
             user_id="user_member",
             email="member@acme.test",
             owner_email="owner@acme.test",
@@ -494,7 +494,7 @@ async def test_provision_member_invite_failure_marks_failed(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
         await prov.provision_member(
-            org_id="org_acme",
+            owner_id="org_acme",
             user_id="user_member",
             email="member@acme.test",
             owner_email="owner@acme.test",
@@ -523,7 +523,7 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError, match="missing 'id'"):
         await prov.provision_member(
-            org_id="org_acme",
+            owner_id="org_acme",
             user_id="user_member",
             email="member@acme.test",
             owner_email="owner@acme.test",
@@ -916,7 +916,7 @@ async def test_paperclip_api_error_5xx_annotated_retryable_on_provision_org(repo
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError) as ei:
         await prov.provision_org(
-            org_id="org_a",
+            owner_id="org_a",
             owner_user_id="user_a",
             owner_email="a@a.test",
         )
@@ -931,7 +931,7 @@ async def test_paperclip_api_error_4xx_annotated_not_retryable_on_provision_org(
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError) as ei:
         await prov.provision_org(
-            org_id="org_a",
+            owner_id="org_a",
             owner_user_id="user_a",
             owner_email="a@a.test",
         )
@@ -945,7 +945,7 @@ async def test_paperclip_api_error_429_annotated_retryable(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError) as ei:
         await prov.provision_org(
-            org_id="org_a",
+            owner_id="org_a",
             owner_user_id="user_a",
             owner_email="a@a.test",
         )
@@ -960,7 +960,7 @@ async def test_paperclip_api_error_annotated_on_provision_member(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError) as ei:
         await prov.provision_member(
-            org_id="org_acme",
+            owner_id="org_acme",
             user_id="user_member",
             email="m@a.test",
             owner_email="o@a.test",

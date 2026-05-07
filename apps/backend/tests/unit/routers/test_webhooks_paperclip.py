@@ -75,7 +75,7 @@ async def test_organization_created_calls_provision_org(async_client, monkeypatc
 
     assert resp.status_code == 200
     mock_provisioning.provision_org.assert_awaited_once_with(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -261,7 +261,7 @@ async def test_membership_created_calls_provision_member(async_client, monkeypat
 
     assert resp.status_code == 200
     mock_provisioning.provision_member.assert_awaited_once_with(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",

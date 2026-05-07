@@ -4,11 +4,23 @@ import userEvent from "@testing-library/user-event";
 import { PanelToolbar } from "@/components/teams/shell/PanelToolbar";
 
 describe("PanelToolbar", () => {
-  it("renders the search placeholder", () => {
+  it("exposes the search input with an accessible name (placeholder fallback)", () => {
     render(
       <PanelToolbar searchValue="" onSearchChange={() => {}} searchPlaceholder="Find issue..." />
     );
-    expect(screen.getByPlaceholderText("Find issue...")).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: /find issue/i })).toBeInTheDocument();
+  });
+
+  it("uses searchAriaLabel when provided", () => {
+    render(
+      <PanelToolbar
+        searchValue=""
+        onSearchChange={() => {}}
+        searchPlaceholder="search"
+        searchAriaLabel="Search threads in Inbox"
+      />
+    );
+    expect(screen.getByRole("searchbox", { name: /search threads in inbox/i })).toBeInTheDocument();
   });
 
   it("calls onSearchChange when typing", async () => {

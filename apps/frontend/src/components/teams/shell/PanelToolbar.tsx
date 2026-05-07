@@ -8,6 +8,7 @@ export interface PanelToolbarProps {
   searchValue: string;
   onSearchChange: (value: string) => void;
   searchPlaceholder: string;
+  searchAriaLabel?: string;
   filters?: ReactNode;
   actions?: ReactNode;
   className?: string;
@@ -17,6 +18,7 @@ export function PanelToolbar({
   searchValue,
   onSearchChange,
   searchPlaceholder,
+  searchAriaLabel,
   filters,
   actions,
   className,
@@ -30,10 +32,11 @@ export function PanelToolbar({
             className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--mute)]"
           />
           <input
-            type="text"
+            type="search"
             value={searchValue}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder={searchPlaceholder}
+            aria-label={searchAriaLabel ?? searchPlaceholder}
             className="w-full rounded-md border border-[var(--edge)] bg-[var(--cream)] py-1.5 pl-7 pr-2 text-[13px] text-[var(--ink)] outline-none transition-colors focus:border-[var(--forest)] focus:ring-2 focus:ring-[var(--forest)]/20"
           />
         </div>

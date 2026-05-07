@@ -242,11 +242,11 @@ describe("InboxPage", () => {
     render(<InboxPage {...baseProps} />);
     // Dialog title isn't in the document until opened.
     expect(
-      screen.queryByRole("alertdialog", { name: /new issue/i }),
+      screen.queryByRole("dialog", { name: /new issue/i }),
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
     expect(
-      await screen.findByRole("alertdialog", { name: /new issue/i }),
+      await screen.findByRole("dialog", { name: /new issue/i }),
     ).toBeInTheDocument();
   });
 

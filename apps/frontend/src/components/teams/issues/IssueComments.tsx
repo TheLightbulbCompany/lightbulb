@@ -5,10 +5,12 @@
 // v1: thread list + plaintext composer with Cmd+Enter submit.
 // Drops markdown editor, @mentions, file upload, action flags, edit/delete.
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// PR 4 (atoms port): submit action via <EditorialButton>.
 
 "use client";
 
 import { useState } from "react";
+import { EditorialButton } from "@/components/teams/shell";
 import { Textarea } from "@/components/ui/textarea";
 import type { IssueComment } from "@/components/teams/shared/types";
 
@@ -135,14 +137,15 @@ export function IssueComments({
           </p>
         )}
         <div className="flex justify-end gap-2">
-          <button
+          <EditorialButton
             type="button"
+            variant="primary"
+            size="sm"
             onClick={submit}
             disabled={!body.trim() || submitting}
-            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Posting…" : "Comment"}
-          </button>
+          </EditorialButton>
         </div>
       </div>
     </div>

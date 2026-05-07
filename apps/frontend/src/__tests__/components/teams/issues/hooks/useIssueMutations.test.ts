@@ -119,4 +119,21 @@ describe("useIssueMutations", () => {
     });
     expect(mockMutate).not.toHaveBeenCalled();
   });
+
+  // Regression: Codex P1 on PR #556 — the BFF CreateIssueBody schema forbids
+  // `status`, so even if a caller smuggles it in (TS would normally block this,
+  // but a rogue `as IssueCreateInput` cast or backports could) the create body
+  // must NEVER include it, or upstream returns 422.
+  test("create body NEVER includes status (BFF whitelist)", async () => {
+    mockPost.mockResolvedValue({ id: "iss_1", title: "x", status: "todo" });
+    const { result } = renderHook(() => useIssueMutations());
+    await act(async () => {
+      // Cast to bypass the type narrowing — the test exists precisely because
+      // we want to defend against runtime smuggling of the field.
+      await result.current.create({ title: "x", status: "in_progress" } as never);
+    });
+    const callBody = mockPost.mock.calls[0][1] as Record<string, unknown>;
+    expect(callBody).not.toHaveProperty("status");
+    expect(callBody).toMatchObject({ title: "x" });
+  });
 });

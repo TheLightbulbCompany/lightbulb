@@ -1,8 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { ListChecks } from "lucide-react";
+import {
+  EditorialButton,
+  PanelDataTable,
+  PanelEmptyState,
+  PanelMasthead,
+  PanelToolbar,
+  type PanelDataColumn,
+} from "@/components/teams/shell";
+import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import type { IssuePriority } from "@/components/teams/shared/types";
+import type {
+  CompanyAgent,
+  IssueProject,
+} from "@/components/teams/shared/types";
 
 interface Issue {
   id: string;
@@ -18,251 +31,124 @@ export function IssuesPanel() {
   const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
     "/issues",
   );
+  // NewIssueDialog renders Project + Assignee pickers only when these arrays
+  // are non-empty (its defaults are []). Without these reads, users creating
+  // issues from this panel can't set project_id / assignee_agent_id.
+  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
+  const { data: projectsData } = read<{ projects: IssueProject[] }>(
+    "/projects",
+  );
   const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState("");
 
-  if (isLoading)
-    return (
-      <div
-        className="p-8 italic"
-        style={{
-          fontFamily: "var(--font-lora-serif), serif",
-          color: "var(--mute)",
-        }}
-      >
-        Loading…
-      </div>
-    );
+  const issues = data?.issues;
+  const filtered = useMemo(() => {
+    const list = issues ?? [];
+    return search
+      ? list.filter((i) =>
+          i.title.toLowerCase().includes(search.toLowerCase()),
+        )
+      : list;
+  }, [issues, search]);
+
   if (error)
     return (
-      <div className="p-8" style={{ color: "var(--danger)" }}>
+      <div className="editorial-page p-8 text-[var(--danger)]">
         Error: {String(error)}
       </div>
     );
 
+  const columns: PanelDataColumn<Issue>[] = [
+    {
+      key: "title",
+      header: "Title",
+      cell: (i) => (
+        <div className="font-medium text-[var(--ink)]">{i.title}</div>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (i) => (
+        <span className="text-sm text-[var(--ink-soft)]">
+          {i.status ?? "open"}
+        </span>
+      ),
+    },
+    {
+      key: "priority",
+      header: "Priority",
+      cell: (i) => (
+        <span className="text-sm text-[var(--ink-soft)]">
+          {i.priority ?? "—"}
+        </span>
+      ),
+    },
+    {
+      key: "open",
+      header: "",
+      align: "right",
+      cell: (i) => (
+        <a
+          href={`/teams/issues/${i.id}`}
+          className="text-sm text-[var(--forest)] hover:underline"
+        >
+          Open →
+        </a>
+      ),
+    },
+  ];
+
   return (
-    <div className="p-8 max-w-4xl" style={{ color: "var(--ink)" }}>
-      <div className="flex justify-between items-center mb-6">
-        <h1
-          className="font-editorial-serif text-3xl"
-          style={{ color: "var(--ink)" }}
-        >
-          Issues
-        </h1>
-        <button
-          onClick={() => setCreating(true)}
-          className="editorial-btn editorial-btn--primary editorial-btn--sm"
-        >
-          New issue
-        </button>
-      </div>
-
-      <ul
-        className="rounded"
-        style={{
-          border: "1px solid var(--edge)",
-          background: "var(--cream)",
-        }}
-      >
-        {(data?.issues ?? []).map((it, idx, arr) => (
-          <li
-            key={it.id}
-            className="flex justify-between items-center p-4"
-            style={
-              idx < arr.length - 1
-                ? { borderBottom: "1px solid var(--edge)" }
-                : undefined
-            }
-          >
-            <div>
-              <div className="font-medium" style={{ color: "var(--ink)" }}>
-                {it.title}
-              </div>
-              <div className="text-xs" style={{ color: "var(--mute)" }}>
-                {it.status ?? "open"}
-                {it.priority ? ` · ${it.priority}` : ""}
-              </div>
-            </div>
-            <a
-              href={`/teams/issues/${it.id}`}
-              className="text-sm hover:underline"
-              style={{ color: "var(--forest)" }}
-            >
-              Open →
-            </a>
-          </li>
-        ))}
-        {(data?.issues ?? []).length === 0 && (
-          <li
-            className="p-4 text-sm italic"
-            style={{
-              fontFamily: "var(--font-lora-serif), serif",
-              color: "var(--mute)",
-            }}
-          >
-            No issues yet.
-          </li>
-        )}
-      </ul>
-
-      {creating && (
-        <CreateIssueDialog
-          onClose={() => setCreating(false)}
-          onCreated={() => {
-            setCreating(false);
-            mutate();
-          }}
+    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead
+        overline="Work"
+        title="Issues"
+        actions={
+          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
+            New issue
+          </EditorialButton>
+        }
+      />
+      <PanelToolbar
+        searchValue={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Find issue..."
+        searchAriaLabel="Search issues"
+      />
+      {isLoading ? (
+        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+          Loading…
+        </div>
+      ) : filtered.length === 0 ? (
+        <PanelEmptyState
+          icon={ListChecks}
+          headline="No issues yet."
+          supporting={
+            search
+              ? "No issues match your search."
+              : "Create an issue to track a piece of work — assign it to an agent and follow it through to done."
+          }
+          action={{ label: "New issue", onClick: () => setCreating(true) }}
+        />
+      ) : (
+        <PanelDataTable<Issue>
+          rows={filtered}
+          columns={columns}
+          rowKey={(i) => i.id}
         />
       )}
-    </div>
-  );
-}
 
-function CreateIssueDialog({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const { post } = useTeamsApi();
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [assigneeAgentId, setAssigneeAgentId] = useState("");
-  const [priority, setPriority] = useState<IssuePriority | "">("");
-  const [submitting, setSubmitting] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function submit() {
-    setSubmitting(true);
-    setErr(null);
-    try {
-      // Body fields match CreateIssueBody (Pydantic, extra="forbid"):
-      // title (req), description?, project_id?, assignee_agent_id?, priority?
-      const body: Record<string, unknown> = { title };
-      if (description) body.description = description;
-      if (projectId) body.project_id = projectId;
-      if (assigneeAgentId) body.assignee_agent_id = assigneeAgentId;
-      if (priority) body.priority = priority;
-      await post("/issues", body);
-      onCreated();
-    } catch (e) {
-      setErr(String(e));
-      setSubmitting(false);
-    }
-  }
-
-  const inputStyle = {
-    background: "var(--cream-deeper)",
-    border: "1px solid var(--edge)",
-    color: "var(--ink)",
-  } as const;
-
-  return (
-    <div
-      className="fixed inset-0 flex items-center justify-center"
-      style={{ background: "rgba(26, 26, 26, 0.45)" }}
-    >
-      <div
-        className="rounded-lg p-6 w-[28rem]"
-        style={{
-          background: "var(--cream)",
-          border: "1px solid var(--edge)",
-          color: "var(--ink)",
+      <NewIssueDialog
+        open={creating}
+        onOpenChange={setCreating}
+        agents={agentsData?.agents ?? []}
+        projects={projectsData?.projects ?? []}
+        onCreated={() => {
+          setCreating(false);
+          mutate();
         }}
-      >
-        <h2
-          className="font-editorial-serif text-2xl mb-4"
-          style={{ color: "var(--ink)" }}
-        >
-          New issue
-        </h2>
-        <label className="block mb-3">
-          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
-            Title
-          </span>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full rounded px-3 py-2 mt-1"
-            style={inputStyle}
-          />
-        </label>
-        <label className="block mb-3">
-          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
-            Description
-          </span>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full rounded px-3 py-2 mt-1"
-            rows={3}
-            style={inputStyle}
-          />
-        </label>
-        <label className="block mb-3">
-          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
-            Project ID (optional)
-          </span>
-          <input
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            className="w-full rounded px-3 py-2 mt-1"
-            style={inputStyle}
-          />
-        </label>
-        <label className="block mb-3">
-          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
-            Assignee agent ID (optional)
-          </span>
-          <input
-            value={assigneeAgentId}
-            onChange={(e) => setAssigneeAgentId(e.target.value)}
-            className="w-full rounded px-3 py-2 mt-1"
-            style={inputStyle}
-          />
-        </label>
-        <label className="block mb-4">
-          <span className="text-sm" style={{ color: "var(--ink-soft)" }}>
-            Priority
-          </span>
-          <select
-            value={priority}
-            onChange={(e) => setPriority(e.target.value as IssuePriority | "")}
-            className="w-full rounded px-3 py-2 mt-1"
-            style={inputStyle}
-          >
-            <option value="">None</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="critical">Critical</option>
-          </select>
-        </label>
-        {err && (
-          <div
-            className="text-sm mb-2"
-            style={{ color: "var(--danger)" }}
-          >
-            {err}
-          </div>
-        )}
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={submit}
-            disabled={submitting || !title}
-            className="editorial-btn editorial-btn--primary editorial-btn--sm"
-          >
-            {submitting ? "Creating…" : "Create"}
-          </button>
-        </div>
-      </div>
+      />
     </div>
   );
 }

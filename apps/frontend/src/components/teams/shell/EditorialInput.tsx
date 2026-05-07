@@ -22,8 +22,7 @@ export const EditorialInput = forwardRef<HTMLInputElement, EditorialInputProps>(
       <div className="flex flex-col gap-1.5">
         <label
           htmlFor={inputId}
-          className="text-[11px] font-semibold uppercase tracking-[0.12em]"
-          style={{ color: "var(--mute)" }}
+          className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--mute)]"
         >
           {label}
         </label>
@@ -31,24 +30,24 @@ export const EditorialInput = forwardRef<HTMLInputElement, EditorialInputProps>(
           id={inputId}
           ref={ref}
           aria-invalid={error ? "true" : undefined}
-          aria-describedby={cn(helpText && helpId, error && errorId) || undefined}
+          aria-describedby={cn(helpText && !error && helpId, error && errorId) || undefined}
           className={cn(
             "rounded-md border px-3 py-2 text-[13px] outline-none transition-colors",
+            "border-[var(--edge)]",
             "focus:ring-2 focus:ring-[var(--forest)]/20 focus:border-[var(--forest)]",
             error && "border-[var(--danger)] focus:ring-[var(--danger)]/20 focus:border-[var(--danger)]",
-            !error && "border-[var(--edge)]",
             "bg-[var(--cream)] text-[var(--ink)]",
             className,
           )}
           {...rest}
         />
         {helpText && !error && (
-          <p id={helpId} className="text-[11px]" style={{ color: "var(--mute)" }}>
+          <p id={helpId} className="text-[11px] text-[var(--mute)]">
             {helpText}
           </p>
         )}
         {error && (
-          <p id={errorId} role="alert" className="text-[11px]" style={{ color: "var(--danger)" }}>
+          <p id={errorId} role="alert" className="text-[11px] text-[var(--danger)]">
             {error}
           </p>
         )}

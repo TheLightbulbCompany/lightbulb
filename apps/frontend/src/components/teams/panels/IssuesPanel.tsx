@@ -30,16 +30,15 @@ export function IssuesPanel() {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
 
-  const issues = data?.issues ?? [];
-  const filtered = useMemo(
-    () =>
-      search
-        ? issues.filter((i) =>
-            i.title.toLowerCase().includes(search.toLowerCase()),
-          )
-        : issues,
-    [issues, search],
-  );
+  const issues = data?.issues;
+  const filtered = useMemo(() => {
+    const list = issues ?? [];
+    return search
+      ? list.filter((i) =>
+          i.title.toLowerCase().includes(search.toLowerCase()),
+        )
+      : list;
+  }, [issues, search]);
 
   if (error)
     return (

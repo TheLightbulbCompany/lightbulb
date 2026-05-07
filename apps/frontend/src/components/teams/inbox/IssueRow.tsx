@@ -14,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { productivityReviewTriggerLabel } from "@/components/teams/shared/components/ProductivityReviewBadge";
+import { EditorialButton } from "@/components/teams/shell";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -201,8 +202,9 @@ export function IssueRow({
       {showUnreadSlot ? (
         <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
           {showUnreadDot ? (
-            <button
-              type="button"
+            <EditorialButton
+              variant="ghost"
+              size="icon"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -235,10 +237,11 @@ export function IssueRow({
                     : "var(--forest)",
                 }}
               />
-            </button>
+            </EditorialButton>
           ) : onArchive ? (
-            <button
-              type="button"
+            <EditorialButton
+              variant="ghost"
+              size="icon"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -255,7 +258,7 @@ export function IssueRow({
               aria-label="Dismiss from inbox"
             >
               <X className="h-3.5 w-3.5" />
-            </button>
+            </EditorialButton>
           ) : (
             <span className="inline-flex h-4 w-4" aria-hidden="true" />
           )}

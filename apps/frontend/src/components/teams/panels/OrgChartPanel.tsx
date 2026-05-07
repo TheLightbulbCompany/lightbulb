@@ -6,6 +6,7 @@
 // updates flow via TeamsEventsProvider's EVENT_KEY_MAP: agent events
 // invalidate /teams/agents and the chart re-renders with fresh status colors.
 
+import { PanelMasthead } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { OrgChart } from "@/components/teams/org-chart/OrgChart";
 import type { OrgChartAgent } from "@/components/teams/org-chart/orgChartLayout";
@@ -25,18 +26,14 @@ export function OrgChartPanel() {
 
   if (isLoading) {
     return (
-      <div className="p-8 text-sm" style={{ color: "var(--mute)" }}>
+      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
         Loading...
       </div>
     );
   }
   if (error) {
     return (
-      <div
-        role="alert"
-        className="p-8 text-sm"
-        style={{ color: "var(--danger)" }}
-      >
+      <div role="alert" className="editorial-page p-8 text-[var(--danger)]">
         Failed to load agents.
       </div>
     );
@@ -44,13 +41,8 @@ export function OrgChartPanel() {
 
   const agents = normalizeAgents(data);
   return (
-    <div className="p-4">
-      <h1
-        className="font-editorial-serif text-2xl mb-4"
-        style={{ color: "var(--ink)" }}
-      >
-        Org chart
-      </h1>
+    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead overline="Team" title="Org chart" />
       <OrgChart agents={agents} />
     </div>
   );

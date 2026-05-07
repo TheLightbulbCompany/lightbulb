@@ -1172,6 +1172,46 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def run_routine(
+        self,
+        *,
+        routine_id: str,
+        body: dict,
+        session_cookie: str,
+    ) -> dict:
+        """Manually fire a routine.
+
+        Maps to ``POST /api/routines/{routineId}/run`` upstream
+        (paperclip/server/src/routes/routines.ts:280). Body is forwarded
+        as-is to upstream, which validates against ``runRoutineSchema``
+        (optional ``reason``, ``inputOverrides``, etc.).
+
+        Returns the upstream response, typically ``{runId, status}``.
+        """
+        return await self._post(
+            f"/api/routines/{routine_id}/run",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def list_routine_runs(
+        self,
+        *,
+        routine_id: str,
+        session_cookie: str,
+    ) -> list[dict]:
+        """List run history for a routine.
+
+        Maps to ``GET /api/routines/{routineId}/runs`` upstream
+        (paperclip/server/src/routes/routines.ts:150). Returns a list of
+        run objects (id, status, startedAt, completedAt, etc.).
+        """
+        result = await self._get(
+            f"/api/routines/{routine_id}/runs",
+            session_cookie=session_cookie,
+        )
+        return result if isinstance(result, list) else []
+
     # ------------------------------------------------------------------
     # Goals
     # ------------------------------------------------------------------

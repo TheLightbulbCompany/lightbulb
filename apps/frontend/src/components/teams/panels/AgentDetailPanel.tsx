@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PanelMasthead, PanelTabs } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Agent {
@@ -15,45 +16,36 @@ interface RunRow {
   startedAt?: string;
 }
 
+const TABS = [
+  { value: "overview", label: "Overview" },
+  { value: "runs", label: "Runs" },
+  { value: "config", label: "Config" },
+];
+
 export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const { read } = useTeamsApi();
   const { data: agent } = read<Agent>(`/agents/${agentId}`);
   const { data: runs } = read<{ runs: RunRow[] }>(`/agents/${agentId}/runs`);
-  const [tab, setTab] = useState<"overview" | "runs" | "config">("overview");
+  const [tab, setTab] = useState<string>("overview");
 
-  if (!agent)
+  if (!agent) {
     return (
       <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
         Loading…
       </div>
     );
+  }
 
   const runRows = runs?.runs ?? [];
 
   return (
-    <div className="editorial-page p-8 max-w-4xl">
-      <h1 className="font-editorial-serif text-3xl mb-1 text-[var(--ink)]">
-        {agent.name}
-      </h1>
-      <div className="text-sm text-[var(--mute)] mb-6 uppercase tracking-wide">
-        {agent.role}
-      </div>
-
-      <div className="border-b border-[var(--edge)] mb-6">
-        {(["overview", "runs", "config"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm transition-colors ${
-              tab === t
-                ? "border-b-2 border-[var(--forest)] text-[var(--ink)]"
-                : "text-[var(--mute)] hover:text-[var(--ink-soft)]"
-            }`}
-          >
-            {t[0].toUpperCase() + t.slice(1)}
-          </button>
-        ))}
-      </div>
+    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead
+        overline="Agent"
+        title={agent.name}
+        meta={agent.role.toUpperCase()}
+      />
+      <PanelTabs tabs={TABS} value={tab} onValueChange={setTab} />
 
       {tab === "overview" && (
         <pre className="editorial-card text-xs p-4 whitespace-pre-wrap text-[var(--ink-soft)] bg-[var(--cream-deeper)]">
@@ -63,10 +55,7 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
       {tab === "runs" && (
         <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
           {runRows.map((r) => (
-            <li
-              key={r.id}
-              className="p-3 flex justify-between items-center"
-            >
+            <li key={r.id} className="p-3 flex justify-between items-center">
               <span className="text-[var(--ink)]">{r.status}</span>
               <a
                 href={`/teams/agents/${agentId}/runs/${r.id}`}

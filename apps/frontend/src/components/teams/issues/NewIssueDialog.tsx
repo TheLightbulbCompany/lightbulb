@@ -4,18 +4,13 @@
 // markdown editor, attachments, reviewer/approver, execution-workspace,
 // model overrides, labels, parent-issue picker, draft autosave.
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// PR 4 (atoms port): wrapped in <EditorialDialog>; Cancel / Create are
+// <EditorialButton>s.
 
 "use client";
 
 import { useState } from "react";
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogFooter,
-  AlertDialogCancel,
-} from "@/components/ui/alert-dialog";
+import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useIssueMutations } from "./hooks/useIssueMutations";
@@ -77,7 +72,7 @@ export function NewIssueDialog({
     setError(null);
   };
 
-  const handleClose = (next: boolean) => {
+  const handleOpenChange = (next: boolean) => {
     if (!next) reset();
     onOpenChange(next);
   };
@@ -114,184 +109,180 @@ export function NewIssueDialog({
   } as const;
 
   return (
-    <AlertDialog open={open} onOpenChange={handleClose}>
-      <AlertDialogContent
-        style={{ background: "var(--cream)", color: "var(--ink)" }}
-      >
-        <AlertDialogHeader>
-          <AlertDialogTitle
-            className="font-editorial-serif text-2xl"
-            style={{ color: "var(--ink)" }}
-          >
-            New issue
-          </AlertDialogTitle>
-        </AlertDialogHeader>
-        <div className="flex flex-col gap-3">
-          <div>
-            <label
-              htmlFor="new-issue-title"
-              className="section-label"
-              style={{ ...labelStyle, marginTop: 0 }}
-            >
-              <b>Title</b>
-            </label>
-            <Input
-              id="new-issue-title"
-              autoFocus
-              placeholder="Issue title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              disabled={submitting}
-              maxLength={200}
-              style={selectStyle}
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="new-issue-description"
-              className="section-label"
-              style={{ ...labelStyle, marginTop: 0 }}
-            >
-              <b>Description</b>
-            </label>
-            <Textarea
-              id="new-issue-description"
-              placeholder="Optional details..."
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={4}
-              disabled={submitting}
-              maxLength={20000}
-              style={selectStyle}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label
-                htmlFor="new-issue-status"
-                className="section-label"
-                style={{ ...labelStyle, marginTop: 0 }}
-              >
-                <b>Status</b>
-              </label>
-              <select
-                id="new-issue-status"
-                value={status}
-                onChange={(e) => setStatus(e.target.value as IssueStatus)}
-                disabled={submitting}
-                className="w-full rounded px-3 py-2 text-sm"
-                style={selectStyle}
-              >
-                {STATUS_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label
-                htmlFor="new-issue-priority"
-                className="section-label"
-                style={{ ...labelStyle, marginTop: 0 }}
-              >
-                <b>Priority</b>
-              </label>
-              <select
-                id="new-issue-priority"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value as IssuePriority)}
-                disabled={submitting}
-                className="w-full rounded px-3 py-2 text-sm"
-                style={selectStyle}
-              >
-                {PRIORITY_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          {projects.length > 0 && (
-            <div>
-              <label
-                htmlFor="new-issue-project"
-                className="section-label"
-                style={{ ...labelStyle, marginTop: 0 }}
-              >
-                <b>Project</b>
-              </label>
-              <select
-                id="new-issue-project"
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                disabled={submitting}
-                className="w-full rounded px-3 py-2 text-sm"
-                style={selectStyle}
-              >
-                <option value="">No project</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          {agents.length > 0 && (
-            <div>
-              <label
-                htmlFor="new-issue-assignee"
-                className="section-label"
-                style={{ ...labelStyle, marginTop: 0 }}
-              >
-                <b>Assign to agent</b>
-              </label>
-              <select
-                id="new-issue-assignee"
-                value={assigneeAgentId}
-                onChange={(e) => setAssigneeAgentId(e.target.value)}
-                disabled={submitting}
-                className="w-full rounded px-3 py-2 text-sm"
-                style={selectStyle}
-              >
-                <option value="">Unassigned</option>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          {error && (
-            <p
-              role="alert"
-              className="text-sm"
-              style={{ color: "var(--danger)" }}
-            >
-              {error}
-            </p>
-          )}
-        </div>
-        <AlertDialogFooter>
-          <AlertDialogCancel
+    <EditorialDialog
+      open={open}
+      onOpenChange={handleOpenChange}
+      title="New issue"
+      footer={
+        <>
+          <EditorialButton
+            variant="secondary"
+            size="sm"
+            onClick={() => handleOpenChange(false)}
             disabled={submitting}
-            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
           >
             Cancel
-          </AlertDialogCancel>
-          <button
-            type="button"
+          </EditorialButton>
+          <EditorialButton
+            variant="primary"
+            size="sm"
             onClick={submit}
             disabled={!title.trim() || submitting}
-            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create issue"}
-          </button>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+          </EditorialButton>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <div>
+          <label
+            htmlFor="new-issue-title"
+            className="section-label"
+            style={{ ...labelStyle, marginTop: 0 }}
+          >
+            <b>Title</b>
+          </label>
+          <Input
+            id="new-issue-title"
+            autoFocus
+            placeholder="Issue title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            disabled={submitting}
+            maxLength={200}
+            style={selectStyle}
+          />
+        </div>
+        <div>
+          <label
+            htmlFor="new-issue-description"
+            className="section-label"
+            style={{ ...labelStyle, marginTop: 0 }}
+          >
+            <b>Description</b>
+          </label>
+          <Textarea
+            id="new-issue-description"
+            placeholder="Optional details..."
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={4}
+            disabled={submitting}
+            maxLength={20000}
+            style={selectStyle}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label
+              htmlFor="new-issue-status"
+              className="section-label"
+              style={{ ...labelStyle, marginTop: 0 }}
+            >
+              <b>Status</b>
+            </label>
+            <select
+              id="new-issue-status"
+              value={status}
+              onChange={(e) => setStatus(e.target.value as IssueStatus)}
+              disabled={submitting}
+              className="w-full rounded px-3 py-2 text-sm"
+              style={selectStyle}
+            >
+              {STATUS_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label
+              htmlFor="new-issue-priority"
+              className="section-label"
+              style={{ ...labelStyle, marginTop: 0 }}
+            >
+              <b>Priority</b>
+            </label>
+            <select
+              id="new-issue-priority"
+              value={priority}
+              onChange={(e) => setPriority(e.target.value as IssuePriority)}
+              disabled={submitting}
+              className="w-full rounded px-3 py-2 text-sm"
+              style={selectStyle}
+            >
+              {PRIORITY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {projects.length > 0 && (
+          <div>
+            <label
+              htmlFor="new-issue-project"
+              className="section-label"
+              style={{ ...labelStyle, marginTop: 0 }}
+            >
+              <b>Project</b>
+            </label>
+            <select
+              id="new-issue-project"
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              disabled={submitting}
+              className="w-full rounded px-3 py-2 text-sm"
+              style={selectStyle}
+            >
+              <option value="">No project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {agents.length > 0 && (
+          <div>
+            <label
+              htmlFor="new-issue-assignee"
+              className="section-label"
+              style={{ ...labelStyle, marginTop: 0 }}
+            >
+              <b>Assign to agent</b>
+            </label>
+            <select
+              id="new-issue-assignee"
+              value={assigneeAgentId}
+              onChange={(e) => setAssigneeAgentId(e.target.value)}
+              disabled={submitting}
+              className="w-full rounded px-3 py-2 text-sm"
+              style={selectStyle}
+            >
+              <option value="">Unassigned</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {error && (
+          <p
+            role="alert"
+            className="text-sm"
+            style={{ color: "var(--danger)" }}
+          >
+            {error}
+          </p>
+        )}
+      </div>
+    </EditorialDialog>
   );
 }

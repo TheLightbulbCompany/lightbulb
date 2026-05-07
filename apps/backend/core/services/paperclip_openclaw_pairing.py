@@ -44,9 +44,7 @@ def _is_org_owner_id(owner_id: str) -> bool:
     return owner_id.startswith("org_")
 
 
-async def _resolve_company_id_for_owner(
-    *, owner_id: str, repo: PaperclipRepo
-) -> str | None:
+async def _resolve_company_id_for_owner(*, owner_id: str, repo: PaperclipRepo) -> str | None:
     """Look up the Paperclip company_id for this owner.
 
     For personal users (owner_id = user_id): repo.get(user_id).company_id
@@ -77,9 +75,7 @@ async def fetch_paperclip_agents_for_owner(
     provision on Paperclip availability -- empty list flows through to
     the legacy 'main' agent fallback in build_openclaw_config_dict.
     """
-    company_id = await _resolve_company_id_for_owner(
-        owner_id=owner_id, repo=repo
-    )
+    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         return []
 
@@ -97,8 +93,7 @@ async def fetch_paperclip_agents_for_owner(
         # httpx errors (ConnectError/timeouts), and pre-request credential
         # exceptions all map to the same recovery path.
         logger.warning(
-            "paperclip_openclaw_pairing: list_agents failed for owner=%s "
-            "company=%s -- falling back to empty list: %s",
+            "paperclip_openclaw_pairing: list_agents failed for owner=%s company=%s -- falling back to empty list: %s",
             owner_id,
             company_id,
             e,
@@ -107,8 +102,7 @@ async def fetch_paperclip_agents_for_owner(
 
     if not isinstance(agents, list):
         logger.warning(
-            "paperclip_openclaw_pairing: list_agents returned non-list for "
-            "owner=%s -- got %s",
+            "paperclip_openclaw_pairing: list_agents returned non-list for owner=%s -- got %s",
             owner_id,
             type(agents).__name__,
         )
@@ -169,8 +163,7 @@ async def pair_with_openclaw(
         # agent is registered. Treat as idempotent success.
         if "already exists" in str(e):
             logger.info(
-                "pair_with_openclaw: agent %s already exists in container "
-                "for owner %s — skipping update",
+                "pair_with_openclaw: agent %s already exists in container for owner %s — skipping update",
                 pc_uuid,
                 owner_id,
             )

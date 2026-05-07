@@ -11,15 +11,11 @@ from scripts.migrate_paperclip_session_strategy import (
 
 
 def test_needs_migration_true_for_fixed_strategy():
-    assert needs_migration(
-        {"adapterConfig": {"sessionKeyStrategy": "fixed", "sessionKey": "user_x"}}
-    )
+    assert needs_migration({"adapterConfig": {"sessionKeyStrategy": "fixed", "sessionKey": "user_x"}})
 
 
 def test_needs_migration_false_for_issue_strategy():
-    assert not needs_migration(
-        {"adapterConfig": {"sessionKeyStrategy": "issue", "sessionKey": "user_x"}}
-    )
+    assert not needs_migration({"adapterConfig": {"sessionKeyStrategy": "issue", "sessionKey": "user_x"}})
 
 
 def test_needs_migration_false_when_adapter_config_missing():

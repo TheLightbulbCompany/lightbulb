@@ -25,9 +25,7 @@ async def test_chat_agents_create_calls_paperclip_first_then_pairs(monkeypatch):
     They differ when the user is an org member."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
-    pc_create_mock = AsyncMock(
-        return_value={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"}
-    )
+    pc_create_mock = AsyncMock(return_value={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"})
     pair_mock = AsyncMock()
 
     monkeypatch.setattr(
@@ -171,10 +169,12 @@ async def test_chat_agents_create_with_no_name_falls_through_to_gateway(monkeypa
     pair_mock = AsyncMock()
     pc_create_mock = AsyncMock()
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_create_for_chat", pc_create_mock,
+        "routers.websocket_chat._paperclip_create_for_chat",
+        pc_create_mock,
     )
     monkeypatch.setattr(
-        "routers.websocket_chat.pair_with_openclaw", pair_mock,
+        "routers.websocket_chat.pair_with_openclaw",
+        pair_mock,
     )
 
     mgmt_mock = MagicMock()
@@ -223,10 +223,12 @@ async def test_chat_agents_create_paperclip_failure_responds_ok_false(monkeypatc
     pool_mock.send_rpc = AsyncMock()
 
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_create_for_chat", pc_create_mock,
+        "routers.websocket_chat._paperclip_create_for_chat",
+        pc_create_mock,
     )
     monkeypatch.setattr(
-        "routers.websocket_chat.pair_with_openclaw", pair_mock,
+        "routers.websocket_chat.pair_with_openclaw",
+        pair_mock,
     )
     monkeypatch.setattr(
         "routers.websocket_chat.get_gateway_pool",
@@ -295,10 +297,12 @@ async def test_chat_agents_create_pair_failure_responds_ok_false(monkeypatch):
     pool_mock.send_rpc = AsyncMock()
 
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_create_for_chat", pc_create_mock,
+        "routers.websocket_chat._paperclip_create_for_chat",
+        pc_create_mock,
     )
     monkeypatch.setattr(
-        "routers.websocket_chat.pair_with_openclaw", pair_mock,
+        "routers.websocket_chat.pair_with_openclaw",
+        pair_mock,
     )
     monkeypatch.setattr(
         "routers.websocket_chat.get_gateway_pool",

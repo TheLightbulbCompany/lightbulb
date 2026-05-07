@@ -31,7 +31,8 @@ async def test_teams_create_agent_pairs_with_openclaw_when_container_up(monkeypa
     # routers/teams/agents.py.
     pair_mock = AsyncMock()
     monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw", pair_mock,
+        "routers.teams.agents.pair_with_openclaw",
+        pair_mock,
     )
     monkeypatch.setattr(
         "routers.teams.agents._container_is_reachable",
@@ -83,7 +84,8 @@ async def test_teams_create_agent_uses_user_id_for_personal_owner(monkeypatch):
 
     pair_mock = AsyncMock()
     monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw", pair_mock,
+        "routers.teams.agents.pair_with_openclaw",
+        pair_mock,
     )
     monkeypatch.setattr(
         "routers.teams.agents._container_is_reachable",
@@ -91,9 +93,7 @@ async def test_teams_create_agent_uses_user_id_for_personal_owner(monkeypatch):
     )
 
     admin_instance = MagicMock()
-    admin_instance.create_agent = AsyncMock(
-        return_value={"id": pc_uuid, "name": "Helper", "role": "engineer"}
-    )
+    admin_instance.create_agent = AsyncMock(return_value={"id": pc_uuid, "name": "Helper", "role": "engineer"})
     monkeypatch.setattr(
         "routers.teams.agents._admin",
         lambda: admin_instance,
@@ -129,7 +129,8 @@ async def test_teams_create_agent_skips_pairing_when_container_down(monkeypatch)
 
     pair_mock = AsyncMock()
     monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw", pair_mock,
+        "routers.teams.agents.pair_with_openclaw",
+        pair_mock,
     )
     monkeypatch.setattr(
         "routers.teams.agents._container_is_reachable",
@@ -137,9 +138,7 @@ async def test_teams_create_agent_skips_pairing_when_container_down(monkeypatch)
     )
 
     admin_instance = MagicMock()
-    admin_instance.create_agent = AsyncMock(
-        return_value={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"}
-    )
+    admin_instance.create_agent = AsyncMock(return_value={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"})
     monkeypatch.setattr(
         "routers.teams.agents._admin",
         lambda: admin_instance,
@@ -171,11 +170,13 @@ async def test_teams_create_agent_pairing_failure_is_non_fatal(monkeypatch, capl
     """If pair_with_openclaw raises, the route still returns the
     Paperclip agent (pairing is deferred). Failure is logged."""
     import logging
+
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
     pair_mock = AsyncMock(side_effect=RuntimeError("gateway timeout"))
     monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw", pair_mock,
+        "routers.teams.agents.pair_with_openclaw",
+        pair_mock,
     )
     monkeypatch.setattr(
         "routers.teams.agents._container_is_reachable",
@@ -183,9 +184,7 @@ async def test_teams_create_agent_pairing_failure_is_non_fatal(monkeypatch, capl
     )
 
     admin_instance = MagicMock()
-    admin_instance.create_agent = AsyncMock(
-        return_value={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"}
-    )
+    admin_instance.create_agent = AsyncMock(return_value={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"})
     monkeypatch.setattr(
         "routers.teams.agents._admin",
         lambda: admin_instance,
@@ -215,10 +214,7 @@ async def test_teams_create_agent_pairing_failure_is_non_fatal(monkeypatch, capl
         )
     assert result is not None
     # Warning was logged.
-    assert any(
-        "pair_with_openclaw failed" in rec.message
-        for rec in caplog.records
-    )
+    assert any("pair_with_openclaw failed" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio

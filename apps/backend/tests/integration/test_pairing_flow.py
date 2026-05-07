@@ -76,9 +76,7 @@ async def test_provision_then_chat_create_yields_single_uuid_per_agent():
             ],
         )
         cfg2 = json.loads(path.read_text())
-        assert sorted(a["id"] for a in cfg2["agents"]["list"]) == sorted(
-            [main_uuid, second_uuid]
-        )
+        assert sorted(a["id"] for a in cfg2["agents"]["list"]) == sorted([main_uuid, second_uuid])
         # Default still on the CEO.
         defaults = [a for a in cfg2["agents"]["list"] if a.get("default")]
         assert len(defaults) == 1

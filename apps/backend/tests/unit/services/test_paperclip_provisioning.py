@@ -17,9 +17,7 @@ async def test_provision_org_seeds_agent_named_friday(monkeypatch):
 
     admin = MagicMock()
     admin._http = MagicMock()  # touched by get_admin_session_cookie
-    admin.sign_up_user = AsyncMock(
-        return_value={"user": {"id": "pc_user_1"}, "_session_cookie": "cookie_new"}
-    )
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_1"}, "_session_cookie": "cookie_new"})
     admin.create_company = AsyncMock(return_value={"id": "co_xyz"})
     admin.create_invite = AsyncMock(return_value={"token": "invtok"})
     admin.accept_invite = AsyncMock(return_value={"id": "req_1"})

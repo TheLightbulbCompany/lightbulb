@@ -386,8 +386,7 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
             )
         except Exception as exc:  # noqa: BLE001 — pairing failure is deferred.
             logger.warning(
-                "teams.create_agent: pair_with_openclaw failed for "
-                "owner=%s agent=%s — deferring to next provision: %s",
+                "teams.create_agent: pair_with_openclaw failed for owner=%s agent=%s — deferring to next provision: %s",
                 owner_id,
                 paperclip_agent.get("id"),
                 exc,

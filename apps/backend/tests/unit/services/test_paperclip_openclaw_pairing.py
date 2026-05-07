@@ -37,9 +37,7 @@ async def test_fetch_for_personal_user_returns_their_company_agents(monkeypatch)
     repo = MagicMock()
     repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
-    admin_client.list_agents = AsyncMock(
-        return_value=[{"id": pc_uuid, "name": "Friday", "role": "ceo"}]
-    )
+    admin_client.list_agents = AsyncMock(return_value=[{"id": pc_uuid, "name": "Friday", "role": "ceo"}])
 
     monkeypatch.setattr(
         "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
@@ -68,9 +66,7 @@ async def test_fetch_for_org_uses_get_org_company_id(monkeypatch):
     repo.get = AsyncMock()  # should NOT be called
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
     admin_client = MagicMock()
-    admin_client.list_agents = AsyncMock(
-        return_value=[{"id": pc_uuid, "name": "Friday", "role": "ceo"}]
-    )
+    admin_client.list_agents = AsyncMock(return_value=[{"id": pc_uuid, "name": "Friday", "role": "ceo"}])
 
     monkeypatch.setattr(
         "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
@@ -115,9 +111,7 @@ async def test_fetch_returns_empty_on_paperclip_api_error(monkeypatch):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
-    admin_client.list_agents = AsyncMock(
-        side_effect=PaperclipApiError("503", status_code=503, body={})
-    )
+    admin_client.list_agents = AsyncMock(side_effect=PaperclipApiError("503", status_code=503, body={}))
 
     monkeypatch.setattr(
         "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
@@ -142,9 +136,7 @@ async def test_fetch_returns_empty_on_transient_httpx_error(monkeypatch):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
-    admin_client.list_agents = AsyncMock(
-        side_effect=httpx.ConnectError("connection refused")
-    )
+    admin_client.list_agents = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     monkeypatch.setattr(
         "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
@@ -212,9 +204,7 @@ async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name()
     create_call = pool.send_rpc.await_args_list[0]
     assert create_call.kwargs["method"] == "agents.create"
     assert create_call.kwargs["params"]["name"] == pc_uuid
-    assert create_call.kwargs["params"]["workspace"] == (
-        f"/home/node/.openclaw/workspaces/{pc_uuid}"
-    )
+    assert create_call.kwargs["params"]["workspace"] == (f"/home/node/.openclaw/workspaces/{pc_uuid}")
     # The pool's user_id kwarg is actually owner_id under the hood —
     # the existing gateway pool's signature is what it is.
     assert create_call.kwargs["user_id"] == "user_abc"
@@ -233,9 +223,7 @@ async def test_pair_skips_if_agent_already_exists():
     pool = MagicMock()
     # OpenClaw returns INVALID_REQUEST with "agent already exists" in message
     pool.send_rpc = AsyncMock(
-        side_effect=RuntimeError(
-            '{"code":-32602,"message":"agent \\"' + pc_uuid + '\\" already exists"}'
-        )
+        side_effect=RuntimeError('{"code":-32602,"message":"agent \\"' + pc_uuid + '\\" already exists"}')
     )
 
     # Should not raise — idempotent.

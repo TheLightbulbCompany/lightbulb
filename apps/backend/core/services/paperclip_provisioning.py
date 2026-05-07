@@ -138,6 +138,16 @@ class PaperclipProvisioning:
         owner; admin stays as a co-owner of every company (harmless
         side effect — admin doesn't act without explicit code paths).
 
+        Service-token contract: the seeded Main Agent's
+        ``adapterConfig.authToken`` is a JWT whose ``sub`` claim MUST
+        equal the container's ``owner_id``, because the WS Lambda
+        authorizer uses ``sub`` to route the connection to that owner's
+        OpenClaw container. ``owner_id`` is the org_id when an org owns
+        the container; for personal users ``owner_id == user_id`` and
+        ``paperclip_autoprovision.ensure_paperclip_workspace`` passes
+        ``org_id == clerk_user_id``, so minting with ``org_id`` is also
+        correct for the personal path (it collapses to ``user_id``).
+
         Idempotent: if a row already exists for ``owner_user_id`` with
         ``status="active"``, return it unchanged. Other statuses redo
         the chain — Paperclip's Better Auth sign-up is NOT idempotent,
@@ -252,7 +262,19 @@ class PaperclipProvisioning:
             # 6. Mint a long-lived OpenClaw service-token JWT. Baked
             #    into the seeded Main Agent's adapter config so the
             #    agent can reach the user's container via the gateway.
-            svc_token = service_token.mint(owner_user_id)
+            #
+            #    The JWT's ``sub`` claim MUST equal the container's
+            #    ``owner_id`` — the WS Lambda authorizer extracts ``sub``
+            #    and routes the connection to that owner's container.
+            #    For org context, ``owner_id == org_id``; for the
+            #    personal autoprovision path the caller passes
+            #    ``org_id == clerk_user_id``, so this also collapses to
+            #    the right value (``user_id``). Previously this minted
+            #    with ``owner_user_id`` (the human creator's user_id),
+            #    which broke org wakes: the authorizer then tried to
+            #    route to a user-personal container that doesn't exist
+            #    for org members.
+            svc_token = service_token.mint(org_id)
 
             # 7. Best-effort seed a "Main Agent" pointing at the
             #    user's OpenClaw container. Failure here is not fatal
@@ -330,6 +352,15 @@ class PaperclipProvisioning:
         could look it up via ``user_repo`` instead, but keeping it as
         a kwarg avoids the cross-service coupling and makes the
         orchestrator easier to test in isolation.
+
+        Service-token contract: org members share the org's container
+        (keyed by ``org_id``), so the member's stored
+        ``service_token_encrypted`` must be a JWT whose ``sub`` claim
+        equals ``org_id`` — not the member's own user_id. The WS Lambda
+        authorizer extracts ``sub`` and routes the resulting connection
+        to that owner's container; minting with the member's user_id
+        would route to a user-personal container that doesn't exist for
+        org members.
 
         Idempotent on ``user_id``: an already-active row short-circuits
         to a no-op return.
@@ -420,8 +451,17 @@ class PaperclipProvisioning:
                 request_id=request_id,
             )
 
-            # 6. Mint the member's own OpenClaw service-token JWT.
-            svc_token = service_token.mint(user_id)
+            # 6. Mint the member's OpenClaw service-token JWT.
+            #
+            #    Org members share the org's container (keyed by
+            #    ``org_id``), so the JWT's ``sub`` claim MUST equal
+            #    ``org_id`` — that's the value the WS Lambda authorizer
+            #    pulls out and routes against. Previously this minted
+            #    with the joining member's own ``user_id``, which broke
+            #    Paperclip wakes for org members: the authorizer would
+            #    try to route to a user-personal container that doesn't
+            #    exist for org members.
+            svc_token = service_token.mint(org_id)
 
             # 7. Persist the member row.
             now = datetime.now(timezone.utc)

@@ -50,6 +50,9 @@ async def list_labels(ctx: TeamsContext = Depends(_ctx)):
     return envelope_list(upstream, "labels")
 
 
+# NOTE: any new static `/issues/<word>` routes (e.g. /issues/labels) MUST be
+# registered ABOVE this handler — FastAPI's matcher would otherwise treat
+# the static word as a value for {issue_id} and 404 with a misleading shape.
 @router.get("/issues/{issue_id}")
 async def get_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single issue by id."""

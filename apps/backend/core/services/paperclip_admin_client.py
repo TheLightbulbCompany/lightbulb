@@ -1099,14 +1099,10 @@ class PaperclipAdminClient:
             f"/api/companies/{company_id}/labels",
             session_cookie=session_cookie,
         )
-        # Upstream returns a bare list `res.json(labels)`; unwrap defensively
-        # in case a future upstream change envelopes it.
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict):
-            inner = result.get("labels") or result.get("items") or []
-            return inner if isinstance(inner, list) else []
-        return []
+        # Upstream returns a bare list `res.json(labels)` per
+        # paperclip/server/src/routes/labels.ts. If shape ever changes,
+        # tests fail loudly rather than silently guessing an envelope key.
+        return result if isinstance(result, list) else []
 
     # ------------------------------------------------------------------
     # Routines

@@ -50,11 +50,14 @@ describe("AgentsListPanel", () => {
     mockPost.mockResolvedValue({ id: "a1" });
     render(<AgentsListPanel />);
 
-    fireEvent.click(screen.getByText("New agent"));
+    // Two New agent CTAs render when the list is empty (masthead + empty
+    // state). Click the first.
+    const buttons = screen.getAllByRole("button", { name: /new agent/i });
+    fireEvent.click(buttons[0]);
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Helper" },
     });
-    fireEvent.click(screen.getByText("Create"));
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
 
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledTimes(1);

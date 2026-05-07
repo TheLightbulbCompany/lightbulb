@@ -3,7 +3,8 @@
 // Confirms the overview/runs/config tab switching works and that the config
 // tab renders the operator-controlled disclaimer (no edit form ever).
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
@@ -34,12 +35,14 @@ describe("AgentDetailPanel", () => {
   it("renders agent name and role", () => {
     render(<AgentDetailPanel agentId="a1" />);
     expect(screen.getByText("Alice")).toBeInTheDocument();
-    expect(screen.getByText("ceo")).toBeInTheDocument();
+    // PanelMasthead renders the role as meta in uppercase.
+    expect(screen.getByText("CEO")).toBeInTheDocument();
   });
 
-  it("switches to Runs tab and shows run rows", () => {
+  it("switches to Runs tab and shows run rows", async () => {
+    const user = userEvent.setup();
     render(<AgentDetailPanel agentId="a1" />);
-    fireEvent.click(screen.getByText("Runs"));
+    await user.click(screen.getByRole("tab", { name: /runs/i }));
     expect(screen.getByText("ok")).toBeInTheDocument();
     const link = screen.getByText("Open →");
     expect(link.closest("a")).toHaveAttribute(
@@ -48,9 +51,10 @@ describe("AgentDetailPanel", () => {
     );
   });
 
-  it("Config tab shows operator-controlled disclaimer (no edit form)", () => {
+  it("Config tab shows operator-controlled disclaimer (no edit form)", async () => {
+    const user = userEvent.setup();
     render(<AgentDetailPanel agentId="a1" />);
-    fireEvent.click(screen.getByText("Config"));
+    await user.click(screen.getByRole("tab", { name: /config/i }));
     expect(
       screen.getByText(/Adapter configuration is managed by Isol8/i),
     ).toBeInTheDocument();

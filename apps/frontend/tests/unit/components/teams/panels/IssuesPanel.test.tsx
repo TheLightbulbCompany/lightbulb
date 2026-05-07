@@ -25,10 +25,23 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 
 // Stub NewIssueDialog so we can assert that the panel routes the New-issue CTA
 // through it (instead of an inline CreateIssueDialog) without depending on the
-// real dialog's internals.
+// real dialog's internals. The stub also exposes the agents + projects props
+// it received so we can guard against the regression where the panel rendered
+// the dialog with empty default arrays (Codex P2 on PR #556).
+const mockNewIssueDialogProps = vi.fn();
 vi.mock("@/components/teams/issues/NewIssueDialog", () => ({
-  NewIssueDialog: ({ open }: { open: boolean }) =>
-    open ? <div data-testid="new-issue-dialog-stub" role="dialog" /> : null,
+  NewIssueDialog: ({
+    open,
+    agents,
+    projects,
+  }: {
+    open: boolean;
+    agents?: unknown[];
+    projects?: unknown[];
+  }) => {
+    mockNewIssueDialogProps({ open, agents, projects });
+    return open ? <div data-testid="new-issue-dialog-stub" role="dialog" /> : null;
+  },
 }));
 
 import { IssuesPanel } from "@/components/teams/panels/IssuesPanel";
@@ -38,6 +51,7 @@ describe("IssuesPanel atom contract", () => {
     mockPost.mockReset();
     mockMutate.mockReset();
     mockRead.mockReset();
+    mockNewIssueDialogProps.mockReset();
   });
 
   it("renders the editorial PanelMasthead with overline + h1 title", () => {
@@ -111,6 +125,37 @@ describe("IssuesPanel atom contract", () => {
     const ctas = screen.getAllByRole("button", { name: /new issue/i });
     await user.click(ctas[0]);
     expect(screen.getByTestId("new-issue-dialog-stub")).toBeInTheDocument();
+  });
+
+  it("forwards loaded agents + projects into NewIssueDialog (Codex P2 regression guard)", () => {
+    mockRead.mockImplementation((path: string) => {
+      if (path === "/issues")
+        return { data: { issues: [] }, isLoading: false, error: null, mutate: mockMutate };
+      if (path === "/agents")
+        return {
+          data: { agents: [{ id: "a1", name: "Goose", role: "engineer" }] },
+          isLoading: false,
+          error: null,
+        };
+      if (path === "/projects")
+        return {
+          data: { projects: [{ id: "p1", name: "Marketplace" }] },
+          isLoading: false,
+          error: null,
+        };
+      return { data: undefined, isLoading: false, error: null };
+    });
+
+    render(<IssuesPanel />);
+
+    // The dialog renders even when closed (open=false) so we can assert on
+    // the props it received.
+    expect(mockNewIssueDialogProps).toHaveBeenCalled();
+    const lastCall = mockNewIssueDialogProps.mock.calls.at(-1)?.[0];
+    expect(lastCall?.agents).toEqual([
+      { id: "a1", name: "Goose", role: "engineer" },
+    ]);
+    expect(lastCall?.projects).toEqual([{ id: "p1", name: "Marketplace" }]);
   });
 
   it("filters rows by search query (case-insensitive substring match on title)", async () => {

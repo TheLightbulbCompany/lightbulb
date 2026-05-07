@@ -1,6 +1,13 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import { Target } from "lucide-react";
+import {
+  EditorialButton,
+  EditorialDialog,
+  PanelEmptyState,
+  PanelMasthead,
+} from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Goal {
@@ -58,12 +65,6 @@ export function GoalsPanel() {
 
   const tree = useMemo(() => buildTree(data?.goals ?? []), [data]);
 
-  if (isLoading)
-    return (
-      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
-        Loading…
-      </div>
-    );
   if (error)
     return (
       <div className="editorial-page p-8 text-[var(--danger)]">
@@ -72,27 +73,35 @@ export function GoalsPanel() {
     );
 
   return (
-    <div className="editorial-page p-8 max-w-4xl">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Goals</h1>
-        <button
-          onClick={() => setCreating(true)}
-          className="editorial-btn editorial-btn--primary"
-        >
-          New goal
-        </button>
-      </div>
+    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead
+        overline="Strategy"
+        title="Goals"
+        actions={
+          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
+            New goal
+          </EditorialButton>
+        }
+      />
 
-      <ul className="editorial-card overflow-hidden">
-        {tree.map((root) => (
-          <GoalRow key={root.id} node={root} depth={0} />
-        ))}
-        {tree.length === 0 && (
-          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
-            No goals yet.
-          </li>
-        )}
-      </ul>
+      {isLoading ? (
+        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+          Loading…
+        </div>
+      ) : tree.length === 0 ? (
+        <PanelEmptyState
+          icon={Target}
+          headline="No goals yet."
+          supporting="Define a goal to give your agents direction — break it into nested sub-goals as needed."
+          action={{ label: "New goal", onClick: () => setCreating(true) }}
+        />
+      ) : (
+        <ul className="editorial-card overflow-hidden">
+          {tree.map((root) => (
+            <GoalRow key={root.id} node={root} depth={0} />
+          ))}
+        </ul>
+      )}
 
       {creating && (
         <CreateGoalDialog
@@ -138,10 +147,13 @@ function CreateGoalDialog({
   }
 
   return (
-    <div className="fixed inset-0 bg-[rgba(26,26,26,0.35)] flex items-center justify-center">
-      <div className="editorial-card p-6 w-[28rem]">
-        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">New goal</h2>
-        <label className="block mb-3">
+    <EditorialDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="New goal"
+    >
+      <div className="flex flex-col gap-3">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Title</span>
           <input
             value={title}
@@ -149,7 +161,7 @@ function CreateGoalDialog({
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
-        <label className="block mb-3">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Description</span>
           <textarea
             value={description}
@@ -158,7 +170,7 @@ function CreateGoalDialog({
             rows={3}
           />
         </label>
-        <label className="block mb-4">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Parent goal ID (optional)</span>
           <input
             value={parentId}
@@ -167,26 +179,23 @@ function CreateGoalDialog({
           />
         </label>
         {err && (
-          <div className="text-[var(--danger)] text-sm mb-2 border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
             {err}
           </div>
         )}
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
-          >
+        <div className="flex justify-end gap-2 mt-2">
+          <EditorialButton variant="secondary" size="sm" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </EditorialButton>
+          <EditorialButton
+            size="sm"
             onClick={submit}
             disabled={submitting || !title}
-            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create"}
-          </button>
+          </EditorialButton>
         </div>
       </div>
-    </div>
+    </EditorialDialog>
   );
 }

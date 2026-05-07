@@ -1,6 +1,12 @@
 """Unit tests for paperclip_agents handling in build_openclaw_config_dict."""
 
-from core.containers.config import build_openclaw_config_dict
+import json
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from core.containers.config import build_openclaw_config_dict, write_openclaw_config
 
 
 def test_empty_paperclip_agents_falls_back_to_main():
@@ -75,3 +81,41 @@ def test_multiple_agents_no_ceo_first_is_default():
     by_id = {a["id"]: a for a in cfg["agents"]["list"]}
     assert by_id[a_uuid]["default"] is True
     assert "default" not in by_id[b_uuid] or by_id[b_uuid]["default"] is False
+
+
+@pytest.mark.asyncio
+async def test_write_openclaw_config_persists_paperclip_agents():
+    """write_openclaw_config writes agents.list with the supplied Paperclip
+    agents, not the hardcoded 'main' entry."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "openclaw.json"
+        await write_openclaw_config(
+            config_path=path,
+            gateway_token="t" * 32,
+            provider_choice="bedrock_claude",
+            user_id="user_abc",
+            paperclip_agents=[
+                {"id": pc_uuid, "name": "Friday", "role": "ceo"},
+            ],
+        )
+        cfg = json.loads(path.read_text())
+        assert cfg["agents"]["list"][0]["id"] == pc_uuid
+        assert cfg["agents"]["list"][0]["default"] is True
+
+
+@pytest.mark.asyncio
+async def test_write_openclaw_config_omitted_paperclip_agents_keeps_main():
+    """write_openclaw_config without paperclip_agents arg falls back to
+    the legacy 'main' entry. Backward compatible for callers we haven't
+    updated yet."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "openclaw.json"
+        await write_openclaw_config(
+            config_path=path,
+            gateway_token="t" * 32,
+            provider_choice="bedrock_claude",
+            user_id="user_abc",
+        )
+        cfg = json.loads(path.read_text())
+        assert cfg["agents"]["list"][0]["id"] == "main"

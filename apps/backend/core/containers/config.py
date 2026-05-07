@@ -714,6 +714,7 @@ async def write_openclaw_config(
     provider_choice: str,
     user_id: str,
     byo_provider: str | None = None,
+    paperclip_agents: list[dict] | None = None,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -734,6 +735,9 @@ async def write_openclaw_config(
             is set via the CODEX_HOME env var on the per-user ECS task).
         byo_provider: ``"openai"`` or ``"anthropic"`` — required when
             ``provider_choice == "byo_key"``.
+        paperclip_agents: Optional list of Paperclip agent dicts to use
+            for ``agents.list``. Omitting it preserves the legacy ``"main"``
+            entry for backward compatibility with callers we haven't updated.
 
     Raises:
         ValueError: when ``provider_choice`` is unknown or
@@ -744,6 +748,7 @@ async def write_openclaw_config(
         gateway_token=gateway_token,
         provider_choice=provider_choice,
         byo_provider=byo_provider,
+        paperclip_agents=paperclip_agents,
     )
 
     def _write() -> None:

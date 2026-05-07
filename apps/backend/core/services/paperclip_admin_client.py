@@ -1079,6 +1079,31 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_company_labels(
+        self,
+        *,
+        company_id: str,
+        session_cookie: str,
+    ) -> list[dict]:
+        """List labels defined on a Paperclip company.
+
+        Maps to ``GET /api/companies/{companyId}/labels`` upstream. Returns
+        a list of ``{id, name, color}`` dicts. Used by the Teams Inbox filter
+        chip dropdown to populate selectable labels for the issues filter.
+
+        Returns an empty list if upstream returns a non-list payload (defensive
+        — upstream's labels endpoint is documented to return a JSON array per
+        ``paperclip/server/src/routes/labels.ts``).
+        """
+        result = await self._get(
+            f"/api/companies/{company_id}/labels",
+            session_cookie=session_cookie,
+        )
+        # Upstream returns a bare list `res.json(labels)` per
+        # paperclip/server/src/routes/labels.ts. If shape ever changes,
+        # tests fail loudly rather than silently guessing an envelope key.
+        return result if isinstance(result, list) else []
+
     # ------------------------------------------------------------------
     # Routines
     # ------------------------------------------------------------------

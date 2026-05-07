@@ -237,3 +237,36 @@ def test_add_issue_comment_requires_body_field(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_list_labels_returns_envelope(client, monkeypatch):
+    """GET /teams/issues/labels proxies upstream + wraps in {labels: [...]} envelope.
+
+    Upstream's ``GET /api/companies/{co}/labels`` returns a bare JSON array;
+    the Inbox filter chip dropdown reads ``data?.labels`` so we wrap the
+    response server-side via ``envelope_list``.
+    """
+    admin = MagicMock()
+    admin.list_company_labels = AsyncMock(
+        return_value=[
+            {"id": "lbl_1", "name": "bug", "color": "#dc2626"},
+            {"id": "lbl_2", "name": "feature", "color": "#16a34a"},
+        ]
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues/labels",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "labels" in body
+    assert len(body["labels"]) == 2
+    assert body["labels"][0]["name"] == "bug"
+    admin.list_company_labels.assert_awaited_once_with(
+        company_id="co_abc",
+        session_cookie="cookie",
+    )

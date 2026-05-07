@@ -155,10 +155,9 @@ describe("InboxPage", () => {
       error: null,
     });
     render(<InboxPage {...baseProps} />);
-    // Both the mobile + desktop search input render with data-page-search.
-    const searchInput = document.querySelector(
-      "input[data-page-search]",
-    ) as HTMLInputElement;
+    // PR2 atom port: PanelToolbar emits `<input type="search">` (role=searchbox).
+    // Both mobile + desktop variants are present; either one drives state.
+    const searchInput = screen.getAllByRole("searchbox")[0] as HTMLInputElement;
     fireEvent.change(searchInput, { target: { value: "zzzzzz" } });
     expect(
       screen.getByText(/no inbox items match your search/i),

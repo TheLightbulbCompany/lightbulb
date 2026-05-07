@@ -24,6 +24,7 @@ import {
 } from "@/components/teams/dashboard/ActivityCharts";
 import { ActivityRow } from "@/components/teams/dashboard/ActivityRow";
 import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
+import { PanelMasthead } from "@/components/teams/shell";
 import type {
   DashboardResponse,
   DashboardSummary,
@@ -133,40 +134,13 @@ export function DashboardPanel() {
   const totalApprovals =
     dashboard.pendingApprovals + dashboard.budgets.pendingApprovals;
 
-  const today = new Date().toLocaleDateString(undefined, {
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  });
-
   return (
-    <div className="editorial-page p-4 sm:p-6 lg:p-8 flex flex-col gap-7 max-w-[1600px] mx-auto w-full">
-      {/* Header — editorial-grid masthead */}
-      <header
-        className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 pb-3"
-        style={{ borderBottom: "1px solid var(--edge)" }}
-      >
-        <div className="space-y-1">
-          <p
-            className="text-[10px] font-semibold uppercase tracking-[0.12em]"
-            style={{ color: "var(--mute)" }}
-          >
-            Overview
-          </p>
-          <h1
-            className="font-editorial-serif text-5xl leading-none"
-            style={{ color: "var(--ink)" }}
-          >
-            Dashboard
-          </h1>
-        </div>
-        <p
-          className="text-xs tabular-nums font-mono pb-1"
-          style={{ color: "var(--mute)" }}
-        >
-          {today}
-        </p>
-      </header>
+    <div className="editorial-page p-4 sm:p-6 lg:p-8 flex flex-col gap-6 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead
+        overline="Operations"
+        title="Dashboard"
+        meta="Last 14 days"
+      />
 
       {/* Metric tiles — single continuous strip with internal hairlines */}
       <section

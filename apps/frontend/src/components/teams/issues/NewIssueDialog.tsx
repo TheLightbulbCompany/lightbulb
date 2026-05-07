@@ -1,8 +1,9 @@
 // Ported from upstream Paperclip's NewIssueDialog
 // (paperclip/ui/src/components/NewIssueDialog.tsx) (MIT, (c) 2025 Paperclip AI).
-// v1: title + description + status + priority + project + assignee. Drops
-// markdown editor, attachments, reviewer/approver, execution-workspace,
-// model overrides, labels, parent-issue picker, draft autosave.
+// v1: title + description + priority + project + assignee. Drops markdown editor,
+// attachments, reviewer/approver, execution-workspace, model overrides, labels,
+// parent-issue picker, draft autosave. Status is set server-side on create
+// (BFF CreateIssueBody schema forbids it; use PATCH to change post-create).
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 // PR 4 (atoms port): wrapped in <EditorialDialog>; Cancel / Create are
 // <EditorialButton>s.
@@ -17,17 +18,8 @@ import { useIssueMutations } from "./hooks/useIssueMutations";
 import type {
   CompanyAgent,
   IssueProject,
-  IssueStatus,
   IssuePriority,
 } from "@/components/teams/shared/types";
-
-const STATUS_OPTIONS: { value: IssueStatus; label: string }[] = [
-  { value: "todo", label: "Todo" },
-  { value: "in_progress", label: "In progress" },
-  { value: "in_review", label: "In review" },
-  { value: "blocked", label: "Blocked" },
-  { value: "done", label: "Done" },
-];
 
 const PRIORITY_OPTIONS: { value: IssuePriority; label: string }[] = [
   { value: "critical", label: "Critical" },
@@ -55,7 +47,6 @@ export function NewIssueDialog({
   const { create } = useIssueMutations();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [status, setStatus] = useState<IssueStatus>("todo");
   const [priority, setPriority] = useState<IssuePriority>("medium");
   const [projectId, setProjectId] = useState<string>("");
   const [assigneeAgentId, setAssigneeAgentId] = useState<string>("");
@@ -65,7 +56,6 @@ export function NewIssueDialog({
   const reset = () => {
     setTitle("");
     setDescription("");
-    setStatus("todo");
     setPriority("medium");
     setProjectId("");
     setAssigneeAgentId("");
@@ -86,7 +76,6 @@ export function NewIssueDialog({
       const issue = await create({
         title: trimmedTitle,
         description: description.trim() || undefined,
-        status,
         priority,
         projectId: projectId || undefined,
         assigneeAgentId: assigneeAgentId || undefined,
@@ -173,53 +162,28 @@ export function NewIssueDialog({
             style={selectStyle}
           />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label
-              htmlFor="new-issue-status"
-              className="section-label"
-              style={{ ...labelStyle, marginTop: 0 }}
-            >
-              <b>Status</b>
-            </label>
-            <select
-              id="new-issue-status"
-              value={status}
-              onChange={(e) => setStatus(e.target.value as IssueStatus)}
-              disabled={submitting}
-              className="w-full rounded px-3 py-2 text-sm"
-              style={selectStyle}
-            >
-              {STATUS_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label
-              htmlFor="new-issue-priority"
-              className="section-label"
-              style={{ ...labelStyle, marginTop: 0 }}
-            >
-              <b>Priority</b>
-            </label>
-            <select
-              id="new-issue-priority"
-              value={priority}
-              onChange={(e) => setPriority(e.target.value as IssuePriority)}
-              disabled={submitting}
-              className="w-full rounded px-3 py-2 text-sm"
-              style={selectStyle}
-            >
-              {PRIORITY_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div>
+          <label
+            htmlFor="new-issue-priority"
+            className="section-label"
+            style={{ ...labelStyle, marginTop: 0 }}
+          >
+            <b>Priority</b>
+          </label>
+          <select
+            id="new-issue-priority"
+            value={priority}
+            onChange={(e) => setPriority(e.target.value as IssuePriority)}
+            disabled={submitting}
+            className="w-full rounded px-3 py-2 text-sm"
+            style={selectStyle}
+          >
+            {PRIORITY_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
         </div>
         {projects.length > 0 && (
           <div>

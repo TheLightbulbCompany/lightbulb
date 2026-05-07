@@ -123,3 +123,148 @@ async def test_chat_agents_create_with_no_name_falls_through_to_gateway(monkeypa
     pair_mock.assert_not_awaited()
     # No response emitted by the interception — dispatcher handles it.
     mgmt_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chat_agents_create_paperclip_failure_responds_ok_false(monkeypatch):
+    """If _paperclip_create_for_chat raises, the dispatcher's safety
+    try/except must:
+    1. Send an ok:false response frame back to the WS client (so the
+       frontend isn't left hanging).
+    2. NOT forward the original agents.create RPC to the gateway —
+       otherwise we'd leak a phantom agent without the Paperclip pairing.
+    3. NOT call pair_with_openclaw — there is no Paperclip agent to pair.
+
+    Drives _process_rpc_background end-to-end so the safety net at
+    routers/websocket_chat.py:685-704 is covered."""
+    pc_create_mock = AsyncMock(side_effect=RuntimeError("paperclip is down"))
+    pair_mock = AsyncMock()
+    pool_mock = MagicMock()
+    pool_mock.send_rpc = AsyncMock()
+
+    monkeypatch.setattr(
+        "routers.websocket_chat._paperclip_create_for_chat", pc_create_mock,
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.pair_with_openclaw", pair_mock,
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_gateway_pool",
+        MagicMock(return_value=pool_mock),
+    )
+
+    ecs_mock = MagicMock()
+    ecs_mock.resolve_running_container = AsyncMock(
+        return_value=({"gateway_token": "gw_token"}, "10.0.0.5"),
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_ecs_manager",
+        MagicMock(return_value=ecs_mock),
+    )
+
+    mgmt_mock = MagicMock()
+    mgmt_mock.send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_management_api_client",
+        AsyncMock(return_value=mgmt_mock),
+    )
+
+    from routers.websocket_chat import _process_rpc_background
+
+    await _process_rpc_background(
+        connection_id="conn-fail-1",
+        user_id="user_a",
+        owner_id="user_a",
+        req_id="req-fail-1",
+        method="agents.create",
+        params={"name": "Reviewer", "role": "engineer"},
+    )
+
+    # Paperclip create was attempted; pair was never reached.
+    pc_create_mock.assert_awaited_once()
+    pair_mock.assert_not_awaited()
+
+    # Original RPC was NOT forwarded to the gateway — that would leak a
+    # phantom agent.
+    pool_mock.send_rpc.assert_not_awaited()
+
+    # ok:false response was emitted with the failure surfaced as an error.
+    mgmt_mock.send_message.assert_called_once()
+    target_conn, frame = mgmt_mock.send_message.call_args.args
+    assert target_conn == "conn-fail-1"
+    assert frame["type"] == "res"
+    assert frame["id"] == "req-fail-1"
+    assert frame["ok"] is False
+    assert "error" in frame
+    assert "paperclip is down" in frame["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_chat_agents_create_pair_failure_responds_ok_false(monkeypatch):
+    """If pair_with_openclaw raises after Paperclip created the agent,
+    the dispatcher's safety try/except must still respond ok:false and
+    must NOT forward the original RPC to the gateway. The Paperclip
+    agent is left orphan-paired (no OpenClaw twin) — that cleanup is a
+    separate concern; this test only pins the WS-contract behaviour."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    pc_create_mock = AsyncMock(
+        return_value={"id": pc_uuid, "name": "Reviewer", "role": "engineer"},
+    )
+    pair_mock = AsyncMock(side_effect=RuntimeError("gateway timeout"))
+    pool_mock = MagicMock()
+    pool_mock.send_rpc = AsyncMock()
+
+    monkeypatch.setattr(
+        "routers.websocket_chat._paperclip_create_for_chat", pc_create_mock,
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.pair_with_openclaw", pair_mock,
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_gateway_pool",
+        MagicMock(return_value=pool_mock),
+    )
+
+    ecs_mock = MagicMock()
+    ecs_mock.resolve_running_container = AsyncMock(
+        return_value=({"gateway_token": "gw_token"}, "10.0.0.5"),
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_ecs_manager",
+        MagicMock(return_value=ecs_mock),
+    )
+
+    mgmt_mock = MagicMock()
+    mgmt_mock.send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_management_api_client",
+        AsyncMock(return_value=mgmt_mock),
+    )
+
+    from routers.websocket_chat import _process_rpc_background
+
+    await _process_rpc_background(
+        connection_id="conn-fail-2",
+        user_id="user_a",
+        owner_id="user_a",
+        req_id="req-fail-2",
+        method="agents.create",
+        params={"name": "Reviewer", "role": "engineer"},
+    )
+
+    # Both inner steps were attempted; pairing raised.
+    pc_create_mock.assert_awaited_once()
+    pair_mock.assert_awaited_once()
+
+    # Original RPC was NOT forwarded to the gateway.
+    pool_mock.send_rpc.assert_not_awaited()
+
+    # ok:false response was emitted with the failure surfaced as an error.
+    mgmt_mock.send_message.assert_called_once()
+    target_conn, frame = mgmt_mock.send_message.call_args.args
+    assert target_conn == "conn-fail-2"
+    assert frame["type"] == "res"
+    assert frame["id"] == "req-fail-2"
+    assert frame["ok"] is False
+    assert "error" in frame
+    assert "gateway timeout" in frame["error"]["message"]

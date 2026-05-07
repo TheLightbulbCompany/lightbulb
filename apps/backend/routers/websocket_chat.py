@@ -529,6 +529,12 @@ async def _paperclip_create_for_chat(
             service_token=service_token.mint(creator_user_id),
             user_id=creator_user_id,
         )
+        # No idempotency_key: keying on (creator_user_id, name) returns a
+        # stale (potentially deleted) record if the same friendly name is
+        # reused within Paperclip's 24h dedupe window — same regression
+        # class as memory feedback_stripe_idempotency_with_stable_keys.
+        # Paperclip's create_agent treats idempotency_key as Optional, so
+        # dropping it is safe.
         return await admin_client.create_agent(
             company_id=company_id,
             name=name,
@@ -536,7 +542,6 @@ async def _paperclip_create_for_chat(
             adapter_type=OPENCLAW_GATEWAY_TYPE,
             adapter_config=adapter_config,
             session_cookie=admin_cookie,
-            idempotency_key=f"{creator_user_id}:chat-agent:{name}",
         )
     finally:
         await http.aclose()

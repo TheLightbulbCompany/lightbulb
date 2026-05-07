@@ -51,4 +51,26 @@ describe("EditorialDialog", () => {
     );
     expect(screen.getByRole("button", { name: "OK" })).toBeInTheDocument();
   });
+
+  it("merges caller className onto DialogContent", () => {
+    render(
+      <EditorialDialog open onOpenChange={() => {}} title="X" className="custom-class">
+        body
+      </EditorialDialog>
+    );
+    // DialogContent has role="dialog" — find via that
+    expect(screen.getByRole("dialog")).toHaveClass("custom-class");
+  });
+
+  it("does not render visible description when omitted", () => {
+    render(
+      <EditorialDialog open onOpenChange={() => {}} title="X">
+        body
+      </EditorialDialog>
+    );
+    // The visible description region should not be present
+    // (the sr-only fallback is intentionally invisible — it should not surface to getByText)
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelector(".text-\\[var\\(--mute\\)\\]")).toBeNull();
+  });
 });

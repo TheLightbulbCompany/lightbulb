@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 export interface EditorialDialogProps {
   open: boolean;
@@ -16,6 +17,7 @@ export interface EditorialDialogProps {
   description?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  className?: string;
 }
 
 export function EditorialDialog({
@@ -25,17 +27,27 @@ export function EditorialDialog({
   description,
   children,
   footer,
+  className,
 }: EditorialDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="border-[var(--edge)] bg-[var(--cream)] text-[var(--ink)] sm:max-w-[520px]">
+      <DialogContent
+        className={cn(
+          "border-[var(--edge)] bg-[var(--cream)] text-[var(--ink)] sm:max-w-[520px]",
+          className,
+        )}
+      >
         <DialogHeader>
           <DialogTitle className="font-editorial-serif text-[22px] leading-tight text-[var(--ink)]">
             {title}
           </DialogTitle>
-          {description && (
+          {description ? (
             <DialogDescription className="text-[13px] text-[var(--mute)]">
               {description}
+            </DialogDescription>
+          ) : (
+            <DialogDescription className="sr-only">
+              {/* Empty fallback to satisfy Radix a11y; consumer didn't supply one. */}
             </DialogDescription>
           )}
         </DialogHeader>

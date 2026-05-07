@@ -64,13 +64,17 @@ Run `skill-vetter` against every skill in the stack. Enable `sona-security-audit
 
 ## Step 6: Run Activation Check
 
-Run `pulse-activation-check.js`. It verifies:
-- `OPENCLAW_HOOK_TOKEN` and `PERPLEXITY_API_KEY` are set
-- Default fast-io keys exist
-- All 4 cron jobs are registered
-- `#pulse-content` is accessible
+Run `pulse-activation-check.js` with the current configuration piped in as JSON on stdin:
 
-Exit code 0 means go. Exit code 1 means a blocker — surface to the user.
+- `brand_voice` — the brand voice document (must include `adjectives`, `on_off_brand_pairs`, `tone_scales`, `anti_patterns`, `banned_phrases`, `terminology`, `audience_profiles`)
+- `social_connection` — `{connected, platform, draft_mode}` for the configured social scheduler
+- `email_connection` — `{connected, platform}` for the configured email platform
+- `geo_queries` — array of configured GEO queries
+- `competitors` — array of configured competitor entries
+
+A missing or incomplete brand voice document is a blocker — Pulse cannot generate content without one. Missing social scheduler, email platform, GEO queries, or competitors are warnings, not blockers, since each is surfaced lazily via the click-to-connect pattern when the user first asks for something that needs it.
+
+Exit code 0 means no blockers. Exit code 1 means a blocker — surface to the user.
 
 ## Step 7: Announce Readiness
 

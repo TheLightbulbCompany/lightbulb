@@ -190,10 +190,23 @@ function routeVertical(vertical, configuredDatabases) {
   }
 
   if (!stack) {
+    // Escape hatch: unknown vertical routes to agent loop for judgment
+    // instead of forcing a technology fallback that may be wrong.
+    // The agent loop can construct a custom database stack from available
+    // configured databases, or ask the user for clarification.
     return {
-      error: true,
-      message: `Unknown vertical: ${vertical}. Available: ${Object.keys(VERTICAL_STACKS).join(', ')}`,
-      fallback: 'technology'
+      error: false,
+      needs_agent_loop: true,
+      message: `Vertical "${vertical}" doesn't match the 10 predefined categories. The agent loop should determine the right database stack based on the user's ICP description and available databases.`,
+      vertical: normalizedVertical,
+      available_verticals: Object.keys(VERTICAL_STACKS),
+      // Provide universal databases as a starting point
+      databases: UNIVERSAL_ENRICHMENT.map(db => ({
+        ...db,
+        available: (configuredDatabases || []).includes(db.name) || db.always_run
+      })),
+      configured_databases: configuredDatabases || [],
+      signal_sources: { news: ['perplexity'], intent: ['bombora', '6sense'] }
     };
   }
 

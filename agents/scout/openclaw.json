@@ -27,15 +27,7 @@
         ],
         "tools": {
           "profile": "coding",
-          "alsoAllow": ["lobster", "llm-task", "message"],
-          "deny": [
-            "foxreach-io",
-            "campaign-orchestrator",
-            "phone-caller",
-            "firecrawl",
-            "tavily",
-            "api-gateway"
-          ]
+          "alsoAllow": ["lobster", "llm-task", "message"]
         }
       }
     ]

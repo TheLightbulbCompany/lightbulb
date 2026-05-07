@@ -142,11 +142,29 @@ async function main() {
 
     const composite = computeComposite(scores);
 
+    // Escape hatch: flag signals that need agent loop judgment
+    const needsAgentLoop =
+      // Novel signal type the scorer doesn't have patterns for
+      (!signal.signal_type || signal.signal_type === 'unknown') ||
+      // ICP data too sparse to score meaningfully
+      (scores.icp_fit === 50 && !signal.prospect?.company_size && !signal.prospect?.industry) ||
+      // Borderline — within 5 points of threshold, agent should weigh in
+      (Math.abs(composite - threshold) <= 5) ||
+      // Compound signal (multiple signal types on same prospect)
+      (signal.compound_signals && signal.compound_signals.length > 1);
+
     return {
       ...signal,
       scores,
       composite_score: composite,
-      qualified: composite >= threshold
+      qualified: composite >= threshold,
+      needs_agent_loop: needsAgentLoop,
+      agent_loop_reason: needsAgentLoop
+        ? ((!signal.signal_type || signal.signal_type === 'unknown') ? 'novel_signal_type' :
+           scores.icp_fit === 50 ? 'sparse_icp_data' :
+           Math.abs(composite - threshold) <= 5 ? 'borderline_score' :
+           'compound_signal')
+        : null
     };
   });
 

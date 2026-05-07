@@ -69,4 +69,14 @@ describe("InboxPage atom contract", () => {
       screen.getByRole("heading", { level: 1, name: /inbox/i }),
     ).toBeInTheDocument();
   });
+
+  it("renders PanelEmptyState shape when no inbox items match the active tab", () => {
+    // Default `useInboxData` mock returns empty arrays for all three tab
+    // buckets, so the page renders the empty branch. PanelEmptyState renders
+    // the headline as an h2 with the editorial Lora-italic class.
+    render(<InboxPage companyId="c1" currentUserId="u1" />);
+    const headline = screen.getByRole("heading", { level: 2 });
+    expect(headline).toHaveClass("font-editorial-serif");
+    expect(headline).toHaveTextContent(/inbox zero/i);
+  });
 });

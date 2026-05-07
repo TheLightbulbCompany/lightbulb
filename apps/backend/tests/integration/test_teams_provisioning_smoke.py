@@ -336,10 +336,11 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         "authToken must be the per-user service token, not encrypted ciphertext or a placeholder"
     )
 
-    # 5. sessionKeyStrategy is fixed (per spec §5; openclaw_gateway uses
-    # a per-user session so the gateway can route every chat to the
-    # right OpenClaw container).
-    assert adapter_config["sessionKeyStrategy"] == "fixed"
+    # 5. sessionKeyStrategy is "issue" so each Paperclip issue gets its
+    # own OpenClaw session (transcripts don't bleed across unrelated
+    # issues). The sessionKey field is the fallback for manual wakes
+    # without an issueId.
+    assert adapter_config["sessionKeyStrategy"] == "issue"
 
     # 6. sessionKey is the user_id (so the gateway routes to the right
     # OpenClaw container regardless of which agent is calling).

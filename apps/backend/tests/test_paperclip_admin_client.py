@@ -176,7 +176,7 @@ async def test_create_agent_passes_adapter_type_and_config(client_factory):
         adapter_config={
             "url": "wss://ws-dev.isol8.co",
             "authToken": "svc_token_xyz",
-            "sessionKeyStrategy": "fixed",
+            "sessionKeyStrategy": "issue",
             "sessionKey": "user_123",
         },
     )

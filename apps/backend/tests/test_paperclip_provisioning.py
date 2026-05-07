@@ -215,7 +215,7 @@ async def test_provision_org_happy_path(repo):
     assert agent_kwargs["adapter_type"] == "openclaw_gateway"
     assert agent_kwargs["adapter_config"]["url"] == "wss://ws-dev.isol8.co"
     assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
-    assert agent_kwargs["adapter_config"]["sessionKeyStrategy"] == "fixed"
+    assert agent_kwargs["adapter_config"]["sessionKeyStrategy"] == "issue"
     assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted
     # Agent is owned BY the user (their session) so they can edit it later.
     assert agent_kwargs["session_cookie"] == "owner-session-1"

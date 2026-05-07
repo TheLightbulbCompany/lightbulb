@@ -92,7 +92,7 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     assert call.kwargs["adapter_config"] == {
         "url": "wss://ws-dev.isol8.co",
         "authToken": "decrypted-token",
-        "sessionKeyStrategy": "fixed",
+        "sessionKeyStrategy": "issue",
         "sessionKey": "u1",
     }
 
@@ -129,7 +129,7 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
             "adapterConfig": {
                 "url": "wss://ws-dev.isol8.co",
                 "authToken": "SENSITIVE_USER_TOKEN",
-                "sessionKeyStrategy": "fixed",
+                "sessionKeyStrategy": "issue",
                 "sessionKey": "u1",
             },
         }

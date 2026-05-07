@@ -69,6 +69,42 @@ describe("MembersPanel atom contract", () => {
     expect(headline).toHaveTextContent(/no members yet/i);
   });
 
+  it("renders a Loading… status while SWR is fetching (Codex P2 regression)", () => {
+    // Initial fetch: data is undefined + isLoading is true. Without the
+    // explicit loading branch the panel would fall through to PanelDataTable
+    // with zero rows and look like the list is empty.
+    mockRead.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      error: null,
+    });
+
+    render(<MembersPanel />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/loading/i);
+    // The empty-state h2 must not render in the loading branch — that would
+    // mislead users into thinking they have no members yet.
+    expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
+  });
+
+  it("Clerk CTA is a single interactive control (not a nested <a><button>)", () => {
+    // Codex P2 regression: nested interactive controls are invalid HTML and
+    // break keyboard / screen-reader activation. The deeplink must render as
+    // a single <a> styled with editorial-btn classes — no <button> child.
+    mockRead.mockReturnValue({
+      data: { members: [] },
+      isLoading: false,
+      error: null,
+    });
+
+    render(<MembersPanel />);
+    const link = screen.getByRole("link", { name: /manage in clerk/i });
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveClass("editorial-btn");
+    // Must NOT contain a nested <button>.
+    expect(link.querySelector("button")).toBeNull();
+  });
+
   it("renders PanelDataTable rows when members are present", () => {
     mockRead.mockReturnValue({
       data: {

@@ -5,7 +5,6 @@ import {
   PanelMasthead,
   PanelEmptyState,
   PanelDataTable,
-  EditorialButton,
   type PanelDataColumn,
 } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -76,17 +75,20 @@ export function MembersPanel() {
         overline="Team"
         title="Members"
         actions={
+          // Render as a plain anchor styled with the editorial-btn classes so
+          // we don't nest interactive controls (`<a><button>` is invalid HTML
+          // and breaks keyboard / screen-reader activation). Same visual as
+          // <EditorialButton variant="secondary">.
           <a
             href={CLERK_DASHBOARD_URL}
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Manage in Clerk"
+            className="editorial-btn editorial-btn--secondary editorial-btn--md"
           >
-            <EditorialButton variant="secondary">
-              <Users className="size-4" />
-              Manage in Clerk
-              <ExternalLink className="size-3" />
-            </EditorialButton>
+            <Users className="size-4" />
+            Manage in Clerk
+            <ExternalLink className="size-3" />
           </a>
         }
       />
@@ -94,7 +96,15 @@ export function MembersPanel() {
         Member management is handled by Clerk.
       </p>
 
-      {!isLoading && members.length === 0 ? (
+      {isLoading && members.length === 0 ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="font-editorial-serif text-xl italic text-[var(--mute)]"
+        >
+          Loading…
+        </div>
+      ) : members.length === 0 ? (
         <PanelEmptyState
           icon={Users}
           headline="No members yet."

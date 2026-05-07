@@ -65,6 +65,15 @@ export function PanelDataTable<Row>({
             <TableHead
               key={col.key}
               style={col.width ? { width: col.width } : undefined}
+              aria-sort={
+                col.sortable
+                  ? sortKey === col.key
+                    ? sortDir === "asc"
+                      ? "ascending"
+                      : "descending"
+                    : "none"
+                  : undefined
+              }
               className={cn(
                 "text-[10px] font-semibold uppercase tracking-[0.12em]",
                 col.align === "right" && "text-right",

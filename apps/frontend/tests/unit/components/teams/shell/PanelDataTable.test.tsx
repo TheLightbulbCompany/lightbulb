@@ -104,4 +104,39 @@ describe("PanelDataTable", () => {
     expect(screen.getByRole("button", { name: /count/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /name/i })).not.toBeInTheDocument();
   });
+
+  it("sets aria-sort on the active sortable column", () => {
+    render(
+      <PanelDataTable<Row>
+        rows={ROWS}
+        columns={COLUMNS}
+        rowKey={(r) => r.id}
+        sortKey="name"
+        sortDir="desc"
+        onSortChange={vi.fn()}
+      />
+    );
+    expect(screen.getByRole("columnheader", { name: /name/i })).toHaveAttribute("aria-sort", "descending");
+    // The other sortable column ("Count") should be "none"
+    expect(screen.getByRole("columnheader", { name: /count/i })).toHaveAttribute("aria-sort", "none");
+  });
+
+  it("does not set aria-sort on non-sortable columns", () => {
+    const cols: PanelDataColumn<Row>[] = [
+      { key: "name", header: "Name", cell: (r) => r.name }, // sortable not set
+      { key: "count", header: "Count", cell: (r) => r.count, sortable: true },
+    ];
+    render(
+      <PanelDataTable<Row>
+        rows={ROWS}
+        columns={cols}
+        rowKey={(r) => r.id}
+        onSortChange={vi.fn()}
+        sortKey="count"
+        sortDir="asc"
+      />
+    );
+    expect(screen.getByRole("columnheader", { name: /name/i })).not.toHaveAttribute("aria-sort");
+    expect(screen.getByRole("columnheader", { name: /count/i })).toHaveAttribute("aria-sort", "ascending");
+  });
 });

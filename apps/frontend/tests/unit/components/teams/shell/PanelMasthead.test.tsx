@@ -11,7 +11,7 @@ describe("PanelMasthead", () => {
 
   it("renders meta on the right", () => {
     render(<PanelMasthead overline="X" title="Y" meta="Mon, May 7" />);
-    expect(screen.getByText("Mon, May 7")).toBeInTheDocument();
+    expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("Mon, May 7");
   });
 
   it("renders actions slot", () => {
@@ -21,11 +21,9 @@ describe("PanelMasthead", () => {
     expect(screen.getByRole("button", { name: "Create" })).toBeInTheDocument();
   });
 
-  it("does not render meta region when meta is omitted", () => {
+  it("does not render meta when omitted", () => {
     render(<PanelMasthead overline="X" title="Y" />);
-    // The meta `<p>` shouldn't exist
-    expect(screen.queryByText("X")).toBeInTheDocument(); // overline still there
-    // No tabular/font-mono text other than possibly the title (which uses font-editorial-serif)
+    expect(screen.queryByTestId("panel-masthead-meta")).not.toBeInTheDocument();
   });
 
   it("merges caller className", () => {

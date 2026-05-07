@@ -32,12 +32,19 @@ export function PanelMasthead({
           {title}
         </h1>
       </div>
-      <div className="flex items-center gap-3 sm:pb-1">
-        {meta && (
-          <p className="text-xs tabular-nums font-mono text-[var(--mute)]">{meta}</p>
-        )}
-        {actions}
-      </div>
+      {(meta || actions) && (
+        <div className="flex items-center gap-3 sm:pb-1">
+          {meta && (
+            <p
+              data-testid="panel-masthead-meta"
+              className="text-xs tabular-nums font-mono text-[var(--mute)]"
+            >
+              {meta}
+            </p>
+          )}
+          {actions}
+        </div>
+      )}
     </header>
   );
 }

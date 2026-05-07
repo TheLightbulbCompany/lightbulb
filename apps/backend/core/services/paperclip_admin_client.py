@@ -1194,6 +1194,24 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_routine_runs(
+        self,
+        *,
+        routine_id: str,
+        session_cookie: str,
+    ) -> list[dict]:
+        """List run history for a routine.
+
+        Maps to ``GET /api/routines/{routineId}/runs`` upstream
+        (paperclip/server/src/routes/routines.ts:150). Returns a list of
+        run objects (id, status, startedAt, completedAt, etc.).
+        """
+        result = await self._get(
+            f"/api/routines/{routine_id}/runs",
+            session_cookie=session_cookie,
+        )
+        return result if isinstance(result, list) else []
+
     # ------------------------------------------------------------------
     # Goals
     # ------------------------------------------------------------------

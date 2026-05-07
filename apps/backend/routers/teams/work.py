@@ -95,6 +95,19 @@ async def run_routine(
     )
 
 
+@router.get("/routines/{routine_id}/runs")
+async def list_routine_runs(
+    routine_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """List run history for a routine."""
+    upstream = await _agents._admin().list_routine_runs(
+        routine_id=routine_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(upstream, "runs")
+
+
 # ---- Goals ------------------------------------------------------------
 
 

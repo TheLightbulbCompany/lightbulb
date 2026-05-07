@@ -44,6 +44,7 @@ def admin(monkeypatch):
         "patch_routine",
         "delete_routine",
         "run_routine",
+        "list_routine_runs",
         "list_goals",
         "create_goal",
         "patch_goal",
@@ -120,6 +121,34 @@ def test_run_routine_proxies_upstream(client, monkeypatch):
     admin.run_routine.assert_awaited_once_with(
         routine_id="r1",
         body={"reason": "manual"},
+        session_cookie="cookie",
+    )
+
+
+def test_list_routine_runs_returns_envelope(client, monkeypatch):
+    """GET /teams/routines/{id}/runs proxies upstream + wraps in {runs: [...]} envelope."""
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.list_routine_runs = AsyncMock(
+        return_value=[
+            {"id": "run_1", "status": "completed", "startedAt": "2026-05-07T10:00:00Z"},
+            {"id": "run_2", "status": "running", "startedAt": "2026-05-07T11:00:00Z"},
+        ]
+    )
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/routines/r1/runs",
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200
+    body = r.json()
+    assert "runs" in body
+    assert len(body["runs"]) == 2
+    admin.list_routine_runs.assert_awaited_once_with(
+        routine_id="r1",
         session_cookie="cookie",
     )
 

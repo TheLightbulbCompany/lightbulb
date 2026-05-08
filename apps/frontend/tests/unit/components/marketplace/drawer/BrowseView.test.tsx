@@ -10,6 +10,23 @@ vi.mock("@/hooks/useCatalog", () => ({
   useCatalog: () => ({ installedSlugs: new Set(["pulse"]) }),
 }));
 
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({
+    state: { freshlyInstalledAgentId: null, toast: null },
+    open: vi.fn(),
+    close: vi.fn(),
+    setView: vi.fn(),
+    showInstallToast: vi.fn(),
+    dismissToast: vi.fn(),
+    setFreshlyInstalled: vi.fn(),
+  }),
+}));
+
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => ({ getToken: vi.fn().mockResolvedValue("tok_test") }),
+  useUser: () => ({ user: { primaryEmailAddress: { emailAddress: "buyer@example.com" } } }),
+}));
+
 import { BrowseView } from "@/components/marketplace/drawer/BrowseView";
 
 const SAMPLE = [

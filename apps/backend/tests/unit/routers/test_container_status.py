@@ -365,6 +365,98 @@ class TestContainerStatusGate:
         assert result["service_name"] == "openclaw-existing"
         assert result["status"] == "running"
 
+    @pytest.mark.asyncio
+    async def test_admin_subscription_required_returns_404_for_picker(self):
+        """Admin owner with no billing row: gate fires subscription_required,
+        but /status returns 404 so the frontend renders the ProviderPicker
+        (the only checkout entry point) instead of a Subscribe button that
+        loops to /onboarding."""
+        from fastapi import HTTPException
+
+        from core.services.provision_gate import Gate
+        from routers.container import container_status
+
+        fake_gate = Gate(
+            code="subscription_required",
+            title="Subscribe to start your container",
+            message="An active subscription is required to provision a container.",
+            action_label="Subscribe",
+            action_href="/onboarding",
+            action_admin_only=True,
+            owner_role="admin",
+        )
+
+        mock_auth = SimpleNamespace(
+            user_id="user_x",
+            org_id=None,
+            is_org_context=False,
+            is_org_admin=False,
+        )
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+        fake_ecs.get_service_status = AsyncMock(return_value=None)
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch(
+                "routers.container.evaluate_provision_gate",
+                new_callable=AsyncMock,
+                return_value=fake_gate,
+            ),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await container_status(auth=mock_auth)
+
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_member_subscription_required_still_returns_402(self):
+        """Non-admin org member with no billing row on the org: gate still
+        fires 402 so the member sees 'ask your org admin' instead of a
+        ProviderPicker that would 403 on click."""
+        from fastapi import HTTPException
+
+        from core.services.provision_gate import Gate
+        from routers.container import container_status
+
+        fake_gate = Gate(
+            code="subscription_required",
+            title="Subscribe to start your container",
+            message="An active subscription is required to provision a container.",
+            action_label="Subscribe",
+            action_href="/onboarding",
+            action_admin_only=True,
+            owner_role="member",
+        )
+
+        mock_auth = SimpleNamespace(
+            user_id="user_x",
+            org_id="org_x",
+            is_org_context=True,
+            is_org_admin=False,
+        )
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+        fake_ecs.get_service_status = AsyncMock(return_value=None)
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch(
+                "routers.container.evaluate_provision_gate",
+                new_callable=AsyncMock,
+                return_value=fake_gate,
+            ),
+            patch("routers.container.resolve_owner_id", return_value="org_x"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await container_status(auth=mock_auth)
+
+        assert exc.value.status_code == 402
+        assert exc.value.detail["blocked"]["code"] == "subscription_required"
+
 
 class TestGatewayRestart:
     """Test POST /api/v1/container/gateway/restart."""

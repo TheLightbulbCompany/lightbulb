@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
-import { useContainerStatus } from "@/hooks/useContainerStatus";
+import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useBilling } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -107,7 +107,9 @@ export function OverviewPanel() {
     mutate: refreshHealth,
   } = useGatewayRpc<HealthResponse>("health", undefined, { refreshInterval: 10000 });
 
-  const { container, isLoading: statusLoading, error: statusError } = useContainerStatus();
+  const { container, isLoading: statusLoading, error: statusError } = useProvisioningState({
+    revalidateOnFocus: true,
+  });
   const { account } = useBilling();
   const subscriptionStatus = account?.subscription_status ?? null;
 

@@ -143,7 +143,7 @@ async def container_status(
         return {
             "service_name": None,
             "status": "provisioning",
-            "substatus": "ensure_user_ready_dispatched",
+            "substatus": "ensure_user_ready",
             "created_at": None,
             "updated_at": None,
             "region": settings.AWS_REGION,

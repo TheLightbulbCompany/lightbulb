@@ -33,6 +33,28 @@ def _org_member_auth(
     )
 
 
+def _org_admin_auth(
+    user_id: str = "user_admin",
+    org_id: str = "org_xyz",
+    email: str = "a@example.com",
+) -> AuthContext:
+    """Org-admin AuthContext. is_org_context + is_org_admin are derived properties."""
+    return AuthContext(
+        user_id=user_id,
+        org_id=org_id,
+        org_role="org:admin",
+        email=email,
+    )
+
+
+async def _noop_ensure_user_ready(auth):
+    """No-op stand-in with the real qualname so capture_task can verify
+    we dispatched the right coroutine. Using AsyncMock here would yield
+    coro.__qualname__ == 'AsyncMockMixin._execute_mock_call', which
+    defeats the contract assertion."""
+    return None
+
+
 class TestColdStartPhaseResolver:
     """Pure unit tests for the (DDB status, pool state) -> phase mapping.
 
@@ -272,8 +294,9 @@ class TestContainerStatusGate:
 
     When there's no container row yet, /status should evaluate the same
     provision gate POST /provision uses and return 402 + structured
-    `blocked` payload if a gate fires. If no gate fires, the existing 404
-    behavior is preserved (covered by test_returns_404_without_container).
+    `blocked` payload if a gate fires. If no gate fires, /status now
+    dispatches ensure_user_ready and returns a synthetic provisioning
+    response (Task 8 — was a 404 contract pre-Task-8).
     """
 
     @pytest.mark.asyncio
@@ -351,7 +374,7 @@ class TestContainerStatusGate:
 
         assert result["status"] == "provisioning"
         assert result["phase"] == "provisioning"
-        assert result["substatus"] == "ensure_user_ready_dispatched"
+        assert result["substatus"] == "ensure_user_ready"
         assert len(captured) == 1
 
     @pytest.mark.asyncio
@@ -416,7 +439,14 @@ class TestContainerStatusEnsureUserReadyDispatch:
         return 200 with phase=provisioning (not 404)."""
         from routers.container import container_status
 
-        captured = []
+        captured: list[str] = []
+
+        def capture_task(coro):
+            # Snapshot qualname BEFORE closing — coro.close() destroys the
+            # frame after which __qualname__ inspection is unsafe.
+            captured.append(coro.__qualname__)
+            coro.close()
+
         fake_ecs = MagicMock(
             resolve_running_container=AsyncMock(return_value=(None, None)),
             get_service_status=AsyncMock(return_value=None),
@@ -432,17 +462,52 @@ class TestContainerStatusEnsureUserReadyDispatch:
             ),
             patch(
                 "routers.container.ensure_user_ready",
-                new=AsyncMock(),
+                new=_noop_ensure_user_ready,
             ),
             patch(
                 "routers.container.asyncio.create_task",
-                side_effect=lambda c: captured.append(c) or c.close() or c,
+                side_effect=capture_task,
             ),
         ):
             result = await container_status(_personal_auth())
         assert result["status"] == "provisioning"
         assert result["phase"] == "provisioning"
-        assert len(captured) == 1
+        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
+
+    @pytest.mark.asyncio
+    async def test_status_no_container_org_admin_dispatches_ensure_user_ready(self):
+        """Org-admin owner role + no container + gate clear → fire ensure_user_ready,
+        return 200 with phase=provisioning. Same path as personal-owner; this test
+        pins the org-admin variant so a regression in is_org_admin → 202 short-circuit
+        is caught."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(None, None)),
+            get_service_status=AsyncMock(return_value=None),
+        )
+        with (
+            patch(
+                "routers.container.evaluate_provision_gate",
+                new=AsyncMock(return_value=None),
+            ),
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch(
+                "routers.container.ensure_user_ready",
+                new=_noop_ensure_user_ready,
+            ),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+        assert result["status"] == "provisioning"
+        assert result["phase"] == "provisioning"
+        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
 
     @pytest.mark.asyncio
     async def test_status_no_container_org_member_dispatches_ensure_user_ready_returns_202(self):
@@ -453,7 +518,12 @@ class TestContainerStatusEnsureUserReadyDispatch:
 
         from routers.container import container_status
 
-        captured = []
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
         fake_ecs = MagicMock(
             resolve_running_container=AsyncMock(return_value=(None, None)),
             get_service_status=AsyncMock(return_value=None),
@@ -461,16 +531,19 @@ class TestContainerStatusEnsureUserReadyDispatch:
         with (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch("routers.container.ensure_user_ready", new=AsyncMock()),
+            patch(
+                "routers.container.ensure_user_ready",
+                new=_noop_ensure_user_ready,
+            ),
             patch(
                 "routers.container.asyncio.create_task",
-                side_effect=lambda c: captured.append(c) or c.close() or c,
+                side_effect=capture_task,
             ),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await container_status(_org_member_auth())
         assert exc_info.value.status_code == 202
-        assert len(captured) == 1  # ensure_user_ready was dispatched
+        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
 
     @pytest.mark.asyncio
     async def test_status_no_container_gate_blocks_returns_402_unchanged(self):

@@ -123,6 +123,68 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
     assert gate.code == "oauth_required"
 
 
+@pytest.mark.asyncio
+async def test_byo_key_without_byo_provider_returns_byo_provider_required():
+    """Codex P1 (Finding D): provider_choice='byo_key' + byo_provider=None
+    must block ECS dispatch with code='byo_provider_required'.
+
+    The legacy ``POST /container/provision`` flow had a frontend
+    ``needsProviderStep`` guard for the BYO sub-choice (Anthropic/OpenAI).
+    The new poll-driven /container/status canonical trigger lost that
+    guard, so without this gate the user gets stuck in container/error
+    after picking BYO but not yet selecting a sub-provider — ECS
+    rejects with "byo_provider is required when provider_choice ==
+    'byo_key'".
+
+    Symmetric with the chatgpt_oauth gate for personal owners.
+    """
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
+        patch("core.services.provision_gate._get_byo_provider", new_callable=AsyncMock) as gbp,
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={"subscription_status": "trialing", "stripe_subscription_id": "sub_x"},
+        )
+        gp.return_value = "byo_key"
+        gbp.return_value = None  # BYO sub-choice not made yet
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+            clerk_user_id="user_x",
+            is_admin=True,
+        )
+    assert gate is not None
+    assert gate.code == "byo_provider_required"
+    # Member-actionable: the user must pick anthropic/openai themselves;
+    # admin-only would mis-block the action UI for owners who are admin
+    # of themselves (personal users).
+    assert gate.action_admin_only is False
+
+
+@pytest.mark.asyncio
+async def test_byo_key_with_byo_provider_set_passes():
+    """Once byo_provider is set (Anthropic or OpenAI), the gate clears
+    and provisioning is allowed. The downstream BYO-key existence check
+    is the responsibility of ECS provisioning, not this gate — this
+    layer only enforces "the sub-choice was made"."""
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
+        patch("core.services.provision_gate._get_byo_provider", new_callable=AsyncMock) as gbp,
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={"subscription_status": "trialing", "stripe_subscription_id": "sub_x"},
+        )
+        gp.return_value = "byo_key"
+        gbp.return_value = "anthropic"
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+            clerk_user_id="user_x",
+            is_admin=True,
+        )
+    assert gate is None  # all gates pass
+
+
 def test_gate_to_payload_shape():
     gate = Gate(
         code="credits_required",

@@ -430,6 +430,102 @@ async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
 
 
 @pytest.mark.asyncio
+async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409():
+    """Codex P2 (Finding E): provision_org raising PaperclipApiError(409)
+    must be treated as success — the canonical /container/status trigger
+    may fire this on every owner poll until container exists, so duplicate
+    calls must be idempotent.
+
+    For owners with no container row yet, the new /container/status poll
+    keeps dispatching ensure_user_ready until ECS creates the row. A slow
+    first run (~2-3s) followed by a fast second poll could collide on
+    Paperclip's sign_up_user (Better Auth 409 on duplicate email). Without
+    the 409 swallow the duplicate Better Auth call would surface as a
+    PaperclipApiError on every poll until the race resolves.
+
+    Mirrors the member-path fix from commit 6bd01b82 (see
+    test_ensure_paperclip_for_member_idempotent_on_duplicate_409).
+    """
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_provisioning = MagicMock()
+    fake_provisioning.provision_org = AsyncMock(
+        side_effect=PaperclipApiError(
+            "POST /api/auth/sign-up/email -> 409",
+            status_code=409,
+            body='{"message":"User already exists"}',
+        ),
+    )
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision.lookup_owner_email",
+            new=AsyncMock(return_value="o@example.com"),
+        ),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+        patch(
+            "core.services.user_provision.background_provision",
+            new=AsyncMock(),
+        ),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        # Should NOT raise.
+        await ensure_user_ready(_personal_auth())
+    fake_provisioning.provision_org.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
+    """Non-409 PaperclipApiError must propagate — only the duplicate-409
+    race is treated as idempotent. A blanket swallow would mask transient
+    5xx and credential errors from operator visibility (e.g. a Paperclip
+    outage would silently fall through to the container background
+    dispatch, which would then crash later in ECS without a clean signal
+    of why)."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_provisioning = MagicMock()
+    fake_provisioning.provision_org = AsyncMock(
+        side_effect=PaperclipApiError(
+            "POST /api/auth/sign-up/email -> 502",
+            status_code=502,
+            body='{"message":"bad gateway"}',
+        ),
+    )
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision.lookup_owner_email",
+            new=AsyncMock(return_value="o@example.com"),
+        ),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+    ):
+        with pytest.raises(PaperclipApiError) as exc:
+            await ensure_user_ready(_personal_auth())
+    assert exc.value.status_code == 502
+
+
+@pytest.mark.asyncio
 async def test_ensure_user_ready_does_not_dispatch_container_for_member():
     """Member path → no container dispatch."""
     fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")

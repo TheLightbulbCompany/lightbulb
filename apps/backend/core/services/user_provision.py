@@ -132,11 +132,28 @@ async def _ensure_paperclip_for_owner(
 
     provisioning = await build_paperclip_provisioning()
     try:
-        await provisioning.provision_org(
-            owner_id=owner_id,
-            owner_user_id=owner_user_id,
-            owner_email=owner_email,
-        )
+        try:
+            await provisioning.provision_org(
+                owner_id=owner_id,
+                owner_user_id=owner_user_id,
+                owner_email=owner_email,
+            )
+        except PaperclipApiError as exc:
+            # Duplicate-owner 409: race condition — the previous
+            # /container/status poll already kicked off a provision_org
+            # for this owner that hasn't yet written the
+            # ``status="active"`` DDB row. /container/status is the
+            # canonical poll trigger; provision_org may fire on every
+            # ~3s poll until ECS creates the container row, so duplicate
+            # calls must no-op. Mirrors the member-path pattern in
+            # ``_ensure_paperclip_for_member``.
+            if exc.status_code == 409:
+                logger.info(
+                    "ensure_user_ready (owner): %s already in paperclip — no-op (sign_up_user 409)",
+                    owner_id,
+                )
+            else:
+                raise
     finally:
         await close_paperclip_provisioning(provisioning)
 

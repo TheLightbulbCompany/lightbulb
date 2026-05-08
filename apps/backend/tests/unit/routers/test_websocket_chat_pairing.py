@@ -352,3 +352,224 @@ async def test_chat_agents_create_pair_failure_responds_ok_false(monkeypatch):
     assert frame["ok"] is False
     assert "error" in frame
     assert "gateway timeout" in frame["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_chat_create_redacts_paperclip_agent_before_ws_send(monkeypatch):
+    """Codex P1 (Finding A): Paperclip's create response includes
+    ``adapterConfig.authToken`` (the freshly minted OpenClaw service
+    token). The WS response that surfaces back to the browser MUST NOT
+    include that token, or any other adapter fields — those are server-
+    side wiring the browser never needs.
+
+    Mirrors the redaction every /teams handler does via ``_redact_agent``
+    in ``routers/teams/agents.py``. The fields that must be stripped are
+    listed in ``_AGENT_REDACTED_FIELDS`` (currently ``adapterConfig`` +
+    ``adapterType``).
+    """
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    SECRET_TOKEN = "svc.tok.SECRET-MUST-NOT-LEAK"  # noqa: N806
+    paperclip_agent_with_secret = {
+        "id": pc_uuid,
+        "name": "Code Reviewer",
+        "role": "engineer",
+        "adapterType": "openclaw_gateway",
+        "adapterConfig": {
+            "url": "wss://gateway.example/ws",
+            "authToken": SECRET_TOKEN,
+            "userId": "user_member_b",
+        },
+    }
+
+    pc_create_mock = AsyncMock(return_value=paperclip_agent_with_secret)
+    pair_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        "routers.websocket_chat._paperclip_create_for_chat",
+        pc_create_mock,
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.pair_with_openclaw",
+        pair_mock,
+    )
+
+    mgmt_mock = MagicMock()
+    mgmt_mock.send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_management_api_client",
+        AsyncMock(return_value=mgmt_mock),
+    )
+
+    from routers.websocket_chat import _intercept_agents_create
+
+    await _intercept_agents_create(
+        connection_id="conn-redact-1",
+        req_id="req-redact-1",
+        user_id="user_member_b",
+        owner_id="org_xyz",
+        params={"name": "Code Reviewer", "role": "engineer"},
+        ip="10.0.0.5",
+        token="gw_token",
+    )
+
+    # Capture the frame the WS client receives.
+    mgmt_mock.send_message.assert_called_once()
+    _, frame = mgmt_mock.send_message.call_args.args
+    payload_agent = frame["payload"]["agent"]
+
+    # Pin the redaction contract: adapter fields must be stripped.
+    # This matches `_AGENT_REDACTED_FIELDS = ("adapterConfig", "adapterType")`
+    # in routers/teams/agents.py. If those fields ever expand, the same
+    # set must continue to be stripped here.
+    assert "adapterConfig" not in payload_agent, f"adapterConfig leaked to WS — full payload agent: {payload_agent}"
+    assert "adapterType" not in payload_agent, f"adapterType leaked to WS — full payload agent: {payload_agent}"
+
+    # Defensive: belt-and-suspenders check that the secret token string
+    # never appears anywhere in the serialized frame.
+    import json as _json
+
+    serialized = _json.dumps(frame)
+    assert SECRET_TOKEN not in serialized, f"service token leaked into WS frame: {serialized}"
+
+    # Non-secret fields the frontend actually needs are preserved.
+    assert payload_agent["id"] == pc_uuid
+    assert payload_agent["name"] == "Code Reviewer"
+    assert payload_agent["role"] == "engineer"
+
+
+@pytest.mark.asyncio
+async def test_chat_delete_cascades_to_paperclip(monkeypatch):
+    """Codex P2 (Finding B): /chat agents.delete RPC must cascade-delete
+    the Paperclip row, not just OpenClaw + EFS.
+
+    Container reprovision rebuilds ``openclaw.json`` from
+    ``fetch_paperclip_agents_for_owner`` — leaving the Paperclip row
+    behind means the supposedly-deleted agent gets resurrected on the
+    next reprovision. The cascade matches the create-side wiring: both
+    sides of the pair are kept consistent.
+    """
+    paperclip_delete_mock = AsyncMock()
+    monkeypatch.setattr(
+        "routers.websocket_chat._paperclip_delete_for_chat",
+        paperclip_delete_mock,
+    )
+
+    # Stub the OpenClaw delete RPC + EFS cleanup so they don't try real I/O.
+    pool_mock = MagicMock()
+    pool_mock.send_rpc = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_gateway_pool",
+        MagicMock(return_value=pool_mock),
+    )
+
+    ecs_mock = MagicMock()
+    ecs_mock.resolve_running_container = AsyncMock(
+        return_value=({"gateway_token": "gw_token"}, "10.0.0.5"),
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_ecs_manager",
+        MagicMock(return_value=ecs_mock),
+    )
+
+    workspace_mock = MagicMock()
+    workspace_mock.cleanup_agent_dirs = MagicMock()
+    monkeypatch.setattr(
+        "core.containers.get_workspace",
+        MagicMock(return_value=workspace_mock),
+    )
+
+    mgmt_mock = MagicMock()
+    mgmt_mock.send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_management_api_client",
+        AsyncMock(return_value=mgmt_mock),
+    )
+
+    from routers.websocket_chat import _process_rpc_background
+
+    await _process_rpc_background(
+        connection_id="conn-del-1",
+        user_id="user_a",
+        owner_id="user_a",
+        req_id="req-del-1",
+        method="agents.delete",
+        params={"agentId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+    )
+
+    # The cascade hit Paperclip with the same agent id + owner.
+    paperclip_delete_mock.assert_awaited_once()
+    kwargs = paperclip_delete_mock.await_args.kwargs
+    assert kwargs["owner_id"] == "user_a"
+    assert kwargs["agent_id"] == "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+
+@pytest.mark.asyncio
+async def test_chat_delete_paperclip_failure_is_non_fatal(monkeypatch):
+    """Codex P2 (Finding B): a failure in the cascade Paperclip-delete
+    must NOT block the RPC response or undo the OpenClaw + EFS delete.
+
+    The Paperclip-side delete is best-effort: if it fails, the next
+    reprovision rewrites openclaw.json from the live Paperclip list
+    and the operator can retry. Failure must be logged + swallowed so
+    the user-visible /chat delete still completes.
+    """
+    paperclip_delete_mock = AsyncMock(
+        side_effect=RuntimeError("paperclip transient outage"),
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat._paperclip_delete_for_chat",
+        paperclip_delete_mock,
+    )
+
+    pool_mock = MagicMock()
+    pool_mock.send_rpc = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_gateway_pool",
+        MagicMock(return_value=pool_mock),
+    )
+
+    ecs_mock = MagicMock()
+    ecs_mock.resolve_running_container = AsyncMock(
+        return_value=({"gateway_token": "gw_token"}, "10.0.0.5"),
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_ecs_manager",
+        MagicMock(return_value=ecs_mock),
+    )
+
+    workspace_mock = MagicMock()
+    workspace_mock.cleanup_agent_dirs = MagicMock()
+    monkeypatch.setattr(
+        "core.containers.get_workspace",
+        MagicMock(return_value=workspace_mock),
+    )
+
+    mgmt_mock = MagicMock()
+    mgmt_mock.send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "routers.websocket_chat.get_management_api_client",
+        AsyncMock(return_value=mgmt_mock),
+    )
+
+    from routers.websocket_chat import _process_rpc_background
+
+    # Should NOT raise, even though the Paperclip cascade explodes.
+    await _process_rpc_background(
+        connection_id="conn-del-2",
+        user_id="user_a",
+        owner_id="user_a",
+        req_id="req-del-2",
+        method="agents.delete",
+        params={"agentId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+    )
+
+    # Cascade was attempted (and raised internally).
+    paperclip_delete_mock.assert_awaited_once()
+
+    # The original RPC response was emitted normally — the user-visible
+    # delete is still ok:true.
+    mgmt_mock.send_message.assert_called_once()
+    _, frame = mgmt_mock.send_message.call_args.args
+    assert frame["type"] == "res"
+    assert frame["id"] == "req-del-2"
+    assert frame["ok"] is True

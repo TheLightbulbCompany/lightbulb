@@ -178,6 +178,36 @@ async def test_fetch_returns_empty_on_admin_cookie_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_propagates_unexpected_errors(monkeypatch):
+    """Codex P2 (Finding C): the broad ``except Exception`` was tightened
+    to ``(PaperclipApiError, httpx.HTTPError, RuntimeError)``. Non-network
+    bugs (e.g. KeyError, AttributeError, TypeError) inside the helper or
+    the admin client must NOT be swallowed as "Paperclip unavailable" —
+    they need to surface in CloudWatch so we can fix them.
+
+    A blanket Exception catch would silently mask real programming bugs
+    behind a fallback to the legacy 'main' agent path; the resulting
+    UX would be "agents disappear from /teams" with no operator signal.
+    """
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    admin_client = MagicMock()
+    admin_client.list_agents = AsyncMock(side_effect=KeyError("missing-field"))
+
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
+        AsyncMock(return_value="cookie123"),
+    )
+
+    with pytest.raises(KeyError):
+        await fetch_paperclip_agents_for_owner(
+            owner_id="user_abc",
+            repo=repo,
+            admin_client=admin_client,
+        )
+
+
+@pytest.mark.asyncio
 async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name():
     """pair_with_openclaw sends two RPCs:
     1. agents.create with name=<paperclip_uuid> (so OpenClaw uses the

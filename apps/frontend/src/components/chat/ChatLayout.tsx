@@ -25,6 +25,7 @@ import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/compo
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { myListings } from "@/lib/marketplace/api";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -64,7 +65,7 @@ export function ChatLayout({
   // user who was always meant to be an org member. The state machine +
   // the router.replace / setActive side effects live in the hook.
   const onboardingPhase = useOnboardingGate();
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, getToken } = useAuth();
   const { user } = useUser();
   const { organization } = useOrganization();
   const router = useRouter();
@@ -94,6 +95,7 @@ export function ChatLayout({
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
+  const [publishedAgentIds, setPublishedAgentIds] = useState<Set<string>>(new Set());
 
   // TODO: wire to real approvals count when /teams/approvals BFF lands
   const approvalsCount = 0;
@@ -197,6 +199,36 @@ export function ChatLayout({
     const handle = setTimeout(() => setFreshlyInstalled(null), 600);
     return () => clearTimeout(handle);
   }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
+
+  // Fetch the seller's listings so we can render a gold pub-dot on the
+  // sidebar avatar of agents the user has published. Cross-references
+  // listing.manifest_json.agent_id (source agent at publish time) with the
+  // current installed agent set. Best-effort — failure drops the badge
+  // silently rather than breaking the chat shell.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!user?.id) return;
+      const jwt = await getToken();
+      if (!jwt) return;
+      try {
+        const r = await myListings({ sellerId: user.id, jwt });
+        if (!alive) return;
+        const ids = new Set<string>();
+        for (const listing of r.items) {
+          const sourceAgentId = (listing as unknown as { manifest_json?: { agent_id?: string } })
+            .manifest_json?.agent_id;
+          if (sourceAgentId) ids.add(sourceAgentId);
+        }
+        setPublishedAgentIds(ids);
+      } catch {
+        // best effort — drop silently (no badge)
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [user?.id, getToken]);
 
   function handleSelectAgent(agentId: string): void {
     capture("agent_selected", { agent_id: agentId });
@@ -322,7 +354,16 @@ export function ChatLayout({
                       className={`agent-item${currentAgentId === agent.id ? " active" : ""}${isNewArrival ? " new-arrival" : ""}`}
                       onClick={() => handleSelectAgent(agent.id)}
                     >
-                      <Monogram agent={displayAgent} size={28} radius={8} />
+                      <span className="relative inline-flex">
+                        <Monogram agent={displayAgent} size={28} radius={8} />
+                        {publishedAgentIds.has(agent.id) && (
+                          <span
+                            className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#c2a378] border-2 border-[#faf7f2]"
+                            aria-label="Published to marketplace"
+                            title="Published to marketplace"
+                          />
+                        )}
+                      </span>
                       <div className="agent-info">
                         <div className="agent-name">{agentDisplayName(agent)}</div>
                         {(() => {

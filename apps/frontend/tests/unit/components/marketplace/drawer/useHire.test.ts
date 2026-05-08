@@ -3,9 +3,13 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 
 const deployFn = vi.fn();
 const checkoutFn = vi.fn();
+const refreshAgents = vi.fn();
 
 vi.mock("@/hooks/useCatalog", () => ({
   useCatalog: () => ({ deploy: deployFn }),
+}));
+vi.mock("@/hooks/useAgents", () => ({
+  useAgents: () => ({ refresh: refreshAgents }),
 }));
 vi.mock("@/lib/marketplace/api", () => ({
   checkout: (opts: unknown) => checkoutFn(opts),
@@ -32,6 +36,7 @@ describe("useHire", () => {
   beforeEach(() => {
     deployFn.mockReset();
     checkoutFn.mockReset();
+    refreshAgents.mockReset();
     showInstallToast.mockReset();
     close.mockReset();
     setFreshlyInstalled.mockReset();
@@ -57,6 +62,7 @@ describe("useHire", () => {
       } as unknown as Parameters<typeof result.current.hire>[0]);
     });
     expect(deployFn).toHaveBeenCalledWith("atlas");
+    expect(refreshAgents).toHaveBeenCalled();
     expect(setFreshlyInstalled).toHaveBeenCalledWith("ag_42");
     expect(showInstallToast).toHaveBeenCalledWith({ agentName: "Atlas", agentId: "ag_42" });
     await waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 1500 });

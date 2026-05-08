@@ -69,7 +69,11 @@ describe("PublishWizard — submit chain", () => {
     expect(apiPost).toHaveBeenNthCalledWith(
       1,
       "/marketplace/listings",
-      expect.objectContaining({ format: "openclaw", price_cents: 0 }),
+      expect.objectContaining({
+        format: "openclaw",
+        price_cents: 0,
+        category: "operations",
+      }),
     );
     expect(apiPost.mock.calls[1][0]).toBe("/marketplace/listings/list_42/artifact-from-agent");
     expect(apiPost.mock.calls[2][0]).toBe("/marketplace/listings/list_42/submit");

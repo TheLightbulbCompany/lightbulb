@@ -96,6 +96,9 @@ export function PublishWizard() {
           format: "openclaw",
           price_cents: form.priceTier === "free" ? 0 : Math.round(form.priceDollars * 100),
           tags: form.tags,
+          // Lowercased to match Browse-view's category-chip filter casing
+          // (Browse passes `category === "all" ? undefined : category` lowercased).
+          category: form.category.toLowerCase(),
         })) as { listing_id: string };
         listingId = draft.listing_id;
         setDraftListingId(listingId);

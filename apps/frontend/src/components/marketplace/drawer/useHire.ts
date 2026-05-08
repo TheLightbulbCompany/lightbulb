@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
 
 import { useCatalog } from "@/hooks/useCatalog";
+import { useAgents } from "@/hooks/useAgents";
 import { checkout } from "@/lib/marketplace/api";
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import type { Listing } from "@/lib/marketplace/types";
@@ -29,6 +30,7 @@ import type { Listing } from "@/lib/marketplace/types";
  */
 export function useHire() {
   const { deploy } = useCatalog();
+  const { refresh: refreshAgents } = useAgents();
   const { close, showInstallToast, setFreshlyInstalled } = useMarketplaceDrawer();
   const { getToken } = useAuth();
   const { user } = useUser();
@@ -40,6 +42,11 @@ export function useHire() {
       try {
         if (listing.price_cents === 0) {
           const result = await deploy(listing.slug);
+          // Refresh the chat sidebar's agents.list cache BEFORE marking
+          // freshly-installed, so the slide-in animation has a row to attach to.
+          // useCatalog().deploy() only revalidates the marketplace catalog cache;
+          // the sidebar reads useAgents() (a separate agents.list RPC cache).
+          await refreshAgents();
           if (result.agent_id) {
             setFreshlyInstalled(result.agent_id);
           }
@@ -65,7 +72,7 @@ export function useHire() {
         setIsHiring(false);
       }
     },
-    [deploy, close, showInstallToast, setFreshlyInstalled, getToken, user],
+    [deploy, refreshAgents, close, showInstallToast, setFreshlyInstalled, getToken, user],
   );
 
   return { hire, isHiring };

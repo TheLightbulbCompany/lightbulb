@@ -714,9 +714,7 @@ async def test_seller_scoped_bypasses_cache(monkeypatch):
     assert table.scan.call_count == 1
 
     # Seller-scoped read MUST bypass the cache and surface the new review row.
-    items = await marketplace_search.search(
-        seller_id="u_seller", include_unpublished=True
-    )
+    items = await marketplace_search.search(seller_id="u_seller", include_unpublished=True)
     slugs = {item["slug"] for item in items}
     assert "rev" in slugs, (
         "seller-scoped read must bypass cache to surface own writes — "
@@ -731,9 +729,6 @@ async def test_seller_scoped_bypasses_cache(monkeypatch):
     public_again = await marketplace_search.search()
     public_again_slugs = {li["slug"] for li in public_again}
     assert public_again_slugs == {"pub"}, (
-        "cache-bypass branch must not write its scan into _CACHE — the "
-        "public path stays bounded by the 60s TTL."
+        "cache-bypass branch must not write its scan into _CACHE — the public path stays bounded by the 60s TTL."
     )
-    assert table.scan.call_count == 2, (
-        "public reads after a bypass must hit the warm cache, not re-scan"
-    )
+    assert table.scan.call_count == 2, "public reads after a bypass must hit the warm cache, not re-scan"

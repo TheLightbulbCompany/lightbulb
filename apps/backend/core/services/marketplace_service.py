@@ -146,11 +146,7 @@ async def create_draft(
                             "format": {"S": format},
                             "price_cents": {"N": str(price_cents)},
                             "tags": {"L": [{"S": t} for t in tags]},
-                            **(
-                                {"category": {"S": category}}
-                                if category
-                                else {}
-                            ),
+                            **({"category": {"S": category}} if category else {}),
                             "seller_id": {"S": seller_id},
                             "status": {"S": "draft"},
                             "s3_prefix": {"S": s3_prefix},

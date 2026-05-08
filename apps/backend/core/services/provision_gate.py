@@ -220,32 +220,39 @@ async def evaluate_provision_gate(
                 action_admin_only=True,
                 owner_role=owner_role,
             )
-        # Distinguish "real subscription exists but inactive" from
-        # "billing row exists but checkout never produced a subscription"
-        # (Codex P1 on PR #570). /billing/trial-checkout creates the
-        # billing-account row before the Stripe Checkout session, so a
-        # user who cancels Stripe (or whose checkout-session creation
-        # fails after the row is written) lands here with an account
-        # but no stripe_subscription_id. /settings/billing has nothing
-        # to manage in that case — they need to restart checkout via
-        # the picker, which trial-checkout will accept since
-        # is_trial_blocked is False without a Stripe-side state.
-        if not account.get("stripe_subscription_id"):
+        # Align routing with what /billing/trial-checkout will actually
+        # accept (Codex P1 rounds 1+2 on PR #570). trial-checkout 409s
+        # any row whose subscription_status is in TRIAL_BLOCKED_STATUSES
+        # (canceled, incomplete, incomplete_expired, unpaid, paused —
+        # plus active/trialing, but those are filtered out by
+        # is_subscription_active above). Those rows must be routed to
+        # /settings/billing — sending them to the picker would 409
+        # already_subscribed regardless of whether stripe_subscription_id
+        # is still set (cancel_subscription clears it but leaves
+        # status="canceled").
+        #
+        # Conversely, when status is None — the row exists but Stripe
+        # never assigned a state (e.g. /billing/trial-checkout wrote the
+        # row, then Checkout-session creation failed or the user closed
+        # the Stripe tab) — trial-checkout will proceed. Surface
+        # signup_required so the frontend re-renders the picker for a
+        # restart.
+        if is_trial_blocked(account):
             return Gate(
-                code="signup_required",
-                title="Subscribe to start your container",
-                message="An active subscription is required to provision a container.",
-                action_label="Subscribe",
-                action_href="/onboarding",
+                code="subscription_required",
+                title="Subscription not active",
+                message="Reactivate your subscription to start your container.",
+                action_label="Manage subscription",
+                action_href="/settings/billing",
                 action_admin_only=True,
                 owner_role=owner_role,
             )
         return Gate(
-            code="subscription_required",
-            title="Subscription not active",
-            message="Reactivate your subscription to start your container.",
-            action_label="Manage subscription",
-            action_href="/settings/billing",
+            code="signup_required",
+            title="Subscribe to start your container",
+            message="An active subscription is required to provision a container.",
+            action_label="Subscribe",
+            action_href="/onboarding",
             action_admin_only=True,
             owner_role=owner_role,
         )

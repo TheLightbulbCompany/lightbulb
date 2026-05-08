@@ -65,7 +65,7 @@ async def test_billing_account_without_subscription_id_returns_signup_required()
     has nothing to manage in that case — the gate must fire
     signup_required so the frontend re-renders the picker, which
     trial-checkout will accept (is_trial_blocked is False without a
-    Stripe-side state)."""
+    Stripe-side status)."""
     with patch("core.services.provision_gate.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -85,6 +85,33 @@ async def test_billing_account_without_subscription_id_returns_signup_required()
     assert gate is not None
     assert gate.code == "signup_required"
     assert gate.action_href == "/onboarding"
+
+
+@pytest.mark.asyncio
+async def test_canceled_subscription_with_cleared_subscription_id_routes_to_billing():
+    """Codex P1 round 2 on PR #570: the in-app cancel path
+    (BillingService.cancel_subscription) clears stripe_subscription_id
+    but leaves subscription_status='canceled'. is_trial_blocked still
+    rejects 'canceled' rows in /billing/trial-checkout, so we must NOT
+    send these admins to the picker — they'd hit 409 already_subscribed.
+    Route to /settings/billing instead, matching is_trial_blocked."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_x",
+                "stripe_customer_id": "cus_x",
+                "subscription_status": "canceled",
+                # cancel_subscription clears stripe_subscription_id —
+                # the no-sub-id check alone is not enough.
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+            clerk_user_id="user_x",
+        )
+    assert gate is not None
+    assert gate.code == "subscription_required"
+    assert gate.action_href == "/settings/billing"
 
 
 @pytest.mark.asyncio

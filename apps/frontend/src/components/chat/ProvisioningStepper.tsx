@@ -184,14 +184,13 @@ export function ProvisioningStepper({
    *  "recovery" = skip billing, start from container provisioning. */
   trigger?: "onboarding" | "recovery";
 }) {
-  const { organization, membership, isLoaded: orgLoaded } = useOrganization();
+  const { organization, membership } = useOrganization();
   const isOrg = !!organization;
   // Personal accounts (no org) and explicit org admins manage channels.
   // Plain members see link-only flows or get sent straight to ready.
   const isAdmin = !isOrg || membership?.role === "org:admin";
   const api = useApi();
   const { account, isLoading: billingLoading, isSubscribed } = useBilling();
-  const provisionRequestedRef = useRef(false);
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
   // checkout, OAuth) shouldn't count against the timeout budget. A ref because
@@ -265,33 +264,11 @@ export function ProvisioningStepper({
     refresh: refreshGate,
   } = useProvisioningState();
 
-  // When container status returns null (404), trigger provisioning once
-  // Trigger provisioning when no container (404) or container is stopped (scale-to-zero)
-  const needsProvision = container === null || container?.status === "stopped";
-  useEffect(() => {
-    // Defensive: don't fire provision until Clerk's org state has fully
-    // hydrated. ChatLayout already gates this component behind an onboarded
-    // check, so in practice orgLoaded is true by the time we mount — but
-    // keeping the guard here means a direct caller (tests, recovery paths)
-    // can't accidentally fire /container/provision with a still-loading JWT
-    // and get a personal container when an org was expected.
-    if (!orgLoaded) return;
-    // Plan 3: hold off on provisioning until the user has completed the
-    // provider-specific step. Otherwise the container would spin up before
-    // /users/sync has recorded provider_choice, and the gateway's first
-    // pre-chat balance check (Plan 3 Task 4) would see no record.
-    if (needsProviderStep) return;
-    if (needsProvision && shouldPollContainer && !provisionRequestedRef.current) {
-      provisionRequestedRef.current = true;
-      api.post("/container/provision", {}).catch((err: unknown) => {
-        console.error("Container provision failed:", err);
-      });
-    }
-    // Reset the ref when container comes back so it can re-provision on next stop
-    if (container && container.status !== "stopped") {
-      provisionRequestedRef.current = false;
-    }
-  }, [needsProvision, orgLoaded, container, shouldPollContainer, api, needsProviderStep]);
+  // Provisioning is now driven by /container/status: when the gate clears
+  // and no container exists, the backend's status endpoint fires
+  // ensure_user_ready itself. The frontend stepper is purely passive — it
+  // polls /container/status (every 3s during pre-ready) and renders the
+  // appropriate phase. No explicit POST /container/provision from here.
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 

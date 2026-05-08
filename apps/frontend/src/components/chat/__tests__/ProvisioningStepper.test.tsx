@@ -29,14 +29,23 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+// Stable mocks so individual tests can assert against `apiPost` etc. The
+// previous implementation built a fresh `vi.fn()` per `useApi()` call, which
+// meant `expect(post).not.toHaveBeenCalled()` couldn't be wired up — every
+// render returned a brand-new spy.
+const apiPost = vi.fn().mockResolvedValue({});
+const apiGet = vi.fn().mockResolvedValue({});
+const apiPut = vi.fn().mockResolvedValue({});
+const apiDel = vi.fn().mockResolvedValue({});
+
 vi.mock("@/lib/api", () => ({
   useApi: () => ({
     // ProvisioningStepper chains .catch on the result, so the mock must
     // return a promise — vi.fn() defaults to undefined which crashes.
-    post: vi.fn().mockResolvedValue({}),
-    get: vi.fn().mockResolvedValue({}),
-    put: vi.fn().mockResolvedValue({}),
-    del: vi.fn().mockResolvedValue({}),
+    post: apiPost,
+    get: apiGet,
+    put: apiPut,
+    del: apiDel,
   }),
 }));
 
@@ -68,6 +77,10 @@ const useProvMock = useProvisioningState as ReturnType<typeof vi.fn>;
 describe("ProvisioningStepper blocked-state rendering", () => {
   beforeEach(() => {
     useProvMock.mockReset();
+    apiPost.mockClear();
+    apiGet.mockClear();
+    apiPut.mockClear();
+    apiDel.mockClear();
   });
 
   it("renders title + message + action button when admin and not admin_only", () => {
@@ -177,5 +190,30 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     const checkAgain = screen.getByRole("button", { name: /Check again/ });
     checkAgain.click();
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("does not POST /container/provision (canonical /container/status trigger handles it)", () => {
+    // Phase=cold-starting + container=null is the exact state where the
+    // pre-Task-10 stepper would have fired POST /container/provision. Now
+    // the backend's /container/status endpoint owns provisioning kickoff
+    // (Task 8), so the frontend stepper must remain purely passive.
+    useProvMock.mockReturnValue({
+      phase: "cold-starting",
+      container: null,
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    const provisionCalls = apiPost.mock.calls.filter(
+      (args) => args[0] === "/container/provision",
+    );
+    expect(provisionCalls).toHaveLength(0);
   });
 });

@@ -14,6 +14,12 @@ os.environ.setdefault(
     "https://test.execute-api.us-east-1.amazonaws.com/test",
 )
 
+# service_token.mint() reads PAPERCLIP_SERVICE_TOKEN_KEY at call time;
+# every test in this module either patches mint() outright or runs the
+# create_agent path that calls it. Set a deterministic key so the few
+# call paths that exercise mint() unmocked don't crash.
+os.environ.setdefault("PAPERCLIP_SERVICE_TOKEN_KEY", "test-key-not-used")
+
 
 @pytest.mark.asyncio
 async def test_teams_create_agent_pairs_with_openclaw_when_container_up(monkeypatch):
@@ -255,3 +261,108 @@ async def test_container_is_reachable_returns_false_when_no_running_task(monkeyp
     from routers.teams.agents import _container_is_reachable
 
     assert await _container_is_reachable("user_x") == (False, None, None)
+
+
+@pytest.mark.asyncio
+async def test_teams_create_agent_mints_service_token_with_owner_id(monkeypatch):
+    """Codex P1 finding 3: in org context the synthesized
+    adapterConfig.authToken MUST be a JWT minted with sub=owner_id (the
+    org_id), NOT sub=member_user_id. The WS authorizer treats service
+    tokens as orgId="" + userId=<sub>, so a member-keyed token routes
+    Paperclip wakes to the member's PERSONAL container instead of the
+    org's shared container.
+    """
+    from routers.teams.agents import create_agent
+    from routers.teams.schemas import CreateAgentBody
+
+    # Capture the value passed to service_token.mint().
+    mint_mock = MagicMock(return_value="svc.tok.minted-for-org")
+    monkeypatch.setattr(
+        "routers.teams.agents.service_token.mint",
+        mint_mock,
+    )
+    # Capture the synthesized adapter config so we can confirm the minted
+    # token threaded through.
+    synth_mock = MagicMock(return_value={"authToken": "svc.tok.minted-for-org"})
+    monkeypatch.setattr(
+        "routers.teams.agents.synthesize_openclaw_adapter",
+        synth_mock,
+    )
+
+    monkeypatch.setattr(
+        "routers.teams.agents.pair_with_openclaw",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "routers.teams.agents._container_is_reachable",
+        AsyncMock(return_value=(True, "10.0.0.5", "gw_token")),
+    )
+    admin_instance = MagicMock()
+    admin_instance.create_agent = AsyncMock(return_value={"id": "a_new"})
+    monkeypatch.setattr(
+        "routers.teams.agents._admin",
+        lambda: admin_instance,
+    )
+    monkeypatch.setattr(
+        "routers.teams.agents._user_session",
+        AsyncMock(return_value="cookie123"),
+    )
+
+    ctx = MagicMock()
+    ctx.auth.user_id = "user_member_b"
+    ctx.auth.org_id = "org_xyz"
+    ctx.company_id = "co_xyz"
+
+    await create_agent(CreateAgentBody(name="Helper", role="engineer"), ctx)
+
+    # P1: token is minted under the OWNER's id, not the member's.
+    mint_mock.assert_called_once_with("org_xyz")
+    # The minted token threaded through to synthesize_openclaw_adapter.
+    assert synth_mock.call_args.kwargs["service_token"] == "svc.tok.minted-for-org"
+
+
+@pytest.mark.asyncio
+async def test_teams_create_agent_mints_with_user_id_for_personal_owner(monkeypatch):
+    """Regression guard for the personal-owner branch: when the caller
+    has no org_id, mint with sub=user_id so personal users keep working
+    after the org-context fix."""
+    from routers.teams.agents import create_agent
+    from routers.teams.schemas import CreateAgentBody
+
+    mint_mock = MagicMock(return_value="svc.tok.minted-for-personal")
+    monkeypatch.setattr(
+        "routers.teams.agents.service_token.mint",
+        mint_mock,
+    )
+    monkeypatch.setattr(
+        "routers.teams.agents.synthesize_openclaw_adapter",
+        MagicMock(return_value={"authToken": "svc.tok.minted-for-personal"}),
+    )
+    monkeypatch.setattr(
+        "routers.teams.agents.pair_with_openclaw",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "routers.teams.agents._container_is_reachable",
+        AsyncMock(return_value=(False, None, None)),
+    )
+    admin_instance = MagicMock()
+    admin_instance.create_agent = AsyncMock(return_value={"id": "a_new"})
+    monkeypatch.setattr(
+        "routers.teams.agents._admin",
+        lambda: admin_instance,
+    )
+    monkeypatch.setattr(
+        "routers.teams.agents._user_session",
+        AsyncMock(return_value="cookie123"),
+    )
+
+    ctx = MagicMock()
+    ctx.auth.user_id = "user_personal"
+    ctx.auth.org_id = None
+    ctx.company_id = "co_personal"
+
+    await create_agent(CreateAgentBody(name="Helper", role="engineer"), ctx)
+
+    # Personal owner: sub == user_id (no regression).
+    mint_mock.assert_called_once_with("user_personal")

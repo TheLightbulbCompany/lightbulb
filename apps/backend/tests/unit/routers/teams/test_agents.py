@@ -69,12 +69,10 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    # _decrypt_service_token is async (reads DDB). _gateway_url_for_env is sync.
-    monkeypatch.setattr(
-        agents_mod,
-        "_decrypt_service_token",
-        AsyncMock(return_value="decrypted-token"),
-    )
+    # service_token.mint() is sync — patch the module attribute the route
+    # imported at module load time so it returns a deterministic value.
+    mint_mock = MagicMock(return_value="freshly-minted-token")
+    monkeypatch.setattr(agents_mod.service_token, "mint", mint_mock)
     monkeypatch.setattr(
         agents_mod,
         "_gateway_url_for_env",
@@ -91,10 +89,15 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     assert call.kwargs["adapter_type"] == "openclaw_gateway"
     assert call.kwargs["adapter_config"] == {
         "url": "wss://ws-dev.isol8.co",
-        "authToken": "decrypted-token",
+        "authToken": "freshly-minted-token",
         "sessionKeyStrategy": "issue",
         "sessionKey": "u1",
     }
+    # P1 (Codex finding 3): service token MUST be minted with owner_id
+    # (== org_id for org members) so the WS authorizer routes Paperclip
+    # wakes to the org's shared container, not the member's personal
+    # owner. The fixture's TeamsContext has org_id="o1" / owner_id="o1".
+    mint_mock.assert_called_once_with("o1")
 
 
 def test_create_agent_rejects_client_supplied_adapter_type(client):

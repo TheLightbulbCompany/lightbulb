@@ -24,6 +24,7 @@ from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.encryption import decrypt  # noqa: F401 — re-exported for tests + downstream tasks.
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import service_token
 from core.services.paperclip_adapter_config import (
     OPENCLAW_GATEWAY_TYPE,
     synthesize_openclaw_adapter,
@@ -326,10 +327,20 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
     """
     creator_user_id = _creator_user_id(ctx)
     owner_id = _resolve_owner_id(ctx)
-    service_token = await _service_token_for(ctx)
+    # Mint the service token with owner_id (NOT the creator's user_id).
+    # The OpenClaw container is keyed by owner_id (org_id for org members,
+    # user_id for personal owners). The WS Lambda authorizer puts service
+    # tokens into the connection context with ``orgId=""`` and routes by
+    # the JWT ``sub`` claim — so a token minted with the member's user_id
+    # would route subsequent Paperclip wakes to the member's PERSONAL
+    # owner instead of the org's shared owner, missing the container the
+    # agent was just paired into. We mint fresh here rather than reading
+    # the persisted ``service_token_encrypted`` row so legacy rows with a
+    # member-keyed sub can't poison new agents.
+    minted_token = service_token.mint(owner_id)
     adapter_config = synthesize_openclaw_adapter(
         gateway_url=_gateway_url_for_env(),
-        service_token=service_token,
+        service_token=minted_token,
         user_id=creator_user_id,
     )
     paperclip_agent = await _admin().create_agent(

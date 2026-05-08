@@ -1,12 +1,28 @@
 """One-shot migration: switch Paperclip agents from sessionKeyStrategy
-'fixed' to 'issue'.
+'fixed' to 'issue', and rotate org-row ``authToken``s to sub=owner_id.
 
 Run this once per environment (dev, then prod) after deploying the
 agent-pairing PR. Iterates every PaperclipCompany row in DDB,
-``list_agents`` per (deduped) ``company_id``, and patches those whose
-``adapterConfig.sessionKeyStrategy`` is ``"fixed"``.
+``list_agents`` per (deduped) ``company_id``, and patches:
 
-Idempotent: agents already on ``"issue"`` are skipped. Safe to re-run.
+1. Every agent whose ``adapterConfig.sessionKeyStrategy`` is ``"fixed"``
+   (flipped to ``"issue"``).
+2. Every agent in an org-context company whose ``adapterConfig.authToken``
+   was minted with the human creator's ``user_id`` instead of the
+   container's ``owner_id`` (= org_id) — rotated to a fresh JWT minted
+   with ``sub=owner_id``. The WS Lambda authorizer puts service tokens
+   into the connection context with ``orgId=""`` and routes by ``sub``,
+   so a member-keyed token routes Paperclip wakes to the member's
+   PERSONAL container instead of the org's shared container, missing
+   the agent entirely. (Codex P1 finding 4.)
+
+The two transformations always run together: any agent whose
+``sessionKeyStrategy`` is being flipped is also a candidate for
+authToken rotation, so we batch them into a single ``patch_agent`` call.
+
+Idempotent: agents that already have ``sessionKeyStrategy == "issue"``
+AND a token whose ``sub`` already matches their company's ``owner_id``
+are skipped. Safe to re-run.
 
 Usage::
 
@@ -42,9 +58,11 @@ import logging
 from typing import Any
 
 import httpx
+import jwt as _jwt_lib
 
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
+from core.services import service_token
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     PaperclipApiError,
@@ -54,14 +72,48 @@ from core.services.paperclip_admin_session import get_admin_session_cookie
 logger = logging.getLogger("migrate_paperclip_session_strategy")
 
 
-def needs_migration(agent: dict[str, Any]) -> bool:
-    """True if this agent has ``sessionKeyStrategy == "fixed"`` and
-    needs to be flipped to ``"issue"``. False for already-migrated
-    agents and for non-openclaw_gateway adapter types (which don't have
-    this field).
+def _token_sub(token: str | None) -> str | None:
+    """Return the ``sub`` claim of a service-token JWT without verifying
+    the signature.
+
+    The signing key may be rotated and we don't need cryptographic proof
+    here — we only use the claim to decide whether the token already
+    matches the canonical ``owner_id`` for its company. Verification at
+    consumption time still happens in ``service_token.verify``.
+
+    Returns ``None`` if the token is missing, malformed, or carries no
+    ``sub`` — those paths fall through to the rotation branch (rotation
+    is a strict superset of "leave it alone if already correct").
+    """
+    if not token:
+        return None
+    try:
+        claims = _jwt_lib.decode(token, options={"verify_signature": False})
+    except _jwt_lib.InvalidTokenError:
+        return None
+    sub = claims.get("sub")
+    return sub if isinstance(sub, str) else None
+
+
+def needs_migration(agent: dict[str, Any], owner_id: str | None) -> bool:
+    """True if this agent needs to be patched.
+
+    Two trigger conditions, ORed:
+    * ``sessionKeyStrategy == "fixed"`` (legacy → flip to ``"issue"``).
+    * ``adapterConfig.authToken`` carries a ``sub`` claim that doesn't
+      match the canonical ``owner_id`` for the agent's company (org
+      rows where the token was minted with the member's user_id).
+
+    Skips non-openclaw_gateway adapter types (no ``adapterConfig``).
     """
     cfg = agent.get("adapterConfig") or {}
-    return cfg.get("sessionKeyStrategy") == "fixed"
+    if cfg.get("sessionKeyStrategy") == "fixed":
+        return True
+    if owner_id is not None:
+        token_sub = _token_sub(cfg.get("authToken"))
+        if token_sub is not None and token_sub != owner_id:
+            return True
+    return False
 
 
 async def migrate_one_agent(
@@ -69,13 +121,26 @@ async def migrate_one_agent(
     admin_client: PaperclipAdminClient,
     admin_cookie: str,
     agent: dict[str, Any],
+    owner_id: str | None,
 ) -> None:
-    """Apply the strategy flip to a single agent. Preserves all other
-    ``adapterConfig`` fields verbatim (``url``, ``authToken``,
+    """Apply both transformations (strategy flip + authToken rotation)
+    in a single ``patch_agent`` call.
+
+    Preserves every other ``adapterConfig`` field verbatim (``url``,
     ``sessionKey``, …).
     """
     new_cfg = dict(agent["adapterConfig"])
     new_cfg["sessionKeyStrategy"] = "issue"
+
+    # Rotate the service token if we know the canonical owner and the
+    # current sub doesn't match. We always mint a fresh JWT (rather
+    # than re-encrypting the old one) so the new ``iat``/``jti`` make
+    # the rotation observable in audit logs.
+    if owner_id is not None:
+        token_sub = _token_sub(new_cfg.get("authToken"))
+        if token_sub != owner_id:
+            new_cfg["authToken"] = service_token.mint(owner_id)
+
     await admin_client.patch_agent(
         session_cookie=admin_cookie,
         agent_id=agent["id"],
@@ -83,19 +148,25 @@ async def migrate_one_agent(
     )
 
 
-async def _scan_company_ids() -> list[str]:
-    """Paginate the ``paperclip-companies`` table and return the
-    deduped set of ``company_id`` values, sorted for deterministic
-    output.
+async def _scan_company_owner_map() -> dict[str, str]:
+    """Paginate the ``paperclip-companies`` table and return a
+    ``{company_id: owner_id}`` map.
 
-    PaperclipCompany rows are keyed by ``user_id``, but multiple users
-    in the same Isol8 org share a single ``company_id`` — without
-    deduping we'd hit ``list_agents`` once per member and migrate the
-    same fleet repeatedly. ``set`` dedupes; sorting makes log output
-    reproducible across runs.
+    ``owner_id`` is sourced from the ``org_id`` column on the row
+    (post-cutover that column carries the container's owner — Clerk
+    org_id for orgs, Clerk user_id for personal owners; identical
+    across every row in the same company per the
+    ``PaperclipCompany.org_id`` invariant).
+
+    Multiple users in the same org share a single ``company_id``, but
+    they all share the same ``org_id`` too — so the first row we
+    encounter for each company is canonical and later rows just
+    confirm the value. We log a warning if rows in the same company
+    disagree on ``org_id`` (would indicate a data corruption bug
+    upstream).
     """
     table = get_table("paperclip-companies")
-    company_ids: set[str] = set()
+    owner_by_company: dict[str, str] = {}
     last_evaluated_key: dict | None = None
     while True:
         kwargs: dict[str, Any] = {}
@@ -104,12 +175,23 @@ async def _scan_company_ids() -> list[str]:
         resp = await run_in_thread(table.scan, **kwargs)
         for item in resp.get("Items", []):
             cid = item.get("company_id")
-            if cid:
-                company_ids.add(cid)
+            owner = item.get("org_id")
+            if not cid or not owner:
+                continue
+            existing = owner_by_company.get(cid)
+            if existing is None:
+                owner_by_company[cid] = owner
+            elif existing != owner:
+                logger.warning(
+                    "company_id=%s has rows with disagreeing org_id (seen %s and %s); keeping first-seen — investigate",
+                    cid,
+                    existing,
+                    owner,
+                )
         last_evaluated_key = resp.get("LastEvaluatedKey")
         if not last_evaluated_key:
             break
-    return sorted(company_ids)
+    return owner_by_company
 
 
 async def _migrate_company(
@@ -117,6 +199,7 @@ async def _migrate_company(
     admin_client: PaperclipAdminClient,
     admin_cookie: str,
     company_id: str,
+    owner_id: str | None,
     apply: bool,
 ) -> tuple[int, int]:
     """Returns ``(matched, migrated)`` for the company."""
@@ -137,15 +220,16 @@ async def _migrate_company(
     matched = 0
     migrated = 0
     for agent in raw:
-        if not needs_migration(agent):
+        if not needs_migration(agent, owner_id):
             continue
         matched += 1
         logger.info(
-            "%s %s/%s (%s)",
+            "%s %s/%s (%s) owner=%s",
             "MIGRATE" if apply else "DRY-RUN",
             company_id,
             agent.get("id"),
             agent.get("name", "?"),
+            owner_id or "<unknown>",
         )
         if apply:
             try:
@@ -153,6 +237,7 @@ async def _migrate_company(
                     admin_client=admin_client,
                     admin_cookie=admin_cookie,
                     agent=agent,
+                    owner_id=owner_id,
                 )
                 migrated += 1
             except PaperclipApiError as e:
@@ -184,7 +269,8 @@ async def main(apply: bool) -> None:
         admin_client = PaperclipAdminClient(http_client=http)
         admin_cookie = await get_admin_session_cookie(http)
 
-        company_ids = await _scan_company_ids()
+        owner_by_company = await _scan_company_owner_map()
+        company_ids = sorted(owner_by_company.keys())
         total_matched = 0
         total_migrated = 0
         for company_id in company_ids:
@@ -192,6 +278,7 @@ async def main(apply: bool) -> None:
                 admin_client=admin_client,
                 admin_cookie=admin_cookie,
                 company_id=company_id,
+                owner_id=owner_by_company.get(company_id),
                 apply=apply,
             )
             total_matched += matched

@@ -112,6 +112,7 @@ async def search(
     format: str | None = None,
     limit: int = 24,
     seller_id: str | None = None,
+    include_unpublished: bool = False,
 ) -> list[dict[str, Any]]:
     """Search the cached published-listing snapshot.
 
@@ -123,15 +124,26 @@ async def search(
         seller_id: Optional Clerk user_id filter. The chat sidebar's
             featured-listings endpoint passes the curator's user_id here
             so the gallery only shows admin@isol8.co's published agents.
+        include_unpublished: If True, return draft/review/retired/taken_down
+            rows in addition to published. Caller must enforce auth (only
+            seller-scoped reads should set this — the marketplace drawer's
+            "My Listings" view passes seller_id=<self> + include_unpublished
+            so a seller can see their own drafts). Default False = the
+            public search semantics.
 
     Returns:
         Plain listing dicts (caller threads through Pydantic).
     """
     snapshot = _get_snapshot()
 
-    # Defense-in-depth: even though the scan filters to published, re-check
-    # in Python so a stale cache or scan drift can't leak drafts.
-    candidates = [li for li in snapshot if li.get("status") == "published"]
+    if include_unpublished:
+        # Caller has opted into seeing all statuses (seller-scoped reads).
+        # Auth enforcement is the caller's responsibility.
+        candidates = list(snapshot)
+    else:
+        # Defense-in-depth: even though the scan filters to published, re-check
+        # in Python so a stale cache or scan drift can't leak drafts.
+        candidates = [li for li in snapshot if li.get("status") == "published"]
     if format:
         candidates = [li for li in candidates if li.get("format") == format]
     if seller_id:

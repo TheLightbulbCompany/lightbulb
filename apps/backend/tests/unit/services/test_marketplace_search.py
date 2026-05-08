@@ -249,6 +249,122 @@ async def test_cache_refresh_paginates_through_last_evaluated_key():
 
 
 @pytest.mark.asyncio
+async def test_search_includes_unpublished_when_flag_set():
+    """When include_unpublished=True, draft + review + published rows all surface."""
+    snapshot = [
+        {
+            "listing_id": "l1",
+            "slug": "a",
+            "name": "A",
+            "status": "published",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-01",
+            "published_at": "2026-05-01",
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-01",
+        },
+        {
+            "listing_id": "l2",
+            "slug": "b",
+            "name": "B",
+            "status": "draft",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-02",
+            "published_at": None,
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-02",
+        },
+        {
+            "listing_id": "l3",
+            "slug": "c",
+            "name": "C",
+            "status": "review",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-03",
+            "published_at": None,
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-03",
+        },
+    ]
+    table = MagicMock()
+    # The DDB-side FilterExpression would normally drop non-published rows;
+    # we deliberately return them all here so the in-Python branch under test
+    # is exercised end-to-end.
+    table.scan.return_value = {"Items": list(snapshot)}
+    with patch("core.services.marketplace_search._listings_table", return_value=table):
+        items = await marketplace_search.search(query=None, seller_id="u_seller", include_unpublished=True, limit=10)
+
+    statuses = {item["status"] for item in items}
+    assert statuses == {"published", "draft", "review"}
+
+
+@pytest.mark.asyncio
+async def test_search_default_filters_to_published():
+    """Default behavior unchanged: only published rows surface."""
+    snapshot = [
+        {
+            "listing_id": "l1",
+            "slug": "a",
+            "name": "A",
+            "status": "published",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-01",
+            "published_at": "2026-05-01",
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-01",
+        },
+        {
+            "listing_id": "l2",
+            "slug": "b",
+            "name": "B",
+            "status": "draft",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-02",
+            "published_at": None,
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-02",
+        },
+    ]
+    table = MagicMock()
+    table.scan.return_value = {"Items": list(snapshot)}
+    with patch("core.services.marketplace_search._listings_table", return_value=table):
+        items = await marketplace_search.search(query=None, seller_id="u_seller", limit=10)
+
+    statuses = {item["status"] for item in items}
+    assert statuses == {"published"}
+
+
+@pytest.mark.asyncio
 async def test_default_limit_is_24(mock_table):
     # Stuff the table with 50 published listings.
     many = []

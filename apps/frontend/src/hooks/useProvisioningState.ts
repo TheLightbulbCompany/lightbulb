@@ -19,10 +19,28 @@ export interface BlockedPayload {
   owner_role: "admin" | "member";
 }
 
+/**
+ * Cold-start phase from `routers/container.py::_resolve_cold_start_phase`.
+ * Mirrors the type currently re-exported from `useContainerStatus.ts`;
+ * declared here so `ContainerInfo.phase` is concretely typed (the index
+ * signature `[key: string]: unknown` would otherwise widen `phase` to
+ * `unknown` and break the cold-start phase-transition tracking in
+ * ProvisioningStepper). The `useContainerStatus.ts` re-export is removed
+ * in the same PR (Task 8 of the consolidation plan).
+ */
+export type ColdStartPhase = "provisioning" | "starting" | "ready";
+
 export interface ContainerInfo {
   service_name: string;
   status: string;
   substatus: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  region: string;
+  last_error: string | null;
+  last_error_at: string | null;
+  /** Cold-start phase. Optional for backwards compat with old backends. */
+  phase?: ColdStartPhase;
   // Other /container/status response fields preserved for downstream use.
   [key: string]: unknown;
 }

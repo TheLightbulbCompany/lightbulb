@@ -205,22 +205,173 @@ function Field({
 
 export function PricingStep({
   form,
-  onChange: _onChange,
+  onChange,
 }: {
   form: PublishForm;
   onChange: (patch: Partial<PublishForm>) => void;
 }) {
+  const v = form.priceDollars;
+  const stripe = +(v * 0.029 + 0.3).toFixed(2);
+  const platform = +(v * 0.15).toFixed(2);
+  const take = +(v - stripe - platform).toFixed(2);
+
   return (
     <div>
-      Pricing (placeholder, Task 14). tier={form.priceTier}
+      <p className="text-[14px] text-[#5b5b5b] leading-snug mb-4">
+        Set what your work is worth. Price is hidden from the marketplace browse view —
+        buyers only see it at install time.
+      </p>
+
+      <div className="bg-[#f3eee5] rounded-2xl p-1 flex mb-4">
+        <button
+          type="button"
+          onClick={() => onChange({ priceTier: "free" })}
+          className={`flex-1 px-3.5 py-2.5 rounded-xl text-sm ${
+            form.priceTier === "free"
+              ? "bg-white text-[#1a1a1a] shadow-sm font-semibold"
+              : "text-[#5b5b5b]"
+          }`}
+        >
+          Free
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange({ priceTier: "paid" })}
+          className={`flex-1 px-3.5 py-2.5 rounded-xl text-sm ${
+            form.priceTier === "paid"
+              ? "bg-white text-[#1a1a1a] shadow-sm font-semibold"
+              : "text-[#5b5b5b]"
+          }`}
+        >
+          Premium tier
+        </button>
+      </div>
+
+      {form.priceTier === "free" ? (
+        <div className="bg-white border border-[#e0dbd0] rounded-xl p-4 text-[#5b5b5b] text-[13.5px] leading-snug">
+          <strong className="text-[#1a1a1a]">Free agents install instantly.</strong>
+          <br />
+          No payout setup needed. You can switch this listing to a premium tier anytime.
+        </div>
+      ) : (
+        <>
+          <label className="block text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5">
+            Price per install (USD)
+          </label>
+          <div className="flex items-center bg-white border border-[#e0dbd0] rounded-xl px-3.5 py-3 gap-2 mb-2">
+            <span className="font-editorial-serif text-2xl text-[#5b5b5b]">$</span>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              step={1}
+              value={v}
+              onChange={(e) =>
+                onChange({ priceDollars: Math.max(1, Math.min(20, +e.target.value || 0)) })
+              }
+              className="font-editorial-serif text-2xl flex-1 outline-0 bg-transparent"
+            />
+            <span className="text-[12px] text-[#5b5b5b]">USD · one-time, perpetual license</span>
+          </div>
+          <p className="text-[11.5px] text-[#5b5b5b] mb-3">
+            Suggested range: $5–$20. Listings over $20 require Isol8 approval.
+          </p>
+          <div className="bg-white border border-[#e0dbd0] rounded-xl px-4 py-3.5 text-[13px]">
+            <Row label="List price" value={`$${v.toFixed(2)}`} />
+            <Row label="Stripe processing fee (2.9% + $0.30)" value={`−$${stripe.toFixed(2)}`} />
+            <Row label="Isol8 platform fee (15%)" value={`−$${platform.toFixed(2)}`} />
+            <div className="flex justify-between border-t border-[#e0dbd0] mt-1.5 pt-2.5 text-[#1a1a1a] font-semibold">
+              <span>Your take-home per install</span>
+              <span className="font-editorial-serif text-[#06402b] text-base">
+                ${take.toFixed(2)}
+              </span>
+            </div>
+          </div>
+          <p className="text-[12px] italic text-[#5b5b5b] mt-3">
+            Earnings accrue to your seller balance. Cash out anytime from My Listings.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between text-[#5b5b5b] py-0.5">
+      <span>{label}</span>
+      <span>{value}</span>
     </div>
   );
 }
 
 export function ReviewStep({ form }: { form: PublishForm }) {
+  const { getToken } = useAuth();
+  const [summary, setSummary] = useState<AgentSummary | null>(null);
+
+  useEffect(() => {
+    if (!form.agentId) return;
+    let alive = true;
+    (async () => {
+      const jwt = await getToken();
+      if (!jwt) return;
+      const r = await myAgentsSummary({ jwt });
+      if (!alive) return;
+      const match = r.agents.find((a) => a.agent_id === form.agentId);
+      if (match) setSummary(match);
+    })().catch(() => {
+      // best effort — leave summary null
+    });
+    return () => {
+      alive = false;
+    };
+  }, [form.agentId, getToken]);
+
   return (
     <div>
-      Review (placeholder, Task 14). agent={form.agentId}
+      <p className="text-[14px] text-[#5b5b5b] leading-snug mb-4">
+        Here&apos;s how your listing will appear. Submit when ready — listings go live after
+        admin moderation (usually within 24h).
+      </p>
+      <div className="bg-white border border-[#e0dbd0] rounded-2xl p-5">
+        <div className="font-editorial-serif text-xl">{form.name || "Untitled"}</div>
+        <div className="text-[12px] text-[#5b5b5b] italic mt-0.5">by you</div>
+        <p className="text-[13.5px] text-[#5b5b5b] leading-snug mt-2">{form.tagline || "—"}</p>
+        {form.tags.length > 0 && (
+          <div className="flex gap-1.5 flex-wrap mt-3">
+            {form.tags.map((t) => (
+              <span
+                key={t}
+                className="bg-[#f3eee5] text-[#5b5b5b] text-[11px] px-2 py-0.5 rounded-full"
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex justify-between text-[12.5px] text-[#5b5b5b] mt-3 pt-3 border-t border-dashed border-[#e0dbd0]">
+          <span>
+            {summary
+              ? `Bundled: ${summary.skill_count} skill${summary.skill_count === 1 ? "" : "s"} · ${summary.cron_count} cron${summary.cron_count === 1 ? "" : "s"} · ${summary.channel_count} channel${summary.channel_count === 1 ? "" : "s"}`
+              : "Bundled: …"}
+          </span>
+          <span className="font-semibold text-[#06402b]">
+            {form.priceTier === "free" ? "Free" : "Premium tier"}
+          </span>
+        </div>
+      </div>
+      <p className="text-[12px] text-[#5b5b5b] leading-snug mt-3">
+        By publishing, you agree to the{" "}
+        <a href="#" className="text-[#06402b] underline">
+          Marketplace Terms
+        </a>{" "}
+        and confirm this agent is yours to publish. Isol8 retains the right to remove listings
+        that violate the{" "}
+        <a href="#" className="text-[#06402b] underline">
+          Acceptable Use Policy
+        </a>
+        .
+      </p>
     </div>
   );
 }

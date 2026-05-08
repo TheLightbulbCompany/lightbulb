@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { useApi } from "@/lib/api";
+
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import {
   PickAgentStep,
@@ -36,6 +38,7 @@ type Step = 1 | 2 | 3 | 4 | 5;
 
 export function PublishWizard() {
   const { setView, state } = useMarketplaceDrawer();
+  const api = useApi();
   const [step, setStep] = useState<Step>(1);
   const [form, setForm] = useState<PublishForm>({
     ...INITIAL_FORM,
@@ -43,6 +46,7 @@ export function PublishWizard() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [draftListingId, setDraftListingId] = useState<string | null>(null);
 
   const setAgent = (id: string) =>
     setForm((f) => ({
@@ -79,8 +83,40 @@ export function PublishWizard() {
   }
 
   async function submit() {
-    // Stubbed — Task 14 implements the 3-call chain with retry/draft-resume.
-    setStep(5);
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      let listingId = draftListingId;
+      if (!listingId) {
+        const slug = slugify(form.name);
+        const draft = (await api.post("/marketplace/listings", {
+          slug,
+          name: form.name.trim(),
+          description_md: form.description || form.tagline,
+          format: "openclaw",
+          price_cents: form.priceTier === "free" ? 0 : Math.round(form.priceDollars * 100),
+          tags: form.tags,
+        })) as { listing_id: string };
+        listingId = draft.listing_id;
+        setDraftListingId(listingId);
+      }
+      await api.post(`/marketplace/listings/${listingId}/artifact-from-agent`, {
+        agent_id: form.agentId,
+      });
+      await api.post(`/marketplace/listings/${listingId}/submit`, {});
+      setStep(5);
+    } catch (err) {
+      const e = err as Error & { status?: number; detail?: string };
+      if (e.status === 409 && (e.detail || "").includes("slug")) {
+        setSubmitError("That slug is already taken — change the name and try again.");
+        setDraftListingId(null);
+        setStep(2);
+      } else {
+        setSubmitError(e.detail || e.message || "Failed to submit listing");
+      }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -150,4 +186,15 @@ function titleFromId(id: string): string {
     .replace(/^agent[_-]/, "")
     .replace(/[_-]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function slugify(input: string): string {
+  return (
+    input
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || "untitled"
+  );
 }

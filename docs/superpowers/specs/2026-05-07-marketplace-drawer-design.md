@@ -134,7 +134,7 @@ Empty state when zero listings: cream dashed card, Lora heading "No listings yet
 - Read `dashboard_url` from `/payouts/dashboard`. If null (first-time seller, never onboarded): pending-payout stat label changes to a clickable **"Set up payouts →"** action; clicking calls `POST /marketplace/payouts/onboard` and redirects to the returned `onboarding_url`. Same code path `/marketplace/dashboard` already uses today.
 - If `dashboard_url` is non-null: a `Cash out →` link sits under/next to the pending-payout stat; clicking opens `dashboard_url` (Stripe-hosted) in a new tab.
 
-Data source decision (deferred to plan): My Listings needs the seller's listings across all statuses, but `/marketplace/listings/search` filters to `status == "published"` only. Plan picks one of: (a) extend `/listings/search` with `seller_id` + `status_in` query params; (b) add a tiny `GET /marketplace/me/listings` endpoint (~30 lines). No schema changes either way.
+Data source: extend the existing `/marketplace/listings/search` with `seller_id` + `status_in` query params (auth-gated when `seller_id` matches the calling user). The underlying `marketplace_search.search()` service already accepts `seller_id`; only the router and the hard-coded `published`-only filter need to change. See Backend section below for details.
 
 Small `View purchases →` link at the bottom of the My Listings view points to `/marketplace/buyer` (deferred-but-discoverable for buyers who also sell).
 
@@ -146,9 +146,9 @@ Wizard shares the drawer panel — not a modal over the drawer. Smooth `wizFade`
 Lede: *"Pick which agent in your workspace you'd like to publish. We'll bundle its config, skills, and cron jobs into a deployable artifact."*
 
 - 2-column grid (`pick-grid`) of `pick-card` rows: 36×36 monogram avatar + Lora name + DM Sans subline
-- Subline shows `N skills · M crons` derived from the agent's openclaw.json (`agents.list[i].skills.length` + `agents.list[i].cron.length`)
+- Subline shows `N skills · M crons` per agent. Source: a single `GET /marketplace/me/agents-summary` request fired when the wizard mounts at Step 1 (or whenever the user advances into Step 1). Returns per-agent counts derived server-side from the seller's `openclaw.json` (see Backend addition 2). While the request is in flight, sublines render as `…` placeholders.
 - The `main` agent renders disabled (45% opacity, cream-2 bg) with title "main agent can't be published"
-- Already-published agents flagged with the gold pub-dot but still selectable (publishes a new version)
+- Already-published agents flagged with the gold pub-dot but still selectable (publishes a new version). Source: cross-reference `useAgents().agents[].id` with `myListings()` data — each listing has `manifest_json.agent_id` recording the source agent that was published; if the agent's id appears in any of the seller's listings, render the dot.
 - Selecting a card sets `wState.agent` and pre-fills Step 2's `Public name` from the agent's display name
 - If the seller entered Publish via deep-link with a pre-selected `publishAgentId` (future v2), Step 1 is skipped and the wizard opens at Step 2
 
@@ -182,7 +182,7 @@ Validation: 'Continue' always enabled when Free is selected; for Premium, enable
 Lede: *"Here's how your listing will appear. Submit when ready — listings go live after admin moderation (usually within 24h)."*
 
 - Preview card rendered exactly how it'll show in Browse: monogram avatar + Lora name + "by {seller_display_name}" subline + first-line description + tag chips + footer row "Bundled: N skills · M crons · K channels" + green Free/Premium tier label
-- The "Bundled" line pulls from the agent's `openclaw.json` (`skills.list.length`, `cron.length`, `channels.length`)
+- The "Bundled" line reads from the same `/me/agents-summary` payload fetched in Step 1; the wizard's state stores the chosen agent's row and reuses it here
 - Legal: *"By publishing, you agree to the [Marketplace Terms](#) and confirm this agent is yours to publish. Isol8 retains the right to remove listings that violate the [Acceptable Use Policy](#)."*
 - Continue button label switches to **`Submit for review →`**
 
@@ -204,12 +204,39 @@ Bottom-center toast appears 700ms after the drawer auto-closes on a successful f
 ✓ {Name} installed in your workspace.    [ Open in chat → ]
 ```
 
+**Bespoke component, not reuse.** ChatLayout.tsx:361 explicitly comments *"No toast library is wired up in the frontend yet"* — this PR introduces the first toast surface. Build a small `<MarketplaceToast>` component (~40 LOC) with internal show/dismiss state controlled via the drawer provider:
+
 - Green `--green` background, white text, rounded 14px
 - Slides up from `translate(-50%, 40px)` with `cubic-bezier(.34, 1.56, .64, 1)` 350ms
-- "Open in chat →" sets the new agent as active in the sidebar (existing `selectAgent` event)
-- Auto-dismisses after 5500ms
+- "Open in chat →" dispatches the existing `selectAgent` CustomEvent to mark the new agent as active in the sidebar (matches the `dispatchSelectAgentEvent` pattern already used by `ChatLayout.tsx`)
+- Auto-dismisses after 5500ms; manual dismiss when chat-active set
 
-The new agent in the sidebar plays the existing `new-arrival` `slideIn` keyframe animation (green flash background fading to normal) — this is already the codebase's pattern when an agent is freshly installed; nothing new on the sidebar side beyond ensuring the `new-arrival` class is applied to the inserted row.
+The drawer provider exposes `showInstallToast({agentName, agentId})`; the toast component subscribes to provider state. Single-toast model (no queue) — if a second install fires before the first dismisses, the new toast replaces the old.
+
+## Sidebar slide-in animation (new)
+
+When a fresh agent appears in the sidebar after a drawer install, it gets a `new-arrival` class for its first render that triggers a `slideIn` keyframe (green flash background fading to normal).
+
+**This animation does NOT exist today** — the spec's earlier reference to "existing animation" was wrong. This PR adds it (~20 lines CSS in `globals.css` or `ChatLayout.css`):
+
+```css
+.agent-item.new-arrival {
+  animation: slideIn 0.5s ease both;
+}
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+    background: #dde9d6;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+```
+
+The drawer provider tracks the `freshlyInstalledAgentId` (set when install completes, cleared after the agent appears + the animation completes — ~600ms timer). `ChatLayout` reads this from the provider and applies the class to the matching agent row. Single-shot per install.
 
 ---
 
@@ -240,7 +267,13 @@ The sidebar's "MY AGENTS" section above (the user's own provisioned agents) stay
 
 ### From AgentsPanel
 
-- **Per-agent Publish button**: **deleted**. The `<PublishAgentModal>` mount + related state in `AgentsPanel.tsx:216` is removed entirely. Publishing only happens from the drawer (entered from the chat sidebar's `+ Publish` button or the drawer header's `+ Publish your agent` pill).
+- **Per-agent "Publish to marketplace" button**: **deleted**. Five distinct removal points in `AgentsPanel.tsx`:
+  - Line 12: `Upload` import in the lucide-react import block (icon used only by the Publish button)
+  - Line 18: `import { PublishAgentModal } from "@/components/marketplace/PublishAgentModal"`
+  - Lines 38-40: `publishingAgent` state + comment
+  - Lines 187-194: the `<Button>` rendering "Publish to marketplace"
+  - Lines 215-225: the `{publishingAgent && <PublishAgentModal ... />}` mount
+- Publishing only happens from the drawer after this PR (entered from the chat sidebar's `+ Publish` button or the drawer header's `+ Publish your agent` pill).
 
 ### Future deep-link entry (out of scope for v1)
 
@@ -310,22 +343,64 @@ Once the drawer is in production, `/marketplace/dashboard` is functionally redun
 
 ## Backend touches
 
-Almost none. The drawer reuses every existing endpoint:
+Two small additions; everything else reuses existing endpoints. Audit confirmed (`marketplace_search.py` already accepts `seller_id`, just hard-codes the `published` filter).
 
-- `GET /marketplace/listings/search` — Browse view
-- `GET /marketplace/payouts/dashboard` — earnings panel + Cash Out check
+### Existing endpoints (reused unchanged)
+
+- `GET /marketplace/listings/search` — Browse view (`format=openclaw`)
+- `GET /marketplace/payouts/dashboard` — earnings panel + Cash-out check
 - `POST /marketplace/payouts/onboard` — first-time Connect onboarding
-- `POST /marketplace/checkout` — paid Hire
+- `POST /marketplace/checkout` — paid Hire (called via `lib/marketplace/api.ts::checkout()` or the existing `/api/internal/marketplace/checkout` Next.js proxy that `BuyButton` uses; plan picks one for consistency)
 - `POST /marketplace/listings` + `/{id}/artifact-from-agent` + `/{id}/submit` — publish wizard 3-call chain
-- `POST /marketplace/listings/{slug}/deploy` — free Hire (via `useCatalog`)
+- `POST /marketplace/listings/{slug}/deploy` — free Hire (via `useCatalog().deploy`)
 - `GET /marketplace/me/installed-templates` — already-installed marker (via `useCatalog`)
 
-**One possible addition**, decision deferred to plan: My Listings needs the seller's listings across all statuses, but `/marketplace/listings/search` filters to `status="published"`. Two options:
+### Addition 1 — extend `/listings/search` with seller-scoped filtering
 
-- **Option A**: Add a `seller_id` query param + a `status_in` query param to `/listings/search`. Smaller change but extends a public endpoint with auth-gated semantics.
-- **Option B**: Add a tiny new `GET /marketplace/me/listings` endpoint that reads the listings table by `seller_id == auth.user_id`. ~30 lines.
+The underlying `marketplace_search.search()` service already accepts a `seller_id` parameter (see `apps/backend/core/services/marketplace_search.py:114`); only the public router (`marketplace_listings.py:75`) doesn't expose it, and the service hard-codes `status="published"` (line 134).
 
-Plan picks one based on a 5-min read of `marketplace_search.py`. Either way, no schema changes.
+Two-line change:
+
+- Add `seller_id: str | None = Query(default=None)` and `status_in: str | None = Query(default=None, description="Comma-separated statuses; ignored unless seller_id is the calling user.")` to the router signature
+- When `seller_id == auth.user_id` (require auth in this branch via an optional `Depends(get_current_user)`), thread `status_in` through to the service, defaulting to all statuses; otherwise enforce `published`-only as today
+- Extend `marketplace_search.search()` with `include_unpublished=False` flag; flip to True when caller provides `status_in`
+
+Estimated diff: ~15 lines backend + ~10 lines test.
+
+### Addition 2 — `GET /marketplace/me/agents-summary`
+
+The Publish wizard's Step 1 pick-cards and Step 4 review preview both want skill / cron / channel counts for each of the seller's agents. The data is server-side in `workspace.read_openclaw_config(owner_id)` already (see `agent_export.export_agent_from_efs:163`) but not currently exposed to the frontend.
+
+```python
+@router.get("/me/agents-summary")
+async def my_agents_summary(auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Per-agent skill / channel / cron counts from the caller's
+    workspace openclaw.json. Drives the Publish wizard's pick-card
+    sublines (Step 1) and the bundled-summary line in the review
+    preview (Step 4). Reads EFS directly — no container interaction.
+    """
+    owner_id = resolve_owner_id(auth)
+    workspace = get_workspace()
+    config = workspace.read_openclaw_config(owner_id) or {}
+    agents = (config.get("agents") or {}).get("list", []) or []
+    cron_jobs = workspace.read_cron_jobs(owner_id) or []
+    return {
+        "agents": [
+            {
+                "agent_id": a.get("id"),
+                "name": a.get("identity", {}).get("name") or a.get("id"),
+                "skill_count": len((a.get("skills") or {}).get("list", []) or []),
+                "channel_count": len((a.get("channels") or {}).get("list", []) or []),
+                "cron_count": sum(1 for c in cron_jobs if c.get("agent_id") == a.get("id")),
+            }
+            for a in agents
+        ],
+    }
+```
+
+Estimated diff: ~25 lines backend + ~15 lines test.
+
+No schema changes, no new tables, no new GSIs.
 
 ---
 
@@ -343,12 +418,17 @@ The drawer is logically one component but will be decomposed into per-view files
 | `components/marketplace/drawer/wizardSteps.tsx` | **New** — step content components (PickAgent, Details, Pricing, Review) | ~250 |
 | `app/chat/page.tsx` | Wrap in `<MarketplaceDrawerProvider>`, mount `<MarketplaceDrawer />` | ~5 |
 | `components/chat/GallerySection.tsx` | Shrink to a 2-button "Marketplace" block (Browse + Publish). Remove curated-agent rail. | ~-40 |
-| `components/chat/AgentDetailPanel.tsx` | **Delete** (orphaned — no caller after GallerySection list goes) | -141 |
+| `components/chat/AgentDetailPanel.tsx` | **Delete** — chat-side only (orphaned after GallerySection list removal). The unrelated `components/teams/panels/AgentDetailPanel.tsx` is a different file used by `/teams/agents/[agentId]/page.tsx` and stays untouched. | -141 |
 | `components/chat/GalleryItemRow.tsx` | **Delete** (orphaned with the GallerySection list) | -~80 |
+| `hooks/useCatalog.ts` | Update top-of-file comment to remove the `(GallerySection, AgentDetailPanel)` consumers reference (now just used for `installedSlugs` derivation) | ~3 |
+| `app/globals.css` (or `ChatLayout.css`) | Add `slideIn` keyframe + `.agent-item.new-arrival` rule (~20 lines) | +20 |
 | `components/control/panels/AgentsPanel.tsx` | Remove per-agent Publish button + `<PublishAgentModal>` mount + related state | ~-30 |
 | `components/marketplace/PublishAgentModal.tsx` | **Delete** | -472 |
-| `lib/marketplace/api.ts` | Add `searchListings(q, category, sort)` and `myListings()` (or extend `browseListings` with the params; plan picks) | ~30 |
-| `hooks/useAgents.ts` (or new `usePublishedAgents`) | Add a derived `publishedSlugs` set so sidebar published-dots can render | ~15 |
+| `lib/marketplace/api.ts` | Add `searchListings({q, category, sort, sellerId, statusIn})` (single helper; `myListings()` is just a preset). Add `myAgentsSummary()` for the `/me/agents-summary` endpoint. | ~40 |
+| `components/marketplace/drawer/MarketplaceToast.tsx` | **New** — bespoke bottom-center toast (no shared toast utility exists today) | ~40 |
+| `apps/backend/routers/marketplace_listings.py` | Extend `/listings/search` with `seller_id` + `status_in` query params (auth-gated when `seller_id` is set). Add `GET /me/agents-summary` endpoint. | ~50 |
+| `apps/backend/core/services/marketplace_search.py` | Add `include_unpublished=False` flag to `search()` so the new gated callers can read all statuses | ~5 |
+| `apps/backend/tests/unit/routers/test_marketplace_listings.py` | Add tests for `seller_id` + `status_in` filtering and `/me/agents-summary` | ~80 |
 | `tests/unit/components/marketplace/drawer/MarketplaceDrawer.test.tsx` | **New** | ~120 |
 | `tests/unit/components/marketplace/drawer/PublishWizard.test.tsx` | **New** | ~180 |
 | `tests/unit/components/marketplace/drawer/MyListingsView.test.tsx` | **New** | ~80 |
@@ -399,12 +479,21 @@ Net diff estimate: **+650 to +850 lines after offsets**, with the PublishAgentMo
 
 ## Open questions
 
-None blocking. All decisions made during brainstorm:
+None blocking. All decisions made during brainstorm + post-audit:
 
 - All three views (Browse + My Listings + Publish) — matches mock.
 - Replace `PublishAgentModal` entirely; drop the per-agent Publish button on AgentsPanel.
-- Browse uses full marketplace catalog (`/marketplace/listings/search`); chat sidebar's GallerySection rail is **replaced** by a 2-button Marketplace block (Browse + Publish); `AgentDetailPanel` and `GalleryItemRow` are deleted.
+- Browse uses full marketplace catalog (`/marketplace/listings/search`); chat sidebar's GallerySection rail is **replaced** by a 2-button Marketplace block (Browse + Publish); chat-side `AgentDetailPanel` and `GalleryItemRow` are deleted.
 - Same-tab redirect for paid Hire (no cross-tab polling).
 - React context for drawer state (no URL params for v1).
 - Card click opens standalone listing detail in new tab.
 - First-time Connect onboarding handled in drawer via the existing `/payouts/onboard` endpoint.
+- Lazy Connect at publish (no Stripe block at Step 3).
+
+### Resolved during code audit
+
+- **My Listings data source**: extend existing `/listings/search` with `seller_id` + `status_in` query params (NOT a new `/me/listings` endpoint — the underlying search service already supports `seller_id`).
+- **Step 1 / Step 4 skill+cron+channel counts**: add `GET /marketplace/me/agents-summary` reading the seller's `openclaw.json` server-side. Wizard fetches once on Step 1 mount and reuses the payload for Step 4 review.
+- **Sidebar published-agent gold dot**: `listing.manifest_json.agent_id` records the source agent on every publish; cross-reference with `useAgents()` for the dot. Frontend-only correlation, no backend addition needed.
+- **Sidebar slide-in animation**: NEW (the existing-animation claim was wrong); ~20 lines CSS.
+- **Toast**: NEW bespoke component (~40 LOC); no shared toast utility exists.

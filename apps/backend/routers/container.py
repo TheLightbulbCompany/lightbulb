@@ -108,12 +108,24 @@ async def container_status(
         # structured payload (402) so it can render the picker / "top up"
         # CTA instead of trapping the user in a generic "no container"
         # state.
+        is_admin = auth.is_org_admin if auth.is_org_context else True
         gate = await evaluate_provision_gate(
             owner_id=owner_id,
             clerk_user_id=auth.user_id,
-            is_admin=auth.is_org_admin if auth.is_org_context else True,
+            is_admin=is_admin,
         )
         if gate is not None:
+            # subscription_required + admin == "owner has not started
+            # signup yet". The ProviderPicker on /chat is the only
+            # checkout entry point (POST /billing/trial-checkout);
+            # surfacing 402 here traps the admin in a Subscribe button
+            # that loops /onboarding → /chat with no way to start
+            # checkout. Return 404 so useProvisioningState resolves to
+            # phase="provision-needed" and the picker renders. Members
+            # still see the gate so they get "ask your org admin"
+            # instead of a picker that would 403 on click.
+            if gate.code == "subscription_required" and is_admin:
+                raise HTTPException(status_code=404, detail="No container found")
             raise HTTPException(status_code=402, detail=gate.to_payload())
 
         # Gate clear, no container row. After Tasks 6 + 7 stripped the

@@ -140,6 +140,64 @@ async def _ensure_paperclip_for_owner(
         await close_paperclip_provisioning(provisioning)
 
 
-async def _ensure_paperclip_for_member(*, org_id: str, member_user_id: str, member_email: str) -> None:
-    """Org-member fast path. Implemented in Task 4."""
-    raise NotImplementedError("Task 4")
+async def _ensure_paperclip_for_member(
+    *,
+    org_id: str,
+    member_user_id: str,
+    member_email: str,
+) -> None:
+    """Add the org member to the org's existing Paperclip company.
+
+    Returns gracefully if the owner's company row doesn't exist or
+    isn't active yet. The pending state is implicit ("Clerk-membership
+    exists, paperclip-membership doesn't") and resolves on the
+    member's next /container/status poll once the owner finishes
+    provisioning.
+
+    member_email comes from auth.email on the member's JWT; if
+    missing, lookup_owner_email falls back to user_repo + Clerk.
+
+    Implementation note: ``paperclip_repo`` does not expose a single
+    "fetch the org's company row" helper at the module level — see
+    Task 4 verification (Step 4.1). Instead we reuse
+    ``PaperclipProvisioning._find_org_owner``, which already filters to
+    ``status="active"`` rows and is the same lookup ``provision_member``
+    itself uses internally. Returning ``None`` from that helper means
+    the owner's company is either missing or not yet active —
+    indistinguishable for our purposes (both → return gracefully).
+    """
+    provisioning = await build_paperclip_provisioning()
+    try:
+        owner_row = await provisioning._find_org_owner(org_id)
+        if owner_row is None:
+            logger.info(
+                "ensure_user_ready (member): owner's paperclip company "
+                "for org=%s not active yet — skipping; will retry on "
+                "member's next /container/status poll",
+                org_id,
+            )
+            return
+
+        if not member_email:
+            member_email = await lookup_owner_email(org_id=None, fallback_user_id=member_user_id) or ""
+        if not member_email:
+            logger.warning(
+                "ensure_user_ready: no email for member=%s — provision_member skipped",
+                member_user_id,
+            )
+            put_metric(
+                "ensure_user_ready.no_email",
+                dimensions={"path": "member"},
+            )
+            return
+
+        owner_email = await lookup_owner_email(org_id=org_id, fallback_user_id=None) or ""
+
+        await provisioning.provision_member(
+            owner_id=org_id,
+            user_id=member_user_id,
+            email=member_email,
+            owner_email=owner_email,
+        )
+    finally:
+        await close_paperclip_provisioning(provisioning)

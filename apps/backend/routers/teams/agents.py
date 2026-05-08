@@ -14,7 +14,6 @@ the Teams BFF (Tasks 7-12) imports.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 import httpx
@@ -24,20 +23,18 @@ from core.auth import AuthContext, get_current_user
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.encryption import decrypt  # noqa: F401 — re-exported for tests + downstream tasks.
-from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_adapter_config import (
     OPENCLAW_GATEWAY_TYPE,
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_autoprovision import ensure_paperclip_workspace
 from core.services.paperclip_openclaw_pairing import pair_with_openclaw
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 
 from . import deps as deps_mod
-from .deps import TeamsContext, TeamsContextError, envelope_list
+from .deps import TeamsContext, envelope_list
 from .schemas import CreateAgentBody, PatchAgentBody
 
 logger = logging.getLogger(__name__)
@@ -261,19 +258,19 @@ async def _resolve_user_email(user_id: str) -> str:
 
 
 async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
-    """Shared Teams Depends helper — Tasks 7-12 reuse this.
+    """Resolve the Teams BFF context for the current request.
 
     Wires together: Clerk auth -> paperclip-companies row lookup ->
     per-user Better Auth sign-in -> ``TeamsContext`` for the handler.
     Using ``deps_mod.resolve_teams_context`` (rather than a direct
     import) so test code that monkeypatches the deps module Just Works.
 
-    On a "no DDB row" 409, lazy-provision the workspace in the
-    background for personal-context users with an active container,
-    and re-raise as 202 so the frontend polls. Org context keeps the
-    409 — those rows are owned by Clerk's ``organization.created``
-    webhook and a missing row is an operator issue, not a self-heal
-    case. Personal users with no container get 402 (subscribe first).
+    The 409 / 202 / 503 status codes from ``resolve_teams_context``
+    propagate as-is. After Task 9, this function does NOT autoprovision
+    on the no-DDB-row branch — provisioning is owned by the canonical
+    ``/container/status`` trigger (Task 8) which polls every 3s during
+    pre-ready state. A 409 here therefore indicates an operator-level
+    error rather than a self-heal opportunity.
     """
 
     async def session_factory(user_id: str) -> str:
@@ -284,28 +281,11 @@ async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
             clerk_email_resolver=_resolve_user_email,
         )
 
-    try:
-        return await deps_mod.resolve_teams_context(
-            auth=auth,
-            repo=_repo(),
-            session_factory=session_factory,
-        )
-    except TeamsContextError as exc:
-        if exc.status_code != 409 or exc.detail != "team workspace not provisioned":
-            raise
-        if auth.is_org_context:
-            raise
-        container = await container_repo.get_by_owner_id(auth.user_id)
-        if not container:
-            raise TeamsContextError(
-                status_code=402,
-                detail="subscribe to enable Teams",
-            ) from exc
-        asyncio.create_task(ensure_paperclip_workspace(owner_id=auth.user_id, clerk_user_id=auth.user_id))
-        raise TeamsContextError(
-            status_code=202,
-            detail="team workspace provisioning",
-        ) from exc
+    return await deps_mod.resolve_teams_context(
+        auth=auth,
+        repo=_repo(),
+        session_factory=session_factory,
+    )
 
 
 # --- Routes ---

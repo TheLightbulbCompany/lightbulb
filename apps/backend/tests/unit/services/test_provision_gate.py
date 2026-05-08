@@ -34,11 +34,11 @@ async def test_no_billing_account_returns_signup_required():
     "status",
     ["canceled", "incomplete", "incomplete_expired", "unpaid", "paused"],
 )
-async def test_inactive_billing_account_returns_subscription_required(status):
-    """Existing billing row with inactive status keeps the
-    subscription_required code (action: /settings/billing) so the
-    frontend routes the user to the billing portal — *not* to the
-    picker, which would 409 already_subscribed on click."""
+async def test_inactive_billing_account_with_subscription_id_returns_subscription_required(status):
+    """Existing billing row WITH a stripe_subscription_id but inactive
+    status keeps the subscription_required code (action:
+    /settings/billing) so the frontend routes the user to the billing
+    portal — *not* to the picker, which would 409 already_subscribed."""
     with patch("core.services.provision_gate.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -53,6 +53,38 @@ async def test_inactive_billing_account_returns_subscription_required(status):
     assert gate is not None
     assert gate.code == "subscription_required"
     assert gate.action_href == "/settings/billing"
+
+
+@pytest.mark.asyncio
+async def test_billing_account_without_subscription_id_returns_signup_required():
+    """Codex P1 on PR #570: /billing/trial-checkout creates the billing-
+    account row BEFORE the Stripe Checkout session, so a user who
+    cancels Stripe (or whose checkout-session creation fails after the
+    row is written) lands here with an account but no
+    stripe_subscription_id and no subscription_status. /settings/billing
+    has nothing to manage in that case — the gate must fire
+    signup_required so the frontend re-renders the picker, which
+    trial-checkout will accept (is_trial_blocked is False without a
+    Stripe-side state)."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_x",
+                "stripe_customer_id": "cus_x",
+                # provider_choice may be set (trial-checkout writes it
+                # synchronously before creating the Checkout session).
+                "provider_choice": "bedrock_claude",
+                # No stripe_subscription_id, no subscription_status —
+                # checkout was abandoned before Stripe issued a sub.
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+            clerk_user_id="user_x",
+        )
+    assert gate is not None
+    assert gate.code == "signup_required"
+    assert gate.action_href == "/onboarding"
 
 
 @pytest.mark.asyncio

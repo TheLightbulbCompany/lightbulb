@@ -220,6 +220,26 @@ async def evaluate_provision_gate(
                 action_admin_only=True,
                 owner_role=owner_role,
             )
+        # Distinguish "real subscription exists but inactive" from
+        # "billing row exists but checkout never produced a subscription"
+        # (Codex P1 on PR #570). /billing/trial-checkout creates the
+        # billing-account row before the Stripe Checkout session, so a
+        # user who cancels Stripe (or whose checkout-session creation
+        # fails after the row is written) lands here with an account
+        # but no stripe_subscription_id. /settings/billing has nothing
+        # to manage in that case — they need to restart checkout via
+        # the picker, which trial-checkout will accept since
+        # is_trial_blocked is False without a Stripe-side state.
+        if not account.get("stripe_subscription_id"):
+            return Gate(
+                code="signup_required",
+                title="Subscribe to start your container",
+                message="An active subscription is required to provision a container.",
+                action_label="Subscribe",
+                action_href="/onboarding",
+                action_admin_only=True,
+                owner_role=owner_role,
+            )
         return Gate(
             code="subscription_required",
             title="Subscription not active",

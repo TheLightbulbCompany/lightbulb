@@ -256,7 +256,7 @@ export function useProvisioningState(
     : consumerInterval;
 
   if (!data) {
-    return { phase: "loading", container: null, blocked: null, refreshInterval: 0, refresh, error, isLoading };
+    return { phase: "loading", container: null, blocked: null, refreshInterval: consumerInterval, refresh, error, isLoading };
   }
   if (data.kind === "container") {
     return { phase: "normal", container: data.data, blocked: null, refreshInterval, refresh, error, isLoading };

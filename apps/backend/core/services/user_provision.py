@@ -22,6 +22,7 @@ import asyncio
 import logging
 
 from core.auth import AuthContext
+from core.observability.metrics import put_metric
 from core.services.container_provision import background_provision
 from core.services.paperclip_owner_email import lookup_owner_email
 from core.services.provision_gate import evaluate_provision_gate
@@ -30,12 +31,18 @@ logger = logging.getLogger(__name__)
 
 
 async def _get_paperclip_provisioning():
-    """Lazy import to avoid a router→service→router cycle.
+    """Defer router-package imports out of the service layer.
 
-    routers/webhooks.py owns the provisioning factory (httpx client
-    lifetime is attached to the returned instance via ``_http_client``
-    for cleanup by ``_close_paperclip_http``). We reuse its accessor so
-    there's exactly one place that constructs the chain.
+    Top-level ``from routers.webhooks import _get_paperclip_provisioning``
+    would work today (no current cycle), but services importing from
+    routers is a smell that becomes a real cycle the moment any
+    router imports this service module. Keep the import local so
+    the dependency direction stays one-way (routers → services).
+
+    See plan §"Issue #2 deferred" — the proper fix is to move
+    these helpers into core/services/paperclip_provisioning.py
+    so user_provision can stop reaching into router-private code.
+    Tracked as a follow-up cleanup PR.
     """
     from routers.webhooks import _get_paperclip_provisioning as _factory
 
@@ -97,6 +104,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         owner_id=owner_id,
         owner_user_id=auth.user_id,
         owner_email=auth.email or "",
+        org_id=auth.org_id if auth.is_org_context else None,
     )
 
     # Container provisioning is dispatched, not awaited. /container/status
@@ -104,7 +112,13 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     asyncio.create_task(background_provision(owner_id, auth.user_id))
 
 
-async def _ensure_paperclip_for_owner(*, owner_id: str, owner_user_id: str, owner_email: str) -> None:
+async def _ensure_paperclip_for_owner(
+    *,
+    owner_id: str,
+    owner_user_id: str,
+    owner_email: str,
+    org_id: str | None,
+) -> None:
     """Ensure a Paperclip company exists for this owner.
 
     Idempotent — ``provisioning.provision_org`` short-circuits on an
@@ -113,15 +127,15 @@ async def _ensure_paperclip_for_owner(*, owner_id: str, owner_user_id: str, owne
 
     Resolves ``owner_email`` via ``lookup_owner_email`` when not
     supplied on the AuthContext (e.g. retry callers without a JWT
-    email claim). Personal context: ``owner_id == owner_user_id`` so
-    we pass ``org_id=None`` to the resolver and let it fall back to
-    the user_id row. Org admin context: ``owner_id`` is the org_id
-    and is passed for log context.
+    email claim). The caller (``ensure_user_ready``) is the source
+    of truth for org-vs-personal context via ``auth.is_org_context``
+    and forwards ``org_id`` here explicitly — None for personal
+    owners, the Clerk org_id for org admins.
     """
     if not owner_email:
         owner_email = (
             await lookup_owner_email(
-                org_id=owner_id if owner_id != owner_user_id else None,
+                org_id=org_id,
                 fallback_user_id=owner_user_id,
             )
             or ""
@@ -130,6 +144,10 @@ async def _ensure_paperclip_for_owner(*, owner_id: str, owner_user_id: str, owne
         logger.warning(
             "ensure_user_ready: no email for owner=%s — paperclip provision skipped",
             owner_id,
+        )
+        put_metric(
+            "ensure_user_ready.no_email",
+            dimensions={"path": "owner"},
         )
         return
 

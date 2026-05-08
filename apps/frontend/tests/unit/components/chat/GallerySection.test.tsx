@@ -8,9 +8,18 @@ import {
   useMarketplaceDrawer,
 } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 
-let captured: ReturnType<typeof useMarketplaceDrawer> | null = null;
+// Test-only probe: surface the live drawer-context value so assertions can
+// inspect it. Mutating a module-level binding from inside a component would
+// trip the react-hooks/globals rule; mutating a property of a stable holder
+// object trips react-hooks/immutability. Both rules are OK here — Probe
+// renders as a leaf, never re-renders against this value, and the test only
+// reads after the hook fires. Disable the immutability rule narrowly.
+const capturedRef: { current: ReturnType<typeof useMarketplaceDrawer> | null } = {
+  current: null,
+};
 function Probe() {
-  captured = useMarketplaceDrawer();
+  // eslint-disable-next-line react-hooks/immutability
+  capturedRef.current = useMarketplaceDrawer();
   return null;
 }
 
@@ -35,8 +44,8 @@ describe("GallerySection (2-button marketplace block)", () => {
       </MarketplaceDrawerProvider>,
     );
     await user.click(screen.getByRole("button", { name: /^browse$/i }));
-    expect(captured?.state.isOpen).toBe(true);
-    expect(captured?.state.view).toBe("browse");
+    expect(capturedRef.current?.state.isOpen).toBe(true);
+    expect(capturedRef.current?.state.view).toBe("browse");
   });
 
   it("Publish opens drawer in publish view", async () => {
@@ -48,7 +57,7 @@ describe("GallerySection (2-button marketplace block)", () => {
       </MarketplaceDrawerProvider>,
     );
     await user.click(screen.getByRole("button", { name: /publish/i }));
-    expect(captured?.state.isOpen).toBe(true);
-    expect(captured?.state.view).toBe("publish");
+    expect(capturedRef.current?.state.isOpen).toBe(true);
+    expect(capturedRef.current?.state.view).toBe("publish");
   });
 });

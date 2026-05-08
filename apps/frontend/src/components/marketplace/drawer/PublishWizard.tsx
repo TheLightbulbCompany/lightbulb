@@ -106,13 +106,23 @@ export function PublishWizard() {
       await api.post(`/marketplace/listings/${listingId}/submit`, {});
       setStep(5);
     } catch (err) {
-      const e = err as Error & { status?: number; detail?: string };
-      if (e.status === 409 && (e.detail || "").includes("slug")) {
+      // useApi's ApiError doesn't expose `.detail` directly; the body's
+      // detail string lives at `.body.detail` and is also serialized into
+      // `.message`. Check all three so 409s with shape {detail:"slug ..."}
+      // route to the slug-collision branch regardless of which field carries
+      // the text.
+      const e = err as Error & {
+        status?: number;
+        detail?: string;
+        body?: { detail?: string };
+      };
+      const errMsg = e.body?.detail || e.detail || e.message || "";
+      if (e.status === 409 && /slug/i.test(errMsg)) {
         setSubmitError("That slug is already taken — change the name and try again.");
         setDraftListingId(null);
         setStep(2);
       } else {
-        setSubmitError(e.detail || e.message || "Failed to submit listing");
+        setSubmitError(errMsg || "Failed to submit listing");
       }
     } finally {
       setSubmitting(false);

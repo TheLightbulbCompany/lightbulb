@@ -15,7 +15,7 @@ export function BrowseView() {
   const [q, setQ] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [loading, setLoading] = useState(true);
-  const { installedSlugs } = useCatalog() as unknown as { installedSlugs: Set<string> };
+  const { installedSlugs } = useCatalog();
 
   useEffect(() => {
     let alive = true;

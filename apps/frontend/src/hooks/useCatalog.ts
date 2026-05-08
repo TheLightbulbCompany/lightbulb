@@ -116,5 +116,6 @@ export function useCatalog() {
     isLoading: !featuredData || !installedData,
     deploy,
     refresh: () => Promise.all([mutateFeatured(), mutateInstalled()]),
+    installedSlugs,
   };
 }

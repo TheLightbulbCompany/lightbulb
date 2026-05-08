@@ -114,10 +114,11 @@ def _published_at_key(listing: dict[str, Any]) -> str:
 
 async def search(
     *,
-    query: str | None,
+    query: str | None = None,
     format: str | None = None,
     limit: int = 24,
     seller_id: str | None = None,
+    category: str | None = None,
     include_unpublished: bool = False,
 ) -> list[dict[str, Any]]:
     """Search the cached published-listing snapshot.
@@ -130,6 +131,9 @@ async def search(
         seller_id: Optional Clerk user_id filter. The chat sidebar's
             featured-listings endpoint passes the curator's user_id here
             so the gallery only shows admin@isol8.co's published agents.
+        category: Optional category filter (e.g., "operations", "sales").
+            Compared case-insensitively against the listing's "category"
+            field. Drives the Browse view's category-chip filtering.
         include_unpublished: If True, return draft/review/retired/taken_down
             rows in addition to published. Caller must enforce auth (only
             seller-scoped reads should set this — the marketplace drawer's
@@ -155,6 +159,9 @@ async def search(
         candidates = [li for li in candidates if li.get("format") == format]
     if seller_id:
         candidates = [li for li in candidates if li.get("seller_id") == seller_id]
+    if category:
+        cat_lower = category.lower()
+        candidates = [li for li in candidates if str(li.get("category", "")).lower() == cat_lower]
 
     tokens = [t.lower() for t in (query or "").split() if t]
     if not tokens:

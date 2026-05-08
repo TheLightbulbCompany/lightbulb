@@ -65,6 +65,7 @@ def test_search_endpoint_passes_through_to_service(mock_search, unauth_client):
         format="openclaw",
         limit=10,
         seller_id=None,
+        category=None,
         include_unpublished=False,
     )
     # Cache header is set so CloudFront / browser respect the snapshot TTL.
@@ -82,6 +83,7 @@ def test_search_endpoint_works_without_query(mock_search, unauth_client):
         format=None,
         limit=24,
         seller_id=None,
+        category=None,
         include_unpublished=False,
     )
 
@@ -558,6 +560,20 @@ def test_search_seller_scoped_with_status_in(mock_search, authed_client_factory)
     call_kwargs = mock_search.call_args.kwargs
     assert call_kwargs["seller_id"] == "u_seller"
     assert call_kwargs["include_unpublished"] is True
+    # Seller-scoped responses can include private drafts — the response
+    # MUST NOT be cacheable by a CDN. Otherwise CloudFront could serve
+    # one seller's drafts to a different user.
+    assert resp.headers["Cache-Control"] == "private, max-age=0, no-store"
+
+
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_search_category_filter_passes_through(mock_search, unauth_client):
+    """Browse view category chips wire through to the search service."""
+    mock_search.return_value = []
+    resp = unauth_client.get("/api/v1/marketplace/listings/search?category=engineering")
+    assert resp.status_code == 200
+    call_kwargs = mock_search.call_args.kwargs
+    assert call_kwargs["category"] == "engineering"
 
 
 @patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)

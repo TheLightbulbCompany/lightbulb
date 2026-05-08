@@ -76,6 +76,10 @@ async def search_listings(
     format: str | None = Query(default=None, pattern="^(openclaw|skillmd)$"),
     limit: int = Query(default=24, ge=1, le=100),
     seller_id: str | None = Query(default=None),
+    category: str | None = Query(
+        default=None,
+        description="Optional category filter, compared case-insensitively against listing.category.",
+    ),
     status_in: str | None = Query(
         default=None,
         description=(
@@ -95,15 +99,21 @@ async def search_listings(
     TTL) so CloudFront / browser caches don't outpace the underlying
     snapshot.
     """
-    response.headers["Cache-Control"] = "public, max-age=60"
     include_unpublished = (
         seller_id is not None and auth is not None and seller_id == auth.user_id and status_in is not None
     )
+    if include_unpublished:
+        # Seller-scoped reads can include drafts/review/retired rows that
+        # must never be cached by a CDN — those are private to the seller.
+        response.headers["Cache-Control"] = "private, max-age=0, no-store"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=60"
     items = await marketplace_search.search(
         query=q,
         format=format,
         limit=limit,
         seller_id=seller_id,
+        category=category,
         include_unpublished=include_unpublished,
     )
     if include_unpublished and status_in:

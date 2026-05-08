@@ -518,3 +518,57 @@ async def test_default_search_still_excludes_drafts_after_cache_change(monkeypat
     items = await marketplace_search.search(query=None)  # default — no flag
     statuses = {item["status"] for item in items}
     assert statuses == {"published"}, "default search must filter to published-only"
+
+
+@pytest.mark.asyncio
+async def test_search_filters_by_category(monkeypatch):
+    """Browse view category chips drive a case-insensitive filter on the
+    listing's "category" field. Listings without a matching category fall out.
+    """
+    table = MagicMock()
+    table.scan.return_value = {
+        "Items": [
+            {
+                "listing_id": "l1",
+                "slug": "a",
+                "name": "A",
+                "status": "published",
+                "seller_id": "u_s",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-01",
+                "published_at": "2026-05-01",
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-01",
+                "category": "Engineering",
+            },
+            {
+                "listing_id": "l2",
+                "slug": "b",
+                "name": "B",
+                "status": "published",
+                "seller_id": "u_s",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-01",
+                "published_at": "2026-05-01",
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-01",
+                "category": "Sales",
+            },
+        ],
+    }
+
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    items = await marketplace_search.search(category="engineering")
+    slugs = {item["slug"] for item in items}
+    assert slugs == {"a"}

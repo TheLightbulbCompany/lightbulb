@@ -102,9 +102,12 @@ function ChatPageInner() {
             </div>
           )}
         </ChatLayout>
+        {/* Drawer + toast must live INSIDE GatewayProvider — useHire() and
+            PickAgentStep both call useAgents() which calls useGateway().
+            See PR #567 review (Codex P1). */}
+        <MarketplaceDrawer />
+        <MarketplaceToast />
       </GatewayProvider>
-      <MarketplaceDrawer />
-      <MarketplaceToast />
     </MarketplaceDrawerProvider>
   );
 }

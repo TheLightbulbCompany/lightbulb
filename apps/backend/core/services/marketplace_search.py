@@ -120,6 +120,7 @@ async def search(
     seller_id: str | None = None,
     category: str | None = None,
     include_unpublished: bool = False,
+    status_in: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Search the cached published-listing snapshot.
 
@@ -140,6 +141,13 @@ async def search(
             "My Listings" view passes seller_id=<self> + include_unpublished
             so a seller can see their own drafts). Default False = the
             public search semantics.
+        status_in: Optional explicit status whitelist (e.g., ["review"]).
+            Applied BEFORE the limit slice so seller-scoped reads with a
+            narrow status filter aren't lost when the snapshot has many
+            published rows ahead of the matching ones. Honored regardless
+            of include_unpublished — but in practice only seller-scoped
+            callers pass it, since the public path filters to "published"
+            anyway.
 
     Returns:
         Plain listing dicts (caller threads through Pydantic).
@@ -162,6 +170,13 @@ async def search(
     if category:
         cat_lower = category.lower()
         candidates = [li for li in candidates if str(li.get("category", "")).lower() == cat_lower]
+    if status_in:
+        # Run BEFORE the limit slice — otherwise a seller with >limit rows
+        # in unrelated statuses ahead of the matching ones loses them to
+        # the limit cut. See PR #567 review (Codex P2).
+        wanted = {s for s in status_in if s}
+        if wanted:
+            candidates = [li for li in candidates if li.get("status") in wanted]
 
     tokens = [t.lower() for t in (query or "").split() if t]
     if not tokens:

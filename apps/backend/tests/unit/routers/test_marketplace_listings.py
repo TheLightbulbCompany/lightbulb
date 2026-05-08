@@ -67,6 +67,7 @@ def test_search_endpoint_passes_through_to_service(mock_search, unauth_client):
         seller_id=None,
         category=None,
         include_unpublished=False,
+        status_in=None,
     )
     # Cache header is set so CloudFront / browser respect the snapshot TTL.
     assert resp.headers["Cache-Control"] == "public, max-age=60"
@@ -85,6 +86,7 @@ def test_search_endpoint_works_without_query(mock_search, unauth_client):
         seller_id=None,
         category=None,
         include_unpublished=False,
+        status_in=None,
     )
 
 
@@ -603,23 +605,46 @@ def test_search_anonymous_published_only(mock_search, unauth_client):
 def test_search_seller_scoped_status_in_filters_results(mock_search, authed_client_factory):
     """status_in narrows the result set to the requested statuses.
 
-    The router asks marketplace_search for include_unpublished=True (so the
-    snapshot returns every status the seller owns) and then post-filters in
-    Python by the comma-separated ``status_in`` whitelist. Anything outside
-    that whitelist must be dropped before the response — otherwise the
-    drawer's "Drafts" tab would show retired/taken_down rows when
-    status_in=draft is sent.
+    The router pushes ``status_in`` into ``marketplace_search.search`` so the
+    filter runs BEFORE the limit slice — otherwise a seller with many
+    published rows ahead of a small status (e.g., a single review) loses the
+    match to the limit cut. The service does the filtering; the router's
+    job is just to parse the comma-separated string into a list.
     """
     mock_search.return_value = [
         {"listing_id": "l1", "status": "draft", "seller_id": "u_seller", "name": "A"},
-        {"listing_id": "l2", "status": "retired", "seller_id": "u_seller", "name": "B"},
-        {"listing_id": "l3", "status": "published", "seller_id": "u_seller", "name": "C"},
     ]
     tc = authed_client_factory("u_seller", "seller@example.com")
     resp = tc.get("/api/v1/marketplace/listings/search?seller_id=u_seller&status_in=draft,published")
     assert resp.status_code == 200, resp.text
-    statuses = {item["status"] for item in resp.json()["items"]}
-    assert statuses == {"draft", "published"}
+    call_kwargs = mock_search.call_args.kwargs
+    assert call_kwargs["status_in"] == ["draft", "published"]
+    assert call_kwargs["include_unpublished"] is True
+
+
+@patch("routers.marketplace_listings.marketplace_service.create_draft", new_callable=AsyncMock)
+def test_create_listing_persists_category(mock_create, authed_client_factory):
+    """Wizard's category selection (Step 4 of the publish flow) must thread
+    through to ``marketplace_service.create_draft`` so the listing's DDB row
+    carries a ``category`` field — without that, the new browse-by-category
+    chip filter never matches the just-published listing.
+    """
+    mock_create.return_value = {"listing_id": "l1", "slug": "atlas", "version": 1}
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings",
+        json={
+            "slug": "atlas",
+            "name": "Atlas",
+            "description_md": "x",
+            "format": "openclaw",
+            "price_cents": 0,
+            "tags": [],
+            "category": "engineering",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert mock_create.call_args.kwargs["category"] == "engineering"
 
 
 @patch("routers.marketplace_listings.get_workspace")

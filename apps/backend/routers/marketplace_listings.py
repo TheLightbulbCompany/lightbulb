@@ -108,6 +108,13 @@ async def search_listings(
         response.headers["Cache-Control"] = "private, max-age=0, no-store"
     else:
         response.headers["Cache-Control"] = "public, max-age=60"
+    # Push status_in down to the search service so it's applied BEFORE the
+    # limit slice — otherwise a seller with many published rows ahead of a
+    # smaller status (e.g., a single review) loses the match to the limit
+    # cut. See PR #567 review (Codex P2).
+    status_list: list[str] | None = None
+    if include_unpublished and status_in:
+        status_list = [s.strip() for s in status_in.split(",") if s.strip()] or None
     items = await marketplace_search.search(
         query=q,
         format=format,
@@ -115,11 +122,8 @@ async def search_listings(
         seller_id=seller_id,
         category=category,
         include_unpublished=include_unpublished,
+        status_in=status_list,
     )
-    if include_unpublished and status_in:
-        wanted = {s.strip() for s in status_in.split(",") if s.strip()}
-        if wanted:
-            items = [item for item in items if item.get("status") in wanted]
     return {"items": items}
 
 
@@ -400,6 +404,7 @@ async def create_listing(
             format=payload.format,
             price_cents=payload.price_cents,
             tags=payload.tags,
+            category=payload.category,
             artifact_bytes=b"",  # uploaded separately; this is the metadata create
             manifest={"name": payload.name, "description": payload.description_md},
         )

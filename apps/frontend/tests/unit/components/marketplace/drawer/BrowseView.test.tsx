@@ -7,7 +7,15 @@ vi.mock("@/lib/marketplace/api", () => ({
   searchListings: (opts: unknown) => mockSearch(opts),
 }));
 vi.mock("@/hooks/useCatalog", () => ({
-  useCatalog: () => ({ installedSlugs: new Set(["pulse"]) }),
+  useCatalog: () => ({ installedSlugs: new Set(["pulse"]), deploy: vi.fn() }),
+}));
+
+// useHire (called from ListingCard) reaches into useAgents -> useGateway. The
+// test renders ListingCards without a GatewayProvider, so we mock useAgents
+// here to avoid the throw. Same root cause as PR #567 P1: anything inside the
+// drawer that uses useHire needs gateway context (real or mocked).
+vi.mock("@/hooks/useAgents", () => ({
+  useAgents: () => ({ agents: [], refresh: vi.fn().mockResolvedValue(undefined) }),
 }));
 
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({

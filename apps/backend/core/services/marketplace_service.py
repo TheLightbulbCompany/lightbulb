@@ -91,6 +91,7 @@ async def create_draft(
     artifact_bytes: bytes,
     manifest: dict,
     openclaw_slice: dict | None = None,
+    category: str | None = None,
 ) -> dict:
     """Create a new listing in draft state. Slug must be unique.
 
@@ -145,6 +146,11 @@ async def create_draft(
                             "format": {"S": format},
                             "price_cents": {"N": str(price_cents)},
                             "tags": {"L": [{"S": t} for t in tags]},
+                            **(
+                                {"category": {"S": category}}
+                                if category
+                                else {}
+                            ),
                             "seller_id": {"S": seller_id},
                             "status": {"S": "draft"},
                             "s3_prefix": {"S": s3_prefix},
@@ -179,6 +185,7 @@ async def create_draft(
         "format": format,
         "price_cents": price_cents,
         "tags": tags,
+        "category": category,
         "seller_id": seller_id,
         "status": "draft",
         "s3_prefix": s3_prefix,

@@ -572,3 +572,72 @@ async def test_search_filters_by_category(monkeypatch):
     items = await marketplace_search.search(category="engineering")
     slugs = {item["slug"] for item in items}
     assert slugs == {"a"}
+
+
+@pytest.mark.asyncio
+async def test_status_in_filter_runs_before_limit(monkeypatch):
+    """Seller-scoped reads must apply ``status_in`` BEFORE the limit slice.
+
+    Otherwise a seller with many published rows ahead of a single ``review``
+    row loses the match — the limit cuts the published rows first and the
+    review row never makes it into the response. Regression for PR #567
+    Codex P2.
+
+    Setup: 30 published listings + 1 review listing for the same seller.
+    Caller asks for ``status_in=["review"]`` with ``limit=10``.
+    Expectation: the review row surfaces.
+    """
+    items: list[dict] = []
+    for i in range(30):
+        items.append(
+            {
+                "listing_id": f"l_pub_{i}",
+                "slug": f"pub-{i}",
+                "name": f"Pub {i}",
+                "status": "published",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                # All published_at values are newer than the review row so
+                # they would dominate a published_at-desc sort, masking the
+                # bug if status_in were applied after the limit slice.
+                "published_at": f"2026-05-{(i % 28) + 1:02d}T00:00:00Z",
+                "price_cents": 0,
+            }
+        )
+    items.append(
+        {
+            "listing_id": "l_review",
+            "slug": "review-row",
+            "name": "Review Row",
+            "status": "review",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "published_at": "2026-04-01T00:00:00Z",
+            "price_cents": 0,
+        }
+    )
+
+    table = MagicMock()
+    table.scan.return_value = {"Items": items}
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    results = await marketplace_search.search(
+        query=None,
+        seller_id="u_seller",
+        include_unpublished=True,
+        status_in=["review"],
+        limit=10,
+    )
+    statuses = {li["status"] for li in results}
+    assert statuses == {"review"}, (
+        "status_in must filter BEFORE the limit slice — otherwise the "
+        "review row is lost to the 30 published rows ahead of it."
+    )
+    slugs = {li["slug"] for li in results}
+    assert "review-row" in slugs

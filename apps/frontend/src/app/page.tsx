@@ -5,6 +5,7 @@ import { Hero } from "@/components/landing/Hero";
 import { Features } from "@/components/landing/Features";
 import { OurAgents } from "@/components/landing/OurAgents";
 import { Skills } from "@/components/landing/Skills";
+import { MarketplaceSection } from "@/components/landing/MarketplaceSection";
 import { Pricing } from "@/components/landing/Pricing";
 import { FAQ } from "@/components/landing/FAQ";
 import { GooseTownTransition, GooseTown } from "@/components/landing/GooseTown";
@@ -20,6 +21,7 @@ export default function LandingPage() {
         <Features />
         <OurAgents />
         <Skills />
+        <MarketplaceSection />
         <Pricing />
         <FAQ />
         <GooseTownTransition />

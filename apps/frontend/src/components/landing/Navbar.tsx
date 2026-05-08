@@ -78,6 +78,9 @@ export function Navbar() {
         <Link href="#features" data-section="features">
           Features
         </Link>
+        <Link href="/marketplace">
+          Marketplace
+        </Link>
         <Link href="#pricing" data-section="pricing">
           Pricing
         </Link>

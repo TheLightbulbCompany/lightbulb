@@ -381,9 +381,14 @@ async def upload_artifact_from_agent(
     openclaw.json or the agent_id isn't in their agents.list, so a user
     without a container can't get past this endpoint regardless. Tier-based
     publishing gates were retired in the post-2026-04-26 flat-fee cutover.
+
+    EFS workspace is keyed by owner_id (= org_id for org members), so
+    the export must use the resolved id. The listing row's seller_id
+    below stays as auth.user_id — that's the author/attribution field.
     """
+    owner_id = resolve_owner_id(auth)
     try:
-        package = agent_export.export_agent_from_efs(seller_id=auth.user_id, agent_id=payload.agent_id)
+        package = agent_export.export_agent_from_efs(seller_id=owner_id, agent_id=payload.agent_id)
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except agent_export.AgentNotFoundError as e:

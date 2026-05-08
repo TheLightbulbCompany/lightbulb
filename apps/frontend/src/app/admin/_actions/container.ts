@@ -86,10 +86,9 @@ export async function startContainer(userId: string): Promise<ActionResult> {
   return adminPost(`/admin/users/${encodeURIComponent(userId)}/container/start`);
 }
 
-export async function resizeContainer(userId: string, tier: string): Promise<ActionResult> {
+export async function resizeContainer(userId: string): Promise<ActionResult> {
   return adminPost(
     `/admin/users/${encodeURIComponent(userId)}/container/resize`,
-    { tier },
   );
 }
 

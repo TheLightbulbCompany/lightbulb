@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
-import { useApi, ApiError } from "@/lib/api";
+import { ApiError, fetchJsonWithStatus } from "@/lib/api";
 
 /**
  * Cold-start phase from `routers/container.py::_resolve_cold_start_phase`.
@@ -39,25 +39,34 @@ interface UseContainerStatusOptions {
 
 export function useContainerStatus(options: UseContainerStatusOptions = {}) {
   const { refreshInterval = 0, enabled = true } = options;
-  const { isSignedIn } = useAuth();
-  const api = useApi();
+  const { isSignedIn, getToken } = useAuth();
 
-  // 404: no container row yet. 402: a provision gate is up (handled by
-  // useProvisioningState in the stepper). For non-stepper consumers (e.g.
-  // OverviewPanel, HealthIndicator), both states mean "no container info to
-  // render" — return null instead of letting the ApiError propagate.
+  // 402: a provision gate is up (handled by useProvisioningState in the
+  // stepper). 202: org member's admin-owned workspace hasn't been
+  // provisioned yet (also handled by useProvisioningState). For non-stepper
+  // consumers (e.g. OverviewPanel, HealthIndicator), both states mean "no
+  // container info to render" — return null instead of letting an error
+  // propagate. After backend Task 8, /container/status no longer returns
+  // 404 for the missing-container case (owners get 200/provisioning,
+  // members get 202/team-pending), so a real 404 here would be a genuine
+  // bug worth surfacing.
+  //
+  // Uses fetchJsonWithStatus (not `useApi().get`) because 202 is a 2xx
+  // response: the standard `useApi.get` would collapse it into a body-only
+  // return, hiding the status code we need to distinguish "owner already
+  // provisioning" (200) from "team workspace pending" (202).
   const fetcher = useCallback(
     async (url: string): Promise<ContainerStatus | null> => {
       try {
-        return (await api.get(url)) as ContainerStatus;
+        const { status, body } = await fetchJsonWithStatus(url, getToken);
+        if (status === 202) return null; // team workspace pending
+        return body as ContainerStatus;
       } catch (err) {
-        if (err instanceof ApiError && (err.status === 404 || err.status === 402)) {
-          return null;
-        }
+        if (err instanceof ApiError && err.status === 402) return null;
         throw err;
       }
     },
-    [api],
+    [getToken],
   );
 
   const { data, error, isLoading, mutate } = useSWR<ContainerStatus | null>(

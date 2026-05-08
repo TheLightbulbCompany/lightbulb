@@ -435,12 +435,56 @@ def _provider_block(
     raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
 
 
+def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
+    """Build the openclaw.json agents.list entries from Paperclip agents.
+
+    If paperclip_agents is empty, fall back to the legacy hardcoded 'main'
+    agent so a freshly-provisioned container still works (e.g. when
+    Paperclip provisioning failed silently and the user opens /chat
+    before the next reprovision).
+
+    Otherwise emit one entry per Paperclip agent. The agent with
+    role='ceo' is marked default; if no agent has that role, the first
+    one in the list wins. Each agent's workspace is keyed by its
+    Paperclip UUID so OpenClaw's session-key routing
+    (agent:<uuid>:<rest>) lands in the right directory on EFS.
+    """
+    if not paperclip_agents:
+        return [
+            {
+                "id": "main",
+                "default": True,
+                "reasoningDefault": "stream",
+                "workspace": "/home/node/.openclaw/workspaces/main",
+            },
+        ]
+
+    default_index = next(
+        (i for i, a in enumerate(paperclip_agents) if a.get("role") == "ceo"),
+        0,
+    )
+
+    entries: list[dict] = []
+    for i, agent in enumerate(paperclip_agents):
+        agent_id = agent["id"]
+        entry: dict = {
+            "id": agent_id,
+            "reasoningDefault": "stream",
+            "workspace": f"/home/node/.openclaw/workspaces/{agent_id}",
+        }
+        if i == default_index:
+            entry["default"] = True
+        entries.append(entry)
+    return entries
+
+
 def build_openclaw_config_dict(
     *,
     user_id: str,
     gateway_token: str,
     provider_choice: str,
     byo_provider: str | None = None,
+    paperclip_agents: list[dict] | None = None,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -541,17 +585,15 @@ def build_openclaw_config_dict(
             # into real-time thinking streams. User-created agents inherit it
             # via AgentCreateForm passing reasoningDefault: "stream" on
             # agents.create.
-            "list": [
-                {
-                    "id": "main",
-                    "default": True,
-                    "reasoningDefault": "stream",
-                    # Absolute path so path.resolve() returns it unchanged
-                    # regardless of process cwd (agent exec tools run with
-                    # cwd=workspaceDir, which breaks relative resolution).
-                    "workspace": "/home/node/.openclaw/workspaces/main",
-                },
-            ],
+            # Per-agent settings keyed by Paperclip UUID. _build_agents_list
+            # falls back to a single legacy "main" entry when paperclip_agents
+            # is empty/None so unprovisioned containers (and tests that don't
+            # pass the kwarg) keep working.
+            #
+            # Absolute workspace paths so path.resolve() returns them unchanged
+            # regardless of process cwd (agent exec tools run with
+            # cwd=workspaceDir, which breaks relative resolution).
+            "list": _build_agents_list(paperclip_agents or []),
         },
         # Memory backend: "builtin" = flat MEMORY.md files in the agent
         # workspace. The qmd backend was removed 2026-05-02 because qmd's
@@ -672,6 +714,7 @@ async def write_openclaw_config(
     provider_choice: str,
     user_id: str,
     byo_provider: str | None = None,
+    paperclip_agents: list[dict] | None = None,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -692,6 +735,9 @@ async def write_openclaw_config(
             is set via the CODEX_HOME env var on the per-user ECS task).
         byo_provider: ``"openai"`` or ``"anthropic"`` — required when
             ``provider_choice == "byo_key"``.
+        paperclip_agents: Optional list of Paperclip agent dicts to use
+            for ``agents.list``. Omitting it preserves the legacy ``"main"``
+            entry for backward compatibility with callers we haven't updated.
 
     Raises:
         ValueError: when ``provider_choice`` is unknown or
@@ -702,6 +748,7 @@ async def write_openclaw_config(
         gateway_token=gateway_token,
         provider_choice=provider_choice,
         byo_provider=byo_provider,
+        paperclip_agents=paperclip_agents,
     )
 
     def _write() -> None:

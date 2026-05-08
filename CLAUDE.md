@@ -384,6 +384,51 @@ Intentionally empty (just an `__init__.py` docstring: *"DynamoDB items are plain
 
 Pydantic request/response models for the HTTP surface: `billing.py`, `user_schemas.py`.
 
+### Paperclip ↔ OpenClaw agent pairing
+
+Paperclip is the source of truth for agent identity. Every Paperclip agent
+has a UUID; that UUID is also the OpenClaw `agentId` in the user's
+container — `agents.list[].id`, the workspace dir, the agent dir, and the
+session-key prefix all share the same string.
+
+Provisioning order:
+
+1. Sign-up → `provision_org` creates the Paperclip company + seeds a
+   "Friday" agent (role=ceo). Paperclip auto-generates the UUID.
+2. User opens `/chat` → container provisions → `write_user_configs` calls
+   `fetch_paperclip_agents_for_owner` → live agent list from Paperclip's
+   REST API → written into `openclaw.json`'s `agents.list`.
+3. Container boots with all known Paperclip agents pre-registered.
+
+Forward-going creates:
+
+- `/teams` POST `/agents`: Paperclip create_agent first, then
+  `pair_with_openclaw` if the container is reachable.
+- `/chat` `agents.create` RPC: backend interception calls Paperclip
+  first, then forwards `agents.create` (with name=UUID) and
+  `agents.update` (with friendly name) to the container.
+
+Reprovision (`PATCH /debug/provision`) re-fetches the live Paperclip list
+and rewrites `agents.list`. Stale workspaces on EFS are not GC'd by this
+flow — handled separately.
+
+**Important:** `<EFS>/users/{owner_id}/agents/main/agent/auth-profiles.json`
+is the **container-wide auth-fallback location** — not tied to any agent
+in `agents.list`. OpenClaw's `resolveOpenClawAgentDir` returns this path
+unconditionally for ChatGPT-OAuth credential resolution. Do not relocate
+this file to a paired-agent directory; doing so breaks OAuth for all
+agents.
+
+**Multi-tenant model:** the container is keyed by `owner_id` (Clerk org_id
+for orgs, user_id for personal users). Org members share their owner's
+container, EFS, and Paperclip company. Member-level chat isolation comes
+from `routers/websocket_chat.py:881`'s `agent:<agentId>:<member_user_id>`
+session-key format. Issue-driven runs use `paperclip:issue:<issue_id>`
+(via `synthesize_openclaw_adapter`'s `sessionKeyStrategy="issue"`).
+
+See `docs/architecture/2026-05-07-paperclip-openclaw-pairing.md` for the
+full design rationale and the seven consistency surfaces.
+
 ---
 
 ## Frontend (Next.js 16 App Router)

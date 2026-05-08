@@ -28,6 +28,7 @@ from core.services.node_proxy import (
     handle_node_disconnect,
     is_node_connection,
 )
+from core.services.paperclip_openclaw_pairing import pair_with_openclaw
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +472,234 @@ async def ws_message(
 # =============================================================================
 
 
+async def _paperclip_create_for_chat(
+    *,
+    creator_user_id: str,
+    owner_id: str,
+    name: str,
+    role: str | None,
+    model: str | None,
+) -> dict:
+    """Create a Paperclip agent invoked from /chat WS RPC interception.
+
+    creator_user_id: the authenticated member triggering the create;
+        baked into adapterConfig.sessionKey as the manual-wake fallback.
+    owner_id: container owner (org_id for orgs, user_id for personal);
+        used to look up the shared Paperclip company.
+
+    The ``model`` parameter is accepted but not currently forwarded to
+    Paperclip's create_agent — Paperclip's adapter selects the model
+    server-side from the agent's role + company defaults. We thread the
+    field through anyway so future schema additions don't require a
+    second signature change.
+    """
+    import httpx
+
+    from core.config import settings as _settings
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services import service_token
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_admin_session import get_admin_session_cookie
+    from core.services.paperclip_adapter_config import (
+        OPENCLAW_GATEWAY_TYPE,
+        synthesize_openclaw_adapter,
+    )
+    from core.services.paperclip_openclaw_pairing import (
+        _resolve_company_id_for_owner,
+    )
+    from core.services.paperclip_provisioning import _ws_gateway_url
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    if company_id is None:
+        raise RuntimeError(
+            f"owner {owner_id} has no Paperclip company — agent create blocked. Re-run org provisioning."
+        )
+
+    http = httpx.AsyncClient(
+        base_url=_settings.PAPERCLIP_INTERNAL_URL,
+        timeout=15.0,
+    )
+    try:
+        admin_client = PaperclipAdminClient(http_client=http)
+        admin_cookie = await get_admin_session_cookie(http)
+        # Mint the service token with owner_id (NOT creator_user_id). The
+        # WS authorizer puts service tokens into the connection context with
+        # ``orgId=""`` and ``userId=<sub>`` — minting with the member id
+        # would route subsequent Paperclip wakes as the member's PERSONAL
+        # owner instead of the org's shared owner, and the agent could
+        # never reach the container it was just paired into.
+        # ``user_id=creator_user_id`` is still correct: that field is the
+        # adapterConfig.sessionKey fallback (per-creator manual-wake
+        # session key), not the auth principal.
+        adapter_config = synthesize_openclaw_adapter(
+            gateway_url=_ws_gateway_url(_settings.ENVIRONMENT or ""),
+            service_token=service_token.mint(owner_id),
+            user_id=creator_user_id,
+        )
+        # No idempotency_key: keying on (creator_user_id, name) returns a
+        # stale (potentially deleted) record if the same friendly name is
+        # reused within Paperclip's 24h dedupe window — same regression
+        # class as memory feedback_stripe_idempotency_with_stable_keys.
+        # Paperclip's create_agent treats idempotency_key as Optional, so
+        # dropping it is safe.
+        return await admin_client.create_agent(
+            company_id=company_id,
+            name=name,
+            role=role or "general",
+            adapter_type=OPENCLAW_GATEWAY_TYPE,
+            adapter_config=adapter_config,
+            session_cookie=admin_cookie,
+        )
+    finally:
+        await http.aclose()
+
+
+async def _paperclip_delete_for_chat(
+    *,
+    owner_id: str,
+    agent_id: str,
+) -> None:
+    """Delete a Paperclip agent triggered by a /chat agents.delete RPC.
+
+    Cascade-delete partner to ``_paperclip_create_for_chat``: container
+    provision rebuilds ``openclaw.json`` from
+    ``fetch_paperclip_agents_for_owner``, so a Paperclip row that
+    survives the OpenClaw delete will resurrect the agent on the next
+    reprovision.
+
+    Idempotent: ``PaperclipAdminClient.delete_agent`` swallows 404 from
+    Paperclip (treats already-gone as success), so legacy 'main' agents
+    that never existed in Paperclip and double-deletes are safe.
+
+    Looks up the Paperclip company under the OWNER (org_id for orgs,
+    user_id for personal), mirroring the create path.
+    """
+    import httpx
+
+    from core.config import settings as _settings
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_admin_session import get_admin_session_cookie
+    from core.services.paperclip_openclaw_pairing import (
+        _resolve_company_id_for_owner,
+    )
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    if company_id is None:
+        # No Paperclip company — owner was never provisioned through the
+        # paired path, or the row was already cleaned. Nothing to delete.
+        logger.info(
+            "_paperclip_delete_for_chat: owner %s has no Paperclip company — skip",
+            owner_id,
+        )
+        return
+
+    http = httpx.AsyncClient(
+        base_url=_settings.PAPERCLIP_INTERNAL_URL,
+        timeout=15.0,
+    )
+    try:
+        admin_client = PaperclipAdminClient(http_client=http)
+        admin_cookie = await get_admin_session_cookie(http)
+        await admin_client.delete_agent(
+            session_cookie=admin_cookie,
+            agent_id=agent_id,
+        )
+    finally:
+        await http.aclose()
+
+
+async def _intercept_agents_create(
+    *,
+    connection_id: str,
+    req_id: str,
+    user_id: str,
+    owner_id: str,
+    params: dict,
+    ip: str,
+    token: str,
+) -> bool:
+    """Intercept /chat's agents.create RPC.
+
+    Performs the Paperclip-first pairing flow:
+    1. Create a Paperclip agent (under the owner's company), getting
+       a UUID.
+    2. Call ``pair_with_openclaw`` to register it in the OWNER's
+       container.
+    3. Send a ``res`` frame back to the client over the management API
+       with the new agent's UUID as ``payload.agentId``.
+
+    Returns ``True`` when the call has been fully consumed (the
+    dispatcher should NOT forward to the gateway). Returns ``False``
+    when the interception decides to fall through (e.g. the create
+    call has no name — let OpenClaw's validator reject so we don't
+    duplicate validation here).
+
+    user_id is the authenticated member (creator); owner_id is the
+    container owner — these differ for org members.
+
+    Symmetric with the /teams pairing flow in ``routers/teams/agents.py``;
+    see ``_resolve_owner_id`` / ``_container_is_reachable`` there for
+    rationale on the owner-vs-member split.
+    """
+    name = (params or {}).get("name", "").strip() if isinstance((params or {}).get("name"), str) else ""
+    role = (params or {}).get("role")
+    model = (params or {}).get("model")
+    if not name:
+        # Let OpenClaw's validator reject — we don't duplicate validation.
+        return False
+
+    paperclip_agent = await _paperclip_create_for_chat(
+        creator_user_id=user_id,
+        owner_id=owner_id,
+        name=name,
+        role=role,
+        model=model,
+    )
+
+    # pair_with_openclaw issues both agents.create and agents.update RPCs
+    # to the gateway, registering the agent under its Paperclip UUID
+    # with the friendly display name.
+    await pair_with_openclaw(
+        owner_id=owner_id,
+        paperclip_agent=paperclip_agent,
+        gateway_pool=get_gateway_pool(),
+        ip=ip,
+        token=token,
+    )
+
+    # Surface the new agent's UUID back to the frontend over the
+    # management API. The frontend treats this as the resolution of the
+    # original ``agents.create`` req — it will use ``agentId`` to start
+    # chats against the new agent.
+    #
+    # SECURITY: Paperclip echoes the full stored agent record (including
+    # ``adapterConfig.authToken`` — the freshly minted OpenClaw service
+    # token) on create. We MUST redact those adapter fields before
+    # sending over the WS to the browser; otherwise the token leaks
+    # into the DOM. Mirrors the ``_redact_agent`` strip used by every
+    # /teams read path — see ``routers/teams/agents.py:_redact_agent``.
+    from routers.teams.agents import _redact_agent
+
+    redacted_agent = _redact_agent(paperclip_agent)
+    management_api = await get_management_api_client()
+    management_api.send_message(
+        connection_id,
+        {
+            "type": "res",
+            "id": req_id,
+            "ok": True,
+            "payload": {
+                "agentId": paperclip_agent["id"],
+                "agent": redacted_agent,
+            },
+        },
+    )
+    return True
+
+
 async def _process_rpc_background(
     connection_id: str,
     user_id: str,
@@ -513,6 +742,49 @@ async def _process_rpc_background(
             )
             return
 
+        # Paperclip-first pairing for /chat agents.create. The interception
+        # mints a Paperclip UUID, calls pair_with_openclaw to register it
+        # in the owner's container, and emits the WS response itself. When
+        # it consumes the call we must NOT forward to the gateway — pairing
+        # already issued the underlying agents.create + agents.update RPCs
+        # under the canonical UUID, and forwarding the original (browser-
+        # supplied, friendly-named) request would create a phantom second
+        # agent. Symmetric with /teams's create_agent route.
+        if method == "agents.create":
+            try:
+                consumed = await _intercept_agents_create(
+                    connection_id=connection_id,
+                    req_id=req_id,
+                    user_id=user_id,
+                    owner_id=owner_id,
+                    params=params,
+                    ip=ip,
+                    token=container["gateway_token"],
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[%s] agents.create interception failed owner=%s err=%s",
+                    user_id,
+                    owner_id,
+                    exc,
+                )
+                try:
+                    management_api.send_message(
+                        connection_id,
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"message": f"Failed to create agent: {exc}"},
+                        },
+                    )
+                except Exception:
+                    pass
+                return
+            if consumed:
+                return
+            # else fall through to forward the original RPC (validator-reject path).
+
         pool = get_gateway_pool()
         result = await pool.send_rpc(
             user_id=owner_id,
@@ -553,6 +825,32 @@ async def _process_rpc_background(
                         owner_id,
                         agent_id,
                         cleanup_exc,
+                    )
+
+                # Cascade-delete the Paperclip row. Container provisioning
+                # repopulates ``openclaw.json`` from
+                # ``fetch_paperclip_agents_for_owner``, so leaving the
+                # Paperclip record behind would resurrect the supposedly-
+                # deleted agent on the next reprovision. Idempotent: a
+                # 404 (legacy 'main' agent that was never in Paperclip,
+                # or already-deleted row) is swallowed by
+                # ``PaperclipAdminClient.delete_agent`` itself.
+                try:
+                    await _paperclip_delete_for_chat(
+                        owner_id=owner_id,
+                        agent_id=agent_id,
+                    )
+                except Exception as paperclip_exc:
+                    # Non-fatal: OpenClaw + EFS already cleaned. The next
+                    # reprovision rewrites openclaw.json from the live
+                    # Paperclip list — if the row truly is still there,
+                    # the resurrected agent will surface in /teams and a
+                    # subsequent delete attempt can reconcile.
+                    logger.warning(
+                        "[%s] post-delete paperclip delete failed for agent=%s: %s",
+                        owner_id,
+                        agent_id,
+                        paperclip_exc,
                     )
 
     except RuntimeError as e:

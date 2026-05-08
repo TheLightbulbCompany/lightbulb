@@ -144,6 +144,19 @@ async def _get_provider_choice(owner_id: str) -> str:
     return (row or {}).get("provider_choice") or "bedrock_claude"
 
 
+async def _get_byo_provider(owner_id: str) -> str | None:
+    """Read byo_provider from the billing row.
+
+    ``None`` means the BYO provider hasn't been chosen yet (the owner
+    picked the BYO path but hasn't completed Anthropic/OpenAI setup).
+    Used by the BYO-setup gate to block ECS dispatch on incomplete BYO
+    selection — without it the provisioning path would 422 inside ECS
+    with "byo_provider is required when provider_choice == 'byo_key'".
+    """
+    row = await billing_repo.get_by_owner_id(owner_id)
+    return (row or {}).get("byo_provider") or None
+
+
 async def _has_oauth_tokens(clerk_user_id: str) -> bool:
     """Whether the calling Clerk user has ChatGPT OAuth tokens on file.
 
@@ -236,6 +249,27 @@ async def evaluate_provision_gate(
                 title="Sign in with ChatGPT",
                 message="Complete the ChatGPT sign-in to start your container.",
                 action_label="Sign in with ChatGPT",
+                action_href="/settings/llm",
+                action_admin_only=False,
+                owner_role=owner_role,
+            )
+
+    if provider_choice == "byo_key":
+        # Symmetric with the chatgpt_oauth gate above: the BYO path has a
+        # provider sub-choice (Anthropic / OpenAI) that the user picks
+        # AFTER selecting "byo_key". Until that sub-choice is persisted,
+        # ECS provisioning rejects with
+        # "byo_provider is required when provider_choice == 'byo_key'".
+        # The legacy ``POST /container/provision`` flow had a frontend
+        # ``needsProviderStep`` guard for this; the new poll-driven
+        # /container/status trigger lost the guard, so we enforce it
+        # here as the canonical gate site.
+        if not await _get_byo_provider(owner_id):
+            return Gate(
+                code="byo_provider_required",
+                title="Choose your BYO provider",
+                message="Choose Anthropic or OpenAI as your BYO provider to start your container.",
+                action_label="Choose provider",
                 action_href="/settings/llm",
                 action_admin_only=False,
                 owner_role=owner_role,

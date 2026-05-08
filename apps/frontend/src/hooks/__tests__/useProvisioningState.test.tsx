@@ -97,12 +97,51 @@ describe("useProvisioningState", () => {
     expect(result.current.blocked?.code).toBe("credits_required");
   });
 
-  it("returns phase=provision-needed when /status returns 404", async () => {
-    global.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+  it("returns phase=team-pending when /status returns 202 (org member, admin-owned workspace not yet provisioned)", async () => {
+    // Backend Task 8: org members whose admin-owned workspace is missing
+    // get 202 Accepted with {"detail": "..."}. The hook surfaces this as
+    // `phase === "team-pending"` so the stepper can render an
+    // admin-waiting empty state and keep polling (5s) for transition to
+    // `normal` once the admin's container appears.
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: "team workspace pending" }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    );
     const { result } = renderHook(() => useProvisioningState(), { wrapper });
-    await waitFor(() => expect(result.current.phase).toBe("provision-needed"));
+    await waitFor(() => expect(result.current.phase).toBe("team-pending"));
     expect(result.current.container).toBeNull();
     expect(result.current.blocked).toBeNull();
+    // Members poll fast so the UI flips to `normal` shortly after their
+    // admin's container becomes ready.
+    expect(result.current.refreshInterval).toBe(5_000);
+  });
+
+  it("drops team-pending polling cadence to 30s after the first minute", async () => {
+    // Without a slow phase, a member whose admin never provisions would
+    // hammer /container/status indefinitely (720 req/hour). The cadence
+    // should match `blocked`: 5s for the first minute, then 30s.
+    vi.useFakeTimers();
+    try {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ detail: "team workspace pending" }),
+          { status: 202, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      const { result } = renderHook(() => useProvisioningState(), { wrapper });
+      await vi.waitFor(() => expect(result.current.phase).toBe("team-pending"));
+      expect(result.current.refreshInterval).toBe(5_000);
+
+      // Advance past the first 60s window — cadence should drop to 30s.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(30_000));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("polls every 5s for the first minute while blocked", async () => {

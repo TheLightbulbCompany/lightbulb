@@ -4,7 +4,8 @@ T13 Paperclip passes.
 Coverage:
 * ``_paperclip_purge_pass`` calls ``provisioning.purge`` for every
   due row and swallows per-row errors.
-* ``_paperclip_provision_retry_pass`` dispatches by ``op``,
+* ``_paperclip_provision_retry_pass`` dispatches ``op="archive_member"``
+  (the only live op after Tasks 6+7 stripped eager provisioning),
   marks rows applied on success, marks rows failed on non-retryable
   errors, and leaves them pending on retryable errors.
 * The scheduled worker loop runs both Paperclip passes once per
@@ -38,9 +39,7 @@ from core.services import update_service
 def _make_provisioning_mock() -> MagicMock:
     """A MagicMock with AsyncMock methods matching PaperclipProvisioning."""
     prov = MagicMock()
-    prov.provision_org = AsyncMock(return_value=None)
-    prov.provision_member = AsyncMock(return_value=None)
-    prov.disable = AsyncMock(return_value=None)
+    prov.archive_member = AsyncMock(return_value=None)
     prov.purge = AsyncMock(return_value=None)
     return prov
 
@@ -167,19 +166,14 @@ async def test_retry_pass_no_pending_rows_is_noop():
     build.assert_not_called()
 
 
-async def test_retry_pass_dispatches_provision_org_on_success():
+async def test_retry_pass_dispatches_archive_member_on_success():
     prov = _make_provisioning_mock()
     http = _make_http_mock()
     rows = [
         {
-            "owner_id": "user_owner",
-            "update_id": "u1",
-            "changes": {
-                "op": "provision_org",
-                "org_id": "org_acme",
-                "owner_user_id": "user_owner",
-                "owner_email": "owner@acme.test",
-            },
+            "owner_id": "user_a",
+            "update_id": "u_archive",
+            "changes": {"op": "archive_member", "user_id": "user_a"},
         }
     ]
 
@@ -191,69 +185,10 @@ async def test_retry_pass_dispatches_provision_org_on_success():
     ):
         await update_service._paperclip_provision_retry_pass()
 
-    prov.provision_org.assert_awaited_once_with(
-        org_id="org_acme",
-        owner_user_id="user_owner",
-        owner_email="owner@acme.test",
-    )
-    mark_applied.assert_awaited_once_with("user_owner", "u1")
+    prov.archive_member.assert_awaited_once_with(user_id="user_a")
+    mark_applied.assert_awaited_once_with("user_a", "u_archive")
     mark_failed.assert_not_awaited()
     http.aclose.assert_awaited_once()
-
-
-async def test_retry_pass_dispatches_provision_member_on_success():
-    prov = _make_provisioning_mock()
-    http = _make_http_mock()
-    rows = [
-        {
-            "owner_id": "user_member",
-            "update_id": "u2",
-            "changes": {
-                "op": "provision_member",
-                "org_id": "org_acme",
-                "user_id": "user_member",
-                "email": "member@acme.test",
-                "owner_email": "owner@acme.test",
-            },
-        }
-    ]
-
-    with (
-        patch.object(update_service.update_repo, "list_pending_by_type", new=AsyncMock(return_value=rows)),
-        patch.object(update_service.update_repo, "mark_applied", new=AsyncMock(return_value=True)) as mark_applied,
-        patch.object(update_service, "_build_paperclip_provisioning", return_value=(prov, http, MagicMock())),
-    ):
-        await update_service._paperclip_provision_retry_pass()
-
-    prov.provision_member.assert_awaited_once_with(
-        org_id="org_acme",
-        user_id="user_member",
-        email="member@acme.test",
-        owner_email="owner@acme.test",
-    )
-    mark_applied.assert_awaited_once_with("user_member", "u2")
-
-
-async def test_retry_pass_dispatches_disable_on_success():
-    prov = _make_provisioning_mock()
-    http = _make_http_mock()
-    rows = [
-        {
-            "owner_id": "user_a",
-            "update_id": "u3",
-            "changes": {"op": "disable", "user_id": "user_a"},
-        }
-    ]
-
-    with (
-        patch.object(update_service.update_repo, "list_pending_by_type", new=AsyncMock(return_value=rows)),
-        patch.object(update_service.update_repo, "mark_applied", new=AsyncMock(return_value=True)) as mark_applied,
-        patch.object(update_service, "_build_paperclip_provisioning", return_value=(prov, http, MagicMock())),
-    ):
-        await update_service._paperclip_provision_retry_pass()
-
-    prov.disable.assert_awaited_once_with(user_id="user_a")
-    mark_applied.assert_awaited_once_with("user_a", "u3")
 
 
 async def test_retry_pass_unknown_op_marks_failed():
@@ -275,9 +210,7 @@ async def test_retry_pass_unknown_op_marks_failed():
     ):
         await update_service._paperclip_provision_retry_pass()
 
-    prov.provision_org.assert_not_awaited()
-    prov.provision_member.assert_not_awaited()
-    prov.disable.assert_not_awaited()
+    prov.archive_member.assert_not_awaited()
     mark_applied.assert_not_awaited()
     mark_failed.assert_awaited_once()
     args, kwargs = mark_failed.call_args
@@ -291,18 +224,13 @@ async def test_retry_pass_retryable_failure_leaves_row_pending():
     """Retryable errors must NOT be marked failed — they stay pending so
     the next iteration re-tries them."""
     prov = _make_provisioning_mock()
-    prov.provision_org = AsyncMock(side_effect=_FakeRetryable("upstream 503"))
+    prov.archive_member = AsyncMock(side_effect=_FakeRetryable("upstream 503"))
     http = _make_http_mock()
     rows = [
         {
-            "owner_id": "user_owner",
+            "owner_id": "user_a",
             "update_id": "u5",
-            "changes": {
-                "op": "provision_org",
-                "org_id": "org_acme",
-                "owner_user_id": "user_owner",
-                "owner_email": "owner@acme.test",
-            },
+            "changes": {"op": "archive_member", "user_id": "user_a"},
         }
     ]
 
@@ -314,25 +242,20 @@ async def test_retry_pass_retryable_failure_leaves_row_pending():
     ):
         await update_service._paperclip_provision_retry_pass()
 
-    prov.provision_org.assert_awaited_once()
+    prov.archive_member.assert_awaited_once()
     mark_applied.assert_not_awaited()
     mark_failed.assert_not_awaited()  # crucial: row stays pending
 
 
 async def test_retry_pass_nonretryable_failure_marks_failed():
     prov = _make_provisioning_mock()
-    prov.provision_org = AsyncMock(side_effect=_FakeNonRetryable("bad email"))
+    prov.archive_member = AsyncMock(side_effect=_FakeNonRetryable("bad user"))
     http = _make_http_mock()
     rows = [
         {
-            "owner_id": "user_owner",
+            "owner_id": "user_a",
             "update_id": "u6",
-            "changes": {
-                "op": "provision_org",
-                "org_id": "org_acme",
-                "owner_user_id": "user_owner",
-                "owner_email": "owner@acme.test",
-            },
+            "changes": {"op": "archive_member", "user_id": "user_a"},
         }
     ]
 
@@ -347,7 +270,7 @@ async def test_retry_pass_nonretryable_failure_marks_failed():
     mark_applied.assert_not_awaited()
     mark_failed.assert_awaited_once()
     args, _kwargs = mark_failed.call_args
-    assert args[0] == "user_owner"
+    assert args[0] == "user_a"
     assert args[1] == "u6"
 
 
@@ -355,18 +278,13 @@ async def test_retry_pass_processes_multiple_rows_independently():
     """Mix of success / retryable / non-retryable in a single batch."""
     prov = _make_provisioning_mock()
     # row 1 success, row 2 retryable, row 3 non-retryable.
-    prov.provision_org = AsyncMock(side_effect=[None, _FakeRetryable("503"), _FakeNonRetryable("bad")])
+    prov.archive_member = AsyncMock(side_effect=[None, _FakeRetryable("503"), _FakeNonRetryable("bad")])
     http = _make_http_mock()
     rows = [
         {
             "owner_id": f"user_{i}",
             "update_id": f"u_{i}",
-            "changes": {
-                "op": "provision_org",
-                "org_id": "org_x",
-                "owner_user_id": f"user_{i}",
-                "owner_email": "x@x",
-            },
+            "changes": {"op": "archive_member", "user_id": f"user_{i}"},
         }
         for i in range(3)
     ]
@@ -379,7 +297,7 @@ async def test_retry_pass_processes_multiple_rows_independently():
     ):
         await update_service._paperclip_provision_retry_pass()
 
-    assert prov.provision_org.await_count == 3
+    assert prov.archive_member.await_count == 3
     mark_applied.assert_awaited_once_with("user_0", "u_0")  # row 1 only
     mark_failed.assert_awaited_once()  # row 3 only — row 2 stays pending
     failed_args, _ = mark_failed.call_args
@@ -395,220 +313,6 @@ async def test_retry_pass_list_failure_does_not_raise():
         new=AsyncMock(side_effect=RuntimeError("ddb down")),
     ):
         await update_service._paperclip_provision_retry_pass()
-
-
-async def test_retry_pass_resolves_owner_email_from_user_repo_when_missing():
-    """F3: When the retry payload has no ``owner_email`` (because F2's
-    fix omitted it at enqueue time), the retry pass must look it up
-    via ``user_repo`` using ``owner_user_id``."""
-    prov = _make_provisioning_mock()
-    http = _make_http_mock()
-    rows = [
-        {
-            "owner_id": "user_owner",
-            "update_id": "u_resolve",
-            "changes": {
-                "op": "provision_org",
-                "org_id": "org_acme",
-                "owner_user_id": "user_owner",
-                # NOTE: no ``owner_email`` key — F2 omits it.
-            },
-        }
-    ]
-
-    user_repo_get = AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"})
-
-    with (
-        patch.object(
-            update_service.update_repo,
-            "list_pending_by_type",
-            new=AsyncMock(return_value=rows),
-        ),
-        patch.object(
-            update_service.update_repo,
-            "mark_applied",
-            new=AsyncMock(return_value=True),
-        ) as mark_applied,
-        patch.object(
-            update_service,
-            "_build_paperclip_provisioning",
-            return_value=(prov, http, MagicMock()),
-        ),
-        patch("core.repositories.user_repo.get", new=user_repo_get),
-    ):
-        await update_service._paperclip_provision_retry_pass()
-
-    user_repo_get.assert_awaited_once_with("user_owner")
-    prov.provision_org.assert_awaited_once_with(
-        org_id="org_acme",
-        owner_user_id="user_owner",
-        owner_email="owner@acme.test",
-    )
-    mark_applied.assert_awaited_once_with("user_owner", "u_resolve")
-
-
-async def test_retry_pass_leaves_row_pending_when_owner_email_unresolvable():
-    """F3: If ``user_repo.get`` returns nothing (the user.created
-    webhook hasn't landed yet), the retry pass MUST leave the row
-    pending — not mark it failed — so a later redelivery can supply
-    the email."""
-    prov = _make_provisioning_mock()
-    http = _make_http_mock()
-    rows = [
-        {
-            "owner_id": "user_owner",
-            "update_id": "u_unresolved",
-            "changes": {
-                "op": "provision_org",
-                "org_id": "org_acme",
-                "owner_user_id": "user_owner",
-            },
-        }
-    ]
-
-    with (
-        patch.object(
-            update_service.update_repo,
-            "list_pending_by_type",
-            new=AsyncMock(return_value=rows),
-        ),
-        patch.object(
-            update_service.update_repo,
-            "mark_applied",
-            new=AsyncMock(return_value=True),
-        ) as mark_applied,
-        patch.object(
-            update_service.update_repo,
-            "mark_failed",
-            new=AsyncMock(return_value=True),
-        ) as mark_failed,
-        patch.object(
-            update_service,
-            "_build_paperclip_provisioning",
-            return_value=(prov, http, MagicMock()),
-        ),
-        # users repo has no row yet for the owner.
-        patch("core.repositories.user_repo.get", new=AsyncMock(return_value=None)),
-    ):
-        await update_service._paperclip_provision_retry_pass()
-
-    prov.provision_org.assert_not_awaited()
-    mark_applied.assert_not_awaited()
-    mark_failed.assert_not_awaited()  # crucial: row stays pending
-
-
-async def test_retry_pass_resolves_owner_email_for_provision_member_when_missing():
-    """F3: Same re-resolution applies to ``provision_member`` payloads.
-    The membership_created webhook now includes ``owner_user_id`` so
-    the retry pass can look up the owner's email."""
-    prov = _make_provisioning_mock()
-    http = _make_http_mock()
-    rows = [
-        {
-            "owner_id": "user_member",
-            "update_id": "u_member",
-            "changes": {
-                "op": "provision_member",
-                "org_id": "org_acme",
-                "user_id": "user_member",
-                "email": "member@acme.test",
-                "owner_user_id": "user_owner",
-                # No ``owner_email`` — must be re-resolved.
-            },
-        }
-    ]
-
-    user_repo_get = AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"})
-
-    with (
-        patch.object(
-            update_service.update_repo,
-            "list_pending_by_type",
-            new=AsyncMock(return_value=rows),
-        ),
-        patch.object(
-            update_service.update_repo,
-            "mark_applied",
-            new=AsyncMock(return_value=True),
-        ) as mark_applied,
-        patch.object(
-            update_service,
-            "_build_paperclip_provisioning",
-            return_value=(prov, http, MagicMock()),
-        ),
-        patch("core.repositories.user_repo.get", new=user_repo_get),
-    ):
-        await update_service._paperclip_provision_retry_pass()
-
-    user_repo_get.assert_awaited_once_with("user_owner")
-    prov.provision_member.assert_awaited_once_with(
-        org_id="org_acme",
-        user_id="user_member",
-        email="member@acme.test",
-        owner_email="owner@acme.test",
-    )
-    mark_applied.assert_awaited_once_with("user_member", "u_member")
-
-
-async def test_retry_pass_prefers_fresh_owner_email_over_cached_payload():
-    """Round-4 P2: on retries, the resolver MUST re-resolve the
-    owner's email from ``user_repo`` (with Clerk fallback) and prefer
-    that over any cached ``owner_email`` baked into the retry payload.
-
-    Why: if the user rotated their email between the original webhook
-    and the retry, signing in with the cached value fails
-    non-retryably and the retry row gets marked failed — requiring
-    manual ops cleanup. Always trying a fresh lookup first lets the
-    retry self-heal across email rotations.
-    """
-    prov = _make_provisioning_mock()
-    http = _make_http_mock()
-    rows = [
-        {
-            "owner_id": "user_owner",
-            "update_id": "u_rotated",
-            "changes": {
-                "op": "provision_org",
-                "org_id": "org_acme",
-                "owner_user_id": "user_owner",
-                # Cached value from the original webhook; user has
-                # since rotated to ``new@example.com``.
-                "owner_email": "old@example.com",
-            },
-        }
-    ]
-
-    user_repo_get = AsyncMock(return_value={"user_id": "user_owner", "email": "new@example.com"})
-
-    with (
-        patch.object(
-            update_service.update_repo,
-            "list_pending_by_type",
-            new=AsyncMock(return_value=rows),
-        ),
-        patch.object(
-            update_service.update_repo,
-            "mark_applied",
-            new=AsyncMock(return_value=True),
-        ) as mark_applied,
-        patch.object(
-            update_service,
-            "_build_paperclip_provisioning",
-            return_value=(prov, http, MagicMock()),
-        ),
-        patch("core.repositories.user_repo.get", new=user_repo_get),
-    ):
-        await update_service._paperclip_provision_retry_pass()
-
-    user_repo_get.assert_awaited_once_with("user_owner")
-    # Critically: provision_org received the FRESH email, not the
-    # stale cached one from the payload.
-    prov.provision_org.assert_awaited_once_with(
-        org_id="org_acme",
-        owner_user_id="user_owner",
-        owner_email="new@example.com",
-    )
-    mark_applied.assert_awaited_once_with("user_owner", "u_rotated")
 
 
 # ----------------------------------------------------------------------

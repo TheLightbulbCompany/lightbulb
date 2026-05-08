@@ -12,8 +12,8 @@ If CLERK_WEBHOOK_SECRET is not configured the signature check is skipped
 
 **Paperclip provisioning dispatch** (added in T12):
 
-  * ``organization.created``           -> ``provision_org``
-  * ``organizationMembership.created`` -> ``provision_member``
+  * ``organization.created``           -> log only (provisioning deferred to /container/status; see plan Task 8)
+  * ``organizationMembership.created`` -> log + dual-tenancy probe (provisioning deferred to /container/status; see plan Task 8)
   * ``organizationMembership.deleted`` -> ``disable`` for that user
   * ``organization.deleted``           -> ``disable`` for every member of the org
   * ``user.deleted``                   -> ``disable`` for that user
@@ -37,13 +37,16 @@ import logging
 import time
 from typing import Any, Optional
 
-import httpx
 import stripe
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, channel_link_repo, update_repo
+from core.services.paperclip_provisioning import (
+    build_paperclip_provisioning,
+    close_paperclip_provisioning,
+)
 from core.services.update_service import PAPERCLIP_RETRY_KIND
 
 logger = logging.getLogger(__name__)
@@ -96,16 +99,6 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     raise HTTPException(status_code=400, detail="Invalid svix signature")
 
 
-# ----------------------------------------------------------------------
-# Paperclip provisioning factory
-# ----------------------------------------------------------------------
-#
-# We construct a fresh PaperclipProvisioning per webhook invocation. The
-# httpx.AsyncClient lifecycle is bounded by the request — this is the
-# only call site so the connection pool doesn't need to be shared, and
-# constructing per-request keeps the wiring trivial to override in tests.
-# T14/T15 (proxy router) will introduce a long-lived shared client.
-
 # The canonical home for ``PAPERCLIP_RETRY_KIND`` is
 # ``core.services.update_service.PAPERCLIP_RETRY_KIND``. Both this
 # webhook router (which enqueues retries) and the scheduled worker
@@ -113,59 +106,11 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
 # lockstep is the only way the retry cron actually picks up the
 # rows we wrote. The import lives at the top of this file alongside
 # the other ``core.*`` imports.
-
-
-async def _get_paperclip_provisioning():
-    """Build a PaperclipProvisioning for this request.
-
-    Returns a ``PaperclipProvisioning`` instance. The underlying
-    ``httpx.AsyncClient`` is attached as ``provisioning._http_client``
-    so handlers can close it via ``aclose()`` after use — keeping the
-    socket from leaking on production webhook traffic. T14/T15 will
-    replace this per-request construction with a long-lived shared
-    client tied to the FastAPI app lifespan.
-
-    Imports are local to keep cold-start cheap (httpx + boto3 chain
-    aren't needed if no Paperclip-bound webhook fires) and to keep the
-    legacy webhook handlers working unchanged when Paperclip env is not
-    configured (e.g. local dev without paperclip running).
-    """
-    from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    http = httpx.AsyncClient(
-        base_url=settings.PAPERCLIP_INTERNAL_URL,
-        timeout=15.0,
-    )
-    admin = PaperclipAdminClient(http_client=http)
-    # Short name only — ``core.dynamodb.get_table`` prepends the env
-    # prefix once (``isol8-{env}-``). Passing the fully-qualified name
-    # would double-prefix at production deploy time (caught in
-    # PR #414 review F1, c778809) and 404 on every lookup.
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
-    # Expose the underlying client for cleanup. Tests that patch
-    # _get_paperclip_provisioning return AsyncMock-shaped objects that
-    # don't carry this attribute, so consumers must guard with getattr.
-    provisioning._http_client = http  # type: ignore[attr-defined]
-    return provisioning
-
-
-async def _close_paperclip_http(provisioning) -> None:
-    """Close the underlying httpx client if one was attached.
-
-    AsyncMock-shaped objects (used in tests) won't have the attribute,
-    so we no-op gracefully — keeps the production cleanup hot path
-    working without breaking the test patches.
-    """
-    http = getattr(provisioning, "_http_client", None)
-    if http is None:
-        return
-    try:
-        await http.aclose()
-    except Exception:
-        logger.exception("paperclip httpx client close failed")
+#
+# The Paperclip provisioning factory (build_paperclip_provisioning +
+# close_paperclip_provisioning) lives in core/services/paperclip_provisioning.py
+# — imported at the top of this file. Service-layer ownership keeps the
+# routers→services dependency direction one-way.
 
 
 async def _enqueue_paperclip_retry(*, op: str, payload: dict, owner_id: str) -> None:
@@ -317,69 +262,41 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
 
 
 async def _handle_organization_created(data: dict) -> None:
-    """Provision a Paperclip company for the newly-created Clerk org."""
+    """Persist any org metadata we want to track from the create event.
+
+    Provisioning is intentionally NOT done here — at org creation
+    time the readiness gate is up (no subscription, no provider
+    chosen) and provisioning Paperclip without a container is the
+    half-state we're eliminating. Provisioning fires from the
+    canonical GET /container/status trigger (Task 8) once readiness
+    is satisfied.
+    """
     org_id = data.get("id", "")
     owner_user_id = data.get("created_by", "")
     if not org_id or not owner_user_id:
         logger.warning("Clerk organization.created missing id/created_by: %s", data)
         return
-
-    # Owner email isn't on the organization payload — we fetch it from
-    # the users repo (populated by user.created earlier in the lifecycle).
-    owner_email = await _lookup_owner_email(org_id=org_id, fallback_user_id=owner_user_id)
-    if not owner_email:
-        logger.warning(
-            "organization.created: no email for owner %s; enqueueing retry",
-            owner_user_id,
-        )
-        # Omit ``owner_email`` entirely (rather than writing ``""``) — the
-        # retry pass re-resolves it from ``user_repo`` at replay time.
-        # Persisting an empty string here would mislead any operator
-        # eyeballing the row and tempt callers to skip the lookup.
-        await _enqueue_paperclip_retry(
-            op="provision_org",
-            payload={"org_id": org_id, "owner_user_id": owner_user_id},
-            owner_id=owner_user_id,
-        )
-        return
-
-    provisioning = await _get_paperclip_provisioning()
-    try:
-        await provisioning.provision_org(
-            org_id=org_id,
-            owner_user_id=owner_user_id,
-            owner_email=owner_email,
-        )
-        put_metric("paperclip.webhook.provision_org", dimensions={"result": "ok"})
-    except Exception as e:
-        retryable = _is_retryable(e)
-        put_metric(
-            "paperclip.webhook.provision_org",
-            dimensions={"result": "retryable" if retryable else "error"},
-        )
-        logger.warning(
-            "provision_org failed for org=%s owner=%s retryable=%s err=%s",
-            org_id,
-            owner_user_id,
-            retryable,
-            e,
-        )
-        if retryable:
-            await _enqueue_paperclip_retry(
-                op="provision_org",
-                payload={
-                    "org_id": org_id,
-                    "owner_user_id": owner_user_id,
-                    "owner_email": owner_email,
-                },
-                owner_id=owner_user_id,
-            )
-    finally:
-        await _close_paperclip_http(provisioning)
+    logger.info(
+        "organization.created: org=%s owner=%s recorded",
+        org_id,
+        owner_user_id,
+    )
 
 
 async def _handle_organization_membership_created(data: dict) -> None:
-    """Add the new member to the org's existing Paperclip company."""
+    """Record-keeping for member acceptance + dual-tenancy invariant probe.
+
+    Provisioning is intentionally NOT done here. The new member's
+    paperclip-membership row will be added by their first
+    ``/container/status`` poll, which calls ``ensure_user_ready`` and
+    routes to ``_ensure_paperclip_for_member`` (Task 8). That helper:
+
+      * adds the member if the owner's company is active
+      * logs and returns gracefully if the owner's company isn't ready
+
+    Either way, the webhook has nothing useful to do besides logging
+    + enforcing the dual-tenancy invariant.
+    """
     org = data.get("organization") or {}
     org_id = org.get("id", "")
     owner_user_id = org.get("created_by", "")
@@ -421,68 +338,13 @@ async def _handle_organization_membership_created(data: dict) -> None:
         # Never let an observability check break a real provisioning path.
         logger.exception("tenancy invariant probe failed for user=%s org=%s", user_id, org_id)
 
-    owner_email = await _lookup_owner_email(org_id=org_id, fallback_user_id=owner_user_id)
-    if not owner_email:
-        logger.warning(
-            "organizationMembership.created: no email for org %s owner %s; enqueueing retry",
-            org_id,
-            owner_user_id,
-        )
-        # Omit ``owner_email`` so the retry pass re-resolves it from
-        # ``user_repo`` rather than picking up a misleading blank.
-        # Persist ``owner_user_id`` so the retry pass has the key it
-        # needs to do that lookup.
-        await _enqueue_paperclip_retry(
-            op="provision_member",
-            payload={
-                "org_id": org_id,
-                "user_id": user_id,
-                "email": email,
-                "owner_user_id": owner_user_id,
-            },
-            owner_id=user_id,
-        )
-        return
-
-    provisioning = await _get_paperclip_provisioning()
-    try:
-        await provisioning.provision_member(
-            org_id=org_id,
-            user_id=user_id,
-            email=email,
-            owner_email=owner_email,
-        )
-        put_metric("paperclip.webhook.provision_member", dimensions={"result": "ok"})
-    except Exception as e:
-        retryable = _is_retryable(e)
-        put_metric(
-            "paperclip.webhook.provision_member",
-            dimensions={"result": "retryable" if retryable else "error"},
-        )
-        logger.warning(
-            "provision_member failed for org=%s user=%s retryable=%s err=%s",
-            org_id,
-            user_id,
-            retryable,
-            e,
-        )
-        if retryable:
-            # Carry ``owner_user_id`` alongside ``owner_email`` so the
-            # retry pass can re-resolve the email from ``user_repo``
-            # if the cached one drifts (e.g. owner email rotates).
-            await _enqueue_paperclip_retry(
-                op="provision_member",
-                payload={
-                    "org_id": org_id,
-                    "user_id": user_id,
-                    "email": email,
-                    "owner_user_id": owner_user_id,
-                    "owner_email": owner_email,
-                },
-                owner_id=user_id,
-            )
-    finally:
-        await _close_paperclip_http(provisioning)
+    logger.info(
+        "membership.created: org=%s member=%s owner=%s recorded; "
+        "paperclip-membership will be added by first /container/status poll",
+        org_id,
+        user_id,
+        owner_user_id,
+    )
 
 
 async def _handle_organization_membership_deleted(data: dict) -> None:
@@ -505,7 +367,7 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
         logger.warning("Clerk organizationMembership.deleted missing user_id: %s", data)
         return
 
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         try:
             await provisioning.archive_member(user_id=user_id)
@@ -584,7 +446,7 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
                         user_id,
                     )
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 async def _handle_organization_deleted(data: dict) -> None:
@@ -603,7 +465,7 @@ async def _handle_organization_deleted(data: dict) -> None:
 
     from core.dynamodb import run_in_thread
 
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         # Reach through the repo to the underlying GSI to enumerate members.
         # We could promote this into the repo, but for v1 the only caller
@@ -647,19 +509,19 @@ async def _handle_organization_deleted(data: dict) -> None:
             org_id,
         )
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 async def _handle_user_deleted_paperclip(user_id: str) -> None:
     """Disable Paperclip for a deleted Clerk user."""
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         await provisioning.disable(user_id=user_id)
         put_metric("paperclip.webhook.disable", dimensions={"trigger": "user_deleted"})
     except Exception:
         logger.exception("disable on user_deleted failed for user=%s", user_id)
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 # ----------------------------------------------------------------------
@@ -684,10 +546,12 @@ async def handle_clerk_webhook(request: Request):
 
     # Idempotency dedupe — svix will retry on any non-2xx and on its own
     # at-least-once delivery insurance. Without this, two retries from
-    # svix on a flaky webhook would each call ``provision_org``, the
-    # second of which fails with email-collision (409 from Better Auth,
-    # non-retryable) and marks the row failed forever. Keyed on svix-id
-    # which is unique per genuine Clerk event, identical across retries.
+    # svix on a flaky webhook would each call ``provision_member``, the
+    # second of which fails with a duplicate-membership conflict
+    # (non-retryable: the member's Better Auth account already exists
+    # from the first run, so sign_up_user 409s) and marks the row failed
+    # forever. Keyed on svix-id which is unique per genuine Clerk event,
+    # identical across retries.
     svix_id = request.headers.get("svix-id")
     if svix_id:
         try:

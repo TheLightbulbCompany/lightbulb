@@ -15,8 +15,13 @@ from core.containers import get_ecs_manager, get_gateway_pool
 from core.containers.ecs_manager import EcsManagerError
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
-from core.repositories import billing_repo, container_repo
+from core.repositories import container_repo
+from core.services.container_provision import (
+    resolve_provider_choice as _resolve_provider_choice,
+    background_provision as _background_provision,
+)
 from core.services.provision_gate import evaluate_provision_gate
+from core.services.user_provision import ensure_user_ready
 
 logger = logging.getLogger(__name__)
 
@@ -68,56 +73,22 @@ async def _assert_provision_allowed(
         raise HTTPException(status_code=402, detail=gate.to_payload())
 
 
-async def _resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
-    """Look up the owner's provider_choice (+ byo_provider) from billing_repo.
-
-    Workstream B (2026-05-03): provider_choice now lives on billing_accounts,
-    keyed on ``owner_id`` (org_id in org context, user_id in personal
-    context), not on the user row. This matches the per-owner billing
-    model — one provider choice per billing account, not per Clerk user.
-
-    Falls back to ``bedrock_claude`` when no row or no choice is persisted,
-    matching the legacy default and keeping recovery working for owners
-    onboarded before Workstream B.
-    """
-    row = await billing_repo.get_by_owner_id(owner_id)
-    provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
-    byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
-    return provider_choice, byo_provider
-
-
-async def _background_provision(owner_id: str, clerk_user_id: str) -> None:
-    """Run provisioning in the background.
-
-    ``owner_id`` is the container scope (org_id in org context, user_id
-    in personal) and is also the key for the billing row that holds the
-    provider_choice (Workstream B). ``clerk_user_id`` is kept on the
-    signature for callers that still pass it; it's currently vestigial
-    inside this function (provider_choice lookup uses ``owner_id``) and
-    can be removed once external callers are audited.
-    """
-    try:
-        provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
-        await get_ecs_manager().provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-        )
-    except Exception:
-        logger.exception("Background provisioning failed for owner %s", owner_id)
-
-
 @router.get(
     "/status",
     summary="Get container metadata for current user",
     description=(
         "Returns the user's container status and metadata. "
-        "If the container is in error state and the user has an active "
-        "subscription, auto-triggers re-provisioning in the background."
+        "If no container row exists yet and the provision gate is clear, "
+        "dispatches ensure_user_ready in the background and returns a "
+        "synthetic provisioning response (owners) or 202 'workspace pending' "
+        "(org members). If the container is in error state and the user "
+        "has an active subscription, auto-triggers re-provisioning in the "
+        "background."
     ),
     operation_id="container_status",
     responses={
-        404: {"description": "No container for this user"},
+        202: {"description": "Org-member: owner's container not ready yet"},
+        402: {"description": "Provision gate is up (structured blocked payload)"},
     },
 )
 async def container_status(
@@ -132,12 +103,11 @@ async def container_status(
         # Fall back to get_service_status for error/stopped containers
         container = await ecs_manager.get_service_status(owner_id)
     if not container:
-        # No container row at all — before returning 404, evaluate the
-        # same provision gate POST /provision uses. If a gate fires, the
-        # frontend needs the structured payload (402) so it can render
-        # the picker / "top up" CTA instead of trapping the user in a
-        # generic "no container" state. If no gate fires, fall through
-        # to the existing 404 behavior unchanged.
+        # No container row at all. Evaluate the same provision gate
+        # POST /provision uses — if a gate is up, the frontend needs the
+        # structured payload (402) so it can render the picker / "top up"
+        # CTA instead of trapping the user in a generic "no container"
+        # state.
         gate = await evaluate_provision_gate(
             owner_id=owner_id,
             clerk_user_id=auth.user_id,
@@ -145,7 +115,42 @@ async def container_status(
         )
         if gate is not None:
             raise HTTPException(status_code=402, detail=gate.to_payload())
-        raise HTTPException(status_code=404, detail="No container found")
+
+        # Gate clear, no container row. After Tasks 6 + 7 stripped the
+        # eager Clerk-webhook provisioning, this endpoint is the canonical
+        # poll-driven trigger that drives every authenticated user from
+        # "Clerk-authed" to "container provisioning." Fire ensure_user_ready
+        # in the background; it's idempotent and gate-checks again itself.
+        #
+        # Org members can't drive container provisioning themselves —
+        # they ride the owner's container. But ensure_user_ready (member
+        # role) handles paperclip-membership-add against the owner's
+        # company; if the owner's company isn't active yet, it returns
+        # gracefully. Surface 202 so the frontend renders "workspace
+        # pending" rather than a generic loading state.
+        if auth.is_org_context and not auth.is_org_admin:
+            asyncio.create_task(ensure_user_ready(auth))
+            raise HTTPException(
+                status_code=202,
+                detail="team workspace pending",
+            )
+
+        # Owner role: dispatch ensure_user_ready and return a synthetic
+        # provisioning response. Shape mirrors the existing 200-OK return
+        # below so the frontend's phase=="provisioning" UI handles this
+        # without schema drift.
+        asyncio.create_task(ensure_user_ready(auth))
+        return {
+            "service_name": None,
+            "status": "provisioning",
+            "substatus": "ensure_user_ready",
+            "created_at": None,
+            "updated_at": None,
+            "region": settings.AWS_REGION,
+            "last_error": None,
+            "last_error_at": None,
+            "phase": "provisioning",
+        }
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the
@@ -167,6 +172,18 @@ async def container_status(
             asyncio.create_task(_background_provision(owner_id, auth.user_id))
             container["status"] = "provisioning"
             container["substatus"] = "auto_retry"
+
+    # Org members: their paperclip-membership-add doesn't fall out of the
+    # missing-container branch above when the org owner's container already
+    # exists (e.g., member joins an org that's already provisioned). The
+    # "missing container" branch is the canonical paperclip-add trigger, but
+    # an org member sharing the owner's container resolves to an existing
+    # row here and skips it. Fire ensure_user_ready idempotently —
+    # _ensure_paperclip_for_member treats provision_member's duplicate-409
+    # as success, so this is safe to invoke on every member status poll.
+    # Codex P1 on PR #563.
+    if auth.is_org_context and not auth.is_org_admin:
+        asyncio.create_task(ensure_user_ready(auth))
 
     return {
         "service_name": container.get("service_name"),

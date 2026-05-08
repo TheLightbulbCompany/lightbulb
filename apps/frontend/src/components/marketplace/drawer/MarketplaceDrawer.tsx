@@ -24,7 +24,7 @@ export function MarketplaceDrawer() {
         aria-hidden="true"
       />
       <aside
-        data-mode={isPublish ? "publish" : ""}
+        data-mode={isPublish ? "publish" : undefined}
         className="fixed top-0 right-0 z-[60] h-screen w-[min(920px,98vw)] bg-[#faf7f2] border-l border-[#e0dbd0] shadow-[-30px_0_80px_rgba(10,30,20,0.16)] flex flex-col transform translate-x-0 transition-transform duration-350"
         aria-label="Marketplace drawer"
       >
@@ -45,6 +45,7 @@ export function MarketplaceDrawer() {
                 <Link
                   href="/marketplace"
                   target="_blank"
+                  rel="noopener noreferrer"
                   className="text-[12.5px] text-[#5b5b5b] hover:text-[#1a1a1a] inline-flex items-center gap-1"
                 >
                   Open in full page <ExternalLink className="w-3 h-3" />

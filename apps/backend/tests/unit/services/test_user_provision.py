@@ -278,10 +278,12 @@ async def test_ensure_paperclip_for_member_threads_owner_user_id_to_lookup_owner
 @pytest.mark.asyncio
 async def test_ensure_user_ready_dispatches_container_for_owner():
     """Owner path → background_provision dispatched as task."""
-    captured = []
+    captured: list[str] = []
 
     def capture_task(coro):
-        captured.append(coro)
+        # Snapshot the qualname BEFORE closing — coro.close() destroys the
+        # coroutine frame, after which __qualname__ inspection is unsafe.
+        captured.append(coro.__qualname__)
         # Don't actually await; close the coroutine to avoid the "never awaited" warning.
         coro.close()
 
@@ -300,7 +302,40 @@ async def test_ensure_user_ready_dispatches_container_for_owner():
         ),
     ):
         await ensure_user_ready(_personal_auth("user_p"))
-    assert len(captured) == 1, f"expected one create_task call, got {len(captured)}"
+    assert captured == ["background_provision"], (
+        f"expected one create_task call dispatching background_provision, got {captured}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_user_ready_dispatches_container_for_org_admin():
+    """Org-admin owner path → background_provision dispatched with owner_id=org_id."""
+    captured: list[str] = []
+
+    def capture_task(coro):
+        # Snapshot the qualname BEFORE closing — coro.close() destroys the
+        # coroutine frame, after which __qualname__ inspection is unsafe.
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision._ensure_paperclip_for_owner",
+            new=AsyncMock(),
+        ),
+        patch(
+            "core.services.user_provision.asyncio.create_task",
+            side_effect=capture_task,
+        ),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    assert captured == ["background_provision"], (
+        f"expected one create_task call dispatching background_provision, got {captured}"
+    )
 
 
 @pytest.mark.asyncio

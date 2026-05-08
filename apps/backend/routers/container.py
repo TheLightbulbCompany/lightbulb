@@ -15,7 +15,11 @@ from core.containers import get_ecs_manager, get_gateway_pool
 from core.containers.ecs_manager import EcsManagerError
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
-from core.repositories import billing_repo, container_repo
+from core.repositories import container_repo
+from core.services.container_provision import (
+    _resolve_provider_choice,
+    background_provision as _background_provision,
+)
 from core.services.provision_gate import evaluate_provision_gate
 
 logger = logging.getLogger(__name__)
@@ -66,45 +70,6 @@ async def _assert_provision_allowed(
     )
     if gate is not None:
         raise HTTPException(status_code=402, detail=gate.to_payload())
-
-
-async def _resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
-    """Look up the owner's provider_choice (+ byo_provider) from billing_repo.
-
-    Workstream B (2026-05-03): provider_choice now lives on billing_accounts,
-    keyed on ``owner_id`` (org_id in org context, user_id in personal
-    context), not on the user row. This matches the per-owner billing
-    model — one provider choice per billing account, not per Clerk user.
-
-    Falls back to ``bedrock_claude`` when no row or no choice is persisted,
-    matching the legacy default and keeping recovery working for owners
-    onboarded before Workstream B.
-    """
-    row = await billing_repo.get_by_owner_id(owner_id)
-    provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
-    byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
-    return provider_choice, byo_provider
-
-
-async def _background_provision(owner_id: str, clerk_user_id: str) -> None:
-    """Run provisioning in the background.
-
-    ``owner_id`` is the container scope (org_id in org context, user_id
-    in personal) and is also the key for the billing row that holds the
-    provider_choice (Workstream B). ``clerk_user_id`` is kept on the
-    signature for callers that still pass it; it's currently vestigial
-    inside this function (provider_choice lookup uses ``owner_id``) and
-    can be removed once external callers are audited.
-    """
-    try:
-        provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
-        await get_ecs_manager().provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-        )
-    except Exception:
-        logger.exception("Background provisioning failed for owner %s", owner_id)
 
 
 @router.get(

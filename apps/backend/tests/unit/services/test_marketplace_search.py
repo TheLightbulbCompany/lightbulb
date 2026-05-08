@@ -641,3 +641,99 @@ async def test_status_in_filter_runs_before_limit(monkeypatch):
     )
     slugs = {li["slug"] for li in results}
     assert "review-row" in slugs
+
+
+@pytest.mark.asyncio
+async def test_seller_scoped_bypasses_cache(monkeypatch):
+    """A seller's own newly-submitted listing appears immediately on the
+    next call, even if the snapshot cache was warmed before the write.
+
+    Regression for the cache-stale read-your-writes bug: the publish
+    wizard's "View my listings →" CTA could surface a 60-second-stale
+    snapshot, hiding a row the seller just submitted. The fix is to
+    bypass the module-level cache when the caller is seller-scoped AND
+    has opted into ``include_unpublished``. PR #567 Codex P2.
+    """
+    # Start clean — autouse _reset_cache fixture also runs, but be explicit.
+    marketplace_search._reset_cache()
+
+    initial = [
+        {
+            "listing_id": "l_pub",
+            "slug": "pub",
+            "name": "Pub",
+            "status": "published",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-01",
+            "published_at": "2026-05-01",
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-01",
+        },
+    ]
+    after_write = initial + [
+        {
+            "listing_id": "l_review",
+            "slug": "rev",
+            "name": "Rev",
+            "status": "review",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-02",
+            "published_at": None,
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-02",
+        },
+    ]
+
+    table = MagicMock()
+    # First scan: warms the public cache with the initial set.
+    # Second scan: simulates the seller having submitted between calls;
+    # this should be hit by the cache-bypass branch (NOT _get_snapshot,
+    # which would return the cached `initial` set).
+    table.scan.side_effect = [
+        {"Items": list(initial)},
+        {"Items": list(after_write)},
+    ]
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    # Warm the public cache via a default search (no seller_id, no flag).
+    public = await marketplace_search.search()
+    public_slugs = {li["slug"] for li in public}
+    assert public_slugs == {"pub"}, "sanity: cache warmed with the initial published set"
+    assert table.scan.call_count == 1
+
+    # Seller-scoped read MUST bypass the cache and surface the new review row.
+    items = await marketplace_search.search(
+        seller_id="u_seller", include_unpublished=True
+    )
+    slugs = {item["slug"] for item in items}
+    assert "rev" in slugs, (
+        "seller-scoped read must bypass cache to surface own writes — "
+        "otherwise the publish wizard's 'View my listings' CTA shows a "
+        "stale 60s snapshot."
+    )
+    # Bypass branch must have actually issued a fresh scan.
+    assert table.scan.call_count == 2
+
+    # The bypass must NOT pollute the cache: a follow-up public read should
+    # still see the originally-cached snapshot (no third scan).
+    public_again = await marketplace_search.search()
+    public_again_slugs = {li["slug"] for li in public_again}
+    assert public_again_slugs == {"pub"}, (
+        "cache-bypass branch must not write its scan into _CACHE — the "
+        "public path stays bounded by the 60s TTL."
+    )
+    assert table.scan.call_count == 2, (
+        "public reads after a bypass must hit the warm cache, not re-scan"
+    )

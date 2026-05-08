@@ -19,8 +19,16 @@ Behavior:
 
 The cache is intentionally process-local. Each backend Fargate task warms
 its own copy on first request; with the 60s TTL, drift between tasks is
-bounded. No invalidation hook on publish — the next request after TTL
-expiry picks up the new listing.
+bounded. No invalidation hook on publish — the next public request after
+TTL expiry picks up the new listing.
+
+Seller-scoped reads (``seller_id`` set + ``include_unpublished=True``)
+bypass the cache and do a fresh DDB scan. This gives sellers
+read-your-writes semantics: a listing newly created/submitted via the
+Publish wizard is visible immediately on the next "My Listings" call,
+instead of being shadowed by a stale 60s snapshot. The bypass is keyed on
+``include_unpublished`` so the higher-traffic public path keeps cache
+amplification protection.
 """
 
 import time
@@ -48,16 +56,17 @@ def _reset_cache() -> None:
     _CACHE_TIMESTAMP = 0.0
 
 
-def _refresh_cache() -> list[dict[str, Any]]:
-    """Scan all listings (every status) into the module-level cache.
+def _scan_listings_table() -> list[dict[str, Any]]:
+    """Unfiltered paginated scan of the listings table.
 
-    No FilterExpression is applied at scan time — the in-Python
+    Used by both ``_refresh_cache()`` (which stores the result in the
+    module-level cache) and the cache-bypass branch in ``search()`` for
+    seller-scoped reads. No FilterExpression is applied — the in-Python
     `status == "published"` gate inside search() is what enforces the
     public-vs-seller split. Filtering at the DDB layer would silently drop
     draft/review/retired/taken_down rows before include_unpublished=True
     could ever surface them.
     """
-    global _CACHE, _CACHE_TIMESTAMP
     table = _listings_table()
     items: list[dict[str, Any]] = []
     scan_kwargs: dict[str, Any] = {}
@@ -68,6 +77,17 @@ def _refresh_cache() -> list[dict[str, Any]]:
         if not last:
             break
         scan_kwargs["ExclusiveStartKey"] = last
+    return items
+
+
+def _refresh_cache() -> list[dict[str, Any]]:
+    """Scan all listings (every status) into the module-level cache.
+
+    Delegates the scan to ``_scan_listings_table()`` so the same paginated
+    read path is shared with the cache-bypass branch in ``search()``.
+    """
+    global _CACHE, _CACHE_TIMESTAMP
+    items = _scan_listings_table()
     _CACHE = items
     _CACHE_TIMESTAMP = time.time()
     return items
@@ -151,8 +171,24 @@ async def search(
 
     Returns:
         Plain listing dicts (caller threads through Pydantic).
+
+    Cache behavior:
+        Public reads use a module-level 60s cache. Seller-scoped reads
+        with ``include_unpublished=True`` bypass the cache and do a fresh
+        DDB scan, so a seller sees their own newly-submitted listings
+        immediately after the wizard's submit chain completes. Without
+        the bypass, the publish→"View my listings" CTA could surface a
+        stale snapshot for up to 60s.
     """
-    snapshot = _get_snapshot()
+    if include_unpublished and seller_id:
+        # Read-your-writes for seller-scoped reads: skip the public
+        # snapshot cache and re-scan. Same paginated read path as
+        # _refresh_cache() but the result is NOT written into _CACHE,
+        # so a subsequent public request still sees the cached snapshot
+        # (drift bounded by TTL as documented at module level).
+        snapshot = _scan_listings_table()
+    else:
+        snapshot = _get_snapshot()
 
     if include_unpublished:
         # Caller has opted into seeing all statuses (seller-scoped reads).

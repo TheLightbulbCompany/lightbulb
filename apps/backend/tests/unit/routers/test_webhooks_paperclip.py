@@ -55,10 +55,6 @@ async def test_organization_created_does_not_provision():
             "routers.webhooks._enqueue_paperclip_retry",
             new=AsyncMock(),
         ) as mock_retry,
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
-        ),
     ):
         await _handle_organization_created(
             {

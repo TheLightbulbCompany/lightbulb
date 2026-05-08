@@ -12,7 +12,7 @@ If CLERK_WEBHOOK_SECRET is not configured the signature check is skipped
 
 **Paperclip provisioning dispatch** (added in T12):
 
-  * ``organization.created``           -> ``provision_org``
+  * ``organization.created``           -> log only (provisioning deferred to /container/status; see plan Task 8)
   * ``organizationMembership.created`` -> ``provision_member``
   * ``organizationMembership.deleted`` -> ``disable`` for that user
   * ``organization.deleted``           -> ``disable`` for every member of the org
@@ -589,10 +589,12 @@ async def handle_clerk_webhook(request: Request):
 
     # Idempotency dedupe — svix will retry on any non-2xx and on its own
     # at-least-once delivery insurance. Without this, two retries from
-    # svix on a flaky webhook would each call ``provision_org``, the
-    # second of which fails with email-collision (409 from Better Auth,
-    # non-retryable) and marks the row failed forever. Keyed on svix-id
-    # which is unique per genuine Clerk event, identical across retries.
+    # svix on a flaky webhook would each call ``provision_member``, the
+    # second of which fails with a duplicate-membership conflict
+    # (non-retryable: the member's Better Auth account already exists
+    # from the first run, so sign_up_user 409s) and marks the row failed
+    # forever. Keyed on svix-id which is unique per genuine Clerk event,
+    # identical across retries.
     svix_id = request.headers.get("svix-id")
     if svix_id:
         try:

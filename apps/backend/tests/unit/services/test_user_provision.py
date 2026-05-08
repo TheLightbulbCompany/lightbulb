@@ -69,3 +69,67 @@ async def test_ensure_user_ready_no_op_when_gate_blocks():
         await ensure_user_ready(_personal_auth())
     mock_paperclip.assert_not_awaited()
     mock_container.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
+    """Personal user → provision_org with owner_id == user_id."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.provision_org = AsyncMock()
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision._get_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision._close_paperclip_http",
+            new=AsyncMock(),
+        ),
+        patch(
+            "core.services.user_provision.background_provision",
+            new=AsyncMock(),
+        ),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+    fake_provisioning.provision_org.assert_awaited_once_with(
+        owner_id="user_p",
+        owner_user_id="user_p",
+        owner_email="p@example.com",
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_paperclip_for_owner_org_admin_passes_org_id():
+    """Org admin → provision_org with owner_id == org_id, owner_user_id == user_id."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.provision_org = AsyncMock()
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision._get_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision._close_paperclip_http",
+            new=AsyncMock(),
+        ),
+        patch(
+            "core.services.user_provision.background_provision",
+            new=AsyncMock(),
+        ),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    fake_provisioning.provision_org.assert_awaited_once_with(
+        owner_id="org_xyz",
+        owner_user_id="user_admin",
+        owner_email="a@example.com",
+    )

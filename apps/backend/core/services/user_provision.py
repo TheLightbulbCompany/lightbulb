@@ -23,9 +23,30 @@ import logging
 
 from core.auth import AuthContext
 from core.services.container_provision import background_provision
+from core.services.paperclip_owner_email import lookup_owner_email
 from core.services.provision_gate import evaluate_provision_gate
 
 logger = logging.getLogger(__name__)
+
+
+async def _get_paperclip_provisioning():
+    """Lazy import to avoid a router→service→router cycle.
+
+    routers/webhooks.py owns the provisioning factory (httpx client
+    lifetime is attached to the returned instance via ``_http_client``
+    for cleanup by ``_close_paperclip_http``). We reuse its accessor so
+    there's exactly one place that constructs the chain.
+    """
+    from routers.webhooks import _get_paperclip_provisioning as _factory
+
+    return await _factory()
+
+
+async def _close_paperclip_http(provisioning) -> None:
+    """Close the httpx client attached by ``_get_paperclip_provisioning``."""
+    from routers.webhooks import _close_paperclip_http as _close
+
+    await _close(provisioning)
 
 
 async def ensure_user_ready(auth: AuthContext) -> None:
@@ -84,8 +105,43 @@ async def ensure_user_ready(auth: AuthContext) -> None:
 
 
 async def _ensure_paperclip_for_owner(*, owner_id: str, owner_user_id: str, owner_email: str) -> None:
-    """Personal-user-or-org-admin path. Implemented in Task 3."""
-    raise NotImplementedError("Task 3")
+    """Ensure a Paperclip company exists for this owner.
+
+    Idempotent — ``provisioning.provision_org`` short-circuits on an
+    existing active row (see ``core/services/paperclip_provisioning.py``
+    ``provision_org`` docstring).
+
+    Resolves ``owner_email`` via ``lookup_owner_email`` when not
+    supplied on the AuthContext (e.g. retry callers without a JWT
+    email claim). Personal context: ``owner_id == owner_user_id`` so
+    we pass ``org_id=None`` to the resolver and let it fall back to
+    the user_id row. Org admin context: ``owner_id`` is the org_id
+    and is passed for log context.
+    """
+    if not owner_email:
+        owner_email = (
+            await lookup_owner_email(
+                org_id=owner_id if owner_id != owner_user_id else None,
+                fallback_user_id=owner_user_id,
+            )
+            or ""
+        )
+    if not owner_email:
+        logger.warning(
+            "ensure_user_ready: no email for owner=%s — paperclip provision skipped",
+            owner_id,
+        )
+        return
+
+    provisioning = await _get_paperclip_provisioning()
+    try:
+        await provisioning.provision_org(
+            owner_id=owner_id,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+        )
+    finally:
+        await _close_paperclip_http(provisioning)
 
 
 async def _ensure_paperclip_for_member(*, org_id: str, member_user_id: str, member_email: str) -> None:

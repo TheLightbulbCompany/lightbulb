@@ -441,161 +441,6 @@ export function ProvisioningStepper({
     return <>{children}</>;
   }
 
-  // Provision-gate blocked state: backend returned 402 + structured payload
-  // (e.g. credits_required, subscription_required). Render the same centerpiece
-  // shell as the cold-start view (logo + key-stage) but swap the title, body,
-  // and footer for the gate-specific copy + action. Placed before the other
-  // pre-provision early returns so a member of an unsubscribed org sees the
-  // "Ask your org admin" message instead of the personal ProviderPicker.
-  if (gatePhase === "blocked" && blocked) {
-    const showAction = !(blocked.action.admin_only && blocked.owner_role !== "admin");
-    return (
-      <>
-        <style>{`
-          .provision-wrapper {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #faf7f2;
-          }
-          .provision-card {
-            text-align: center;
-            max-width: 400px;
-            width: 100%;
-            padding: 48px 32px;
-          }
-          .provision-logo {
-            margin-bottom: 32px;
-          }
-          .provision-stage {
-            width: 80px;
-            height: 80px;
-            margin: 0 auto 32px;
-            position: relative;
-          }
-          .provision-anim {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .anim-key-circle {
-            width: 56px; height: 56px;
-            border: 2px solid #e0dbd0;
-            border-top-color: #06402B;
-            border-radius: 50%;
-          }
-          .anim-key-icon {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .provision-title {
-            font-family: var(--font-lora-serif), serif;
-            font-size: 22px; font-weight: 400; color: #1a1a1a;
-            margin-bottom: 8px;
-          }
-          .provision-desc {
-            font-family: var(--font-dm-sans), sans-serif;
-            font-size: 14px; color: #8a8578;
-            margin-bottom: 24px;
-          }
-          .provision-cta {
-            display: inline-block;
-            padding: 10px 22px;
-            border-radius: 9999px;
-            background: #06402B;
-            color: #ffffff;
-            font-family: var(--font-dm-sans), sans-serif;
-            font-size: 14px;
-            font-weight: 500;
-            text-decoration: none;
-          }
-          .provision-cta:hover { background: #052e1f; }
-          .provision-muted {
-            font-family: var(--font-dm-sans), sans-serif;
-            font-size: 13px;
-            color: #8a8578;
-            margin: 0;
-          }
-          .provision-timeout {
-            margin-top: 28px;
-            padding-top: 20px;
-            border-top: 1px solid #ece6d9;
-            display: flex; flex-direction: column;
-            align-items: center; gap: 14px;
-            max-width: 360px;
-            margin-left: auto; margin-right: auto;
-          }
-          .provision-timeout-actions {
-            display: flex; gap: 8px; align-items: center;
-          }
-        `}</style>
-        <div className="provision-wrapper">
-          <div className="provision-card">
-            <div className="provision-logo">
-              <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="100" height="100" rx="22" fill="#06402B" />
-                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-              </svg>
-            </div>
-
-            {/* Animation stage — key icon (no spin), echoing the cold-start
-                centerpiece so the visual layout stays consistent. */}
-            <div className="provision-stage" aria-hidden="true">
-              <div className="provision-anim">
-                <div className="anim-key-circle" />
-                <div className="anim-key-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-
-            <h2
-              className="provision-title"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              {blocked.title}
-            </h2>
-            <p className="provision-desc">{blocked.message}</p>
-
-            {showAction ? (
-              <a className="provision-cta" href={blocked.action.href}>
-                {blocked.action.label}
-              </a>
-            ) : (
-              <p className="provision-muted">Ask your org admin to fix this.</p>
-            )}
-
-            <div className="provision-timeout">
-              <div className="provision-timeout-actions">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full border-[#e0dbd0]"
-                  onClick={() => refresh()}
-                >
-                  Check again
-                </Button>
-                <Button variant="ghost" size="sm" asChild>
-                  <a href="mailto:support@isol8.co">Contact support</a>
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </>
-    );
-  }
-
   // Team-pending: org member whose admin hasn't provisioned the shared
   // workspace yet. Backend Task 8 returns 202 from /container/status for
   // this case; useProvisioningState surfaces it as `phase === "team-pending"`.
@@ -802,6 +647,164 @@ export function ProvisioningStepper({
           )}
         </div>
       </div>
+    );
+  }
+
+  // Provision-gate blocked state: backend returned 402 + structured payload
+  // (e.g. credits_required, subscription_required). Render the same centerpiece
+  // shell as the cold-start view (logo + key-stage) but swap the title, body,
+  // and footer for the gate-specific copy + action. Placed AFTER the provider
+  // step so that when the user clicks "Sign in with ChatGPT" (which sets
+  // ?provider=chatgpt_oauth in the URL), the provider step wins and the gate UI
+  // does not re-render on top of the OAuth flow. A member of an unsubscribed org
+  // (no ?provider= in URL) still falls through to here and sees "Ask your org
+  // admin" because the provider block's providerChoice guard fails first.
+  if (gatePhase === "blocked" && blocked) {
+    const showAction = !(blocked.action.admin_only && blocked.owner_role !== "admin");
+    return (
+      <>
+        <style>{`
+          .provision-wrapper {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #faf7f2;
+          }
+          .provision-card {
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+            padding: 48px 32px;
+          }
+          .provision-logo {
+            margin-bottom: 32px;
+          }
+          .provision-stage {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 32px;
+            position: relative;
+          }
+          .provision-anim {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .anim-key-circle {
+            width: 56px; height: 56px;
+            border: 2px solid #e0dbd0;
+            border-top-color: #06402B;
+            border-radius: 50%;
+          }
+          .anim-key-icon {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .provision-title {
+            font-family: var(--font-lora-serif), serif;
+            font-size: 22px; font-weight: 400; color: #1a1a1a;
+            margin-bottom: 8px;
+          }
+          .provision-desc {
+            font-family: var(--font-dm-sans), sans-serif;
+            font-size: 14px; color: #8a8578;
+            margin-bottom: 24px;
+          }
+          .provision-cta {
+            display: inline-block;
+            padding: 10px 22px;
+            border-radius: 9999px;
+            background: #06402B;
+            color: #ffffff;
+            font-family: var(--font-dm-sans), sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            text-decoration: none;
+          }
+          .provision-cta:hover { background: #052e1f; }
+          .provision-muted {
+            font-family: var(--font-dm-sans), sans-serif;
+            font-size: 13px;
+            color: #8a8578;
+            margin: 0;
+          }
+          .provision-timeout {
+            margin-top: 28px;
+            padding-top: 20px;
+            border-top: 1px solid #ece6d9;
+            display: flex; flex-direction: column;
+            align-items: center; gap: 14px;
+            max-width: 360px;
+            margin-left: auto; margin-right: auto;
+          }
+          .provision-timeout-actions {
+            display: flex; gap: 8px; align-items: center;
+          }
+        `}</style>
+        <div className="provision-wrapper">
+          <div className="provision-card">
+            <div className="provision-logo">
+              <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect width="100" height="100" rx="22" fill="#06402B" />
+                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
+              </svg>
+            </div>
+
+            {/* Animation stage — key icon (no spin), echoing the cold-start
+                centerpiece so the visual layout stays consistent. */}
+            <div className="provision-stage" aria-hidden="true">
+              <div className="provision-anim">
+                <div className="anim-key-circle" />
+                <div className="anim-key-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <h2
+              className="provision-title"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {blocked.title}
+            </h2>
+            <p className="provision-desc">{blocked.message}</p>
+
+            {showAction ? (
+              <a className="provision-cta" href={blocked.action.href}>
+                {blocked.action.label}
+              </a>
+            ) : (
+              <p className="provision-muted">Ask your org admin to fix this.</p>
+            )}
+
+            <div className="provision-timeout">
+              <div className="provision-timeout-actions">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full border-[#e0dbd0]"
+                  onClick={() => refresh()}
+                >
+                  Check again
+                </Button>
+                <Button variant="ghost" size="sm" asChild>
+                  <a href="mailto:support@isol8.co">Contact support</a>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </>
     );
   }
 

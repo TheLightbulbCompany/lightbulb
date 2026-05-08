@@ -533,12 +533,12 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
 
 
 # ----------------------------------------------------------------------
-# _find_org_owner
+# find_org_owner
 # ----------------------------------------------------------------------
 
 
 async def test_find_org_owner_skips_disabled_rows(repo):
-    """Codex P1 (round 3): ``_find_org_owner`` must NOT return a disabled row.
+    """Codex P1 (round 3): ``find_org_owner`` must NOT return a disabled row.
 
     ``disable()`` flips ``status="disabled"`` and leaves the row in DDB
     until the purge worker runs (up to 30 days). If the OLDEST row in
@@ -547,7 +547,7 @@ async def test_find_org_owner_skips_disabled_rows(repo):
     even when other active admins existed.
 
     Seed: row A (disabled, older created_at) + row B (active, newer).
-    Expect: ``_find_org_owner`` returns row B.
+    Expect: ``find_org_owner`` returns row B.
     """
     from datetime import timedelta
 
@@ -587,7 +587,7 @@ async def test_find_org_owner_skips_disabled_rows(repo):
 
     admin = _make_admin_mock()
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    found = await prov._find_org_owner("org_acme")  # noqa: SLF001 — testing the helper
+    found = await prov.find_org_owner("org_acme")
 
     assert found is not None
     assert found.user_id == "user_active_admin"
@@ -596,7 +596,7 @@ async def test_find_org_owner_skips_disabled_rows(repo):
 
 async def test_find_org_owner_returns_none_when_no_active_rows(repo):
     """If every row in the org is non-active (disabled/failed/provisioning),
-    ``_find_org_owner`` returns None so the caller raises
+    ``find_org_owner`` returns None so the caller raises
     ``OrgNotProvisionedError`` and the retry path takes over.
     """
     from core.encryption import encrypt
@@ -618,7 +618,7 @@ async def test_find_org_owner_returns_none_when_no_active_rows(repo):
 
     admin = _make_admin_mock()
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    found = await prov._find_org_owner("org_dead")  # noqa: SLF001
+    found = await prov.find_org_owner("org_dead")
 
     assert found is None
 

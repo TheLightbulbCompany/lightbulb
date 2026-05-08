@@ -60,7 +60,7 @@ def _build_provision_member_doubles(monkeypatch):
 
     ``provision_member`` doesn't call ``create_company``, but it DOES
     sign in as the org owner and look up the company_id. We seed a
-    fake owner row directly via ``repo.get`` / ``_find_org_owner``
+    fake owner row directly via ``repo.get`` / ``find_org_owner``
     rather than hauling in the full moto fixture.
     """
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "test-service-token-key")
@@ -156,7 +156,7 @@ async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
     admin = _build_provision_member_doubles(monkeypatch)
 
     # Build a repo double that returns no row for the joining member
-    # but a valid owner row for ``_find_org_owner`` / company lookup.
+    # but a valid owner row for ``find_org_owner`` / company lookup.
     from datetime import datetime, timezone
 
     owner_row = PaperclipCompany(
@@ -182,7 +182,7 @@ async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
     repo = MagicMock()
 
     # First .get(user_member) -> None (joining member is new); subsequent .get(user_owner)
-    # returns the seeded owner row inside _find_org_owner -> repo.get(...).
+    # returns the seeded owner row inside find_org_owner -> repo.get(...).
     async def _get(uid: str):
         if uid == "user_owner":
             return owner_row
@@ -192,14 +192,14 @@ async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
     repo.put = AsyncMock()
 
-    # _find_org_owner queries the by-org-id GSI directly via repo._table().query.
+    # find_org_owner queries the by-org-id GSI directly via repo._table().query.
     # Stub the whole helper instead — simpler than mocking boto3.
     import core.services.paperclip_provisioning as prov_mod
 
     async def _fake_find_owner(self, _org_id):
         return owner_row
 
-    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "_find_org_owner", _fake_find_owner)
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
 
     mint_spy = MagicMock(return_value="svc.tok.minted")
     monkeypatch.setattr(service_token, "mint", mint_spy)

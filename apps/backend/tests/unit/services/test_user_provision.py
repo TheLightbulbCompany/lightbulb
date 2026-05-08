@@ -143,21 +143,22 @@ async def test_ensure_paperclip_for_owner_org_admin_passes_org_id():
 # ``get_by_org_id`` helper (see Task 4 Step 4.1 verification — only
 # ``PaperclipRepo.get_org_company_id(org_id) -> str | None`` exists).
 # ``_ensure_paperclip_for_member`` therefore reuses
-# ``PaperclipProvisioning._find_org_owner``, which already filters to
+# ``PaperclipProvisioning.find_org_owner``, which already filters to
 # ``status="active"`` rows. The "company missing" and "company not yet
-# active" cases collapse into a single ``_find_org_owner -> None`` branch
-# in the unit under test, so these tests assert the same returned-None
-# behavior for both.
+# active" cases collapse into a single ``find_org_owner -> None`` branch
+# in the unit under test, so we only assert the missing-company case
+# here; ``find_org_owner``'s active-only filter is its own concern,
+# tested at the ``paperclip_provisioning`` layer.
 
 
 @pytest.mark.asyncio
 async def test_ensure_paperclip_for_member_returns_when_owner_company_missing():
     """Org member's ensure_user_ready when org's Paperclip company
-    doesn't exist yet → return without raising, no provision_member
-    call. The pending state is implicit; resolves on the next poll
-    when owner is ready."""
+    doesn't exist yet (or isn't active) → return without raising, no
+    provision_member call. The pending state is implicit; resolves on
+    the next poll when owner is ready."""
     fake_provisioning = MagicMock()
-    fake_provisioning._find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.provision_member = AsyncMock()
     with (
         patch(
@@ -179,41 +180,11 @@ async def test_ensure_paperclip_for_member_returns_when_owner_company_missing():
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_member_returns_when_owner_company_inactive():
-    """Same gracefully-return behaviour when owner's company exists
-    but is in 'provisioning' or 'failed' state.
-
-    ``_find_org_owner`` filters out non-active rows internally (see
-    paperclip_provisioning.py docstring), so from the unit-under-test's
-    perspective an inactive company looks identical to a missing one:
-    both surface as ``_find_org_owner -> None``."""
-    fake_provisioning = MagicMock()
-    fake_provisioning._find_org_owner = AsyncMock(return_value=None)
-    fake_provisioning.provision_member = AsyncMock()
-    with (
-        patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning",
-            new=AsyncMock(return_value=fake_provisioning),
-        ),
-        patch(
-            "core.services.user_provision.close_paperclip_provisioning",
-            new=AsyncMock(),
-        ),
-    ):
-        await ensure_user_ready(_org_member_auth())
-    fake_provisioning.provision_member.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_ensure_paperclip_for_member_calls_provision_member_when_owner_active():
     """Org member with an existing active company row → provision_member."""
-    fake_owner_row = MagicMock(status="active", company_id="co_123")
+    fake_owner_row = MagicMock(status="active", company_id="co_123", user_id="user_owner_123")
     fake_provisioning = MagicMock()
-    fake_provisioning._find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
     fake_provisioning.provision_member = AsyncMock()
     with (
         patch(
@@ -239,4 +210,57 @@ async def test_ensure_paperclip_for_member_calls_provision_member_when_owner_act
         user_id="user_m",
         email="m@example.com",
         owner_email="owner@example.com",
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_paperclip_for_member_threads_owner_user_id_to_lookup_owner_email():
+    """The owner_email lookup must pass the owner's Clerk user_id as
+    fallback_user_id — passing None makes lookup_owner_email return
+    None (paperclip_owner_email.py lines 46-47 short-circuit) and
+    provision_member would be called with empty owner_email,
+    breaking Paperclip sign-in."""
+    fake_company = MagicMock(
+        status="active",
+        company_id="co_123",
+        user_id="user_owner_123",
+    )
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
+    fake_provisioning.provision_member = AsyncMock()
+    lookup_calls = []
+
+    async def capturing_lookup(*, org_id, fallback_user_id):
+        lookup_calls.append((org_id, fallback_user_id))
+        return "owner@example.com"
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision.lookup_owner_email",
+            side_effect=capturing_lookup,
+        ),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+    ):
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
+
+    # The owner-email lookup specifically must thread owner's user_id, not None.
+    owner_email_lookups = [
+        c
+        for c in lookup_calls
+        if c[0] == "org_o"  # the org-id lookup is for owner-email
+    ]
+    assert owner_email_lookups, "expected at least one lookup_owner_email(org_id=org_o, ...)"
+    assert all(c[1] == "user_owner_123" for c in owner_email_lookups), (
+        f"expected fallback_user_id='user_owner_123', got {owner_email_lookups}"
     )

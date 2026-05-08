@@ -160,7 +160,7 @@ async def _ensure_paperclip_for_member(
     Implementation note: ``paperclip_repo`` does not expose a single
     "fetch the org's company row" helper at the module level — see
     Task 4 verification (Step 4.1). Instead we reuse
-    ``PaperclipProvisioning._find_org_owner``, which already filters to
+    ``PaperclipProvisioning.find_org_owner``, which already filters to
     ``status="active"`` rows and is the same lookup ``provision_member``
     itself uses internally. Returning ``None`` from that helper means
     the owner's company is either missing or not yet active —
@@ -168,8 +168,8 @@ async def _ensure_paperclip_for_member(
     """
     provisioning = await build_paperclip_provisioning()
     try:
-        owner_row = await provisioning._find_org_owner(org_id)
-        if owner_row is None:
+        owner_company = await provisioning.find_org_owner(org_id)
+        if owner_company is None:
             logger.info(
                 "ensure_user_ready (member): owner's paperclip company "
                 "for org=%s not active yet — skipping; will retry on "
@@ -191,7 +191,20 @@ async def _ensure_paperclip_for_member(
             )
             return
 
-        owner_email = await lookup_owner_email(org_id=org_id, fallback_user_id=None) or ""
+        # ``lookup_owner_email`` short-circuits to None when
+        # ``fallback_user_id`` is falsy (see paperclip_owner_email.py
+        # lines 46-47), so we MUST thread the owner's Clerk user_id
+        # here. The owner's user_id sits on the PaperclipCompany row
+        # we already fetched via ``find_org_owner`` — passing None
+        # would make the lookup return None and call provision_member
+        # with owner_email="" which fails Paperclip sign-in.
+        owner_email = (
+            await lookup_owner_email(
+                org_id=org_id,
+                fallback_user_id=owner_company.user_id,
+            )
+            or ""
+        )
 
         await provisioning.provision_member(
             owner_id=org_id,

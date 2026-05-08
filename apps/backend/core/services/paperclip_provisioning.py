@@ -446,10 +446,10 @@ class PaperclipProvisioning:
                 "organization.created webhook may not have run yet — caller should retry."
             )
 
-        owner_row = await self._find_org_owner(owner_id)
+        owner_row = await self.find_org_owner(owner_id)
         if owner_row is None:
             # Defensive — get_org_company_id returned a company_id but
-            # _find_org_owner couldn't locate the row that produced it.
+            # find_org_owner couldn't locate the row that produced it.
             # Should be impossible if the GSI is consistent.
             raise OrgNotProvisionedError(f"Owner {owner_id} has company {company_id} but no owner row found")
         owner_password = decrypt(owner_row.paperclip_password_encrypted)
@@ -759,7 +759,7 @@ class PaperclipProvisioning:
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _find_org_owner(self, owner_id: str) -> Optional[PaperclipCompany]:
+    async def find_org_owner(self, owner_id: str) -> Optional[PaperclipCompany]:
         """Find the owner row (oldest ACTIVE ``created_at`` for this owner_id).
 
         Filters out rows that aren't ``status="active"`` before picking

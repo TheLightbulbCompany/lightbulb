@@ -339,6 +339,97 @@ async def test_ensure_user_ready_dispatches_container_for_org_admin():
 
 
 @pytest.mark.asyncio
+async def test_ensure_paperclip_for_member_idempotent_on_duplicate_409():
+    """provision_member raising 409 (member already added) is treated as
+    success — the canonical /container/status trigger may fire this on
+    every member poll, so duplicate calls must be idempotent.
+
+    Codex P1 on PR #563: when an org member joins an org whose owner
+    already has a container, /container/status hits the existing-container
+    branch and dispatches ensure_user_ready for the member on every poll.
+    The first dispatch successfully adds the member; subsequent dispatches
+    see sign_up_user → Better Auth 409 (account already exists). That
+    409 must be swallowed, not re-raised — otherwise the member's status
+    poll loop logs PaperclipApiError(409) on every iteration.
+    """
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
+    duplicate_error = PaperclipApiError(
+        "POST /api/auth/sign-up/email -> 409",
+        status_code=409,
+        body='{"message":"User already exists"}',
+    )
+    fake_provisioning.provision_member = AsyncMock(side_effect=duplicate_error)
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision.lookup_owner_email",
+            new=AsyncMock(return_value="o@example.com"),
+        ),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+    ):
+        # Should NOT raise.
+        await ensure_user_ready(_org_member_auth())
+
+    fake_provisioning.provision_member.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
+    """Non-409 PaperclipApiError (e.g. 500 from sign_up_user) must
+    propagate — only the duplicate-409 case is treated as idempotent
+    success. A blanket swallow would mask transient Paperclip errors
+    from operator visibility."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
+    server_error = PaperclipApiError(
+        "POST /api/auth/sign-up/email -> 500",
+        status_code=500,
+        body='{"message":"internal"}',
+    )
+    fake_provisioning.provision_member = AsyncMock(side_effect=server_error)
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision.lookup_owner_email",
+            new=AsyncMock(return_value="o@example.com"),
+        ),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+    ):
+        with pytest.raises(PaperclipApiError) as exc:
+            await ensure_user_ready(_org_member_auth())
+    assert exc.value.status_code == 500
+
+
+@pytest.mark.asyncio
 async def test_ensure_user_ready_does_not_dispatch_container_for_member():
     """Member path → no container dispatch."""
     fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")

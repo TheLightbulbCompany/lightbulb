@@ -173,6 +173,18 @@ async def container_status(
             container["status"] = "provisioning"
             container["substatus"] = "auto_retry"
 
+    # Org members: their paperclip-membership-add doesn't fall out of the
+    # missing-container branch above when the org owner's container already
+    # exists (e.g., member joins an org that's already provisioned). The
+    # "missing container" branch is the canonical paperclip-add trigger, but
+    # an org member sharing the owner's container resolves to an existing
+    # row here and skips it. Fire ensure_user_ready idempotently —
+    # _ensure_paperclip_for_member treats provision_member's duplicate-409
+    # as success, so this is safe to invoke on every member status poll.
+    # Codex P1 on PR #563.
+    if auth.is_org_context and not auth.is_org_admin:
+        asyncio.create_task(ensure_user_ready(auth))
+
     return {
         "service_name": container.get("service_name"),
         "status": container.get("status"),

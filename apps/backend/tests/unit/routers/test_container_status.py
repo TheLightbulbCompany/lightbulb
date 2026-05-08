@@ -566,6 +566,124 @@ class TestContainerStatusEnsureUserReadyDispatch:
         assert exc_info.value.status_code == 402
 
 
+class TestContainerStatusOrgMemberDispatchOnExisting:
+    """Codex P1 on PR #563.
+
+    For an org member joining an org whose owner already has a container,
+    /container/status resolves the owner's existing container row via
+    resolve_running_container and skips the missing-container branch
+    (which is the canonical paperclip-add trigger). Without an explicit
+    dispatch on the existing-container path, the member's
+    paperclip-membership-add never fires and /teams 409s indefinitely.
+    """
+
+    @pytest.mark.asyncio
+    async def test_status_container_exists_org_member_dispatches_ensure_user_ready(self):
+        """When the org owner's container exists (200-OK path), an org member
+        polling /container/status must STILL dispatch ensure_user_ready so
+        their paperclip-membership-add fires."""
+        from routers.container import container_status
+
+        fake_container = {
+            "service_name": "svc-x",
+            "status": "running",
+            "substatus": None,
+            "created_at": "2026-05-08T00:00:00Z",
+            "updated_at": "2026-05-08T00:00:00Z",
+            "last_error": None,
+            "last_error_at": None,
+        }
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(fake_container, "10.0.0.1")),
+        )
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch("routers.container._safe_phase", return_value="ready"),
+        ):
+            result = await container_status(_org_member_auth())
+
+        assert result["status"] == "running"
+        assert captured == ["_noop_ensure_user_ready"], (
+            f"expected ensure_user_ready dispatched for org member on container-exists path, got {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_status_container_exists_owner_does_not_dispatch(self):
+        """For owners whose container already exists, no dispatch is needed —
+        they're already provisioned (paperclip + container created together
+        by ensure_user_ready)."""
+        from routers.container import container_status
+
+        fake_container = {
+            "service_name": "svc-x",
+            "status": "running",
+            "substatus": None,
+            "created_at": "2026-05-08T00:00:00Z",
+            "updated_at": "2026-05-08T00:00:00Z",
+            "last_error": None,
+            "last_error_at": None,
+        }
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(fake_container, "10.0.0.1")),
+        )
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch("routers.container._safe_phase", return_value="ready"),
+        ):
+            await container_status(_personal_auth())
+
+        assert captured == [], "owner path should not dispatch when container already exists"
+
+    @pytest.mark.asyncio
+    async def test_status_container_exists_org_admin_does_not_dispatch(self):
+        """Org admin with an existing container must not dispatch either —
+        the dispatch is gated on (is_org_context AND NOT is_org_admin).
+        Org admins are owners and were already provisioned atomically."""
+        from routers.container import container_status
+
+        fake_container = {
+            "service_name": "svc-x",
+            "status": "running",
+            "substatus": None,
+            "created_at": "2026-05-08T00:00:00Z",
+            "updated_at": "2026-05-08T00:00:00Z",
+            "last_error": None,
+            "last_error_at": None,
+        }
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(fake_container, "10.0.0.1")),
+        )
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch("routers.container._safe_phase", return_value="ready"),
+        ):
+            await container_status(_org_admin_auth())
+
+        assert captured == [], "org admin path should not dispatch when container already exists"
+
+
 class TestGatewayRestart:
     """Test POST /api/v1/container/gateway/restart."""
 

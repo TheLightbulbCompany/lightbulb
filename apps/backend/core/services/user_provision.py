@@ -24,6 +24,7 @@ import logging
 from core.auth import AuthContext
 from core.observability.metrics import put_metric
 from core.services.container_provision import background_provision
+from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_owner_email import lookup_owner_email
 from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
@@ -165,6 +166,15 @@ async def _ensure_paperclip_for_member(
     itself uses internally. Returning ``None`` from that helper means
     the owner's company is either missing or not yet active —
     indistinguishable for our purposes (both → return gracefully).
+
+    Idempotent on duplicate-add: ``provision_member`` calls
+    ``sign_up_user`` for the joining member; on a duplicate
+    (member already in Paperclip from a previous successful add)
+    Paperclip's Better Auth returns 409 and ``sign_up_user`` raises
+    ``PaperclipApiError(status_code=409)``. /container/status is the
+    canonical poll trigger and may fire this helper on every member
+    poll, so duplicate calls must no-op. We catch the 409 and return —
+    other PaperclipApiError statuses re-raise.
     """
     provisioning = await build_paperclip_provisioning()
     try:
@@ -206,11 +216,25 @@ async def _ensure_paperclip_for_member(
             or ""
         )
 
-        await provisioning.provision_member(
-            owner_id=org_id,
-            user_id=member_user_id,
-            email=member_email,
-            owner_email=owner_email,
-        )
+        try:
+            await provisioning.provision_member(
+                owner_id=org_id,
+                user_id=member_user_id,
+                email=member_email,
+                owner_email=owner_email,
+            )
+        except PaperclipApiError as exc:
+            # Duplicate-member 409: the member was already added in a
+            # prior successful run. /container/status is the canonical
+            # poll trigger and may fire this on every member poll, so
+            # treat as idempotent success. Any other status re-raises.
+            if exc.status_code == 409:
+                logger.debug(
+                    "ensure_user_ready (member): %s already in paperclip company for org=%s — no-op (sign_up_user 409)",
+                    member_user_id,
+                    org_id,
+                )
+            else:
+                raise
     finally:
         await close_paperclip_provisioning(provisioning)

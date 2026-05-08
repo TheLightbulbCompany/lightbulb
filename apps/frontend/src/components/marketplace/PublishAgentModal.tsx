@@ -21,7 +21,6 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 
 interface SellerEligibilityResponse {
-  tier: string;
   can_sell_skillmd: boolean;
   can_sell_openclaw: boolean;
   reason: string | null;

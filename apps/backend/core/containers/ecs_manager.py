@@ -672,27 +672,6 @@ class EcsManager:
         await self.start_user_service(user_id)
         return {"status": "started"}
 
-    async def resize_for_user(self, user_id: str, tier: str | None = None) -> dict:
-        """Resize the user's container to the single per-user task size.
-
-        Per spec §3.2 / §10 (flat-fee pivot, 2026-04): every user — free or
-        paying — gets the same 0.5 vCPU / 1 GB box. The old per-tier sizing
-        (pro 1/2, enterprise 2/4) is gone; the ``tier`` arg is accepted for
-        admin-router back-compat (Plan 3 cutover removes the call site) and
-        is otherwise ignored.
-        """
-        del tier  # unused under flat-fee
-        await self.resize_user_container(
-            user_id,
-            new_cpu=PER_USER_CPU,
-            new_memory=PER_USER_MEMORY_MIB,
-        )
-        return {
-            "status": "resized",
-            "cpu": PER_USER_CPU,
-            "memory": PER_USER_MEMORY_MIB,
-        }
-
     async def delete_user_service(self, user_id: str) -> None:
         """Remove a user's ECS service and per-user resources entirely.
 

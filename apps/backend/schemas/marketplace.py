@@ -100,7 +100,6 @@ class ArtifactFromAgentRequest(BaseModel):
 
 
 class SellerEligibilityResponse(BaseModel):
-    tier: str  # "free" | "starter" | "pro" | "enterprise" | "none"
     can_sell_skillmd: bool
     can_sell_openclaw: bool
     reason: str | None = None  # populated when can_sell_openclaw=False

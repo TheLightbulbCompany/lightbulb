@@ -19,16 +19,13 @@ from core.config import settings
 from core.repositories import billing_repo
 from core.services import agent_export, marketplace_search, marketplace_service
 from core.services.catalog_service import get_catalog_service
+from core.services.provision_gate import is_subscription_active
 from schemas import marketplace as schemas
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace"])
-
-
-# Tier strings that grant openclaw publishing.
-_PAID_TIERS = {"starter", "pro", "enterprise"}
 
 
 def _purchases_table():
@@ -306,17 +303,15 @@ async def upload_artifact_from_agent(
     directly from EFS (no container interaction), tars the directory, packs
     it as a CatalogPackage, and replaces the listing's artifact.
 
-    Requires the seller to be on a paid tier (free-tier users have no
-    container, so no agents on EFS to publish).
+    Requires an active Isol8 subscription — without one the seller has no
+    container and no agents on EFS to publish.
     """
     account = await billing_repo.get_by_owner_id(auth.user_id)
-    tier = (account or {}).get("tier", "none")
-    if tier not in _PAID_TIERS:
+    if not is_subscription_active(account):
         raise HTTPException(
             status_code=403,
             detail={
-                "error": "publishing OpenClaw agents requires Isol8 Starter, Pro, or Enterprise",
-                "current_tier": tier,
+                "error": "publishing requires an active Isol8 subscription",
                 "upgrade_url": "https://isol8.co/pricing",
             },
         )
@@ -357,14 +352,12 @@ async def seller_eligibility(auth: Annotated[AuthContext, Depends(get_current_us
     """Surface whether the caller can publish each format.
 
     Cheap (single billing repo lookup); UI calls it on every mount so a
-    user who upgrades mid-session sees the new option immediately.
+    user who subscribes mid-session sees the new option immediately.
     """
     account = await billing_repo.get_by_owner_id(auth.user_id)
-    tier = (account or {}).get("tier", "none")
-    can_openclaw = tier in _PAID_TIERS
+    can_openclaw = is_subscription_active(account)
     return schemas.SellerEligibilityResponse(
-        tier=tier,
         can_sell_skillmd=False,  # skillmd path removed in Isol8-internal v0 reduction
         can_sell_openclaw=can_openclaw,
-        reason=None if can_openclaw else "Publishing requires an Isol8 Starter, Pro, or Enterprise subscription.",
+        reason=None if can_openclaw else "Publishing requires an active Isol8 subscription.",
     )

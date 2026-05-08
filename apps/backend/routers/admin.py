@@ -43,10 +43,6 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # ---------------------------------------------------------------------------
 
 
-class ResizeRequest(BaseModel):
-    tier: str = Field(..., description="New plan tier (e.g. 'starter', 'pro', 'enterprise')")
-
-
 class IssueCreditRequest(BaseModel):
     amount_cents: int = Field(..., gt=0, description="Credit amount in cents")
     reason: str = Field(..., min_length=1, description="Reason for credit (audited)")
@@ -254,23 +250,6 @@ async def admin_container_start(
     owner_id, _ = await resolve_admin_owner_id(user_id)
     ecs = get_ecs_manager()
     return await ecs.start_user_service(owner_id)
-
-
-@router.post(
-    "/users/{user_id}/container/resize",
-    description="Resize the user's container CPU/memory to the per-tier profile.",
-)
-@idempotency()
-@audit_admin_action("container.resize")
-async def admin_container_resize(
-    user_id: str,
-    body: ResizeRequest,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
-    ecs = get_ecs_manager()
-    return await ecs.resize_for_user(owner_id, body.tier)
 
 
 # ---------------------------------------------------------------------------

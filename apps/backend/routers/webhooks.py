@@ -13,7 +13,7 @@ If CLERK_WEBHOOK_SECRET is not configured the signature check is skipped
 **Paperclip provisioning dispatch** (added in T12):
 
   * ``organization.created``           -> log only (provisioning deferred to /container/status; see plan Task 8)
-  * ``organizationMembership.created`` -> ``provision_member``
+  * ``organizationMembership.created`` -> log + dual-tenancy probe (provisioning deferred to /container/status; see plan Task 8)
   * ``organizationMembership.deleted`` -> ``disable`` for that user
   * ``organization.deleted``           -> ``disable`` for every member of the org
   * ``user.deleted``                   -> ``disable`` for that user
@@ -284,7 +284,19 @@ async def _handle_organization_created(data: dict) -> None:
 
 
 async def _handle_organization_membership_created(data: dict) -> None:
-    """Add the new member to the org's existing Paperclip company."""
+    """Record-keeping for member acceptance + dual-tenancy invariant probe.
+
+    Provisioning is intentionally NOT done here. The new member's
+    paperclip-membership row will be added by their first
+    ``/container/status`` poll, which calls ``ensure_user_ready`` and
+    routes to ``_ensure_paperclip_for_member`` (Task 8). That helper:
+
+      * adds the member if the owner's company is active
+      * logs and returns gracefully if the owner's company isn't ready
+
+    Either way, the webhook has nothing useful to do besides logging
+    + enforcing the dual-tenancy invariant.
+    """
     org = data.get("organization") or {}
     org_id = org.get("id", "")
     owner_user_id = org.get("created_by", "")
@@ -326,68 +338,13 @@ async def _handle_organization_membership_created(data: dict) -> None:
         # Never let an observability check break a real provisioning path.
         logger.exception("tenancy invariant probe failed for user=%s org=%s", user_id, org_id)
 
-    owner_email = await _lookup_owner_email(org_id=org_id, fallback_user_id=owner_user_id)
-    if not owner_email:
-        logger.warning(
-            "organizationMembership.created: no email for org %s owner %s; enqueueing retry",
-            org_id,
-            owner_user_id,
-        )
-        # Omit ``owner_email`` so the retry pass re-resolves it from
-        # ``user_repo`` rather than picking up a misleading blank.
-        # Persist ``owner_user_id`` so the retry pass has the key it
-        # needs to do that lookup.
-        await _enqueue_paperclip_retry(
-            op="provision_member",
-            payload={
-                "org_id": org_id,
-                "user_id": user_id,
-                "email": email,
-                "owner_user_id": owner_user_id,
-            },
-            owner_id=user_id,
-        )
-        return
-
-    provisioning = await build_paperclip_provisioning()
-    try:
-        await provisioning.provision_member(
-            owner_id=org_id,
-            user_id=user_id,
-            email=email,
-            owner_email=owner_email,
-        )
-        put_metric("paperclip.webhook.provision_member", dimensions={"result": "ok"})
-    except Exception as e:
-        retryable = _is_retryable(e)
-        put_metric(
-            "paperclip.webhook.provision_member",
-            dimensions={"result": "retryable" if retryable else "error"},
-        )
-        logger.warning(
-            "provision_member failed for org=%s user=%s retryable=%s err=%s",
-            org_id,
-            user_id,
-            retryable,
-            e,
-        )
-        if retryable:
-            # Carry ``owner_user_id`` alongside ``owner_email`` so the
-            # retry pass can re-resolve the email from ``user_repo``
-            # if the cached one drifts (e.g. owner email rotates).
-            await _enqueue_paperclip_retry(
-                op="provision_member",
-                payload={
-                    "org_id": org_id,
-                    "user_id": user_id,
-                    "email": email,
-                    "owner_user_id": owner_user_id,
-                    "owner_email": owner_email,
-                },
-                owner_id=user_id,
-            )
-    finally:
-        await close_paperclip_provisioning(provisioning)
+    logger.info(
+        "membership.created: org=%s member=%s owner=%s recorded; "
+        "paperclip-membership will be added by first /container/status poll",
+        org_id,
+        user_id,
+        owner_user_id,
+    )
 
 
 async def _handle_organization_membership_deleted(data: dict) -> None:

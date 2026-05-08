@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from core.services.paperclip_admin_client import PaperclipApiError
-from core.services.paperclip_provisioning import OrgNotProvisionedError
 
 
 def _bypass_svix(monkeypatch):
@@ -68,160 +67,42 @@ async def test_organization_created_does_not_provision():
 
 
 # ----------------------------------------------------------------------
-# organizationMembership.created -> provision_member
+# organizationMembership.created -> log + dual-tenancy invariant probe
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_membership_created_calls_provision_member(async_client, monkeypatch):
-    """``organizationMembership.created`` payloads carry the new member's
-    user_id + email under ``public_user_data``, and the owner's user_id
-    under ``organization.created_by``. Owner email is sourced from
-    the users repo since Clerk doesn't put it on this payload.
-    """
-    _bypass_svix(monkeypatch)
-
-    mock_provisioning = AsyncMock()
-    mock_provisioning.provision_member = AsyncMock(return_value=None)
-
-    payload = {
-        "type": "organizationMembership.created",
-        "data": {
-            "id": "orgm_1",
-            "organization": {
-                "id": "org_acme",
-                "created_by": "user_owner",
-            },
-            "public_user_data": {
-                "user_id": "user_member",
-                "identifier": "member@acme.test",
-            },
-            "role": "org:member",
-        },
-    }
+async def test_membership_created_does_not_provision():
+    """After consolidation (Task 7), the membership webhook is
+    record-keeping + dual-tenancy invariant probe only. Should NOT call
+    provision_member, build_paperclip_provisioning, or
+    _enqueue_paperclip_retry. The new member's paperclip-membership row
+    will be added by the first /container/status poll on their session
+    via ensure_user_ready (Task 8)."""
+    from routers.webhooks import _handle_organization_membership_created
 
     with (
+        patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
+        patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
         patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
-        ),
+            "routers.webhooks.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),  # no personal billing row -> invariant clean
+        ) as mock_billing,
     ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
+        await _handle_organization_membership_created(
+            {
+                "organization": {"id": "org_x", "created_by": "user_owner"},
+                "public_user_data": {
+                    "user_id": "user_member",
+                    "identifier": "m@example.com",
+                },
+            }
         )
 
-    assert resp.status_code == 200
-    mock_provisioning.provision_member.assert_awaited_once_with(
-        owner_id="org_acme",
-        user_id="user_member",
-        email="member@acme.test",
-        owner_email="owner@acme.test",
-    )
-
-
-@pytest.mark.asyncio
-async def test_membership_created_org_not_provisioned_enqueues(async_client, monkeypatch):
-    """``OrgNotProvisionedError`` is always retryable — the org-create
-    webhook is in flight, we just need to retry shortly. Should enqueue
-    and return 200.
-    """
-    _bypass_svix(monkeypatch)
-
-    err = OrgNotProvisionedError("org missing")
-    mock_provisioning = AsyncMock()
-    mock_provisioning.provision_member = AsyncMock(side_effect=err)
-    captured_create = AsyncMock(return_value={"update_id": "upd_1"})
-
-    payload = {
-        "type": "organizationMembership.created",
-        "data": {
-            "id": "orgm_1",
-            "organization": {"id": "org_acme", "created_by": "user_owner"},
-            "public_user_data": {
-                "user_id": "user_member",
-                "identifier": "member@acme.test",
-            },
-        },
-    }
-
-    with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    captured_create.assert_awaited_once()
-    kwargs = captured_create.call_args.kwargs
-    assert kwargs["owner_id"] == "user_member"
-    assert kwargs["changes"]["op"] == "provision_member"
-    assert kwargs["changes"]["user_id"] == "user_member"
-    assert kwargs["changes"]["email"] == "member@acme.test"
-
-
-@pytest.mark.asyncio
-async def test_membership_created_missing_owner_email_omits_blank_in_retry(async_client, monkeypatch):
-    """F2 (membership variant): When the org owner's email isn't
-    backfilled yet, the membership retry payload also drops
-    ``owner_email`` (instead of writing ``""``) and includes
-    ``owner_user_id`` so the retry pass can look the email up later.
-    """
-    _bypass_svix(monkeypatch)
-
-    captured_create = AsyncMock(return_value={"update_id": "upd_member_blank"})
-
-    payload = {
-        "type": "organizationMembership.created",
-        "data": {
-            "id": "orgm_blank",
-            "organization": {"id": "org_acme", "created_by": "user_owner"},
-            "public_user_data": {
-                "user_id": "user_member",
-                "identifier": "member@acme.test",
-            },
-        },
-    }
-
-    # Owner row missing -> _lookup_owner_email returns None.
-    with (
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value=None),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    captured_create.assert_awaited_once()
-    kwargs = captured_create.call_args.kwargs
-    changes = kwargs["changes"]
-    assert changes["op"] == "provision_member"
-    assert changes["user_id"] == "user_member"
-    assert changes["email"] == "member@acme.test"
-    assert changes["owner_user_id"] == "user_owner"
-    assert "owner_email" not in changes
+    mock_factory.assert_not_called()
+    mock_retry.assert_not_awaited()
+    # Invariant probe still runs.
+    mock_billing.assert_awaited()
 
 
 # ----------------------------------------------------------------------
@@ -579,12 +460,14 @@ async def test_user_created_persist_failure_is_non_fatal(async_client, monkeypat
 @pytest.mark.asyncio
 async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     """Two retries from svix on the same Clerk event must NOT both
-    drive ``provision_member`` — Verify the second delivery returns
-    early without invoking the provisioning factory.
+    drive provisioning — verify the second delivery returns early
+    without invoking the provisioning factory.
 
-    Uses ``organizationMembership.created`` because
-    ``organization.created`` no longer drives provisioning after
-    Task 6 (it became record-keeping only).
+    Uses ``organizationMembership.deleted`` because
+    ``organization.created`` and ``organizationMembership.created`` no
+    longer drive provisioning after Tasks 6 + 7 (record-keeping only).
+    Membership.deleted still calls ``archive_member`` so the dedupe
+    wrapper has something observable to gate.
     """
     _bypass_svix(monkeypatch)
 
@@ -604,28 +487,19 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     )
 
     mock_provisioning = AsyncMock()
-    mock_provisioning.provision_member = AsyncMock(return_value=None)
+    mock_provisioning.archive_member = AsyncMock(return_value=None)
     factory = AsyncMock(return_value=mock_provisioning)
 
     payload = {
-        "type": "organizationMembership.created",
+        "type": "organizationMembership.deleted",
         "data": {
             "id": "orgm_1",
-            "organization": {"id": "org_acme", "created_by": "user_owner"},
-            "public_user_data": {
-                "user_id": "user_member",
-                "identifier": "member@acme.test",
-            },
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
         },
     }
 
-    with (
-        patch("routers.webhooks.build_paperclip_provisioning", new=factory),
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
-        ),
-    ):
+    with patch("routers.webhooks.build_paperclip_provisioning", new=factory):
         resp1 = await async_client.post(
             "/api/v1/webhooks/clerk",
             json=payload,
@@ -640,7 +514,7 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     assert resp1.status_code == 200
     assert resp2.status_code == 200
     # Provisioning ran exactly once across both retries.
-    mock_provisioning.provision_member.assert_awaited_once()
+    mock_provisioning.archive_member.assert_awaited_once()
 
 
 @pytest.mark.asyncio

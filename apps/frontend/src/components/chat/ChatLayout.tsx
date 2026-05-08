@@ -24,6 +24,7 @@ import { FileViewer } from "@/components/chat/FileViewer";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/components/chat/AgentDialogs";
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -185,6 +186,18 @@ export function ChatLayout({
     };
   }, [pollingForWebhook, isSubscribed, refreshBilling]);
 
+  // Marketplace drawer: when a hire completes, the provider sets
+  // `freshlyInstalledAgentId` so the matching sidebar row plays the
+  // `slideIn` animation. Clear the flag after the animation has had time
+  // to finish so the class isn't reapplied on subsequent renders.
+  const { state: drawerState, setFreshlyInstalled } = useMarketplaceDrawer();
+
+  useEffect(() => {
+    if (!drawerState.freshlyInstalledAgentId) return;
+    const handle = setTimeout(() => setFreshlyInstalled(null), 600);
+    return () => clearTimeout(handle);
+  }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
+
   function handleSelectAgent(agentId: string): void {
     capture("agent_selected", { agent_id: agentId });
     setUserSelectedId(agentId);
@@ -301,11 +314,12 @@ export function ChatLayout({
                 </div>
                 {agents.map((agent) => {
                   const isDefault = agent.id === defaultId;
+                  const isNewArrival = drawerState.freshlyInstalledAgentId === agent.id;
                   const displayAgent = fromInstalledAgent(agent);
                   return (
                     <div
                       key={agent.id}
-                      className={`agent-item${currentAgentId === agent.id ? " active" : ""}`}
+                      className={`agent-item${currentAgentId === agent.id ? " active" : ""}${isNewArrival ? " new-arrival" : ""}`}
                       onClick={() => handleSelectAgent(agent.id)}
                     >
                       <Monogram agent={displayAgent} size={28} radius={8} />

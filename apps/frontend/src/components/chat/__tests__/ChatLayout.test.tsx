@@ -95,6 +95,14 @@ vi.mock("@/components/chat/AgentDialogs", () => ({
   AgentRenameDialog: () => null,
   AgentDeleteDialog: () => null,
 }));
+// Drawer provider is mounted on the chat page in production, but this test
+// renders <ChatLayout /> bare. Stub the hook so we don't have to wrap.
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({
+    state: { freshlyInstalledAgentId: null },
+    setFreshlyInstalled: vi.fn(),
+  }),
+}));
 // CSS import is a no-op in vitest jsdom env, but stub it for safety.
 vi.mock("./ChatLayout.css", () => ({}));
 

@@ -1409,3 +1409,19 @@ button:focus-visible { border-radius: 999px; }
   .legal-content h2 { font-size: 1.15rem; }
   .support-submit { width: 100%; text-align: center; }
 }
+
+/* Marketplace drawer: freshly-installed agent slide-in (Task 16) */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+    background: #dde9d6;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.agent-item.new-arrival {
+  animation: slideIn 0.5s ease both;
+}

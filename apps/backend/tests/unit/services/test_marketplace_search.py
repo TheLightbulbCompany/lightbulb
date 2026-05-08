@@ -60,7 +60,10 @@ LISTINGS = [
     },
 ]
 
-# Items the scan should return when FilterExpression is status='published'.
+# The DDB scan is now unfiltered — it returns all rows regardless of status —
+# so the mock_table fixture seeds the full LISTINGS set including the draft.
+# The in-Python `status == "published"` gate in search() is what excludes the
+# draft from default reads.
 PUBLISHED_LISTINGS = [li for li in LISTINGS if li["status"] == "published"]
 
 
@@ -75,7 +78,7 @@ def _reset_cache():
 @pytest.fixture
 def mock_table():
     table = MagicMock()
-    table.scan.return_value = {"Items": list(PUBLISHED_LISTINGS)}
+    table.scan.return_value = {"Items": list(LISTINGS)}
     with patch("core.services.marketplace_search._listings_table", return_value=table):
         yield table
 
@@ -156,18 +159,28 @@ async def test_drops_zero_score_results(mock_table):
 
 
 @pytest.mark.asyncio
-async def test_drafts_excluded_via_filter_expression(mock_table):
-    # The scan call site must include FilterExpression for status='published'.
-    await marketplace_search.search(query=None)
-    kwargs = mock_table.scan.call_args.kwargs
-    assert "FilterExpression" in kwargs
-    # Defensive: also re-filter in Python in case scan returns extra rows.
-    # Add a stray draft to the scan response and confirm it's still dropped.
-    mock_table.scan.return_value = {"Items": list(LISTINGS)}  # includes draft-thing
-    marketplace_search._reset_cache()
+async def test_drafts_excluded_via_in_python_filter(mock_table):
+    """The in-Python status filter is the load-bearing public-vs-seller gate.
+
+    The scan deliberately does NOT carry a FilterExpression on status — that
+    used to silently drop draft rows before include_unpublished=True could
+    ever surface them. mock_table is now seeded with the full LISTINGS set
+    (including draft-thing), and the default search() must still exclude it.
+    """
     results = await marketplace_search.search(query=None)
     assert all(li["status"] == "published" for li in results)
     assert "draft-thing" not in [li["slug"] for li in results]
+
+    # Defense against regression: the snapshot scan must be unfiltered.
+    # The original bug carried FilterExpression="#s = :pub" with the literal
+    # word "status" only in ExpressionAttributeNames — a substring check on
+    # the expression string would not have caught it. The strict contract is
+    # "no FilterExpression at all" per the module docstring.
+    kwargs = mock_table.scan.call_args.kwargs
+    assert "FilterExpression" not in kwargs, (
+        "scan must not carry a FilterExpression — the snapshot is unfiltered "
+        "(status filter happens in-Python in search() so include_unpublished=True works)"
+    )
 
 
 @pytest.mark.asyncio
@@ -249,6 +262,122 @@ async def test_cache_refresh_paginates_through_last_evaluated_key():
 
 
 @pytest.mark.asyncio
+async def test_search_includes_unpublished_when_flag_set():
+    """When include_unpublished=True, draft + review + published rows all surface."""
+    snapshot = [
+        {
+            "listing_id": "l1",
+            "slug": "a",
+            "name": "A",
+            "status": "published",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-01",
+            "published_at": "2026-05-01",
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-01",
+        },
+        {
+            "listing_id": "l2",
+            "slug": "b",
+            "name": "B",
+            "status": "draft",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-02",
+            "published_at": None,
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-02",
+        },
+        {
+            "listing_id": "l3",
+            "slug": "c",
+            "name": "C",
+            "status": "review",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-03",
+            "published_at": None,
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-03",
+        },
+    ]
+    table = MagicMock()
+    # The DDB-side FilterExpression would normally drop non-published rows;
+    # we deliberately return them all here so the in-Python branch under test
+    # is exercised end-to-end.
+    table.scan.return_value = {"Items": list(snapshot)}
+    with patch("core.services.marketplace_search._listings_table", return_value=table):
+        items = await marketplace_search.search(query=None, seller_id="u_seller", include_unpublished=True, limit=10)
+
+    statuses = {item["status"] for item in items}
+    assert statuses == {"published", "draft", "review"}
+
+
+@pytest.mark.asyncio
+async def test_search_default_filters_to_published():
+    """Default behavior unchanged: only published rows surface."""
+    snapshot = [
+        {
+            "listing_id": "l1",
+            "slug": "a",
+            "name": "A",
+            "status": "published",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-01",
+            "published_at": "2026-05-01",
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-01",
+        },
+        {
+            "listing_id": "l2",
+            "slug": "b",
+            "name": "B",
+            "status": "draft",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-02",
+            "published_at": None,
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-02",
+        },
+    ]
+    table = MagicMock()
+    table.scan.return_value = {"Items": list(snapshot)}
+    with patch("core.services.marketplace_search._listings_table", return_value=table):
+        items = await marketplace_search.search(query=None, seller_id="u_seller", limit=10)
+
+    statuses = {item["status"] for item in items}
+    assert statuses == {"published"}
+
+
+@pytest.mark.asyncio
 async def test_default_limit_is_24(mock_table):
     # Stuff the table with 50 published listings.
     many = []
@@ -270,3 +399,341 @@ async def test_default_limit_is_24(mock_table):
 
     results = await marketplace_search.search(query=None)
     assert len(results) == 24
+
+
+@pytest.mark.asyncio
+async def test_draft_row_surfaces_to_seller_via_include_unpublished(monkeypatch):
+    """End-to-end: a draft row in the underlying scan response surfaces to a
+    seller-scoped include_unpublished=True call. Catches the bug where the
+    FilterExpression at scan time would silently drop drafts before the cache
+    fills.
+    """
+    table = MagicMock()
+    table.scan.return_value = {
+        "Items": [
+            {
+                "listing_id": "l_pub",
+                "slug": "pub",
+                "name": "Pub",
+                "status": "published",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-01",
+                "published_at": "2026-05-01",
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-01",
+            },
+            {
+                "listing_id": "l_draft",
+                "slug": "draft",
+                "name": "Draft",
+                "status": "draft",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-02",
+                "published_at": None,
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-02",
+            },
+        ],
+    }
+
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    items = await marketplace_search.search(query=None, seller_id="u_seller", include_unpublished=True)
+    slugs = {item["slug"] for item in items}
+    assert "draft" in slugs, "expected draft listing to surface for seller-scoped include_unpublished read"
+
+    # Verify the snapshot scan was unfiltered. The original bug carried
+    # FilterExpression="#s = :pub" with "status" only in ExpressionAttributeNames,
+    # so a substring check on the expression string would have passed against
+    # the buggy code. The strict contract is "no FilterExpression at all".
+    scan_calls = table.scan.call_args_list
+    assert len(scan_calls) >= 1
+    for call in scan_calls:
+        kwargs = call.kwargs
+        assert "FilterExpression" not in kwargs, (
+            "scan must not carry a FilterExpression — the snapshot is unfiltered "
+            "(status filter happens in-Python in search() so include_unpublished=True works)"
+        )
+
+
+@pytest.mark.asyncio
+async def test_default_search_still_excludes_drafts_after_cache_change(monkeypatch):
+    """Defense-in-depth regression test: even though the cache now holds all
+    statuses, the default (no flag) search still returns published-only.
+    """
+    table = MagicMock()
+    table.scan.return_value = {
+        "Items": [
+            {
+                "listing_id": "l_pub",
+                "slug": "pub",
+                "name": "Pub",
+                "status": "published",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-01",
+                "published_at": "2026-05-01",
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-01",
+            },
+            {
+                "listing_id": "l_draft",
+                "slug": "draft",
+                "name": "Draft",
+                "status": "draft",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-02",
+                "published_at": None,
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-02",
+            },
+        ],
+    }
+
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    items = await marketplace_search.search(query=None)  # default — no flag
+    statuses = {item["status"] for item in items}
+    assert statuses == {"published"}, "default search must filter to published-only"
+
+
+@pytest.mark.asyncio
+async def test_search_filters_by_category(monkeypatch):
+    """Browse view category chips drive a case-insensitive filter on the
+    listing's "category" field. Listings without a matching category fall out.
+    """
+    table = MagicMock()
+    table.scan.return_value = {
+        "Items": [
+            {
+                "listing_id": "l1",
+                "slug": "a",
+                "name": "A",
+                "status": "published",
+                "seller_id": "u_s",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-01",
+                "published_at": "2026-05-01",
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-01",
+                "category": "Engineering",
+            },
+            {
+                "listing_id": "l2",
+                "slug": "b",
+                "name": "B",
+                "status": "published",
+                "seller_id": "u_s",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-01",
+                "published_at": "2026-05-01",
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-01",
+                "category": "Sales",
+            },
+        ],
+    }
+
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    items = await marketplace_search.search(category="engineering")
+    slugs = {item["slug"] for item in items}
+    assert slugs == {"a"}
+
+
+@pytest.mark.asyncio
+async def test_status_in_filter_runs_before_limit(monkeypatch):
+    """Seller-scoped reads must apply ``status_in`` BEFORE the limit slice.
+
+    Otherwise a seller with many published rows ahead of a single ``review``
+    row loses the match — the limit cuts the published rows first and the
+    review row never makes it into the response. Regression for PR #567
+    Codex P2.
+
+    Setup: 30 published listings + 1 review listing for the same seller.
+    Caller asks for ``status_in=["review"]`` with ``limit=10``.
+    Expectation: the review row surfaces.
+    """
+    items: list[dict] = []
+    for i in range(30):
+        items.append(
+            {
+                "listing_id": f"l_pub_{i}",
+                "slug": f"pub-{i}",
+                "name": f"Pub {i}",
+                "status": "published",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                # All published_at values are newer than the review row so
+                # they would dominate a published_at-desc sort, masking the
+                # bug if status_in were applied after the limit slice.
+                "published_at": f"2026-05-{(i % 28) + 1:02d}T00:00:00Z",
+                "price_cents": 0,
+            }
+        )
+    items.append(
+        {
+            "listing_id": "l_review",
+            "slug": "review-row",
+            "name": "Review Row",
+            "status": "review",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "published_at": "2026-04-01T00:00:00Z",
+            "price_cents": 0,
+        }
+    )
+
+    table = MagicMock()
+    table.scan.return_value = {"Items": items}
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    results = await marketplace_search.search(
+        query=None,
+        seller_id="u_seller",
+        include_unpublished=True,
+        status_in=["review"],
+        limit=10,
+    )
+    statuses = {li["status"] for li in results}
+    assert statuses == {"review"}, (
+        "status_in must filter BEFORE the limit slice — otherwise the "
+        "review row is lost to the 30 published rows ahead of it."
+    )
+    slugs = {li["slug"] for li in results}
+    assert "review-row" in slugs
+
+
+@pytest.mark.asyncio
+async def test_seller_scoped_bypasses_cache(monkeypatch):
+    """A seller's own newly-submitted listing appears immediately on the
+    next call, even if the snapshot cache was warmed before the write.
+
+    Regression for the cache-stale read-your-writes bug: the publish
+    wizard's "View my listings →" CTA could surface a 60-second-stale
+    snapshot, hiding a row the seller just submitted. The fix is to
+    bypass the module-level cache when the caller is seller-scoped AND
+    has opted into ``include_unpublished``. PR #567 Codex P2.
+    """
+    # Start clean — autouse _reset_cache fixture also runs, but be explicit.
+    marketplace_search._reset_cache()
+
+    initial = [
+        {
+            "listing_id": "l_pub",
+            "slug": "pub",
+            "name": "Pub",
+            "status": "published",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-01",
+            "published_at": "2026-05-01",
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-01",
+        },
+    ]
+    after_write = initial + [
+        {
+            "listing_id": "l_review",
+            "slug": "rev",
+            "name": "Rev",
+            "status": "review",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "created_at": "2026-05-02",
+            "published_at": None,
+            "price_cents": 0,
+            "install_count": 0,
+            "manifest_json": {},
+            "updated_at": "2026-05-02",
+        },
+    ]
+
+    table = MagicMock()
+    # First scan: warms the public cache with the initial set.
+    # Second scan: simulates the seller having submitted between calls;
+    # this should be hit by the cache-bypass branch (NOT _get_snapshot,
+    # which would return the cached `initial` set).
+    table.scan.side_effect = [
+        {"Items": list(initial)},
+        {"Items": list(after_write)},
+    ]
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    # Warm the public cache via a default search (no seller_id, no flag).
+    public = await marketplace_search.search()
+    public_slugs = {li["slug"] for li in public}
+    assert public_slugs == {"pub"}, "sanity: cache warmed with the initial published set"
+    assert table.scan.call_count == 1
+
+    # Seller-scoped read MUST bypass the cache and surface the new review row.
+    items = await marketplace_search.search(
+        seller_id="u_seller", include_unpublished=True
+    )
+    slugs = {item["slug"] for item in items}
+    assert "rev" in slugs, (
+        "seller-scoped read must bypass cache to surface own writes — "
+        "otherwise the publish wizard's 'View my listings' CTA shows a "
+        "stale 60s snapshot."
+    )
+    # Bypass branch must have actually issued a fresh scan.
+    assert table.scan.call_count == 2
+
+    # The bypass must NOT pollute the cache: a follow-up public read should
+    # still see the originally-cached snapshot (no third scan).
+    public_again = await marketplace_search.search()
+    public_again_slugs = {li["slug"] for li in public_again}
+    assert public_again_slugs == {"pub"}, (
+        "cache-bypass branch must not write its scan into _CACHE — the "
+        "public path stays bounded by the 60s TTL."
+    )
+    assert table.scan.call_count == 2, (
+        "public reads after a bypass must hit the warm cache, not re-scan"
+    )

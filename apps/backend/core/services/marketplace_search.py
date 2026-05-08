@@ -5,19 +5,30 @@ users) the listing count is small enough that a TTL-cached table scan +
 Python tokenized scoring beats running an external SaaS search index.
 
 Behavior:
-  * Snapshot of all `published`-status listings is held in a module-level
-    cache and refreshed every 60s (or when empty). Refresh is a single DDB
-    scan with FilterExpression status='published' — fine for <5000 listings.
+  * Snapshot of all listings (every status) is held in a module-level cache
+    and refreshed every 60s (or when empty). Refresh is a single unfiltered
+    DDB scan — fine for <5000 listings. The in-Python `status == 'published'`
+    filter inside search() is the load-bearing public-vs-seller gate, which
+    lets include_unpublished=True actually surface drafts to seller-scoped
+    callers.
   * search() filters/scores the cached snapshot in Python and returns the
-    top `limit` hits.
-  * Scoring (per-token, additive): exact slug = 50, exact tag = 30,
-    substring in name = 20, substring in description_md = 5. Zero-score
-    listings are dropped. Sort is by score desc, then published_at desc.
+    top `limit` hits. Scoring (per-token, additive): exact slug = 50, exact
+    tag = 30, substring in name = 20, substring in description_md = 5.
+    Zero-score listings are dropped. Sort is by score desc, then
+    published_at desc.
 
 The cache is intentionally process-local. Each backend Fargate task warms
 its own copy on first request; with the 60s TTL, drift between tasks is
-bounded. No invalidation hook on publish — the next request after TTL
-expiry picks up the new listing.
+bounded. No invalidation hook on publish — the next public request after
+TTL expiry picks up the new listing.
+
+Seller-scoped reads (``seller_id`` set + ``include_unpublished=True``)
+bypass the cache and do a fresh DDB scan. This gives sellers
+read-your-writes semantics: a listing newly created/submitted via the
+Publish wizard is visible immediately on the next "My Listings" call,
+instead of being shadowed by a stale 60s snapshot. The bypass is keyed on
+``include_unpublished`` so the higher-traffic public path keeps cache
+amplification protection.
 """
 
 import time
@@ -45,16 +56,20 @@ def _reset_cache() -> None:
     _CACHE_TIMESTAMP = 0.0
 
 
-def _refresh_cache() -> list[dict[str, Any]]:
-    """Scan all published listings into the module-level cache."""
-    global _CACHE, _CACHE_TIMESTAMP
+def _scan_listings_table() -> list[dict[str, Any]]:
+    """Unfiltered paginated scan of the listings table.
+
+    Used by both ``_refresh_cache()`` (which stores the result in the
+    module-level cache) and the cache-bypass branch in ``search()`` for
+    seller-scoped reads. No FilterExpression is applied — the in-Python
+    `status == "published"` gate inside search() is what enforces the
+    public-vs-seller split. Filtering at the DDB layer would silently drop
+    draft/review/retired/taken_down rows before include_unpublished=True
+    could ever surface them.
+    """
     table = _listings_table()
     items: list[dict[str, Any]] = []
-    scan_kwargs: dict[str, Any] = {
-        "FilterExpression": "#s = :pub",
-        "ExpressionAttributeNames": {"#s": "status"},
-        "ExpressionAttributeValues": {":pub": "published"},
-    }
+    scan_kwargs: dict[str, Any] = {}
     while True:
         resp = table.scan(**scan_kwargs)
         items.extend(resp.get("Items", []))
@@ -62,6 +77,17 @@ def _refresh_cache() -> list[dict[str, Any]]:
         if not last:
             break
         scan_kwargs["ExclusiveStartKey"] = last
+    return items
+
+
+def _refresh_cache() -> list[dict[str, Any]]:
+    """Scan all listings (every status) into the module-level cache.
+
+    Delegates the scan to ``_scan_listings_table()`` so the same paginated
+    read path is shared with the cache-bypass branch in ``search()``.
+    """
+    global _CACHE, _CACHE_TIMESTAMP
+    items = _scan_listings_table()
     _CACHE = items
     _CACHE_TIMESTAMP = time.time()
     return items
@@ -108,10 +134,13 @@ def _published_at_key(listing: dict[str, Any]) -> str:
 
 async def search(
     *,
-    query: str | None,
+    query: str | None = None,
     format: str | None = None,
     limit: int = 24,
     seller_id: str | None = None,
+    category: str | None = None,
+    include_unpublished: bool = False,
+    status_in: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Search the cached published-listing snapshot.
 
@@ -123,19 +152,67 @@ async def search(
         seller_id: Optional Clerk user_id filter. The chat sidebar's
             featured-listings endpoint passes the curator's user_id here
             so the gallery only shows admin@isol8.co's published agents.
+        category: Optional category filter (e.g., "operations", "sales").
+            Compared case-insensitively against the listing's "category"
+            field. Drives the Browse view's category-chip filtering.
+        include_unpublished: If True, return draft/review/retired/taken_down
+            rows in addition to published. Caller must enforce auth (only
+            seller-scoped reads should set this — the marketplace drawer's
+            "My Listings" view passes seller_id=<self> + include_unpublished
+            so a seller can see their own drafts). Default False = the
+            public search semantics.
+        status_in: Optional explicit status whitelist (e.g., ["review"]).
+            Applied BEFORE the limit slice so seller-scoped reads with a
+            narrow status filter aren't lost when the snapshot has many
+            published rows ahead of the matching ones. Honored regardless
+            of include_unpublished — but in practice only seller-scoped
+            callers pass it, since the public path filters to "published"
+            anyway.
 
     Returns:
         Plain listing dicts (caller threads through Pydantic).
-    """
-    snapshot = _get_snapshot()
 
-    # Defense-in-depth: even though the scan filters to published, re-check
-    # in Python so a stale cache or scan drift can't leak drafts.
-    candidates = [li for li in snapshot if li.get("status") == "published"]
+    Cache behavior:
+        Public reads use a module-level 60s cache. Seller-scoped reads
+        with ``include_unpublished=True`` bypass the cache and do a fresh
+        DDB scan, so a seller sees their own newly-submitted listings
+        immediately after the wizard's submit chain completes. Without
+        the bypass, the publish→"View my listings" CTA could surface a
+        stale snapshot for up to 60s.
+    """
+    if include_unpublished and seller_id:
+        # Read-your-writes for seller-scoped reads: skip the public
+        # snapshot cache and re-scan. Same paginated read path as
+        # _refresh_cache() but the result is NOT written into _CACHE,
+        # so a subsequent public request still sees the cached snapshot
+        # (drift bounded by TTL as documented at module level).
+        snapshot = _scan_listings_table()
+    else:
+        snapshot = _get_snapshot()
+
+    if include_unpublished:
+        # Caller has opted into seeing all statuses (seller-scoped reads).
+        # Auth enforcement is the caller's responsibility.
+        candidates = list(snapshot)
+    else:
+        # The cache holds every status (the DDB scan is unfiltered) — this
+        # in-Python check is the load-bearing public-vs-seller gate that
+        # keeps drafts/review/retired/taken_down out of public reads.
+        candidates = [li for li in snapshot if li.get("status") == "published"]
     if format:
         candidates = [li for li in candidates if li.get("format") == format]
     if seller_id:
         candidates = [li for li in candidates if li.get("seller_id") == seller_id]
+    if category:
+        cat_lower = category.lower()
+        candidates = [li for li in candidates if str(li.get("category", "")).lower() == cat_lower]
+    if status_in:
+        # Run BEFORE the limit slice — otherwise a seller with >limit rows
+        # in unrelated statuses ahead of the matching ones loses them to
+        # the limit cut. See PR #567 review (Codex P2).
+        wanted = {s for s in status_in if s}
+        if wanted:
+            candidates = [li for li in candidates if li.get("status") in wanted]
 
     tokens = [t.lower() for t in (query or "").split() if t]
     if not tokens:

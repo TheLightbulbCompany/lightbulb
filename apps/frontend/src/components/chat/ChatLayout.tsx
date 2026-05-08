@@ -24,6 +24,8 @@ import { FileViewer } from "@/components/chat/FileViewer";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/components/chat/AgentDialogs";
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { myListings } from "@/lib/marketplace/api";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -63,7 +65,7 @@ export function ChatLayout({
   // user who was always meant to be an org member. The state machine +
   // the router.replace / setActive side effects live in the hook.
   const onboardingPhase = useOnboardingGate();
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, getToken } = useAuth();
   const { user } = useUser();
   const { organization } = useOrganization();
   const router = useRouter();
@@ -93,6 +95,7 @@ export function ChatLayout({
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
+  const [publishedAgentIds, setPublishedAgentIds] = useState<Set<string>>(new Set());
 
   // TODO: wire to real approvals count when /teams/approvals BFF lands
   const approvalsCount = 0;
@@ -184,6 +187,48 @@ export function ChatLayout({
       clearTimeout(giveUpTimer);
     };
   }, [pollingForWebhook, isSubscribed, refreshBilling]);
+
+  // Marketplace drawer: when a hire completes, the provider sets
+  // `freshlyInstalledAgentId` so the matching sidebar row plays the
+  // `slideIn` animation. Clear the flag after the animation has had time
+  // to finish so the class isn't reapplied on subsequent renders.
+  const { state: drawerState, setFreshlyInstalled } = useMarketplaceDrawer();
+
+  useEffect(() => {
+    if (!drawerState.freshlyInstalledAgentId) return;
+    const handle = setTimeout(() => setFreshlyInstalled(null), 600);
+    return () => clearTimeout(handle);
+  }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
+
+  // Fetch the seller's listings so we can render a gold pub-dot on the
+  // sidebar avatar of agents the user has published. Cross-references
+  // listing.manifest_json.agent_id (source agent at publish time) with the
+  // current installed agent set. Best-effort — failure drops the badge
+  // silently rather than breaking the chat shell.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!user?.id) return;
+      const jwt = await getToken();
+      if (!jwt) return;
+      try {
+        const r = await myListings({ sellerId: user.id, jwt });
+        if (!alive) return;
+        const ids = new Set<string>();
+        for (const listing of r.items) {
+          const sourceAgentId = (listing as unknown as { manifest_json?: { agent_id?: string } })
+            .manifest_json?.agent_id;
+          if (sourceAgentId) ids.add(sourceAgentId);
+        }
+        setPublishedAgentIds(ids);
+      } catch {
+        // best effort — drop silently (no badge)
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [user?.id, getToken]);
 
   function handleSelectAgent(agentId: string): void {
     capture("agent_selected", { agent_id: agentId });
@@ -301,14 +346,24 @@ export function ChatLayout({
                 </div>
                 {agents.map((agent) => {
                   const isDefault = agent.id === defaultId;
+                  const isNewArrival = drawerState.freshlyInstalledAgentId === agent.id;
                   const displayAgent = fromInstalledAgent(agent);
                   return (
                     <div
                       key={agent.id}
-                      className={`agent-item${currentAgentId === agent.id ? " active" : ""}`}
+                      className={`agent-item${currentAgentId === agent.id ? " active" : ""}${isNewArrival ? " new-arrival" : ""}`}
                       onClick={() => handleSelectAgent(agent.id)}
                     >
-                      <Monogram agent={displayAgent} size={28} radius={8} />
+                      <span className="relative inline-flex">
+                        <Monogram agent={displayAgent} size={28} radius={8} />
+                        {publishedAgentIds.has(agent.id) && (
+                          <span
+                            className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#c2a378] border-2 border-[#faf7f2]"
+                            aria-label="Published to marketplace"
+                            title="Published to marketplace"
+                          />
+                        )}
+                      </span>
                       <div className="agent-info">
                         <div className="agent-name">{agentDisplayName(agent)}</div>
                         {(() => {
@@ -350,23 +405,10 @@ export function ChatLayout({
                 })}
               </div>
 
-              {/* Agent catalog gallery — renders below the user's agents.
-                  useCatalog filters out already-deployed templates, so this
-                  section auto-hides once a user has deployed every template
-                  (and never renders while the catalog/deployed fetches are
-                  still in flight). On successful deploy we refresh the agent
-                  list and auto-select the newly deployed agent. */}
-              <GallerySection
-                onAgentDeployed={(result) => {
-                  // No toast library is wired up in the frontend yet, so we
-                  // just log + rely on the auto-select below to give the user
-                  // visible feedback that the deploy landed.
-                  console.log("[catalog deploy]", result);
-                  setUserSelectedId(result.agent_id);
-                  dispatchSelectAgentEvent(result.agent_id);
-                  setSidebarOpen(false);
-                }}
-              />
+              {/* Marketplace block — Browse + Publish buttons that open the
+                  MarketplaceDrawer. The drawer (mounted on the chat page) owns
+                  the install + auto-select flow now. */}
+              <GallerySection />
             </>
           ) : (
             <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />

@@ -4,16 +4,12 @@ import { useCallback, useMemo } from "react";
 import { useApi } from "@/lib/api";
 
 /**
- * Source of the chat sidebar's "From the marketplace" gallery.
+ * Marketplace catalog data source for the drawer.
  *
- * Reads ``/marketplace/featured-listings`` (curator's published listings —
- * admin@isol8.co treated as a regular seller, no special flag) and
- * ``/marketplace/me/installed-templates`` (this user's installed templates,
- * derived from EFS .template sidecars), then renders the difference.
- *
- * Replaces the old admin-catalog ``/catalog`` endpoints. The hook + return
- * shape are unchanged so consumers (GallerySection, AgentDetailPanel) don't
- * need to change.
+ * Reads ``/marketplace/featured-listings`` and
+ * ``/marketplace/me/installed-templates``, exposes the difference as
+ * ``agents`` plus a ``deploy(slug)`` mutation. Consumed by the drawer's
+ * BrowseView and the useHire deploy flow.
  */
 
 export interface CatalogAgent {
@@ -120,5 +116,6 @@ export function useCatalog() {
     isLoading: !featuredData || !installedData,
     deploy,
     refresh: () => Promise.all([mutateFeatured(), mutateInstalled()]),
+    installedSlugs,
   };
 }

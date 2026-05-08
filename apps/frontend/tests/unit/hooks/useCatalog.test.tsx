@@ -82,6 +82,28 @@ describe("useCatalog", () => {
     expect(result.current.agents[0].slug).toBe("echo");
   });
 
+  it("exposes installedSlugs as a Set of template_slug values", async () => {
+    mockGet.mockImplementation((path: string) => {
+      if (path === FEATURED) return Promise.resolve({ items: [] });
+      if (path === INSTALLED) {
+        return Promise.resolve({
+          installed: [
+            { agent_id: "a1", template_slug: "pitch", template_version: 3 },
+            { agent_id: "a2", template_slug: "pulse", template_version: 1 },
+          ],
+        });
+      }
+      throw new Error();
+    });
+
+    const { result } = renderHook(() => useCatalog(), { wrapper });
+    await waitFor(() => expect(result.current.installedSlugs).toBeDefined());
+    expect(result.current.installedSlugs).toBeInstanceOf(Set);
+    expect(result.current.installedSlugs.has("pitch")).toBe(true);
+    expect(result.current.installedSlugs.has("pulse")).toBe(true);
+    expect(result.current.installedSlugs.has("missing")).toBe(false);
+  });
+
   it("deploy() POSTs the marketplace deploy URL and revalidates", async () => {
     mockGet.mockImplementation((path: string) => {
       if (path === FEATURED) return Promise.resolve({ items: [] });

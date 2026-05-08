@@ -73,8 +73,12 @@ type FetchResult =
  * first minute, then 30s. `refresh()` resets to 5s and re-polls
  * immediately. Without the slow phase, a member whose admin never
  * provisions would hammer /container/status indefinitely (720 req/hour).
- * `needs-signup` does not auto-poll — the next state change comes from
- * the user clicking a picker card and being redirected to Stripe.
+ * `needs-signup` polls on the same cadence as `blocked` / `team-pending`
+ * so a user returning from Stripe Checkout before the
+ * customer.subscription.created webhook lands doesn't get stuck on a
+ * stale picker. The gate briefly returns 404 in that window
+ * (status=None on the billing row), and only revalidation will pick
+ * up the eventual transition to `normal`.
  */
 export function useProvisioningState(): ProvisioningStateResult {
   const { isSignedIn, getToken } = useAuth();
@@ -163,13 +167,20 @@ export function useProvisioningState(): ProvisioningStateResult {
     fetcher,
     {
       revalidateOnFocus: false,
-      // Function form lets SWR pass the latest data. While in either
-      // `blocked` or `team-pending`, fast-poll for the first minute
-      // (`slowAfterGen < pendingGen` means the 60s timer hasn't fired
-      // yet for the current generation), then drop to 30s. Avoids
-      // referencing `data` in this options block (it isn't in scope yet).
+      // Function form lets SWR pass the latest data. While in any
+      // pending state (blocked / team-pending / needs-signup),
+      // fast-poll for the first minute (`slowAfterGen < pendingGen`
+      // means the 60s timer hasn't fired yet for the current
+      // generation), then drop to 30s. needs-signup polls so a user
+      // returning from Stripe before the subscription webhook lands
+      // doesn't get stuck on a stale picker. Avoids referencing `data`
+      // in this options block (it isn't in scope yet).
       refreshInterval: (latest) => {
-        if (latest?.kind === "blocked" || latest?.kind === "team-pending") {
+        if (
+          latest?.kind === "blocked" ||
+          latest?.kind === "team-pending" ||
+          latest?.kind === "needs-signup"
+        ) {
           return slowAfterGen < pendingGen ? 5_000 : 30_000;
         }
         return 0;
@@ -189,7 +200,10 @@ export function useProvisioningState(): ProvisioningStateResult {
   // Codex P2 on PR #519: the previous `[isBlocked]`-only effect never
   // re-fired on subsequent refreshes, so a manual refresh after the
   // first minute could leave polling stuck at 5s indefinitely.
-  const isPending = data?.kind === "blocked" || data?.kind === "team-pending";
+  const isPending =
+    data?.kind === "blocked" ||
+    data?.kind === "team-pending" ||
+    data?.kind === "needs-signup";
   const [prevIsPending, setPrevIsPending] = useState(false);
   if (isPending !== prevIsPending) {
     // setState-during-render is the React-recommended way to derive a
@@ -239,10 +253,11 @@ export function useProvisioningState(): ProvisioningStateResult {
     };
   }
   if (data.kind === "needs-signup") {
-    // No auto-poll. The user must click a picker card to advance —
-    // that fires POST /billing/trial-checkout and redirects to Stripe;
-    // SWR re-fetches when they return.
-    return { phase: "needs-signup", container: null, blocked: null, refreshInterval: 0, refresh };
+    // Polls on the same cadence as blocked/team-pending so a user
+    // returning from Stripe Checkout before customer.subscription.created
+    // fires (which flips status from None to "trialing"/"active") gets
+    // picked up automatically rather than stuck on a stale picker.
+    return { phase: "needs-signup", container: null, blocked: null, refreshInterval, refresh };
   }
   return { phase: "blocked", container: null, blocked: data.data, refreshInterval, refresh };
 }

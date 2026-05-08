@@ -113,8 +113,10 @@ describe("useProvisioningState", () => {
     await waitFor(() => expect(result.current.phase).toBe("needs-signup"));
     expect(result.current.container).toBeNull();
     expect(result.current.blocked).toBeNull();
-    // No auto-poll — user advances by clicking a picker card.
-    expect(result.current.refreshInterval).toBe(0);
+    // Polls on same cadence as blocked/team-pending so a user
+    // returning from Stripe before the subscription webhook lands
+    // doesn't get stuck on a stale picker (Codex P1 round 3 on PR #570).
+    expect(result.current.refreshInterval).toBe(5_000);
   });
 
   it("returns phase=team-pending when /status returns 202 (org member, admin-owned workspace not yet provisioned)", async () => {

@@ -16,7 +16,7 @@ async def test_background_provision_resolves_provider_and_dispatches():
     fake_ecs.provision_user_container = AsyncMock(return_value="svc-name")
     with (
         patch(
-            "core.services.container_provision._resolve_provider_choice",
+            "core.services.container_provision.resolve_provider_choice",
             new=AsyncMock(return_value=("bedrock_claude", None)),
         ),
         patch(
@@ -41,7 +41,7 @@ async def test_background_provision_swallows_exceptions():
     fake_ecs.provision_user_container = AsyncMock(side_effect=RuntimeError("boom"))
     with (
         patch(
-            "core.services.container_provision._resolve_provider_choice",
+            "core.services.container_provision.resolve_provider_choice",
             new=AsyncMock(return_value=("bedrock_claude", None)),
         ),
         patch(

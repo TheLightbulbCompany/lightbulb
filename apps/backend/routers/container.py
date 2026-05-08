@@ -17,7 +17,7 @@ from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
 from core.services.container_provision import (
-    _resolve_provider_choice,
+    resolve_provider_choice as _resolve_provider_choice,
     background_provision as _background_provision,
 )
 from core.services.provision_gate import evaluate_provision_gate

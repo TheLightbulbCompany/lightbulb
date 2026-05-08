@@ -41,173 +41,34 @@ def _svix_headers() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_organization_created_calls_provision_org(async_client, monkeypatch):
-    """``organization.created`` should drive ``PaperclipProvisioning.provision_org``
-    with the right kwargs, sourcing owner_email from the users repo."""
-    _bypass_svix(monkeypatch)
-
-    mock_provisioning = AsyncMock()
-    mock_provisioning.provision_org = AsyncMock(return_value=None)
-
-    payload = {
-        "type": "organization.created",
-        "data": {
-            "id": "org_acme",
-            "created_by": "user_owner",
-        },
-    }
+async def test_organization_created_does_not_provision():
+    """After consolidation (Task 6), the webhook is record-keeping only.
+    Should NOT call build_paperclip_provisioning, provision_org, or
+    _enqueue_paperclip_retry. Provisioning fires from
+    /container/status (Task 8) when readiness is satisfied.
+    """
+    from routers.webhooks import _handle_organization_created
 
     with (
+        patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
         patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
+            "routers.webhooks._enqueue_paperclip_retry",
+            new=AsyncMock(),
+        ) as mock_retry,
         patch(
             "core.repositories.user_repo.get",
             new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
         ),
     ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
+        await _handle_organization_created(
+            {
+                "id": "org_acme",
+                "created_by": "user_owner",
+            }
         )
 
-    assert resp.status_code == 200
-    mock_provisioning.provision_org.assert_awaited_once_with(
-        owner_id="org_acme",
-        owner_user_id="user_owner",
-        owner_email="owner@acme.test",
-    )
-
-
-@pytest.mark.asyncio
-async def test_organization_created_retryable_failure_enqueues(async_client, monkeypatch):
-    """5xx during provision_org should enqueue a pending-updates retry row
-    AND return 200 (we own retries from this point).
-    """
-    _bypass_svix(monkeypatch)
-
-    err = PaperclipApiError("server-down", 503, "")
-    mock_provisioning = AsyncMock()
-    mock_provisioning.provision_org = AsyncMock(side_effect=err)
-
-    captured_create = AsyncMock(return_value={"update_id": "upd_1"})
-
-    payload = {
-        "type": "organization.created",
-        "data": {"id": "org_acme", "created_by": "user_owner"},
-    }
-
-    with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    mock_provisioning.provision_org.assert_awaited_once()
-    captured_create.assert_awaited_once()
-    kwargs = captured_create.call_args.kwargs
-    assert kwargs["owner_id"] == "user_owner"
-    assert kwargs["update_type"] == "paperclip_provision"
-    assert kwargs["changes"]["op"] == "provision_org"
-    assert kwargs["changes"]["org_id"] == "org_acme"
-    assert kwargs["changes"]["owner_user_id"] == "user_owner"
-    assert kwargs["changes"]["owner_email"] == "owner@acme.test"
-
-
-@pytest.mark.asyncio
-async def test_organization_created_non_retryable_does_not_enqueue(async_client, monkeypatch):
-    """4xx (non-429) should NOT enqueue a retry — that error won't fix itself.
-
-    We still return 200 to Clerk because the webhook delivery itself
-    is fine; the failure is in our downstream call, and Clerk retries
-    would just hit the same 4xx.
-    """
-    _bypass_svix(monkeypatch)
-
-    err = PaperclipApiError("dup-email", 409, "")
-    mock_provisioning = AsyncMock()
-    mock_provisioning.provision_org = AsyncMock(side_effect=err)
-    captured_create = AsyncMock()
-
-    payload = {
-        "type": "organization.created",
-        "data": {"id": "org_acme", "created_by": "user_owner"},
-    }
-
-    with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    captured_create.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_organization_created_missing_owner_email_omits_blank_in_retry(async_client, monkeypatch):
-    """F2: When ``user_repo.get`` returns no email for the owner (the
-    user.created webhook hasn't landed yet), the retry payload MUST NOT
-    include ``owner_email`` at all — not even as ``""``. The retry pass
-    re-resolves it from ``user_repo`` at replay time.
-    """
-    _bypass_svix(monkeypatch)
-
-    captured_create = AsyncMock(return_value={"update_id": "upd_blank"})
-
-    payload = {
-        "type": "organization.created",
-        "data": {"id": "org_pending", "created_by": "user_pending"},
-    }
-
-    # No row yet for the owner -> _lookup_owner_email returns None.
-    with (
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value=None),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    captured_create.assert_awaited_once()
-    kwargs = captured_create.call_args.kwargs
-    changes = kwargs["changes"]
-    assert changes["op"] == "provision_org"
-    assert changes["org_id"] == "org_pending"
-    assert changes["owner_user_id"] == "user_pending"
-    # The whole point of F2: do NOT persist a blank email.
-    assert "owner_email" not in changes
+    mock_factory.assert_not_called()
+    mock_retry.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------
@@ -722,9 +583,12 @@ async def test_user_created_persist_failure_is_non_fatal(async_client, monkeypat
 @pytest.mark.asyncio
 async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     """Two retries from svix on the same Clerk event must NOT both
-    drive ``provision_org`` — the second 409s with email-collision and
-    marks the row failed forever. Verify the second delivery returns
+    drive ``provision_member`` — Verify the second delivery returns
     early without invoking the provisioning factory.
+
+    Uses ``organizationMembership.created`` because
+    ``organization.created`` no longer drives provisioning after
+    Task 6 (it became record-keeping only).
     """
     _bypass_svix(monkeypatch)
 
@@ -744,12 +608,19 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     )
 
     mock_provisioning = AsyncMock()
-    mock_provisioning.provision_org = AsyncMock(return_value=None)
+    mock_provisioning.provision_member = AsyncMock(return_value=None)
     factory = AsyncMock(return_value=mock_provisioning)
 
     payload = {
-        "type": "organization.created",
-        "data": {"id": "org_acme", "created_by": "user_owner"},
+        "type": "organizationMembership.created",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme", "created_by": "user_owner"},
+            "public_user_data": {
+                "user_id": "user_member",
+                "identifier": "member@acme.test",
+            },
+        },
     }
 
     with (
@@ -773,7 +644,7 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     assert resp1.status_code == 200
     assert resp2.status_code == 200
     # Provisioning ran exactly once across both retries.
-    mock_provisioning.provision_org.assert_awaited_once()
+    mock_provisioning.provision_member.assert_awaited_once()
 
 
 @pytest.mark.asyncio

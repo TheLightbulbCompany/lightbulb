@@ -262,65 +262,25 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
 
 
 async def _handle_organization_created(data: dict) -> None:
-    """Provision a Paperclip company for the newly-created Clerk org."""
+    """Persist any org metadata we want to track from the create event.
+
+    Provisioning is intentionally NOT done here — at org creation
+    time the readiness gate is up (no subscription, no provider
+    chosen) and provisioning Paperclip without a container is the
+    half-state we're eliminating. Provisioning fires from the
+    canonical GET /container/status trigger (Task 8) once readiness
+    is satisfied.
+    """
     org_id = data.get("id", "")
     owner_user_id = data.get("created_by", "")
     if not org_id or not owner_user_id:
         logger.warning("Clerk organization.created missing id/created_by: %s", data)
         return
-
-    # Owner email isn't on the organization payload — we fetch it from
-    # the users repo (populated by user.created earlier in the lifecycle).
-    owner_email = await _lookup_owner_email(org_id=org_id, fallback_user_id=owner_user_id)
-    if not owner_email:
-        logger.warning(
-            "organization.created: no email for owner %s; enqueueing retry",
-            owner_user_id,
-        )
-        # Omit ``owner_email`` entirely (rather than writing ``""``) — the
-        # retry pass re-resolves it from ``user_repo`` at replay time.
-        # Persisting an empty string here would mislead any operator
-        # eyeballing the row and tempt callers to skip the lookup.
-        await _enqueue_paperclip_retry(
-            op="provision_org",
-            payload={"org_id": org_id, "owner_user_id": owner_user_id},
-            owner_id=owner_user_id,
-        )
-        return
-
-    provisioning = await build_paperclip_provisioning()
-    try:
-        await provisioning.provision_org(
-            owner_id=org_id,
-            owner_user_id=owner_user_id,
-            owner_email=owner_email,
-        )
-        put_metric("paperclip.webhook.provision_org", dimensions={"result": "ok"})
-    except Exception as e:
-        retryable = _is_retryable(e)
-        put_metric(
-            "paperclip.webhook.provision_org",
-            dimensions={"result": "retryable" if retryable else "error"},
-        )
-        logger.warning(
-            "provision_org failed for org=%s owner=%s retryable=%s err=%s",
-            org_id,
-            owner_user_id,
-            retryable,
-            e,
-        )
-        if retryable:
-            await _enqueue_paperclip_retry(
-                op="provision_org",
-                payload={
-                    "org_id": org_id,
-                    "owner_user_id": owner_user_id,
-                    "owner_email": owner_email,
-                },
-                owner_id=owner_user_id,
-            )
-    finally:
-        await close_paperclip_provisioning(provisioning)
+    logger.info(
+        "organization.created: org=%s owner=%s recorded",
+        org_id,
+        owner_user_id,
+    )
 
 
 async def _handle_organization_membership_created(data: dict) -> None:

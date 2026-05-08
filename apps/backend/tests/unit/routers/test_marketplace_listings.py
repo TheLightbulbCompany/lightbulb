@@ -10,6 +10,8 @@ import pytest  # noqa: E402
 from botocore.exceptions import ClientError  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from core.auth import AuthContext  # noqa: E402
+
 
 @pytest.fixture
 def unauth_client():
@@ -58,7 +60,13 @@ def test_search_endpoint_passes_through_to_service(mock_search, unauth_client):
     assert resp.status_code == 200
     body = resp.json()
     assert body == {"items": [{"slug": "foo", "name": "Foo"}]}
-    mock_search.assert_called_once_with(query="foo", format="openclaw", limit=10)
+    mock_search.assert_called_once_with(
+        query="foo",
+        format="openclaw",
+        limit=10,
+        seller_id=None,
+        include_unpublished=False,
+    )
     # Cache header is set so CloudFront / browser respect the snapshot TTL.
     assert resp.headers["Cache-Control"] == "public, max-age=60"
 
@@ -69,7 +77,13 @@ def test_search_endpoint_works_without_query(mock_search, unauth_client):
     resp = unauth_client.get("/api/v1/marketplace/listings/search")
     assert resp.status_code == 200
     assert resp.json() == {"items": []}
-    mock_search.assert_called_once_with(query=None, format=None, limit=24)
+    mock_search.assert_called_once_with(
+        query=None,
+        format=None,
+        limit=24,
+        seller_id=None,
+        include_unpublished=False,
+    )
 
 
 def test_search_endpoint_rejects_invalid_format(unauth_client):
@@ -488,3 +502,160 @@ def test_entitlement_check_uses_listing_gsi(mock_get_by_slug, mock_get_catalog, 
     assert call_kwargs["ExpressionAttributeValues"] == {":l": "lst_1"}
     # Newest first so power buyers' newest purchase row is reached fast.
     assert call_kwargs["ScanIndexForward"] is False
+
+
+# ---------------------------------------------------------------------------
+# Seller-scoped search (drawer's "My Listings" tab) + /me/agents-summary
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def authed_client_factory(app):
+    """Yield a callable that returns a TestClient authenticated as a given user.
+
+    Mirrors the conftest-level ``client`` fixture pattern but lets the test
+    pin the authed user_id (and email) explicitly. The drawer endpoints
+    ``/listings/search?seller_id=…`` and ``/me/agents-summary`` derive
+    behaviour from the caller's identity, so test cases need to swap users
+    rather than always being ``user_test_123``.
+    """
+    from core.auth import get_current_user, get_optional_user
+
+    created: list[TestClient] = []
+
+    def _make(user_id: str, email: str | None = None) -> TestClient:
+        ctx = AuthContext(user_id=user_id, email=email)
+
+        async def _override():
+            return ctx
+
+        async def _override_optional():
+            return ctx
+
+        app.dependency_overrides[get_current_user] = _override
+        app.dependency_overrides[get_optional_user] = _override_optional
+        tc = TestClient(app)
+        created.append(tc)
+        return tc
+
+    try:
+        yield _make
+    finally:
+        app.dependency_overrides.clear()
+        for tc in created:
+            tc.close()
+
+
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_search_seller_scoped_with_status_in(mock_search, authed_client_factory):
+    """Authed seller can read their own listings across statuses."""
+    mock_search.return_value = [
+        {"listing_id": "l1", "status": "draft", "seller_id": "u_seller", "name": "A"},
+    ]
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/listings/search?seller_id=u_seller&status_in=draft,review,published")
+    assert resp.status_code == 200, resp.text
+    call_kwargs = mock_search.call_args.kwargs
+    assert call_kwargs["seller_id"] == "u_seller"
+    assert call_kwargs["include_unpublished"] is True
+
+
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_search_seller_scoped_rejects_other_users_unpublished(mock_search, authed_client_factory):
+    """status_in is ignored when seller_id != caller — enforces published-only semantics."""
+    mock_search.return_value = []
+    tc = authed_client_factory("u_attacker", "attacker@example.com")
+    resp = tc.get("/api/v1/marketplace/listings/search?seller_id=u_victim&status_in=draft")
+    assert resp.status_code == 200, resp.text
+    call_kwargs = mock_search.call_args.kwargs
+    assert call_kwargs["seller_id"] == "u_victim"
+    assert call_kwargs.get("include_unpublished", False) is False
+
+
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_search_anonymous_published_only(mock_search, unauth_client):
+    """No auth + no seller_id = today's behavior — include_unpublished stays False."""
+    mock_search.return_value = []
+    resp = unauth_client.get("/api/v1/marketplace/listings/search?format=openclaw&limit=5")
+    assert resp.status_code == 200
+    call_kwargs = mock_search.call_args.kwargs
+    assert call_kwargs["seller_id"] is None
+    assert call_kwargs["include_unpublished"] is False
+
+
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_search_seller_scoped_status_in_filters_results(mock_search, authed_client_factory):
+    """status_in narrows the result set to the requested statuses.
+
+    The router asks marketplace_search for include_unpublished=True (so the
+    snapshot returns every status the seller owns) and then post-filters in
+    Python by the comma-separated ``status_in`` whitelist. Anything outside
+    that whitelist must be dropped before the response — otherwise the
+    drawer's "Drafts" tab would show retired/taken_down rows when
+    status_in=draft is sent.
+    """
+    mock_search.return_value = [
+        {"listing_id": "l1", "status": "draft", "seller_id": "u_seller", "name": "A"},
+        {"listing_id": "l2", "status": "retired", "seller_id": "u_seller", "name": "B"},
+        {"listing_id": "l3", "status": "published", "seller_id": "u_seller", "name": "C"},
+    ]
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/listings/search?seller_id=u_seller&status_in=draft,published")
+    assert resp.status_code == 200, resp.text
+    statuses = {item["status"] for item in resp.json()["items"]}
+    assert statuses == {"draft", "published"}
+
+
+@patch("routers.marketplace_listings.get_workspace")
+def test_my_agents_summary_returns_per_agent_counts(mock_workspace_factory, authed_client_factory):
+    workspace = mock_workspace_factory.return_value
+    workspace.read_openclaw_config.return_value = {
+        "agents": {
+            "list": [
+                {
+                    "id": "agent_main",
+                    "identity": {"name": "main"},
+                    "skills": {"list": [{"name": "s1"}, {"name": "s2"}]},
+                    "channels": {"list": [{"name": "slack"}]},
+                },
+                {
+                    "id": "agent_pulse",
+                    "identity": {"name": "Pulse"},
+                    "skills": {"list": [{"name": "x"}, {"name": "y"}, {"name": "z"}]},
+                    "channels": {"list": []},
+                },
+            ]
+        }
+    }
+    workspace.read_cron_jobs.return_value = [
+        {"agent_id": "agent_pulse", "schedule": "0 9 * * *"},
+        {"agent_id": "agent_pulse", "schedule": "0 17 * * *"},
+        {"agent_id": "agent_main", "schedule": "*/5 * * * *"},
+    ]
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/me/agents-summary")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    by_id = {a["agent_id"]: a for a in body["agents"]}
+    assert by_id["agent_main"]["skill_count"] == 2
+    assert by_id["agent_main"]["channel_count"] == 1
+    assert by_id["agent_main"]["cron_count"] == 1
+    assert by_id["agent_pulse"]["skill_count"] == 3
+    assert by_id["agent_pulse"]["channel_count"] == 0
+    assert by_id["agent_pulse"]["cron_count"] == 2
+
+
+@patch("routers.marketplace_listings.get_workspace")
+def test_my_agents_summary_no_config_returns_empty(mock_workspace_factory, authed_client_factory):
+    workspace = mock_workspace_factory.return_value
+    workspace.read_openclaw_config.return_value = None
+    workspace.read_cron_jobs.return_value = []
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/me/agents-summary")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"agents": []}
+
+
+def test_my_agents_summary_unauthorized(unauth_client):
+    resp = unauth_client.get("/api/v1/marketplace/me/agents-summary")
+    assert resp.status_code in (401, 403)

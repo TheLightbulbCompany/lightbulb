@@ -14,8 +14,9 @@ import boto3
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, get_optional_user, resolve_owner_id
 from core.config import settings
+from core.containers import get_workspace
 from core.services import agent_export, curator, marketplace_search, marketplace_service
 from core.services.catalog_service import get_catalog_service
 from schemas import marketplace as schemas
@@ -70,18 +71,45 @@ def _has_valid_entitlement(*, buyer_id: str, listing_id: str) -> bool:
 @router.get("/listings/search")
 async def search_listings(
     response: Response,
+    auth: Annotated[AuthContext | None, Depends(get_optional_user)] = None,
     q: str | None = Query(default=None, description="Whitespace-tokenized query"),
     format: str | None = Query(default=None, pattern="^(openclaw|skillmd)$"),
     limit: int = Query(default=24, ge=1, le=100),
+    seller_id: str | None = Query(default=None),
+    status_in: str | None = Query(
+        default=None,
+        description=(
+            "Comma-separated statuses (draft,review,published,retired,taken_down)."
+            " Honored only when seller_id matches the calling user."
+        ),
+    ),
 ):
-    """Browse / search published listings.
+    """Browse / search listings.
+
+    Default behavior (anonymous or non-seller caller): returns
+    ``status='published'`` only. The chat drawer's My Listings tab calls
+    with ``seller_id=<own user_id>`` and an authed token to receive
+    its own draft/review/retired rows alongside published ones.
 
     Cached for 60s on the server (matches the search service's snapshot
     TTL) so CloudFront / browser caches don't outpace the underlying
     snapshot.
     """
     response.headers["Cache-Control"] = "public, max-age=60"
-    items = await marketplace_search.search(query=q, format=format, limit=limit)
+    include_unpublished = (
+        seller_id is not None and auth is not None and seller_id == auth.user_id and status_in is not None
+    )
+    items = await marketplace_search.search(
+        query=q,
+        format=format,
+        limit=limit,
+        seller_id=seller_id,
+        include_unpublished=include_unpublished,
+    )
+    if include_unpublished and status_in:
+        wanted = {s.strip() for s in status_in.split(",") if s.strip()}
+        if wanted:
+            items = [item for item in items if item.get("status") in wanted]
     return {"items": items}
 
 
@@ -134,6 +162,37 @@ async def my_installed_templates(
     """
     catalog_svc = get_catalog_service()
     return {"installed": catalog_svc.list_deployed_for_user(resolve_owner_id(auth))}
+
+
+@router.get("/me/agents-summary")
+async def my_agents_summary(auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Per-agent skill / channel / cron counts from the caller's
+    workspace ``openclaw.json``.
+
+    Drives the in-chat marketplace drawer's Publish wizard pick-card
+    sublines (Step 1) and the bundled-summary line in the review preview
+    (Step 4). Reads EFS directly via the workspace helper — no container
+    interaction required, so it returns instantly even when the caller's
+    container is stopped or scaled to zero.
+    """
+    owner_id = resolve_owner_id(auth)
+    workspace = get_workspace()
+    config = workspace.read_openclaw_config(owner_id) or {}
+    agents = (config.get("agents") or {}).get("list", []) or []
+    cron_jobs = workspace.read_cron_jobs(owner_id) or []
+    return {
+        "agents": [
+            {
+                "agent_id": a.get("id"),
+                "name": (a.get("identity") or {}).get("name") or a.get("id"),
+                "skill_count": len((a.get("skills") or {}).get("list", []) or []),
+                "channel_count": len((a.get("channels") or {}).get("list", []) or []),
+                "cron_count": sum(1 for c in cron_jobs if c.get("agent_id") == a.get("id")),
+            }
+            for a in agents
+            if a.get("id")
+        ],
+    }
 
 
 @router.get("/listings/{slug}")

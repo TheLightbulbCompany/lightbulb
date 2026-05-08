@@ -60,7 +60,10 @@ LISTINGS = [
     },
 ]
 
-# Items the scan should return when FilterExpression is status='published'.
+# The DDB scan is now unfiltered — it returns all rows regardless of status —
+# so the mock_table fixture seeds the full LISTINGS set including the draft.
+# The in-Python `status == "published"` gate in search() is what excludes the
+# draft from default reads.
 PUBLISHED_LISTINGS = [li for li in LISTINGS if li["status"] == "published"]
 
 
@@ -75,7 +78,7 @@ def _reset_cache():
 @pytest.fixture
 def mock_table():
     table = MagicMock()
-    table.scan.return_value = {"Items": list(PUBLISHED_LISTINGS)}
+    table.scan.return_value = {"Items": list(LISTINGS)}
     with patch("core.services.marketplace_search._listings_table", return_value=table):
         yield table
 
@@ -156,18 +159,27 @@ async def test_drops_zero_score_results(mock_table):
 
 
 @pytest.mark.asyncio
-async def test_drafts_excluded_via_filter_expression(mock_table):
-    # The scan call site must include FilterExpression for status='published'.
-    await marketplace_search.search(query=None)
-    kwargs = mock_table.scan.call_args.kwargs
-    assert "FilterExpression" in kwargs
-    # Defensive: also re-filter in Python in case scan returns extra rows.
-    # Add a stray draft to the scan response and confirm it's still dropped.
-    mock_table.scan.return_value = {"Items": list(LISTINGS)}  # includes draft-thing
-    marketplace_search._reset_cache()
+async def test_drafts_excluded_via_in_python_filter(mock_table):
+    """The in-Python status filter is the load-bearing public-vs-seller gate.
+
+    The scan deliberately does NOT carry a FilterExpression on status — that
+    used to silently drop draft rows before include_unpublished=True could
+    ever surface them. mock_table is now seeded with the full LISTINGS set
+    (including draft-thing), and the default search() must still exclude it.
+    """
     results = await marketplace_search.search(query=None)
     assert all(li["status"] == "published" for li in results)
     assert "draft-thing" not in [li["slug"] for li in results]
+
+    # Defense against regression: the scan must NOT filter on status at the
+    # DDB layer. If a FilterExpression is ever re-introduced it must not key
+    # on status — otherwise include_unpublished=True silently breaks.
+    kwargs = mock_table.scan.call_args.kwargs
+    if "FilterExpression" in kwargs:
+        assert "status" not in str(kwargs["FilterExpression"]).lower(), (
+            "scan must not filter on status — let the in-Python filter "
+            "handle public-only so include_unpublished=True works."
+        )
 
 
 @pytest.mark.asyncio
@@ -386,3 +398,120 @@ async def test_default_limit_is_24(mock_table):
 
     results = await marketplace_search.search(query=None)
     assert len(results) == 24
+
+
+@pytest.mark.asyncio
+async def test_draft_row_surfaces_to_seller_via_include_unpublished(monkeypatch):
+    """End-to-end: a draft row in the underlying scan response surfaces to a
+    seller-scoped include_unpublished=True call. Catches the bug where the
+    FilterExpression at scan time would silently drop drafts before the cache
+    fills.
+    """
+    table = MagicMock()
+    table.scan.return_value = {
+        "Items": [
+            {
+                "listing_id": "l_pub",
+                "slug": "pub",
+                "name": "Pub",
+                "status": "published",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-01",
+                "published_at": "2026-05-01",
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-01",
+            },
+            {
+                "listing_id": "l_draft",
+                "slug": "draft",
+                "name": "Draft",
+                "status": "draft",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-02",
+                "published_at": None,
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-02",
+            },
+        ],
+    }
+
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    items = await marketplace_search.search(query=None, seller_id="u_seller", include_unpublished=True)
+    slugs = {item["slug"] for item in items}
+    assert "draft" in slugs, "expected draft listing to surface for seller-scoped include_unpublished read"
+
+    # Verify the scan was called WITHOUT a FilterExpression keyed on status
+    scan_calls = table.scan.call_args_list
+    assert len(scan_calls) >= 1
+    for call in scan_calls:
+        kwargs = call.kwargs
+        # The FilterExpression should be absent (we dropped it) — defense against regression
+        if "FilterExpression" in kwargs:
+            assert "status" not in str(kwargs["FilterExpression"]).lower(), (
+                "scan should not filter on status — let the in-Python filter handle public-only"
+            )
+
+
+@pytest.mark.asyncio
+async def test_default_search_still_excludes_drafts_after_cache_change(monkeypatch):
+    """Defense-in-depth regression test: even though the cache now holds all
+    statuses, the default (no flag) search still returns published-only.
+    """
+    table = MagicMock()
+    table.scan.return_value = {
+        "Items": [
+            {
+                "listing_id": "l_pub",
+                "slug": "pub",
+                "name": "Pub",
+                "status": "published",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-01",
+                "published_at": "2026-05-01",
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-01",
+            },
+            {
+                "listing_id": "l_draft",
+                "slug": "draft",
+                "name": "Draft",
+                "status": "draft",
+                "seller_id": "u_seller",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                "created_at": "2026-05-02",
+                "published_at": None,
+                "price_cents": 0,
+                "install_count": 0,
+                "manifest_json": {},
+                "updated_at": "2026-05-02",
+            },
+        ],
+    }
+
+    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+
+    items = await marketplace_search.search(query=None)  # default — no flag
+    statuses = {item["status"] for item in items}
+    assert statuses == {"published"}, "default search must filter to published-only"

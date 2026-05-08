@@ -5,14 +5,17 @@ users) the listing count is small enough that a TTL-cached table scan +
 Python tokenized scoring beats running an external SaaS search index.
 
 Behavior:
-  * Snapshot of all `published`-status listings is held in a module-level
-    cache and refreshed every 60s (or when empty). Refresh is a single DDB
-    scan with FilterExpression status='published' — fine for <5000 listings.
+  * Snapshot of all listings (every status) is held in a module-level cache
+    and refreshed every 60s (or when empty). Refresh is a single unfiltered
+    DDB scan — fine for <5000 listings. The in-Python `status == 'published'`
+    filter inside search() is the load-bearing public-vs-seller gate, which
+    lets include_unpublished=True actually surface drafts to seller-scoped
+    callers.
   * search() filters/scores the cached snapshot in Python and returns the
-    top `limit` hits.
-  * Scoring (per-token, additive): exact slug = 50, exact tag = 30,
-    substring in name = 20, substring in description_md = 5. Zero-score
-    listings are dropped. Sort is by score desc, then published_at desc.
+    top `limit` hits. Scoring (per-token, additive): exact slug = 50, exact
+    tag = 30, substring in name = 20, substring in description_md = 5.
+    Zero-score listings are dropped. Sort is by score desc, then
+    published_at desc.
 
 The cache is intentionally process-local. Each backend Fargate task warms
 its own copy on first request; with the 60s TTL, drift between tasks is
@@ -46,15 +49,18 @@ def _reset_cache() -> None:
 
 
 def _refresh_cache() -> list[dict[str, Any]]:
-    """Scan all published listings into the module-level cache."""
+    """Scan all listings (every status) into the module-level cache.
+
+    No FilterExpression is applied at scan time — the in-Python
+    `status == "published"` gate inside search() is what enforces the
+    public-vs-seller split. Filtering at the DDB layer would silently drop
+    draft/review/retired/taken_down rows before include_unpublished=True
+    could ever surface them.
+    """
     global _CACHE, _CACHE_TIMESTAMP
     table = _listings_table()
     items: list[dict[str, Any]] = []
-    scan_kwargs: dict[str, Any] = {
-        "FilterExpression": "#s = :pub",
-        "ExpressionAttributeNames": {"#s": "status"},
-        "ExpressionAttributeValues": {":pub": "published"},
-    }
+    scan_kwargs: dict[str, Any] = {}
     while True:
         resp = table.scan(**scan_kwargs)
         items.extend(resp.get("Items", []))
@@ -141,8 +147,9 @@ async def search(
         # Auth enforcement is the caller's responsibility.
         candidates = list(snapshot)
     else:
-        # Defense-in-depth: even though the scan filters to published, re-check
-        # in Python so a stale cache or scan drift can't leak drafts.
+        # The cache holds every status (the DDB scan is unfiltered) — this
+        # in-Python check is the load-bearing public-vs-seller gate that
+        # keeps drafts/review/retired/taken_down out of public reads.
         candidates = [li for li in snapshot if li.get("status") == "published"]
     if format:
         candidates = [li for li in candidates if li.get("format") == format]

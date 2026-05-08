@@ -304,9 +304,11 @@ async def upload_artifact_from_agent(
     it as a CatalogPackage, and replaces the listing's artifact.
 
     Requires an active Isol8 subscription — without one the seller has no
-    container and no agents on EFS to publish.
+    container and no agents on EFS to publish. The billing row lives on
+    the owner_id (= org_id for org members), so resolve before lookup.
     """
-    account = await billing_repo.get_by_owner_id(auth.user_id)
+    owner_id = resolve_owner_id(auth)
+    account = await billing_repo.get_by_owner_id(owner_id)
     if not is_subscription_active(account):
         raise HTTPException(
             status_code=403,
@@ -353,8 +355,10 @@ async def seller_eligibility(auth: Annotated[AuthContext, Depends(get_current_us
 
     Cheap (single billing repo lookup); UI calls it on every mount so a
     user who subscribes mid-session sees the new option immediately.
+    Resolves to owner_id so org members read their org's billing row.
     """
-    account = await billing_repo.get_by_owner_id(auth.user_id)
+    owner_id = resolve_owner_id(auth)
+    account = await billing_repo.get_by_owner_id(owner_id)
     can_openclaw = is_subscription_active(account)
     return schemas.SellerEligibilityResponse(
         can_sell_skillmd=False,  # skillmd path removed in Isol8-internal v0 reduction

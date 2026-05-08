@@ -61,7 +61,11 @@ export function useHire() {
           if (!jwt) throw new Error("Not authenticated");
           const result = await checkout({
             listingSlug: listing.slug,
-            successUrl: `${window.location.origin}/marketplace/deploy-success?listing_slug=${encodeURIComponent(listing.slug)}`,
+            // {CHECKOUT_SESSION_ID} is a Stripe placeholder — Stripe substitutes
+            // the actual session_id into the redirect URL. /deploy-success requires
+            // session_id in its query params or its paid-return deploy effect exits
+            // and the purchased listing is never installed.
+            successUrl: `${window.location.origin}/marketplace/deploy-success?listing_slug=${encodeURIComponent(listing.slug)}&session_id={CHECKOUT_SESSION_ID}`,
             cancelUrl: `${window.location.origin}/chat`,
             jwt,
             email: user?.primaryEmailAddress?.emailAddress,

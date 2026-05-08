@@ -23,23 +23,32 @@ describe("useContainerStatus", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns null container when /container/status returns 404 (no row yet)", async () => {
-    global.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+  it("returns null container when /container/status returns 402 (provision gate up)", async () => {
+    // The stepper's useProvisioningState renders the gate UI; non-stepper
+    // consumers (OverviewPanel, HealthIndicator, etc.) just need
+    // "no container info to render". 202 and 402 both collapse to null
+    // for those callers.
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: { blocked: { code: "subscribe_required" } } }),
+        { status: 402, headers: { "Content-Type": "application/json" } },
+      ),
+    );
     const { result } = renderHook(() => useContainerStatus(), { wrapper });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.container).toBeNull();
     expect(result.current.error).toBeUndefined();
   });
 
-  it("returns null container when /container/status returns 402 (provision gate up)", async () => {
-    // The stepper's useProvisioningState renders the gate UI; non-stepper
-    // consumers (OverviewPanel, HealthIndicator, etc.) just need
-    // "no container info to render". Both 404 and 402 collapse to null
-    // for those callers.
+  it("returns null container when /container/status returns 202 (team workspace pending)", async () => {
+    // Backend Task 8: org members whose admin-owned workspace is missing
+    // get 202 Accepted instead of 404. useProvisioningState renders the
+    // "waiting on your admin" state in the stepper; non-stepper consumers
+    // just collapse to null here.
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
-        JSON.stringify({ detail: { blocked: { code: "subscribe_required" } } }),
-        { status: 402, headers: { "Content-Type": "application/json" } },
+        JSON.stringify({ detail: "team workspace pending" }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
       ),
     );
     const { result } = renderHook(() => useContainerStatus(), { wrapper });

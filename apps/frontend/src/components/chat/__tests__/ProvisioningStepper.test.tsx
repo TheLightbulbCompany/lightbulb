@@ -192,6 +192,38 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(refresh).toHaveBeenCalled();
   });
 
+  it("renders team-pending centerpiece when phase=team-pending", () => {
+    // Backend Task 8: org members whose admin-owned workspace isn't
+    // provisioned yet receive 202 from /container/status. The hook
+    // surfaces phase=team-pending; the stepper must render a
+    // "waiting on your admin" empty state with a Check again button.
+    const refresh = vi.fn();
+    useProvMock.mockReturnValue({
+      phase: "team-pending",
+      container: null,
+      blocked: null,
+      refreshInterval: 5_000,
+      refresh,
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(
+      screen.getByText(/Your team workspace is being set up/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/admin will finish this soon/i),
+    ).toBeInTheDocument();
+
+    const checkAgain = screen.getByRole("button", { name: /Check again/ });
+    checkAgain.click();
+    expect(refresh).toHaveBeenCalled();
+  });
+
   it("does not POST /container/provision (canonical /container/status trigger handles it)", () => {
     // Phase=cold-starting + container=null is the exact state where the
     // pre-Task-10 stepper would have fired POST /container/provision. Now

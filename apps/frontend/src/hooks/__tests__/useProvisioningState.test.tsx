@@ -97,12 +97,25 @@ describe("useProvisioningState", () => {
     expect(result.current.blocked?.code).toBe("credits_required");
   });
 
-  it("returns phase=provision-needed when /status returns 404", async () => {
-    global.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+  it("returns phase=team-pending when /status returns 202 (org member, admin-owned workspace not yet provisioned)", async () => {
+    // Backend Task 8: org members whose admin-owned workspace is missing
+    // get 202 Accepted with {"detail": "..."}. The hook surfaces this as
+    // `phase === "team-pending"` so the stepper can render an
+    // admin-waiting empty state and keep polling (5s) for transition to
+    // `normal` once the admin's container appears.
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: "team workspace pending" }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    );
     const { result } = renderHook(() => useProvisioningState(), { wrapper });
-    await waitFor(() => expect(result.current.phase).toBe("provision-needed"));
+    await waitFor(() => expect(result.current.phase).toBe("team-pending"));
     expect(result.current.container).toBeNull();
     expect(result.current.blocked).toBeNull();
+    // Members poll fast so the UI flips to `normal` shortly after their
+    // admin's container becomes ready.
+    expect(result.current.refreshInterval).toBe(5_000);
   });
 
   it("polls every 5s for the first minute while blocked", async () => {

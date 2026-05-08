@@ -734,6 +734,15 @@ class TestAdminMutationOwnerResolution:
         assert res.status_code == 200
         ecs.reprovision_for_user.assert_awaited_once_with("org_abc")
 
+    @pytest.mark.asyncio
+    async def test_container_resize_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        ecs = MagicMock()
+        ecs.reapply_standard_sizing = AsyncMock(return_value={"status": "resized"})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            res = await async_client.post("/api/v1/admin/users/user_123/container/resize")
+        assert res.status_code == 200
+        ecs.reapply_standard_sizing.assert_awaited_once_with("org_abc")
+
     # -- Billing mutations ---------------------------------------------------
 
     @pytest.mark.asyncio

@@ -252,6 +252,22 @@ async def admin_container_start(
     return await ecs.start_user_service(owner_id)
 
 
+@router.post(
+    "/users/{user_id}/container/resize",
+    description="Re-apply the canonical flat-fee task profile (0.5 vCPU / 2 GB). Recovery action for containers wedged on a stale task def. No body.",
+)
+@idempotency()
+@audit_admin_action("container.resize")
+async def admin_container_resize(
+    user_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    ecs = get_ecs_manager()
+    return await ecs.reapply_standard_sizing(owner_id)
+
+
 # ---------------------------------------------------------------------------
 # Billing actions
 # ---------------------------------------------------------------------------

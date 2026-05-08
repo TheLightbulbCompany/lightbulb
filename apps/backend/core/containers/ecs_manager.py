@@ -672,6 +672,23 @@ class EcsManager:
         await self.start_user_service(user_id)
         return {"status": "started"}
 
+    async def reapply_standard_sizing(self, user_id: str) -> dict:
+        """Roll the user's task definition with the canonical flat-fee
+        size. Admin recovery action for containers wedged on a stale
+        task def. No tier arg — every user gets the same 0.5 vCPU /
+        2 GB box post flat-fee cutover.
+        """
+        await self.resize_user_container(
+            user_id,
+            new_cpu=PER_USER_CPU,
+            new_memory=PER_USER_MEMORY_MIB,
+        )
+        return {
+            "status": "resized",
+            "cpu": PER_USER_CPU,
+            "memory": PER_USER_MEMORY_MIB,
+        }
+
     async def delete_user_service(self, user_id: str) -> None:
         """Remove a user's ECS service and per-user resources entirely.
 

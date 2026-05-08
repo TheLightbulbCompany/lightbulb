@@ -227,6 +227,50 @@ class TestContainerStart:
         assert ecs.start_user_service.await_count == 1
 
 
+class TestContainerResize:
+    """POST /api/v1/admin/users/{user_id}/container/resize — no body.
+
+    Re-applies the canonical flat-fee task profile. Recovery action for
+    containers wedged on a stale task def.
+    """
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self, async_client, admin_env):
+        ecs = MagicMock()
+        ecs.reapply_standard_sizing = AsyncMock(return_value={"status": "resized"})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            res = await async_client.post("/api/v1/admin/users/u_target/container/resize")
+        assert res.status_code == 200
+        ecs.reapply_standard_sizing.assert_awaited_once_with("u_target")
+
+    @pytest.mark.asyncio
+    async def test_403_for_non_admin(self, async_client, non_admin_env):
+        res = await async_client.post("/api/v1/admin/users/u_target/container/resize")
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
+        ecs = MagicMock()
+        ecs.reapply_standard_sizing = AsyncMock(return_value={"status": "resized"})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            res = await async_client.post("/api/v1/admin/users/u_target/container/resize")
+        assert res.status_code == 200
+        mock_audit_repo.assert_awaited_once()
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "container.resize"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_within_window(self, async_client, admin_env):
+        ecs = MagicMock()
+        ecs.reapply_standard_sizing = AsyncMock(return_value={"status": "resized"})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            headers = {"Idempotency-Key": "resize-key-1"}
+            r1 = await async_client.post("/api/v1/admin/users/u_target/container/resize", headers=headers)
+            r2 = await async_client.post("/api/v1/admin/users/u_target/container/resize", headers=headers)
+        assert r1.json() == r2.json()
+        assert ecs.reapply_standard_sizing.await_count == 1
+
+
 # ===========================================================================
 # Billing actions
 # ===========================================================================

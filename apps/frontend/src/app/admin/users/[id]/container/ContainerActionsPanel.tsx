@@ -69,8 +69,7 @@ export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
 
   async function handleResize() {
     clearStatus();
-    // Tier arg is ignored by the backend post-flat-fee; pass empty string.
-    const result = await resizeContainer(userId, "");
+    const result = await resizeContainer(userId);
     applyResult("Re-apply standard sizing", result.ok, result.error);
   }
 

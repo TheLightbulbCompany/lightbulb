@@ -20,6 +20,23 @@ export async function browseListings(
   return { items: body.items, count: body.items.length };
 }
 
+export async function featuredListings(
+  opts: { limit?: number } = {},
+): Promise<{ items: Listing[] }> {
+  // Curator's published listings only (admin@isol8.co). Backend returns an
+  // empty list if the curator account hasn't onboarded to Clerk yet — caller
+  // renders an empty-state CTA instead of breaking.
+  const params = new URLSearchParams();
+  params.set("limit", String(opts.limit ?? 6));
+  params.set("format", "openclaw");
+
+  const resp = await fetch(`${API}/marketplace/featured-listings?${params}`, {
+    next: { revalidate: 60 },
+  });
+  if (!resp.ok) throw new Error(`featuredListings failed: ${resp.status}`);
+  return (await resp.json()) as { items: Listing[] };
+}
+
 export async function getListing(slug: string): Promise<ListingDetailResponse | null> {
   const resp = await fetch(`${API}/marketplace/listings/${encodeURIComponent(slug)}`, {
     next: { revalidate: 60 },

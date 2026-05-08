@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
-import { ApiError, BACKEND_URL } from "@/lib/api";
+import { ApiError, fetchJsonWithStatus } from "@/lib/api";
 
 /**
  * Cold-start phase from `routers/container.py::_resolve_cold_start_phase`.
@@ -51,37 +51,20 @@ export function useContainerStatus(options: UseContainerStatusOptions = {}) {
   // members get 202/team-pending), so a real 404 here would be a genuine
   // bug worth surfacing.
   //
-  // Raw fetch (not `useApi().get`) because 202 is a 2xx response: the
-  // standard `useApi.get` would collapse it into a body-only return,
-  // hiding the status code we need to distinguish "owner already
+  // Uses fetchJsonWithStatus (not `useApi().get`) because 202 is a 2xx
+  // response: the standard `useApi.get` would collapse it into a body-only
+  // return, hiding the status code we need to distinguish "owner already
   // provisioning" (200) from "team workspace pending" (202).
   const fetcher = useCallback(
     async (url: string): Promise<ContainerStatus | null> => {
-      const token = await getToken();
-      if (!token) throw new Error("No authentication token available");
-      const response = await fetch(`${BACKEND_URL}${url}`, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
-      if (response.status === 202 || response.status === 402) {
-        return null;
-      }
-      const ct = response.headers.get("Content-Type") ?? "";
-      let body: unknown = null;
-      if (ct.includes("application/json")) {
-        try {
-          body = await response.json();
-        } catch {
-          // empty/malformed JSON — leave body as null
-        }
-      }
-      if (response.ok) {
+      try {
+        const { status, body } = await fetchJsonWithStatus(url, getToken);
+        if (status === 202) return null; // team workspace pending
         return body as ContainerStatus;
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 402) return null;
+        throw err;
       }
-      throw new ApiError(response.status, body);
     },
     [getToken],
   );

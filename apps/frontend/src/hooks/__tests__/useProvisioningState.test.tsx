@@ -118,6 +118,32 @@ describe("useProvisioningState", () => {
     expect(result.current.refreshInterval).toBe(5_000);
   });
 
+  it("drops team-pending polling cadence to 30s after the first minute", async () => {
+    // Without a slow phase, a member whose admin never provisions would
+    // hammer /container/status indefinitely (720 req/hour). The cadence
+    // should match `blocked`: 5s for the first minute, then 30s.
+    vi.useFakeTimers();
+    try {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ detail: "team workspace pending" }),
+          { status: 202, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      const { result } = renderHook(() => useProvisioningState(), { wrapper });
+      await vi.waitFor(() => expect(result.current.phase).toBe("team-pending"));
+      expect(result.current.refreshInterval).toBe(5_000);
+
+      // Advance past the first 60s window — cadence should drop to 30s.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(30_000));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("polls every 5s for the first minute while blocked", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(

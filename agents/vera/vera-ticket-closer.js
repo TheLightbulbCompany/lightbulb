@@ -44,8 +44,17 @@ function checkConfirmation(message) {
     }
   }
 
-  // Ambiguous — keep pending
-  return { confirmed: false, reopened: false, reason: 'ambiguous', matched: null };
+  // Ambiguous — route to agent loop for contextual interpretation
+  // "ok" might mean "resolved" or "I give up." The agent loop reads
+  // the full conversation and determines which.
+  return {
+    confirmed: false,
+    reopened: false,
+    reason: 'ambiguous',
+    matched: null,
+    needs_agent_loop: true,
+    agent_loop_context: 'Customer response is ambiguous. Read the full conversation to determine if the customer sounds satisfied (close) or is giving up / still frustrated (reopen with acknowledgment).'
+  };
 }
 
 function checkAutoClose(ticket) {
@@ -98,8 +107,10 @@ async function main() {
         ticketResult.new_status = 'open';
         ticketResult.reopen_reason = 'customer_indicated_unresolved';
       } else {
-        ticketResult.action = 'keep_pending';
+        ticketResult.action = confirmation.needs_agent_loop ? 'route_to_agent_loop' : 'keep_pending';
         ticketResult.new_status = 'pending_confirmation';
+        ticketResult.needs_agent_loop = confirmation.needs_agent_loop || false;
+        ticketResult.agent_loop_context = confirmation.agent_loop_context || null;
       }
     } else {
       // No new message — check auto-close timer

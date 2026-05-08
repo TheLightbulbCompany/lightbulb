@@ -4,14 +4,18 @@
 // (paperclip/ui/src/pages/Inbox.tsx:1874-2056) (MIT, (c) 2025 Paperclip AI).
 // v1: tabs + search + filters + mark-all-read. Drops nesting toggle, group-by
 // popover, and column picker (deferred per #3c plan).
+//
+// PR2 atom port: search/filters/actions cluster composes the editorial atom
+// library — `PanelToolbar` for the search-row scaffold, `EditorialButton` for
+// the primary "New issue" CTA + secondary "Mark all as read" trigger. Tabs
+// retain their bespoke pill styling (does not match `PanelTabs`'s underline
+// look) and stay as raw <button role="tab"> elements.
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 "use client";
 
 import { useMemo } from "react";
-import { Plus, Search } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Plus } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,6 +28,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
+import { EditorialButton, PanelToolbar } from "@/components/teams/shell";
 import { IssueFiltersPopover } from "@/components/teams/inbox/IssueFiltersPopover";
 import type { InboxTab } from "@/components/teams/shared/queryKeys";
 import type { IssueFilterState } from "@/components/teams/shared/lib/issueFilters";
@@ -133,28 +138,99 @@ export function InboxToolbar(props: InboxToolbarProps) {
 
   const markDisabled = unreadCount === 0;
 
+  // Filters slot — IssueFiltersPopover trigger (iconOnly).
+  // Hoisted out of the JSX for readability — desktop is the only consumer
+  // today (the mobile PanelToolbar renders search-only). If mobile gains an
+  // actions/filters row, both branches can share this single source of truth.
+  const filtersSlot = (
+    <IssueFiltersPopover
+      state={filterState}
+      onChange={handleFilterPatch}
+      activeFilterCount={activeFilterCount}
+      agents={agentOptions}
+      creators={creatorOptions}
+      projects={projectOptions}
+      labels={labelOptions}
+      currentUserId={currentUserId}
+      buttonVariant="outline"
+      iconOnly
+    />
+  );
+
+  // Actions slot — primary "+ New issue" + secondary "Mark all as read"
+  // wrapped in the AlertDialog confirmation flow.
+  const actionsSlot = (
+    <>
+      <EditorialButton
+        type="button"
+        variant="primary"
+        size="sm"
+        onClick={onNewIssue}
+        className="shrink-0"
+      >
+        <Plus className="h-3 w-3" />
+        <span>New issue</span>
+      </EditorialButton>
+
+      <AlertDialog>
+        <AlertDialogTrigger asChild>
+          <EditorialButton
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="shrink-0"
+            disabled={markDisabled}
+            title={
+              markDisabled
+                ? "No unread items"
+                : `Mark all ${unreadCount} unread as read`
+            }
+          >
+            Mark all as read
+          </EditorialButton>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mark all as read?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will mark {unreadCount} unread{" "}
+              {unreadCount === 1 ? "item" : "items"} as read.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={onMarkAllRead}>
+              Confirm
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+
   return (
     <div className="space-y-2">
-      {/* Mobile-only search row */}
-      <div className="relative sm:hidden">
-        <Search
-          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
-          style={{ color: "var(--mute)" }}
-        />
-        <Input
-          type="search"
-          placeholder="Search inbox..."
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className="h-8 w-full pl-8 text-xs"
-          data-page-search
+      {/* Mobile-only search row — search input only, mirroring the
+          original layout. Filter trigger + primary actions are deferred
+          until the desktop breakpoint. */}
+      <div className="sm:hidden">
+        <PanelToolbar
+          searchValue={searchQuery}
+          onSearchChange={onSearchChange}
+          searchPlaceholder="Search inbox..."
+          searchAriaLabel="Search inbox"
         />
       </div>
 
-      {/* Desktop toolbar row */}
-      <div className="hidden flex-wrap items-center justify-between gap-2 sm:flex">
-        {/* Tab bar — plain styled buttons (no shadcn Tabs primitive vendored). */}
-        {/* Retheme: prior amber-700 active swap → forest editorial token. */}
+      {/* Desktop toolbar row — tabs sit inline on the left, PanelToolbar
+          (search + filters + actions) takes the remaining width on the
+          right. */}
+      <div className="hidden flex-wrap items-center gap-3 sm:flex">
+        {/* Tab bar — bespoke pill styling, intentionally does not use
+            PanelTabs (which renders an underline-style tab list).
+            TODO(teams-ui-parity): migrate to PanelTabs once that atom
+            supports a pill variant matching this forest-tint active style.
+            Spec at docs/superpowers/specs/2026-05-07-teams-panel-port-editorial-atoms-design.md. */}
         <div
           role="tablist"
           aria-label="Inbox tabs"
@@ -188,81 +264,15 @@ export function InboxToolbar(props: InboxToolbarProps) {
           })}
         </div>
 
-        <div className="flex flex-1 items-center justify-end gap-2">
-          {/* Desktop search input */}
-          <div className="relative">
-            <Search
-              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
-              style={{ color: "var(--mute)" }}
-            />
-            <Input
-              type="search"
-              placeholder="Search inbox..."
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-              className="h-8 w-[220px] pl-8 text-xs"
-              data-page-search
-            />
-          </div>
-
-          <IssueFiltersPopover
-            state={filterState}
-            onChange={handleFilterPatch}
-            activeFilterCount={activeFilterCount}
-            agents={agentOptions}
-            creators={creatorOptions}
-            projects={projectOptions}
-            labels={labelOptions}
-            currentUserId={currentUserId}
-            buttonVariant="outline"
-            iconOnly
-          />
-
-          {/* Primary action: open the New Issue dialog. */}
-          <button
-            type="button"
-            onClick={onNewIssue}
-            className="editorial-btn editorial-btn--primary editorial-btn--sm shrink-0"
-          >
-            <Plus className="h-3 w-3" />
-            <span>New issue</span>
-          </button>
-
-          {/* Mark all as read with confirmation dialog. */}
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="editorial-btn editorial-btn--secondary editorial-btn--sm shrink-0"
-                disabled={markDisabled}
-                title={
-                  markDisabled
-                    ? "No unread items"
-                    : `Mark all ${unreadCount} unread as read`
-                }
-              >
-                Mark all as read
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Mark all as read?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This will mark {unreadCount} unread{" "}
-                  {unreadCount === 1 ? "item" : "items"} as read.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={onMarkAllRead}>
-                  Confirm
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
+        <PanelToolbar
+          className="flex-1"
+          searchValue={searchQuery}
+          onSearchChange={onSearchChange}
+          searchPlaceholder="Search inbox..."
+          searchAriaLabel="Search inbox"
+          filters={filtersSlot}
+          actions={actionsSlot}
+        />
       </div>
     </div>
   );

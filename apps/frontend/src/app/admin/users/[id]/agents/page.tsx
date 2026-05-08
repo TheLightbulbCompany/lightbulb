@@ -138,8 +138,8 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     <div className="space-y-6">
       <Header />
       {orgBanner}
-      <div className="overflow-hidden rounded-md border border-white/10">
-        <table className="w-full table-fixed text-sm">
+      <div className="overflow-x-auto rounded-md border border-white/10">
+        <table className="w-full min-w-[720px] table-fixed text-sm">
           <thead className="bg-zinc-900 text-left text-xs uppercase tracking-wide text-zinc-400">
             <tr>
               <th className="px-3 py-2 font-medium">Name</th>

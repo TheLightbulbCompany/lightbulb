@@ -61,41 +61,11 @@ describe("slugify", () => {
   });
 });
 
-describe("PublishAgentModal — eligibility", () => {
-  it("shows upgrade message and no form for free-tier user", async () => {
-    api.get.mockResolvedValueOnce({
-      tier: "free",
-      can_sell_skillmd: false,
-      can_sell_openclaw: false,
-      reason: "Publishing requires Isol8 Starter, Pro, or Enterprise.",
-    });
-    render(
-      <PublishAgentModal agent={AGENT} open={true} onClose={() => {}} />,
-    );
-    await waitFor(() =>
-      expect(screen.getByText(/upgrade required to publish/i)).toBeInTheDocument(),
-    );
-    expect(
-      screen.getByText(/Publishing requires Isol8 Starter/i),
-    ).toBeInTheDocument();
-    // No form fields rendered.
-    expect(screen.queryByLabelText(/storefront description/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/^Listing name$/i)).not.toBeInTheDocument();
-    expect(api.get).toHaveBeenCalledWith("/marketplace/seller-eligibility");
-  });
+describe("PublishAgentModal — initial render", () => {
+  it("renders the form immediately with auto-filled slug + name + description", async () => {
+    render(<PublishAgentModal agent={AGENT} open={true} onClose={() => {}} />);
 
-  it("renders form for paid-tier user with auto-filled slug", async () => {
-    api.get.mockResolvedValueOnce({
-      tier: "pro",
-      can_sell_skillmd: false,
-      can_sell_openclaw: true,
-      reason: null,
-    });
-    render(
-      <PublishAgentModal agent={AGENT} open={true} onClose={() => {}} />,
-    );
-
-    const slugInput = await screen.findByLabelText(/slug/i) as HTMLInputElement;
+    const slugInput = (await screen.findByLabelText(/slug/i)) as HTMLInputElement;
     expect(slugInput.value).toBe("research-agent");
 
     const nameInput = screen.getByLabelText(/^Listing name$/i) as HTMLInputElement;
@@ -103,18 +73,14 @@ describe("PublishAgentModal — eligibility", () => {
 
     const descInput = screen.getByLabelText(/storefront description/i) as HTMLTextAreaElement;
     expect(descInput.value).toBe("Helps with deep research tasks.");
+
+    // No eligibility prefetch — the tier gate was retired in the flat-fee cutover.
+    expect(api.get).not.toHaveBeenCalled();
   });
 });
 
 describe("PublishAgentModal — submit flow", () => {
   it("happy path: create + artifact + submit shows success state", async () => {
-    api.get.mockResolvedValueOnce({
-      tier: "pro",
-      can_sell_skillmd: false,
-      can_sell_openclaw: true,
-      reason: null,
-    });
-    // Sequential POSTs
     api.post
       .mockResolvedValueOnce({ listing_id: "list_123", slug: "research-agent" })
       .mockResolvedValueOnce({
@@ -178,12 +144,6 @@ describe("PublishAgentModal — submit flow", () => {
   });
 
   it("step-1 slug collision (409) surfaces friendly error and stays on form", async () => {
-    api.get.mockResolvedValueOnce({
-      tier: "pro",
-      can_sell_skillmd: false,
-      can_sell_openclaw: true,
-      reason: null,
-    });
     api.post.mockRejectedValueOnce(
       Object.assign(new Error("conflict"), {
         status: 409,
@@ -191,9 +151,7 @@ describe("PublishAgentModal — submit flow", () => {
       }),
     );
 
-    render(
-      <PublishAgentModal agent={AGENT} open={true} onClose={() => {}} />,
-    );
+    render(<PublishAgentModal agent={AGENT} open={true} onClose={() => {}} />);
     await screen.findByLabelText(/slug/i);
 
     const user = userEvent.setup();
@@ -201,9 +159,7 @@ describe("PublishAgentModal — submit flow", () => {
 
     // Friendly slug-collision message visible (the modal maps 409 → this copy)
     await waitFor(() =>
-      expect(
-        screen.getByText(/that slug is already taken/i),
-      ).toBeInTheDocument(),
+      expect(screen.getByText(/that slug is already taken/i)).toBeInTheDocument(),
     );
 
     // Stayed on form (not the generic error step) so the seller can edit slug
@@ -220,18 +176,11 @@ describe("PublishAgentModal — submit flow", () => {
   });
 
   it("retry resumes from draft listing — step-1 not re-called after step-2 failure", async () => {
-    api.get.mockResolvedValueOnce({
-      tier: "pro",
-      can_sell_skillmd: false,
-      can_sell_openclaw: true,
-      reason: null,
-    });
     // POST sequence:
     //   #1  /listings                          → success (creates draft)
     //   #2  /artifact-from-agent (first try)   → fail
     //   #3  /artifact-from-agent (retry)       → success
     //   #4  /submit                            → success
-    // Total: api.post called 4 times across the flow; /listings called only once.
     api.post
       .mockResolvedValueOnce({ listing_id: "list_456", slug: "research-agent" })
       .mockRejectedValueOnce(
@@ -296,40 +245,6 @@ describe("PublishAgentModal — submit flow", () => {
     expect(submitCalls).toHaveLength(1);
 
     expect(onPublished).toHaveBeenCalledWith("list_456");
-  });
-
-  it("artifact 403 surfaces tier-gated error message", async () => {
-    api.get.mockResolvedValueOnce({
-      tier: "free",
-      can_sell_skillmd: false,
-      can_sell_openclaw: true, // pretend backend let us through to test the second-step gate
-      reason: null,
-    });
-    api.post
-      .mockResolvedValueOnce({ listing_id: "list_123", slug: "research-agent" })
-      .mockRejectedValueOnce(
-        Object.assign(new Error("publishing requires paid"), {
-          status: 403,
-          detail: "publishing OpenClaw agents requires Isol8 Starter, Pro, or Enterprise",
-        }),
-      );
-
-    render(
-      <PublishAgentModal agent={AGENT} open={true} onClose={() => {}} />,
-    );
-    await screen.findByLabelText(/slug/i);
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /^Publish$/i }));
-
-    await waitFor(() =>
-      expect(
-        screen.getByText(/publishing requires a paid isol8 plan/i),
-      ).toBeInTheDocument(),
-    );
-
-    // submit endpoint never hit
-    expect(api.post).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -403,15 +318,7 @@ describe("storefrontUrlForSlug — host pattern", () => {
 
 describe("PublishAgentModal — slug validation", () => {
   it("invalid slug surfaces inline error and prevents submit", async () => {
-    api.get.mockResolvedValueOnce({
-      tier: "pro",
-      can_sell_skillmd: false,
-      can_sell_openclaw: true,
-      reason: null,
-    });
-    render(
-      <PublishAgentModal agent={AGENT} open={true} onClose={() => {}} />,
-    );
+    render(<PublishAgentModal agent={AGENT} open={true} onClose={() => {}} />);
     const slug = (await screen.findByLabelText(/slug/i)) as HTMLInputElement;
 
     const user = userEvent.setup();

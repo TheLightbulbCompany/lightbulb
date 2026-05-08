@@ -6,11 +6,20 @@
  * Deterministic pattern matching. Zero LLM.
  */
 
-function detectAnomalies(transaction, vendorHistory, chartOfAccounts) {
+function detectAnomalies(transaction, vendorHistory, chartOfAccounts, dismissalHistory) {
   const flags = [];
   const vendor = (transaction.vendor || '').toLowerCase();
   const amount = transaction.amount || 0;
   const history = vendorHistory[vendor];
+
+  // Dismissal history: when the finance person dismisses the same flag type
+  // for the same vendor 3+ times, suppress that flag type for that vendor.
+  // This prevents the same false positive from surfacing repeatedly.
+  const dismissed = dismissalHistory || {};
+  const vendorDismissals = dismissed[vendor] || {};
+  function isDismissed(flagType) {
+    return (vendorDismissals[flagType] || 0) >= 3;
+  }
 
   // Signal 1: New payee
   if (!history && !chartOfAccounts.some(a => a.vendors?.includes(vendor))) {
@@ -84,7 +93,25 @@ function detectAnomalies(transaction, vendorHistory, chartOfAccounts) {
     }
   }
 
-  return flags;
+  // Filter out flags the finance person has repeatedly dismissed for this vendor
+  const activeFlags = flags.filter(f => !isDismissed(f.type));
+  const suppressedFlags = flags.filter(f => isDismissed(f.type));
+
+  // Escape hatch: if no flags matched but the transaction feels unusual
+  // (very high amount, very unusual vendor name, or transaction metadata suggests
+  // something the 6 signal types don't cover), flag for agent loop review
+  const isVeryHighAmount = amount > (history?.amount_max || Infinity) * 3;
+  const isUnusualMetadata = transaction.metadata?.needs_review;
+  if (activeFlags.length === 0 && (isVeryHighAmount || isUnusualMetadata)) {
+    activeFlags.push({
+      type: 'recommend_agent_review',
+      severity: 'advisory',
+      detail: 'Transaction passed all standard checks but has unusual characteristics. Agent loop should review for patterns the standard signals may miss.',
+      needs_agent_loop: true
+    });
+  }
+
+  return { flags: activeFlags, suppressed: suppressedFlags };
 }
 
 function validateReceipt(receipt, transaction) {
@@ -157,11 +184,12 @@ async function main() {
   const transactions = input.transactions || [input.transaction || input];
   const vendorHistory = input.vendor_history || {};
   const chartOfAccounts = input.chart_of_accounts || [];
+  const dismissalHistory = input.dismissal_history || {};
 
   const results = transactions.map(tx => {
-    const anomalyFlags = detectAnomalies(tx, vendorHistory, chartOfAccounts);
+    const anomalyResult = detectAnomalies(tx, vendorHistory, chartOfAccounts, dismissalHistory);
     const receiptFlags = tx.receipt ? validateReceipt(tx.receipt, tx) : [];
-    const allFlags = [...anomalyFlags, ...receiptFlags];
+    const allFlags = [...(anomalyResult.flags || []), ...receiptFlags];
 
     return {
       transaction_id: tx.id || tx.transaction_id,

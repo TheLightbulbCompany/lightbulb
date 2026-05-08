@@ -8,7 +8,9 @@ no security hot edges. Each mutating handler validates with a
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Any
+
+from fastapi import APIRouter, Body, Depends
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
@@ -72,6 +74,38 @@ async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
         routine_id=routine_id,
         session_cookie=ctx.session_cookie,
     )
+
+
+@router.post("/routines/{routine_id}/run")
+async def run_routine(
+    routine_id: str,
+    body: dict[str, Any] = Body(default_factory=dict),
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Manually fire a routine.
+
+    Body is forwarded to upstream as-is — upstream's ``runRoutineSchema``
+    accepts optional ``reason`` / ``inputOverrides`` and is the source of
+    truth for validation.
+    """
+    return await _agents._admin().run_routine(
+        routine_id=routine_id,
+        body=body,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/routines/{routine_id}/runs")
+async def list_routine_runs(
+    routine_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """List run history for a routine."""
+    upstream = await _agents._admin().list_routine_runs(
+        routine_id=routine_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(upstream, "runs")
 
 
 # ---- Goals ------------------------------------------------------------

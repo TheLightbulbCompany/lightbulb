@@ -64,12 +64,6 @@ schema = (
     .exclude(
         path_regex="^/api/v1/users/",
     )
-    # Catalog endpoints require AGENT_CATALOG_BUCKET + a reachable S3 bucket.
-    # CI doesn't provision S3 for contract tests, so the service init raises
-    # RuntimeError — consistent with /billing/ and /container/ exclusions.
-    .exclude(
-        path_regex="^/api/v1/catalog",
-    )
     # Admin dashboard endpoints compose several upstream services (Clerk
     # Backend API, PostHog, CloudWatch Logs, DynamoDB) that aren't mocked
     # at the contract-test layer — schemathesis fuzzing occasionally

@@ -127,6 +127,28 @@ function scanContent(draft, config) {
     }
   }
 
+  // --- Escape hatch: flag drafts that passed keyword checks but may have subtle issues ---
+  // The keyword lists catch explicit patterns. But subtle competitor references ("unlike tools
+  // that require manual setup"), implicit commitments ("you'll see results within weeks"), and
+  // tone mismatches that don't contain flagged words should route to the agent loop.
+  // When a draft is long (>200 words) or the prospect is high-value, recommend agent loop review
+  // even if no keywords matched, because the cost of a subtle mistake in a high-stakes message
+  // exceeds the cost of one LLM review call.
+  const isHighStakes = config.prospect_tier === 'enterprise' || config.prospect_tier === 'strategic' ||
+                       config.is_first_touch || config.prospect_title_seniority === 'c_suite';
+  const isLongDraft = body.split(/\s+/).length > 200;
+
+  if (flags.length === 0 && (isHighStakes || isLongDraft)) {
+    flags.push({
+      type: 'recommend_agent_review',
+      severity: 'advisory',
+      reason: isHighStakes
+        ? 'High-stakes prospect — recommend agent loop review for tone, subtlety, and implicit commitments the keyword scanner may miss.'
+        : 'Long draft — recommend agent loop review for content coherence and implicit patterns.',
+      needs_agent_loop: true
+    });
+  }
+
   return flags;
 }
 
@@ -146,11 +168,13 @@ async function main() {
   const rejectAndRegenerate = flags.some(f => f.severity === 'reject_and_regenerate');
 
   const result = {
-    pass: flags.length === 0,
+    pass: flags.length === 0 || flags.every(f => f.severity === 'advisory'),
     flags,
     action: rejectAndRegenerate ? 'regenerate' :
             approvalRequired ? 'route_to_approval' :
+            flags.some(f => f.needs_agent_loop) ? 'recommend_agent_review' :
             'proceed',
+    needs_agent_loop: flags.some(f => f.needs_agent_loop),
     draft_domain: draft.prospect_domain || 'unknown',
     timestamp: new Date().toISOString()
   };

@@ -16,10 +16,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.repositories import billing_repo
-from core.services import agent_export, marketplace_search, marketplace_service
+from core.services import agent_export, curator, marketplace_search, marketplace_service
 from core.services.catalog_service import get_catalog_service
-from core.services.provision_gate import is_subscription_active
 from schemas import marketplace as schemas
 
 
@@ -87,6 +85,57 @@ async def search_listings(
     return {"items": items}
 
 
+@router.get("/featured-listings")
+async def featured_listings(
+    response: Response,
+    limit: int = Query(default=24, ge=1, le=100),
+    format: str = Query(default="openclaw", pattern="^(openclaw|skillmd)$"),
+):
+    """Curated listings — admin@isol8.co's published agents.
+
+    The chat sidebar's "From the marketplace" gallery hits this. The curator
+    publishes through the same /listings flow as any other seller; this
+    endpoint just filters the published-listings snapshot down to whoever
+    holds the configured curator email in Clerk. Returns an empty list
+    when the curator account doesn't exist yet — the sidebar renders that
+    as the empty-state.
+
+    ``format`` defaults to ``openclaw`` rather than no-filter so the sidebar
+    can never receive a non-agent listing the chat-side ``CatalogAgent``
+    deploy flow can't honour (the only other format today is ``skillmd``,
+    which was decommissioned in v0 — defending against any reintroduction).
+
+    Lives outside the ``/listings/{slug}`` namespace so a seller can't
+    create a listing with slug ``"featured"`` and shadow this route — the
+    earlier ``/listings/featured`` placement would have made
+    ``GET /listings/featured`` match this static route instead of the
+    detail endpoint for that listing.
+    """
+    response.headers["Cache-Control"] = "public, max-age=60"
+    curator_id = await curator.get_curator_user_id()
+    if not curator_id:
+        return {"items": []}
+    items = await marketplace_search.search(query=None, format=format, limit=limit, seller_id=curator_id)
+    return {"items": items}
+
+
+@router.get("/me/installed-templates")
+async def my_installed_templates(
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+):
+    """Templates the caller has already deployed into their container.
+
+    Used by the chat sidebar gallery to filter out rows the user has
+    already hired (so they don't appear as deployable). Backed by EFS
+    sidecar files at ``workspaces/{agent_id}/.template`` written by
+    ``catalog_service.deploy_from_artifact`` on every deploy. Replaces
+    the legacy ``GET /catalog/deployed`` endpoint that was tied to the
+    deleted admin-catalog router.
+    """
+    catalog_svc = get_catalog_service()
+    return {"installed": catalog_svc.list_deployed_for_user(resolve_owner_id(auth))}
+
+
 @router.get("/listings/{slug}")
 async def get_listing(slug: str, response: Response):
     """Public listing detail.
@@ -145,15 +194,14 @@ async def deploy_listing(
 
     Resolves the listing by slug, verifies entitlement (free → anyone signed
     in, paid → caller must hold a non-revoked marketplace-purchases row),
-    fetches the artifact tarball from S3, and extracts it into the buyer's
-    EFS at ``workspaces/{agent_uuid}/`` plus (when the artifact carries an
-    openclaw-slice) registers the new agent in their ``openclaw.json``.
+    fetches the artifact tarball + openclaw-slice from S3, and hands them to
+    ``catalog_service.deploy_from_artifact`` which extracts files into the
+    buyer's EFS at ``workspaces/{agent_uuid}/`` and deep-merges the slice
+    into their ``openclaw.json`` so the new agent auto-registers.
 
-    Marketplace artifacts published via ``agent_export.export_agent_from_efs``
-    currently set ``openclaw_slice={}`` — those deploys extract files but
-    leave the buyer's openclaw.json untouched. ``catalog_service.deploy_from_artifact``
-    handles both shapes; the response's ``config_registered`` flag tells
-    the caller which path ran.
+    Listings published before slice-synthesis shipped have an empty
+    openclaw-slice.json (or no key at all on the older write path); the
+    response's ``config_registered`` flag tells the caller which path ran.
     """
     listing = await marketplace_service.get_by_slug(slug=slug)
     if not listing or listing.get("status") != "published":
@@ -169,13 +217,11 @@ async def deploy_listing(
             detail="purchase required to deploy this listing",
         )
 
-    # Fetch the artifact tarball from S3. The listing's ``s3_prefix`` is
-    # written by ``marketplace_service._upload_artifact_to_s3`` and looks
+    # Fetch the artifact tarball + slice from S3. The listing's ``s3_prefix``
+    # is written by ``marketplace_service._upload_artifact_to_s3`` and looks
     # like ``listings/{listing_id}/v{version}/``. We deliberately skip
     # reading manifest.json (the manifest stored on the listing row is
-    # authoritative for slug/name/version) and the openclaw-slice (not
-    # written by the marketplace publish path; see TODO in
-    # catalog_service.deploy_from_artifact).
+    # authoritative for slug/name/version).
     s3_prefix = listing.get("s3_prefix")
     if not s3_prefix:
         raise HTTPException(status_code=500, detail="listing has no artifact prefix")
@@ -206,6 +252,32 @@ async def deploy_listing(
             detail="failed to fetch listing artifact",
         ) from exc
 
+    # Fetch the slice. NoSuchKey is tolerated for legacy listings published
+    # before slice-synthesis shipped — those deploys land workspace files
+    # without registering the agent in openclaw.json (legacy behavior).
+    try:
+        slice_obj = s3.get_object(
+            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
+            Key=f"{s3_prefix}openclaw-slice.json",
+        )
+        slice_ = json.loads(slice_obj["Body"].read())
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+            logger.info(
+                "Marketplace deploy: legacy listing %s has no openclaw-slice; deploying without config registration",
+                listing.get("listing_id"),
+            )
+            slice_ = {}
+        else:
+            logger.exception(
+                "Marketplace deploy: slice fetch failed for listing %s",
+                listing.get("listing_id"),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="failed to fetch listing slice",
+            ) from exc
+
     # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
     # listing's manifest_json column). The marketplace manifest doesn't
     # follow the admin catalog's schema — it uses {name, description,
@@ -224,7 +296,7 @@ async def deploy_listing(
             owner_id=owner_id,
             slug=slug,
             manifest=manifest,
-            slice_={},  # TODO(cut-11-followup): synthesize openclaw-slice
+            slice_=slice_,
             tar_bytes=tar_bytes,
         )
     except Exception as exc:
@@ -303,30 +375,26 @@ async def upload_artifact_from_agent(
     directly from EFS (no container interaction), tars the directory, packs
     it as a CatalogPackage, and replaces the listing's artifact.
 
-    Requires an active Isol8 subscription — without one the seller has no
-    container and no agents on EFS to publish. The billing row lives on
-    the owner_id (= org_id for org members), so resolve before lookup.
+    Authentication is the only gate. The natural floor is "user has a
+    provisioned container with a registered agent" — ``agent_export``
+    surfaces ``AgentNotInConfigError`` (→ 400) when the seller has no
+    openclaw.json or the agent_id isn't in their agents.list, so a user
+    without a container can't get past this endpoint regardless. Tier-based
+    publishing gates were retired in the post-2026-04-26 flat-fee cutover.
+
+    EFS workspace is keyed by owner_id (= org_id for org members), so
+    the export must use the resolved id. The listing row's seller_id
+    below stays as auth.user_id — that's the author/attribution field.
     """
     owner_id = resolve_owner_id(auth)
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not is_subscription_active(account):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "publishing requires an active Isol8 subscription",
-                "upgrade_url": "https://isol8.co/pricing",
-            },
-        )
-
-    # EFS workspace is keyed by owner_id (= org_id for org members), so
-    # the export must use the resolved id. The listing row's seller_id
-    # below stays as auth.user_id — that's the author/attribution field.
     try:
         package = agent_export.export_agent_from_efs(seller_id=owner_id, agent_id=payload.agent_id)
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except agent_export.AgentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except agent_export.AgentNotInConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         result = await marketplace_service.replace_artifact(
@@ -334,6 +402,7 @@ async def upload_artifact_from_agent(
             seller_id=auth.user_id,
             artifact_bytes=package.tarball_bytes,
             manifest=package.manifest,
+            openclaw_slice=package.openclaw_slice,
         )
     except marketplace_service.InvalidStateError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -344,27 +413,4 @@ async def upload_artifact_from_agent(
         manifest_sha256=result["manifest_sha256"],
         file_count=len(package.tarball_contents),
         bytes=len(package.tarball_bytes),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Seller surfacing — tier gate
-# ---------------------------------------------------------------------------
-
-
-@router.get("/seller-eligibility", response_model=schemas.SellerEligibilityResponse)
-async def seller_eligibility(auth: Annotated[AuthContext, Depends(get_current_user)]):
-    """Surface whether the caller can publish each format.
-
-    Cheap (single billing repo lookup); UI calls it on every mount so a
-    user who subscribes mid-session sees the new option immediately.
-    Resolves to owner_id so org members read their org's billing row.
-    """
-    owner_id = resolve_owner_id(auth)
-    account = await billing_repo.get_by_owner_id(owner_id)
-    can_openclaw = is_subscription_active(account)
-    return schemas.SellerEligibilityResponse(
-        can_sell_skillmd=False,  # skillmd path removed in Isol8-internal v0 reduction
-        can_sell_openclaw=can_openclaw,
-        reason=None if can_openclaw else "Publishing requires an active Isol8 subscription.",
     )

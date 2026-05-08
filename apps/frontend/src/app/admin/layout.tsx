@@ -52,12 +52,6 @@ export default async function AdminLayout({
                 Users
               </Link>
               <Link
-                href="/admin/catalog"
-                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
-              >
-                Catalog
-              </Link>
-              <Link
                 href="/admin/marketplace/listings"
                 className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
               >

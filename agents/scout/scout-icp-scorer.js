@@ -153,14 +153,34 @@ function scoreLead(lead, icp, config) {
     recency: scoreRecency(lead.signal_timestamp)
   };
 
-  // Weighted composite
+  // Support custom dimensions from user config (escape hatch for unique ICPs)
+  // Custom dimensions are scored by the agent loop and passed in as pre-computed values
+  const customDimensions = config.custom_dimensions || {};
+  const customWeightTotal = Object.values(customDimensions).reduce((sum, d) => sum + (d.weight || 0), 0);
+
+  // Rebalance weights if custom dimensions exist
+  const effectiveWeights = { ...WEIGHTS };
+  if (customWeightTotal > 0) {
+    const scaleFactor = (1 - customWeightTotal) / 1; // shrink default weights to make room
+    for (const key of Object.keys(effectiveWeights)) {
+      effectiveWeights[key] *= scaleFactor;
+    }
+  }
+
+  // Weighted composite with both default and custom dimensions
   let rawScore = Math.round(
-    dimensions.firmographic * WEIGHTS.firmographic +
-    dimensions.technographic * WEIGHTS.technographic +
-    dimensions.role_fit * WEIGHTS.role_fit +
-    dimensions.intent_strength * WEIGHTS.intent_strength +
-    dimensions.recency * WEIGHTS.recency
+    dimensions.firmographic * effectiveWeights.firmographic +
+    dimensions.technographic * effectiveWeights.technographic +
+    dimensions.role_fit * effectiveWeights.role_fit +
+    dimensions.intent_strength * effectiveWeights.intent_strength +
+    dimensions.recency * effectiveWeights.recency +
+    Object.values(customDimensions).reduce((sum, d) => sum + ((d.score || 50) * (d.weight || 0)), 0)
   );
+
+  // Add custom dimensions to the output for traceability
+  for (const [name, d] of Object.entries(customDimensions)) {
+    dimensions[name] = d.score || 50;
+  }
 
   // Apply source exclusivity factor (Req 38)
   const exclusivity = getExclusivityFactor(lead.signal_source, config.exclusivity_weights);

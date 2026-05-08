@@ -16,6 +16,25 @@ class MockResizeObserver {
 }
 global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 
+// JSDOM polyfills for Radix UI primitives (Select, Dropdown, etc.).
+// These methods aren't implemented in JSDOM but Radix calls them on pointer
+// events, so user-event interaction with a Radix Select trigger throws
+// "target.hasPointerCapture is not a function" without these stubs.
+if (typeof Element !== 'undefined') {
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = vi.fn(() => false) as unknown as typeof Element.prototype.hasPointerCapture;
+  }
+  if (!Element.prototype.releasePointerCapture) {
+    Element.prototype.releasePointerCapture = vi.fn() as unknown as typeof Element.prototype.releasePointerCapture;
+  }
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = vi.fn() as unknown as typeof Element.prototype.setPointerCapture;
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = vi.fn() as unknown as typeof Element.prototype.scrollIntoView;
+  }
+}
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: vi.fn(),

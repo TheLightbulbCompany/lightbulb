@@ -4,7 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 /**
  * Stripe Connect onboarding "return" landing page.
@@ -31,7 +31,7 @@ export default function PayoutsReturnPage() {
       try {
         const jwt = await getToken();
         if (!jwt) return;
-        const resp = await fetch(`${API}/api/v1/marketplace/payouts/dashboard`, {
+        const resp = await fetch(`${API}/marketplace/payouts/dashboard`, {
           headers: { Authorization: `Bearer ${jwt}` },
         });
         if (resp.ok) {

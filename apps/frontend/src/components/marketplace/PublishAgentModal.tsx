@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Loader2, AlertCircle, ExternalLink, CheckCircle2 } from "lucide-react";
 
 import {
@@ -19,12 +19,6 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 // Types matching apps/backend/schemas/marketplace.py
 // ---------------------------------------------------------------------------
-
-interface SellerEligibilityResponse {
-  can_sell_skillmd: boolean;
-  can_sell_openclaw: boolean;
-  reason: string | null;
-}
 
 interface ListingCreateResponse {
   listing_id: string;
@@ -126,25 +120,13 @@ export function storefrontUrlForSlug(slug: string): string {
 // Component
 // ---------------------------------------------------------------------------
 
-type Step =
-  | "loading"
-  | "eligibility_error"
-  | "ineligible"
-  | "form"
-  | "submitting"
-  | "success"
-  | "error";
+type Step = "form" | "submitting" | "success" | "error";
 
 export function PublishAgentModal({ agent, open, onClose, onPublished }: PublishAgentModalProps) {
   const api = useApi();
 
-  const [step, setStep] = useState<Step>("loading");
-  const [eligibility, setEligibility] = useState<SellerEligibilityResponse | null>(null);
+  const [step, setStep] = useState<Step>("form");
   const [submitError, setSubmitError] = useState<string | null>(null);
-  // Separate from submitError so the "eligibility check failed" branch can
-  // surface a dedicated message + retry button without colliding with
-  // submission errors that should keep the form rendered.
-  const [eligibilityError, setEligibilityError] = useState<string | null>(null);
   const [publishedListingId, setPublishedListingId] = useState<string | null>(null);
   // Tracks the listing_id once step 1 (create) succeeds, so a retry after a
   // step-2/step-3 failure resumes from where we left off rather than
@@ -181,53 +163,6 @@ export function PublishAgentModal({ agent, open, onClose, onPublished }: Publish
 
   const formInvalid = Boolean(slugError || nameError || descError || priceError || tagsError);
 
-  // Fetch eligibility on open. The modal is mounted per-open by AgentsPanel,
-  // so useState initializers above already provide a clean per-open form
-  // state — no manual resets here. Only the async fetch result lands as
-  // setState, which is the rule-of-effects-allowed shape.
-  //
-  // Pulled into a callback so the eligibility_error retry button can re-fire
-  // the same fetch (versus the submit retry, which never re-checks
-  // eligibility — different recovery paths).
-  const fetchEligibility = useCallback(async () => {
-    setStep("loading");
-    setEligibilityError(null);
-    try {
-      const r = (await api.get("/marketplace/seller-eligibility")) as SellerEligibilityResponse;
-      setEligibility(r);
-      setStep(r.can_sell_openclaw ? "form" : "ineligible");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to check eligibility";
-      setEligibility(null);
-      setEligibilityError(msg);
-      setStep("eligibility_error");
-    }
-  }, [api]);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    (async () => {
-      setStep("loading");
-      setEligibilityError(null);
-      try {
-        const r = (await api.get("/marketplace/seller-eligibility")) as SellerEligibilityResponse;
-        if (cancelled) return;
-        setEligibility(r);
-        setStep(r.can_sell_openclaw ? "form" : "ineligible");
-      } catch (err) {
-        if (cancelled) return;
-        const msg = err instanceof Error ? err.message : "Failed to check eligibility";
-        setEligibility(null);
-        setEligibilityError(msg);
-        setStep("eligibility_error");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, api]);
-
   const handleSubmit = useCallback(async () => {
     if (formInvalid) {
       setTouched({ slug: true, name: true, description: true, price: true, tags: true });
@@ -263,7 +198,7 @@ export function PublishAgentModal({ agent, open, onClose, onPublished }: Publish
       }
     }
 
-    // Step 2: snapshot agent EFS dir into listing artifact (tier-gated)
+    // Step 2: snapshot agent EFS dir into listing artifact.
     try {
       await api.post(`/marketplace/listings/${listingId}/artifact-from-agent`, {
         agent_id: agent.agent_id,
@@ -271,9 +206,7 @@ export function PublishAgentModal({ agent, open, onClose, onPublished }: Publish
     } catch (err) {
       const e = err as Error & { status?: number; detail?: string };
       let msg = e.detail || e.message || "Failed to snapshot agent";
-      if (e.status === 403) {
-        msg = "Publishing requires a paid Isol8 plan. Upgrade and try again.";
-      } else if (e.status === 404) {
+      if (e.status === 404) {
         msg = "Agent not found on disk. Try again, or recreate the agent.";
       }
       setSubmitError(msg);
@@ -329,53 +262,6 @@ export function PublishAgentModal({ agent, open, onClose, onPublished }: Publish
             Snapshot {agent.name || agent.agent_id} and submit it as a marketplace listing for review.
           </AlertDialogDescription>
         </AlertDialogHeader>
-
-        {step === "loading" && (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
-          </div>
-        )}
-
-        {step === "eligibility_error" && (
-          <div className="space-y-3 py-2">
-            <div
-              role="alert"
-              className="rounded-md border border-[#dc2626]/40 bg-[#fee2e2] p-3 text-sm text-[#7f1d1d] flex gap-2"
-            >
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-              <div>
-                <div className="font-medium">Couldn&apos;t check publishing eligibility</div>
-                <div className="mt-1 text-[#7f1d1d]/90">
-                  {eligibilityError ||
-                    "Network error while checking your plan. Please retry."}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {step === "ineligible" && (
-          <div className="space-y-3 py-2">
-            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 flex gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-              <div>
-                <div className="font-medium">Upgrade required to publish</div>
-                <div className="mt-1 text-amber-800">
-                  {eligibility?.reason ||
-                    "Publishing requires Isol8 Starter, Pro, or Enterprise."}
-                </div>
-                <a
-                  href="https://isol8.co/pricing"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-2 inline-flex items-center gap-1 text-amber-900 underline hover:text-amber-700"
-                >
-                  See plans <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-            </div>
-          </div>
-        )}
 
         {(step === "form" || step === "submitting" || step === "error") && (
           <div className="space-y-4 py-2 max-h-[60vh] overflow-y-auto">
@@ -552,19 +438,6 @@ export function PublishAgentModal({ agent, open, onClose, onPublished }: Publish
         )}
 
         <AlertDialogFooter>
-          {step === "ineligible" && (
-            <Button variant="outline" onClick={onClose}>
-              Close
-            </Button>
-          )}
-          {step === "eligibility_error" && (
-            <>
-              <Button variant="outline" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button onClick={fetchEligibility}>Retry eligibility</Button>
-            </>
-          )}
           {(step === "form" || step === "submitting" || step === "error") && (
             <>
               <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
@@ -589,11 +462,6 @@ export function PublishAgentModal({ agent, open, onClose, onPublished }: Publish
           )}
           {step === "success" && (
             <Button onClick={onClose}>Done</Button>
-          )}
-          {step === "loading" && (
-            <Button variant="outline" onClick={onClose}>
-              Cancel
-            </Button>
           )}
         </AlertDialogFooter>
       </AlertDialogContent>

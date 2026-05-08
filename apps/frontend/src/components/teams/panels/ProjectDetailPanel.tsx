@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PanelMasthead, PanelTabs } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Project {
@@ -10,46 +11,41 @@ interface Project {
   budget_monthly_cents?: number;
 }
 
+const TABS = [
+  { value: "overview", label: "Overview" },
+  { value: "issues", label: "Issues" },
+  { value: "budget", label: "Budget" },
+];
+
 export function ProjectDetailPanel({ projectId }: { projectId: string }) {
   const { read } = useTeamsApi();
   const { data, isLoading } = read<Project>(`/projects/${projectId}`);
-  const [tab, setTab] = useState<"overview" | "issues" | "budget">("overview");
+  const [tab, setTab] = useState<string>("overview");
 
-  if (isLoading)
+  if (isLoading) {
     return (
       <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
         Loading…
       </div>
     );
-  if (!data)
+  }
+  if (!data) {
     return (
       <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
         Project not found.
       </div>
     );
+  }
 
   return (
-    <div className="editorial-page p-8 max-w-4xl">
-      <h1 className="font-editorial-serif text-3xl mb-1 text-[var(--ink)]">{data.name}</h1>
+    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead overline="Project" title={data.name} />
       {data.description && (
-        <div className="text-sm text-[var(--ink-soft)] mb-6">{data.description}</div>
+        <p className="text-sm text-[var(--ink-soft)] -mt-3">
+          {data.description}
+        </p>
       )}
-
-      <div className="border-b border-[var(--edge)] mb-6">
-        {(["overview", "issues", "budget"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm transition-colors ${
-              tab === t
-                ? "border-b-2 border-[var(--forest)] text-[var(--ink)]"
-                : "text-[var(--mute)] hover:text-[var(--ink-soft)]"
-            }`}
-          >
-            {t[0].toUpperCase() + t.slice(1)}
-          </button>
-        ))}
-      </div>
+      <PanelTabs tabs={TABS} value={tab} onValueChange={setTab} />
 
       {tab === "overview" && (
         <pre className="editorial-card text-xs p-4 whitespace-pre-wrap text-[var(--ink-soft)] bg-[var(--cream-deeper)]">

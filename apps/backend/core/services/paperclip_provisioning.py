@@ -131,9 +131,12 @@ class PaperclipProvisioning:
         (per ``paperclip/server/src/routes/companies.ts:269``). The
         old flow signed up the new user and immediately tried to create
         the company AS that user — which 403'd because the new user
-        isn't an admin. Fixed flow: the bootstrap admin (admin@isol8.co,
-        the only ``instance_admin`` on the deployment) creates the
-        company and invites the new user as a co-owner via the standard
+        isn't an admin. Fixed flow: the bootstrap admin
+        (``admin+paperclip@isol8.co`` in new envs, ``admin@isol8.co`` in
+        legacy envs — email loaded dynamically from Secrets Manager,
+        never hardcoded), the only ``instance_admin`` on the deployment,
+        creates the company and invites the new user as a co-owner via
+        the standard
         invite/accept/approve chain. New user ends up as an active
         owner; admin stays as a co-owner of every company (harmless
         side effect — admin doesn't act without explicit code paths).

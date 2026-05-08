@@ -18,9 +18,6 @@ export function GallerySection({ onAgentDeployed }: GallerySectionProps) {
   const { refresh: refreshAgents } = useAgents();
   const [selected, setSelected] = useState<CatalogAgent | null>(null);
 
-  if (isLoading) return null;
-  if (agents.length === 0) return null;
-
   const handleDeploy = async (slug: string) => {
     const result = await deploy(slug);
     capture("catalog_agent_deployed", {
@@ -36,7 +33,7 @@ export function GallerySection({ onAgentDeployed }: GallerySectionProps) {
     <>
       <div className="mt-4 border-t border-[#e0dbd0] pt-3">
         <div className="px-2 mb-2 flex items-baseline justify-between">
-          <h3 className="font-editorial-serif text-sm italic text-[#1a1a1a]">Gallery</h3>
+          <h3 className="font-editorial-serif text-sm italic text-[#1a1a1a]">From the marketplace</h3>
           <Link href="/marketplace" className="text-[10px] font-bold uppercase tracking-wide text-[#06402B] no-underline">
             Browse all →
           </Link>
@@ -44,16 +41,26 @@ export function GallerySection({ onAgentDeployed }: GallerySectionProps) {
         <p className="px-2 mb-2 text-[11px] leading-4 text-[#8a8578]">
           One-click hires from the marketplace.
         </p>
-        <div className="space-y-0.5">
-          {agents.map((a) => (
-            <GalleryItemRow
-              key={a.slug}
-              agent={a}
-              onDeploy={handleDeploy}
-              onOpenInfo={setSelected}
-            />
-          ))}
-        </div>
+        {isLoading ? (
+          <p className="px-2 py-1 font-editorial-serif text-[11px] italic text-[#8a8578]">
+            Loading…
+          </p>
+        ) : agents.length === 0 ? (
+          <p className="px-2 py-1 font-editorial-serif text-[11px] italic text-[#8a8578]">
+            You&apos;ve hired everyone. More on the way.
+          </p>
+        ) : (
+          <div className="space-y-0.5">
+            {agents.map((a) => (
+              <GalleryItemRow
+                key={a.slug}
+                agent={a}
+                onDeploy={handleDeploy}
+                onOpenInfo={setSelected}
+              />
+            ))}
+          </div>
+        )}
       </div>
       <AgentDetailPanel
         agent={selected}

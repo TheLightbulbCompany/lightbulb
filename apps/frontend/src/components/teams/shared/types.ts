@@ -105,11 +105,17 @@ export interface IssueComment {
   authorKind?: "user" | "agent" | null;
 }
 
-/** Body for POST /teams/issues. Slim shape for v1 NewIssueDialog. */
+/** Body for POST /teams/issues. Slim shape for v1 NewIssueDialog.
+ *
+ * NOTE: `status` is intentionally absent. The Teams BFF `CreateIssueBody`
+ * schema (apps/backend/routers/teams/schemas.py) sets ``extra="forbid"`` and
+ * does NOT whitelist ``status`` — POSTs that include it 422. Issue starting
+ * status is owned by upstream Paperclip's create handler. Use ``IssueUpdateInput``
+ * via PATCH if you need to change status post-creation.
+ */
 export interface IssueCreateInput {
   title: string;
   description?: string;
-  status?: IssueStatus;
   priority?: IssuePriority;
   projectId?: string;
   assigneeAgentId?: string;

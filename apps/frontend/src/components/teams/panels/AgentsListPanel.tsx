@@ -1,6 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Bot } from "lucide-react";
+import {
+  EditorialButton,
+  EditorialDialog,
+  PanelDataTable,
+  PanelEmptyState,
+  PanelMasthead,
+  PanelToolbar,
+  type PanelDataColumn,
+} from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Agent {
@@ -12,60 +22,103 @@ interface Agent {
 
 export function AgentsListPanel() {
   const { read } = useTeamsApi();
-  const { data, isLoading, error, mutate } = read<{ agents: Agent[] }>("/agents");
+  const { data, isLoading, error, mutate } = read<{ agents: Agent[] }>(
+    "/agents",
+  );
   const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState("");
 
-  if (isLoading)
-    return (
-      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
-        Loading…
-      </div>
-    );
-  if (error)
+  const agents = data?.agents;
+  const filtered = useMemo(() => {
+    const list = agents ?? [];
+    return search
+      ? list.filter((a) =>
+          (a.name + " " + a.role).toLowerCase().includes(search.toLowerCase()),
+        )
+      : list;
+  }, [agents, search]);
+
+  if (error) {
     return (
       <div className="editorial-page p-8 text-[var(--danger)]">
         Error: {String(error)}
       </div>
     );
+  }
 
-  const agents = data?.agents ?? [];
+  const columns: PanelDataColumn<Agent>[] = [
+    {
+      key: "name",
+      header: "Name",
+      sortable: true,
+      cell: (a) => (
+        <div className="font-medium text-[var(--ink)]">{a.name}</div>
+      ),
+    },
+    {
+      key: "role",
+      header: "Role",
+      cell: (a) => (
+        <span className="text-xs uppercase tracking-wide text-[var(--mute)]">
+          {a.role}
+        </span>
+      ),
+    },
+    {
+      key: "open",
+      header: "",
+      align: "right",
+      cell: (a) => (
+        <a
+          href={`/teams/agents/${a.id}`}
+          className="text-sm hover:underline"
+          style={{ color: "var(--forest)" }}
+        >
+          Open →
+        </a>
+      ),
+    },
+  ];
 
   return (
-    <div className="editorial-page p-8 max-w-4xl">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Agents</h1>
-        <button
-          onClick={() => setCreating(true)}
-          className="editorial-btn editorial-btn--primary"
-        >
-          New agent
-        </button>
-      </div>
-
-      <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
-        {agents.map((a) => (
-          <li
-            key={a.id}
-            className="flex justify-between items-center p-4"
-          >
-            <div>
-              <div className="font-medium text-[var(--ink)]">{a.name}</div>
-              <div className="text-xs text-[var(--mute)]">{a.role}</div>
-            </div>
-            <a
-              href={`/teams/agents/${a.id}`}
-              className="text-sm text-[var(--ink-soft)] hover:underline"
-            >
-              Open →
-            </a>
-          </li>
-        ))}
-        {agents.length === 0 && (
-          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
-            No agents yet.
-          </li>
-        )}
-      </ul>
+    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead
+        overline="Team"
+        title="Agents"
+        actions={
+          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
+            New agent
+          </EditorialButton>
+        }
+      />
+      <PanelToolbar
+        searchValue={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Find agent..."
+        searchAriaLabel="Search agents"
+      />
+      {isLoading ? (
+        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+          Loading…
+        </div>
+      ) : filtered.length === 0 ? (
+        <PanelEmptyState
+          icon={Bot}
+          headline="No agents yet."
+          supporting={
+            search
+              ? "No agents match your search."
+              : "Spin up your first agent — assign a role + start delegating work."
+          }
+          action={{ label: "New agent", onClick: () => setCreating(true) }}
+        />
+      ) : (
+        <PanelDataTable<Agent>
+          rows={filtered}
+          columns={columns}
+          rowKey={(a) => a.id}
+        />
+      )}
 
       {creating && (
         <CreateAgentDialog
@@ -111,10 +164,13 @@ function CreateAgentDialog({
   }
 
   return (
-    <div className="fixed inset-0 bg-[rgba(26,26,26,0.35)] flex items-center justify-center">
-      <div className="editorial-card p-6 w-96">
-        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">New agent</h2>
-        <label className="block mb-3">
+    <EditorialDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="New agent"
+    >
+      <div className="flex flex-col gap-3">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Name</span>
           <input
             value={name}
@@ -122,7 +178,7 @@ function CreateAgentDialog({
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
-        <label className="block mb-4">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Role</span>
           <select
             value={role}
@@ -135,26 +191,23 @@ function CreateAgentDialog({
           </select>
         </label>
         {err && (
-          <div className="text-[var(--danger)] text-sm mb-2 border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
             {err}
           </div>
         )}
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="editorial-btn editorial-btn--secondary editorial-btn--sm"
-          >
+        <div className="flex justify-end gap-2 mt-2">
+          <EditorialButton variant="secondary" size="sm" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </EditorialButton>
+          <EditorialButton
+            size="sm"
             onClick={submit}
             disabled={submitting || !name}
-            className="editorial-btn editorial-btn--primary editorial-btn--sm"
           >
             {submitting ? "Creating…" : "Create"}
-          </button>
+          </EditorialButton>
         </div>
       </div>
-    </div>
+    </EditorialDialog>
   );
 }

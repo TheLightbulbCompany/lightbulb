@@ -22,16 +22,11 @@ vi.mock("../panels/CreditsPanel", () => ({
 }));
 // All other panels can stub-render too — they shouldn't mount in these
 // tests but the import graph evaluates the module.
-vi.mock("../panels/InstancesPanel", () => ({ InstancesPanel: () => null }));
 vi.mock("../panels/SessionsPanel", () => ({ SessionsPanel: () => null }));
 vi.mock("../panels/UsagePanel", () => ({ UsagePanel: () => null }));
 vi.mock("../panels/CronPanel", () => ({ CronPanel: () => null }));
 vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => null }));
 vi.mock("../panels/SkillsPanel", () => ({ SkillsPanel: () => null }));
-vi.mock("../panels/NodesPanel", () => ({ NodesPanel: () => null }));
-vi.mock("../panels/ConfigPanel", () => ({ ConfigPanel: () => null }));
-vi.mock("../panels/DebugPanel", () => ({ DebugPanel: () => null }));
-vi.mock("../panels/LogsPanel", () => ({ LogsPanel: () => null }));
 vi.mock("../panels/LLMPanel", () => ({ LLMPanel: () => null }));
 
 describe("ControlPanelRouter", () => {

@@ -242,7 +242,8 @@ export class ServiceStack extends cdk.Stack {
     // Bootstrap admin credentials write (Paperclip service account):
     // apps/backend/scripts/bootstrap_paperclip_admin.py is invoked via
     // `aws ecs execute-command` against the backend task. It signs up
-    // admin@isol8.co in Paperclip, then calls PutSecretValue on
+    // the bootstrap admin email (see ADMIN_EMAIL constant in the
+    // script) in Paperclip, then calls PutSecretValue on
     // isol8/{env}/paperclip_admin_credentials. Without this scoped
     // grant the put fails with AccessDeniedException after the
     // Paperclip user is already created — leaves an inconsistent
@@ -551,25 +552,6 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
-    // Agent Catalog S3 Bucket
-    //
-    // Stores published agent bundles (agent.tar.gz + manifest.json) that users
-    // can one-click deploy into their own containers. Versioned so we can roll
-    // back a bad publish without losing history.
-    // -------------------------------------------------------------------------
-    const agentCatalogBucket = new s3.Bucket(this, "AgentCatalogBucket", {
-      bucketName: `isol8-${env}-agent-catalog`,
-      versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy:
-        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: env !== "prod",
-    });
-
-    agentCatalogBucket.grantReadWrite(this.taskRole);
-
-    // -------------------------------------------------------------------------
     // Marketplace Artifacts S3 Bucket
     //
     // Stores artifacts uploaded for marketplace listings (agent bundles,
@@ -763,7 +745,6 @@ export class ServiceStack extends cdk.Stack {
         CREDIT_TRANSACTIONS_TABLE:
           props.database.creditTransactionsTable.tableName,
         OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
-        AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
         // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
         // env vars via core.config.settings; empty defaults keep the app
         // booting in non-marketplace contexts (unit tests, smoke tests).

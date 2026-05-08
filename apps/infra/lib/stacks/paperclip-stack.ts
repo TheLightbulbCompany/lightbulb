@@ -319,13 +319,27 @@ export class PaperclipStack extends cdk.Stack {
         // public ECS deploys; without it some scheduler-dependent flows
         // never fire.
         HEARTBEAT_SCHEDULER_ENABLED: "true",
-        // First-boot bootstrap: an admin must sign up to mint the Board
-        // API key that drives subsequent server-side provisioning.
-        // Disabling sign-up before bootstrap locks us out. Re-enable once
-        // the admin user exists (one-line CDK change + redeploy). Prod
-        // deploys ship with sign-up off because the admin is provisioned
-        // out-of-band there.
-        PAPERCLIP_AUTH_DISABLE_SIGN_UP: env === "prod" ? "true" : "false",
+        // Better Auth's email/password signup endpoint
+        // (`POST /api/auth/sign-up/email`). All "first-admin" bootstrap
+        // paths in upstream Paperclip — direct signup, board-claim, and
+        // the bootstrap_ceo invite — funnel through this same endpoint
+        // (verified in paperclip/ui/src/pages/InviteLanding.tsx:368 and
+        // paperclip/server/src/auth/better-auth.ts:118-122). Setting this
+        // to "true" before any instance_admin exists makes the deployment
+        // un-bootstrappable; PR #473 originally hard-coded "true" with a
+        // "provisioned out-of-band" comment for prod, but no
+        // out-of-band path exists upstream.
+        //
+        // Practical exposure on this deployment is near zero regardless:
+        // `company.isol8.co` has no DNS record, the Paperclip task is in
+        // private subnets, and our backend's paperclip_proxy router
+        // route-filters /api/auth/* (see docs/audit-2026-05-02-
+        // paperclip-routes.md). Keeping signup enabled uniformly across
+        // dev and prod gives every fresh env-stand-up the same
+        // deterministic bootstrap path. If we later add public DNS for
+        // Paperclip, revisit this as a deliberate security review post-
+        // bootstrap rather than as a default.
+        PAPERCLIP_AUTH_DISABLE_SIGN_UP: "false",
         PAPERCLIP_BIND: "lan",
         // Postgres connection split: host/port/user/db at synth time;
         // password injected from Secrets Manager at runtime. The entrypoint

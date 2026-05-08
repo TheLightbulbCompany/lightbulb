@@ -4,7 +4,7 @@ import type { Listing } from "@/lib/marketplace/types";
 import { useAuth, useUser } from "@clerk/nextjs";
 import { useState } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 /**
  * One-click deploy / buy button for a listing.
@@ -84,7 +84,7 @@ function FreeDeployButton({
     try {
       const jwt = await getToken();
       const resp = await fetch(
-        `${API}/api/v1/marketplace/listings/${encodeURIComponent(slug)}/deploy`,
+        `${API}/marketplace/listings/${encodeURIComponent(slug)}/deploy`,
         {
           method: "POST",
           headers: {

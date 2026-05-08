@@ -232,12 +232,39 @@ def _published_listing(*, price_cents: int = 0, listing_id: str = "lst_1") -> di
     }
 
 
-def _stub_s3_get_object(_tar_bytes: bytes = b"fake-tar"):
-    """Build a boto3.client('s3') stub whose get_object returns _tar_bytes."""
-    body = MagicMock()
-    body.read.return_value = _tar_bytes
+def _stub_s3_get_object(
+    _tar_bytes: bytes = b"fake-tar",
+    _slice: dict | None = None,
+    _slice_missing: bool = False,
+):
+    """Build a boto3.client('s3') stub that dispatches by S3 Key.
+
+    deploy_listing fetches both ``workspace.tar.gz`` and ``openclaw-slice.json``;
+    we have to return the right body for each. Pass ``_slice_missing=True``
+    to simulate a legacy listing where the slice key doesn't exist (the
+    route should tolerate it via NoSuchKey).
+    """
+    import json as _json
+
     s3 = MagicMock()
-    s3.get_object.return_value = {"Body": body}
+
+    def _get_object(*, Bucket: str, Key: str):
+        if Key.endswith("workspace.tar.gz"):
+            body = MagicMock()
+            body.read.return_value = _tar_bytes
+            return {"Body": body}
+        if Key.endswith("openclaw-slice.json"):
+            if _slice_missing:
+                raise ClientError(
+                    {"Error": {"Code": "NoSuchKey", "Message": "slice missing"}},
+                    "GetObject",
+                )
+            body = MagicMock()
+            body.read.return_value = _json.dumps(_slice or {}).encode("utf-8")
+            return {"Body": body}
+        raise AssertionError(f"unexpected S3 Key: {Key!r}")
+
+    s3.get_object.side_effect = _get_object
     return s3
 
 
@@ -246,13 +273,60 @@ def _stub_s3_get_object(_tar_bytes: bytes = b"fake-tar"):
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_deploy_free_listing_succeeds(mock_get_by_slug, mock_get_catalog, mock_boto, client):
     mock_get_by_slug.return_value = _published_listing(price_cents=0)
-    mock_boto.return_value = _stub_s3_get_object()
+    real_slice = {
+        "agent": {"name": "Demo Agent", "skills": ["search"]},
+        "plugins": {"entries": {"memory": {"enabled": True}}},
+        "tools": {"profile": "default"},
+        "cron_jobs": [],
+    }
+    mock_boto.return_value = _stub_s3_get_object(_slice=real_slice)
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(
         return_value={
             "slug": "demo-agent",
             "version": 1,
             "agent_id": "agent_abc123",
+            "name": "Demo Agent",
+            "skills_added": ["search"],
+            "plugins_enabled": ["memory"],
+            "cron_jobs_added": 0,
+            "config_registered": True,
+        }
+    )
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["agent_uuid"] == "agent_abc123"
+    assert body["agent_id"] == "agent_abc123"
+    assert body["config_registered"] is True
+    catalog.deploy_from_artifact.assert_awaited_once()
+    kwargs = catalog.deploy_from_artifact.await_args.kwargs
+    assert kwargs["slug"] == "demo-agent"
+    assert kwargs["tar_bytes"] == b"fake-tar"
+    # Slice fetched from S3 and forwarded so the buyer's openclaw.json gets
+    # patched (i.e. the agent auto-registers).
+    assert kwargs["slice_"] == real_slice
+
+
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_deploy_legacy_listing_without_slice_falls_back(mock_get_by_slug, mock_get_catalog, mock_boto, client):
+    """Listings published before slice-synthesis shipped have no
+    openclaw-slice.json key. The deploy must tolerate NoSuchKey on the
+    slice fetch and fall through to the no-config-registration path
+    (matching the legacy behavior).
+    """
+    mock_get_by_slug.return_value = _published_listing(price_cents=0)
+    mock_boto.return_value = _stub_s3_get_object(_slice_missing=True)
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={
+            "slug": "demo-agent",
+            "version": 1,
+            "agent_id": "agent_legacy_1",
             "name": "Demo Agent",
             "skills_added": [],
             "plugins_enabled": [],
@@ -264,14 +338,9 @@ def test_deploy_free_listing_succeeds(mock_get_by_slug, mock_get_catalog, mock_b
 
     resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["agent_uuid"] == "agent_abc123"
-    assert body["agent_id"] == "agent_abc123"
-    assert body["config_registered"] is False
-    catalog.deploy_from_artifact.assert_awaited_once()
     kwargs = catalog.deploy_from_artifact.await_args.kwargs
-    assert kwargs["slug"] == "demo-agent"
-    assert kwargs["tar_bytes"] == b"fake-tar"
+    assert kwargs["slice_"] == {}
+    assert resp.json()["config_registered"] is False
 
 
 @patch("routers.marketplace_listings._purchases_table")
@@ -334,7 +403,9 @@ def test_deploy_paid_listing_with_valid_purchase_succeeds(
             }
         ]
     }
-    mock_boto.return_value = _stub_s3_get_object()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Demo Agent"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(
         return_value={
@@ -345,7 +416,7 @@ def test_deploy_paid_listing_with_valid_purchase_succeeds(
             "skills_added": [],
             "plugins_enabled": [],
             "cron_jobs_added": 0,
-            "config_registered": False,
+            "config_registered": True,
         }
     )
     mock_get_catalog.return_value = catalog

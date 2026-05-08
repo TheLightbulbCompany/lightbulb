@@ -30,9 +30,7 @@ from core.repositories import container_repo
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
-    admin_catalog,
     billing,
-    catalog,
     channels,
     config,
     container,
@@ -552,10 +550,6 @@ app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 
 # ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)
 app.include_router(oauth.router, prefix="/api/v1")
-
-# Agent catalog (user-facing list/deploy/deployed + admin publish)
-app.include_router(catalog.router, prefix="/api/v1")
-app.include_router(admin_catalog.router, prefix="/api/v1")
 
 # Admin dashboard (#351) — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

@@ -2,7 +2,7 @@
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 interface Purchase {
   purchase_id: string;
@@ -16,15 +16,16 @@ interface Purchase {
 
 export default function Buyer() {
   const { getToken } = useAuth();
-  const { data } = useSWR(
-    `${API}/api/v1/marketplace/my-purchases`,
+  const { data, error } = useSWR(
+    `${API}/marketplace/my-purchases`,
     async (url) => {
       const jwt = await getToken();
       const resp = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
-      if (!resp.ok) return null;
+      if (!resp.ok) throw new Error(`my-purchases failed (${resp.status})`);
       return resp.json();
     }
   );
+  if (error) return <p className="p-8 text-[var(--danger)]">Couldn&apos;t load purchases: {error.message}</p>;
   if (!data) return <p className="p-8">Loading…</p>;
   const items: Purchase[] = data.items ?? [];
   return (

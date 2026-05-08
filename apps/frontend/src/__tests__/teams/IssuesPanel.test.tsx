@@ -1,12 +1,15 @@
 // Test for IssuesPanel.
 //
-// Asserts the create-issue body uses ONLY whitelisted fields from
-// CreateIssueBody (title, description, project_id, assignee_agent_id,
-// priority). Extra fields would 422 at the BFF (extra="forbid").
+// After PR 4 of the /teams panel port, the inline `CreateIssueDialog` was
+// deleted in favour of the standalone `NewIssueDialog` (which uses
+// `useIssueMutations.create()` and has its own behaviour tests at
+// src/__tests__/components/teams/issues/NewIssueDialog.test.tsx). This file
+// guards the integration: clicking "New issue" mounts NewIssueDialog with
+// open=true. The actual POST /issues body shape is asserted in the
+// NewIssueDialog and useIssueMutations tests.
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 
-const mockPost = vi.fn();
 const mockMutate = vi.fn();
 const mockRead = vi.fn(() => ({
   data: { issues: [] },
@@ -18,72 +21,42 @@ const mockRead = vi.fn(() => ({
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: mockRead,
-    post: mockPost,
+    post: vi.fn(),
     patch: vi.fn(),
     del: vi.fn(),
   }),
 }));
 
+const newIssueDialogStub = vi.fn();
+vi.mock("@/components/teams/issues/NewIssueDialog", () => ({
+  NewIssueDialog: (props: {
+    open: boolean;
+    onOpenChange: (next: boolean) => void;
+    onCreated?: (id: string) => void;
+  }) => {
+    newIssueDialogStub(props);
+    return props.open ? <div data-testid="new-issue-dialog-stub" /> : null;
+  },
+}));
+
 import { IssuesPanel } from "@/components/teams/panels/IssuesPanel";
 
 describe("IssuesPanel", () => {
-  it("renders empty state", () => {
+  it("renders the editorial empty state when there are no issues", () => {
     render(<IssuesPanel />);
-    expect(screen.getByText("Issues")).toBeInTheDocument();
-    expect(screen.getByText("No issues yet.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: /issues/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/no issues yet/i)).toBeInTheDocument();
   });
 
-  it("create form posts ONLY whitelisted fields (no smuggled fields)", async () => {
-    mockPost.mockResolvedValue({ id: "i1" });
+  it("clicking 'New issue' opens NewIssueDialog (open=true)", () => {
     render(<IssuesPanel />);
-
-    fireEvent.click(screen.getByText("New issue"));
-    fireEvent.change(screen.getByLabelText("Title"), {
-      target: { value: "Fix bug" },
-    });
-    fireEvent.change(screen.getByLabelText("Priority"), {
-      target: { value: "high" },
-    });
-    fireEvent.click(screen.getByText("Create"));
-
-    await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledTimes(1);
-    });
-    expect(mockPost).toHaveBeenCalledWith("/issues", {
-      title: "Fix bug",
-      priority: "high",
-    });
-
-    const [, body] = mockPost.mock.calls[0];
-    const allowedKeys = new Set([
-      "title",
-      "description",
-      "project_id",
-      "assignee_agent_id",
-      "priority",
-    ]);
-    for (const k of Object.keys(body as Record<string, unknown>)) {
-      expect(allowedKeys.has(k)).toBe(true);
-    }
-    expect(body).not.toHaveProperty("adapterType");
-    expect(body).not.toHaveProperty("adapterConfig");
-    expect(body).not.toHaveProperty("status");
-  });
-
-  it("title-only submit posts only {title}", async () => {
-    mockPost.mockResolvedValue({ id: "i2" });
-    render(<IssuesPanel />);
-
-    fireEvent.click(screen.getByText("New issue"));
-    fireEvent.change(screen.getByLabelText("Title"), {
-      target: { value: "Just a title" },
-    });
-    fireEvent.click(screen.getByText("Create"));
-
-    await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledWith("/issues", {
-        title: "Just a title",
-      });
-    });
+    expect(screen.queryByTestId("new-issue-dialog-stub")).not.toBeInTheDocument();
+    // Two New issue CTAs render when the list is empty (masthead + empty
+    // state). Click the first.
+    const buttons = screen.getAllByRole("button", { name: /new issue/i });
+    fireEvent.click(buttons[0]);
+    expect(screen.getByTestId("new-issue-dialog-stub")).toBeInTheDocument();
   });
 });

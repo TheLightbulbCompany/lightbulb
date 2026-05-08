@@ -10,10 +10,13 @@
 import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { Inbox as InboxIcon } from "lucide-react";
+
 import { InboxToolbar } from "@/components/teams/inbox/InboxToolbar";
 import { InboxList } from "@/components/teams/inbox/InboxList";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
+import { PanelEmptyState, PanelMasthead } from "@/components/teams/shell";
 
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
@@ -213,18 +216,44 @@ export function InboxPage({
     // single-row interactions via archiveStack.markRead.
   }, [filteredIssues, readItems]);
 
-  // 12. Empty-state copy per tab + per-search.
-  const emptyMessage = useMemo(() => {
-    if (searchQuery) return "No inbox items match your search.";
-    if (tab === "mine") return "Inbox zero.";
-    if (tab === "unread") return "No new inbox items.";
-    if (tab === "recent") return "No recent inbox items.";
-    return "No inbox items match these filters.";
+  // 12. Empty-state copy per tab + per-search. Headline preserves the
+  //     terse editorial voice from upstream; supporting text gives a single
+  //     sentence of context appropriate to the tab.
+  const emptyState = useMemo<{ headline: string; supporting: string }>(() => {
+    if (searchQuery) {
+      return {
+        headline: "No matches.",
+        supporting: "No inbox items match your search.",
+      };
+    }
+    if (tab === "mine") {
+      return {
+        headline: "Inbox zero.",
+        supporting:
+          "Nothing pending right now. Items appear here when an agent completes a run, an issue is assigned to you, or an approval is requested.",
+      };
+    }
+    if (tab === "unread") {
+      return {
+        headline: "No new inbox items.",
+        supporting: "Everything in your inbox has been read.",
+      };
+    }
+    if (tab === "recent") {
+      return {
+        headline: "No recent inbox items.",
+        supporting: "Recently touched issues will surface here.",
+      };
+    }
+    return {
+      headline: "Nothing here.",
+      supporting: "No inbox items match these filters.",
+    };
   }, [tab, searchQuery]);
 
   return (
     <div className="flex flex-col p-4 sm:p-6 editorial-page">
-      <h1 className="font-editorial-serif text-3xl mb-4 text-[var(--ink)]">Inbox</h1>
+      <PanelMasthead overline="Inbox" title="Inbox" className="mb-4" />
       <InboxToolbar
         tab={tab}
         onTabChange={setTab}
@@ -259,9 +288,11 @@ export function InboxPage({
           <PageSkeleton variant="inbox" />
         </div>
       ) : sections.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-12 font-editorial-serif text-xl italic text-[var(--mute)]">
-          {emptyMessage}
-        </div>
+        <PanelEmptyState
+          icon={InboxIcon}
+          headline={emptyState.headline}
+          supporting={emptyState.supporting}
+        />
       ) : (
         <InboxList
           sections={sections}

@@ -40,7 +40,7 @@ describe("NewIssueDialog", () => {
     expect(screen.getByRole("button", { name: /create issue/i })).not.toBeDisabled();
   });
 
-  test("submit fires create with trimmed inputs + status/priority defaults", async () => {
+  test("submit fires create with trimmed inputs + priority default (status owned upstream)", async () => {
     mockCreate.mockResolvedValue({ id: "iss_new" });
     render(<NewIssueDialog {...baseProps} />);
     fireEvent.change(screen.getByPlaceholderText("Issue title"), {
@@ -54,7 +54,6 @@ describe("NewIssueDialog", () => {
       expect(mockCreate).toHaveBeenCalledWith({
         title: "Fix bug",
         description: "Details",
-        status: "todo",
         priority: "medium",
         projectId: undefined,
         assigneeAgentId: undefined,

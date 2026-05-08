@@ -1,11 +1,36 @@
 """Tests for container endpoints: GET /status and POST /gateway/restart."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.auth import AuthContext
 from routers.container import _resolve_cold_start_phase
+
+
+def _personal_auth(user_id: str = "user_x", email: str = "u@example.com") -> AuthContext:
+    """Personal-context AuthContext (no org)."""
+    return AuthContext(
+        user_id=user_id,
+        org_id=None,
+        org_role=None,
+        email=email,
+    )
+
+
+def _org_member_auth(
+    user_id: str = "user_member",
+    org_id: str = "org_1",
+    email: str = "m@example.com",
+) -> AuthContext:
+    """Org-member AuthContext. is_org_admin returns False because role != org:admin."""
+    return AuthContext(
+        user_id=user_id,
+        org_id=org_id,
+        org_role="org:member",
+        email=email,
+    )
 
 
 class TestColdStartPhaseResolver:
@@ -219,17 +244,27 @@ class TestContainerStatus:
         assert data["last_error_at"] is None
 
     @pytest.mark.asyncio
+    @patch("routers.container.asyncio.create_task")
+    @patch("routers.container.ensure_user_ready", new_callable=AsyncMock)
     @patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock)
     @patch("routers.container.get_ecs_manager")
-    async def test_returns_404_without_container(self, mock_get_ecs, mock_gate, async_client):
-        """No container row + no gate fires -> preserve existing 404 behavior."""
+    async def test_returns_provisioning_without_container(
+        self, mock_get_ecs, mock_gate, mock_ensure, mock_create_task, async_client
+    ):
+        """No container row + no gate fires (owner) -> dispatch ensure_user_ready
+        and return 200 with phase=provisioning. Replaces former 404 contract."""
         mock_ecs = AsyncMock()
         mock_get_ecs.return_value = mock_ecs
         mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
         mock_ecs.get_service_status = AsyncMock(return_value=None)
         mock_gate.return_value = None  # no gate fires
+        mock_create_task.side_effect = lambda c: c.close() or MagicMock()
         response = await async_client.get("/api/v1/container/status")
-        assert response.status_code == 404
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "provisioning"
+        assert body["phase"] == "provisioning"
+        mock_create_task.assert_called_once()
 
 
 class TestContainerStatusGate:
@@ -288,19 +323,12 @@ class TestContainerStatusGate:
         assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing#credits"
 
     @pytest.mark.asyncio
-    async def test_no_container_no_gate_raises_404(self):
-        """No container row + no gate fires -> existing 404 behavior preserved."""
-        from fastapi import HTTPException
-
+    async def test_no_container_no_gate_dispatches_ensure_user_ready(self):
+        """No container row + no gate fires (owner) -> dispatch ensure_user_ready
+        and return synthetic provisioning response (was 404 pre-Task-8)."""
         from routers.container import container_status
 
-        mock_auth = SimpleNamespace(
-            user_id="user_x",
-            org_id=None,
-            is_org_context=False,
-            is_org_admin=False,
-        )
-
+        captured = []
         fake_ecs = AsyncMock()
         fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
         fake_ecs.get_service_status = AsyncMock(return_value=None)
@@ -313,11 +341,18 @@ class TestContainerStatusGate:
                 return_value=None,
             ),
             patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.ensure_user_ready", new=AsyncMock()),
+            patch(
+                "routers.container.asyncio.create_task",
+                side_effect=lambda c: captured.append(c) or c.close() or c,
+            ),
         ):
-            with pytest.raises(HTTPException) as exc:
-                await container_status(auth=mock_auth)
+            result = await container_status(auth=_personal_auth())
 
-        assert exc.value.status_code == 404
+        assert result["status"] == "provisioning"
+        assert result["phase"] == "provisioning"
+        assert result["substatus"] == "ensure_user_ready_dispatched"
+        assert len(captured) == 1
 
     @pytest.mark.asyncio
     async def test_existing_container_skips_gate(self):
@@ -364,6 +399,98 @@ class TestContainerStatusGate:
         mock_gate.assert_not_called()
         assert result["service_name"] == "openclaw-existing"
         assert result["status"] == "running"
+
+
+class TestContainerStatusEnsureUserReadyDispatch:
+    """Task 8 — /container/status as the canonical readiness trigger.
+
+    After the Clerk-webhook eager-provisioning paths were stripped (Tasks
+    6 + 7), this endpoint is the only path that drives a fresh user from
+    "Clerk-authed" to "container provisioning." Owners get a synthetic
+    provisioning response; org members get 202 'workspace pending'.
+    """
+
+    @pytest.mark.asyncio
+    async def test_status_no_container_gate_passes_owner_dispatches_ensure_user_ready(self):
+        """Owner role + no container + gate clear -> fire ensure_user_ready,
+        return 200 with phase=provisioning (not 404)."""
+        from routers.container import container_status
+
+        captured = []
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(None, None)),
+            get_service_status=AsyncMock(return_value=None),
+        )
+        with (
+            patch(
+                "routers.container.evaluate_provision_gate",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "routers.container.get_ecs_manager",
+                return_value=fake_ecs,
+            ),
+            patch(
+                "routers.container.ensure_user_ready",
+                new=AsyncMock(),
+            ),
+            patch(
+                "routers.container.asyncio.create_task",
+                side_effect=lambda c: captured.append(c) or c.close() or c,
+            ),
+        ):
+            result = await container_status(_personal_auth())
+        assert result["status"] == "provisioning"
+        assert result["phase"] == "provisioning"
+        assert len(captured) == 1
+
+    @pytest.mark.asyncio
+    async def test_status_no_container_org_member_dispatches_ensure_user_ready_returns_202(self):
+        """Org member + no owner container + gate clear -> fire ensure_user_ready
+        (member role; will add to paperclip if owner's company is active,
+        otherwise return gracefully) AND return 202 'team workspace pending'."""
+        from fastapi import HTTPException
+
+        from routers.container import container_status
+
+        captured = []
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(None, None)),
+            get_service_status=AsyncMock(return_value=None),
+        )
+        with (
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.ensure_user_ready", new=AsyncMock()),
+            patch(
+                "routers.container.asyncio.create_task",
+                side_effect=lambda c: captured.append(c) or c.close() or c,
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await container_status(_org_member_auth())
+        assert exc_info.value.status_code == 202
+        assert len(captured) == 1  # ensure_user_ready was dispatched
+
+    @pytest.mark.asyncio
+    async def test_status_no_container_gate_blocks_returns_402_unchanged(self):
+        """Existing 402 behavior preserved when gate is up."""
+        from fastapi import HTTPException
+
+        from routers.container import container_status
+
+        fake_gate = MagicMock(to_payload=lambda: {"blocked": {"code": "x"}})
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(None, None)),
+            get_service_status=AsyncMock(return_value=None),
+        )
+        with (
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=fake_gate)),
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await container_status(_personal_auth())
+        assert exc_info.value.status_code == 402
 
 
 class TestGatewayRestart:

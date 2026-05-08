@@ -21,6 +21,7 @@ from core.services.container_provision import (
     background_provision as _background_provision,
 )
 from core.services.provision_gate import evaluate_provision_gate
+from core.services.user_provision import ensure_user_ready
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +78,17 @@ async def _assert_provision_allowed(
     summary="Get container metadata for current user",
     description=(
         "Returns the user's container status and metadata. "
-        "If the container is in error state and the user has an active "
-        "subscription, auto-triggers re-provisioning in the background."
+        "If no container row exists yet and the provision gate is clear, "
+        "dispatches ensure_user_ready in the background and returns a "
+        "synthetic provisioning response (owners) or 202 'workspace pending' "
+        "(org members). If the container is in error state and the user "
+        "has an active subscription, auto-triggers re-provisioning in the "
+        "background."
     ),
     operation_id="container_status",
     responses={
-        404: {"description": "No container for this user"},
+        202: {"description": "Org-member: owner's container not ready yet"},
+        402: {"description": "Provision gate is up (structured blocked payload)"},
     },
 )
 async def container_status(
@@ -97,12 +103,11 @@ async def container_status(
         # Fall back to get_service_status for error/stopped containers
         container = await ecs_manager.get_service_status(owner_id)
     if not container:
-        # No container row at all — before returning 404, evaluate the
-        # same provision gate POST /provision uses. If a gate fires, the
-        # frontend needs the structured payload (402) so it can render
-        # the picker / "top up" CTA instead of trapping the user in a
-        # generic "no container" state. If no gate fires, fall through
-        # to the existing 404 behavior unchanged.
+        # No container row at all. Evaluate the same provision gate
+        # POST /provision uses — if a gate is up, the frontend needs the
+        # structured payload (402) so it can render the picker / "top up"
+        # CTA instead of trapping the user in a generic "no container"
+        # state.
         gate = await evaluate_provision_gate(
             owner_id=owner_id,
             clerk_user_id=auth.user_id,
@@ -110,7 +115,42 @@ async def container_status(
         )
         if gate is not None:
             raise HTTPException(status_code=402, detail=gate.to_payload())
-        raise HTTPException(status_code=404, detail="No container found")
+
+        # Gate clear, no container row. After Tasks 6 + 7 stripped the
+        # eager Clerk-webhook provisioning, this endpoint is the canonical
+        # poll-driven trigger that drives every authenticated user from
+        # "Clerk-authed" to "container provisioning." Fire ensure_user_ready
+        # in the background; it's idempotent and gate-checks again itself.
+        #
+        # Org members can't drive container provisioning themselves —
+        # they ride the owner's container. But ensure_user_ready (member
+        # role) handles paperclip-membership-add against the owner's
+        # company; if the owner's company isn't active yet, it returns
+        # gracefully. Surface 202 so the frontend renders "workspace
+        # pending" rather than a generic loading state.
+        if auth.is_org_context and not auth.is_org_admin:
+            asyncio.create_task(ensure_user_ready(auth))
+            raise HTTPException(
+                status_code=202,
+                detail="team workspace pending",
+            )
+
+        # Owner role: dispatch ensure_user_ready and return a synthetic
+        # provisioning response. Shape mirrors the existing 200-OK return
+        # below so the frontend's phase=="provisioning" UI handles this
+        # without schema drift.
+        asyncio.create_task(ensure_user_ready(auth))
+        return {
+            "service_name": None,
+            "status": "provisioning",
+            "substatus": "ensure_user_ready_dispatched",
+            "created_at": None,
+            "updated_at": None,
+            "region": settings.AWS_REGION,
+            "last_error": None,
+            "last_error_at": None,
+            "phase": "provisioning",
+        }
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the

@@ -13,7 +13,11 @@ from core.services.provision_gate import (
 
 
 @pytest.mark.asyncio
-async def test_no_billing_account_returns_subscription_required():
+async def test_no_billing_account_returns_signup_required():
+    """No billing row at all — never started signup. Distinct code from
+    subscription_required (which is for inactive existing rows) so the
+    /container/status endpoint can route admins to the ProviderPicker
+    without short-circuiting the canceled/unpaid/paused path."""
     with patch("core.services.provision_gate.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(return_value=None)
         gate = await evaluate_provision_gate(
@@ -21,8 +25,34 @@ async def test_no_billing_account_returns_subscription_required():
             clerk_user_id="user_x",
         )
     assert gate is not None
-    assert gate.code == "subscription_required"
+    assert gate.code == "signup_required"
     assert gate.action_admin_only is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    ["canceled", "incomplete", "incomplete_expired", "unpaid", "paused"],
+)
+async def test_inactive_billing_account_returns_subscription_required(status):
+    """Existing billing row with inactive status keeps the
+    subscription_required code (action: /settings/billing) so the
+    frontend routes the user to the billing portal — *not* to the
+    picker, which would 409 already_subscribed on click."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "stripe_subscription_id": "sub_x",
+                "subscription_status": status,
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+            clerk_user_id="user_x",
+        )
+    assert gate is not None
+    assert gate.code == "subscription_required"
+    assert gate.action_href == "/settings/billing"
 
 
 @pytest.mark.asyncio

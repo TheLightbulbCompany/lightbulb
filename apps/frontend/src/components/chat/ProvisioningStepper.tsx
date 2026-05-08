@@ -739,6 +739,17 @@ export function ProvisioningStepper({
     );
   }
 
+  // Needs-signup: backend signals via 404 that the owner has never
+  // started signup (gate would fire `signup_required` for an admin).
+  // Render the ProviderPicker by intent here — the picker's
+  // POST /billing/trial-checkout is the only path that creates the
+  // first billing row. Placed before billing/onboarded fall-through so
+  // we don't depend on the post-billing-load render order to surface
+  // the picker for fresh users.
+  if (gatePhase === "needs-signup") {
+    return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
+  }
+
   // Channel onboarding — admins set up the first main-agent bot, members
   // pair their identity with an existing one. Always scoped to `main`.
   if (phase === "channels") {

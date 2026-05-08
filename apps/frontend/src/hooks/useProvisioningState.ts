@@ -27,7 +27,12 @@ export interface ContainerInfo {
   [key: string]: unknown;
 }
 
-export type ProvisioningPhase = "loading" | "normal" | "blocked" | "team-pending";
+export type ProvisioningPhase =
+  | "loading"
+  | "normal"
+  | "blocked"
+  | "team-pending"
+  | "needs-signup";
 
 export interface ProvisioningStateResult {
   phase: ProvisioningPhase;
@@ -40,28 +45,36 @@ export interface ProvisioningStateResult {
 type FetchResult =
   | { kind: "container"; data: ContainerInfo }
   | { kind: "blocked"; data: BlockedPayload }
-  | { kind: "team-pending"; detail: string };
+  | { kind: "team-pending"; detail: string }
+  | { kind: "needs-signup" };
 
 /**
  * Owns the chat-page centerpiece state machine:
  *
  *   /status load
  *        |
- *  +-----+------+
- *  |   200      | 202                    | 402
- *  v            v                         v
- *  normal     team-pending              blocked
+ *  +-----+------+--------------+--------------+
+ *  |   200      | 202          | 402          | 404
+ *  v            v              v              v
+ *  normal     team-pending   blocked        needs-signup
  *
  * 200 covers both the "have a container" case and the "owner has no
  * container yet, gate is clear, backend kicked off provisioning"
  * case (status="provisioning"). 202 is returned only for org members
- * waiting on their admin-owned workspace. 404 is no longer a valid
- * response shape on this endpoint after backend Task 8.
+ * waiting on their admin-owned workspace. 404 is the explicit
+ * "owner has never started signup" signal — the backend returns it
+ * for admins whose provision gate would fire `signup_required`, so
+ * the chat surface can render the ProviderPicker (the only checkout
+ * entry point) without trapping the user in a Subscribe button that
+ * loops back here. Inactive-row admins (canceled, unpaid, paused)
+ * still get 402 with a /settings/billing action.
  *
  * While in either `blocked` OR `team-pending`, polls fast (5s) for the
  * first minute, then 30s. `refresh()` resets to 5s and re-polls
  * immediately. Without the slow phase, a member whose admin never
  * provisions would hammer /container/status indefinitely (720 req/hour).
+ * `needs-signup` does not auto-poll — the next state change comes from
+ * the user clicking a picker card and being redirected to Stripe.
  */
 export function useProvisioningState(): ProvisioningStateResult {
   const { isSignedIn, getToken } = useAuth();
@@ -103,6 +116,16 @@ export function useProvisioningState(): ProvisioningStateResult {
         return { kind: "container", data: body as ContainerInfo };
       } catch (err) {
         if (!(err instanceof ApiError)) throw err;
+        if (err.status === 404) {
+          // Backend signal for "owner has never started signup": gate
+          // would fire `signup_required` for an admin, but the
+          // /container/status endpoint converts that to 404 so the
+          // chat surface renders the ProviderPicker (which calls
+          // POST /billing/trial-checkout — the only way to create the
+          // first billing row) instead of trapping the admin in a
+          // Subscribe-loop UI. Inactive-row admins still get 402.
+          return { kind: "needs-signup" };
+        }
         if (err.status === 402) {
           // FastAPI's HTTPException(detail=...) serializes to
           // {"detail": <whatever was passed>}. Backend passes
@@ -214,6 +237,12 @@ export function useProvisioningState(): ProvisioningStateResult {
       refreshInterval,
       refresh,
     };
+  }
+  if (data.kind === "needs-signup") {
+    // No auto-poll. The user must click a picker card to advance —
+    // that fires POST /billing/trial-checkout and redirects to Stripe;
+    // SWR re-fetches when they return.
+    return { phase: "needs-signup", container: null, blocked: null, refreshInterval: 0, refresh };
   }
   return { phase: "blocked", container: null, blocked: data.data, refreshInterval, refresh };
 }

@@ -191,8 +191,16 @@ async def evaluate_provision_gate(
     # Layer 1 — subscription.
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account:
+        # No billing row at all means the owner has never started signup.
+        # This is *distinct* from an inactive subscription below, which
+        # has its own re-activation path. Surfaced separately so the
+        # /container/status endpoint can route admins to the
+        # ProviderPicker (which calls POST /billing/trial-checkout —
+        # the only way to create the first billing row) without
+        # accidentally short-circuiting the canceled/unpaid/paused
+        # cases that need /settings/billing instead.
         return Gate(
-            code="subscription_required",
+            code="signup_required",
             title="Subscribe to start your container",
             message="An active subscription is required to provision a container.",
             action_label="Subscribe",

@@ -29,8 +29,8 @@ The standalone marketplace at `/marketplace/*` stays unchanged — it remains th
 
 ### Single new component, single new context
 
-- `apps/frontend/src/components/marketplace/MarketplaceDrawer.tsx` — right-side `<aside>` following the existing `AgentDetailPanel` pattern (`fixed right-0 top-0 z-50 h-full`). ~560px wide on desktop, full-width on mobile. Hosts three internal views switched by header tabs.
-- `apps/frontend/src/components/marketplace/MarketplaceDrawerProvider.tsx` — lightweight React context. Exposes `useMarketplaceDrawer().open({view, agentId?})`, `close()`, `state`. Triggers anywhere in the tree call `open(...)` without prop drilling.
+- `apps/frontend/src/components/marketplace/drawer/MarketplaceDrawer.tsx` — right-side `<aside>` overlay. Mock dimensions: `width: min(920px, 98vw)` — substantially wider than `AgentDetailPanel` (its predecessor). Slides in via `transform: translateX(100%) → 0` over 350ms (`cubic-bezier(.4, 0, .2, 1)`). Backed by a scrim (`rgba(20, 30, 25, 0.45)`) that fades in over 250ms. Click scrim to close.
+- `apps/frontend/src/components/marketplace/drawer/MarketplaceDrawerProvider.tsx` — lightweight React context. Exposes `useMarketplaceDrawer().open({view, agentId?})`, `close()`, `state`. Triggers anywhere in the tree call `open(...)` without prop drilling.
 - Provider wraps `<ChatLayout>` in `apps/frontend/src/app/chat/page.tsx`.
 - Drawer itself is `position: fixed` and sits visually outside the layout flow.
 
@@ -54,67 +54,208 @@ State lives in React only (no URL params for v1). Closing the drawer with the X 
 
 The drawer is a discrete component with its own styling — Tailwind utilities since that's the prevailing pattern in `apps/frontend/src/components/marketplace/*`. The publish-mode header swap uses a `data-mode="publish"` attribute on the drawer root + CSS rules that hide/show header pieces (no JS show/hide → no layout flicker).
 
+### Visual tokens
+
+Match the mock's palette exactly:
+- `--cream: #faf7f2`, `--cream-2: #f3eee5` (drawer background, tab background)
+- `--ink: #1a1a1a`, `--ink-2: #5b5b5b` (text)
+- `--green: #06402b`, `--green-2: #0a5a3d` (CTAs, active states)
+- `--border: #e0dbd0`, `--accent: #c2a378` (gold; "Curated" badge + published agent dots)
+- Body `DM Sans`, headings `Lora` (serif, italic for marketplace context labels)
+
+The `MarketplaceSection` we shipped on the landing page already uses these tokens via globals.css. The drawer uses the same vocabulary inline (Tailwind arbitrary values + class-name aliases as needed).
+
+---
+
+## Drawer header
+
+Two header configurations driven by `data-mode` on the drawer root. CSS-only swap, no JS layout flicker.
+
+**Default mode** (viewing Browse or My Listings):
+- Left: italic Lora "Marketplace" crumb + pill-shaped tab group (Browse | My listings)
+- Right: green pill `+ Publish your agent` button → opens wizard at Step 1; small `Open in full page ↗` link → opens `/marketplace` in a **new tab** (preserves drawer state, gives users the SEO-able / shareable standalone surface); circular ✕ close.
+
+**Publish mode** (`data-mode="publish"`):
+- Left: back-arrow button (`← Marketplace`) returns drawer to `prevView` (Browse or My Listings — whichever opened the wizard); italic Lora "Publish an agent" subtitle; 4-dot progress indicator; "Step N of 4" label.
+- Right: ✕ close only (no Publish button or full-page link in publish mode — keep focused).
+
+Publish mode also reveals a **sticky footer bar** at the drawer bottom holding `Back` / `Cancel` / `Continue →` (or `Submit for review →` on Step 4). Footer hidden in default mode.
+
 ---
 
 ## Three views
 
 ### Browse view
 
-- Top row: search input, sort dropdown ("Most installed", "Recently updated").
-- Category chips: All, Sales, Engineering, Operations, Research, Finance, Marketing.
-- Card grid via `GET /marketplace/listings/search?q=...&format=openclaw`. The endpoint already filters to `status="published"`; v0 catalog is curator-only but the drawer is forward-compatible for when other sellers exist.
-- Card content: name, tagline (first line of description, ~120 chars), seller name, Free/Premium tier label, install button.
-- **Card body click**: opens `/marketplace/listing/[slug]` in a new tab (`target="_blank"`). Preserves chat session.
-- **Hire button click**:
-  - Free listing → calls existing `useCatalog().deploy(slug)`. On success: drawer auto-closes after 700ms, the new agent slides into the chat sidebar (existing animation), toast confirms.
-  - Paid listing → `POST /marketplace/checkout` (existing) → `window.location.href = checkoutUrl` (same-tab redirect, existing pattern). Stripe redirects buyer to `/marketplace/deploy-success` which deploys + bounces to `/chat`.
-- Already-installed listings render with a green border + "Hired ✓" pill. `useCatalog().installedSlugs` is the source.
+Top toolbar:
+- Search input (full-width left) — debounced 300ms, calls `GET /marketplace/listings/search?q=...&format=openclaw`
+- "Most installed ▾" sort dropdown (right). v1 supports two orders: most-installed (default) and recently-updated.
+
+Category chips below toolbar — exactly six per mock:
+**All · Sales · Engineering · Operations · Research · Finance**
+
+Cards (grid `auto-fill, minmax(240px, 1fr)`, gap 16px, min-height 200px):
+- 38×38 rounded-square monogram avatar (per-listing palette via `agentDesign.fromListing`)
+- Lora 18px name, 13px description (clamped 2 lines)
+- Footer row: italic seller name (left), green pill `Hire` button (right)
+- "Curated" badge (gold `--accent`, 10px caps top-right) when `seller_id == curator`
+- Already-installed listings: green border (`#aac6b4`), `#f4f8f4` background, "INSTALLED" tag top-right, disabled "Hired ✓" pill in footer. Source: `useCatalog().installedSlugs`.
+- **Card body click** opens `/marketplace/listing/[slug]` in a **new tab** (`target="_blank"`). Hire button click stays in-drawer.
+
+Hire flow:
+- Free listing → calls existing `useCatalog().deploy(slug)`. Card swaps to "Installing…" → "Hired ✓"; drawer auto-closes after 700ms; new agent slides into the chat sidebar with the existing `slideIn` keyframe (green flash background fading to normal); toast confirms (see Toast section).
+- Paid listing → `POST /marketplace/checkout` → `window.location.href = checkout_url`. Same-tab redirect; user lands at `/deploy-success` → deploys → bounces to `/chat`. No cross-tab polling for v1.
 
 ### My Listings view
 
-- **Earnings panel** at top: held balance + lifetime earned + "Cash out →" button. Reads existing `GET /marketplace/payouts/dashboard`.
-  - **First-time sellers (Connect not onboarded)**: `dashboard_url` is null. Button text is "Set up payouts" and clicks call `POST /marketplace/payouts/onboard` (existing endpoint), then redirect to the returned `onboarding_url`. Same code path as `/marketplace/dashboard` already uses today.
-  - **Onboarded sellers**: button text is "Cash out →" and opens `dashboard_url` (Stripe-hosted) in a new tab.
-- **Listings list** below: seller's listings across all statuses (draft, review, published, retired, taken-down).
-  - Data source decision deferred to plan: either add a `seller_id` query param to the existing `/marketplace/listings/search` endpoint, OR add a small new `GET /marketplace/me/listings` endpoint. Whichever requires fewer backend changes.
-  - Each row: avatar, name, status badge (Live / In review / Draft / Taken down), updated-at, install count, tier label.
-  - Per-listing actions: `Analytics` (stub — opens placeholder), `Edit` (disabled stub for v1), overflow `⋯` (Copy link only — Unpublish + Take down deferred).
-- **`+ New listing`** button at top right opens the Publish wizard at Step 1.
-- **`View purchases →`** link at the bottom pointing to `/marketplace/buyer` (deferred-but-discoverable).
+Header row (mock layout):
 
-### Publish wizard view (4 steps + success)
+```
+My listings                                   [ + New listing ]
+2 active listings · 1,247 total installs · $0 pending payout
+```
 
-Shares the drawer panel — not a modal over the drawer. Sticky `.md-foot` bar holds Back / Cancel / Continue buttons.
+Three numeric stats (per mock — distinct from "held + lifetime"):
+- **Active listings** — count where `status == "published"`, derived client-side from the listings response
+- **Total installs** — sum of `install_count` across all seller's listings
+- **Pending payout** — `balance_held_cents` from `GET /marketplace/payouts/dashboard`, formatted as USD
 
-- **Step 1 — Pick agent**: grid of `useAgents()` results. The `main` agent is excluded (cannot be published; it's the user's primary chat agent). Already-published agents flagged with a small badge but still selectable (publishes a new version). If the seller entered Publish with a pre-selected `publishAgentId`, Step 1 is skipped and the wizard opens at Step 2.
-- **Step 2 — Listing details**: public name (defaults to agent name), tagline (≤80 chars), description (markdown textarea, ≤4096 chars), category dropdown, tags chip input (≤5 tags). Validation matches existing `PublishAgentModal` rules.
-- **Step 3 — Pricing**: Free/Premium toggle. Premium reveals price input ($1–$20 cap, matches existing backend cap), live take-home breakdown (15% platform fee + Stripe 2.9% + $0.30 processing). Earnings-accrual note: "Earnings accrue to your seller balance. Cash out anytime from My Listings."
-- **Step 4 — Review**: live preview card (rendered exactly how it'll appear in Browse), bundled-skills disclosure pulled from the agent's `openclaw.json`, terms acknowledgment checkbox. Continue button label: "Submit for review →".
-- **Success step**: ✓ confirmation + "Submitted for review. We'll notify you when it's live." + "View my listings →" button switches drawer to My Listings.
+`+ New listing` button (top-right green pill) opens the Publish wizard at Step 1.
 
-The 3-call submit chain (`POST /marketplace/listings` → `POST /marketplace/listings/{id}/artifact-from-agent` → `POST /marketplace/listings/{id}/submit`) and the **draft-resume on partial-failure** logic from `PublishAgentModal` are ported into the wizard verbatim. Don't reinvent the retry semantics — they handle real failure modes (slug 409 on create, transient 5xx on artifact upload, etc.).
+Listings list below (vertical stack, gap 10px). Each row:
+- 42×42 monogram avatar
+- Lora 18px name + meta line (`Updated 2d ago · 847 installs · Premium tier`; "Premium tier" or "Free" in green)
+- Status badge (right): `Live` (`#e3efe6`/`#06402b`), `In review` (`#fef4e3`/`#a07520`), `Draft` (`#f3eee5`/`#5b5b5b`), or `Taken down` (cream)
+- Per-row buttons: `Analytics` (stub, opens placeholder), `Edit` (disabled stub for v1), `⋯` overflow (Copy link only — Unpublish + Take down deferred)
+
+Empty state when zero listings: cream dashed card, Lora heading "No listings yet.", body "Open chat to publish your first agent.", `+ Publish your agent` CTA → opens wizard.
+
+**Cash-out integration** (the Gap 1 fix from brainstorm):
+- Read `dashboard_url` from `/payouts/dashboard`. If null (first-time seller, never onboarded): pending-payout stat label changes to a clickable **"Set up payouts →"** action; clicking calls `POST /marketplace/payouts/onboard` and redirects to the returned `onboarding_url`. Same code path `/marketplace/dashboard` already uses today.
+- If `dashboard_url` is non-null: a `Cash out →` link sits under/next to the pending-payout stat; clicking opens `dashboard_url` (Stripe-hosted) in a new tab.
+
+Data source decision (deferred to plan): My Listings needs the seller's listings across all statuses, but `/marketplace/listings/search` filters to `status == "published"` only. Plan picks one of: (a) extend `/listings/search` with `seller_id` + `status_in` query params; (b) add a tiny `GET /marketplace/me/listings` endpoint (~30 lines). No schema changes either way.
+
+Small `View purchases →` link at the bottom of the My Listings view points to `/marketplace/buyer` (deferred-but-discoverable for buyers who also sell).
+
+### Publish wizard (4 steps + success)
+
+Wizard shares the drawer panel — not a modal over the drawer. Smooth `wizFade` 260ms entrance.
+
+**Step 1 — Pick agent.**
+Lede: *"Pick which agent in your workspace you'd like to publish. We'll bundle its config, skills, and cron jobs into a deployable artifact."*
+
+- 2-column grid (`pick-grid`) of `pick-card` rows: 36×36 monogram avatar + Lora name + DM Sans subline
+- Subline shows `N skills · M crons` derived from the agent's openclaw.json (`agents.list[i].skills.length` + `agents.list[i].cron.length`)
+- The `main` agent renders disabled (45% opacity, cream-2 bg) with title "main agent can't be published"
+- Already-published agents flagged with the gold pub-dot but still selectable (publishes a new version)
+- Selecting a card sets `wState.agent` and pre-fills Step 2's `Public name` from the agent's display name
+- If the seller entered Publish via deep-link with a pre-selected `publishAgentId` (future v2), Step 1 is skipped and the wizard opens at Step 2
+
+**Step 2 — Listing details.**
+Lede: *"Help buyers find your agent. This is what they'll see in the marketplace."*
+
+- `Public name` text input (defaults from Step 1)
+- `One-line tagline` text input, `maxlength=80`, hint "Max 80 characters."
+- `Description` textarea, ~88px min height, hint "Markdown allowed."
+- 2-column row: `Category` dropdown (Operations / Sales / Engineering / Research / Finance / Marketing / Personal — note 7 here vs 6 chips in Browse; Personal is publishable but doesn't get its own filter chip) | `Tags` chip input (max 5; type+Enter to add; Backspace on empty input deletes the last chip; chips lowercase on add)
+
+Validation: 'Continue' enabled when `Public name` and `One-line tagline` both have non-empty trimmed values. Description and Tags are optional.
+
+**Step 3 — Pricing.** **(Diverges intentionally from mock — see "Mock divergences" section.)**
+Lede: *"Set what your work is worth. Price is hidden from the marketplace browse view — buyers only see it at install time."*
+
+- `Free` / `Premium tier` pill toggle (default Free)
+- Free panel: cream card with note *"Free agents install instantly. No payout setup needed. You can switch this listing to a premium tier anytime."*
+- Premium panel reveals:
+  - `Price per install (USD)` numeric input ($1–$20, step 1, default $10), suffix "USD · one-time, perpetual license", hint "Suggested range: $5–$20. Listings over $20 require Isol8 approval."
+  - Live `breakdown` card recalculating on input:
+    - List price: `$X.XX`
+    - Stripe processing fee (2.9% + $0.30): `−$X.XX`
+    - Isol8 platform fee (15%): `−$X.XX`
+    - **Your take-home per install**: `$X.XX` (in green Lora 16px)
+- **No Stripe Connect block.** Replaced with one italic line: *"Earnings accrue to your seller balance. Cash out anytime from My Listings."* (lazy-Connect direction; #565)
+
+Validation: 'Continue' always enabled when Free is selected; for Premium, enabled when price ≥ $1.
+
+**Step 4 — Review.**
+Lede: *"Here's how your listing will appear. Submit when ready — listings go live after admin moderation (usually within 24h)."*
+
+- Preview card rendered exactly how it'll show in Browse: monogram avatar + Lora name + "by {seller_display_name}" subline + first-line description + tag chips + footer row "Bundled: N skills · M crons · K channels" + green Free/Premium tier label
+- The "Bundled" line pulls from the agent's `openclaw.json` (`skills.list.length`, `cron.length`, `channels.length`)
+- Legal: *"By publishing, you agree to the [Marketplace Terms](#) and confirm this agent is yours to publish. Isol8 retains the right to remove listings that violate the [Acceptable Use Policy](#)."*
+- Continue button label switches to **`Submit for review →`**
+
+**Success step (Step 5).**
+- 60×60 green check circle (`#dde9d6` bg, `#06402b` mark)
+- Lora 24px "Submitted for review."
+- Body: *"You'll get a notification when it's live — usually within 24 hours. Until then, you can find it in **My listings → In review**."*
+- `View my listings →` button → switches drawer to My Listings tab and resets wizard state.
+
+The 3-call submit chain (`POST /marketplace/listings` → `POST /marketplace/listings/{id}/artifact-from-agent` → `POST /marketplace/listings/{id}/submit`) and the **draft-resume on partial-failure** logic from `PublishAgentModal` are ported verbatim. Don't reinvent the retry semantics — they handle real failure modes (slug 409 on create, transient 5xx on artifact upload, etc.).
+
+---
+
+## Toast (post-install confirmation)
+
+Bottom-center toast appears 700ms after the drawer auto-closes on a successful free install:
+
+```
+✓ {Name} installed in your workspace.    [ Open in chat → ]
+```
+
+- Green `--green` background, white text, rounded 14px
+- Slides up from `translate(-50%, 40px)` with `cubic-bezier(.34, 1.56, .64, 1)` 350ms
+- "Open in chat →" sets the new agent as active in the sidebar (existing `selectAgent` event)
+- Auto-dismisses after 5500ms
+
+The new agent in the sidebar plays the existing `new-arrival` `slideIn` keyframe animation (green flash background fading to normal) — this is already the codebase's pattern when an agent is freshly installed; nothing new on the sidebar side beyond ensuring the `new-arrival` class is applied to the inserted row.
 
 ---
 
 ## Triggers / integration points
 
-### From the chat sidebar (`GallerySection`)
+### From the chat sidebar (replaces the existing GallerySection list)
 
-- **"Browse all →" link**: changes from `<Link href="/marketplace">` to `<button onClick={() => open({ view: 'browse' })}>`. Inline curated rows in the sidebar stay as the always-visible discovery rail.
-- **GalleryItemRow's "info" button** stays — opens the existing `AgentDetailPanel` (separate from the drawer).
+The mock replaces the current `GallerySection` curated-agents inline rail with a much smaller two-button block in the sidebar footer:
+
+```
+        Marketplace
+   ┌────────────┬───────────────┐
+   │  Browse    │  + Publish    │
+   └────────────┴───────────────┘
+```
+
+- `Browse` → `open({ view: 'browse' })`
+- `+ Publish` → `open({ view: 'publish' })`
+
+This is a real visual change from today: the curated-agent inline rail (and its hover-info → `AgentDetailPanel` flow) is **removed entirely**. The drawer absorbs all marketplace discovery; the sidebar becomes a clean entry point only. Cascade deletes: `AgentDetailPanel.tsx`, `GalleryItemRow.tsx`, and most of `GallerySection.tsx` (the file shrinks from ~72 lines to a ~30-line two-button block).
+
+The sidebar's "MY AGENTS" section above (the user's own provisioned agents) stays unchanged. **Published agents** in that list now render with a small gold dot (`.pub-dot`, `--accent` color) in the top-right of their avatar — visual indicator of which of the user's agents are listed in the marketplace. Source: cross-reference between `useAgents()` and `myListings()` (the latter introduced for the My Listings tab).
 
 ### From the drawer header
 
-- **Browse / My Listings tabs**: switch view in place.
-- **`+ Publish your agent`** button (top right of header in Browse + My Listings modes): opens the Publish wizard at Step 1.
+- **Browse / My Listings tabs**: switch view in place
+- **`+ Publish your agent`** button (top-right of header in default mode): opens Publish wizard at Step 1
 
 ### From AgentsPanel
 
-- **Per-agent Publish button**: **deleted** (per design decision). The `<PublishAgentModal>` mount + related state in `AgentsPanel.tsx:216` is removed entirely. Publishing only happens from the drawer.
+- **Per-agent Publish button**: **deleted**. The `<PublishAgentModal>` mount + related state in `AgentsPanel.tsx:216` is removed entirely. Publishing only happens from the drawer (entered from the chat sidebar's `+ Publish` button or the drawer header's `+ Publish your agent` pill).
 
 ### Future deep-link entry (out of scope for v1)
 
-`?openMarketplace=publish&agent_id=...` — for `/marketplace/dashboard`'s eventual "Publish in chat" button. ~5 lines of `useSearchParams` in the provider. Defer until a real cross-page CTA needs it.
+`?openMarketplace=publish&agent_id=...` — for `/marketplace/dashboard`'s eventual "Publish in chat" button, or for cross-page links from emails. ~5 lines of `useSearchParams` in the provider. Defer until a real cross-page CTA needs it.
+
+---
+
+## Mock divergences (intentional)
+
+Two places where this spec deliberately differs from `isol8-chat-marketplace.html`:
+
+1. **Step 3 omits the Stripe Connect block.** Mock requires Stripe Connect onboarding before continuing for premium-tier listings. We shipped lazy Connect in #565 (the publish gate moved entirely to Cash Out time). Re-introducing the friction at publish would un-do that work two days later. The spec replaces the Stripe block with one italic line: *"Earnings accrue to your seller balance. Cash out anytime from My Listings."* First-time onboarding happens in My Listings' "Set up payouts" branch (Gap 1 fix) — at the moment a seller actually has money to receive.
+2. **My Listings stats use "active listings / total installs / pending payout"**, not "held + lifetime". This matches the mock layout exactly. Held + lifetime are derivable from the same `/payouts/dashboard` endpoint if needed elsewhere.
+
+Everything else (drawer dimensions, header layout, view structure, card design, wizard step layout, toast, sidebar block) follows the mock as the source of truth.
 
 ---
 
@@ -147,7 +288,7 @@ The 3-call submit chain (`POST /marketplace/listings` → `POST /marketplace/lis
 
 ### Curator flow (admin@isol8.co)
 
-Same as seller flow. Curator's published listings happen to be the data behind the chat sidebar's `GallerySection` and the landing page's `MarketplaceSection` (the curator-filter uses `seller_id == admin@isol8.co`'s Clerk user_id via `core.services.curator.get_curator_user_id`). No special path.
+Same as seller flow. Curator's published listings power the **landing page's `MarketplaceSection`** (the `/marketplace/featured-listings` endpoint filters by curator's Clerk user_id via `core.services.curator.get_curator_user_id`). Inside the drawer, curator's listings show up in Browse the same as any seller's, with a gold "Curated" badge in the top-right of the card. The chat sidebar's `GallerySection` no longer renders curator agents inline (replaced by the 2-button block); the curator's rows are reachable via Browse instead.
 
 ### Anonymous flow
 
@@ -160,8 +301,8 @@ Untouched. Drawer is signed-in only. Standalone marketplace pages handle anonymo
 Three things end up living in two places after this PR. All three are deliberate context-splitting, not technical debt.
 
 1. **Browse**: `/marketplace/agents` (standalone) and the drawer's Browse view both let signed-in users search and install. The standalone is required for SEO + anonymous; the drawer keeps signed-in users in chat. Same backend (`/marketplace/listings/search`).
-2. **Earnings display**: `/marketplace/dashboard` and the drawer's My Listings earnings panel both show held + lifetime. Same backend (`/marketplace/payouts/dashboard`).
-3. **Cash out trigger**: `/marketplace/dashboard` and the drawer's Cash Out button both link to the same Stripe-hosted dashboard URL.
+2. **Earnings display**: `/marketplace/dashboard` and the drawer's My Listings pending-payout stat both surface held balance. Same backend (`/marketplace/payouts/dashboard`).
+3. **Cash-out / Connect-onboarding triggers**: `/marketplace/dashboard` and the drawer's pending-payout action both call the same backend (`/payouts/onboard` for first-time, then the Stripe-hosted dashboard URL for cash-out).
 
 Once the drawer is in production, `/marketplace/dashboard` is functionally redundant for sellers who use chat. We don't delete it — it's the documented public seller URL and might still be linked from emails, support docs, etc. Treat it as a minimal alternate surface.
 
@@ -201,14 +342,19 @@ The drawer is logically one component but will be decomposed into per-view files
 | `components/marketplace/drawer/PublishWizard.tsx` | **New** — 4-step wizard + state machine + 3-call submit | ~280 |
 | `components/marketplace/drawer/wizardSteps.tsx` | **New** — step content components (PickAgent, Details, Pricing, Review) | ~250 |
 | `app/chat/page.tsx` | Wrap in `<MarketplaceDrawerProvider>`, mount `<MarketplaceDrawer />` | ~5 |
-| `components/chat/GallerySection.tsx` | Replace `<Link href="/marketplace">` with `<button onClick={open}>` | ~3 |
+| `components/chat/GallerySection.tsx` | Shrink to a 2-button "Marketplace" block (Browse + Publish). Remove curated-agent rail. | ~-40 |
+| `components/chat/AgentDetailPanel.tsx` | **Delete** (orphaned — no caller after GallerySection list goes) | -141 |
+| `components/chat/GalleryItemRow.tsx` | **Delete** (orphaned with the GallerySection list) | -~80 |
 | `components/control/panels/AgentsPanel.tsx` | Remove per-agent Publish button + `<PublishAgentModal>` mount + related state | ~-30 |
 | `components/marketplace/PublishAgentModal.tsx` | **Delete** | -472 |
-| `lib/marketplace/api.ts` | Add `searchListings(q, category)` if not adequate, or `myListings()` for the seller-scoped fetch | ~20 |
+| `lib/marketplace/api.ts` | Add `searchListings(q, category, sort)` and `myListings()` (or extend `browseListings` with the params; plan picks) | ~30 |
+| `hooks/useAgents.ts` (or new `usePublishedAgents`) | Add a derived `publishedSlugs` set so sidebar published-dots can render | ~15 |
 | `tests/unit/components/marketplace/drawer/MarketplaceDrawer.test.tsx` | **New** | ~120 |
 | `tests/unit/components/marketplace/drawer/PublishWizard.test.tsx` | **New** | ~180 |
 | `tests/unit/components/marketplace/drawer/MyListingsView.test.tsx` | **New** | ~80 |
 | `tests/unit/components/marketplace/PublishAgentModal.test.tsx` | **Delete** | -~430 |
+| `tests/unit/components/chat/AgentDetailPanel.test.tsx` | **Delete if exists** | — |
+| `tests/unit/components/chat/GallerySection.test.tsx` | Update to test the 2-button block | ~-40 |
 
 Net diff estimate: **+650 to +850 lines after offsets**, with the PublishAgentModal deletion absorbing a large chunk.
 
@@ -257,7 +403,7 @@ None blocking. All decisions made during brainstorm:
 
 - All three views (Browse + My Listings + Publish) — matches mock.
 - Replace `PublishAgentModal` entirely; drop the per-agent Publish button on AgentsPanel.
-- Browse uses full marketplace catalog (`/marketplace/listings/search`); GallerySection stays as sidebar discovery rail.
+- Browse uses full marketplace catalog (`/marketplace/listings/search`); chat sidebar's GallerySection rail is **replaced** by a 2-button Marketplace block (Browse + Publish); `AgentDetailPanel` and `GalleryItemRow` are deleted.
 - Same-tab redirect for paid Hire (no cross-tab polling).
 - React context for drawer state (no URL params for v1).
 - Card click opens standalone listing detail in new tab.

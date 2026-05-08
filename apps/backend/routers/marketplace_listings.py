@@ -318,8 +318,11 @@ async def upload_artifact_from_agent(
             },
         )
 
+    # EFS workspace is keyed by owner_id (= org_id for org members), so
+    # the export must use the resolved id. The listing row's seller_id
+    # below stays as auth.user_id — that's the author/attribution field.
     try:
-        package = agent_export.export_agent_from_efs(seller_id=auth.user_id, agent_id=payload.agent_id)
+        package = agent_export.export_agent_from_efs(seller_id=owner_id, agent_id=payload.agent_id)
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except agent_export.AgentNotFoundError as e:

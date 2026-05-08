@@ -55,6 +55,59 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Like useApi.get, but exposes the HTTP status code on success.
+ *
+ * Use this when a 2xx response code carries semantic meaning that
+ * the body alone doesn't capture — e.g. /container/status returning
+ * 200 (container info) vs 202 (team workspace pending). The standard
+ * useApi.get path returns the body for any 2xx status, swallowing
+ * the status code.
+ *
+ * Returns { status, body }. Throws ApiError on non-2xx, matching
+ * useApi's error shape (including the body.detail → message extraction).
+ */
+export async function fetchJsonWithStatus(
+  url: string,
+  getToken: () => Promise<string | null>,
+): Promise<{ status: number; body: unknown }> {
+  const token = await getToken();
+  if (!token) {
+    throw new ApiError(401, null, "Not authenticated");
+  }
+  const response = await fetch(`${BACKEND_URL}${url}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  let body: unknown = null;
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+  }
+
+  if (!response.ok) {
+    // Mirror useApi.authenticatedFetch: extract body.detail as a string
+    // for ApiError.message so callers reading .message see a useful
+    // backend message instead of "API <status>".
+    const detail =
+      body && typeof body === "object" && "detail" in body
+        ? (body as { detail: unknown }).detail
+        : null;
+    const message = typeof detail === "string" ? detail : undefined;
+    throw new ApiError(response.status, body, message);
+  }
+
+  return { status: response.status, body };
+}
+
 interface UploadedFile {
   filename: string;
   path: string;

@@ -13,10 +13,17 @@ Field shape per ``paperclip/packages/adapters/openclaw-gateway/src/index.ts:21``
 not ``token``.
 
 Adapter type is ``"openclaw_gateway"`` with an underscore — canonical
-per ``paperclip/packages/shared/src/constants.ts:40``. The existing
-``paperclip_provisioning.py:255`` sends ``"openclaw-gateway"`` (hyphen),
-which Paperclip's ``assertKnownAdapterType`` rejects. Task 13 fixes that
-provisioning call to use ``OPENCLAW_GATEWAY_TYPE`` from this module.
+per ``paperclip/packages/shared/src/constants.ts:40``.
+
+Session key strategy is ``"issue"`` so each Paperclip issue assigned
+to an agent gets its own OpenClaw session
+(``agent:<agent_id>:paperclip:issue:<issue_id>``). This isolates
+transcripts across unrelated issues; long-term knowledge still
+persists across sessions via OpenClaw's memory plugin (MEMORY.md).
+The ``sessionKey`` field is the fallback for wakes without an issueId
+(manual ``Run Heartbeat``, sibling-agent wake, etc.) and is set to
+the agent creator's user_id so manual wakes route to a stable
+per-creator session.
 """
 
 from __future__ import annotations
@@ -64,6 +71,6 @@ def synthesize_openclaw_adapter(
     return {
         "url": gateway_url,
         "authToken": service_token,
-        "sessionKeyStrategy": "fixed",
+        "sessionKeyStrategy": "issue",
         "sessionKey": user_id,
     }

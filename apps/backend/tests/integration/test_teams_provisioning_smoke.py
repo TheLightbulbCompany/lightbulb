@@ -26,6 +26,7 @@ transport mocked. Why it matters:
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
@@ -36,10 +37,18 @@ import pytest
 from fastapi.testclient import TestClient
 from moto import mock_aws
 
-from core.auth import AuthContext, get_current_user
-from core.encryption import encrypt
-from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
-from core.services.paperclip_admin_client import PaperclipAdminClient
+# service_token.mint() is called on the /teams agents.create path now;
+# pin a deterministic key so the smoke test can decode and assert on the
+# minted JWT.
+os.environ.setdefault(
+    "PAPERCLIP_SERVICE_TOKEN_KEY",
+    "test-key-teams-provisioning-smoke",
+)
+
+from core.auth import AuthContext, get_current_user  # noqa: E402
+from core.encryption import encrypt  # noqa: E402
+from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo  # noqa: E402
+from core.services.paperclip_admin_client import PaperclipAdminClient  # noqa: E402
 
 PAPERCLIP_COMPANIES_TABLE = "paperclip-companies"
 
@@ -330,16 +339,37 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         f"adapterConfig.url must match the gateway allowlist; got {adapter_config['url']!r}"
     )
 
-    # 4. authToken is the user's own decrypted service token (NOT empty,
-    # NOT the encrypted form, NOT a constant).
-    assert adapter_config["authToken"] == smoke_service_token_plaintext, (
-        "authToken must be the per-user service token, not encrypted ciphertext or a placeholder"
-    )
+    # 4. authToken is a freshly-minted service-token JWT whose ``sub``
+    # claim equals the container's owner_id (org_id for org members,
+    # user_id for personal owners). Codex P1 finding 3 (PR #563): the
+    # BFF used to pass through the persisted ``service_token_encrypted``
+    # (decrypted), which for legacy member rows could carry the wrong
+    # ``sub``; the route now mints fresh per call. The smoke fixture
+    # plants an org-context auth (org_id="org_smoke_27"), so the new
+    # token must be keyed at the org_id.
+    import jwt as _jwt_lib
 
-    # 5. sessionKeyStrategy is fixed (per spec §5; openclaw_gateway uses
-    # a per-user session so the gateway can route every chat to the
-    # right OpenClaw container).
-    assert adapter_config["sessionKeyStrategy"] == "fixed"
+    auth_token = adapter_config["authToken"]
+    assert auth_token, "authToken must not be empty"
+    assert auth_token != smoke_service_token_plaintext, (
+        "authToken must be a freshly-minted JWT, not the persisted "
+        "service_token_encrypted (the legacy pre-fix behavior)"
+    )
+    minted_claims = _jwt_lib.decode(
+        auth_token,
+        os.environ["PAPERCLIP_SERVICE_TOKEN_KEY"],
+        algorithms=["HS256"],
+    )
+    assert minted_claims["sub"] == "org_smoke_27", (
+        f"authToken sub must equal owner_id (org_id for org members); got {minted_claims['sub']!r}"
+    )
+    assert minted_claims["kind"] == "paperclip_service"
+
+    # 5. sessionKeyStrategy is "issue" so each Paperclip issue gets its
+    # own OpenClaw session (transcripts don't bleed across unrelated
+    # issues). The sessionKey field is the fallback for manual wakes
+    # without an issueId.
+    assert adapter_config["sessionKeyStrategy"] == "issue"
 
     # 6. sessionKey is the user_id (so the gateway routes to the right
     # OpenClaw container regardless of which agent is calling).

@@ -166,7 +166,7 @@ async def test_provision_org_happy_path(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -215,7 +215,7 @@ async def test_provision_org_happy_path(repo):
     assert agent_kwargs["adapter_type"] == "openclaw_gateway"
     assert agent_kwargs["adapter_config"]["url"] == "wss://ws-dev.isol8.co"
     assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
-    assert agent_kwargs["adapter_config"]["sessionKeyStrategy"] == "fixed"
+    assert agent_kwargs["adapter_config"]["sessionKeyStrategy"] == "issue"
     assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted
     # Agent is owned BY the user (their session) so they can edit it later.
     assert agent_kwargs["session_cookie"] == "owner-session-1"
@@ -243,12 +243,12 @@ async def test_provision_org_idempotent_on_second_call(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     first = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
     second = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -267,7 +267,7 @@ async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -283,7 +283,7 @@ async def test_provision_org_signup_failure_marks_failed(repo):
 
     with pytest.raises(PaperclipApiError):
         await prov.provision_org(
-            org_id="org_acme",
+            owner_id="org_acme",
             owner_user_id="user_owner",
             owner_email="owner@acme.test",
         )
@@ -305,7 +305,7 @@ async def test_provision_org_create_company_failure_marks_failed(repo):
 
     with pytest.raises(PaperclipApiError):
         await prov.provision_org(
-            org_id="org_acme",
+            owner_id="org_acme",
             owner_user_id="user_owner",
             owner_email="owner@acme.test",
         )
@@ -324,7 +324,7 @@ async def test_provision_org_retries_after_failure(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
         await prov.provision_org(
-            org_id="org_acme",
+            owner_id="org_acme",
             owner_user_id="user_owner",
             owner_email="owner@acme.test",
         )
@@ -333,7 +333,7 @@ async def test_provision_org_retries_after_failure(repo):
     # Second attempt with healthy admin
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
     row = await prov.provision_org(
-        org_id="org_acme",
+        owner_id="org_acme",
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
@@ -376,7 +376,7 @@ async def test_provision_member_happy_path(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_member(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",
@@ -430,7 +430,7 @@ async def test_provision_member_raises_when_org_not_provisioned(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(OrgNotProvisionedError):
         await prov.provision_member(
-            org_id="org_phantom",
+            owner_id="org_phantom",
             user_id="user_member",
             email="member@phantom.test",
             owner_email="owner@phantom.test",
@@ -448,13 +448,13 @@ async def test_provision_member_idempotent_on_second_call(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     first = await prov.provision_member(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",
     )
     second = await prov.provision_member(
-        org_id="org_acme",
+        owner_id="org_acme",
         user_id="user_member",
         email="member@acme.test",
         owner_email="owner@acme.test",
@@ -472,7 +472,7 @@ async def test_provision_member_signup_failure_marks_failed(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
         await prov.provision_member(
-            org_id="org_acme",
+            owner_id="org_acme",
             user_id="user_member",
             email="member@acme.test",
             owner_email="owner@acme.test",
@@ -494,7 +494,7 @@ async def test_provision_member_invite_failure_marks_failed(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
         await prov.provision_member(
-            org_id="org_acme",
+            owner_id="org_acme",
             user_id="user_member",
             email="member@acme.test",
             owner_email="owner@acme.test",
@@ -523,7 +523,7 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError, match="missing 'id'"):
         await prov.provision_member(
-            org_id="org_acme",
+            owner_id="org_acme",
             user_id="user_member",
             email="member@acme.test",
             owner_email="owner@acme.test",
@@ -533,12 +533,12 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
 
 
 # ----------------------------------------------------------------------
-# _find_org_owner
+# find_org_owner
 # ----------------------------------------------------------------------
 
 
 async def test_find_org_owner_skips_disabled_rows(repo):
-    """Codex P1 (round 3): ``_find_org_owner`` must NOT return a disabled row.
+    """Codex P1 (round 3): ``find_org_owner`` must NOT return a disabled row.
 
     ``disable()`` flips ``status="disabled"`` and leaves the row in DDB
     until the purge worker runs (up to 30 days). If the OLDEST row in
@@ -547,7 +547,7 @@ async def test_find_org_owner_skips_disabled_rows(repo):
     even when other active admins existed.
 
     Seed: row A (disabled, older created_at) + row B (active, newer).
-    Expect: ``_find_org_owner`` returns row B.
+    Expect: ``find_org_owner`` returns row B.
     """
     from datetime import timedelta
 
@@ -587,7 +587,7 @@ async def test_find_org_owner_skips_disabled_rows(repo):
 
     admin = _make_admin_mock()
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    found = await prov._find_org_owner("org_acme")  # noqa: SLF001 — testing the helper
+    found = await prov.find_org_owner("org_acme")
 
     assert found is not None
     assert found.user_id == "user_active_admin"
@@ -596,7 +596,7 @@ async def test_find_org_owner_skips_disabled_rows(repo):
 
 async def test_find_org_owner_returns_none_when_no_active_rows(repo):
     """If every row in the org is non-active (disabled/failed/provisioning),
-    ``_find_org_owner`` returns None so the caller raises
+    ``find_org_owner`` returns None so the caller raises
     ``OrgNotProvisionedError`` and the retry path takes over.
     """
     from core.encryption import encrypt
@@ -618,7 +618,7 @@ async def test_find_org_owner_returns_none_when_no_active_rows(repo):
 
     admin = _make_admin_mock()
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    found = await prov._find_org_owner("org_dead")  # noqa: SLF001
+    found = await prov.find_org_owner("org_dead")
 
     assert found is None
 
@@ -916,7 +916,7 @@ async def test_paperclip_api_error_5xx_annotated_retryable_on_provision_org(repo
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError) as ei:
         await prov.provision_org(
-            org_id="org_a",
+            owner_id="org_a",
             owner_user_id="user_a",
             owner_email="a@a.test",
         )
@@ -931,7 +931,7 @@ async def test_paperclip_api_error_4xx_annotated_not_retryable_on_provision_org(
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError) as ei:
         await prov.provision_org(
-            org_id="org_a",
+            owner_id="org_a",
             owner_user_id="user_a",
             owner_email="a@a.test",
         )
@@ -945,7 +945,7 @@ async def test_paperclip_api_error_429_annotated_retryable(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError) as ei:
         await prov.provision_org(
-            org_id="org_a",
+            owner_id="org_a",
             owner_user_id="user_a",
             owner_email="a@a.test",
         )
@@ -960,7 +960,7 @@ async def test_paperclip_api_error_annotated_on_provision_member(repo):
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError) as ei:
         await prov.provision_member(
-            org_id="org_acme",
+            owner_id="org_acme",
             user_id="user_member",
             email="m@a.test",
             owner_email="o@a.test",

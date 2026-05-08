@@ -69,3 +69,61 @@ export async function checkout(opts: {
   if (!resp.ok) throw new Error(`checkout failed: ${resp.status}`);
   return (await resp.json()) as { checkout_url: string; session_id: string };
 }
+
+export interface SearchOptions {
+  q?: string;
+  category?: string;
+  sort?: "installs" | "recent";
+  limit?: number;
+}
+
+export async function searchListings(
+  opts: SearchOptions = {},
+): Promise<{ items: Listing[] }> {
+  const params = new URLSearchParams();
+  if (opts.q) params.set("q", opts.q);
+  if (opts.category) params.set("category", opts.category);
+  if (opts.sort) params.set("sort", opts.sort);
+  params.set("format", "openclaw");
+  params.set("limit", String(opts.limit ?? 60));
+  const resp = await fetch(`${API}/marketplace/listings/search?${params}`, {
+    next: { revalidate: 60 },
+  });
+  if (!resp.ok) throw new Error(`searchListings failed: ${resp.status}`);
+  return (await resp.json()) as { items: Listing[] };
+}
+
+export async function myListings(opts: {
+  sellerId: string;
+  jwt: string;
+  statusIn?: string[];
+}): Promise<{ items: Listing[] }> {
+  const params = new URLSearchParams();
+  params.set("seller_id", opts.sellerId);
+  params.set(
+    "status_in",
+    (opts.statusIn ?? ["draft", "review", "published", "retired", "taken_down"]).join(","),
+  );
+  params.set("limit", "100");
+  const resp = await fetch(`${API}/marketplace/listings/search?${params}`, {
+    headers: { Authorization: `Bearer ${opts.jwt}` },
+  });
+  if (!resp.ok) throw new Error(`myListings failed: ${resp.status}`);
+  return (await resp.json()) as { items: Listing[] };
+}
+
+export interface AgentSummary {
+  agent_id: string;
+  name: string;
+  skill_count: number;
+  channel_count: number;
+  cron_count: number;
+}
+
+export async function myAgentsSummary(opts: { jwt: string }): Promise<{ agents: AgentSummary[] }> {
+  const resp = await fetch(`${API}/marketplace/me/agents-summary`, {
+    headers: { Authorization: `Bearer ${opts.jwt}` },
+  });
+  if (!resp.ok) throw new Error(`myAgentsSummary failed: ${resp.status}`);
+  return (await resp.json()) as { agents: AgentSummary[] };
+}

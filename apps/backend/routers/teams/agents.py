@@ -14,28 +14,31 @@ the Teams BFF (Tasks 7-12) imports.
 
 from __future__ import annotations
 
-import asyncio
+import logging
 
 import httpx
 from fastapi import APIRouter, Depends
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings
+from core.containers import get_ecs_manager, get_gateway_pool
 from core.encryption import decrypt  # noqa: F401 — re-exported for tests + downstream tasks.
-from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import service_token
 from core.services.paperclip_adapter_config import (
     OPENCLAW_GATEWAY_TYPE,
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_autoprovision import ensure_paperclip_workspace
+from core.services.paperclip_openclaw_pairing import pair_with_openclaw
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 
 from . import deps as deps_mod
-from .deps import TeamsContext, TeamsContextError, envelope_list
+from .deps import TeamsContext, envelope_list
 from .schemas import CreateAgentBody, PatchAgentBody
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -137,6 +140,98 @@ async def _decrypt_service_token(user_id: str) -> str:
     return decrypt(company.service_token_encrypted)
 
 
+def _creator_user_id(ctx) -> str:
+    """Return the creator's Clerk user_id (used as the adapterConfig
+    ``sessionKey`` fallback for non-issue runs).
+
+    Tolerates both real ``TeamsContext`` (flat ``user_id`` field) and
+    ``MagicMock`` test fixtures that carry the auth on ``ctx.auth.user_id``
+    — the pairing tests use the latter shape.
+    """
+    auth = getattr(ctx, "auth", None)
+    if auth is not None:
+        uid = getattr(auth, "user_id", None)
+        if isinstance(uid, str):
+            return uid
+    return ctx.user_id
+
+
+def _resolve_owner_id(ctx) -> str:
+    """Container owner: org_id when the user is in an org, else user_id.
+
+    The OpenClaw container is keyed by owner — for org members the owner
+    is the org_id, NOT the member's user_id. Personal users are their
+    own owner. Mirrors ``core.auth.resolve_owner_id`` but works on the
+    Teams ``ctx`` shape (which already has ``owner_id`` for the
+    production path) plus the ``MagicMock`` ctx the pairing tests use
+    (which exposes ``ctx.auth.org_id`` / ``ctx.auth.user_id``).
+    """
+    auth = getattr(ctx, "auth", None)
+    if auth is not None:
+        org_id = getattr(auth, "org_id", None)
+        if isinstance(org_id, str):
+            return org_id
+        uid = getattr(auth, "user_id", None)
+        if isinstance(uid, str):
+            return uid
+    # TeamsContext production path — owner_id is computed in
+    # ``deps.resolve_teams_context`` via ``core.auth.resolve_owner_id``.
+    return getattr(ctx, "owner_id", None) or ctx.user_id
+
+
+async def _user_session(ctx) -> str:
+    """Return the user-session cookie for ``ctx``.
+
+    Thin indirection so the pairing tests can monkeypatch the I/O without
+    re-implementing the full ``_ctx`` dependency chain. The production
+    path resolves the cookie in ``deps.resolve_teams_context``; this
+    helper just reads it back off the ``TeamsContext``.
+    """
+    return ctx.session_cookie
+
+
+async def _service_token_for(ctx) -> str:
+    """Return the user's decrypted OpenClaw service token.
+
+    Wrapper around ``_decrypt_service_token`` keyed by the creator's
+    user_id. Pairing tests monkeypatch this helper directly so they can
+    skip the DDB read entirely.
+    """
+    return await _decrypt_service_token(_creator_user_id(ctx))
+
+
+async def _container_is_reachable(
+    owner_id: str,
+) -> tuple[bool, str | None, str | None]:
+    """Return (reachable, ip, gateway_token) for the owner's container.
+
+    Uses ``ecs_manager.resolve_running_container`` to discover the
+    container's task IP via ECS DescribeTasks (we do NOT store
+    ``private_ip`` on the container DDB row — it's discovered fresh).
+    The gateway_token IS stored on the DDB row.
+
+    Reachable means: container row exists in provisioning/running
+    status, ECS reports a running task, and a gateway_token is
+    present. We don't ping the gateway — pair_with_openclaw will
+    fail gracefully if the task isn't actually serving yet, and the
+    next reprovision will pick up the new agent via list_agents.
+    """
+    try:
+        ecs = get_ecs_manager()
+        container, ip = await ecs.resolve_running_container(owner_id)
+    except Exception:  # noqa: BLE001 — defensive, treat as unreachable.
+        # Defensive: in unit-test contexts without AWS creds, ECS calls
+        # raise. Treat as not reachable; pairing falls back to next
+        # reprovision via list_agents.
+        return False, None, None
+    if container is None or not ip:
+        return False, None, None
+    token = container.get("gateway_token")
+    if not token:
+        return False, None, None
+    return True, ip, token
+
+
 async def _resolve_user_email(user_id: str) -> str:
     """Fetch the user's primary email from Clerk.
 
@@ -164,19 +259,19 @@ async def _resolve_user_email(user_id: str) -> str:
 
 
 async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
-    """Shared Teams Depends helper — Tasks 7-12 reuse this.
+    """Resolve the Teams BFF context for the current request.
 
     Wires together: Clerk auth -> paperclip-companies row lookup ->
     per-user Better Auth sign-in -> ``TeamsContext`` for the handler.
     Using ``deps_mod.resolve_teams_context`` (rather than a direct
     import) so test code that monkeypatches the deps module Just Works.
 
-    On a "no DDB row" 409, lazy-provision the workspace in the
-    background for personal-context users with an active container,
-    and re-raise as 202 so the frontend polls. Org context keeps the
-    409 — those rows are owned by Clerk's ``organization.created``
-    webhook and a missing row is an operator issue, not a self-heal
-    case. Personal users with no container get 402 (subscribe first).
+    The 409 / 202 / 503 status codes from ``resolve_teams_context``
+    propagate as-is. After Task 9, this function does NOT autoprovision
+    on the no-DDB-row branch — provisioning is owned by the canonical
+    ``/container/status`` trigger (Task 8) which polls every 3s during
+    pre-ready state. A 409 here therefore indicates an operator-level
+    error rather than a self-heal opportunity.
     """
 
     async def session_factory(user_id: str) -> str:
@@ -187,28 +282,11 @@ async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
             clerk_email_resolver=_resolve_user_email,
         )
 
-    try:
-        return await deps_mod.resolve_teams_context(
-            auth=auth,
-            repo=_repo(),
-            session_factory=session_factory,
-        )
-    except TeamsContextError as exc:
-        if exc.status_code != 409 or exc.detail != "team workspace not provisioned":
-            raise
-        if auth.is_org_context:
-            raise
-        container = await container_repo.get_by_owner_id(auth.user_id)
-        if not container:
-            raise TeamsContextError(
-                status_code=402,
-                detail="subscribe to enable Teams",
-            ) from exc
-        asyncio.create_task(ensure_paperclip_workspace(owner_id=auth.user_id, clerk_user_id=auth.user_id))
-        raise TeamsContextError(
-            status_code=202,
-            detail="team workspace provisioning",
-        ) from exc
+    return await deps_mod.resolve_teams_context(
+        auth=auth,
+        repo=_repo(),
+        session_factory=session_factory,
+    )
 
 
 # --- Routes ---
@@ -231,21 +309,42 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/agents")
 async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx)):
-    """Create an agent.
+    """Create an agent in Paperclip and pair it with the owner's
+    OpenClaw container.
 
     Spec §5 security invariant: the ``adapter_type`` + ``adapter_config``
     fields passed to the admin client are synthesized HERE, server-side,
     using ``synthesize_openclaw_adapter``. The client body never carries
     them — ``CreateAgentBody`` rejects extra keys with 422.
+
+    After Paperclip's create succeeds, we call ``pair_with_openclaw`` to
+    register the new agent in the OWNER's running container (org_id for
+    org members, user_id for personal users) so ``/chat`` sees the same
+    agent. If the container isn't reachable (provisioning in progress
+    or scaled to zero), pairing is silently skipped — the next container
+    provision will pick up the new agent via ``list_agents``. Pairing
+    failures are non-fatal for the same reason.
     """
-    service_token = await _decrypt_service_token(ctx.user_id)
+    creator_user_id = _creator_user_id(ctx)
+    owner_id = _resolve_owner_id(ctx)
+    # Mint the service token with owner_id (NOT the creator's user_id).
+    # The OpenClaw container is keyed by owner_id (org_id for org members,
+    # user_id for personal owners). The WS Lambda authorizer puts service
+    # tokens into the connection context with ``orgId=""`` and routes by
+    # the JWT ``sub`` claim — so a token minted with the member's user_id
+    # would route subsequent Paperclip wakes to the member's PERSONAL
+    # owner instead of the org's shared owner, missing the container the
+    # agent was just paired into. We mint fresh here rather than reading
+    # the persisted ``service_token_encrypted`` row so legacy rows with a
+    # member-keyed sub can't poison new agents.
+    minted_token = service_token.mint(owner_id)
     adapter_config = synthesize_openclaw_adapter(
         gateway_url=_gateway_url_for_env(),
-        service_token=service_token,
-        user_id=ctx.user_id,
+        service_token=minted_token,
+        user_id=creator_user_id,
     )
-    return await _admin().create_agent(
-        session_cookie=ctx.session_cookie,
+    paperclip_agent = await _admin().create_agent(
+        session_cookie=await _user_session(ctx),
         company_id=ctx.company_id,
         name=body.name,
         role=body.role,
@@ -256,6 +355,35 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
         reports_to=body.reports_to,
         budget_monthly_cents=body.budget_monthly_cents,
     )
+
+    # Pair with the owner's OpenClaw container if reachable. Failure is
+    # non-fatal — the next container provision picks the agent up via
+    # ``fetch_paperclip_agents_for_owner``. ``get_gateway_pool()`` itself
+    # touches process-wide state (a singleton lazily wired to the AWS
+    # Management API client) so we resolve it inside the try block: if
+    # the env isn't fully wired (e.g. unit tests, CI without
+    # ``WS_MANAGEMENT_API_URL``) we still surface a clean "deferred"
+    # warning instead of a 500 from the route.
+    reachable, ip, token = await _container_is_reachable(owner_id)
+    if reachable and ip and token:
+        try:
+            gateway_pool = get_gateway_pool()
+            await pair_with_openclaw(
+                owner_id=owner_id,
+                paperclip_agent=paperclip_agent,
+                gateway_pool=gateway_pool,
+                ip=ip,
+                token=token,
+            )
+        except Exception as exc:  # noqa: BLE001 — pairing failure is deferred.
+            logger.warning(
+                "teams.create_agent: pair_with_openclaw failed for owner=%s agent=%s — deferring to next provision: %s",
+                owner_id,
+                paperclip_agent.get("id"),
+                exc,
+            )
+
+    return paperclip_agent
 
 
 @router.get("/agents/{agent_id}")

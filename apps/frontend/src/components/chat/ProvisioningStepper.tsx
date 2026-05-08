@@ -184,14 +184,13 @@ export function ProvisioningStepper({
    *  "recovery" = skip billing, start from container provisioning. */
   trigger?: "onboarding" | "recovery";
 }) {
-  const { organization, membership, isLoaded: orgLoaded } = useOrganization();
+  const { organization, membership } = useOrganization();
   const isOrg = !!organization;
   // Personal accounts (no org) and explicit org admins manage channels.
   // Plain members see link-only flows or get sent straight to ready.
   const isAdmin = !isOrg || membership?.role === "org:admin";
   const api = useApi();
   const { account, isLoading: billingLoading, isSubscribed } = useBilling();
-  const provisionRequestedRef = useRef(false);
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
   // checkout, OAuth) shouldn't count against the timeout budget. A ref because
@@ -265,33 +264,11 @@ export function ProvisioningStepper({
     refresh: refreshGate,
   } = useProvisioningState();
 
-  // When container status returns null (404), trigger provisioning once
-  // Trigger provisioning when no container (404) or container is stopped (scale-to-zero)
-  const needsProvision = container === null || container?.status === "stopped";
-  useEffect(() => {
-    // Defensive: don't fire provision until Clerk's org state has fully
-    // hydrated. ChatLayout already gates this component behind an onboarded
-    // check, so in practice orgLoaded is true by the time we mount — but
-    // keeping the guard here means a direct caller (tests, recovery paths)
-    // can't accidentally fire /container/provision with a still-loading JWT
-    // and get a personal container when an org was expected.
-    if (!orgLoaded) return;
-    // Plan 3: hold off on provisioning until the user has completed the
-    // provider-specific step. Otherwise the container would spin up before
-    // /users/sync has recorded provider_choice, and the gateway's first
-    // pre-chat balance check (Plan 3 Task 4) would see no record.
-    if (needsProviderStep) return;
-    if (needsProvision && shouldPollContainer && !provisionRequestedRef.current) {
-      provisionRequestedRef.current = true;
-      api.post("/container/provision", {}).catch((err: unknown) => {
-        console.error("Container provision failed:", err);
-      });
-    }
-    // Reset the ref when container comes back so it can re-provision on next stop
-    if (container && container.status !== "stopped") {
-      provisionRequestedRef.current = false;
-    }
-  }, [needsProvision, orgLoaded, container, shouldPollContainer, api, needsProviderStep]);
+  // Provisioning is now driven by /container/status: when the gate clears
+  // and no container exists, the backend's status endpoint fires
+  // ensure_user_ready itself. The frontend stepper is purely passive — it
+  // polls /container/status (every 3s during pre-ready) and renders the
+  // appropriate phase. No explicit POST /container/provision from here.
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
@@ -604,6 +581,142 @@ export function ProvisioningStepper({
             ) : (
               <p className="provision-muted">Ask your org admin to fix this.</p>
             )}
+
+            <div className="provision-timeout">
+              <div className="provision-timeout-actions">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full border-[#e0dbd0]"
+                  onClick={() => refreshGate()}
+                >
+                  Check again
+                </Button>
+                <Button variant="ghost" size="sm" asChild>
+                  <a href="mailto:support@isol8.co">Contact support</a>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Team-pending: org member whose admin hasn't provisioned the shared
+  // workspace yet. Backend Task 8 returns 202 from /container/status for
+  // this case; useProvisioningState surfaces it as `phase === "team-pending"`.
+  // Reuse the blocked-state centerpiece visuals (key icon, refresh button)
+  // and swap the copy for "waiting on your admin". The hook keeps polling
+  // at 5s so the UI flips to `normal` automatically once the admin's
+  // container appears.
+  if (gatePhase === "team-pending") {
+    return (
+      <>
+        <style>{`
+          .provision-wrapper {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #faf7f2;
+          }
+          .provision-card {
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+            padding: 48px 32px;
+          }
+          .provision-logo {
+            margin-bottom: 32px;
+          }
+          .provision-stage {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 32px;
+            position: relative;
+          }
+          .provision-anim {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .anim-key-circle {
+            width: 56px; height: 56px;
+            border: 2px solid #e0dbd0;
+            border-top-color: #06402B;
+            border-radius: 50%;
+          }
+          .anim-key-icon {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .provision-title {
+            font-family: var(--font-lora-serif), serif;
+            font-size: 22px; font-weight: 400; color: #1a1a1a;
+            margin-bottom: 8px;
+          }
+          .provision-desc {
+            font-family: var(--font-dm-sans), sans-serif;
+            font-size: 14px; color: #8a8578;
+            margin-bottom: 24px;
+          }
+          .provision-muted {
+            font-family: var(--font-dm-sans), sans-serif;
+            font-size: 13px;
+            color: #8a8578;
+            margin: 0;
+          }
+          .provision-timeout {
+            margin-top: 28px;
+            padding-top: 20px;
+            border-top: 1px solid #ece6d9;
+            display: flex; flex-direction: column;
+            align-items: center; gap: 14px;
+            max-width: 360px;
+            margin-left: auto; margin-right: auto;
+          }
+          .provision-timeout-actions {
+            display: flex; gap: 8px; align-items: center;
+          }
+        `}</style>
+        <div className="provision-wrapper">
+          <div className="provision-card">
+            <div className="provision-logo">
+              <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect width="100" height="100" rx="22" fill="#06402B" />
+                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
+              </svg>
+            </div>
+
+            <div className="provision-stage" aria-hidden="true">
+              <div className="provision-anim">
+                <div className="anim-key-circle" />
+                <div className="anim-key-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <h2
+              className="provision-title"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              Your team workspace is being set up
+            </h2>
+            <p className="provision-desc">
+              Your admin will finish this soon. We&apos;ll bring you in
+              automatically once the workspace is ready.
+            </p>
 
             <div className="provision-timeout">
               <div className="provision-timeout-actions">

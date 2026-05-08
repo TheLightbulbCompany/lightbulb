@@ -186,6 +186,10 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
                 "subscription_status": "active",
                 # Workstream B: provider_choice lives on billing_accounts now.
                 "provider_choice": provider_choice,
+                # The byo_provider sub-choice gate (Finding D on PR #563)
+                # blocks byo_key without a sub-provider; this test isolates
+                # the credit-balance behaviour, so seed a complete BYO row.
+                "byo_provider": "anthropic" if provider_choice == "byo_key" else None,
             },
         ),
         patch(

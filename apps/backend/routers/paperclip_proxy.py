@@ -809,9 +809,9 @@ async def provision_self(request: Request) -> Response:
     if existing is not None and existing.status == "active":
         return Response(status_code=204)
 
-    # Build provisioning chain inline (same shape as the webhook handler's
-    # _get_paperclip_provisioning helper). Per-request httpx.AsyncClient
-    # mirrors the proxy's pattern.
+    # Build provisioning chain inline (same shape as the
+    # core.services.paperclip_provisioning.build_paperclip_provisioning
+    # helper). Per-request httpx.AsyncClient mirrors the proxy's pattern.
     from core.services.paperclip_admin_client import PaperclipAdminClient
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
@@ -822,11 +822,12 @@ async def provision_self(request: Request) -> Response:
         admin = PaperclipAdminClient(http_client=http)
         provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
         try:
-            # Use user_id as org_id sentinel — the row is keyed per-user
-            # already, and the by-org-id GSI partitions cleanly because each
-            # personal user is its own one-member "org".
+            # Personal context: pass user_id as the owner_id — for
+            # personal owners ``owner_id == clerk_user_id`` and the
+            # by-org-id GSI partitions cleanly because each personal
+            # user is its own one-member "org" on the storage side.
             await provisioning.provision_org(
-                org_id=auth.user_id,
+                owner_id=auth.user_id,
                 owner_user_id=auth.user_id,
                 owner_email=auth.email,
             )
@@ -888,10 +889,11 @@ def _frontend_url() -> str:
 async def _autoprovision(auth: AuthContext) -> None:
     """Synchronously create a personal Paperclip company for ``auth``.
 
-    Mirrors what the Clerk org.created webhook does, but uses
-    ``user_id`` as the org_id sentinel since the row is keyed per-user
-    anyway. Idempotent — provision_org short-circuits if a row already
-    exists with status="active". Raises HTTPException(502) on failure.
+    Mirrors what the Clerk org.created webhook does, but passes
+    ``user_id`` as the ``owner_id`` since for personal owners
+    ``owner_id == clerk_user_id``. Idempotent — provision_org
+    short-circuits if a row already exists with status="active".
+    Raises HTTPException(502) on failure.
     """
     if not auth.email:
         raise HTTPException(
@@ -910,7 +912,7 @@ async def _autoprovision(auth: AuthContext) -> None:
         provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
         try:
             await provisioning.provision_org(
-                org_id=auth.user_id,
+                owner_id=auth.user_id,
                 owner_user_id=auth.user_id,
                 owner_email=auth.email,
             )

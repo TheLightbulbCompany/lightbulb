@@ -17,7 +17,11 @@ let clerkState: {
 };
 
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ isSignedIn: clerkState.isSignedIn, isLoaded: true }),
+  useAuth: () => ({
+    isSignedIn: clerkState.isSignedIn,
+    isLoaded: true,
+    getToken: vi.fn().mockResolvedValue("test-jwt"),
+  }),
   useUser: () => ({ user: clerkState.user, isLoaded: true }),
   useOrganization: () => ({
     organization: clerkState.organization,
@@ -94,6 +98,19 @@ vi.mock("@/components/chat/AgentDialogs", () => ({
   AgentCreateDialog: () => null,
   AgentRenameDialog: () => null,
   AgentDeleteDialog: () => null,
+}));
+// Drawer provider is mounted on the chat page in production, but this test
+// renders <ChatLayout /> bare. Stub the hook so we don't have to wrap.
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({
+    state: { freshlyInstalledAgentId: null },
+    setFreshlyInstalled: vi.fn(),
+  }),
+}));
+// myListings (Task 17): the sidebar fetches this on mount to compute the
+// gold pub-dot set; default to an empty list so no badge renders in the test.
+vi.mock("@/lib/marketplace/api", () => ({
+  myListings: vi.fn().mockResolvedValue({ items: [] }),
 }));
 // CSS import is a no-op in vitest jsdom env, but stub it for safety.
 vi.mock("./ChatLayout.css", () => ({}));

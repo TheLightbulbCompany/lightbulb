@@ -9,13 +9,11 @@ import {
   MessageSquare,
   Plus,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { AgentCreateForm } from "./AgentCreateForm";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
-import { PublishAgentModal } from "@/components/marketplace/PublishAgentModal";
 import { useBilling } from "@/hooks/useBilling";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
@@ -35,9 +33,6 @@ export function AgentsPanel() {
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
-  // Per-agent "Publish to marketplace" modal — keyed by agent id so the
-  // modal mounts/unmounts on open/close and resets its internal form state.
-  const [publishingAgent, setPublishingAgent] = useState<AgentEntry | null>(null);
 
   const agents: AgentEntry[] = rawData?.agents ?? [];
   const defaultId = rawData?.defaultId;
@@ -184,14 +179,6 @@ export function AgentsPanel() {
                     </button>
                   ))}
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPublishingAgent(selected)}
-                  aria-label={`Publish ${selected.name || selected.id} to marketplace`}
-                >
-                  <Upload className="h-3.5 w-3.5 mr-1" /> Publish to marketplace
-                </Button>
               </div>
 
               {activeTab === "overview" && (
@@ -211,19 +198,6 @@ export function AgentsPanel() {
           )}
         </div>
       </div>
-
-      {publishingAgent && (
-        <PublishAgentModal
-          agent={{
-            agent_id: publishingAgent.id,
-            name: publishingAgent.name || publishingAgent.identity?.name,
-            // The chat app's AgentEntry doesn't carry a description; let the
-            // modal default to an empty body and let the seller fill it in.
-          }}
-          open={true}
-          onClose={() => setPublishingAgent(null)}
-        />
-      )}
     </div>
   );
 }

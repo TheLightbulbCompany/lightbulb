@@ -7,11 +7,12 @@ The scheduled worker also runs two Paperclip-related passes (T13):
   and call ``PaperclipProvisioning.purge`` for each.
 * ``_paperclip_provision_retry_pass`` — every loop iteration, consume
   pending-updates rows with ``update_type="paperclip_provision"``
-  (enqueued by T12's Clerk webhook handlers on retryable failures)
-  and re-call the matching provisioning entry-point. Successful rows
-  are marked applied; non-retryable failures get marked failed with
-  the truncated reason; retryable failures stay pending and are picked
-  up on the next iteration.
+  (enqueued by ``_handle_organization_membership_deleted`` in
+  ``routers/webhooks.py`` for ``op="archive_member"``) and re-call
+  the matching provisioning entry-point. Successful rows are marked
+  applied; non-retryable failures get marked failed with the truncated
+  reason; retryable failures stay pending and are picked up on the
+  next iteration.
 """
 
 import asyncio
@@ -170,7 +171,7 @@ def _build_paperclip_provisioning():
     Returns a ``(provisioning, http_client)`` tuple. The caller MUST
     close ``http_client`` (via ``await http_client.aclose()``) once the
     pass finishes — this mirrors the per-request construction pattern
-    used by the webhook handlers (``routers/webhooks._get_paperclip_provisioning``)
+    used by the webhook handlers (``core.services.paperclip_provisioning.build_paperclip_provisioning``)
     and avoids leaking sockets across daily/per-loop pass runs.
 
     Imports are local so this module can be loaded in environments
@@ -247,63 +248,23 @@ async def _paperclip_purge_pass() -> None:
             logger.exception("paperclip_purge_pass: http client close failed")
 
 
-async def _resolve_owner_email(payload: dict) -> str | None:
-    """Resolve the org owner's email for a Paperclip retry payload.
-
-    On retries we always prefer a fresh lookup over the cached
-    ``owner_email`` in the payload. The cached value can be stale —
-    if a user rotates their email between the original webhook and
-    the retry, ``provision_member`` would sign in with stale
-    credentials and fail non-retryably, marking the retry row failed
-    and requiring manual ops cleanup.
-
-    Resolution order:
-
-    * Re-resolve via ``paperclip_owner_email.lookup_owner_email`` —
-      hits ``user_repo`` first, falls back to Clerk Backend API.
-    * Fall back to ``payload["owner_email"]`` only when the fresh
-      lookup returns ``None`` (e.g. user_repo row missing AND Clerk
-      transiently down). This preserves the ability to make progress
-      when both lookup tiers fail mid-retry.
-
-    Returns ``None`` if the email is still unresolvable. Callers should
-    leave the retry row pending (NOT mark failed) so a later
-    ``user.created`` redelivery can supply the missing email.
-    """
-    owner_user_id = payload.get("owner_user_id")
-    if owner_user_id:
-        # Local import keeps cold-start cheap and mirrors the lazy-import
-        # convention used elsewhere in this module.
-        from core.services.paperclip_owner_email import lookup_owner_email
-
-        try:
-            fresh = await lookup_owner_email(org_id=payload.get("org_id"), fallback_user_id=owner_user_id)
-        except Exception:
-            logger.exception(
-                "paperclip_provision_retry_pass: lookup_owner_email failed for owner=%s",
-                owner_user_id,
-            )
-            fresh = None
-        if fresh:
-            return fresh
-    # Fallback: trust the cached value from the original webhook
-    # payload only if the fresh lookup couldn't resolve.
-    cached = payload.get("owner_email")
-    if cached:
-        return cached
-    return None
-
-
 async def _paperclip_provision_retry_pass() -> None:
     """Per-loop pass: consume pending-updates rows of type
     ``paperclip_provision`` and re-call the matching provisioning op.
 
     Dispatch on ``changes["op"]``:
 
-      * ``provision_org``    -> ``PaperclipProvisioning.provision_org``
-      * ``provision_member`` -> ``PaperclipProvisioning.provision_member``
-      * ``archive_member``   -> ``PaperclipProvisioning.archive_member``
-      * ``disable``          -> ``PaperclipProvisioning.disable``
+      * ``archive_member`` -> ``PaperclipProvisioning.archive_member``
+
+    Historical note: this pass also serviced ``provision_org``,
+    ``provision_member`` and ``disable`` ops back when sign-up /
+    membership-created webhooks eagerly provisioned Paperclip rows.
+    Those eager-provision paths were removed (see Tasks 6 + 7 of the
+    paperclip-openclaw-agent-pairing plan) so nothing enqueues those
+    ops anymore. The ``disable`` branch was always dead — no enqueue
+    site existed. Only ``archive_member`` (enqueued by
+    ``_handle_organization_membership_deleted`` in
+    ``routers/webhooks.py``) remains live.
 
     On success, mark the row applied (``mark_applied``). On a
     non-retryable failure (or unknown op), mark failed
@@ -338,46 +299,8 @@ async def _paperclip_provision_retry_pass() -> None:
             op = changes.get("op")
 
             try:
-                if op == "provision_org":
-                    owner_email = await _resolve_owner_email(changes)
-                    if not owner_email:
-                        # Email still unresolvable — leave the row pending
-                        # (do NOT mark failed) so a later user.created
-                        # webhook redelivery / backfill can supply it.
-                        logger.warning(
-                            "paperclip_provision_retry_pass: skipping op=provision_org "
-                            "(owner_email unresolved) owner=%s update=%s",
-                            owner_id,
-                            update_id,
-                        )
-                        retryable_left += 1
-                        continue
-                    await provisioning.provision_org(
-                        org_id=changes["org_id"],
-                        owner_user_id=changes["owner_user_id"],
-                        owner_email=owner_email,
-                    )
-                elif op == "provision_member":
-                    owner_email = await _resolve_owner_email(changes)
-                    if not owner_email:
-                        logger.warning(
-                            "paperclip_provision_retry_pass: skipping op=provision_member "
-                            "(owner_email unresolved) owner=%s update=%s",
-                            owner_id,
-                            update_id,
-                        )
-                        retryable_left += 1
-                        continue
-                    await provisioning.provision_member(
-                        org_id=changes["org_id"],
-                        user_id=changes["user_id"],
-                        email=changes["email"],
-                        owner_email=owner_email,
-                    )
-                elif op == "archive_member":
+                if op == "archive_member":
                     await provisioning.archive_member(user_id=changes["user_id"])
-                elif op == "disable":
-                    await provisioning.disable(user_id=changes["user_id"])
                 else:
                     logger.error(
                         "paperclip_provision_retry_pass: unknown op=%r (owner=%s, update=%s)",

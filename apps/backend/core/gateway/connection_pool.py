@@ -456,6 +456,31 @@ class GatewayConnection:
                     thinking_parts.append(text)
         return "\n\n".join(thinking_parts) if thinking_parts else None
 
+    @staticmethod
+    def _extract_assistant_text(payload: dict) -> str | None:
+        """Extract assistant text from a chat-final's message.content field.
+
+        Slash commands (/help, /whoami, /approve, etc.) reply via chat.final
+        without an agent stream — the response text only exists here. For
+        normal agent runs the chunks already painted the same text, but
+        re-asserting it via cumulative replacement is a no-op visually
+        (OpenClaw's flushBufferedChatDeltaIfNeeded backstop guarantees the
+        last streamed chunk equals the final message).
+        """
+        msg = payload.get("message")
+        if not isinstance(msg, dict):
+            return None
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            return None
+        text_parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text") or ""
+                if text:
+                    text_parts.append(text)
+        return "".join(text_parts) if text_parts else None
+
     def _forward_to_frontends(self, message: dict, target_member_id: str | None = None) -> None:
         """Send a message to registered frontend connections.
 
@@ -928,9 +953,19 @@ class GatewayConnection:
                             fwd["agent_id"] = event_agent_id
                         fwd["runId"] = run_id
                         self._forward_to_frontends(fwd, target_member)
-                    # OpenClaw guarantees the full text reached us via agent
-                    # stream="assistant" events (with flushBufferedChatDeltaIfNeeded
-                    # as a server-side backstop), so no chunk is emitted here.
+                    # Forward the assistant text from chat.final. For agent
+                    # runs the streamed chunks already painted the same text
+                    # (chunks use cumulative replacement), so this is a visual
+                    # no-op. For slash commands (/help, /approve, etc.) there
+                    # is no agent stream — this is the only path that delivers
+                    # the response text to the frontend.
+                    text_content = self._extract_assistant_text(payload)
+                    if text_content:
+                        fwd = {"type": "chunk", "content": text_content}
+                        if event_agent_id:
+                            fwd["agent_id"] = event_agent_id
+                        fwd["runId"] = run_id
+                        self._forward_to_frontends(fwd, target_member)
                     fwd = {"type": "done"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id

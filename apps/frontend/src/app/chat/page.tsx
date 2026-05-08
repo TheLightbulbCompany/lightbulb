@@ -6,6 +6,9 @@ import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { GatewayProvider } from "@/hooks/useGateway";
+import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
+import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
 
 export default function ChatPage() {
   // useSearchParams() forces dynamic rendering; wrap in Suspense so the
@@ -76,28 +79,35 @@ function ChatPageInner() {
   }, []);
 
   return (
-    <GatewayProvider>
-      <ChatLayout
-        activeView={activeView}
-        onViewChange={setActiveView}
-        activePanel={activePanel}
-        onPanelChange={setActivePanel}
-        fileViewerOpen={fileViewerOpen}
-        activeFilePath={activeFilePath}
-        onOpenFile={handleOpenFile}
-        onCloseFileViewer={handleCloseFileViewer}
-      >
-        {/* Keep AgentChatWindow mounted but hidden so chat state
-            (messages, scroll position, streaming) survives view switches */}
-        <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
-          <AgentChatWindow key={selectedAgentId} agentId={selectedAgentId} onOpenFile={handleOpenFile} />
-        </div>
-        {activeView === "control" && (
-          <div className="flex flex-col h-full min-h-0">
-            <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
+    <MarketplaceDrawerProvider>
+      <GatewayProvider>
+        <ChatLayout
+          activeView={activeView}
+          onViewChange={setActiveView}
+          activePanel={activePanel}
+          onPanelChange={setActivePanel}
+          fileViewerOpen={fileViewerOpen}
+          activeFilePath={activeFilePath}
+          onOpenFile={handleOpenFile}
+          onCloseFileViewer={handleCloseFileViewer}
+        >
+          {/* Keep AgentChatWindow mounted but hidden so chat state
+              (messages, scroll position, streaming) survives view switches */}
+          <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
+            <AgentChatWindow key={selectedAgentId} agentId={selectedAgentId} onOpenFile={handleOpenFile} />
           </div>
-        )}
-      </ChatLayout>
-    </GatewayProvider>
+          {activeView === "control" && (
+            <div className="flex flex-col h-full min-h-0">
+              <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
+            </div>
+          )}
+        </ChatLayout>
+        {/* Drawer + toast must live INSIDE GatewayProvider — useHire() and
+            PickAgentStep both call useAgents() which calls useGateway().
+            See PR #567 review (Codex P1). */}
+        <MarketplaceDrawer />
+        <MarketplaceToast />
+      </GatewayProvider>
+    </MarketplaceDrawerProvider>
   );
 }

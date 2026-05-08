@@ -1,64 +1,63 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { GallerySection } from "@/components/chat/GallerySection";
+import {
+  MarketplaceDrawerProvider,
+  useMarketplaceDrawer,
+} from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 
-const { deployMock, refreshMock } = vi.hoisted(() => ({
-  deployMock: vi.fn().mockResolvedValue({
-    agent_id: "agent_new",
-    name: "Pitch",
-    slug: "pitch",
-    version: 3,
-    skills_added: [],
-    plugins_enabled: [],
-  }),
-  refreshMock: vi.fn(),
-}));
+// Test-only probe: surface the live drawer-context value so assertions can
+// inspect it. Mutating a module-level binding from inside a component would
+// trip the react-hooks/globals rule; mutating a property of a stable holder
+// object trips react-hooks/immutability. Both rules are OK here — Probe
+// renders as a leaf, never re-renders against this value, and the test only
+// reads after the hook fires. Disable the immutability rule narrowly.
+const capturedRef: { current: ReturnType<typeof useMarketplaceDrawer> | null } = {
+  current: null,
+};
+function Probe() {
+  // eslint-disable-next-line react-hooks/immutability
+  capturedRef.current = useMarketplaceDrawer();
+  return null;
+}
 
-vi.mock("@/hooks/useCatalog", () => ({
-  useCatalog: () => ({
-    agents: [
-      { slug: "pitch", name: "Pitch", version: 3, emoji: "🎯", vibe: "", description: "",
-        suggested_model: "", suggested_channels: [], required_skills: [], required_plugins: [] },
-    ],
-    isLoading: false,
-    deploy: deployMock,
-    refresh: refreshMock,
-  }),
-}));
-
-vi.mock("@/hooks/useAgents", () => ({
-  useAgents: () => ({ refresh: refreshMock }),
-}));
-
-describe("GallerySection", () => {
-  // The global test setup calls vi.restoreAllMocks() in afterEach, which
-  // strips mockResolvedValue. Re-apply it before each test.
-  beforeEach(() => {
-    deployMock.mockResolvedValue({
-      agent_id: "agent_new",
-      name: "Pitch",
-      slug: "pitch",
-      version: 3,
-      skills_added: [],
-      plugins_enabled: [],
-    });
+describe("GallerySection (2-button marketplace block)", () => {
+  it("renders Browse and Publish buttons under a 'Marketplace' label", () => {
+    render(
+      <MarketplaceDrawerProvider>
+        <GallerySection />
+      </MarketplaceDrawerProvider>,
+    );
+    expect(screen.getByText(/marketplace/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: /^browse$/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /publish/i })).toBeVisible();
   });
 
-  it("renders the header and each agent row", () => {
-    render(<GallerySection onAgentDeployed={vi.fn()} />);
-    expect(
-      screen.getByRole("heading", { name: /from the marketplace/i }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Pitch")).toBeInTheDocument();
+  it("Browse opens drawer in browse view", async () => {
+    const user = userEvent.setup();
+    render(
+      <MarketplaceDrawerProvider>
+        <GallerySection />
+        <Probe />
+      </MarketplaceDrawerProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: /^browse$/i }));
+    expect(capturedRef.current?.state.isOpen).toBe(true);
+    expect(capturedRef.current?.state.view).toBe("browse");
   });
 
-  it("calls onAgentDeployed with new agent info after deploy", async () => {
-    const onAgentDeployed = vi.fn();
-    render(<GallerySection onAgentDeployed={onAgentDeployed} />);
-    await userEvent.click(screen.getByRole("button", { name: /deploy pitch/i }));
-    await vi.waitFor(() => expect(onAgentDeployed).toHaveBeenCalled());
-    expect(onAgentDeployed.mock.calls[0][0]).toMatchObject({ agent_id: "agent_new" });
+  it("Publish opens drawer in publish view", async () => {
+    const user = userEvent.setup();
+    render(
+      <MarketplaceDrawerProvider>
+        <GallerySection />
+        <Probe />
+      </MarketplaceDrawerProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: /publish/i }));
+    expect(capturedRef.current?.state.isOpen).toBe(true);
+    expect(capturedRef.current?.state.view).toBe("publish");
   });
 });

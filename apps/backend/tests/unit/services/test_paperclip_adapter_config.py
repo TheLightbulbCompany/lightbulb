@@ -56,7 +56,7 @@ def test_synthesize_returns_canonical_shape():
     assert cfg == {
         "url": "wss://ws-dev.isol8.co",
         "authToken": "JWT_TOKEN_HERE",
-        "sessionKeyStrategy": "fixed",
+        "sessionKeyStrategy": "issue",
         "sessionKey": "user_123",
     }
 
@@ -86,3 +86,19 @@ def test_synthesize_rejects_empty_user_id():
             service_token="x",
             user_id="",
         )
+
+
+def test_strategy_is_issue_for_per_issue_session_isolation():
+    """We want each issue assigned to an agent to be its own OpenClaw
+    session so transcripts don't bleed across unrelated issues. The
+    sessionKey field becomes the fallback for manual wakes (no issue
+    context); the issue-driven path uses paperclip:issue:<id>."""
+    cfg = synthesize_openclaw_adapter(
+        gateway_url="wss://ws.isol8.co",
+        service_token="t" * 100,
+        user_id="user_abc",
+    )
+    assert cfg["sessionKeyStrategy"] == "issue"
+    assert cfg["sessionKey"] == "user_abc"
+    assert cfg["url"] == "wss://ws.isol8.co"
+    assert cfg["authToken"] == "t" * 100

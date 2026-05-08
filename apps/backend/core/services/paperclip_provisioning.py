@@ -45,6 +45,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import httpx
+
+from core.config import settings
 from core.encryption import decrypt, encrypt
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
@@ -52,6 +55,56 @@ from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthe
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
 logger = logging.getLogger(__name__)
+
+
+async def build_paperclip_provisioning() -> "PaperclipProvisioning":
+    """Build a PaperclipProvisioning for this request.
+
+    Returns a ``PaperclipProvisioning`` instance. The underlying
+    ``httpx.AsyncClient`` is attached as ``provisioning._http_client``
+    so handlers can close it via ``aclose()`` after use — keeping the
+    socket from leaking on production webhook traffic. T14/T15 will
+    replace this per-request construction with a long-lived shared
+    client tied to the FastAPI app lifespan.
+
+    Public service-layer entry point — callers (webhook router,
+    billing router, autoprovision, ensure_user_ready) construct a
+    fresh provisioning chain per webhook invocation. The httpx client
+    lifecycle is bounded by the request, so the connection pool
+    doesn't need to be shared.
+    """
+    http = httpx.AsyncClient(
+        base_url=settings.PAPERCLIP_INTERNAL_URL,
+        timeout=15.0,
+    )
+    admin = PaperclipAdminClient(http_client=http)
+    # Short name only — ``core.dynamodb.get_table`` prepends the env
+    # prefix once (``isol8-{env}-``). Passing the fully-qualified name
+    # would double-prefix at production deploy time (caught in
+    # PR #414 review F1, c778809) and 404 on every lookup.
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
+    # Expose the underlying client for cleanup. Tests that patch
+    # build_paperclip_provisioning return AsyncMock-shaped objects that
+    # don't carry this attribute, so consumers must guard with getattr.
+    provisioning._http_client = http  # type: ignore[attr-defined]
+    return provisioning
+
+
+async def close_paperclip_provisioning(provisioning) -> None:
+    """Close the underlying httpx client if one was attached.
+
+    AsyncMock-shaped objects (used in tests) won't have the attribute,
+    so we no-op gracefully — keeps the production cleanup hot path
+    working without breaking the test patches.
+    """
+    http = getattr(provisioning, "_http_client", None)
+    if http is None:
+        return
+    try:
+        await http.aclose()
+    except Exception:
+        logger.exception("paperclip httpx client close failed")
 
 
 def _ws_gateway_url(env_name: str) -> str:

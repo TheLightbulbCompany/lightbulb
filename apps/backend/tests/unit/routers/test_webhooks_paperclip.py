@@ -1,7 +1,7 @@
 """Tests for the Clerk webhook handlers wired to PaperclipProvisioning (T12).
 
 The webhook handler builds a fresh ``PaperclipProvisioning`` per
-request via ``_get_paperclip_provisioning``. We patch that factory to
+request via ``build_paperclip_provisioning``. We patch that factory to
 hand back an ``AsyncMock`` provisioning instance so the test never
 touches a real httpx client / DynamoDB repo.
 
@@ -59,7 +59,7 @@ async def test_organization_created_calls_provision_org(async_client, monkeypatc
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch(
@@ -101,7 +101,7 @@ async def test_organization_created_retryable_failure_enqueues(async_client, mon
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch(
@@ -150,7 +150,7 @@ async def test_organization_created_non_retryable_does_not_enqueue(async_client,
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch(
@@ -245,7 +245,7 @@ async def test_membership_created_calls_provision_member(async_client, monkeypat
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch(
@@ -295,7 +295,7 @@ async def test_membership_created_org_not_provisioned_enqueues(async_client, mon
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch(
@@ -394,7 +394,7 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
     }
 
     with patch(
-        "routers.webhooks._get_paperclip_provisioning",
+        "routers.webhooks.build_paperclip_provisioning",
         new=AsyncMock(return_value=mock_provisioning),
     ):
         resp = await async_client.post(
@@ -439,7 +439,7 @@ async def test_membership_deleted_retryable_failure_enqueues(async_client, monke
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch("core.repositories.update_repo.create", new=captured_create),
@@ -493,7 +493,7 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch("core.repositories.update_repo.create", new=captured_create),
@@ -537,7 +537,7 @@ async def test_membership_deleted_non_retryable_disable_failure_is_swallowed(asy
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch("core.repositories.update_repo.create", new=captured_create),
@@ -582,7 +582,7 @@ async def test_membership_deleted_retryable_disable_failure_is_swallowed(async_c
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch("core.repositories.update_repo.create", new=captured_create),
@@ -620,7 +620,7 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
 
     with (
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "routers.webhooks.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
         patch(
@@ -753,7 +753,7 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     }
 
     with (
-        patch("routers.webhooks._get_paperclip_provisioning", new=factory),
+        patch("routers.webhooks.build_paperclip_provisioning", new=factory),
         patch(
             "core.repositories.user_repo.get",
             new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
@@ -830,7 +830,7 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
         ),
         patch("core.containers.get_ecs_manager") as mock_ecs,
         patch(
-            "routers.webhooks._get_paperclip_provisioning",
+            "core.services.paperclip_provisioning.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
     ):

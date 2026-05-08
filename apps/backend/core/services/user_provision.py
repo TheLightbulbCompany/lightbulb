@@ -25,35 +25,13 @@ from core.auth import AuthContext
 from core.observability.metrics import put_metric
 from core.services.container_provision import background_provision
 from core.services.paperclip_owner_email import lookup_owner_email
+from core.services.paperclip_provisioning import (
+    build_paperclip_provisioning,
+    close_paperclip_provisioning,
+)
 from core.services.provision_gate import evaluate_provision_gate
 
 logger = logging.getLogger(__name__)
-
-
-async def _get_paperclip_provisioning():
-    """Defer router-package imports out of the service layer.
-
-    Top-level ``from routers.webhooks import _get_paperclip_provisioning``
-    would work today (no current cycle), but services importing from
-    routers is a smell that becomes a real cycle the moment any
-    router imports this service module. Keep the import local so
-    the dependency direction stays one-way (routers → services).
-
-    See plan §"Issue #2 deferred" — the proper fix is to move
-    these helpers into core/services/paperclip_provisioning.py
-    so user_provision can stop reaching into router-private code.
-    Tracked as a follow-up cleanup PR.
-    """
-    from routers.webhooks import _get_paperclip_provisioning as _factory
-
-    return await _factory()
-
-
-async def _close_paperclip_http(provisioning) -> None:
-    """Close the httpx client attached by ``_get_paperclip_provisioning``."""
-    from routers.webhooks import _close_paperclip_http as _close
-
-    await _close(provisioning)
 
 
 async def ensure_user_ready(auth: AuthContext) -> None:
@@ -151,7 +129,7 @@ async def _ensure_paperclip_for_owner(
         )
         return
 
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         await provisioning.provision_org(
             owner_id=owner_id,
@@ -159,7 +137,7 @@ async def _ensure_paperclip_for_owner(
             owner_email=owner_email,
         )
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 async def _ensure_paperclip_for_member(*, org_id: str, member_user_id: str, member_email: str) -> None:

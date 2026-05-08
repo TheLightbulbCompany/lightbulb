@@ -37,13 +37,16 @@ import logging
 import time
 from typing import Any, Optional
 
-import httpx
 import stripe
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, channel_link_repo, update_repo
+from core.services.paperclip_provisioning import (
+    build_paperclip_provisioning,
+    close_paperclip_provisioning,
+)
 from core.services.update_service import PAPERCLIP_RETRY_KIND
 
 logger = logging.getLogger(__name__)
@@ -96,16 +99,6 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     raise HTTPException(status_code=400, detail="Invalid svix signature")
 
 
-# ----------------------------------------------------------------------
-# Paperclip provisioning factory
-# ----------------------------------------------------------------------
-#
-# We construct a fresh PaperclipProvisioning per webhook invocation. The
-# httpx.AsyncClient lifecycle is bounded by the request — this is the
-# only call site so the connection pool doesn't need to be shared, and
-# constructing per-request keeps the wiring trivial to override in tests.
-# T14/T15 (proxy router) will introduce a long-lived shared client.
-
 # The canonical home for ``PAPERCLIP_RETRY_KIND`` is
 # ``core.services.update_service.PAPERCLIP_RETRY_KIND``. Both this
 # webhook router (which enqueues retries) and the scheduled worker
@@ -113,59 +106,11 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
 # lockstep is the only way the retry cron actually picks up the
 # rows we wrote. The import lives at the top of this file alongside
 # the other ``core.*`` imports.
-
-
-async def _get_paperclip_provisioning():
-    """Build a PaperclipProvisioning for this request.
-
-    Returns a ``PaperclipProvisioning`` instance. The underlying
-    ``httpx.AsyncClient`` is attached as ``provisioning._http_client``
-    so handlers can close it via ``aclose()`` after use — keeping the
-    socket from leaking on production webhook traffic. T14/T15 will
-    replace this per-request construction with a long-lived shared
-    client tied to the FastAPI app lifespan.
-
-    Imports are local to keep cold-start cheap (httpx + boto3 chain
-    aren't needed if no Paperclip-bound webhook fires) and to keep the
-    legacy webhook handlers working unchanged when Paperclip env is not
-    configured (e.g. local dev without paperclip running).
-    """
-    from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    http = httpx.AsyncClient(
-        base_url=settings.PAPERCLIP_INTERNAL_URL,
-        timeout=15.0,
-    )
-    admin = PaperclipAdminClient(http_client=http)
-    # Short name only — ``core.dynamodb.get_table`` prepends the env
-    # prefix once (``isol8-{env}-``). Passing the fully-qualified name
-    # would double-prefix at production deploy time (caught in
-    # PR #414 review F1, c778809) and 404 on every lookup.
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
-    # Expose the underlying client for cleanup. Tests that patch
-    # _get_paperclip_provisioning return AsyncMock-shaped objects that
-    # don't carry this attribute, so consumers must guard with getattr.
-    provisioning._http_client = http  # type: ignore[attr-defined]
-    return provisioning
-
-
-async def _close_paperclip_http(provisioning) -> None:
-    """Close the underlying httpx client if one was attached.
-
-    AsyncMock-shaped objects (used in tests) won't have the attribute,
-    so we no-op gracefully — keeps the production cleanup hot path
-    working without breaking the test patches.
-    """
-    http = getattr(provisioning, "_http_client", None)
-    if http is None:
-        return
-    try:
-        await http.aclose()
-    except Exception:
-        logger.exception("paperclip httpx client close failed")
+#
+# The Paperclip provisioning factory (build_paperclip_provisioning +
+# close_paperclip_provisioning) lives in core/services/paperclip_provisioning.py
+# — imported at the top of this file. Service-layer ownership keeps the
+# routers→services dependency direction one-way.
 
 
 async def _enqueue_paperclip_retry(*, op: str, payload: dict, owner_id: str) -> None:
@@ -343,7 +288,7 @@ async def _handle_organization_created(data: dict) -> None:
         )
         return
 
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         await provisioning.provision_org(
             owner_id=org_id,
@@ -375,7 +320,7 @@ async def _handle_organization_created(data: dict) -> None:
                 owner_id=owner_user_id,
             )
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 async def _handle_organization_membership_created(data: dict) -> None:
@@ -444,7 +389,7 @@ async def _handle_organization_membership_created(data: dict) -> None:
         )
         return
 
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         await provisioning.provision_member(
             owner_id=org_id,
@@ -482,7 +427,7 @@ async def _handle_organization_membership_created(data: dict) -> None:
                 owner_id=user_id,
             )
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 async def _handle_organization_membership_deleted(data: dict) -> None:
@@ -505,7 +450,7 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
         logger.warning("Clerk organizationMembership.deleted missing user_id: %s", data)
         return
 
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         try:
             await provisioning.archive_member(user_id=user_id)
@@ -584,7 +529,7 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
                         user_id,
                     )
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 async def _handle_organization_deleted(data: dict) -> None:
@@ -603,7 +548,7 @@ async def _handle_organization_deleted(data: dict) -> None:
 
     from core.dynamodb import run_in_thread
 
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         # Reach through the repo to the underlying GSI to enumerate members.
         # We could promote this into the repo, but for v1 the only caller
@@ -647,19 +592,19 @@ async def _handle_organization_deleted(data: dict) -> None:
             org_id,
         )
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 async def _handle_user_deleted_paperclip(user_id: str) -> None:
     """Disable Paperclip for a deleted Clerk user."""
-    provisioning = await _get_paperclip_provisioning()
+    provisioning = await build_paperclip_provisioning()
     try:
         await provisioning.disable(user_id=user_id)
         put_metric("paperclip.webhook.disable", dimensions={"trigger": "user_deleted"})
     except Exception:
         logger.exception("disable on user_deleted failed for user=%s", user_id)
     finally:
-        await _close_paperclip_http(provisioning)
+        await close_paperclip_provisioning(provisioning)
 
 
 # ----------------------------------------------------------------------

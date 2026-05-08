@@ -809,9 +809,9 @@ async def provision_self(request: Request) -> Response:
     if existing is not None and existing.status == "active":
         return Response(status_code=204)
 
-    # Build provisioning chain inline (same shape as the webhook handler's
-    # _get_paperclip_provisioning helper). Per-request httpx.AsyncClient
-    # mirrors the proxy's pattern.
+    # Build provisioning chain inline (same shape as the
+    # core.services.paperclip_provisioning.build_paperclip_provisioning
+    # helper). Per-request httpx.AsyncClient mirrors the proxy's pattern.
     from core.services.paperclip_admin_client import PaperclipAdminClient
     from core.services.paperclip_provisioning import PaperclipProvisioning
 

@@ -36,7 +36,10 @@ async def ensure_paperclip_workspace(*, owner_id: str, clerk_user_id: str) -> No
         return
     try:
         from core.services.paperclip_owner_email import lookup_owner_email
-        from routers.webhooks import _close_paperclip_http, _get_paperclip_provisioning
+        from core.services.paperclip_provisioning import (
+            build_paperclip_provisioning,
+            close_paperclip_provisioning,
+        )
 
         owner_email = await lookup_owner_email(org_id=None, fallback_user_id=clerk_user_id)
         if not owner_email:
@@ -45,7 +48,7 @@ async def ensure_paperclip_workspace(*, owner_id: str, clerk_user_id: str) -> No
                 clerk_user_id,
             )
             return
-        provisioning = await _get_paperclip_provisioning()
+        provisioning = await build_paperclip_provisioning()
         try:
             await provisioning.provision_org(
                 owner_id=clerk_user_id,
@@ -53,7 +56,7 @@ async def ensure_paperclip_workspace(*, owner_id: str, clerk_user_id: str) -> No
                 owner_email=owner_email,
             )
         finally:
-            await _close_paperclip_http(provisioning)
+            await close_paperclip_provisioning(provisioning)
     except Exception:
         logger.exception(
             "Paperclip auto-provision failed for user %s — user can retry from /teams",

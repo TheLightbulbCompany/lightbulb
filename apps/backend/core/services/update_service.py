@@ -170,7 +170,7 @@ def _build_paperclip_provisioning():
     Returns a ``(provisioning, http_client)`` tuple. The caller MUST
     close ``http_client`` (via ``await http_client.aclose()``) once the
     pass finishes — this mirrors the per-request construction pattern
-    used by the webhook handlers (``routers/webhooks._get_paperclip_provisioning``)
+    used by the webhook handlers (``core.services.paperclip_provisioning.build_paperclip_provisioning``)
     and avoids leaking sockets across daily/per-loop pass runs.
 
     Imports are local so this module can be loaded in environments

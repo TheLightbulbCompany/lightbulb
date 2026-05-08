@@ -758,14 +758,14 @@ async def handle_stripe_webhook(
             # the grace elapses. Only THIS user is disabled; if they own a
             # multi-member org the other members keep access until their
             # own subscriptions cancel (or the org is deleted in Clerk).
-            from routers.webhooks import (
-                _close_paperclip_http,
-                _get_paperclip_provisioning,
+            from core.services.paperclip_provisioning import (
+                build_paperclip_provisioning,
+                close_paperclip_provisioning,
             )
 
             provisioning = None
             try:
-                provisioning = await _get_paperclip_provisioning()
+                provisioning = await build_paperclip_provisioning()
                 await provisioning.disable(user_id=account["owner_id"])
                 put_metric(
                     "paperclip.webhook.disable",
@@ -778,7 +778,7 @@ async def handle_stripe_webhook(
                 )
             finally:
                 if provisioning is not None:
-                    await _close_paperclip_http(provisioning)
+                    await close_paperclip_provisioning(provisioning)
 
     elif event_type == "invoice.payment_failed":
         put_metric("stripe.subscription", dimensions={"event": "payment_failed"})

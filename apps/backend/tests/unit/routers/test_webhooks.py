@@ -31,7 +31,7 @@ async def test_membership_created_with_active_personal_logs_violation(caplog):
 
     with (
         patch("routers.webhooks.billing_repo") as mock_billing,
-        patch("routers.webhooks._get_paperclip_provisioning") as mock_prov,
+        patch("routers.webhooks.build_paperclip_provisioning") as mock_prov,
         patch("routers.webhooks.put_metric") as mock_metric,
         patch("routers.webhooks._lookup_owner_email", AsyncMock(return_value="owner@example.com")),
     ):
@@ -73,7 +73,7 @@ async def test_membership_created_without_personal_billing_emits_no_violation(ca
 
     with (
         patch("routers.webhooks.billing_repo") as mock_billing,
-        patch("routers.webhooks._get_paperclip_provisioning") as mock_prov,
+        patch("routers.webhooks.build_paperclip_provisioning") as mock_prov,
         patch("routers.webhooks.put_metric") as mock_metric,
         patch("routers.webhooks._lookup_owner_email", AsyncMock(return_value="owner@example.com")),
     ):
@@ -108,7 +108,7 @@ async def test_membership_created_invariant_probe_failure_does_not_block_provisi
 
     with (
         patch("routers.webhooks.billing_repo") as mock_billing,
-        patch("routers.webhooks._get_paperclip_provisioning") as mock_prov,
+        patch("routers.webhooks.build_paperclip_provisioning") as mock_prov,
         patch("routers.webhooks._lookup_owner_email", AsyncMock(return_value="owner@example.com")),
     ):
         mock_billing.get_by_owner_id = AsyncMock(side_effect=RuntimeError("ddb boom"))

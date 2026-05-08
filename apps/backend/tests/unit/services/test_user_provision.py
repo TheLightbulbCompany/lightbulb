@@ -82,11 +82,11 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "core.services.user_provision._get_paperclip_provisioning",
+            "core.services.user_provision.build_paperclip_provisioning",
             new=AsyncMock(return_value=fake_provisioning),
         ),
         patch(
-            "core.services.user_provision._close_paperclip_http",
+            "core.services.user_provision.close_paperclip_provisioning",
             new=AsyncMock(),
         ),
         patch(
@@ -114,11 +114,11 @@ async def test_ensure_paperclip_for_owner_org_admin_passes_org_id():
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "core.services.user_provision._get_paperclip_provisioning",
+            "core.services.user_provision.build_paperclip_provisioning",
             new=AsyncMock(return_value=fake_provisioning),
         ),
         patch(
-            "core.services.user_provision._close_paperclip_http",
+            "core.services.user_provision.close_paperclip_provisioning",
             new=AsyncMock(),
         ),
         patch(

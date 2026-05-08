@@ -171,15 +171,16 @@ async def test_drafts_excluded_via_in_python_filter(mock_table):
     assert all(li["status"] == "published" for li in results)
     assert "draft-thing" not in [li["slug"] for li in results]
 
-    # Defense against regression: the scan must NOT filter on status at the
-    # DDB layer. If a FilterExpression is ever re-introduced it must not key
-    # on status — otherwise include_unpublished=True silently breaks.
+    # Defense against regression: the snapshot scan must be unfiltered.
+    # The original bug carried FilterExpression="#s = :pub" with the literal
+    # word "status" only in ExpressionAttributeNames — a substring check on
+    # the expression string would not have caught it. The strict contract is
+    # "no FilterExpression at all" per the module docstring.
     kwargs = mock_table.scan.call_args.kwargs
-    if "FilterExpression" in kwargs:
-        assert "status" not in str(kwargs["FilterExpression"]).lower(), (
-            "scan must not filter on status — let the in-Python filter "
-            "handle public-only so include_unpublished=True works."
-        )
+    assert "FilterExpression" not in kwargs, (
+        "scan must not carry a FilterExpression — the snapshot is unfiltered "
+        "(status filter happens in-Python in search() so include_unpublished=True works)"
+    )
 
 
 @pytest.mark.asyncio
@@ -453,16 +454,18 @@ async def test_draft_row_surfaces_to_seller_via_include_unpublished(monkeypatch)
     slugs = {item["slug"] for item in items}
     assert "draft" in slugs, "expected draft listing to surface for seller-scoped include_unpublished read"
 
-    # Verify the scan was called WITHOUT a FilterExpression keyed on status
+    # Verify the snapshot scan was unfiltered. The original bug carried
+    # FilterExpression="#s = :pub" with "status" only in ExpressionAttributeNames,
+    # so a substring check on the expression string would have passed against
+    # the buggy code. The strict contract is "no FilterExpression at all".
     scan_calls = table.scan.call_args_list
     assert len(scan_calls) >= 1
     for call in scan_calls:
         kwargs = call.kwargs
-        # The FilterExpression should be absent (we dropped it) — defense against regression
-        if "FilterExpression" in kwargs:
-            assert "status" not in str(kwargs["FilterExpression"]).lower(), (
-                "scan should not filter on status — let the in-Python filter handle public-only"
-            )
+        assert "FilterExpression" not in kwargs, (
+            "scan must not carry a FilterExpression — the snapshot is unfiltered "
+            "(status filter happens in-Python in search() so include_unpublished=True works)"
+        )
 
 
 @pytest.mark.asyncio

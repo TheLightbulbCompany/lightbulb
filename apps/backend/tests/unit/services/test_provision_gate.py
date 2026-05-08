@@ -210,6 +210,10 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
         )
     assert gate is not None
     assert gate.code == "oauth_required"
+    # Click target must be a real route. /settings/llm doesn't exist on
+    # the frontend; the canonical OAuth completion path is the
+    # ?provider=chatgpt_oauth wizard mounted on /chat.
+    assert gate.action_href == "/chat?provider=chatgpt_oauth"
 
 
 @pytest.mark.asyncio

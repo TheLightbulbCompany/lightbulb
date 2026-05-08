@@ -239,4 +239,72 @@ describe("useProvisioningState", () => {
       vi.useRealTimers();
     }
   });
+
+  it("uses consumer-supplied refreshInterval when not in a pending state", async () => {
+    // 200 = normal state. The hook's gate-driven cadence is 0 here, so
+    // the consumer's refreshInterval should determine polling.
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "running",
+          substatus: "gateway_healthy",
+          service_name: "x",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const { result } = renderHook(
+      () => useProvisioningState({ refreshInterval: 10_000 }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.phase).toBe("normal"));
+    expect(result.current.refreshInterval).toBe(10_000);
+  });
+
+  it("gate-driven cadence wins over consumer refreshInterval when blocked", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            blocked: {
+              code: "oauth_required",
+              title: "Sign in with ChatGPT",
+              message: "x",
+              action: { kind: "link", label: "x", href: "x", admin_only: false },
+              owner_role: "admin",
+            },
+          },
+        }),
+        { status: 402, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const { result } = renderHook(
+      () => useProvisioningState({ refreshInterval: 60_000 }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.phase).toBe("blocked"));
+    // 5s (pending fast-poll) wins over the consumer's 60s.
+    expect(result.current.refreshInterval).toBe(5_000);
+  });
+
+  it("enabled: false halts the fetch", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    renderHook(() => useProvisioningState({ enabled: false }), { wrapper });
+    // Give SWR a tick to potentially fire — assert it never did.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("exposes the SWR error on non-2xx, non-handled statuses", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: "boom" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { result } = renderHook(() => useProvisioningState(), { wrapper });
+    await waitFor(() => expect(result.current.error).toBeDefined());
+    expect(result.current.phase).toBe("loading");
+  });
 });

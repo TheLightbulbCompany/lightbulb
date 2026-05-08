@@ -34,12 +34,27 @@ export type ProvisioningPhase =
   | "team-pending"
   | "needs-signup";
 
+export interface ProvisioningStateOptions {
+  /** Polling cadence to use when NOT in a pending state. Default 0 (no auto-poll).
+   * The pending-state cadence (5s for the first minute, 30s after) always wins
+   * over this when data.kind is blocked / team-pending / needs-signup. */
+  refreshInterval?: number;
+  /** When false, the hook does not fetch. Default true. */
+  enabled?: boolean;
+  /** Whether to revalidate on tab focus. Default false. */
+  revalidateOnFocus?: boolean;
+}
+
 export interface ProvisioningStateResult {
   phase: ProvisioningPhase;
   container: ContainerInfo | null;
   blocked: BlockedPayload | null;
   refreshInterval: number;
   refresh: () => void;
+  /** SWR error for non-2xx, non-handled statuses. */
+  error: Error | undefined;
+  /** SWR isLoading. */
+  isLoading: boolean;
 }
 
 type FetchResult =
@@ -80,7 +95,10 @@ type FetchResult =
  * (status=None on the billing row), and only revalidation will pick
  * up the eventual transition to `normal`.
  */
-export function useProvisioningState(): ProvisioningStateResult {
+export function useProvisioningState(
+  options: ProvisioningStateOptions = {},
+): ProvisioningStateResult {
+  const { refreshInterval: consumerInterval = 0, enabled = true, revalidateOnFocus = false } = options;
   const { isSignedIn, getToken } = useAuth();
   // Two-phase pending-state polling cadence (covers both `blocked` and
   // `team-pending`): 5s for the first minute, then 30s. `pendingGen` is a
@@ -162,11 +180,11 @@ export function useProvisioningState(): ProvisioningStateResult {
     [getToken],
   );
 
-  const { data, mutate } = useSWR<FetchResult>(
-    isSignedIn ? "/container/status" : null,
+  const { data, mutate, error, isLoading } = useSWR<FetchResult>(
+    isSignedIn && enabled ? "/container/status" : null,
     fetcher,
     {
-      revalidateOnFocus: false,
+      revalidateOnFocus,
       // Function form lets SWR pass the latest data. While in any
       // pending state (blocked / team-pending / needs-signup),
       // fast-poll for the first minute (`slowAfterGen < pendingGen`
@@ -183,7 +201,7 @@ export function useProvisioningState(): ProvisioningStateResult {
         ) {
           return slowAfterGen < pendingGen ? 5_000 : 30_000;
         }
-        return 0;
+        return consumerInterval;
       },
     },
   );
@@ -231,13 +249,17 @@ export function useProvisioningState(): ProvisioningStateResult {
     mutate();
   }, [mutate]);
 
-  const refreshInterval = isPending ? (slowAfterGen < pendingGen ? 5_000 : 30_000) : 0;
+  const refreshInterval = isPending
+    ? slowAfterGen < pendingGen
+      ? 5_000
+      : 30_000
+    : consumerInterval;
 
   if (!data) {
-    return { phase: "loading", container: null, blocked: null, refreshInterval: 0, refresh };
+    return { phase: "loading", container: null, blocked: null, refreshInterval: 0, refresh, error, isLoading };
   }
   if (data.kind === "container") {
-    return { phase: "normal", container: data.data, blocked: null, refreshInterval, refresh };
+    return { phase: "normal", container: data.data, blocked: null, refreshInterval, refresh, error, isLoading };
   }
   if (data.kind === "team-pending") {
     // Members poll fast (5s) at first so they see the workspace come
@@ -250,6 +272,8 @@ export function useProvisioningState(): ProvisioningStateResult {
       blocked: null,
       refreshInterval,
       refresh,
+      error,
+      isLoading,
     };
   }
   if (data.kind === "needs-signup") {
@@ -257,7 +281,7 @@ export function useProvisioningState(): ProvisioningStateResult {
     // returning from Stripe Checkout before customer.subscription.created
     // fires (which flips status from None to "trialing"/"active") gets
     // picked up automatically rather than stuck on a stale picker.
-    return { phase: "needs-signup", container: null, blocked: null, refreshInterval, refresh };
+    return { phase: "needs-signup", container: null, blocked: null, refreshInterval, refresh, error, isLoading };
   }
-  return { phase: "blocked", container: null, blocked: data.data, refreshInterval, refresh };
+  return { phase: "blocked", container: null, blocked: data.data, refreshInterval, refresh, error, isLoading };
 }

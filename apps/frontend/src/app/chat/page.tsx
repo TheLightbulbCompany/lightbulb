@@ -8,6 +8,7 @@ import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { GatewayProvider } from "@/hooks/useGateway";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
+import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
 
 export default function ChatPage() {
   // useSearchParams() forces dynamic rendering; wrap in Suspense so the
@@ -103,6 +104,7 @@ function ChatPageInner() {
         </ChatLayout>
       </GatewayProvider>
       <MarketplaceDrawer />
+      <MarketplaceToast />
     </MarketplaceDrawerProvider>
   );
 }

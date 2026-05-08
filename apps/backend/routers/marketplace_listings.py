@@ -31,6 +31,23 @@ def _purchases_table():
     return boto3.resource("dynamodb").Table(settings.MARKETPLACE_PURCHASES_TABLE)
 
 
+def _count_field(field) -> int:
+    """Count items in an agent config field that may be array- or object-shaped.
+
+    Real agent configs in this repo (e.g. ``agents/atlas/openclaw.json``)
+    store ``skills`` and ``channels`` as plain arrays
+    (``"skills": ["foo", "bar"]``). Older / hand-built configs use the
+    object form ``{"list": [...]}``. Both must be supported — the previous
+    ``(field or {}).get("list", [])`` form raised ``AttributeError`` on
+    non-empty arrays because the ``or`` short-circuit doesn't fire.
+    """
+    if isinstance(field, list):
+        return len(field)
+    if isinstance(field, dict):
+        return len(field.get("list", []) or [])
+    return 0
+
+
 def _has_valid_entitlement(*, buyer_id: str, listing_id: str) -> bool:
     """True iff caller has a non-revoked marketplace-purchases row for this listing.
 
@@ -199,8 +216,8 @@ async def my_agents_summary(auth: Annotated[AuthContext, Depends(get_current_use
             {
                 "agent_id": a.get("id"),
                 "name": (a.get("identity") or {}).get("name") or a.get("id"),
-                "skill_count": len((a.get("skills") or {}).get("list", []) or []),
-                "channel_count": len((a.get("channels") or {}).get("list", []) or []),
+                "skill_count": _count_field(a.get("skills")),
+                "channel_count": _count_field(a.get("channels")),
                 "cron_count": sum(1 for c in cron_jobs if c.get("agent_id") == a.get("id")),
             }
             for a in agents

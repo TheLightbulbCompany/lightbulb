@@ -700,3 +700,56 @@ def test_my_agents_summary_no_config_returns_empty(mock_workspace_factory, authe
 def test_my_agents_summary_unauthorized(unauth_client):
     resp = unauth_client.get("/api/v1/marketplace/me/agents-summary")
     assert resp.status_code in (401, 403)
+
+
+@patch("routers.marketplace_listings.get_workspace")
+def test_my_agents_summary_handles_array_shape_skills(mock_workspace_factory, authed_client_factory):
+    """Real agent configs (e.g. atlas) store skills/channels as plain arrays.
+
+    The endpoint must return correct counts for both array and object shapes
+    without raising AttributeError. Codex P2 (PR #567 round 7) flagged that
+    ``len((a.get("skills") or {}).get("list", []))`` blows up on non-empty
+    array-shaped fields because the ``or`` short-circuit doesn't fire.
+    """
+    workspace = mock_workspace_factory.return_value
+    workspace.read_openclaw_config.return_value = {
+        "agents": {
+            "list": [
+                # Array shape (real-world configs like atlas/openclaw.json)
+                {
+                    "id": "agent_atlas",
+                    "identity": {"name": "Atlas"},
+                    "skills": ["s1", "s2", "s3"],
+                    "channels": ["slack", "email"],
+                },
+                # Object shape (older / hand-built configs)
+                {
+                    "id": "agent_pulse",
+                    "identity": {"name": "Pulse"},
+                    "skills": {"list": [{"name": "s1"}]},
+                    "channels": {"list": []},
+                },
+                # Missing fields (defensive)
+                {
+                    "id": "agent_min",
+                    "identity": {"name": "Min"},
+                },
+            ]
+        }
+    }
+    workspace.read_cron_jobs.return_value = []
+
+    client = authed_client_factory("u_seller", "seller@example.com")
+    resp = client.get("/api/v1/marketplace/me/agents-summary")
+    assert resp.status_code == 200
+    body = resp.json()
+    by_id = {a["agent_id"]: a for a in body["agents"]}
+    # Array shape
+    assert by_id["agent_atlas"]["skill_count"] == 3
+    assert by_id["agent_atlas"]["channel_count"] == 2
+    # Object shape
+    assert by_id["agent_pulse"]["skill_count"] == 1
+    assert by_id["agent_pulse"]["channel_count"] == 0
+    # Missing fields
+    assert by_id["agent_min"]["skill_count"] == 0
+    assert by_id["agent_min"]["channel_count"] == 0

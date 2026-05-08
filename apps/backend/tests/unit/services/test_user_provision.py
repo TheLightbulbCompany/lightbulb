@@ -264,3 +264,79 @@ async def test_ensure_paperclip_for_member_threads_owner_user_id_to_lookup_owner
     assert all(c[1] == "user_owner_123" for c in owner_email_lookups), (
         f"expected fallback_user_id='user_owner_123', got {owner_email_lookups}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Container dispatch contract (Task 5)
+# ---------------------------------------------------------------------------
+#
+# The container background_provision is dispatched as an asyncio task
+# only on the owner path. Org members ride the owner's container, so
+# ensure_user_ready must NOT dispatch a container task for them.
+
+
+@pytest.mark.asyncio
+async def test_ensure_user_ready_dispatches_container_for_owner():
+    """Owner path → background_provision dispatched as task."""
+    captured = []
+
+    def capture_task(coro):
+        captured.append(coro)
+        # Don't actually await; close the coroutine to avoid the "never awaited" warning.
+        coro.close()
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision._ensure_paperclip_for_owner",
+            new=AsyncMock(),
+        ),
+        patch(
+            "core.services.user_provision.asyncio.create_task",
+            side_effect=capture_task,
+        ),
+    ):
+        await ensure_user_ready(_personal_auth("user_p"))
+    assert len(captured) == 1, f"expected one create_task call, got {len(captured)}"
+
+
+@pytest.mark.asyncio
+async def test_ensure_user_ready_does_not_dispatch_container_for_member():
+    """Member path → no container dispatch."""
+    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
+    fake_provisioning.provision_member = AsyncMock()
+    captured = []
+
+    def capture_task(coro):
+        captured.append(coro)
+        coro.close()
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.user_provision.lookup_owner_email",
+            new=AsyncMock(return_value="o@example.com"),
+        ),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+        patch(
+            "core.services.user_provision.asyncio.create_task",
+            side_effect=capture_task,
+        ),
+    ):
+        await ensure_user_ready(_org_member_auth())
+    assert captured == [], f"expected no create_task calls, got {len(captured)}"

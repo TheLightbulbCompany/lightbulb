@@ -15,7 +15,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
-import { useContainerStatus, type ColdStartPhase } from "@/hooks/useContainerStatus";
+import { type ColdStartPhase } from "@/hooks/useContainerStatus";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
@@ -237,32 +237,25 @@ export function ProvisioningStepper({
     router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
   }, [providerStepDone, searchParams, router]);
 
-  // Poll container status every 3s while subscribed. The interval is
-  // gated on the *previously observed* phase: as soon as a response
-  // tells us we're ready, the next render drops the interval to 0 and
-  // SWR stops re-fetching — saves a GET every 3 s + a gateway-pool
-  // walk per request. Uses a mirror state instead of reading the
-  // current `container` directly so the gate doesn't reference a value
-  // that's still in its useSWR call frame.
   const [reachedReady, setReachedReady] = useState(false);
   const shouldPollContainer = isSubscribed && !reachedReady;
-  const { container, refresh: refreshContainer } = useContainerStatus({
-    refreshInterval: shouldPollContainer ? 3000 : 0,
-    enabled: isSubscribed,
-  });
-  useEffect(() => {
-    if (container?.phase === "ready" && !reachedReady) setReachedReady(true);
-  }, [container?.phase, reachedReady]);
 
-  // Provision-gate state: when /container/status returns 402 with a structured
-  // `blocked` payload (e.g. credits_required, subscription_required), the
-  // stepper centerpiece renders a gate-aware variant instead of the cold-start
-  // spinner. `useContainerStatus` stays in place for non-blocked paths.
+  // Single canonical /container/status poller. Gate-driven cadence
+  // wins when blocked (5s/30s); cold-start polling at 3s otherwise so
+  // the user sees fast progress through phase transitions.
   const {
     phase: gatePhase,
     blocked,
-    refresh: refreshGate,
-  } = useProvisioningState();
+    container,
+    refresh,
+  } = useProvisioningState({
+    refreshInterval: shouldPollContainer ? 3000 : 0,
+    enabled: isSubscribed,
+  });
+
+  useEffect(() => {
+    if (container?.phase === "ready" && !reachedReady) setReachedReady(true);
+  }, [container?.phase, reachedReady]);
 
   // Provisioning is now driven by /container/status: when the gate clears
   // and no container exists, the backend's status endpoint fires
@@ -588,7 +581,7 @@ export function ProvisioningStepper({
                   variant="outline"
                   size="sm"
                   className="rounded-full border-[#e0dbd0]"
-                  onClick={() => refreshGate()}
+                  onClick={() => refresh()}
                 >
                   Check again
                 </Button>
@@ -724,7 +717,7 @@ export function ProvisioningStepper({
                   variant="outline"
                   size="sm"
                   className="rounded-full border-[#e0dbd0]"
-                  onClick={() => refreshGate()}
+                  onClick={() => refresh()}
                 >
                   Check again
                 </Button>
@@ -860,7 +853,7 @@ export function ProvisioningStepper({
             </p>
           </div>
           <div className="flex gap-3 justify-center">
-            <Button variant="outline" className="rounded-full border-[#e0dbd0]" onClick={() => refreshContainer()}>
+            <Button variant="outline" className="rounded-full border-[#e0dbd0]" onClick={() => refresh()}>
               Retry
             </Button>
             <Button variant="ghost" className="rounded-full" asChild>
@@ -1248,7 +1241,7 @@ export function ProvisioningStepper({
                   size="sm"
                   className="rounded-full border-[#e0dbd0]"
                   onClick={() => {
-                    refreshContainer();
+                    refresh();
                     setTimedOut(false);
                     provisioningStartRef.current = Date.now();
                     setElapsedMs(0);

@@ -97,6 +97,28 @@ describe("useProvisioningState", () => {
     expect(result.current.blocked?.code).toBe("credits_required");
   });
 
+  it("returns phase=needs-signup when /status returns 404 (admin owner has never started signup)", async () => {
+    // Backend signal for "owner has never started signup": gate would
+    // fire `signup_required` for an admin, but /status converts that
+    // to 404 so the chat surface renders the ProviderPicker (the only
+    // checkout entry point) instead of trapping the admin in a
+    // Subscribe-loop UI. Inactive-row admins still get 402.
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: "No container found" }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const { result } = renderHook(() => useProvisioningState(), { wrapper });
+    await waitFor(() => expect(result.current.phase).toBe("needs-signup"));
+    expect(result.current.container).toBeNull();
+    expect(result.current.blocked).toBeNull();
+    // Polls on same cadence as blocked/team-pending so a user
+    // returning from Stripe before the subscription webhook lands
+    // doesn't get stuck on a stale picker (Codex P1 round 3 on PR #570).
+    expect(result.current.refreshInterval).toBe(5_000);
+  });
+
   it("returns phase=team-pending when /status returns 202 (org member, admin-owned workspace not yet provisioned)", async () => {
     // Backend Task 8: org members whose admin-owned workspace is missing
     // get 202 Accepted with {"detail": "..."}. The hook surfaces this as

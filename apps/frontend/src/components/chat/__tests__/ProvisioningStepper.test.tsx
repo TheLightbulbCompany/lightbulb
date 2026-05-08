@@ -192,6 +192,38 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(refresh).toHaveBeenCalled();
   });
 
+  it("renders the ProviderPicker when phase=needs-signup", () => {
+    // Backend signal for "owner has never started signup": /status
+    // returns 404, the hook surfaces it as phase="needs-signup", and
+    // the stepper must render the picker (the only checkout entry
+    // point). This must NOT depend on the post-billing-load
+    // fall-through render — it should fire by intent.
+    useProvMock.mockReturnValue({
+      phase: "needs-signup",
+      container: null,
+      blocked: null,
+      refreshInterval: 0,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // ProviderPicker headline + card titles confirm the picker rendered.
+    expect(
+      screen.getByText(/ways to power it/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Sign in with ChatGPT/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Bring your own API key/i }),
+    ).toBeInTheDocument();
+  });
+
   it("renders team-pending centerpiece when phase=team-pending", () => {
     // Backend Task 8: org members whose admin-owned workspace isn't
     // provisioned yet receive 202 from /container/status. The hook

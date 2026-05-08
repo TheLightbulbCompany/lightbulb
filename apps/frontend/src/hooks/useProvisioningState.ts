@@ -27,7 +27,12 @@ export interface ContainerInfo {
   [key: string]: unknown;
 }
 
-export type ProvisioningPhase = "loading" | "normal" | "blocked" | "team-pending";
+export type ProvisioningPhase =
+  | "loading"
+  | "normal"
+  | "blocked"
+  | "team-pending"
+  | "needs-signup";
 
 export interface ProvisioningStateResult {
   phase: ProvisioningPhase;
@@ -40,28 +45,40 @@ export interface ProvisioningStateResult {
 type FetchResult =
   | { kind: "container"; data: ContainerInfo }
   | { kind: "blocked"; data: BlockedPayload }
-  | { kind: "team-pending"; detail: string };
+  | { kind: "team-pending"; detail: string }
+  | { kind: "needs-signup" };
 
 /**
  * Owns the chat-page centerpiece state machine:
  *
  *   /status load
  *        |
- *  +-----+------+
- *  |   200      | 202                    | 402
- *  v            v                         v
- *  normal     team-pending              blocked
+ *  +-----+------+--------------+--------------+
+ *  |   200      | 202          | 402          | 404
+ *  v            v              v              v
+ *  normal     team-pending   blocked        needs-signup
  *
  * 200 covers both the "have a container" case and the "owner has no
  * container yet, gate is clear, backend kicked off provisioning"
  * case (status="provisioning"). 202 is returned only for org members
- * waiting on their admin-owned workspace. 404 is no longer a valid
- * response shape on this endpoint after backend Task 8.
+ * waiting on their admin-owned workspace. 404 is the explicit
+ * "owner has never started signup" signal — the backend returns it
+ * for admins whose provision gate would fire `signup_required`, so
+ * the chat surface can render the ProviderPicker (the only checkout
+ * entry point) without trapping the user in a Subscribe button that
+ * loops back here. Inactive-row admins (canceled, unpaid, paused)
+ * still get 402 with a /settings/billing action.
  *
  * While in either `blocked` OR `team-pending`, polls fast (5s) for the
  * first minute, then 30s. `refresh()` resets to 5s and re-polls
  * immediately. Without the slow phase, a member whose admin never
  * provisions would hammer /container/status indefinitely (720 req/hour).
+ * `needs-signup` polls on the same cadence as `blocked` / `team-pending`
+ * so a user returning from Stripe Checkout before the
+ * customer.subscription.created webhook lands doesn't get stuck on a
+ * stale picker. The gate briefly returns 404 in that window
+ * (status=None on the billing row), and only revalidation will pick
+ * up the eventual transition to `normal`.
  */
 export function useProvisioningState(): ProvisioningStateResult {
   const { isSignedIn, getToken } = useAuth();
@@ -103,6 +120,16 @@ export function useProvisioningState(): ProvisioningStateResult {
         return { kind: "container", data: body as ContainerInfo };
       } catch (err) {
         if (!(err instanceof ApiError)) throw err;
+        if (err.status === 404) {
+          // Backend signal for "owner has never started signup": gate
+          // would fire `signup_required` for an admin, but the
+          // /container/status endpoint converts that to 404 so the
+          // chat surface renders the ProviderPicker (which calls
+          // POST /billing/trial-checkout — the only way to create the
+          // first billing row) instead of trapping the admin in a
+          // Subscribe-loop UI. Inactive-row admins still get 402.
+          return { kind: "needs-signup" };
+        }
         if (err.status === 402) {
           // FastAPI's HTTPException(detail=...) serializes to
           // {"detail": <whatever was passed>}. Backend passes
@@ -140,13 +167,20 @@ export function useProvisioningState(): ProvisioningStateResult {
     fetcher,
     {
       revalidateOnFocus: false,
-      // Function form lets SWR pass the latest data. While in either
-      // `blocked` or `team-pending`, fast-poll for the first minute
-      // (`slowAfterGen < pendingGen` means the 60s timer hasn't fired
-      // yet for the current generation), then drop to 30s. Avoids
-      // referencing `data` in this options block (it isn't in scope yet).
+      // Function form lets SWR pass the latest data. While in any
+      // pending state (blocked / team-pending / needs-signup),
+      // fast-poll for the first minute (`slowAfterGen < pendingGen`
+      // means the 60s timer hasn't fired yet for the current
+      // generation), then drop to 30s. needs-signup polls so a user
+      // returning from Stripe before the subscription webhook lands
+      // doesn't get stuck on a stale picker. Avoids referencing `data`
+      // in this options block (it isn't in scope yet).
       refreshInterval: (latest) => {
-        if (latest?.kind === "blocked" || latest?.kind === "team-pending") {
+        if (
+          latest?.kind === "blocked" ||
+          latest?.kind === "team-pending" ||
+          latest?.kind === "needs-signup"
+        ) {
           return slowAfterGen < pendingGen ? 5_000 : 30_000;
         }
         return 0;
@@ -166,7 +200,10 @@ export function useProvisioningState(): ProvisioningStateResult {
   // Codex P2 on PR #519: the previous `[isBlocked]`-only effect never
   // re-fired on subsequent refreshes, so a manual refresh after the
   // first minute could leave polling stuck at 5s indefinitely.
-  const isPending = data?.kind === "blocked" || data?.kind === "team-pending";
+  const isPending =
+    data?.kind === "blocked" ||
+    data?.kind === "team-pending" ||
+    data?.kind === "needs-signup";
   const [prevIsPending, setPrevIsPending] = useState(false);
   if (isPending !== prevIsPending) {
     // setState-during-render is the React-recommended way to derive a
@@ -214,6 +251,13 @@ export function useProvisioningState(): ProvisioningStateResult {
       refreshInterval,
       refresh,
     };
+  }
+  if (data.kind === "needs-signup") {
+    // Polls on the same cadence as blocked/team-pending so a user
+    // returning from Stripe Checkout before customer.subscription.created
+    // fires (which flips status from None to "trialing"/"active") gets
+    // picked up automatically rather than stuck on a stale picker.
+    return { phase: "needs-signup", container: null, blocked: null, refreshInterval, refresh };
   }
   return { phase: "blocked", container: null, blocked: data.data, refreshInterval, refresh };
 }

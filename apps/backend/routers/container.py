@@ -115,16 +115,22 @@ async def container_status(
             is_admin=is_admin,
         )
         if gate is not None:
-            # subscription_required + admin == "owner has not started
-            # signup yet". The ProviderPicker on /chat is the only
-            # checkout entry point (POST /billing/trial-checkout);
-            # surfacing 402 here traps the admin in a Subscribe button
-            # that loops /onboarding → /chat with no way to start
-            # checkout. Return 404 so useProvisioningState resolves to
-            # phase="provision-needed" and the picker renders. Members
-            # still see the gate so they get "ask your org admin"
-            # instead of a picker that would 403 on click.
-            if gate.code == "subscription_required" and is_admin:
+            # signup_required + admin == "owner has never started
+            # signup" (no billing row at all). The ProviderPicker on
+            # /chat is the only checkout entry point
+            # (POST /billing/trial-checkout); surfacing 402 here traps
+            # the admin in a Subscribe button that loops
+            # /onboarding → /chat with no way to start checkout.
+            # Return 404 so useProvisioningState maps it to
+            # phase="needs-signup" and renders the picker. Inactive-row
+            # gates (subscription_required for canceled/unpaid/paused,
+            # or payment_past_due) keep their 402 + structured action
+            # so the user gets routed to /settings/billing instead —
+            # those owners already have a subscription and
+            # trial-checkout would 409 already_subscribed on click.
+            # Members always see the gate so they get "ask your org
+            # admin" instead of a picker that would 403 on click.
+            if gate.code == "signup_required" and is_admin:
                 raise HTTPException(status_code=404, detail="No container found")
             raise HTTPException(status_code=402, detail=gate.to_payload())
 

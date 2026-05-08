@@ -53,10 +53,6 @@ vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({ isLoading: false, isSubscribed: true }),
 }));
 
-vi.mock("@/hooks/useContainerStatus", () => ({
-  useContainerStatus: () => ({ container: null, refresh: vi.fn() }),
-}));
-
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({ data: null, error: null }),
 }));

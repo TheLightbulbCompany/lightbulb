@@ -21,12 +21,10 @@ export interface BlockedPayload {
 
 /**
  * Cold-start phase from `routers/container.py::_resolve_cold_start_phase`.
- * Mirrors the type currently re-exported from `useContainerStatus.ts`;
- * declared here so `ContainerInfo.phase` is concretely typed (the index
+ * Declared here so `ContainerInfo.phase` is concretely typed (the index
  * signature `[key: string]: unknown` would otherwise widen `phase` to
  * `unknown` and break the cold-start phase-transition tracking in
- * ProvisioningStepper). The `useContainerStatus.ts` re-export is removed
- * in the same PR (Task 8 of the consolidation plan).
+ * ProvisioningStepper).
  */
 export type ColdStartPhase = "provisioning" | "starting" | "ready";
 

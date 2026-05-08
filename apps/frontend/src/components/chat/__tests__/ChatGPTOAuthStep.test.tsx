@@ -1,12 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { ChatGPTOAuthStep } from "../ChatGPTOAuthStep";
+import type { OAuthState } from "@/hooks/useChatGPTOAuth";
 
 const startMock = vi.fn();
-const stateRef: { current: ReturnType<typeof initialState> } = { current: initialState() };
 
-function initialState() {
-  return { state: { status: "idle" } as const, start: startMock, disconnect: vi.fn() };
+interface MockHookValue {
+  state: OAuthState;
+  start: () => void;
+  disconnect: () => Promise<void>;
+}
+
+const stateRef: { current: MockHookValue } = { current: initialState() };
+
+function initialState(): MockHookValue {
+  return { state: { status: "idle" }, start: startMock, disconnect: vi.fn() };
 }
 
 vi.mock("@/hooks/useChatGPTOAuth", () => ({

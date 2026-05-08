@@ -503,9 +503,13 @@ class TestHandleMessageChatEvents:
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert {"type": "done", "runId": "run-1"} in calls
 
-    def test_chat_final_does_not_emit_text_chunk(self, connection):
-        """chat state=final emits only the done signal — assistant text already
-        streamed via agent events, so re-sending would be redundant."""
+    def test_chat_final_emits_text_chunk_then_done(self, connection):
+        """chat state=final forwards the assistant text as a chunk before the
+        done signal. For agent runs the streamed chunks already painted the
+        same text (cumulative replace ⇒ visual no-op). For slash commands
+        (/help, /approve, etc.) this is the only path that delivers the
+        response text to the frontend — without it, slash-command replies
+        are silently dropped."""
         conn, mgmt = connection
         conn._handle_message(
             {
@@ -519,8 +523,12 @@ class TestHandleMessageChatEvents:
             }
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
-        assert all(c.get("type") != "chunk" for c in calls)
+        assert {"type": "chunk", "content": "complete answer", "runId": "run-1"} in calls
         assert {"type": "done", "runId": "run-1"} in calls
+        # chunk before done
+        assert calls.index({"type": "chunk", "content": "complete answer", "runId": "run-1"}) < calls.index(
+            {"type": "done", "runId": "run-1"}
+        )
 
     def test_chat_error_sends_error_message(self, connection):
         """chat state=error forwards an error type message."""

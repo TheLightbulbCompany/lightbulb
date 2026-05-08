@@ -311,7 +311,7 @@ class TestHandleMessage:
         )
 
     def test_chat_final_tagged_with_agent_id(self, connection, mock_management_api):
-        """chat.final done signal carries agent_id so the frontend can route it."""
+        """chat.final chunk + done signals both carry agent_id so the frontend can route them."""
         connection._handle_message(
             {
                 "type": "event",
@@ -324,9 +324,10 @@ class TestHandleMessage:
                 },
             }
         )
-        mock_management_api.send_message.assert_called_once_with(
-            "conn-1", {"type": "done", "agent_id": "my-agent-id", "runId": "run-1"}
-        )
+        assert mock_management_api.send_message.call_args_list == [
+            call("conn-1", {"type": "chunk", "content": "Done.", "agent_id": "my-agent-id", "runId": "run-1"}),
+            call("conn-1", {"type": "done", "agent_id": "my-agent-id", "runId": "run-1"}),
+        ]
 
     # -- Chat events (terminal states only) --
 
@@ -344,8 +345,9 @@ class TestHandleMessage:
         )
         mock_management_api.send_message.assert_not_called()
 
-    def test_chat_final_sends_only_done(self, connection, mock_management_api):
-        """Final sends just the done signal — assistant text streamed via agent events."""
+    def test_chat_final_sends_chunk_then_done(self, connection, mock_management_api):
+        """Final emits the assistant text as a chunk (cumulative replace, no-op for
+        agent runs that already streamed it) then the done signal."""
         connection._handle_message(
             {
                 "type": "event",
@@ -360,10 +362,13 @@ class TestHandleMessage:
                 },
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done", "runId": "run-1"})
+        assert mock_management_api.send_message.call_args_list == [
+            call("conn-1", {"type": "chunk", "content": "Complete response here.", "runId": "run-1"}),
+            call("conn-1", {"type": "done", "runId": "run-1"}),
+        ]
 
-    def test_chat_final_with_thinking_sends_thinking_then_done(self, connection, mock_management_api):
-        """Thinking blocks in the final message are forwarded for models that batch reasoning."""
+    def test_chat_final_with_thinking_sends_thinking_chunk_then_done(self, connection, mock_management_api):
+        """Thinking blocks in the final message are forwarded ahead of the text chunk."""
         connection._handle_message(
             {
                 "type": "event",
@@ -381,12 +386,11 @@ class TestHandleMessage:
                 },
             }
         )
-        assert mock_management_api.send_message.call_count == 2
-        calls = mock_management_api.send_message.call_args_list
-        assert calls[0] == call(
-            "conn-1", {"type": "thinking", "content": "Let me reason about this...", "runId": "run-1"}
-        )
-        assert calls[1] == call("conn-1", {"type": "done", "runId": "run-1"})
+        assert mock_management_api.send_message.call_args_list == [
+            call("conn-1", {"type": "thinking", "content": "Let me reason about this...", "runId": "run-1"}),
+            call("conn-1", {"type": "chunk", "content": "Answer", "runId": "run-1"}),
+            call("conn-1", {"type": "done", "runId": "run-1"}),
+        ]
 
     def test_chat_final_without_text_sends_only_done(self, connection, mock_management_api):
         connection._handle_message(
@@ -397,6 +401,40 @@ class TestHandleMessage:
             }
         )
         mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done", "runId": "run-1"})
+
+    def test_chat_final_emits_chunk_for_slash_command_response(self, connection, mock_management_api):
+        """Slash commands (/help, /whoami, /status, etc.) reply via chat.final
+        without any preceding agent stream — the response text lives only in
+        message.content. The connection pool must forward that text as a chunk
+        so the frontend has something to render. Without this, slash-command
+        replies are silently dropped on their way to the browser.
+        """
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "runId": "run-cmd",
+                    "sessionKey": "agent:agent-1:main",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "OpenClaw — built-in commands ..."}],
+                    },
+                },
+            }
+        )
+        calls = mock_management_api.send_message.call_args_list
+        assert calls[0] == call(
+            "conn-1",
+            {
+                "type": "chunk",
+                "content": "OpenClaw — built-in commands ...",
+                "agent_id": "agent-1",
+                "runId": "run-cmd",
+            },
+        )
+        assert calls[-1] == call("conn-1", {"type": "done", "agent_id": "agent-1", "runId": "run-cmd"})
 
     def test_chat_error_with_dict(self, connection, mock_management_api):
         connection._handle_message(

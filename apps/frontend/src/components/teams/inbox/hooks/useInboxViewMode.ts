@@ -4,36 +4,41 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import {
+  loadInboxViewMode,
+  saveInboxViewMode,
+} from "@/components/teams/shared/lib/inboxStorage";
 
 export type InboxViewMode = "list" | "board";
-
-const KEY_PREFIX = "isol8:teams:inbox-view-mode:";
-const VALID: readonly InboxViewMode[] = ["list", "board"];
-
-function isViewMode(v: string | null): v is InboxViewMode {
-  return v !== null && (VALID as readonly string[]).includes(v);
-}
 
 export function useInboxViewMode(companyId: string | null): {
   viewMode: InboxViewMode;
   setViewMode: (mode: InboxViewMode) => void;
 } {
-  const [viewMode, setViewModeState] = useState<InboxViewMode>("list");
+  // Lazy initializer — runs once on first render. Hydration-safe and avoids the
+  // initial-render flash where a useEffect-driven read shows "list" for one
+  // frame before flipping to the persisted value.
+  const [viewMode, setViewModeState] = useState<InboxViewMode>(() =>
+    companyId ? loadInboxViewMode(companyId) : "list",
+  );
 
-  useEffect(() => {
-    if (!companyId) {
-      setViewModeState("list");
-      return;
-    }
-    const stored = window.localStorage.getItem(KEY_PREFIX + companyId);
-    setViewModeState(isViewMode(stored) ? stored : "list");
-  }, [companyId]);
+  // Track the companyId the current state was loaded for. When it changes,
+  // reset state inline during render — same pattern as `useReadInboxItems`,
+  // avoiding the `react-hooks/set-state-in-effect` flash.
+  // See https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [loadedCompanyId, setLoadedCompanyId] = useState<string | null>(
+    companyId,
+  );
+  if (companyId !== loadedCompanyId) {
+    setLoadedCompanyId(companyId);
+    setViewModeState(companyId ? loadInboxViewMode(companyId) : "list");
+  }
 
   const setViewMode = useCallback(
     (mode: InboxViewMode) => {
       if (!companyId) return; // no key to scope to; treat as no-op
-      window.localStorage.setItem(KEY_PREFIX + companyId, mode);
+      saveInboxViewMode(companyId, mode);
       setViewModeState(mode);
     },
     [companyId],

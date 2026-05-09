@@ -13,7 +13,7 @@ describe("useInboxViewMode", () => {
   });
 
   it("reads a stored value", () => {
-    window.localStorage.setItem("isol8:teams:inbox-view-mode:co-1", "board");
+    window.localStorage.setItem("paperclip:inbox:co-1:view-mode", "board");
     const { result } = renderHook(() => useInboxViewMode("co-1"));
     expect(result.current.viewMode).toBe("board");
   });
@@ -22,11 +22,11 @@ describe("useInboxViewMode", () => {
     const { result } = renderHook(() => useInboxViewMode("co-1"));
     act(() => result.current.setViewMode("board"));
     expect(result.current.viewMode).toBe("board");
-    expect(window.localStorage.getItem("isol8:teams:inbox-view-mode:co-1")).toBe("board");
+    expect(window.localStorage.getItem("paperclip:inbox:co-1:view-mode")).toBe("board");
   });
 
   it("scopes per companyId", () => {
-    window.localStorage.setItem("isol8:teams:inbox-view-mode:co-1", "board");
+    window.localStorage.setItem("paperclip:inbox:co-1:view-mode", "board");
     const { result } = renderHook(() => useInboxViewMode("co-2"));
     expect(result.current.viewMode).toBe("list");
   });
@@ -39,8 +39,19 @@ describe("useInboxViewMode", () => {
   });
 
   it("ignores unknown stored values", () => {
-    window.localStorage.setItem("isol8:teams:inbox-view-mode:co-1", "garbage");
+    window.localStorage.setItem("paperclip:inbox:co-1:view-mode", "garbage");
     const { result } = renderHook(() => useInboxViewMode("co-1"));
     expect(result.current.viewMode).toBe("list");
+  });
+
+  it("re-reads storage when companyId changes", () => {
+    window.localStorage.setItem("paperclip:inbox:co-1:view-mode", "board");
+    const { result, rerender } = renderHook(
+      ({ id }) => useInboxViewMode(id),
+      { initialProps: { id: "co-2" as string | null } },
+    );
+    expect(result.current.viewMode).toBe("list");
+    rerender({ id: "co-1" });
+    expect(result.current.viewMode).toBe("board");
   });
 });

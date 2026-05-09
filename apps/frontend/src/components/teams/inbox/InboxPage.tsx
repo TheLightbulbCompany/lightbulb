@@ -9,6 +9,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 
 import { Inbox as InboxIcon } from "lucide-react";
 
@@ -22,6 +23,23 @@ import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
 import { useReadInboxItems } from "@/components/teams/inbox/hooks/useReadInboxItems";
+import { useInboxViewMode } from "@/components/teams/inbox/hooks/useInboxViewMode";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+
+// Lazy-load the board so the dnd-kit + KanbanColumn/KanbanCard tree only
+// arrives in the client bundle when the user actually flips to board view.
+const KanbanBoard = dynamic(
+  () =>
+    import("@/components/teams/inbox/KanbanBoard").then((m) => m.KanbanBoard),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="p-4" style={{ color: "var(--mute)" }}>
+        Loading board…
+      </div>
+    ),
+  },
+);
 
 import {
   buildGroupedInboxSections,
@@ -125,6 +143,14 @@ export function InboxPage({
     useInboxData();
   const archiveStack = useInboxArchiveStack();
   const readItems = useReadInboxItems(companyId);
+  const { viewMode, setViewMode } = useInboxViewMode(companyId ?? null);
+  const { patch } = useTeamsApi();
+  const onUpdateIssue = useCallback(
+    (id: string, data: Record<string, unknown>) => {
+      void patch(`/issues/${id}`, data);
+    },
+    [patch],
+  );
 
   // 5. Compute the active issue list per tab.
   const activeIssues = useMemo<Issue[]>(() => {
@@ -269,6 +295,8 @@ export function InboxPage({
         unreadCount={unreadCount}
         onMarkAllRead={handleMarkAllRead}
         onNewIssue={() => setNewIssueOpen(true)}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
       />
       {isError && (
         <div
@@ -287,6 +315,12 @@ export function InboxPage({
         <div className="mt-4">
           <PageSkeleton variant="inbox" />
         </div>
+      ) : viewMode === "board" ? (
+        <KanbanBoard
+          issues={filteredIssues}
+          agents={agents}
+          onUpdateIssue={onUpdateIssue}
+        />
       ) : sections.length === 0 ? (
         <PanelEmptyState
           icon={InboxIcon}

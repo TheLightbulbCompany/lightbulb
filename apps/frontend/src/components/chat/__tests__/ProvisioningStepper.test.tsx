@@ -47,6 +47,18 @@ vi.mock("@/lib/api", () => ({
     put: apiPut,
     del: apiDel,
   }),
+  // useChatGPTOAuth (transitively imported via ChatGPTOAuthStep) does
+  // `e instanceof ApiError` in its 409 handler — the mock must expose a
+  // matching class or the import resolves to undefined and throws at runtime.
+  ApiError: class ApiError extends Error {
+    public readonly status: number;
+    public readonly body: unknown;
+    constructor(status: number, body: unknown, message?: string) {
+      super(message ?? `API ${status}`);
+      this.status = status;
+      this.body = body;
+    }
+  },
 }));
 
 vi.mock("@/hooks/useBilling", () => ({

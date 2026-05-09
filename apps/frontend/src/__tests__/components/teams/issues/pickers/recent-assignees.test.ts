@@ -80,9 +80,9 @@ describe("recent-assignees", () => {
   });
 
   it("returns empty when localStorage is unavailable (SSR-safe)", () => {
-    // Simulate SSR by pretending window doesn't exist.
+    // Simulate SSR by pretending window doesn't exist. Cast through a
+    // partial type so the delete on globalThis.window typechecks.
     const realWindow = globalThis.window;
-    // @ts-expect-error — intentional teardown for the SSR branch
     delete (globalThis as { window?: Window }).window;
     try {
       expect(getRecentAssignees()).toEqual([]);

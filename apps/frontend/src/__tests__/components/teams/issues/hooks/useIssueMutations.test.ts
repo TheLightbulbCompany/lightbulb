@@ -30,7 +30,7 @@ beforeEach(() => {
 });
 
 describe("useIssueMutations", () => {
-  test("create posts to /issues with snake_cased body", async () => {
+  test("create posts to /issues with camelCase body", async () => {
     mockPost.mockResolvedValue({ id: "iss_1", title: "Fix bug", status: "todo" });
     const { result } = renderHook(() => useIssueMutations());
     let created;
@@ -47,8 +47,8 @@ describe("useIssueMutations", () => {
       title: "Fix bug",
       description: "details",
       priority: "high",
-      project_id: "proj_1",
-      assignee_agent_id: "ag_1",
+      projectId: "proj_1",
+      assigneeAgentId: "ag_1",
     });
     expect(created).toMatchObject({ id: "iss_1" });
   });
@@ -88,7 +88,7 @@ describe("useIssueMutations", () => {
     expect(mockMutate).toHaveBeenCalledWith("/teams/issues/iss_1/comments");
   });
 
-  test("update with all fields snake_cases project + assignee", async () => {
+  test("update with all fields forwards camelCase project + assignee", async () => {
     mockPatch.mockResolvedValue({ id: "iss_1", title: "x", status: "todo" });
     const { result } = renderHook(() => useIssueMutations());
     await act(async () => {
@@ -106,8 +106,8 @@ describe("useIssueMutations", () => {
       description: "y",
       status: "todo",
       priority: "low",
-      project_id: "proj_1",
-      assignee_agent_id: "ag_1",
+      projectId: "proj_1",
+      assigneeAgentId: "ag_1",
     });
   });
 
@@ -120,20 +120,20 @@ describe("useIssueMutations", () => {
     expect(mockMutate).not.toHaveBeenCalled();
   });
 
-  // Regression: Codex P1 on PR #556 — the BFF CreateIssueBody schema forbids
-  // `status`, so even if a caller smuggles it in (TS would normally block this,
-  // but a rogue `as IssueCreateInput` cast or backports could) the create body
-  // must NEVER include it, or upstream returns 422.
-  test("create body NEVER includes status (BFF whitelist)", async () => {
+  // Whitelist enforcement: since the camelCase unification (Task 3 of
+  // 2026-05-09-teams-bff-camelcase-unification), the frontend forwards
+  // IssueCreateInput verbatim to the BFF — there is no client-side body
+  // builder stripping disallowed fields. The BFF's CreateIssueBody schema
+  // (extra="forbid") is the single source of truth for the whitelist; if a
+  // caller smuggles `status` past TypeScript via a `as never` cast, the
+  // BFF will 422. This test pins the new contract: the body the frontend
+  // posts is exactly the (typed) input.
+  test("create posts the typed input verbatim (whitelist enforced server-side)", async () => {
     mockPost.mockResolvedValue({ id: "iss_1", title: "x", status: "todo" });
     const { result } = renderHook(() => useIssueMutations());
     await act(async () => {
-      // Cast to bypass the type narrowing — the test exists precisely because
-      // we want to defend against runtime smuggling of the field.
-      await result.current.create({ title: "x", status: "in_progress" } as never);
+      await result.current.create({ title: "x", priority: "low" });
     });
-    const callBody = mockPost.mock.calls[0][1] as Record<string, unknown>;
-    expect(callBody).not.toHaveProperty("status");
-    expect(callBody).toMatchObject({ title: "x" });
+    expect(mockPost).toHaveBeenCalledWith("/issues", { title: "x", priority: "low" });
   });
 });

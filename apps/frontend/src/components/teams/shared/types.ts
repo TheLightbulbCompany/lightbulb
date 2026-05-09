@@ -127,10 +127,10 @@ export interface IssueUpdateInput {
   description?: string;
   status?: IssueStatus;
   priority?: IssuePriority;
-  /** ``null`` explicitly clears the project (sent as ``project_id: null`` in the
+  /** ``null`` explicitly clears the project (sent as ``projectId: null`` in the
    * PATCH body). ``undefined`` leaves the project unchanged. */
   projectId?: string | null;
-  /** ``null`` explicitly unassigns (sent as ``assignee_agent_id: null`` in the
+  /** ``null`` explicitly unassigns (sent as ``assigneeAgentId: null`` in the
    * PATCH body). ``undefined`` leaves the assignee unchanged. */
   assigneeAgentId?: string | null;
 }

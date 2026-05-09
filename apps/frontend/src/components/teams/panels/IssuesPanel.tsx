@@ -14,17 +14,9 @@ import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   CompanyAgent,
+  Issue,
   IssueProject,
 } from "@/components/teams/shared/types";
-
-interface Issue {
-  id: string;
-  title: string;
-  status?: string;
-  priority?: string;
-  project_id?: string;
-  assignee_agent_id?: string;
-}
 
 export function IssuesPanel() {
   const { read } = useTeamsApi();
@@ -33,7 +25,7 @@ export function IssuesPanel() {
   );
   // NewIssueDialog renders Project + Assignee pickers only when these arrays
   // are non-empty (its defaults are []). Without these reads, users creating
-  // issues from this panel can't set project_id / assignee_agent_id.
+  // issues from this panel can't set projectId / assigneeAgentId.
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsData } = read<{ projects: IssueProject[] }>(
     "/projects",

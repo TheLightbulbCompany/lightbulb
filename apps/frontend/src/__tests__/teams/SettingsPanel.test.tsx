@@ -1,5 +1,5 @@
 // Test for SettingsPanel — confirms PATCH body contains ONLY
-// {display_name, description}. Adapter/plugin/instance fields would 422
+// {displayName, description}. Adapter/plugin/instance fields would 422
 // at the BFF (PatchCompanySettingsBody, extra="forbid").
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -9,7 +9,7 @@ const mockMutate = vi.fn();
 // Use a stable object reference: useEffect depends on `data` identity, so
 // returning a new object on every render would re-run the effect and fight
 // with user-typed state.
-const stableData = { display_name: "Acme Co", description: "Building things" };
+const stableData = { displayName: "Acme Co", description: "Building things" };
 const stableResp = {
   data: stableData,
   isLoading: false,
@@ -43,7 +43,7 @@ describe("SettingsPanel", () => {
     ).toBeInTheDocument();
   });
 
-  it("save patches /settings with ONLY {display_name, description}", async () => {
+  it("save patches /settings with ONLY {displayName, description}", async () => {
     mockPatch.mockResolvedValue({});
     render(<SettingsPanel />);
 
@@ -56,14 +56,14 @@ describe("SettingsPanel", () => {
       expect(mockPatch).toHaveBeenCalledTimes(1);
     });
     expect(mockPatch).toHaveBeenCalledWith("/settings", {
-      display_name: "New name",
+      displayName: "New name",
       description: "Building things",
     });
 
     const [, body] = mockPatch.mock.calls[0];
     expect(Object.keys(body as Record<string, unknown>).sort()).toEqual([
       "description",
-      "display_name",
+      "displayName",
     ]);
     // Defense-in-depth: confirm no smuggled fields.
     expect(body).not.toHaveProperty("adapterType");

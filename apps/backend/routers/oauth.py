@@ -20,6 +20,7 @@ from core.services.oauth_service import (
     DevicePollResult,
     OAuthAlreadyActiveError,
     OAuthExchangeFailedError,
+    get_decrypted_tokens_consistent,
     poll_device_code,
     request_device_code,
     revoke_user_oauth,
@@ -27,6 +28,34 @@ from core.services.oauth_service import (
 
 
 router = APIRouter(prefix="/oauth/chatgpt", tags=["oauth"])
+
+
+@router.get(
+    "/status",
+    summary="Whether the user has stored ChatGPT OAuth tokens",
+    description=(
+        "Read-only probe used by the wizard's hook on mount so the user "
+        "advances cleanly past the OAuth step when tokens are already "
+        "on file (e.g. they completed in another tab, or the page "
+        "remounted between /poll and the next gate refresh). Returns "
+        "200 with {connected, account_id}; never raises for missing-row. "
+        "403 for org-context users (ChatGPT OAuth is personal-only — see "
+        "memory/project_chatgpt_oauth_personal_only.md)."
+    ),
+)
+async def status(ctx: AuthContext = Depends(get_current_user)):
+    if ctx.is_org_context:
+        raise HTTPException(
+            status_code=403,
+            detail="ChatGPT OAuth is not available for organization workspaces.",
+        )
+    # Strongly-consistent read so the wizard sees its own write from /poll
+    # without an eventual-consistency stutter.
+    tokens = await get_decrypted_tokens_consistent(user_id=ctx.user_id)
+    return {
+        "connected": tokens is not None,
+        "account_id": (tokens or {}).get("account_id"),
+    }
 
 
 @router.post(

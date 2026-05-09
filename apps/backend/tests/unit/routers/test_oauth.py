@@ -128,3 +128,76 @@ class TestStartProviderRules:
         ):
             resp = await async_client.post("/api/v1/oauth/chatgpt/start")
         assert resp.status_code == 200
+
+
+class TestStatus:
+    """GET /api/v1/oauth/chatgpt/status — wizard idempotency probe.
+
+    Used by useChatGPTOAuth on mount so the wizard can recover from a
+    remount mid-flow (e.g. tab close + revisit, or in-tab parent re-render
+    that unmounts + remounts the OAuth step). Strongly-consistent DDB read
+    so the wizard reads its own write from /poll without an
+    eventual-consistency stutter.
+    """
+
+    @pytest.fixture
+    def override_org_admin_auth(self, app, mock_org_admin_user):
+        from core.auth import get_current_user
+
+        app.dependency_overrides[get_current_user] = mock_org_admin_user
+        yield
+        app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_status_returns_connected_true_when_active_row_exists(self, async_client):
+        with patch(
+            "routers.oauth.get_decrypted_tokens_consistent",
+            new=AsyncMock(
+                return_value={
+                    "account_id": "acc_x",
+                    "access_token": "tok-a",
+                    "refresh_token": "tok-r",
+                }
+            ),
+        ):
+            resp = await async_client.get("/api/v1/oauth/chatgpt/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"connected": True, "account_id": "acc_x"}
+
+    @pytest.mark.asyncio
+    async def test_status_returns_connected_false_when_no_row(self, async_client):
+        with patch(
+            "routers.oauth.get_decrypted_tokens_consistent",
+            new=AsyncMock(return_value=None),
+        ):
+            resp = await async_client.get("/api/v1/oauth/chatgpt/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"connected": False, "account_id": None}
+
+    @pytest.mark.asyncio
+    async def test_status_returns_connected_true_when_account_id_missing(self, async_client):
+        # Older rows may not have account_id (extracted from JWT post-2026-04).
+        with patch(
+            "routers.oauth.get_decrypted_tokens_consistent",
+            new=AsyncMock(return_value={"access_token": "tok-a", "refresh_token": "tok-r"}),
+        ):
+            resp = await async_client.get("/api/v1/oauth/chatgpt/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"connected": True, "account_id": None}
+
+    @pytest.mark.asyncio
+    async def test_status_rejects_org_context(self, async_client, override_org_admin_auth):
+        """Org-context user calling /status gets 403 before any DDB read.
+
+        Mirrors /start's org guard. Even though /status is read-only,
+        ChatGPT OAuth is personal-only per
+        memory/project_chatgpt_oauth_personal_only.md.
+        """
+        with patch(
+            "routers.oauth.get_decrypted_tokens_consistent",
+            new=AsyncMock(return_value=None),
+        ) as mock_lookup:
+            resp = await async_client.get("/api/v1/oauth/chatgpt/status")
+        assert resp.status_code == 403
+        assert "organization" in resp.json()["detail"].lower()
+        mock_lookup.assert_not_awaited()

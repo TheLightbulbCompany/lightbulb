@@ -91,9 +91,13 @@ class TestOpenclawConfigShape:
         assert memory_search["provider"] == "bedrock"
         assert memory_search["model"] == "amazon.titan-embed-text-v2:0"
 
-    def test_agents_defaults_idle_timeout(self):
+    def test_agents_defaults_no_llm_key(self):
+        # `agents.defaults.llm` was removed from AgentDefaultsSchema between
+        # OpenClaw v2026.4.23 and v2026.5.7. The strict() schema rejects it
+        # with `Unrecognized key: "llm"` and the gateway exits at startup.
+        # OpenClaw's default idle timeout is fine.
         config = _cfg()
-        assert config["agents"]["defaults"]["llm"]["idleTimeoutSeconds"] == 300
+        assert "llm" not in config["agents"]["defaults"]
 
     def test_agents_defaults_verbose_full(self):
         """verboseDefault=full keeps tool result/partialResult in agent
@@ -249,7 +253,7 @@ class TestWriteOpenclawConfigAsync:
         cfg = json.loads(out.read_text())
         # Sanity-check one field from each major section.
         assert cfg["gateway"]["auth"]["token"] == "t-1"
-        assert cfg["agents"]["defaults"]["llm"]["idleTimeoutSeconds"] == 300
+        assert cfg["agents"]["defaults"]["verboseDefault"] == "full"
         assert cfg["memory"]["backend"] == "builtin"
         assert cfg["tools"]["exec"]["security"] == "allowlist"
         assert cfg["channels"]["telegram"]["enabled"] is True

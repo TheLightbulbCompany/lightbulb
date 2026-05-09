@@ -147,7 +147,12 @@ export function InboxPage({
   const { patch } = useTeamsApi();
   const onUpdateIssue = useCallback(
     (id: string, data: Record<string, unknown>) => {
-      void patch(`/issues/${id}`, data);
+      // Surface 4xx/5xx PATCH failures to the console so an optimistic
+      // kanban drag that snaps back via realtime invalidate isn't a
+      // silent no-op for the developer. A future PR can add a toast.
+      patch(`/issues/${id}`, data).catch((err) => {
+        console.error(`Failed to update issue ${id}:`, err);
+      });
     },
     [patch],
   );

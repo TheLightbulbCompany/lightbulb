@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback, useMemo } from "react";
 import useSWR, { type SWRConfiguration, type SWRResponse } from "swr";
 import { useApi } from "@/lib/api";
 
@@ -66,24 +67,49 @@ export function useTeamsApi() {
     );
   }
 
-  async function post<T = unknown>(path: string, body: unknown): Promise<T> {
-    return (await api.post(`/teams${path}`, body)) as T;
-  }
+  // Wrap the mutation helpers in `useCallback` so consumers can list them
+  // as `useCallback`/`useEffect` deps without rebuilding every render. The
+  // generic `<T>` survives because `useCallback` infers from the function
+  // expression directly.
+  const post = useCallback(
+    async <T = unknown>(path: string, body: unknown): Promise<T> => {
+      return (await api.post(`/teams${path}`, body)) as T;
+    },
+    [api],
+  );
 
   // The BFF defines `@router.patch(...)` handlers on settings/routines/
   // goals/projects/issues/agents — routing this through PUT (the prior
   // implementation) silently 405'd because no PUT handlers exist. Use
   // `api.patch` so the actual HTTP method matches what the backend
   // accepts.
-  async function patch<T = unknown>(path: string, body: unknown): Promise<T> {
-    return (await api.patch(`/teams${path}`, body)) as T;
-  }
+  const patch = useCallback(
+    async <T = unknown>(path: string, body: unknown): Promise<T> => {
+      return (await api.patch(`/teams${path}`, body)) as T;
+    },
+    [api],
+  );
 
-  async function del<T = unknown>(path: string): Promise<T> {
-    return (await api.del(`/teams${path}`)) as T;
-  }
+  const del = useCallback(
+    async <T = unknown>(path: string): Promise<T> => {
+      return (await api.del(`/teams${path}`)) as T;
+    },
+    [api],
+  );
 
-  return { read: useRead, post, patch, del };
+  // `useRead` is intentionally NOT wrapped in `useCallback`: it calls
+  // `useSWR` internally, which means consumers must invoke it
+  // unconditionally at the top of their component body (rules of hooks).
+  // Memoizing it would not stabilize the resulting SWR subscription —
+  // SWR keys it by path string, not by the read fn identity — and it is
+  // never used as a `useCallback`/`useEffect` dep. The returned object
+  // shape is still memoized so consumers destructuring `{ post, patch,
+  // del }` get stable references.
+  return useMemo(
+    () => ({ read: useRead, post, patch, del }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [post, patch, del],
+  );
 }
 
 export type TeamsWorkspaceStatus =

@@ -242,6 +242,16 @@ export function ProvisioningStepper({
   // Single canonical /container/status poller. Gate-driven cadence
   // wins when blocked (5s/30s); cold-start polling at 3s otherwise so
   // the user sees fast progress through phase transitions.
+  // No `enabled` gate here: an admin with a `past_due` / `canceled` /
+  // `unpaid` / `paused` billing row has `isSubscribed === false`, but
+  // we still need /container/status to fire so the backend's 402
+  // subscription_required / payment_past_due gate surfaces. The
+  // refreshInterval below already throttles non-blocked polling for
+  // unsubscribed users (interval=0 when !shouldPollContainer); the
+  // gate-driven cadence (5s/30s) still wins for pending states. Codex
+  // P1 on PR #571 — the previous `enabled: isSubscribed` bypassed the
+  // entire fetch for inactive subscriptions and lost their
+  // /settings/billing reactivation CTA.
   const {
     phase: gatePhase,
     blocked,
@@ -249,7 +259,6 @@ export function ProvisioningStepper({
     refresh,
   } = useProvisioningState({
     refreshInterval: shouldPollContainer ? 3000 : 0,
-    enabled: isSubscribed,
   });
 
   useEffect(() => {

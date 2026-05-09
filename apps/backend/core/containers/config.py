@@ -585,9 +585,12 @@ def build_openclaw_config_dict(
                     "provider": "bedrock",
                     "model": "amazon.titan-embed-text-v2:0",
                 },
-                "llm": {
-                    "idleTimeoutSeconds": 300,
-                },
+                # `agents.defaults.llm.idleTimeoutSeconds` was removed from
+                # AgentDefaultsSchema between v2026.4.23 and v2026.5.7 (see
+                # upstream src/config/zod-schema.agent-defaults.ts diff). We
+                # used to set 300s here; OpenClaw v2026.5.7's strict() schema
+                # rejects the unknown key and the gateway exits with
+                # `Unrecognized key: "llm"`. Default idle timeout is fine.
                 # verboseDefault="full" keeps tool result/partialResult in
                 # agent events so the frontend can show tool input + output.
                 # OpenClaw defaults to "off" which strips those fields before

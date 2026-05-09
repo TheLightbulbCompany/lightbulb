@@ -18,31 +18,41 @@ function isBrowser(): boolean {
   }
 }
 
-/** Returns most-recent-first, capped at 5. Empty on SSR or corrupted storage. */
+// Both read and write are best-effort. localStorage.getItem /
+// .setItem / .removeItem can ALL throw in private/sandboxed
+// environments even when the localStorage object itself exists
+// (Safari Private Browsing pre-15, quota exceeded, sandboxed
+// iframes, COEP-restricted contexts). isBrowser() is necessary but
+// not sufficient — we need defensive try/catch on every storage
+// call too. AssigneePicker treats this util as a UX nicety; never
+// let it block the actual assignment PATCH (Codex P2 on PR #575/#576).
+
+/** Returns most-recent-first, capped at 5. Empty on SSR or any storage failure. */
 export function getRecentAssignees(): string[] {
   if (!isBrowser()) return [];
-  const raw = localStorage.getItem(RECENT_ASSIGNEES_KEY);
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(RECENT_ASSIGNEES_KEY);
+  } catch {
+    // Storage read blocked. Best-effort: pretend empty.
+    return [];
+  }
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
-      localStorage.removeItem(RECENT_ASSIGNEES_KEY);
+      safeRemove();
       return [];
     }
     return parsed.filter((x): x is string => typeof x === "string");
   } catch {
-    // Defensive: storage corrupted by a different version of the code or
-    // a foreign tab. Clear it so we don't keep choking on the same value.
-    localStorage.removeItem(RECENT_ASSIGNEES_KEY);
+    // Storage corrupted (different code version, foreign tab, etc.).
+    safeRemove();
     return [];
   }
 }
 
-/** Add `id` to the front, dedupe, cap at 5. No-op on SSR. Best-effort:
- * a localStorage write failure (quota exceeded, blocked storage in Safari
- * Private Browsing, sandboxed iframes, etc.) is swallowed so the caller's
- * subsequent ``onChange`` still runs. Recent-bubble-up is a UX nicety —
- * never block an assignment on persistence (Codex P2 on PR #575). */
+/** Add `id` to the front, dedupe, cap at 5. No-op on SSR or any storage failure. */
 export function trackRecentAssignee(id: string): void {
   if (!isBrowser()) return;
   const current = getRecentAssignees().filter((x) => x !== id);
@@ -51,6 +61,16 @@ export function trackRecentAssignee(id: string): void {
   try {
     localStorage.setItem(RECENT_ASSIGNEES_KEY, JSON.stringify(next));
   } catch {
-    // Storage write failed — best-effort, don't block the picker.
+    // Storage write blocked — best-effort.
+  }
+}
+
+/** removeItem can throw in the same scenarios as getItem/setItem; never let
+ * the corruption-recovery path itself throw and block the caller. */
+function safeRemove(): void {
+  try {
+    localStorage.removeItem(RECENT_ASSIGNEES_KEY);
+  } catch {
+    // Storage delete blocked — give up, return [] anyway.
   }
 }

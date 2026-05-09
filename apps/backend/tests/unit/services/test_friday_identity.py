@@ -172,3 +172,87 @@ def test_provider_label_for_each_choice(provider_choice, byo_provider, expected_
     """_format_provider_label maps each provider tuple to a human label."""
     label = friday_identity._format_provider_label(provider_choice, byo_provider)
     assert expected_substring in label
+
+
+@pytest.mark.asyncio
+async def test_resolve_personal_owner_uses_clerk_get_user(monkeypatch):
+    """Personal owner_id → reads first_name/last_name/email from clerk_admin."""
+    from core.services import clerk_admin
+    from core.services import container_provision
+
+    async def fake_get_user(user_id):
+        assert user_id == "user_abc"
+        return {
+            "first_name": "Sam",
+            "last_name": "Rivers",
+            "email_addresses": [{"email_address": "sam@example.com"}],
+            "primary_email_address_id": None,
+        }
+
+    async def fake_resolve_provider(owner_id):
+        return ("bedrock_claude", None)
+
+    monkeypatch.setattr(clerk_admin, "get_user", fake_get_user)
+    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
+
+    profile = await friday_identity._resolve_owner_profile("user_abc")
+    assert profile["kind"] == "personal"
+    assert profile["full_name"] == "Sam Rivers"
+    assert profile["first_name_or_fallback"] == "Sam"
+    assert profile["owner_display"] == "Sam"
+    assert profile["email"] == "sam@example.com"
+    assert "Bedrock" in profile["provider_label"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_owner_uses_clerk_get_organization(monkeypatch):
+    """Org owner_id → reads org name from clerk_admin.get_organization
+    and owner email from paperclip_owner_email."""
+    from core.services import clerk_admin
+    from core.services import container_provision
+    from core.services import paperclip_owner_email
+
+    async def fake_get_org(org_id):
+        assert org_id == "org_xyz"
+        return {"name": "Acme Inc"}
+
+    async def fake_lookup_owner_email(*, org_id, fallback_user_id):
+        assert org_id == "org_xyz"
+        return "founder@acme.com"
+
+    async def fake_resolve_provider(owner_id):
+        return ("bedrock_claude", None)
+
+    monkeypatch.setattr(clerk_admin, "get_organization", fake_get_org)
+    monkeypatch.setattr(paperclip_owner_email, "lookup_owner_email", fake_lookup_owner_email)
+    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
+
+    profile = await friday_identity._resolve_owner_profile("org_xyz")
+    assert profile["kind"] == "org"
+    assert profile["org_name"] == "Acme Inc"
+    assert profile["owner_email"] == "founder@acme.com"
+    assert profile["owner_display"] == "Acme Inc"
+
+
+@pytest.mark.asyncio
+async def test_resolve_falls_back_to_minimal_when_clerk_fails(monkeypatch):
+    """clerk_admin.get_user returns None → resolver still returns a usable
+    profile with email='(unknown)'."""
+    from core.services import clerk_admin
+    from core.services import container_provision
+
+    async def fake_get_user_returns_none(user_id):
+        return None
+
+    async def fake_resolve_provider(owner_id):
+        return ("byo_key", "anthropic")
+
+    monkeypatch.setattr(clerk_admin, "get_user", fake_get_user_returns_none)
+    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
+
+    profile = await friday_identity._resolve_owner_profile("user_abc")
+    assert profile["kind"] == "personal"
+    assert profile["email"] == "(unknown)"
+    assert profile["full_name"] == "(unknown)"
+    # Provider still resolves correctly via billing_repo.
+    assert "BYO Anthropic" in profile["provider_label"]

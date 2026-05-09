@@ -291,28 +291,74 @@ def _render_templates(profile: dict) -> dict[str, str]:
 async def _resolve_owner_profile(owner_id: str) -> dict:
     """Resolve a profile dict for the seed templates.
 
-    REAL implementation lands in Task 4. For Task 3 this is a stub that
-    returns a minimal-fallback profile (email-only) so the writes path
-    can be exercised end-to-end with no Clerk dependency. Task 4 will
-    replace the body with personal/org branches that consult Clerk +
-    paperclip_owner_email + container_provision.resolve_provider_choice.
+    Branches on _is_org_owner_id:
+      - Personal: clerk_admin.get_user → email + first_name + last_name.
+      - Org: clerk_admin.get_organization → name; paperclip_owner_email
+        → owner email.
+
+    Provider label: container_provision.resolve_provider_choice (reads
+    from billing_repo). Defaults to bedrock_claude if the row is missing
+    or the field is unset (matches resolve_provider_choice's own default).
+
+    Failures degrade to placeholder strings ("(unknown)" for missing
+    Clerk fields, "your team" for missing org name). Friday will learn
+    actual values through conversation.
     """
+    # Lazy imports keep module-load light and avoid import cycles between
+    # friday_identity and container_provision (which uses clerk_admin).
+    from core.services import clerk_admin
+    from core.services.container_provision import resolve_provider_choice
+
+    provider_choice, byo_provider = await resolve_provider_choice(owner_id)
+    provider_label = _format_provider_label(provider_choice, byo_provider)
+
     if _is_org_owner_id(owner_id):
+        from core.services.paperclip_owner_email import lookup_owner_email
+
+        org = await clerk_admin.get_organization(owner_id)
+        org_name = (org or {}).get("name") or "your team"
+        owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=None) or "(unknown)"
         return {
             "kind": "org",
-            "owner_display": "your team",
+            "owner_display": org_name,
             "first_name_or_fallback": "team",
-            "org_name": "your team",
-            "owner_email": "(unknown)",
-            "provider_label": _format_provider_label("bedrock_claude", None),
+            "org_name": org_name,
+            "owner_email": owner_email,
+            "provider_label": provider_label,
         }
+
+    user = await clerk_admin.get_user(owner_id)
+    user = user or {}
+    first_name = user.get("first_name") or ""
+    last_name = user.get("last_name") or ""
+    full_name = f"{first_name} {last_name}".strip() or "(unknown)"
+
+    # Pick the primary email when present; fall back to the first one in
+    # the list, then to a placeholder.
+    emails = user.get("email_addresses") or []
+    primary_id = user.get("primary_email_address_id")
+    primary = next((e for e in emails if e.get("id") == primary_id), None)
+    if primary is None and emails:
+        primary = emails[0]
+    email = (primary or {}).get("email_address") or "(unknown)"
+
+    # Friendly fallback for the "what to call them" / greeting slot.
+    if first_name:
+        first_name_or_fallback = first_name
+    elif email != "(unknown)" and "@" in email:
+        first_name_or_fallback = email.split("@", 1)[0]
+    else:
+        first_name_or_fallback = "there"
+
+    owner_display = first_name or first_name_or_fallback
+
     return {
         "kind": "personal",
-        "owner_display": "you",
-        "first_name_or_fallback": "there",
-        "full_name": "(unknown)",
-        "email": "(unknown)",
-        "provider_label": _format_provider_label("bedrock_claude", None),
+        "owner_display": owner_display,
+        "first_name_or_fallback": first_name_or_fallback,
+        "full_name": full_name,
+        "email": email,
+        "provider_label": provider_label,
     }
 
 

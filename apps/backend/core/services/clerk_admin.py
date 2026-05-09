@@ -143,6 +143,32 @@ async def get_user(user_id: str) -> dict | None:
     return response.json()
 
 
+async def get_organization(org_id: str) -> dict | None:
+    """Single Clerk organization by org_id. Returns None on 404 / no key.
+
+    Mirrors get_user's defensive posture: catches network errors, logs,
+    returns None. Callers should handle None as "no metadata available"
+    rather than as failure.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return None
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.get(f"{_CLERK_API_BASE}/organizations/{org_id}", headers=headers)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin.get_organization network error: %s", e)
+        return None
+
+    if response.status_code == 404:
+        return None
+    if response.status_code >= 400:
+        logger.warning("clerk_admin.get_organization HTTP %s", response.status_code)
+        return None
+    return response.json()
+
+
 async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict]:
     """Return the orgs a Clerk user belongs to.
 

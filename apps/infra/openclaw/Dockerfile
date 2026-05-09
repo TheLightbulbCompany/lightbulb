@@ -147,66 +147,27 @@ RUN npm i -g --ignore-scripts \
       @anthropic-ai/claude-code @google/gemini-cli \
       @xdevplatform/xurl
 
-# ---- Layer 8c: pre-bake ALL openclaw plugin runtime deps ----
-# At first start, openclaw's plugin loader npm-installs each plugin's deps
-# into <pluginRoot>/node_modules/ unless a matching version already exists
-# there. Detection logic (upstream src/plugins/bundled-runtime-deps.ts):
-#   collectRuntimeDeps(packageJson) returns
-#       { ...packageJson.dependencies, ...packageJson.optionalDependencies }
-#   readInstalledDependencyVersion(<pluginRoot>, depName) reads
-#       <pluginRoot>/node_modules/<dep>/package.json and semver-checks
-#       against the spec. Match → skip install.
+# Layers 8c (per-plugin npm prebake) and 8d (Playwright Chromium pre-download)
+# were removed during the v2026.5.7 bump. At v2026.4.23 they were necessary
+# workarounds: the upstream "fat" image didn't actually bundle plugin runtime
+# deps into <plugin>/node_modules/, and the browser plugin paid ~6min on cold
+# start downloading Chromium. Verified via upstream Dockerfile that v2026.5.7's
+# build now does both natively:
+#   - line 66:  pnpm install --frozen-lockfile  (resolves workspace: refs;
+#                 deps land in /app/node_modules with proper hoisting)
+#   - line 169: COPY --from=runtime-assets /app/node_modules ./node_modules
+#                 (hoisted deps are present in the runtime image)
+#   - line 217: node /app/node_modules/playwright-core/cli.js install
+#                   --with-deps chromium   (Chromium pre-installed)
 #
-# Earlier versions of this layer scanned `package.json#openclaw.bundledRuntimeDeps`,
-# but ZERO upstream plugins declare that field — confirmed via
-# `find ~/Desktop/openclaw/extensions -name package.json -exec grep -l bundledRuntimeDeps {}`
-# returning no matches. The prebake silently no-op'd, leaving deepgram /
-# elevenlabs / microsoft TTS plugins (and any other plugin with deps) to
-# install at first boot — observed as a 5.5 min `sidecars.plugin-services`
-# wedge during cold start (2026-05-01).
+# Our previous prebake also broke at 2026.5.7 because plugins now reference
+# each other via workspace:* — npm install (which we used) doesn't speak
+# workspace: protocol; only pnpm does. Trying to maintain a pnpm-aware
+# prebake on top of upstream's already-correct pnpm install is busywork.
 #
-# Match what openclaw actually checks: scan dependencies + optionalDependencies
-# from each plugin's package.json, filter out workspace/file/link specs (npm
-# rejects those outside a workspace), and install into the plugin's own
-# node_modules so readInstalledDependencyVersion finds the dep first try.
-RUN node -e ' \
-    const fs=require("fs"),path=require("path"),{execSync}=require("child_process"); \
-    const root="/app/dist/extensions"; \
-    if (!fs.existsSync(root)) { console.log("[prebake] no extensions dir, skipping"); process.exit(0); } \
-    const NON_REGISTRY_PREFIXES=["workspace:","file:","link:","portal:","catalog:"]; \
-    for (const name of fs.readdirSync(root)) { \
-      const dir=path.join(root,name); \
-      const pkgPath=path.join(dir,"package.json"); \
-      if (!fs.existsSync(pkgPath)) continue; \
-      let pkg; try { pkg=JSON.parse(fs.readFileSync(pkgPath,"utf8")); } catch { continue; } \
-      const all={...(pkg.dependencies||{}),...(pkg.optionalDependencies||{})}; \
-      const specs=Object.entries(all) \
-        .filter(([,v])=>typeof v==="string" && !NON_REGISTRY_PREFIXES.some(p=>v.startsWith(p))) \
-        .map(([n,v])=>`${n}@${v}`); \
-      if (specs.length===0) continue; \
-      console.log(`[prebake] ${name}: ${specs.join(" ")}`); \
-      execSync(`npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev ${specs.map(s=>JSON.stringify(s)).join(" ")}`, \
-        { cwd: dir, stdio: "inherit" }); \
-    }' && \
-    chown -R node:node /app/dist/extensions
-
-# ---- Layer 8d: pre-download Playwright Chromium browser ----
-# After Layer 8c installs playwright-core, the browser plugin still pays
-# ~6 minutes on cold start downloading + extracting Chromium (~150 MB)
-# the first time it spins up — observed empirically as the gap between
-# `[gateway] starting channels and sidecars...` (T+29s) and
-# `[browser/server] Browser control listening` (T+446s).
-#
-# `playwright-core` is the runtime; the `playwright` package wraps it
-# and provides the `playwright install` CLI. We install playwright
-# alongside playwright-core into the browser plugin's node_modules,
-# then run the CLI with PLAYWRIGHT_BROWSERS_PATH pointing at the
-# default cache location so the binary is ready when the plugin starts.
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
-RUN cd /app/dist/extensions/browser && \
-    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev playwright@1.59.1 && \
-    HOME=/home/node ./node_modules/.bin/playwright install --with-deps chromium && \
-    chown -R node:node /app/dist/extensions/browser /home/node/.cache
+# If a specific plugin fails to start because its deps aren't bundled, add a
+# targeted RUN for just that plugin rather than reintroducing the broad
+# prebake. Document with a link to the failing run for next-time triage.
 
 # ---- Restore runtime context ----
 USER node

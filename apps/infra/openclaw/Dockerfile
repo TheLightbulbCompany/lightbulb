@@ -37,17 +37,22 @@ ENV PATH=/usr/local/go/bin:$PATH \
 RUN mkdir -p /out/bin
 
 # Steipete + community Go tools — `go install` writes binaries into GOBIN (=/out/bin).
+# Five of these (wacli, songsee, gogcli, goplaces, spogo) were transferred from
+# github.com/steipete/* to github.com/openclaw/* in early 2026. github.com still
+# 301-redirects browser traffic, but `go install`'s module-path check rejects the
+# old path the moment a release ships with the new go.mod (e.g. wacli@v0.8.1
+# declares `module github.com/openclaw/wacli`). Always use the canonical path.
 RUN go install github.com/steipete/eightctl/cmd/eightctl@latest && \
     go install github.com/Hyaxia/blogwatcher/cmd/blogwatcher@latest && \
     go install github.com/steipete/ordercli/cmd/ordercli@latest && \
     go install github.com/steipete/sonoscli/cmd/sonos@latest && \
-    go install github.com/steipete/wacli/cmd/wacli@latest && \
+    go install github.com/openclaw/wacli/cmd/wacli@latest && \
     go install github.com/steipete/gifgrep/cmd/gifgrep@latest && \
     go install github.com/steipete/blucli/cmd/blu@latest && \
-    go install github.com/steipete/songsee/cmd/songsee@latest && \
-    go install github.com/steipete/gogcli/cmd/gog@latest && \
-    go install github.com/steipete/goplaces/cmd/goplaces@latest && \
-    go install github.com/steipete/spogo/cmd/spogo@latest
+    go install github.com/openclaw/songsee/cmd/songsee@latest && \
+    go install github.com/openclaw/gogcli/cmd/gog@latest && \
+    go install github.com/openclaw/goplaces/cmd/goplaces@latest && \
+    go install github.com/openclaw/spogo/cmd/spogo@latest
 
 # notesmd-cli (formerly obsidian-cli) — `go build` from a cloned repo.
 RUN git clone --depth=1 https://github.com/Yakitrak/notesmd-cli.git /tmp/notesmd && \

@@ -18,7 +18,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { KanbanColumn } from "@/components/teams/inbox/KanbanColumn";
-import { KanbanCard, type KanbanAgent } from "@/components/teams/inbox/KanbanCard";
+import { KanbanCardOverlay, type KanbanAgent } from "@/components/teams/inbox/KanbanCard";
 import type { Issue } from "@/components/teams/shared/types";
 
 export const BOARD_STATUSES = [
@@ -119,7 +119,7 @@ export function KanbanBoard({
       </div>
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay />
+          <KanbanCardOverlay issue={activeIssue} agents={agents} />
         ) : null}
       </DragOverlay>
     </DndContext>

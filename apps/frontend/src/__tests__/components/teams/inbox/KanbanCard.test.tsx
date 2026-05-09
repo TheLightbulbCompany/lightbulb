@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { DndContext } from "@dnd-kit/core";
 import { SortableContext } from "@dnd-kit/sortable";
-import { KanbanCard } from "@/components/teams/inbox/KanbanCard";
+import { KanbanCard, KanbanCardOverlay } from "@/components/teams/inbox/KanbanCard";
 import type { Issue } from "@/components/teams/shared/types";
 
 const baseIssue: Issue = {
@@ -56,5 +56,28 @@ describe("KanbanCard", () => {
       ),
     );
     expect(screen.getByText("Atlas")).toBeInTheDocument();
+  });
+});
+
+describe("KanbanCardOverlay", () => {
+  it("renders without DndContext (no useSortable registration)", () => {
+    // The overlay must NOT call useSortable — otherwise it would double-
+    // register the active card's id and confuse dnd-kit's collision
+    // detection. Rendering without a DndContext wrapper proves the
+    // component is presentational-only.
+    render(<KanbanCardOverlay issue={baseIssue} agents={[]} />);
+    expect(screen.getByText("ENG-42")).toBeInTheDocument();
+    expect(screen.getByText("Wire up the kanban board")).toBeInTheDocument();
+  });
+
+  it("links by id (consistent with KanbanCard)", () => {
+    render(<KanbanCardOverlay issue={baseIssue} agents={[]} />);
+    expect(screen.getByRole("link")).toHaveAttribute("href", "/teams/issues/iss-1");
+  });
+
+  it("carries a data-kanban-card-overlay attribute (not -id) so it doesn't collide with the active card in queries", () => {
+    const { container } = render(<KanbanCardOverlay issue={baseIssue} agents={[]} />);
+    expect(container.querySelector(`[data-kanban-card-overlay="iss-1"]`)).toBeInTheDocument();
+    expect(container.querySelector(`[data-kanban-card-id="iss-1"]`)).not.toBeInTheDocument();
   });
 });

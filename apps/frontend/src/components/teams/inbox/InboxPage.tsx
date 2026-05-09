@@ -210,10 +210,13 @@ export function InboxPage({
 
   // 10. Wire keyboard shortcuts. Upstream allows j/k/Arrow/Enter navigation
   //     on every tab; only archive-class shortcuts (a/y/r/u) are restricted
-  //     to the "mine" tab.
+  //     to the "mine" tab. In board mode the list/selection UI isn't
+  //     rendered, so all list-based shortcuts are gated off — otherwise
+  //     j/k would create an invisible row selection and Enter/a/y/r could
+  //     open or archive that hidden row.
   useInboxKeyboardNav({
-    enableNav: true,
-    enableArchive: tab === "mine",
+    enableNav: viewMode === "list",
+    enableArchive: viewMode === "list" && tab === "mine",
     navItems,
     selectedIndex,
     onSelectIndex: (idx) => {

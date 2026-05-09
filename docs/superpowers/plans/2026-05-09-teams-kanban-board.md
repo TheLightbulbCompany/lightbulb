@@ -361,7 +361,7 @@ function SegmentButton({
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-editorial-sans transition-colors",
+        "inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors",
       )}
       style={{
         backgroundColor: active ? "var(--forest-tint)" : "transparent",
@@ -775,7 +775,7 @@ export function KanbanColumn({
         {(!isEmpty || isOver) && (
           <>
             <span
-              className="text-xs font-semibold uppercase tracking-wide font-editorial-sans"
+              className="text-xs font-semibold uppercase tracking-wide"
               style={{ color: "var(--mute)" }}
             >
               {statusLabel(status)}

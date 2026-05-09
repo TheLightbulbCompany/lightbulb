@@ -70,7 +70,7 @@ async def create_issue(
     """Create an issue."""
     return await _agents._admin().create_issue(
         company_id=ctx.company_id,
-        body=body.model_dump(exclude_none=True),
+        body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
@@ -92,7 +92,7 @@ async def patch_issue(
     """
     return await _agents._admin().patch_issue(
         issue_id=issue_id,
-        body=body.model_dump(exclude_unset=True),
+        body=body.model_dump(exclude_unset=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
@@ -168,6 +168,6 @@ async def add_issue_comment(
     """Post a comment on an issue. Body is whitelisted to ``{body: str}``."""
     return await _agents._admin().add_issue_comment(
         issue_id=issue_id,
-        body=body.model_dump(),
+        body=body.model_dump(by_alias=True),
         session_cookie=ctx.session_cookie,
     )

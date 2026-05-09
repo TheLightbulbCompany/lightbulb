@@ -33,7 +33,7 @@ async def patch_settings(
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Patch the company record with the whitelisted subset only."""
-    payload = body.model_dump(exclude_none=True)
+    payload = body.model_dump(exclude_none=True, by_alias=True)
     return await _agents._admin().patch_company(
         company_id=ctx.company_id,
         body=payload,

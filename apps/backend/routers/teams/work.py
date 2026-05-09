@@ -48,7 +48,7 @@ async def create_routine(
     """Create a routine."""
     return await _agents._admin().create_routine(
         company_id=ctx.company_id,
-        body=body.model_dump(exclude_none=True),
+        body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
@@ -62,7 +62,7 @@ async def patch_routine(
     """Patch a routine."""
     return await _agents._admin().patch_routine(
         routine_id=routine_id,
-        body=body.model_dump(exclude_none=True),
+        body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
@@ -129,7 +129,7 @@ async def create_goal(
     """Create a goal."""
     return await _agents._admin().create_goal(
         company_id=ctx.company_id,
-        body=body.model_dump(exclude_none=True),
+        body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
@@ -143,7 +143,7 @@ async def patch_goal(
     """Patch a goal."""
     return await _agents._admin().patch_goal(
         goal_id=goal_id,
-        body=body.model_dump(exclude_none=True),
+        body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
@@ -178,7 +178,7 @@ async def create_project(
     """Create a project."""
     return await _agents._admin().create_project(
         company_id=ctx.company_id,
-        body=body.model_dump(exclude_none=True),
+        body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
@@ -192,6 +192,6 @@ async def patch_project(
     """Patch a project."""
     return await _agents._admin().patch_project(
         project_id=project_id,
-        body=body.model_dump(exclude_none=True),
+        body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )

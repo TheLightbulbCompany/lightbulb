@@ -71,7 +71,7 @@ def test_patch_settings_passes_whitelisted_body(client, monkeypatch):
     )
     assert r.status_code == 200
     body = admin.patch_company.await_args.kwargs["body"]
-    assert body == {"display_name": "Acme Inc.", "description": "tighter copy"}
+    assert body == {"displayName": "Acme Inc.", "description": "tighter copy"}
 
 
 def test_patch_settings_rejects_unknown_field(client):

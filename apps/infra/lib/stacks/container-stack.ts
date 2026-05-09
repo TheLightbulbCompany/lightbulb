@@ -357,7 +357,7 @@ export class ContainerStack extends cdk.Stack {
         // blocks channel/sidecar startup for ~13 minutes before the
         // bonjour watchdog finally gives up. Verified via runtime logs +
         // upstream `src/gateway/server-discovery-runtime.ts` — env var
-        // present in image tag 2026.4.23-slim.
+        // present in image tag 2026.5.7.
         OPENCLAW_DISABLE_BONJOUR: "true",
         // Emit per-step startup trace lines so we can attribute the multi-minute
         // post-gateway-ready wedge (channels-and-sidecars phase) to a specific

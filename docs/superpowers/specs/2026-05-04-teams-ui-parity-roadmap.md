@@ -20,6 +20,7 @@ A gap audit produced this prioritized list of sub-projects to close the most-vis
 | 4 | Command palette (cmd+k for fast nav/search/create across agents/issues/projects) | S | Done | — | [2026-05-05-teams-command-palette.md](../plans/2026-05-05-teams-command-palette.md) | [#537](https://github.com/Isol8AI/isol8/pull/537) |
 | 5 | Agent org chart (new panel: agent hierarchy viz with reports_to + live status dots) | L | Done | — | [2026-05-05-teams-org-chart.md](../plans/2026-05-05-teams-org-chart.md) | [#538](https://github.com/Isol8AI/isol8/pull/538) |
 | 6 | Issue header + properties pickers v2 (assignee + project pickers editable post-creation; recent-assignee bubble-up via localStorage) | M | In progress | — | [2026-05-09-teams-issue-pickers-v2.md](../plans/2026-05-09-teams-issue-pickers-v2.md) | TBD |
+| 7 | Issues kanban board (list/board toggle in /teams/inbox; verbatim KanbanBoard port + retheme) | M | In progress | [2026-05-09-teams-kanban-board-design.md](./2026-05-09-teams-kanban-board-design.md) | [2026-05-09-teams-kanban-board.md](../plans/2026-05-09-teams-kanban-board.md) | TBD |
 
 ## Dependency graph
 

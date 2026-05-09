@@ -9,6 +9,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 
 import { Inbox as InboxIcon } from "lucide-react";
 
@@ -22,6 +23,24 @@ import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
 import { useReadInboxItems } from "@/components/teams/inbox/hooks/useReadInboxItems";
+import { useInboxViewMode } from "@/components/teams/inbox/hooks/useInboxViewMode";
+import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
+import type { IssueUpdateInput } from "@/components/teams/shared/types";
+
+// Lazy-load the board so the dnd-kit + KanbanColumn/KanbanCard tree only
+// arrives in the client bundle when the user actually flips to board view.
+const KanbanBoard = dynamic(
+  () =>
+    import("@/components/teams/inbox/KanbanBoard").then((m) => m.KanbanBoard),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="p-4" style={{ color: "var(--mute)" }}>
+        Loading board…
+      </div>
+    ),
+  },
+);
 
 import {
   buildGroupedInboxSections,
@@ -125,6 +144,20 @@ export function InboxPage({
     useInboxData();
   const archiveStack = useInboxArchiveStack();
   const readItems = useReadInboxItems(companyId);
+  const { viewMode, setViewMode } = useInboxViewMode(companyId ?? null);
+  const { update: updateIssue } = useIssueMutations();
+  const onUpdateIssue = useCallback(
+    (id: string, data: Record<string, unknown>) => {
+      // Route through useIssueMutations so the SWR keys for /teams/inbox?...
+      // and the issue detail are invalidated on success. Without this the
+      // board re-renders from stale filteredIssues and the dragged card
+      // snaps back to its old column even when the PATCH succeeded.
+      updateIssue(id, data as IssueUpdateInput).catch((err) => {
+        console.error(`Failed to update issue ${id}:`, err);
+      });
+    },
+    [updateIssue],
+  );
 
   // 5. Compute the active issue list per tab.
   const activeIssues = useMemo<Issue[]>(() => {
@@ -177,10 +210,13 @@ export function InboxPage({
 
   // 10. Wire keyboard shortcuts. Upstream allows j/k/Arrow/Enter navigation
   //     on every tab; only archive-class shortcuts (a/y/r/u) are restricted
-  //     to the "mine" tab.
+  //     to the "mine" tab. In board mode the list/selection UI isn't
+  //     rendered, so all list-based shortcuts are gated off — otherwise
+  //     j/k would create an invisible row selection and Enter/a/y/r could
+  //     open or archive that hidden row.
   useInboxKeyboardNav({
-    enableNav: true,
-    enableArchive: tab === "mine",
+    enableNav: viewMode === "list",
+    enableArchive: viewMode === "list" && tab === "mine",
     navItems,
     selectedIndex,
     onSelectIndex: (idx) => {
@@ -269,6 +305,8 @@ export function InboxPage({
         unreadCount={unreadCount}
         onMarkAllRead={handleMarkAllRead}
         onNewIssue={() => setNewIssueOpen(true)}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
       />
       {isError && (
         <div
@@ -287,6 +325,12 @@ export function InboxPage({
         <div className="mt-4">
           <PageSkeleton variant="inbox" />
         </div>
+      ) : viewMode === "board" ? (
+        <KanbanBoard
+          issues={filteredIssues}
+          agents={agents}
+          onUpdateIssue={onUpdateIssue}
+        />
       ) : sections.length === 0 ? (
         <PanelEmptyState
           icon={InboxIcon}

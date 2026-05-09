@@ -18,6 +18,8 @@ const baseProps = {
   unreadCount: 0,
   onMarkAllRead: vi.fn(),
   onNewIssue: vi.fn(),
+  viewMode: "list" as const,
+  onViewModeChange: vi.fn(),
 };
 
 beforeEach(() => {

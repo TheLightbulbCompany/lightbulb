@@ -38,11 +38,19 @@ export function getRecentAssignees(): string[] {
   }
 }
 
-/** Add `id` to the front, dedupe, cap at 5. No-op on SSR. */
+/** Add `id` to the front, dedupe, cap at 5. No-op on SSR. Best-effort:
+ * a localStorage write failure (quota exceeded, blocked storage in Safari
+ * Private Browsing, sandboxed iframes, etc.) is swallowed so the caller's
+ * subsequent ``onChange`` still runs. Recent-bubble-up is a UX nicety —
+ * never block an assignment on persistence (Codex P2 on PR #575). */
 export function trackRecentAssignee(id: string): void {
   if (!isBrowser()) return;
   const current = getRecentAssignees().filter((x) => x !== id);
   current.unshift(id);
   const next = current.slice(0, MAX_RECENT);
-  localStorage.setItem(RECENT_ASSIGNEES_KEY, JSON.stringify(next));
+  try {
+    localStorage.setItem(RECENT_ASSIGNEES_KEY, JSON.stringify(next));
+  } catch {
+    // Storage write failed — best-effort, don't block the picker.
+  }
 }

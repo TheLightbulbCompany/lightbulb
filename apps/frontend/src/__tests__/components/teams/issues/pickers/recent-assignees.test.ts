@@ -92,4 +92,21 @@ describe("recent-assignees", () => {
       globalThis.window = realWindow;
     }
   });
+
+  it("does not throw when localStorage.setItem fails (quota / blocked storage)", () => {
+    // Codex P2 on PR #575: AssigneePicker's handleSelect calls
+    // trackRecentAssignee BEFORE onChange. If setItem throws (Safari
+    // Private Browsing, quota exceeded, sandboxed iframe), an uncaught
+    // exception there blocks the assignment PATCH. Track must be
+    // best-effort.
+    const realSetItem = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = () => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    };
+    try {
+      expect(() => trackRecentAssignee("ag_1")).not.toThrow();
+    } finally {
+      localStorage.setItem = realSetItem;
+    }
+  });
 });

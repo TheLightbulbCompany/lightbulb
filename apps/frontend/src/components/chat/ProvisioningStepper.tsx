@@ -15,8 +15,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
-import { useContainerStatus, type ColdStartPhase } from "@/hooks/useContainerStatus";
-import { useProvisioningState } from "@/hooks/useProvisioningState";
+import { useProvisioningState, type ColdStartPhase } from "@/hooks/useProvisioningState";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
@@ -237,32 +236,34 @@ export function ProvisioningStepper({
     router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
   }, [providerStepDone, searchParams, router]);
 
-  // Poll container status every 3s while subscribed. The interval is
-  // gated on the *previously observed* phase: as soon as a response
-  // tells us we're ready, the next render drops the interval to 0 and
-  // SWR stops re-fetching — saves a GET every 3 s + a gateway-pool
-  // walk per request. Uses a mirror state instead of reading the
-  // current `container` directly so the gate doesn't reference a value
-  // that's still in its useSWR call frame.
   const [reachedReady, setReachedReady] = useState(false);
   const shouldPollContainer = isSubscribed && !reachedReady;
-  const { container, refresh: refreshContainer } = useContainerStatus({
-    refreshInterval: shouldPollContainer ? 3000 : 0,
-    enabled: isSubscribed,
-  });
-  useEffect(() => {
-    if (container?.phase === "ready" && !reachedReady) setReachedReady(true);
-  }, [container?.phase, reachedReady]);
 
-  // Provision-gate state: when /container/status returns 402 with a structured
-  // `blocked` payload (e.g. credits_required, subscription_required), the
-  // stepper centerpiece renders a gate-aware variant instead of the cold-start
-  // spinner. `useContainerStatus` stays in place for non-blocked paths.
+  // Single canonical /container/status poller. Gate-driven cadence
+  // wins when blocked (5s/30s); cold-start polling at 3s otherwise so
+  // the user sees fast progress through phase transitions.
+  // No `enabled` gate here: an admin with a `past_due` / `canceled` /
+  // `unpaid` / `paused` billing row has `isSubscribed === false`, but
+  // we still need /container/status to fire so the backend's 402
+  // subscription_required / payment_past_due gate surfaces. The
+  // refreshInterval below already throttles non-blocked polling for
+  // unsubscribed users (interval=0 when !shouldPollContainer); the
+  // gate-driven cadence (5s/30s) still wins for pending states. Codex
+  // P1 on PR #571 — the previous `enabled: isSubscribed` bypassed the
+  // entire fetch for inactive subscriptions and lost their
+  // /settings/billing reactivation CTA.
   const {
     phase: gatePhase,
     blocked,
-    refresh: refreshGate,
-  } = useProvisioningState();
+    container,
+    refresh,
+  } = useProvisioningState({
+    refreshInterval: shouldPollContainer ? 3000 : 0,
+  });
+
+  useEffect(() => {
+    if (container?.phase === "ready" && !reachedReady) setReachedReady(true);
+  }, [container?.phase, reachedReady]);
 
   // Provisioning is now driven by /container/status: when the gate clears
   // and no container exists, the backend's status endpoint fires
@@ -448,12 +449,224 @@ export function ProvisioningStepper({
     return <>{children}</>;
   }
 
+  // Team-pending: org member whose admin hasn't provisioned the shared
+  // workspace yet. Backend Task 8 returns 202 from /container/status for
+  // this case; useProvisioningState surfaces it as `phase === "team-pending"`.
+  // Reuse the blocked-state centerpiece visuals (key icon, refresh button)
+  // and swap the copy for "waiting on your admin". The hook keeps polling
+  // at 5s so the UI flips to `normal` automatically once the admin's
+  // container appears.
+  if (gatePhase === "team-pending") {
+    return (
+      <>
+        <style>{`
+          .provision-wrapper {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #faf7f2;
+          }
+          .provision-card {
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+            padding: 48px 32px;
+          }
+          .provision-logo {
+            margin-bottom: 32px;
+          }
+          .provision-stage {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 32px;
+            position: relative;
+          }
+          .provision-anim {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .anim-key-circle {
+            width: 56px; height: 56px;
+            border: 2px solid #e0dbd0;
+            border-top-color: #06402B;
+            border-radius: 50%;
+          }
+          .anim-key-icon {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .provision-title {
+            font-family: var(--font-lora-serif), serif;
+            font-size: 22px; font-weight: 400; color: #1a1a1a;
+            margin-bottom: 8px;
+          }
+          .provision-desc {
+            font-family: var(--font-dm-sans), sans-serif;
+            font-size: 14px; color: #8a8578;
+            margin-bottom: 24px;
+          }
+          .provision-muted {
+            font-family: var(--font-dm-sans), sans-serif;
+            font-size: 13px;
+            color: #8a8578;
+            margin: 0;
+          }
+          .provision-timeout {
+            margin-top: 28px;
+            padding-top: 20px;
+            border-top: 1px solid #ece6d9;
+            display: flex; flex-direction: column;
+            align-items: center; gap: 14px;
+            max-width: 360px;
+            margin-left: auto; margin-right: auto;
+          }
+          .provision-timeout-actions {
+            display: flex; gap: 8px; align-items: center;
+          }
+        `}</style>
+        <div className="provision-wrapper">
+          <div className="provision-card">
+            <div className="provision-logo">
+              <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect width="100" height="100" rx="22" fill="#06402B" />
+                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
+              </svg>
+            </div>
+
+            <div className="provision-stage" aria-hidden="true">
+              <div className="provision-anim">
+                <div className="anim-key-circle" />
+                <div className="anim-key-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <h2
+              className="provision-title"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              Your team workspace is being set up
+            </h2>
+            <p className="provision-desc">
+              Your admin will finish this soon. We&apos;ll bring you in
+              automatically once the workspace is ready.
+            </p>
+
+            <div className="provision-timeout">
+              <div className="provision-timeout-actions">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full border-[#e0dbd0]"
+                  onClick={() => refresh()}
+                >
+                  Check again
+                </Button>
+                <Button variant="ghost" size="sm" asChild>
+                  <a href="mailto:support@isol8.co">Contact support</a>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Needs-signup: backend signals via 404 that the owner has never
+  // started signup (gate would fire `signup_required` for an admin).
+  // Render the ProviderPicker by intent here — the picker's
+  // POST /billing/trial-checkout is the only path that creates the
+  // first billing row. Placed before billing/onboarded fall-through so
+  // we don't depend on the post-billing-load render order to surface
+  // the picker for fresh users.
+  if (gatePhase === "needs-signup") {
+    return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
+  }
+
+  // Channel onboarding — admins set up the first main-agent bot, members
+  // pair their identity with an existing one. Always scoped to `main`.
+  if (phase === "channels") {
+    const wizardMode = isAdmin ? "create" : "link-only";
+    // Admin creates always default to telegram; member link-only uses
+    // whichever main-agent provider they haven't paired with yet.
+    const wizardProvider: Provider = isAdmin ? "telegram" : (memberLinkTarget ?? "telegram");
+    // Look up the actual bot handle so the link-only pair step can tell the
+    // member which bot to DM. linksData is guaranteed loaded here because
+    // we only enter the channels phase after it resolves.
+    const wizardBotUsername = !isAdmin
+      ? linksData?.[wizardProvider]?.find((b) => b.agent_id === "main")?.bot_username
+      : undefined;
+    return (
+      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
+        <div className="w-full max-w-md">
+          <BotSetupWizard
+            mode={wizardMode}
+            provider={wizardProvider}
+            agentId="main"
+            botUsername={wizardBotUsername}
+            onComplete={() => { capture("onboarding_completed"); setOnboardingComplete(true); }}
+            onCancel={() => setOnboardingComplete(true)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Plan 3: provider-specific signup step. Renders the right component
+  // based on `?provider=` and advances the wizard once the user finishes.
+  //
+  // Workstream B (2026-05-03, provider-choice-per-owner): provider_choice
+  // is no longer persisted via /users/sync here. The ProviderPicker's
+  // "Subscribe" step writes it synchronously to billing_accounts via
+  // POST /billing/trial-checkout, which is the canonical (and only) write
+  // path now. Prior to Workstream B this hook double-wrote to user_repo;
+  // that path is gone — billing_repo (owner-keyed) is the source of truth.
+  if (phase === "provider" && providerChoice !== null) {
+    const handleProviderComplete = async () => {
+      capture("onboarding_provider_completed", {
+        provider_choice: providerChoice,
+      });
+      setProviderStepDone(true);
+    };
+    return (
+      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
+        <div className="w-full max-w-md">
+          {providerChoice === "chatgpt_oauth" && (
+            <ChatGPTOAuthStep onComplete={handleProviderComplete} />
+          )}
+          {providerChoice === "byo_key" && (
+            <ByoKeyStep onComplete={handleProviderComplete} />
+          )}
+          {providerChoice === "bedrock_claude" && (
+            <CreditsStep onComplete={handleProviderComplete} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // Provision-gate blocked state: backend returned 402 + structured payload
   // (e.g. credits_required, subscription_required). Render the same centerpiece
   // shell as the cold-start view (logo + key-stage) but swap the title, body,
-  // and footer for the gate-specific copy + action. Placed before the other
-  // pre-provision early returns so a member of an unsubscribed org sees the
-  // "Ask your org admin" message instead of the personal ProviderPicker.
+  // and footer for the gate-specific copy + action. Placed AFTER the provider
+  // step so that when the user clicks "Sign in with ChatGPT" (which sets
+  // ?provider=chatgpt_oauth in the URL), the provider step wins and the gate UI
+  // does not re-render on top of the OAuth flow. A member of an unsubscribed org
+  // (no ?provider= in URL) still falls through to here and sees "Ask your org
+  // admin" because the provider block's providerChoice guard fails first.
   if (gatePhase === "blocked" && blocked) {
     const showAction = !(blocked.action.admin_only && blocked.owner_role !== "admin");
     return (
@@ -588,7 +801,7 @@ export function ProvisioningStepper({
                   variant="outline"
                   size="sm"
                   className="rounded-full border-[#e0dbd0]"
-                  onClick={() => refreshGate()}
+                  onClick={() => refresh()}
                 >
                   Check again
                 </Button>
@@ -600,215 +813,6 @@ export function ProvisioningStepper({
           </div>
         </div>
       </>
-    );
-  }
-
-  // Team-pending: org member whose admin hasn't provisioned the shared
-  // workspace yet. Backend Task 8 returns 202 from /container/status for
-  // this case; useProvisioningState surfaces it as `phase === "team-pending"`.
-  // Reuse the blocked-state centerpiece visuals (key icon, refresh button)
-  // and swap the copy for "waiting on your admin". The hook keeps polling
-  // at 5s so the UI flips to `normal` automatically once the admin's
-  // container appears.
-  if (gatePhase === "team-pending") {
-    return (
-      <>
-        <style>{`
-          .provision-wrapper {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #faf7f2;
-          }
-          .provision-card {
-            text-align: center;
-            max-width: 400px;
-            width: 100%;
-            padding: 48px 32px;
-          }
-          .provision-logo {
-            margin-bottom: 32px;
-          }
-          .provision-stage {
-            width: 80px;
-            height: 80px;
-            margin: 0 auto 32px;
-            position: relative;
-          }
-          .provision-anim {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .anim-key-circle {
-            width: 56px; height: 56px;
-            border: 2px solid #e0dbd0;
-            border-top-color: #06402B;
-            border-radius: 50%;
-          }
-          .anim-key-icon {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .provision-title {
-            font-family: var(--font-lora-serif), serif;
-            font-size: 22px; font-weight: 400; color: #1a1a1a;
-            margin-bottom: 8px;
-          }
-          .provision-desc {
-            font-family: var(--font-dm-sans), sans-serif;
-            font-size: 14px; color: #8a8578;
-            margin-bottom: 24px;
-          }
-          .provision-muted {
-            font-family: var(--font-dm-sans), sans-serif;
-            font-size: 13px;
-            color: #8a8578;
-            margin: 0;
-          }
-          .provision-timeout {
-            margin-top: 28px;
-            padding-top: 20px;
-            border-top: 1px solid #ece6d9;
-            display: flex; flex-direction: column;
-            align-items: center; gap: 14px;
-            max-width: 360px;
-            margin-left: auto; margin-right: auto;
-          }
-          .provision-timeout-actions {
-            display: flex; gap: 8px; align-items: center;
-          }
-        `}</style>
-        <div className="provision-wrapper">
-          <div className="provision-card">
-            <div className="provision-logo">
-              <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="100" height="100" rx="22" fill="#06402B" />
-                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-              </svg>
-            </div>
-
-            <div className="provision-stage" aria-hidden="true">
-              <div className="provision-anim">
-                <div className="anim-key-circle" />
-                <div className="anim-key-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-
-            <h2
-              className="provision-title"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              Your team workspace is being set up
-            </h2>
-            <p className="provision-desc">
-              Your admin will finish this soon. We&apos;ll bring you in
-              automatically once the workspace is ready.
-            </p>
-
-            <div className="provision-timeout">
-              <div className="provision-timeout-actions">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full border-[#e0dbd0]"
-                  onClick={() => refreshGate()}
-                >
-                  Check again
-                </Button>
-                <Button variant="ghost" size="sm" asChild>
-                  <a href="mailto:support@isol8.co">Contact support</a>
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  // Needs-signup: backend signals via 404 that the owner has never
-  // started signup (gate would fire `signup_required` for an admin).
-  // Render the ProviderPicker by intent here — the picker's
-  // POST /billing/trial-checkout is the only path that creates the
-  // first billing row. Placed before billing/onboarded fall-through so
-  // we don't depend on the post-billing-load render order to surface
-  // the picker for fresh users.
-  if (gatePhase === "needs-signup") {
-    return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
-  }
-
-  // Channel onboarding — admins set up the first main-agent bot, members
-  // pair their identity with an existing one. Always scoped to `main`.
-  if (phase === "channels") {
-    const wizardMode = isAdmin ? "create" : "link-only";
-    // Admin creates always default to telegram; member link-only uses
-    // whichever main-agent provider they haven't paired with yet.
-    const wizardProvider: Provider = isAdmin ? "telegram" : (memberLinkTarget ?? "telegram");
-    // Look up the actual bot handle so the link-only pair step can tell the
-    // member which bot to DM. linksData is guaranteed loaded here because
-    // we only enter the channels phase after it resolves.
-    const wizardBotUsername = !isAdmin
-      ? linksData?.[wizardProvider]?.find((b) => b.agent_id === "main")?.bot_username
-      : undefined;
-    return (
-      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
-        <div className="w-full max-w-md">
-          <BotSetupWizard
-            mode={wizardMode}
-            provider={wizardProvider}
-            agentId="main"
-            botUsername={wizardBotUsername}
-            onComplete={() => { capture("onboarding_completed"); setOnboardingComplete(true); }}
-            onCancel={() => setOnboardingComplete(true)}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  // Plan 3: provider-specific signup step. Renders the right component
-  // based on `?provider=` and advances the wizard once the user finishes.
-  //
-  // Workstream B (2026-05-03, provider-choice-per-owner): provider_choice
-  // is no longer persisted via /users/sync here. The ProviderPicker's
-  // "Subscribe" step writes it synchronously to billing_accounts via
-  // POST /billing/trial-checkout, which is the canonical (and only) write
-  // path now. Prior to Workstream B this hook double-wrote to user_repo;
-  // that path is gone — billing_repo (owner-keyed) is the source of truth.
-  if (phase === "provider" && providerChoice !== null) {
-    const handleProviderComplete = async () => {
-      capture("onboarding_provider_completed", {
-        provider_choice: providerChoice,
-      });
-      setProviderStepDone(true);
-    };
-    return (
-      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
-        <div className="w-full max-w-md">
-          {providerChoice === "chatgpt_oauth" && (
-            <ChatGPTOAuthStep onComplete={handleProviderComplete} />
-          )}
-          {providerChoice === "byo_key" && (
-            <ByoKeyStep onComplete={handleProviderComplete} />
-          )}
-          {providerChoice === "bedrock_claude" && (
-            <CreditsStep onComplete={handleProviderComplete} />
-          )}
-        </div>
-      </div>
     );
   }
 
@@ -860,7 +864,7 @@ export function ProvisioningStepper({
             </p>
           </div>
           <div className="flex gap-3 justify-center">
-            <Button variant="outline" className="rounded-full border-[#e0dbd0]" onClick={() => refreshContainer()}>
+            <Button variant="outline" className="rounded-full border-[#e0dbd0]" onClick={() => refresh()}>
               Retry
             </Button>
             <Button variant="ghost" className="rounded-full" asChild>
@@ -1248,7 +1252,7 @@ export function ProvisioningStepper({
                   size="sm"
                   className="rounded-full border-[#e0dbd0]"
                   onClick={() => {
-                    refreshContainer();
+                    refresh();
                     setTimedOut(false);
                     provisioningStartRef.current = Date.now();
                     setElapsedMs(0);

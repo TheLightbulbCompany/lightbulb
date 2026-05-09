@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
-import { useContainerStatus } from "@/hooks/useContainerStatus";
+import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useApi } from "@/lib/api";
 
 export type HealthState =
@@ -40,7 +40,7 @@ const MAX_RECONNECT = 10;
 
 export function useSystemHealth(): SystemHealth {
   const { isConnected, reconnectAttempt, onEvent } = useGateway();
-  const { container } = useContainerStatus({
+  const { container } = useProvisioningState({
     refreshInterval: 10_000,
     enabled: true,
   });

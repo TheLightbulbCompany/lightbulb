@@ -1,5 +1,5 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 
 type Props = {
@@ -8,28 +8,22 @@ type Props = {
 
 export function ChatGPTOAuthStep({ onComplete }: Props) {
   const { state, start } = useChatGPTOAuth();
+  const startedRef = useRef(false);
+
+  // Auto-start the device-code request on mount. The startedRef guard
+  // prevents the dev-mode StrictMode double-invoke from firing two
+  // /oauth/chatgpt/start calls back-to-back (the second would
+  // overwrite the first's pending row, which is harmless but
+  // user-visible as a UI flicker on the device code).
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    start();
+  }, [start]);
 
   useEffect(() => {
     if (state.status === "completed") onComplete();
   }, [state, onComplete]);
-
-  if (state.status === "idle") {
-    return (
-      <div className="flex flex-col items-center gap-4 py-8">
-        <h3 className="text-xl font-semibold">Sign in with ChatGPT</h3>
-        <p className="text-sm text-muted-foreground text-center max-w-md">
-          Use your existing ChatGPT Plus/Pro subscription for inference. No
-          keys to copy.
-        </p>
-        <button
-          onClick={start}
-          className="rounded-md bg-primary px-6 py-3 text-primary-foreground font-medium hover:bg-primary/90"
-        >
-          Connect ChatGPT
-        </button>
-      </div>
-    );
-  }
 
   if (state.status === "pending") {
     return (
@@ -72,7 +66,7 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
         </p>
         <button
           onClick={start}
-          className="rounded-md bg-secondary px-4 py-2 text-sm"
+          className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-6 py-3 font-medium"
         >
           Try again
         </button>
@@ -80,11 +74,22 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
     );
   }
 
-  // status === "completed" — useEffect already called onComplete; show
-  // a brief checkmark while the parent advances.
+  if (state.status === "completed") {
+    return (
+      <div className="flex items-center justify-center py-8 text-primary">
+        &#10003; Connected
+      </div>
+    );
+  }
+
+  // status === "idle" — auto-start hasn't fired yet (one render frame).
+  // Render a neutral spinner instead of the deleted "Connect ChatGPT"
+  // button so we don't ask the user for a click that's about to be
+  // taken automatically.
   return (
-    <div className="flex items-center justify-center py-8 text-primary">
-      &#10003; Connected
+    <div className="flex flex-col items-center gap-3 py-8">
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-[#06402B]" />
+      <p className="text-sm text-muted-foreground">Starting ChatGPT sign-in&hellip;</p>
     </div>
   );
 }

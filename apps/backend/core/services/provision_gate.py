@@ -284,7 +284,7 @@ async def evaluate_provision_gate(
                 title="Sign in with ChatGPT",
                 message="Complete the ChatGPT sign-in to start your container.",
                 action_label="Sign in with ChatGPT",
-                action_href="/settings/llm",
+                action_href="/chat?provider=chatgpt_oauth",
                 action_admin_only=False,
                 owner_role=owner_role,
             )
@@ -305,7 +305,7 @@ async def evaluate_provision_gate(
                 title="Choose your BYO provider",
                 message="Choose Anthropic or OpenAI as your BYO provider to start your container.",
                 action_label="Choose provider",
-                action_href="/settings/llm",
+                action_href="/chat?provider=byo_key",
                 action_admin_only=False,
                 owner_role=owner_role,
             )

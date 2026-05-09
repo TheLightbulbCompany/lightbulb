@@ -210,6 +210,10 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
         )
     assert gate is not None
     assert gate.code == "oauth_required"
+    # Click target must be a real route. /settings/llm doesn't exist on
+    # the frontend; the canonical OAuth completion path is the
+    # ?provider=chatgpt_oauth wizard mounted on /chat.
+    assert gate.action_href == "/chat?provider=chatgpt_oauth"
 
 
 @pytest.mark.asyncio
@@ -244,6 +248,10 @@ async def test_byo_key_without_byo_provider_returns_byo_provider_required():
         )
     assert gate is not None
     assert gate.code == "byo_provider_required"
+    # Click target must be a real route. /settings/llm doesn't exist on
+    # the frontend; the canonical BYO sub-choice path is the
+    # ?provider=byo_key wizard mounted on /chat.
+    assert gate.action_href == "/chat?provider=byo_key"
     # Member-actionable: the user must pick anthropic/openai themselves;
     # admin-only would mis-block the action UI for owners who are admin
     # of themselves (personal users).

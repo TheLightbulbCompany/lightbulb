@@ -26,7 +26,7 @@ vi.mock("posthog-js/react", () => ({
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
 // Stable mocks so individual tests can assert against `apiPost` etc. The
@@ -51,10 +51,6 @@ vi.mock("@/lib/api", () => ({
 
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({ isLoading: false, isSubscribed: true }),
-}));
-
-vi.mock("@/hooks/useContainerStatus", () => ({
-  useContainerStatus: () => ({ container: null, refresh: vi.fn() }),
 }));
 
 vi.mock("@/hooks/useGatewayRpc", () => ({
@@ -279,5 +275,49 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       (args) => args[0] === "/container/provision",
     );
     expect(provisionCalls).toHaveLength(0);
+  });
+
+  it("renders ChatGPTOAuthStep when ?provider=chatgpt_oauth even if gate is blocked", async () => {
+    // After clicking the gate's "Sign in with ChatGPT" button, the URL
+    // becomes /chat?provider=chatgpt_oauth. The gate is still firing
+    // (oauth_required) until the user finishes signing in — but we
+    // must render the provider step (which is the means by which the
+    // gate gets cleared) instead of the gate UI on top of itself.
+    const { useSearchParams } = await import("next/navigation");
+    (useSearchParams as ReturnType<typeof vi.fn>).mockReturnValue(
+      new URLSearchParams({ provider: "chatgpt_oauth" }),
+    );
+
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: null,
+      blocked: {
+        code: "oauth_required",
+        title: "Sign in with ChatGPT",
+        message: "Complete the ChatGPT sign-in to start your container.",
+        action: {
+          kind: "link",
+          label: "Sign in with ChatGPT",
+          href: "/chat?provider=chatgpt_oauth",
+          admin_only: false,
+        },
+        owner_role: "admin",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+      error: undefined,
+      isLoading: false,
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Gate UI's title/button must NOT appear; ChatGPTOAuthStep renders.
+    expect(
+      screen.queryByText(/Complete the ChatGPT sign-in to start your container/),
+    ).not.toBeInTheDocument();
   });
 });

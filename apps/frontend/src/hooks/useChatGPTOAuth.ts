@@ -134,22 +134,28 @@ export function useChatGPTOAuth() {
   // - connected: false → auto-fire start() so the user doesn't have to
   //   click "Connect ChatGPT" again. The 409 fallback in start() covers the
   //   race where /status said disconnected but tokens landed before /start.
-  // StrictMode-safe via startedRef.
+  //
+  // Concurrency: startedRef prevents the in-flight async work from being
+  // duplicated by React 19 StrictMode's intentional remount-replay. We do
+  // NOT use a `cancelled` flag in the cleanup — Codex P2 caught that
+  // pattern: StrictMode runs the cleanup immediately after the first
+  // invocation, which would set cancelled=true on the only in-flight
+  // attempt; the replayed effect then early-returns at startedRef and
+  // the OAuth step would stay on the spinner forever. setState on an
+  // unmounted component is a tolerated no-op in React 18+, so no
+  // cancellation is needed here.
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
-    let cancelled = false;
     (async () => {
       try {
         const r = (await api.get("/oauth/chatgpt/status")) as StatusResponse;
-        if (cancelled) return;
         if (r.connected) {
           setState({ status: "completed", accountId: r.account_id });
           return;
         }
         await start();
       } catch (e: unknown) {
-        if (cancelled) return;
         // Status probe failure: surface as error rather than silently
         // auto-starting, since /status is a required precondition for
         // knowing whether /start would 409.
@@ -157,9 +163,6 @@ export function useChatGPTOAuth() {
         setState({ status: "error", message });
       }
     })();
-    return () => {
-      cancelled = true;
-    };
     // Run-once on mount; api/start are stable from useApi/useCallback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

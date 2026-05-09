@@ -72,7 +72,7 @@ export function KanbanColumn({
           "flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors",
         )}
         style={{
-          backgroundColor: isOver ? "var(--paper)" : "var(--paper-soft)",
+          backgroundColor: isOver ? "var(--edge)" : "var(--cream-deeper)",
         }}
       >
         <SortableContext

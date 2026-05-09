@@ -25,7 +25,7 @@ export function ViewModeToggle({ value, onChange, className }: ViewModeTogglePro
         "inline-flex items-center gap-0.5 rounded-md border p-0.5",
         className,
       )}
-      style={{ borderColor: "var(--edge)", backgroundColor: "var(--paper)" }}
+      style={{ borderColor: "var(--edge)", backgroundColor: "var(--cream)" }}
     >
       <SegmentButton
         label="List"

@@ -92,4 +92,56 @@ describe("recent-assignees", () => {
       globalThis.window = realWindow;
     }
   });
+
+  it("does not throw when localStorage.setItem fails (quota / blocked storage)", () => {
+    // Codex P2 on PR #575: AssigneePicker's handleSelect calls
+    // trackRecentAssignee BEFORE onChange. If setItem throws (Safari
+    // Private Browsing, quota exceeded, sandboxed iframe), an uncaught
+    // exception there blocks the assignment PATCH. Track must be
+    // best-effort.
+    const realSetItem = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = () => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    };
+    try {
+      expect(() => trackRecentAssignee("ag_1")).not.toThrow();
+    } finally {
+      localStorage.setItem = realSetItem;
+    }
+  });
+
+  it("does not throw when localStorage.getItem fails (private mode read)", () => {
+    // Codex P2 on PR #576: trackRecentAssignee internally calls
+    // getRecentAssignees() which itself reads localStorage. If getItem
+    // throws (private-mode read failure), the read needs to fall
+    // through to []. Without defensive try/catch on the read path,
+    // trackRecentAssignee throws before the write attempt — same
+    // user-visible failure (assignment PATCH blocked).
+    const realGetItem = localStorage.getItem.bind(localStorage);
+    localStorage.getItem = () => {
+      throw new DOMException("SecurityError", "SecurityError");
+    };
+    try {
+      expect(getRecentAssignees()).toEqual([]);
+      expect(() => trackRecentAssignee("ag_1")).not.toThrow();
+    } finally {
+      localStorage.getItem = realGetItem;
+    }
+  });
+
+  it("does not throw when localStorage.removeItem fails during corruption recovery", () => {
+    // The corruption-recovery path inside getRecentAssignees calls
+    // removeItem. If that throws too (locked storage), the helper
+    // must still return [] rather than propagating.
+    localStorage.setItem(RECENT_ASSIGNEES_KEY, "{not valid json");
+    const realRemove = localStorage.removeItem.bind(localStorage);
+    localStorage.removeItem = () => {
+      throw new DOMException("SecurityError", "SecurityError");
+    };
+    try {
+      expect(getRecentAssignees()).toEqual([]);
+    } finally {
+      localStorage.removeItem = realRemove;
+    }
+  });
 });

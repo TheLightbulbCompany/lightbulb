@@ -16,6 +16,7 @@ const makeProps = () => ({
   onTitleSave: vi.fn().mockResolvedValue(undefined),
   onStatusChange: vi.fn().mockResolvedValue(undefined),
   onPriorityChange: vi.fn().mockResolvedValue(undefined),
+  onAssigneeChange: vi.fn().mockResolvedValue(undefined),
 });
 
 beforeEach(() => {
@@ -134,5 +135,26 @@ describe("IssueHeader", () => {
       />,
     );
     expect(screen.getByText("Renamed externally")).toBeInTheDocument();
+  });
+
+  test("renders an inline AssigneePicker after status + priority", async () => {
+    const onAssigneeChange = vi.fn();
+    const agents = [{ id: "ag_1", name: "Friday" }];
+    render(
+      <IssueHeader
+        issue={{ ...baseIssue, assigneeAgentId: "ag_1" }}
+        agents={agents}
+        onTitleSave={vi.fn()}
+        onStatusChange={vi.fn()}
+        onPriorityChange={vi.fn()}
+        onAssigneeChange={onAssigneeChange}
+      />,
+    );
+    // The trigger should render with the current assignee's name. Headers may
+    // surface duplicate "Friday" labels (icon + visible label); a query for
+    // the element by role+name confirms the picker chip is present.
+    expect(
+      screen.getAllByRole("button", { name: /Friday/ }).length,
+    ).toBeGreaterThan(0);
   });
 });

@@ -14,6 +14,11 @@ import { IssueComments } from "./IssueComments";
 import { IssueProperties } from "./IssueProperties";
 import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import type {
+  CompanyAgent,
+  IssueProject,
+} from "@/components/teams/shared/types";
 
 export interface IssueDetailPageProps {
   issueId: string;
@@ -22,6 +27,11 @@ export interface IssueDetailPageProps {
 export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { issue, comments, isLoading, isError, error } = useIssueDetail(issueId);
   const mutations = useIssueMutations();
+  const { read } = useTeamsApi();
+  const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
+  const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
+  const agents = agentsResp?.agents ?? [];
+  const projects = projectsResp?.projects ?? [];
 
   if (isLoading && !issue) {
     return (
@@ -76,6 +86,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       <main className="flex flex-col gap-6 min-w-0">
         <IssueHeader
           issue={issue}
+          agents={agents}
           onTitleSave={async (title) => {
             await mutations.update(issueId, { title });
           }}
@@ -84,6 +95,9 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           }}
           onPriorityChange={async (priority) => {
             await mutations.update(issueId, { priority });
+          }}
+          onAssigneeChange={async (assigneeAgentId) => {
+            await mutations.update(issueId, { assigneeAgentId });
           }}
         />
         {issue.description && (
@@ -111,7 +125,17 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         </div>
       </main>
       <aside className="lg:sticky lg:top-4 lg:self-start">
-        <IssueProperties issue={issue} />
+        <IssueProperties
+          issue={issue}
+          agents={agents}
+          projects={projects}
+          onAssigneeChange={(assigneeAgentId) => {
+            void mutations.update(issueId, { assigneeAgentId });
+          }}
+          onProjectChange={(projectId) => {
+            void mutations.update(issueId, { projectId });
+          }}
+        />
       </aside>
     </div>
   );

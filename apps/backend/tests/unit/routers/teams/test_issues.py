@@ -1,12 +1,14 @@
 """Tests for the Teams Issues BFF (Task 9)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from main import app
 from routers.teams.deps import TeamsContext
+from routers.teams.issues import patch_issue
+from routers.teams.schemas import PatchIssueBody
 
 
 @pytest.fixture
@@ -270,3 +272,49 @@ def test_list_labels_returns_envelope(client, monkeypatch):
         company_id="co_abc",
         session_cookie="cookie",
     )
+
+
+# ---------------------------------------------------------------------------
+# patch_issue — exclude_unset vs exclude_none behaviour
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_issue_forwards_explicit_null_to_unassign():
+    """An admin sending {"assignee_agent_id": null} must reach Paperclip
+    as null, not be stripped. Otherwise users can't unassign."""
+    fake_admin = MagicMock()
+    fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    fake_agents_module = MagicMock()
+    fake_agents_module._admin.return_value = fake_admin
+    fake_ctx = MagicMock()
+    fake_ctx.session_cookie = "sess=abc"
+
+    body = PatchIssueBody(assignee_agent_id=None)
+
+    with patch("routers.teams.issues._agents", fake_agents_module):
+        await patch_issue(issue_id="iss_1", body=body, ctx=fake_ctx)
+
+    # Confirm null forwarded — was stripped under exclude_none=True before.
+    fake_admin.patch_issue.assert_called_once()
+    forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
+    assert forwarded_body == {"assignee_agent_id": None}
+
+
+@pytest.mark.asyncio
+async def test_patch_issue_omits_unset_fields():
+    """Empty PATCH body must not send unrelated keys to upstream."""
+    fake_admin = MagicMock()
+    fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    fake_agents_module = MagicMock()
+    fake_agents_module._admin.return_value = fake_admin
+    fake_ctx = MagicMock()
+    fake_ctx.session_cookie = "sess=abc"
+
+    body = PatchIssueBody()  # nothing set
+
+    with patch("routers.teams.issues._agents", fake_agents_module):
+        await patch_issue(issue_id="iss_1", body=body, ctx=fake_ctx)
+
+    forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
+    assert forwarded_body == {}

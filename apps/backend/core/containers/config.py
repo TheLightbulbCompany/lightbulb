@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # itself self-writes (io.ts:879 uses `VERSION` from package.json).
 # A drift test in tests/unit/containers/test_config.py asserts this
 # stays in sync with openclaw-version.json on every CI run.
-OPENCLAW_UPSTREAM_VERSION = "2026.4.23"
+OPENCLAW_UPSTREAM_VERSION = "2026.5.7"
 
 
 # ``fcntl.lockf`` serializes ACROSS processes but not across threads within a
@@ -561,10 +561,15 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
-                # v2026.4.22's zod-schema.agent-defaults.ts requires these
-                # three fields (no .optional()). Empty objects validate
-                # because every nested field IS optional. Required for
-                # config validation; behavior unchanged.
+                # Stubs preserved from a v2026.4.22-era constraint where
+                # AgentDefaultsSchema referenced these schemas without
+                # .optional(). At v2026.5.7 each schema (Heartbeat,
+                # AgentContextLimits, AgentEmbeddedHarness) ends in
+                # .optional() so emitting them is no longer required.
+                # Kept as explicit no-op defaults; safe to delete in a
+                # follow-up cleanup PR. None of these features are
+                # opted into (no heartbeat cadence, no context-limit
+                # caps, no embedded-harness override).
                 "embeddedHarness": {},
                 "contextLimits": {},
                 "heartbeat": {},

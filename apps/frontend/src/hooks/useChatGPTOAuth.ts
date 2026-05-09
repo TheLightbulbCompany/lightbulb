@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useApi } from "@/lib/api";
+import { ApiError, useApi } from "@/lib/api";
 
 /**
  * ChatGPT OAuth — device-code flow.
@@ -64,6 +64,17 @@ export function useChatGPTOAuth() {
         expiresAt: Date.now() + r.expires_in * 1000,
       });
     } catch (e: unknown) {
+      // Backend returns 409 (OAuthAlreadyActiveError) when an active token row
+      // already exists for this user. The auto-fire from ChatGPTOAuthStep
+      // hits this when the wizard re-mounts on a stale ?provider=chatgpt_oauth
+      // URL — e.g. browser back/history restore for an already-onboarded user.
+      // The user's tokens are fine; treat the 409 as completion so the parent
+      // advances out of the wizard (which strips ?provider= via the
+      // providerStepDone effect in ProvisioningStepper).
+      if (e instanceof ApiError && e.status === 409) {
+        setState({ status: "completed", accountId: null });
+        return;
+      }
       const message = e instanceof Error ? e.message : "OAuth start failed";
       setState({ status: "error", message });
     }

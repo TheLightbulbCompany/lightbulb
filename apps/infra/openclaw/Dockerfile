@@ -31,8 +31,14 @@ RUN GO_VER=1.24.2 && \
 
 ENV PATH=/usr/local/go/bin:$PATH \
     GOPATH=/opt/go \
-    GOBIN=/out/bin \
-    CGO_ENABLED=0
+    GOBIN=/out/bin
+# CGO_ENABLED is left at Go's default (=1) so packages with C-binding deps
+# build correctly. wacli@v0.8.1 (and any future tool that pulls in
+# go-sqlite3 or similar) emits a `wacli_requires_cgo_enabled_1_for_go_sqlite3`
+# stub-import compile error when CGO is off. Pure-Go tools build identically
+# at CGO=1 vs CGO=0; build-essential is already installed above (Layer 1)
+# so gcc is available, and the final image FROMs Debian-based openclaw so
+# dynamic libc linking works at runtime.
 
 RUN mkdir -p /out/bin
 

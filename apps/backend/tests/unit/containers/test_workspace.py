@@ -378,3 +378,40 @@ class TestCleanupAgentDirs:
 
         # Empty agent_id must not nuke the entire agents/ dir.
         assert (agents_root / "main").exists()
+
+
+# ---------------------------------------------------------------------------
+# write_file_if_missing
+# ---------------------------------------------------------------------------
+
+
+class TestWriteFileIfMissing:
+    """Test write-once semantics for the seed-files helper."""
+
+    def test_writes_when_absent(self, workspace, user_id):
+        """File doesn't exist → method writes it and returns True."""
+        rel_path = "workspaces/abc/IDENTITY.md"
+        wrote = workspace.write_file_if_missing(user_id, rel_path, "hello")
+        assert wrote is True
+        assert workspace.read_file(user_id, rel_path) == "hello"
+
+    def test_returns_false_when_present(self, workspace, user_id):
+        """File exists → method skips write and returns False."""
+        rel_path = "workspaces/abc/IDENTITY.md"
+        workspace.write_file(user_id, rel_path, "original")
+        wrote = workspace.write_file_if_missing(user_id, rel_path, "replacement")
+        assert wrote is False
+        # Original content preserved.
+        assert workspace.read_file(user_id, rel_path) == "original"
+
+    def test_path_traversal_blocked(self, workspace, user_id):
+        """Escape attempts via .. raise WorkspaceError, no file written."""
+        with pytest.raises(WorkspaceError):
+            workspace.write_file_if_missing(user_id, "../../../etc/passwd", "x")
+
+    def test_creates_parent_directories(self, workspace, user_id):
+        """Method creates intermediate directories on first write."""
+        rel_path = "workspaces/some-uuid/nested/path/SOUL.md"
+        wrote = workspace.write_file_if_missing(user_id, rel_path, "soul content")
+        assert wrote is True
+        assert workspace.read_file(user_id, rel_path) == "soul content"

@@ -461,6 +461,47 @@ class Workspace:
                 user_id=user_id,
             ) from exc
 
+    def write_file_if_missing(self, user_id: str, path: str, content: str) -> bool:
+        """Write a text file only if it does not already exist.
+
+        Uses O_EXCL semantics so the existence check + create is atomic at
+        the filesystem level — no race window between checking and writing.
+        Mirrors OpenClaw's `writeFileIfMissing` (`agents/workspace.ts:183`)
+        so any file pre-staged by Isol8 is honored by OpenClaw's own
+        bootstrap on first agent run.
+
+        Creates parent directories as needed. Sets ownership to 1000:1000
+        so per-user EFS access points can read/write (skipped on local).
+
+        Args:
+            user_id: The user whose workspace to write into.
+            path: Relative path within the user's workspace directory.
+            content: Text content to write.
+
+        Returns:
+            True if the file was written, False if it already existed.
+
+        Raises:
+            WorkspaceError: If the path escapes the user directory or a
+                non-EEXIST filesystem error occurs.
+        """
+        resolved = self._resolve_user_file(user_id, path)
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            with open(resolved, "x", encoding="utf-8") as f:
+                f.write(content)
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            put_metric("workspace.file.write.error")
+            logger.error("Failed to write_if_missing %r for %s: %s", path, user_id, exc)
+            raise WorkspaceError(
+                f"Failed to write_if_missing {path!r} for {user_id}: {exc}",
+                user_id=user_id,
+            ) from exc
+        self._chown_for_access_point(resolved, user_id)
+        return True
+
     def write_bytes(self, user_id: str, path: str, data: bytes) -> None:
         """Write binary data into a user's workspace.
 

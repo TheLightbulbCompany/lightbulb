@@ -24,7 +24,8 @@ import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyb
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
 import { useReadInboxItems } from "@/components/teams/inbox/hooks/useReadInboxItems";
 import { useInboxViewMode } from "@/components/teams/inbox/hooks/useInboxViewMode";
-import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
+import type { IssueUpdateInput } from "@/components/teams/shared/types";
 
 // Lazy-load the board so the dnd-kit + KanbanColumn/KanbanCard tree only
 // arrives in the client bundle when the user actually flips to board view.
@@ -144,17 +145,18 @@ export function InboxPage({
   const archiveStack = useInboxArchiveStack();
   const readItems = useReadInboxItems(companyId);
   const { viewMode, setViewMode } = useInboxViewMode(companyId ?? null);
-  const { patch } = useTeamsApi();
+  const { update: updateIssue } = useIssueMutations();
   const onUpdateIssue = useCallback(
     (id: string, data: Record<string, unknown>) => {
-      // Surface 4xx/5xx PATCH failures to the console so an optimistic
-      // kanban drag that snaps back via realtime invalidate isn't a
-      // silent no-op for the developer. A future PR can add a toast.
-      patch(`/issues/${id}`, data).catch((err) => {
+      // Route through useIssueMutations so the SWR keys for /teams/inbox?...
+      // and the issue detail are invalidated on success. Without this the
+      // board re-renders from stale filteredIssues and the dragged card
+      // snaps back to its old column even when the PATCH succeeded.
+      updateIssue(id, data as IssueUpdateInput).catch((err) => {
         console.error(`Failed to update issue ${id}:`, err);
       });
     },
-    [patch],
+    [updateIssue],
   );
 
   // 5. Compute the active issue list per tab.

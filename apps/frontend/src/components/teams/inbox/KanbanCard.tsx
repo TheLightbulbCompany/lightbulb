@@ -44,7 +44,11 @@ export function KanbanCard({ issue, agents, isLive, isOverlay }: KanbanCardProps
     return agents.find((a) => a.id === id)?.name ?? null;
   };
 
-  const href = `/teams/issues/${issue.identifier ?? issue.id}`;
+  // Always link by `id` — the rest of the inbox/panels surface (InboxPage,
+  // IssuesPanel) does the same, and the BFF forwards /teams/issues/{id} to
+  // upstream /api/issues/{id} which expects the internal id, NOT the
+  // human-readable identifier (e.g. ENG-42).
+  const href = `/teams/issues/${issue.id}`;
 
   return (
     <div

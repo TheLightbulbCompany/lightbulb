@@ -39,17 +39,10 @@ describe("KanbanCard", () => {
     expect(screen.queryByTestId("kanban-card-live-dot")).not.toBeInTheDocument();
   });
 
-  it("links to the issue detail using identifier when present", () => {
+  it("links to the issue detail by id (not identifier — BFF expects id)", () => {
     render(wrap(<KanbanCard issue={baseIssue} agents={[]} />));
-    expect(screen.getByRole("link")).toHaveAttribute("href", "/teams/issues/ENG-42");
-  });
-
-  it("links using id when identifier is null", () => {
-    render(
-      wrap(
-        <KanbanCard issue={{ ...baseIssue, identifier: null }} agents={[]} />,
-      ),
-    );
+    // baseIssue has identifier "ENG-42", but href must use id "iss-1" so the
+    // BFF /teams/issues/{id} → upstream /api/issues/{id} fetch resolves.
     expect(screen.getByRole("link")).toHaveAttribute("href", "/teams/issues/iss-1");
   });
 

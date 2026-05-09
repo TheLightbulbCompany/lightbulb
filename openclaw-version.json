@@ -5,7 +5,7 @@
   "tag": "2026.5.7",
   "full": "ghcr.io/openclaw/openclaw:2026.5.7",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended",
-  "dev":  { "tag": "2026.4.23-d9b4d2b" },
+  "dev":  { "tag": "2026.5.7-6129492" },
   "prod": { "tag": "2026.4.23-slim-94ee825" },
   "notes": "`upstream`/`image`/`tag`/`full` describe the openclaw base image the extended Dockerfile FROMs (and the bootstrap fallback in container-stack.ts). `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev and prod."
 }

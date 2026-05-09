@@ -81,10 +81,18 @@ async def patch_issue(
     body: PatchIssueBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Patch an issue."""
+    """Patch an issue.
+
+    Uses ``exclude_unset=True`` (not ``exclude_none``) so the frontend
+    can send ``assignee_agent_id: null`` / ``project_id: null`` to
+    unassign — Pydantic only emits keys the caller explicitly provided,
+    including those set to ``null``. Dropping ``exclude_none`` was
+    needed because the read-only assignee row in IssueProperties was
+    replaced with a real picker that needs an "Unassigned" path.
+    """
     return await _agents._admin().patch_issue(
         issue_id=issue_id,
-        body=body.model_dump(exclude_none=True),
+        body=body.model_dump(exclude_unset=True),
         session_cookie=ctx.session_cookie,
     )
 

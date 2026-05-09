@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 
 type Props = {
@@ -7,19 +7,12 @@ type Props = {
 };
 
 export function ChatGPTOAuthStep({ onComplete }: Props) {
+  // The hook owns the on-mount status probe + auto-start. If tokens are
+  // already on file (e.g. user completed in another tab, or the wizard
+  // re-mounted between /poll and the next gate refresh), the hook lands
+  // in {status: "completed"} immediately and the useEffect below fires
+  // onComplete; we never render the spinner branch in that case.
   const { state, start } = useChatGPTOAuth();
-  const startedRef = useRef(false);
-
-  // Auto-start the device-code request on mount. The startedRef guard
-  // prevents the dev-mode StrictMode double-invoke from firing two
-  // /oauth/chatgpt/start calls back-to-back (the second would
-  // overwrite the first's pending row, which is harmless but
-  // user-visible as a UI flicker on the device code).
-  useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
-    start();
-  }, [start]);
 
   useEffect(() => {
     if (state.status === "completed") onComplete();

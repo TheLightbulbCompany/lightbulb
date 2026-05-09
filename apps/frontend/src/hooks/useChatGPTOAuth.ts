@@ -36,6 +36,11 @@ type PollResponse =
   | { status: "pending" }
   | { status: "completed"; account_id: string | null };
 
+type StatusResponse = {
+  connected: boolean;
+  account_id: string | null;
+};
+
 const DEFAULT_POLL_INTERVAL_S = 5;
 
 export function useChatGPTOAuth() {
@@ -43,6 +48,10 @@ export function useChatGPTOAuth() {
   const [state, setState] = useState<OAuthState>({ status: "idle" });
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollIntervalSec = useRef<number>(DEFAULT_POLL_INTERVAL_S);
+  // Guards the on-mount status-probe + auto-start sequence so React 19
+  // StrictMode's intentional double-invoke of effects doesn't fire two
+  // /status calls (and worse, two /start device-code requests).
+  const startedRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
@@ -117,6 +126,46 @@ export function useChatGPTOAuth() {
 
   // Stop on unmount.
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  // On mount: probe /status to recover from a remount mid-flow (or from a
+  // re-entry after the user already completed OAuth in a different tab).
+  // - connected: true → land in "completed"; the parent's onComplete fires
+  //   via the existing useEffect in ChatGPTOAuthStep and the wizard advances.
+  // - connected: false → auto-fire start() so the user doesn't have to
+  //   click "Connect ChatGPT" again. The 409 fallback in start() covers the
+  //   race where /status said disconnected but tokens landed before /start.
+  //
+  // Concurrency: startedRef prevents the in-flight async work from being
+  // duplicated by React 19 StrictMode's intentional remount-replay. We do
+  // NOT use a `cancelled` flag in the cleanup — Codex P2 caught that
+  // pattern: StrictMode runs the cleanup immediately after the first
+  // invocation, which would set cancelled=true on the only in-flight
+  // attempt; the replayed effect then early-returns at startedRef and
+  // the OAuth step would stay on the spinner forever. setState on an
+  // unmounted component is a tolerated no-op in React 18+, so no
+  // cancellation is needed here.
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    (async () => {
+      try {
+        const r = (await api.get("/oauth/chatgpt/status")) as StatusResponse;
+        if (r.connected) {
+          setState({ status: "completed", accountId: r.account_id });
+          return;
+        }
+        await start();
+      } catch (e: unknown) {
+        // Status probe failure: surface as error rather than silently
+        // auto-starting, since /status is a required precondition for
+        // knowing whether /start would 409.
+        const message = e instanceof Error ? e.message : "OAuth status probe failed";
+        setState({ status: "error", message });
+      }
+    })();
+    // Run-once on mount; api/start are stable from useApi/useCallback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return { state, start, disconnect };
 }

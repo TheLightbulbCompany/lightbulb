@@ -309,6 +309,21 @@ async def get_decrypted_tokens(*, user_id: str) -> dict | None:
     return json.loads(plain.decode())
 
 
+async def get_decrypted_tokens_consistent(*, user_id: str) -> dict | None:
+    """Strongly-consistent variant of ``get_decrypted_tokens``.
+
+    Used by ``GET /oauth/chatgpt/status`` so the wizard reads its own
+    write from ``/poll`` without an eventual-consistency stutter. Other
+    callers (gate evaluator, provisioning) keep using the eventually-
+    consistent helper to avoid taxing every read path with strong reads.
+    """
+    row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=True).get("Item")
+    if not row or row.get("state") != "active":
+        return None
+    plain = get_fernet().decrypt(bytes(row["encrypted_tokens"]))
+    return json.loads(plain.decode())
+
+
 async def revoke_user_oauth(*, user_id: str) -> None:
     """Delete the user's OAuth row. Caller is responsible for also
     deleting any pre-staged auth file on EFS (see workspace.py)."""

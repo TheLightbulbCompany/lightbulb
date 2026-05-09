@@ -667,7 +667,18 @@ export function ProvisioningStepper({
   // does not re-render on top of the OAuth flow. A member of an unsubscribed org
   // (no ?provider= in URL) still falls through to here and sees "Ask your org
   // admin" because the provider block's providerChoice guard fails first.
-  if (gatePhase === "blocked" && blocked) {
+  //
+  // Additional `providerChoice === null` guard: after the provider step
+  // completes (`setProviderStepDone(true)`), `phase` flips OUT of "provider"
+  // and the early-return above stops firing. But the URL still has
+  // `?provider=chatgpt_oauth` until the strip-effect runs one frame later.
+  // During the eventual-consistency window between the OAuth row write
+  // (from /poll) and the next /container/status read by useProvisioningState,
+  // the gate evaluator's `_has_oauth_tokens` check still returns false and
+  // the gate would re-render the green "Sign in with ChatGPT" button on top
+  // of what should be the provisioning loader. Suppressing the gate UI
+  // entirely while `?provider=` is set closes that race.
+  if (gatePhase === "blocked" && blocked && providerChoice === null) {
     const showAction = !(blocked.action.admin_only && blocked.owner_role !== "admin");
     return (
       <>

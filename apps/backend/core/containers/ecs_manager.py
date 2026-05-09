@@ -1589,6 +1589,27 @@ class EcsManager:
             byo_provider=byo_provider,
             paperclip_agents=paperclip_agents,
         )
+
+        # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
+        # present before the container boots. Best-effort — failure here
+        # MUST NOT block provision; Friday boots with upstream defaults if
+        # this fails.
+        from core.services.friday_identity import pre_stage_friday_identity
+
+        try:
+            await pre_stage_friday_identity(
+                owner_id=owner_id,
+                paperclip_agents=paperclip_agents,
+                workspace=get_workspace(),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort.
+            put_metric("friday_identity.seed.error")
+            logger.warning(
+                "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
+                owner_id,
+                exc,
+            )
+
         workspace = get_workspace()
         workspace.write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
         await self.ensure_device_identities(owner_id, gateway_token)

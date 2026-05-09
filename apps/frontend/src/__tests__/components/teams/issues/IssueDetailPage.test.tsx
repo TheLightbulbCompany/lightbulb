@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // Mock all hooks before importing the component under test.
 vi.mock("@/components/teams/issues/hooks/useIssueDetail", () => ({
@@ -8,14 +9,21 @@ vi.mock("@/components/teams/issues/hooks/useIssueDetail", () => ({
 vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
   useIssueMutations: vi.fn(),
 }));
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: vi.fn(),
+}));
 
 import { IssueDetailPage } from "@/components/teams/issues/IssueDetailPage";
 import { useIssueDetail } from "@/components/teams/issues/hooks/useIssueDetail";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 const mockUpdate = vi.fn();
 const mockAddComment = vi.fn();
 const mockCreate = vi.fn();
+
+// Default read mock: returns empty agents/projects so existing tests are unaffected.
+const defaultRead = vi.fn().mockReturnValue({ data: undefined, isLoading: false, error: null });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -24,6 +32,13 @@ beforeEach(() => {
     update: mockUpdate,
     addComment: mockAddComment,
   });
+  defaultRead.mockReturnValue({ data: undefined, isLoading: false, error: null });
+  vi.mocked(useTeamsApi).mockReturnValue({
+    read: defaultRead,
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  } as unknown as ReturnType<typeof useTeamsApi>);
 });
 
 describe("IssueDetailPage", () => {
@@ -156,5 +171,41 @@ describe("IssueDetailPage", () => {
     render(<IssueDetailPage issueId="iss_1" />);
     expect(screen.getByText("First comment")).toBeInTheDocument();
     expect(screen.getByText("Second comment")).toBeInTheDocument();
+  });
+
+  test("changing the assignee picker calls mutations.update with assigneeAgentId", async () => {
+    const user = userEvent.setup();
+
+    // Wire up /agents and /projects reads; all other paths return empty.
+    const readMock = vi.fn((path: string) => {
+      switch (path) {
+        case "/agents":
+          return { data: { agents: [{ id: "ag_1", name: "Friday" }] }, isLoading: false, error: null };
+        case "/projects":
+          return { data: { projects: [] }, isLoading: false, error: null };
+        default:
+          return { data: undefined, isLoading: false, error: null };
+      }
+    });
+    vi.mocked(useTeamsApi).mockReturnValue({
+      read: readMock,
+      post: vi.fn(),
+      patch: vi.fn(),
+      del: vi.fn(),
+    } as unknown as ReturnType<typeof useTeamsApi>);
+
+    mockUpdate.mockResolvedValue({});
+    vi.mocked(useIssueDetail).mockReturnValue({
+      issue: { id: "iss_1", title: "Fix the inbox", status: "todo", assigneeAgentId: null },
+      comments: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+
+    render(<IssueDetailPage issueId="iss_1" />);
+    await user.click(screen.getAllByRole("button", { name: /Unassigned/i })[0]);
+    await user.click(await screen.findByText("Friday"));
+    expect(mockUpdate).toHaveBeenCalledWith("iss_1", { assigneeAgentId: "ag_1" });
   });
 });

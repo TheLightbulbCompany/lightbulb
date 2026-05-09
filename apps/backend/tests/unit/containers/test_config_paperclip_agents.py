@@ -41,6 +41,28 @@ def test_single_paperclip_agent_replaces_main():
     assert agents[0]["default"] is True
     assert agents[0]["workspace"] == f"/home/node/.openclaw/workspaces/{pc_uuid}"
     assert agents[0]["reasoningDefault"] == "stream"
+    # Friendly display name must round-trip into agents.list[].name so the
+    # OpenClaw chat surface (and the frontend sidebar that reads from it)
+    # can show "Friday" instead of falling back to the UUID.
+    assert agents[0]["name"] == "Friday"
+
+
+def test_paperclip_agent_without_name_omits_field():
+    """Agents without a name (legacy or partially-seeded rows) emit no
+    name field — let OpenClaw fall back to the UUID-as-display-name
+    behavior rather than emitting a redundant name=id."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    cfg = build_openclaw_config_dict(
+        user_id="user_abc",
+        gateway_token="t" * 32,
+        provider_choice="bedrock_claude",
+        paperclip_agents=[
+            {"id": pc_uuid, "role": "ceo"},  # no name
+        ],
+    )
+    agents = cfg["agents"]["list"]
+    assert agents[0]["id"] == pc_uuid
+    assert "name" not in agents[0]
 
 
 def test_multiple_paperclip_agents_ceo_is_default():

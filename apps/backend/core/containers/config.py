@@ -472,6 +472,16 @@ def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
             "reasoningDefault": "stream",
             "workspace": f"/home/node/.openclaw/workspaces/{agent_id}",
         }
+        # Pass through the friendly display name when Paperclip has one.
+        # OpenClaw's agent-runtime schema accepts an optional ``name`` on
+        # agents.list[] entries (zod-schema.agent-runtime.ts:816); the
+        # chat surface and the frontend sidebar both render this when
+        # present. Without it, OpenClaw falls back to the agentId (UUID),
+        # which surfaces as a long string in the chat sidebar instead of
+        # the agent's role-given name (e.g. Friday for the seeded ceo).
+        friendly_name = agent.get("name")
+        if friendly_name:
+            entry["name"] = friendly_name
         if i == default_index:
             entry["default"] = True
         entries.append(entry)

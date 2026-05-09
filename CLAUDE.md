@@ -156,7 +156,32 @@ Debug endpoints return 403 in production.
 
 Full wipe of dev state for fresh testing. Requires AWS SSO (`aws sso login --profile isol8-admin`).
 
-**1. Delete ECS containers:** User deletes their OpenClaw ECS services + EFS access points manually from the AWS console (or via `DELETE /debug/provision` per user above).
+**Note on ECS cluster name:** The cluster ARN suffix changes on stack
+recreation (e.g. `isol8-dev-container-ClusterEB0386A7-L9MzqPCGDupk` as of
+2026-05-09). The hardcoded names in the commands below may be stale —
+always discover dynamically:
+```bash
+CLUSTER=$(aws ecs list-clusters --profile isol8-admin --region us-east-1 \
+  --query 'clusterArns[?contains(@,`isol8-dev-container`)]' --output text)
+SERVICE=$(aws ecs list-services --cluster "$CLUSTER" --profile isol8-admin \
+  --region us-east-1 --query 'serviceArns[?contains(@,`isol8-dev-service`)]' \
+  --output text | awk -F/ '{print $NF}')
+```
+
+**1. Delete ECS containers:** User deletes their OpenClaw ECS services + EFS access points manually from the AWS console (or via `DELETE /debug/provision` per user above). Programmatically:
+```bash
+# Per-user openclaw service + matching EFS access point
+SERVICE=openclaw-<user_id>-<hash>
+aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --desired-count 0 \
+  --profile isol8-admin --region us-east-1
+aws ecs delete-service --cluster "$CLUSTER" --service "$SERVICE" --force \
+  --profile isol8-admin --region us-east-1
+# EFS access point name pattern: isol8-<user_id>
+AP=$(aws efs describe-access-points --file-system-id <openclaw-efs-fs-id> \
+  --profile isol8-admin --region us-east-1 \
+  --query 'AccessPoints[?contains(Name||``,`<user_id>`)].AccessPointId' --output text)
+aws efs delete-access-point --access-point-id "$AP" --profile isol8-admin --region us-east-1
+```
 
 **2. Wipe EFS user workspaces** (via ECS exec on the backend task):
 ```bash
@@ -198,11 +223,81 @@ for item in d.get('Items', []):
 done
 ```
 
-**4. Clean up Stripe:** Delete orphan test customers manually from the [Stripe dashboard](https://dashboard.stripe.com/test/customers) (dev uses test mode keys).
+**4. Wipe Paperclip company + user (Aurora — use RDS Query Editor):**
 
-**5. Clean up Clerk:** Delete test users/orgs from the [Clerk dashboard](https://dashboard.clerk.com) if needed.
+Paperclip data does NOT live in DynamoDB; it's in a per-env Aurora cluster
+(`isol8-dev-paperclip-db`). Wiping DDB does NOT touch Paperclip — orphan
+companies + users will linger. **An orphan user blocks re-signup with the
+same email** because Better Auth's `sign_up_user` is not idempotent (see
+`paperclip_provisioning.py:144-150`). So this step is required for a true
+clean slate.
 
-After all five steps, re-provision starts fresh: new Clerk sign-up → onboarding → container provision → single Stripe customer.
+Two-stage cleanup because Paperclip exposes a company-delete API but NO
+user-delete API (Better Auth's `admin()` plugin is not enabled — verified
+in `auth/better-auth.ts`).
+
+**4a. Delete the company via Paperclip admin API** (from the backend):
+```bash
+# Find the company_id by listing — these calls go through the
+# already-authenticated PaperclipAdminClient inside the backend container.
+TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$SERVICE" \
+  --profile isol8-admin --region us-east-1 --query 'taskArns[0]' --output text \
+  | awk -F/ '{print $NF}')
+
+# List companies + users (script uses the existing admin session)
+aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend \
+  --interactive --command "/bin/sh -c 'cd /app && uv run python -c \"
+import asyncio, httpx
+from core.config import settings
+from core.services.paperclip_admin_session import get_admin_session_cookie
+async def main():
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=30) as c:
+        h = {\\\"Cookie\\\": await get_admin_session_cookie(c)}
+        if settings.PAPERCLIP_PUBLIC_URL: h[\\\"Origin\\\"] = settings.PAPERCLIP_PUBLIC_URL
+        for p in [\\\"/api/companies\\\", \\\"/api/admin/users\\\"]:
+            r = (await c.get(p, headers=h)).json()
+            print(p, len(r))
+            for x in r: print(\\\" \\\", x.get(\\\"id\\\"), x.get(\\\"name\\\") or x.get(\\\"email\\\"))
+asyncio.run(main())
+\"'" --profile isol8-admin --region us-east-1
+```
+
+Then call `DELETE /api/companies/{company_id}` similarly (admin client has
+`delete_company`). Cascades to agents/threads/etc.
+
+**4b. Delete the orphan user(s) via RDS Query Editor** (the cleanest path):
+
+There is NO Paperclip API for user deletion. Direct SQL is the only option.
+**Don't try to ECS-exec a `psql` task or override the migrate task def** —
+both shell-quoting paths failed silently in 2026-05 testing. Use the
+RDS-console Query Editor instead:
+
+1. AWS Console → RDS → DB instances → click `isol8-dev-paperclip-db`
+2. **Connectivity & security** tab → **Connect using: Query Editor** → "Launch"
+3. Connection dialog:
+   - Database instance: `isol8-dev-paperclip-db`
+   - Database username: **Connect with a Secrets Manager ARN**
+   - Secrets manager ARN: full ARN of `isol8-dev-paperclip-db-credentials-<6-char-suffix>` (find via `aws secretsmanager list-secrets ... --query 'SecretList[?contains(Name,\`paperclip-db-credentials\`)].[Name,ARN]'`); ⚠️ pick the **dev** one, NOT prod — they're one click apart
+   - Database name: `paperclip`
+4. Run:
+   ```sql
+   DELETE FROM "user" WHERE id = '<orphan_user_id>';
+   SELECT id, email FROM "user";
+   ```
+   `account` and `session` cascade automatically (`onDelete: "cascade"` per
+   `paperclip/packages/db/src/schema/auth.ts`). Expected output: `DELETE 1`,
+   then a list with just `admin@isol8.co`.
+
+**Why Query Editor and not CloudShell `psql`:** the Aurora cluster sits in
+a private subnet with no internet gateway; CloudShell can't reach it
+directly. Query Editor uses the RDS Data API (HTTPS) which is enabled on
+the cluster.
+
+**5. Clean up Stripe:** Delete orphan test customers manually from the [Stripe dashboard](https://dashboard.stripe.com/test/customers) (dev uses test mode keys).
+
+**6. Clean up Clerk:** Delete test users/orgs from the [Clerk dashboard](https://dashboard.clerk.com) if needed.
+
+After all six steps, re-provision starts fresh: new Clerk sign-up → onboarding → container provision → single Stripe customer + fresh Paperclip company.
 
 ### Manual dev testing accounts
 
@@ -383,51 +478,6 @@ Intentionally empty (just an `__init__.py` docstring: *"DynamoDB items are plain
 ### Request/response schemas (`schemas/`)
 
 Pydantic request/response models for the HTTP surface: `billing.py`, `user_schemas.py`.
-
-### Paperclip ↔ OpenClaw agent pairing
-
-Paperclip is the source of truth for agent identity. Every Paperclip agent
-has a UUID; that UUID is also the OpenClaw `agentId` in the user's
-container — `agents.list[].id`, the workspace dir, the agent dir, and the
-session-key prefix all share the same string.
-
-Provisioning order:
-
-1. Sign-up → `provision_org` creates the Paperclip company + seeds a
-   "Friday" agent (role=ceo). Paperclip auto-generates the UUID.
-2. User opens `/chat` → container provisions → `write_user_configs` calls
-   `fetch_paperclip_agents_for_owner` → live agent list from Paperclip's
-   REST API → written into `openclaw.json`'s `agents.list`.
-3. Container boots with all known Paperclip agents pre-registered.
-
-Forward-going creates:
-
-- `/teams` POST `/agents`: Paperclip create_agent first, then
-  `pair_with_openclaw` if the container is reachable.
-- `/chat` `agents.create` RPC: backend interception calls Paperclip
-  first, then forwards `agents.create` (with name=UUID) and
-  `agents.update` (with friendly name) to the container.
-
-Reprovision (`PATCH /debug/provision`) re-fetches the live Paperclip list
-and rewrites `agents.list`. Stale workspaces on EFS are not GC'd by this
-flow — handled separately.
-
-**Important:** `<EFS>/users/{owner_id}/agents/main/agent/auth-profiles.json`
-is the **container-wide auth-fallback location** — not tied to any agent
-in `agents.list`. OpenClaw's `resolveOpenClawAgentDir` returns this path
-unconditionally for ChatGPT-OAuth credential resolution. Do not relocate
-this file to a paired-agent directory; doing so breaks OAuth for all
-agents.
-
-**Multi-tenant model:** the container is keyed by `owner_id` (Clerk org_id
-for orgs, user_id for personal users). Org members share their owner's
-container, EFS, and Paperclip company. Member-level chat isolation comes
-from `routers/websocket_chat.py:881`'s `agent:<agentId>:<member_user_id>`
-session-key format. Issue-driven runs use `paperclip:issue:<issue_id>`
-(via `synthesize_openclaw_adapter`'s `sessionKeyStrategy="issue"`).
-
-See `docs/architecture/2026-05-07-paperclip-openclaw-pairing.md` for the
-full design rationale and the seven consistency surfaces.
 
 ---
 

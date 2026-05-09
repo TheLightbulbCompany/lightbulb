@@ -412,7 +412,7 @@ async def patch_agent(
     a service token is an admin-side operation handled by the
     provisioning path, not user-facing PATCH.
     """
-    payload = body.model_dump(exclude_none=True)
+    payload = body.model_dump(exclude_none=True, by_alias=True)
     upstream = await _admin().patch_agent(
         agent_id=agent_id,
         body=payload,

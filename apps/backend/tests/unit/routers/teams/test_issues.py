@@ -281,8 +281,9 @@ def test_list_labels_returns_envelope(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_patch_issue_forwards_explicit_null_to_unassign():
-    """An admin sending {"assignee_agent_id": null} must reach Paperclip
-    as null, not be stripped. Otherwise users can't unassign."""
+    """An admin sending {"assigneeAgentId": null} (or its snake_case Python
+    equivalent) must reach Paperclip as null, not be stripped. Otherwise
+    users can't unassign."""
     fake_admin = MagicMock()
     fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
     fake_agents_module = MagicMock()
@@ -298,7 +299,7 @@ async def test_patch_issue_forwards_explicit_null_to_unassign():
     # Confirm null forwarded — was stripped under exclude_none=True before.
     fake_admin.patch_issue.assert_called_once()
     forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
-    assert forwarded_body == {"assignee_agent_id": None}
+    assert forwarded_body == {"assigneeAgentId": None}
 
 
 @pytest.mark.asyncio
@@ -318,3 +319,27 @@ async def test_patch_issue_omits_unset_fields():
 
     forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
     assert forwarded_body == {}
+
+
+@pytest.mark.asyncio
+async def test_patch_issue_forwards_camelcase_assignee_to_paperclip():
+    """Paperclip's PATCH /api/issues/:id reads req.body.assigneeAgentId
+    (camelCase). Our schema attribute is snake_case for Python ergonomics
+    but the wire MUST be camelCase. This is the regression test for the
+    'AssigneePicker click leaves issue Unassigned' bug — without this,
+    Paperclip silently drops the unknown snake_case key and returns the
+    unchanged issue."""
+    fake_admin = MagicMock()
+    fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    fake_agents_module = MagicMock()
+    fake_agents_module._admin.return_value = fake_admin
+    fake_ctx = MagicMock()
+    fake_ctx.session_cookie = "sess=abc"
+
+    body = PatchIssueBody(assignee_agent_id="agt_friday", project_id="proj_x")
+
+    with patch("routers.teams.issues._agents", fake_agents_module):
+        await patch_issue(issue_id="iss_1", body=body, ctx=fake_ctx)
+
+    forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
+    assert forwarded_body == {"assigneeAgentId": "agt_friday", "projectId": "proj_x"}

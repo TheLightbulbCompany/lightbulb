@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface CompanySettings {
-  display_name?: string;
+  displayName?: string;
   description?: string;
 }
 
@@ -18,7 +18,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     if (data) {
-      setName(data.display_name ?? "");
+      setName(data.displayName ?? "");
       setDesc(data.description ?? "");
     }
   }, [data]);
@@ -27,10 +27,10 @@ export function SettingsPanel() {
     setSaving(true);
     setErr(null);
     try {
-      // SECURITY: body contains ONLY {display_name, description}, matching
-      // PatchCompanySettingsBody (Task 3, extra="forbid"). Adapter, plugin,
-      // and instance settings are operator-controlled — defense in depth.
-      await patch("/settings", { display_name: name, description: desc });
+      // SECURITY: body contains ONLY {displayName, description}, matching
+      // PatchCompanySettingsBody (extra="forbid"). Adapter, plugin, and
+      // instance settings are operator-controlled — defense in depth.
+      await patch("/settings", { displayName: name, description: desc });
       mutate();
     } catch (e) {
       setErr(String(e));

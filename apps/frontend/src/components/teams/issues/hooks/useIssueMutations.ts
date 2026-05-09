@@ -24,37 +24,15 @@ export interface UseIssueMutationsResult {
   addComment: (issueId: string, body: string) => Promise<IssueComment>;
 }
 
-// Teams BFF schema: POST /issues whitelist (CreateIssueBody, extra="forbid") is
-// title / description / project_id / assignee_agent_id / priority — `status` is
-// owned upstream and must NOT be in the create payload (it 422s). PATCH allows
-// status, so the update adapter is separate.
-function toBackendCreateBody(input: IssueCreateInput): Record<string, unknown> {
-  const body: Record<string, unknown> = {};
-  if (input.title !== undefined) body.title = input.title;
-  if (input.description !== undefined) body.description = input.description;
-  if (input.priority !== undefined) body.priority = input.priority;
-  if (input.projectId !== undefined) body.project_id = input.projectId;
-  if (input.assigneeAgentId !== undefined) body.assignee_agent_id = input.assigneeAgentId;
-  return body;
-}
-
-function toBackendUpdateBody(input: IssueUpdateInput): Record<string, unknown> {
-  const body: Record<string, unknown> = {};
-  if (input.title !== undefined) body.title = input.title;
-  if (input.description !== undefined) body.description = input.description;
-  if (input.status !== undefined) body.status = input.status;
-  if (input.priority !== undefined) body.priority = input.priority;
-  if (input.projectId !== undefined) body.project_id = input.projectId;
-  if (input.assigneeAgentId !== undefined) body.assignee_agent_id = input.assigneeAgentId;
-  return body;
-}
-
 export function useIssueMutations(): UseIssueMutationsResult {
   const { post, patch } = useTeamsApi();
   const { mutate } = useSWRConfig();
 
   const create = useCallback(async (input: IssueCreateInput): Promise<Issue> => {
-    const created = await post<Issue>("/issues", toBackendCreateBody(input));
+    // The Teams BFF accepts camelCase aliases (Pydantic populate_by_name=True)
+    // and forwards them verbatim to Paperclip — IssueCreateInput's shape IS
+    // the wire shape, no boundary translation needed.
+    const created = await post<Issue>("/issues", input);
     // Invalidate inbox lists (any tab) so the new issue appears.
     mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));
     return created;
@@ -62,7 +40,7 @@ export function useIssueMutations(): UseIssueMutationsResult {
 
   const update = useCallback(
     async (issueId: string, input: IssueUpdateInput): Promise<Issue> => {
-      const updated = await patch<Issue>(`/issues/${issueId}`, toBackendUpdateBody(input));
+      const updated = await patch<Issue>(`/issues/${issueId}`, input);
       // Invalidate the detail key + inbox lists.
       mutate(swrKey(teamsQueryKeys.issues.detail(issueId)));
       mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));

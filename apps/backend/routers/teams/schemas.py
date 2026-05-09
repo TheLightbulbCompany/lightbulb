@@ -13,10 +13,30 @@ from __future__ import annotations
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """Base for Teams BFF request bodies.
+
+    All Teams BFF schemas use snake_case Python attribute names but
+    must emit camelCase JSON to match Paperclip's wire shape. Pydantic's
+    ``alias_generator=to_camel`` derives a camelCase alias for every
+    field; ``populate_by_name=True`` keeps the snake_case attribute
+    names usable from internal Python callers (and from the existing
+    test fixtures). ``extra="forbid"`` still rejects unknown keys —
+    aliasing does not weaken the security posture.
+
+    Outbound: every router that forwards a body to Paperclip must call
+    ``model_dump(..., by_alias=True)`` so the camelCase aliases land on
+    the wire.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class CreateAgentBody(_Strict):

@@ -214,10 +214,11 @@ async def test_resolve_org_owner_uses_clerk_get_organization(monkeypatch):
 
     async def fake_get_org(org_id):
         assert org_id == "org_xyz"
-        return {"name": "Acme Inc"}
+        return {"name": "Acme Inc", "created_by": "user_founder_123"}
 
     async def fake_lookup_owner_email(*, org_id, fallback_user_id):
         assert org_id == "org_xyz"
+        assert fallback_user_id == "user_founder_123"
         return "founder@acme.com"
 
     async def fake_resolve_provider(owner_id):
@@ -256,3 +257,59 @@ async def test_resolve_falls_back_to_minimal_when_clerk_fails(monkeypatch):
     assert profile["full_name"] == "(unknown)"
     # Provider still resolves correctly via billing_repo.
     assert "BYO Anthropic" in profile["provider_label"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_personal_owner_falls_back_to_email_local_part(monkeypatch):
+    """No first_name in Clerk → first_name_or_fallback derives from email local-part."""
+    from core.services import clerk_admin
+    from core.services import container_provision
+
+    async def fake_get_user(user_id):
+        return {
+            "first_name": None,
+            "last_name": None,
+            "email_addresses": [{"id": "ea_1", "email_address": "tao@example.com"}],
+            "primary_email_address_id": "ea_1",
+        }
+
+    async def fake_resolve_provider(owner_id):
+        return ("bedrock_claude", None)
+
+    monkeypatch.setattr(clerk_admin, "get_user", fake_get_user)
+    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
+
+    profile = await friday_identity._resolve_owner_profile("user_abc")
+    assert profile["first_name_or_fallback"] == "tao"
+    assert profile["owner_display"] == "tao"
+    assert profile["full_name"] == "(unknown)"
+    assert profile["email"] == "tao@example.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_owner_falls_back_when_clerk_returns_no_org(monkeypatch):
+    """clerk_admin.get_organization returns None → org_name falls back to 'your team'."""
+    from core.services import clerk_admin
+    from core.services import container_provision
+    from core.services import paperclip_owner_email
+
+    async def fake_get_org(org_id):
+        return None
+
+    async def fake_lookup_owner_email(*, org_id, fallback_user_id):
+        # fallback_user_id should be None when org has no created_by.
+        assert fallback_user_id is None
+        return None
+
+    async def fake_resolve_provider(owner_id):
+        return ("bedrock_claude", None)
+
+    monkeypatch.setattr(clerk_admin, "get_organization", fake_get_org)
+    monkeypatch.setattr(paperclip_owner_email, "lookup_owner_email", fake_lookup_owner_email)
+    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
+
+    profile = await friday_identity._resolve_owner_profile("org_xyz")
+    assert profile["kind"] == "org"
+    assert profile["org_name"] == "your team"
+    assert profile["owner_email"] == "(unknown)"
+    assert profile["owner_display"] == "your team"

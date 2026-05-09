@@ -316,8 +316,14 @@ async def _resolve_owner_profile(owner_id: str) -> dict:
         from core.services.paperclip_owner_email import lookup_owner_email
 
         org = await clerk_admin.get_organization(owner_id)
-        org_name = (org or {}).get("name") or "your team"
-        owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=None) or "(unknown)"
+        org_obj = org or {}
+        org_name = org_obj.get("name") or "your team"
+        # `lookup_owner_email` short-circuits to None when fallback_user_id is
+        # falsy, so threading the org's `created_by` (the founding user_id from
+        # Clerk's `GET /organizations/{org_id}`) is what makes this branch
+        # actually return a real email instead of always landing on "(unknown)".
+        created_by = org_obj.get("created_by") or None
+        owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=created_by) or "(unknown)"
         return {
             "kind": "org",
             "owner_display": org_name,

@@ -2,9 +2,9 @@
 
 // Ported from upstream Paperclip's pages/IssueDetail.tsx sidebar block
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
-// v1: read-only stack of label/value rows. Mutations live in IssueHeader.
-// Drops assignee picker, labels editor, project picker, watcher list, etc.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// v2: assignee + project rows are now interactive pickers; status +
+// priority remain read-only here (they live in the IssueHeader's pickers).
+// See plan at docs/superpowers/plans/2026-05-09-teams-issue-pickers-v2.md
 
 "use client";
 
@@ -19,12 +19,16 @@ import type {
   CompanyMember,
   IssueProject,
 } from "@/components/teams/shared/types";
+import { AssigneePicker } from "./pickers/AssigneePicker";
+import { ProjectPicker } from "./pickers/ProjectPicker";
 
 export interface IssuePropertiesProps {
   issue: Issue;
   agents?: CompanyAgent[];
   members?: CompanyMember[];
   projects?: IssueProject[];
+  onAssigneeChange: (agentId: string | null) => void;
+  onProjectChange: (projectId: string | null) => void;
   className?: string;
 }
 
@@ -43,10 +47,7 @@ function PropertyRow({
         borderBottom: "1px solid var(--edge)",
       }}
     >
-      <dt
-        className="section-label"
-        style={{ marginTop: 0, marginBottom: 0 }}
-      >
+      <dt className="section-label" style={{ marginTop: 0, marginBottom: 0 }}>
         <b>{label}</b>
       </dt>
       <dd className="min-w-0 truncate">{children}</dd>
@@ -59,17 +60,21 @@ const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
 export function IssueProperties({
   issue,
   agents = [],
+  projects = [],
+  onAssigneeChange,
+  onProjectChange,
   className,
 }: IssuePropertiesProps) {
-  const assigneeName = issue.assigneeAgentId
-    ? (agents.find((a) => a.id === issue.assigneeAgentId)?.name ??
-      "Unknown agent")
-    : "Unassigned";
-
-  // Project comes denormalized from the BFF as `issue.project`. The
-  // `projects` / `members` props are accepted today so callers don't need to
-  // refactor when v2 wires assignee/project pickers in.
-  const project: IssueProject | null = issue.project ?? null;
+  // Merge denormalized issue.project into the projects list so the trigger
+  // shows the right name even before the /teams/projects fetch resolves.
+  const projectsWithDenorm = (() => {
+    const base = projects.slice();
+    if (issue.project && !base.some((p) => p.id === issue.project!.id)) {
+      base.unshift(issue.project);
+    }
+    return base;
+  })();
+  const projectId = issue.project?.id ?? null;
 
   const labels = issue.labels ?? [];
 
@@ -78,9 +83,7 @@ export function IssueProperties({
       <PropertyRow label="Status">
         <span className="inline-flex items-center gap-2">
           <StatusIcon status={issue.status} />
-          <span className="capitalize">
-            {issue.status.replace(/_/g, " ")}
-          </span>
+          <span className="capitalize">{issue.status.replace(/_/g, " ")}</span>
         </span>
       </PropertyRow>
       <PropertyRow label="Priority">
@@ -96,18 +99,18 @@ export function IssueProperties({
         )}
       </PropertyRow>
       <PropertyRow label="Assignee">
-        <span style={!issue.assigneeAgentId ? EMPTY_DASH_STYLE : undefined}>
-          {assigneeName}
-        </span>
+        <AssigneePicker
+          agents={agents}
+          selectedAgentId={issue.assigneeAgentId ?? null}
+          onChange={onAssigneeChange}
+        />
       </PropertyRow>
       <PropertyRow label="Project">
-        {project ? (
-          <span>{project.name}</span>
-        ) : (
-          <span data-empty="true" style={EMPTY_DASH_STYLE}>
-            —
-          </span>
-        )}
+        <ProjectPicker
+          projects={projectsWithDenorm}
+          selectedProjectId={projectId}
+          onChange={onProjectChange}
+        />
       </PropertyRow>
       <PropertyRow label="Labels">
         {labels.length > 0 ? (

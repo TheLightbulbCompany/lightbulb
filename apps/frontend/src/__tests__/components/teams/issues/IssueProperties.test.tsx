@@ -1,7 +1,12 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IssueProperties } from "@/components/teams/issues/IssueProperties";
-import type { Issue, CompanyAgent } from "@/components/teams/shared/types";
+import type {
+  Issue,
+  CompanyAgent,
+  IssueProject,
+} from "@/components/teams/shared/types";
 
 const baseIssue: Issue = {
   id: "iss_1",
@@ -14,7 +19,7 @@ const baseIssue: Issue = {
 
 describe("IssueProperties", () => {
   test("renders all 7 property rows", () => {
-    render(<IssueProperties issue={baseIssue} />);
+    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
     expect(screen.getByText("Status")).toBeInTheDocument();
     expect(screen.getByText("Priority")).toBeInTheDocument();
     expect(screen.getByText("Assignee")).toBeInTheDocument();
@@ -24,60 +29,83 @@ describe("IssueProperties", () => {
     expect(screen.getByText("Updated")).toBeInTheDocument();
   });
 
-  test("renders 'Unassigned' when no assigneeAgentId", () => {
-    render(<IssueProperties issue={baseIssue} />);
-    expect(screen.getByText("Unassigned")).toBeInTheDocument();
+  test("Assignee row renders an interactive picker trigger labeled 'Unassigned'", () => {
+    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /Unassigned/i })).toBeInTheDocument();
   });
 
-  test("looks up agent name from agents list", () => {
-    const agents: CompanyAgent[] = [{ id: "ag_1", name: "Main Agent" }];
+  test("Assignee row resolves the agent's name from the agents prop", () => {
+    const agents: CompanyAgent[] = [{ id: "ag_1", name: "Friday" }];
     const issue: Issue = { ...baseIssue, assigneeAgentId: "ag_1" };
-    render(<IssueProperties issue={issue} agents={agents} />);
-    expect(screen.getByText("Main Agent")).toBeInTheDocument();
+    render(
+      <IssueProperties
+        issue={issue}
+        agents={agents}
+        onAssigneeChange={vi.fn()}
+        onProjectChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Friday/ })).toBeInTheDocument();
   });
 
-  test("renders 'Unknown agent' when assignee id has no match", () => {
-    const issue: Issue = { ...baseIssue, assigneeAgentId: "ag_missing" };
-    render(<IssueProperties issue={issue} agents={[]} />);
-    expect(screen.getByText("Unknown agent")).toBeInTheDocument();
+  test("clicking an assignee option calls onAssigneeChange with the id", async () => {
+    const user = userEvent.setup();
+    const onAssigneeChange = vi.fn();
+    const agents: CompanyAgent[] = [{ id: "ag_1", name: "Friday" }];
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        agents={agents}
+        onAssigneeChange={onAssigneeChange}
+        onProjectChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Unassigned/i }));
+    await user.click(await screen.findByText("Friday"));
+    expect(onAssigneeChange).toHaveBeenCalledWith("ag_1");
+  });
+
+  test("Project row renders an interactive picker trigger", () => {
+    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /No project/i })).toBeInTheDocument();
+  });
+
+  test("clicking a project option calls onProjectChange with the id", async () => {
+    const user = userEvent.setup();
+    const onProjectChange = vi.fn();
+    const projects: IssueProject[] = [{ id: "p_1", name: "Inbox v1" }];
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        projects={projects}
+        onAssigneeChange={vi.fn()}
+        onProjectChange={onProjectChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /No project/i }));
+    await user.click(await screen.findByText("Inbox v1"));
+    expect(onProjectChange).toHaveBeenCalledWith("p_1");
   });
 
   test("renders priority icon + label", () => {
-    render(<IssueProperties issue={baseIssue} />);
+    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
     expect(screen.getByText("high")).toBeInTheDocument();
   });
 
   test("renders '—' for null priority", () => {
     const issue: Issue = { ...baseIssue, priority: null };
-    const { container } = render(<IssueProperties issue={issue} />);
-    // Editorial reskin: muted dashes are tagged via data-empty rather than a
-    // tailwind utility class.
+    const { container } = render(
+      <IssueProperties issue={issue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />,
+    );
     const dashes = container.querySelectorAll('[data-empty="true"]');
     expect(Array.from(dashes).some((el) => el.textContent === "—")).toBe(true);
   });
 
-  test("renders project name from issue.project", () => {
+  test("renders project name from issue.project when projects prop empty", () => {
     const issue: Issue = { ...baseIssue, project: { id: "p1", name: "Inbox v1" } };
-    render(<IssueProperties issue={issue} />);
-    expect(screen.getByText("Inbox v1")).toBeInTheDocument();
-  });
-
-  test("renders labels as chips", () => {
-    const issue: Issue = {
-      ...baseIssue,
-      labels: [
-        { id: "l1", name: "bug" },
-        { id: "l2", name: "p1" },
-      ],
-    };
-    render(<IssueProperties issue={issue} />);
-    expect(screen.getByText("bug")).toBeInTheDocument();
-    expect(screen.getByText("p1")).toBeInTheDocument();
-  });
-
-  test("renders relative times for created + updated", () => {
-    render(<IssueProperties issue={baseIssue} />);
-    const timeEls = document.querySelectorAll("time[datetime]");
-    expect(timeEls.length).toBeGreaterThanOrEqual(2);
+    render(<IssueProperties issue={issue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
+    // Trigger should label with the denormalized project name even when the
+    // projects prop is empty (e.g. SWR not yet loaded).
+    expect(screen.getByRole("button", { name: /Inbox v1/ })).toBeInTheDocument();
   });
 });

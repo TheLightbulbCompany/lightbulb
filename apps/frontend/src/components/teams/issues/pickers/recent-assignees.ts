@@ -6,7 +6,16 @@ export const RECENT_ASSIGNEES_KEY = "isol8.teams.recent-assignees";
 const MAX_RECENT = 5;
 
 function isBrowser(): boolean {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+  try {
+    return (
+      typeof window !== "undefined" &&
+      typeof window.localStorage !== "undefined" &&
+      typeof window.localStorage.getItem === "function"
+    );
+  } catch {
+    // SecurityError thrown in some sandboxed environments when accessing localStorage.
+    return false;
+  }
 }
 
 /** Returns most-recent-first, capped at 5. Empty on SSR or corrupted storage. */

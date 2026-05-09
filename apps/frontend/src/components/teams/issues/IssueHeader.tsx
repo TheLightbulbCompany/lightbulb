@@ -16,21 +16,26 @@ import type {
   Issue,
   IssueStatus,
   IssuePriority,
+  CompanyAgent,
 } from "@/components/teams/shared/types";
+import { AssigneePicker } from "./pickers/AssigneePicker";
 
 export interface IssueHeaderProps {
   issue: Issue;
-  /** Called when user saves a new title (blur or Enter). Async; component shows pending state. */
+  agents?: CompanyAgent[];
   onTitleSave: (title: string) => Promise<void>;
   onStatusChange: (status: IssueStatus) => Promise<void>;
   onPriorityChange: (priority: IssuePriority) => Promise<void>;
+  onAssigneeChange: (agentId: string | null) => Promise<void>;
 }
 
 export function IssueHeader({
   issue,
+  agents = [],
   onTitleSave,
   onStatusChange,
   onPriorityChange,
+  onAssigneeChange,
 }: IssueHeaderProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(issue.title);
@@ -144,6 +149,13 @@ export function IssueHeader({
         priority={renderedPriority}
         onChange={(p) => void onPriorityChange(p)}
         showLabel
+      />
+
+      <AssigneePicker
+        agents={agents}
+        selectedAgentId={issue.assigneeAgentId ?? null}
+        onChange={(id) => void onAssigneeChange(id)}
+        variant="inline"
       />
     </div>
   );

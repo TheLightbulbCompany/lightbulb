@@ -376,8 +376,8 @@ class EcsManager:
             )
 
             # Step 3: Create ECS service with desiredCount=0 so the container
-            # does NOT start yet -- the caller writes config files (openclaw.json,
-            # openclaw.json, mcporter.json) to EFS before calling start_user_service().
+            # does NOT start yet -- the caller writes config files (openclaw.json)
+            # to EFS before calling start_user_service().
             create_kwargs = dict(
                 cluster=self._cluster,
                 serviceName=service_name,

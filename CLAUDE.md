@@ -440,7 +440,7 @@ DynamoDB-backed data access. One repo per table.
 |------|---------|
 | `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`, `get_gateway_pool()`. `startup_containers()` / `shutdown_containers()` lifecycle. Usage-recording callback. |
 | `ecs_manager.py` | Per-user ECS Fargate lifecycle. Cloud Map discovery. Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
-| `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider and memory plugin. `write_mcporter_config()` for MCP servers. |
+| `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider and memory plugin. |
 | `workspace.py` | EFS file I/O at `/mnt/efs/users/{user_id}/`. |
 
 ### Gateway (`core/gateway/`)

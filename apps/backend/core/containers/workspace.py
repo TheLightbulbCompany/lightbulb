@@ -30,13 +30,14 @@ logger = logging.getLogger(__name__)
 # when interpolated into an EFS path.
 _USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# System files/dirs to hide from every directory listing, regardless of depth.
-# Anything that could legitimately exist as a user file at a deeper path (e.g.,
-# a `state/` subdir inside a project) does NOT belong here — see
-# routers/workspace_files.py for root-only exclusions.
+# Build/cache/VCS junk to hide from every directory listing, regardless of
+# depth. Trimmed 2026-05-10 — the prior list also hid every dotfile/dotdir
+# (catch-all `name.startswith(".")` rule below) plus `openclaw.json` and
+# `.openclaw`. That suppressed agent-managed state (e.g., an MCP that
+# writes into `.mcp/` inside its workspace) without giving the user any
+# way to discover it. Paying users can deal with seeing their own files;
+# only build artifacts and VCS metadata stay hidden.
 _EXCLUDED_NAMES: set[str] = {
-    "openclaw.json",
-    ".openclaw",
     "node_modules",
     "__pycache__",
     ".git",
@@ -196,8 +197,9 @@ class Workspace:
     def list_directory(self, user_id: str, path: str) -> list[dict]:
         """List the contents of a directory in a user's workspace.
 
-        Hidden entries (starting with '.') and system files/dirs defined in
-        ``_EXCLUDED_NAMES`` are omitted from the results.
+        System files/dirs defined in ``_EXCLUDED_NAMES`` (build artifacts
+        + VCS metadata) are omitted from the results. Dotfiles and
+        dotdirs are NOT hidden — agent-managed state belongs to the user.
 
         Args:
             user_id: The user whose workspace to inspect.
@@ -231,8 +233,11 @@ class Workspace:
         try:
             for entry in resolved.iterdir():
                 name = entry.name
-                # Skip hidden entries and excluded system names.
-                if name.startswith(".") or name in _EXCLUDED_NAMES:
+                # Skip build artifacts + VCS metadata. The prior dotfile
+                # catch-all was removed — agent-managed dotdirs (e.g., an
+                # MCP's `.mcp/` install state) now show up so the user
+                # can see what their agents have written.
+                if name in _EXCLUDED_NAMES:
                     continue
 
                 stat = entry.stat()

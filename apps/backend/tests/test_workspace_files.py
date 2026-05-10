@@ -86,10 +86,10 @@ def populated_workspace(tmp_path: Path) -> tuple[Workspace, Path]:
             readme.txt     (text)
         image.png          (1×1 PNG)
         script.py          (text)
-        openclaw.json      (excluded)
-        .hidden_file       (excluded — hidden)
-        node_modules/      (excluded)
-        __pycache__/       (excluded)
+        openclaw.json      (visible — paying users see their own config)
+        .hidden_file       (visible — agent-managed dotfiles are no longer hidden)
+        node_modules/      (excluded — build artifact)
+        __pycache__/       (excluded — build artifact)
     """
     ws = _make_workspace(tmp_path)
     root = tmp_path / USER_ID
@@ -103,9 +103,10 @@ def populated_workspace(tmp_path: Path) -> tuple[Workspace, Path]:
     (root / "image.png").write_bytes(_minimal_png())
     (root / "script.py").write_text('print("hi")\n', encoding="utf-8")
 
-    # Excluded items
+    # Visible-but-was-previously-hidden items
     (root / "openclaw.json").write_text("{}", encoding="utf-8")
     (root / ".hidden_file").write_text("secret", encoding="utf-8")
+    # Excluded items (build artifacts only)
     (root / "node_modules").mkdir()
     (root / "__pycache__").mkdir()
 
@@ -119,18 +120,22 @@ def populated_workspace(tmp_path: Path) -> tuple[Workspace, Path]:
 
 class TestListDirectory:
     def test_list_agent_root(self, populated_workspace):
-        """list_directory on user root returns expected visible entries."""
+        """list_directory on user root returns expected visible entries.
+
+        After the 2026-05-10 filter trim, dotfiles and ``openclaw.json`` are
+        no longer suppressed — only build artifacts and VCS metadata are.
+        """
         ws, root = populated_workspace
         entries = ws.list_directory(USER_ID, "")
         names = {e["name"] for e in entries}
-        # Visible items
+        # Visible items — including dotfiles + openclaw.json now
         assert "agents" in names
         assert "docs" in names
         assert "image.png" in names
         assert "script.py" in names
-        # Excluded items must not appear
-        assert "openclaw.json" not in names
-        assert ".hidden_file" not in names
+        assert "openclaw.json" in names
+        assert ".hidden_file" in names
+        # Excluded items: build artifacts only
         assert "node_modules" not in names
         assert "__pycache__" not in names
 

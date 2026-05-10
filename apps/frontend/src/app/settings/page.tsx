@@ -9,13 +9,14 @@ import { capture } from "@/lib/analytics";
 import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
+import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { cn } from "@/lib/utils";
 
 // =============================================================================
 // Types & Navigation
 // =============================================================================
 
-type Panel = "profile" | "billing" | "channels";
+type Panel = "profile" | "billing" | "channels" | "webhooks";
 
 const NAV_SECTIONS = [
   {
@@ -24,6 +25,7 @@ const NAV_SECTIONS = [
       { id: "profile" as Panel, name: "Profile", icon: "profile" },
       { id: "billing" as Panel, name: "Billing", icon: "billing" },
       { id: "channels" as Panel, name: "Channels", icon: "channels" },
+      { id: "webhooks" as Panel, name: "Webhooks", icon: "webhooks" },
     ],
   },
 ];
@@ -64,6 +66,14 @@ function NavIcon({ icon }: { icon: string }) {
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+      );
+    case "webhooks":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2" />
+          <path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06" />
+          <path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8" />
         </svg>
       );
     default:
@@ -240,6 +250,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   profile: ProfilePanel,
   billing: BillingPanel,
   channels: ChannelsPanel,
+  webhooks: WebhooksPanel,
 };
 
 // =============================================================================
@@ -265,7 +276,7 @@ function SettingsPageInner() {
   const searchParams = useSearchParams();
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
-    initialPanelParam === "billing" || initialPanelParam === "channels" ? initialPanelParam : "profile";
+    initialPanelParam === "billing" || initialPanelParam === "channels" || initialPanelParam === "webhooks" ? initialPanelParam : "profile";
   const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 

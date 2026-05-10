@@ -53,6 +53,27 @@ async def get_by_status(status: str) -> list[dict]:
     return items
 
 
+async def scan_all() -> list[dict]:
+    """Return every container row. Paginates via DDB LastEvaluatedKey.
+
+    Used by the one-shot hook-token backfill (scripts/backfill-hook-tokens.py).
+    Not for hot paths -- DDB Scan is expensive at scale.
+    """
+    table = _get_table()
+    items: list[dict] = []
+    last_evaluated_key: dict | None = None
+    while True:
+        kwargs: dict = {}
+        if last_evaluated_key is not None:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        response = await run_in_thread(table.scan, **kwargs)
+        items.extend(response.get("Items", []))
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+    return items
+
+
 async def upsert(owner_id: str, fields: dict) -> dict:
     """Create or update a container record. Preserves id and created_at on existing items."""
     table = _get_table()
@@ -89,6 +110,33 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     table = _get_table()
     await run_in_thread(table.put_item, Item=existing)
     return existing
+
+
+async def set_hook_token(owner_id: str, token: str) -> dict | None:
+    """Persist a freshly generated OpenClaw hook token onto the containers row.
+
+    Sets ``hook_token`` and ``hook_token_rotated_at`` together so the rotation
+    timestamp always tracks the current token. Returns the updated row, or
+    None if the row does not exist.
+    """
+    return await update_fields(
+        owner_id,
+        {"hook_token": token, "hook_token_rotated_at": utc_now_iso()},
+    )
+
+
+async def mark_hook_token_provisioned(owner_id: str) -> dict | None:
+    """Stamp ``hook_token_provisioned_at`` after the full backfill sequence
+    (set_hook_token → refresh_task_definition → wait → patch_openclaw_config)
+    has succeeded for this user.
+
+    The backfill orchestrator's idempotency guard tests this field, not
+    ``hook_token``, so a crash mid-sequence leaves the user retryable.
+    """
+    return await update_fields(
+        owner_id,
+        {"hook_token_provisioned_at": utc_now_iso()},
+    )
 
 
 async def update_error(owner_id: str, error: str) -> dict | None:

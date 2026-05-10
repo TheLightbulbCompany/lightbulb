@@ -39,6 +39,8 @@ from routers import (
     control_ui_proxy,
     debug,
     desktop_auth,
+    hooks_credentials,
+    hooks_proxy,
     integrations,
     oauth,
     orgs,
@@ -449,7 +451,38 @@ app.add_middleware(HostDispatcherMiddleware)
 # Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.
 # Without this, FastAPI generates http:// URLs in redirects (e.g. redirect_slashes),
 # which breaks clients behind HTTPS.
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+#
+# trusted_hosts is scoped to the VPC CIDR (10.0.0.0/16) plus loopback. This
+# matters because uvicorn's ProxyHeadersMiddleware ALSO promotes inbound
+# X-Forwarded-For into request.client.host whenever it trusts the immediate
+# peer. The previous "*" form let any caller spoof request.client.host on
+# every route that consumes it (audit logs, rate-limit keys, etc.). Scoping
+# to the VPC CIDR means:
+#   - Production: the immediate TCP peer is always the ALB (private IP in
+#     the 10.0.0.0/16 VPC), so the middleware trusts it and X-Forwarded-Proto
+#     promotion still works — HTTPS redirect URLs continue to render.
+#   - Test/dev: TestClient's peer is the literal string "testclient" (not
+#     in any CIDR), so middleware does NOT promote — request.client.host
+#     stays as the synthetic peer and any spoofed XFF in test inputs is
+#     correctly ignored.
+# Requires uvicorn >= 0.31 for ipaddress.ip_network matching in trusted_hosts
+# (older versions only do exact-string set membership).
+#
+# RESIDUAL CAVEAT (not fixed here, tracked as follow-up): in production, the
+# AWS ALB by default APPENDS the real client IP to any inbound XFF rather
+# than stripping it. The backend then sees `XFF: <attacker-spoofed>, <real>`
+# and uvicorn's middleware reads the LEFTMOST entry, which is the spoofed
+# one. So request.client.host (and audit-log source IPs derived from it) are
+# still attacker-influenced in production. The fix is one of:
+#   - enable XFF stripping at the ALB (AWS-side attribute / WAF rule), or
+#   - swap to a middleware that reads the rightmost XFF (trust N hops from
+#     the right).
+# Out of scope for this commit; the route-level fix uses request.client.host
+# directly so a future ALB-side change immediately closes the gap.
+app.add_middleware(
+    ProxyHeadersMiddleware,
+    trusted_hosts=["10.0.0.0/16", "127.0.0.1", "::1"],
+)
 
 # CORS Middleware
 app.add_middleware(
@@ -550,6 +583,17 @@ app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 
 # ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)
 app.include_router(oauth.router, prefix="/api/v1")
+
+# Public webhook ingress proxy. Bearer-token auth (NOT Clerk) — external
+# senders (Zapier/Stripe/GitHub) hit /api/v1/hooks/u/{owner_id}/{hook_path}
+# and we forward to the per-user OpenClaw container. See routers/hooks_proxy.py
+# for the auth model and forwarded-header rewriting rationale.
+app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
+
+# Clerk-authed read of the calling user's hook credentials. Backs the
+# Settings → Webhooks panel; the user's own browser fetches their own
+# webhook URL + token. See routers/hooks_credentials.py.
+app.include_router(hooks_credentials.router, prefix="/api/v1/hooks", tags=["hooks"])
 
 # Admin dashboard (#351) — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

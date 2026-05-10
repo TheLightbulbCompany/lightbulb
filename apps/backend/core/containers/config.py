@@ -495,6 +495,7 @@ def build_openclaw_config_dict(
     provider_choice: str,
     byo_provider: str | None = None,
     paperclip_agents: list[dict] | None = None,
+    hook_token: str | None = None,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -506,6 +507,19 @@ def build_openclaw_config_dict(
     channels, browser, nodeHost, update) is the same across signup paths
     — these are sections OpenClaw refuses to start without (e.g.
     ``gateway.mode``).
+
+    ``hook_token`` is threaded through the signature for symmetry with
+    ``gateway_token`` and to give a future rotate-flow somewhere to hand
+    the new token without ECS re-registers. It is intentionally NOT
+    interpolated into the JSON: the ``hooks.token`` field renders as the
+    literal placeholder ``${OPENCLAW_HOOK_TOKEN}`` which OpenClaw expands
+    at boot from the per-user ECS task-definition env var (set by T2).
+    Plaintext tokens MUST NEVER land in this file — it sits on EFS.
+
+    Note: ``hook_token`` is intentionally unused inside this function —
+    interpolating it would defeat the env-var indirection and write
+    plaintext to EFS. DO NOT "fix" this by replacing the placeholder
+    string with the parameter value.
     """
     # Reprovision flows pull gateway_token from the existing container row;
     # legacy rows missing the field would silently write
@@ -658,6 +672,33 @@ def build_openclaw_config_dict(
                     "session-memory": {"enabled": True},
                 },
             },
+            # Hook ingress (OpenClaw v2026.5.7 gateway/hooks.ts). Lets
+            # external systems POST to ``/hooks`` with the shared token
+            # to drive agents — Stripe/GitHub webhooks, scheduled
+            # routines, etc. The plaintext ``hook_token`` is NEVER written
+            # here; ``${OPENCLAW_HOOK_TOKEN}`` is a literal placeholder
+            # OpenClaw expands at boot from the per-user ECS task-definition
+            # env var (injected by T2 in ecs_manager._build_per_user_environment).
+            "enabled": True,
+            "token": "${OPENCLAW_HOOK_TOKEN}",
+            "path": "/hooks",
+            # Upstream's pre-auth body cap is 64 KB — far too small for
+            # real-world webhook traffic. Stripe routinely emits ~120 KB
+            # invoice payloads; GitHub PR webhooks can exceed 500 KB on
+            # large diffs. 1 MB matches the documented upper bound for
+            # both providers.
+            "maxBodyBytes": 1_048_576,
+            # OpenClaw v2026.5.7 (gateway/hooks.ts:75-95) requires
+            # "hook:" in this list when ``defaultSessionKey`` is unset
+            # (we don't set it above). Omitting "hook:" makes the gateway
+            # throw at boot — every newly-provisioned container would
+            # refuse to start. DO NOT REMOVE. "isol8-" is for our own
+            # session-key conventions used by internal callers.
+            "allowedSessionKeyPrefixes": ["isol8-", "hook:"],
+            # Lock the request to server-derived session keys only;
+            # untrusted callers don't get to claim arbitrary session
+            # ownership via a header.
+            "allowRequestSessionKey": False,
         },
         "plugins": {
             "slots": {},
@@ -751,6 +792,7 @@ async def write_openclaw_config(
     user_id: str,
     byo_provider: str | None = None,
     paperclip_agents: list[dict] | None = None,
+    hook_token: str | None = None,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -774,6 +816,14 @@ async def write_openclaw_config(
         paperclip_agents: Optional list of Paperclip agent dicts to use
             for ``agents.list``. Omitting it preserves the legacy ``"main"``
             entry for backward compatibility with callers we haven't updated.
+        hook_token: Optional per-user OpenClaw webhook auth token. Threaded
+            through for signature symmetry / future rotate plumbing — NOT
+            interpolated into the JSON. The rendered ``hooks.token`` is the
+            literal ``${OPENCLAW_HOOK_TOKEN}`` placeholder which OpenClaw
+            expands at boot from the per-user ECS task-definition env var.
+            Note: intentionally unused inside this function — interpolating
+            it would defeat the env-var indirection and write plaintext
+            to EFS.
 
     Raises:
         ValueError: when ``provider_choice`` is unknown or
@@ -785,6 +835,7 @@ async def write_openclaw_config(
         provider_choice=provider_choice,
         byo_provider=byo_provider,
         paperclip_agents=paperclip_agents,
+        hook_token=hook_token,
     )
 
     def _write() -> None:

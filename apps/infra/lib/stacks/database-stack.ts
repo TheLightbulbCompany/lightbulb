@@ -47,6 +47,11 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplacePayoutAccountsTable: dynamodb.Table;
   public readonly marketplaceTakedownsTable: dynamodb.Table;
 
+  // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
+  // Per-owner event history for /hooks/{owner_id}/{path} requests proxied
+  // into the per-user OpenClaw container. See T5 (repo) + T6 (proxy router).
+  public readonly hookEventsTable: dynamodb.Table;
+
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
 
@@ -367,6 +372,24 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: props.kmsKey,
+    });
+
+    // OpenClaw webhook ingress audit table — every /hooks/{owner_id}/{path}
+    // delivery (signature verified, body proxied into the per-user container)
+    // appends a row keyed by owner + ULID event_id. TTL `expires_at` (set by
+    // the hook router to ~30d) drops rows automatically. PITR + customer-
+    // managed KMS to match the rest of this stack. T4 of
+    // openclaw-hook-token-provisioning; consumed by T5 repo + T6 proxy.
+    this.hookEventsTable = new dynamodb.Table(this, "HookEventsTable", {
+      tableName: `isol8-${env}-hook-events`,
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "event_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      timeToLiveAttribute: "expires_at",
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {

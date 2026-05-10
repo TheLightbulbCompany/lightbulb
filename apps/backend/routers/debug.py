@@ -137,10 +137,15 @@ async def redeploy_container(
         # path now just rewrites the file via write_user_configs and bumps the
         # service. Plan 3 will wire the user's saved provider_choice in.
         ecs_manager = get_ecs_manager()
+        # Thread hook_token through so the openclaw.json placeholder lines
+        # up with the env-var T2 injects on the per-user task def. Render
+        # is the same either way (literal placeholder), but threading
+        # keeps the rotate-flow plumbing uniform across provision paths.
         await ecs_manager.write_user_configs(
             owner_id,
             container["gateway_token"],
             provider_choice="bedrock_claude",
+            hook_token=container.get("hook_token"),
         )
 
         await ecs_manager.start_user_service(owner_id)

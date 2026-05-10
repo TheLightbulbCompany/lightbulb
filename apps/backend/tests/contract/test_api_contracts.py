@@ -107,6 +107,16 @@ schema = (
     .exclude(
         path_regex="^/api/v1/teams/",
     )
+    # Hooks endpoints (proxy + credentials) both read from the DDB
+    # ``containers`` table on every request. Without a real DDB the
+    # boto3 GetItem raises ResourceNotFoundException which surfaces as
+    # 5xx. Coverage lives in tests/unit/routers/test_hooks_proxy.py +
+    # test_hooks_credentials.py + tests/integration/test_hooks_proxy_e2e.py
+    # which mock container_repo + ecs_manager end-to-end. Excluded for
+    # consistency with /billing/, /container/, and /teams/.
+    .exclude(
+        path_regex="^/api/v1/hooks/",
+    )
     .exclude(
         path_regex="^/health$",
     )

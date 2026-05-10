@@ -60,6 +60,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     marketplacePurchasesTable: dynamodb.Table;
     marketplacePayoutAccountsTable: dynamodb.Table;
     marketplaceTakedownsTable: dynamodb.Table;
+    hookEventsTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -314,6 +315,12 @@ export class ServiceStack extends cdk.Stack {
     props.database.marketplacePurchasesTable.grantReadWriteData(this.taskRole);
     props.database.marketplacePayoutAccountsTable.grantReadWriteData(this.taskRole);
     props.database.marketplaceTakedownsTable.grantReadWriteData(this.taskRole);
+
+    // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
+    // T5 repo writes one row per delivery; T6 proxy + admin views read.
+    // KMS encrypt/decrypt is already covered by the broader KmsAccess
+    // statement above (kmsKeyArn is the same CMK the table uses).
+    props.database.hookEventsTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -685,6 +692,17 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
+        // Public-facing base URL of THIS API. Used by /hooks/credentials
+        // (and any future endpoint that surfaces an absolute URL back to
+        // the browser) to build the webhook URL the Settings panel
+        // displays to the user. Per-env API hostname, matches the DNS
+        // records provisioned by dns-stack.ts.
+        PUBLIC_API_BASE:
+          env === "local"
+            ? "http://localhost:8000"
+            : env === "prod"
+              ? "https://api.isol8.co"
+              : `https://api-${env}.isol8.co`,
         // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
         // (apps/backend/main.py) builds an empty dispatch host set, so requests
         // to `company-{env}.isol8.co` fall through to the default Isol8 API

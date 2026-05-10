@@ -19,6 +19,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from core.config import settings
+from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
 from core.containers.config import (
     build_device_paired_json,
@@ -39,6 +40,25 @@ GATEWAY_PORT = 18789
 # so the resize/register paths pull from a single place.
 PER_USER_CPU = "512"
 PER_USER_MEMORY_MIB = "2048"
+
+
+def _build_per_user_environment(
+    *,
+    hook_token: str,
+    existing: list[dict],
+) -> list[dict]:
+    """Return the per-user ``environment`` list with OPENCLAW_HOOK_TOKEN injected.
+
+    ``existing`` is the caller-supplied list of per-user env entries (e.g. an
+    earlier flow may layer in CODEX_HOME or other markers). We preserve every
+    entry verbatim except we replace any pre-existing ``OPENCLAW_HOOK_TOKEN``
+    with the freshly generated value (matters for the backfill: the old
+    task-def carried no token, but a half-complete prior backfill could have
+    left a stale one).
+    """
+    out: list[dict] = [e for e in existing if e.get("name") != "OPENCLAW_HOOK_TOKEN"]
+    out.append({"name": "OPENCLAW_HOOK_TOKEN", "value": hook_token})
+    return out
 
 
 class EcsManagerError(Exception):
@@ -158,6 +178,7 @@ class EcsManager:
         new_memory: str | None = None,
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
+        hook_token: str | None = None,
     ) -> dict:
         """Build register_task_definition kwargs by cloning the CDK-managed base.
 
@@ -171,6 +192,14 @@ class EcsManager:
           - access_point_id  (per-user EFS access point, replaces the volume's)
           - new_image        (image_update flow only — None preserves base image)
           - new_cpu/memory   (tier-resize flow only — None preserves base values)
+          - hook_token       (per-user OpenClaw webhook auth token; injected
+                              as ``OPENCLAW_HOOK_TOKEN`` env var on the
+                              primary container so the gateway can verify
+                              inbound webhooks). Optional today — the
+                              backfill-only callers (image-update, resize)
+                              that re-register without a hook_token leave
+                              the env var off and rely on a separate backfill
+                              pass to land it.
         """
         desc_resp = self._ecs.describe_task_definition(
             taskDefinition=self._base_task_def_family,
@@ -205,11 +234,21 @@ class EcsManager:
                 # provider keys.
                 base_secrets = list(cd_copy.get("secrets") or [])
                 cd_copy["secrets"] = base_secrets + list(secrets_for_task)
-            if idx == 0 and environment_for_task:
-                # Same merge story for environment — keep CDK base entries
-                # (CHOKIDAR_USEPOLLING, CLAWHUB_WORKDIR) intact.
+            if idx == 0:
+                # Layer per-user env entries on top of the CDK base (which carries
+                # CHOKIDAR_USEPOLLING, CLAWHUB_WORKDIR, etc.). When a hook_token
+                # is provided, inject it as OPENCLAW_HOOK_TOKEN — the helper
+                # also de-dupes any stale entry the caller supplied (matters
+                # for the backfill story).
                 base_env = list(cd_copy.get("environment") or [])
-                cd_copy["environment"] = base_env + list(environment_for_task)
+                per_user_env = list(environment_for_task or [])
+                if hook_token:
+                    per_user_env = _build_per_user_environment(
+                        hook_token=hook_token,
+                        existing=per_user_env,
+                    )
+                if per_user_env:
+                    cd_copy["environment"] = base_env + per_user_env
             container_defs.append(cd_copy)
 
         reg_kwargs = dict(
@@ -243,6 +282,7 @@ class EcsManager:
         access_point_id: str,
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
+        hook_token: str | None = None,
     ) -> str:
         """Clone the CDK base for a new per-user container.
 
@@ -255,6 +295,9 @@ class EcsManager:
                 (``{"name": "...", "value": "..."}``). Used for the
                 ``chatgpt_oauth`` path which injects ``CODEX_HOME`` so
                 OpenClaw reads its auth.json from EFS.
+            hook_token: Optional per-user OpenClaw webhook auth token. When
+                provided, injected as ``OPENCLAW_HOOK_TOKEN`` env var on the
+                primary container.
 
         Returns:
             The ARN of the newly registered task definition revision.
@@ -267,6 +310,7 @@ class EcsManager:
                 access_point_id,
                 secrets_for_task=secrets_for_task,
                 environment_for_task=environment_for_task,
+                hook_token=hook_token,
             )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
@@ -288,6 +332,78 @@ class EcsManager:
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
+    async def refresh_task_definition(self, owner_id: str) -> str | None:
+        """Re-register a user's ECS task definition with the current env list,
+        then roll the running task onto the new revision.
+
+        Used by the hook-token backfill: existing per-user task-defs were
+        registered before OPENCLAW_HOOK_TOKEN existed; just patching
+        openclaw.json on EFS leaves the env var undefined inside the running
+        container, so the gateway's ${VAR} substitution resolves to empty.
+        This helper rebuilds the env list (now including the freshly-set
+        hook_token from the containers row) and updates the service to
+        deploy a new task-def revision.
+
+        Unlike ``_register_task_definition`` (which clones from the CDK base
+        family via ``_build_register_kwargs_from_base``), the backfill path
+        must preserve every per-user mutation already on the live revision
+        (BYOK provider secrets, chatgpt_oauth ``CODEX_HOME``, etc.). So we
+        describe the user's CURRENT task-def, swap its env list, and
+        re-register that — the base-cloning seam doesn't fit here.
+
+        The EFS access point and DDB row are untouched — losing agent
+        state would be a backfill regression.
+
+        Returns the new task definition ARN on success, or None if the user
+        has no provisioned container or the row is missing task_definition_arn.
+        Callers need the ARN so they can wait specifically for the PRIMARY
+        deployment to roll onto this revision (waiting for any RUNNING task
+        races against the OLD task during ``forceNewDeployment``).
+        """
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container or not container.get("task_definition_arn"):
+            return None
+
+        # Read the current task-def to pull family/volumes/secrets/networkMode/etc.
+        current = self._ecs.describe_task_definition(taskDefinition=container["task_definition_arn"])
+        td = current["taskDefinition"]
+
+        # Rebuild the openclaw container-def with a fresh environment list
+        # that includes the freshly-set OPENCLAW_HOOK_TOKEN.
+        existing_env = next(c for c in td["containerDefinitions"] if c["name"] == "openclaw")["environment"]
+        new_env = _build_per_user_environment(
+            hook_token=container.get("hook_token") or "",
+            existing=existing_env,
+        )
+        for cd in td["containerDefinitions"]:
+            if cd["name"] == "openclaw":
+                cd["environment"] = new_env
+
+        register_kwargs = {
+            "family": td["family"],
+            "containerDefinitions": td["containerDefinitions"],
+            "volumes": td.get("volumes", []),
+            "networkMode": td["networkMode"],
+            "requiresCompatibilities": td.get("requiresCompatibilities", []),
+            "cpu": td.get("cpu"),
+            "memory": td.get("memory"),
+            "executionRoleArn": td.get("executionRoleArn"),
+            "taskRoleArn": td.get("taskRoleArn"),
+        }
+        register_kwargs = {k: v for k, v in register_kwargs.items() if v is not None}
+        new_td = self._ecs.register_task_definition(**register_kwargs)
+        new_arn = new_td["taskDefinition"]["taskDefinitionArn"]
+
+        self._ecs.update_service(
+            cluster=settings.ECS_CLUSTER_ARN,
+            service=container["service_name"],
+            taskDefinition=new_arn,
+            forceNewDeployment=True,
+        )
+        # Persist the new ARN so subsequent operations see it.
+        await container_repo.update_fields(owner_id, {"task_definition_arn": new_arn})
+        return new_arn
+
     # ------------------------------------------------------------------
     # Safe DB helpers
     # ------------------------------------------------------------------
@@ -307,6 +423,7 @@ class EcsManager:
         owner_type: str = "personal",
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
+        hook_token: str | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -328,6 +445,11 @@ class EcsManager:
             environment_for_task: Optional plain ``environment:`` entries.
                 Used by the ``chatgpt_oauth`` path to set ``CODEX_HOME``
                 so OpenClaw reads its auth.json from the EFS-staged dir.
+            hook_token: Optional per-user OpenClaw webhook auth token. When
+                provided, persisted onto the containers row by the upsert
+                below (atomically with the rest of the row, so brand-new
+                rows land with the token already set) and injected as
+                ``OPENCLAW_HOOK_TOKEN`` on the primary container.
 
         Returns:
             The ECS service name.
@@ -339,17 +461,31 @@ class EcsManager:
         access_point_id = None
         task_def_arn = None
 
-        # Step 0: Upsert container record EARLY so frontend can start polling
-        await container_repo.upsert(
-            user_id,
-            {
-                "service_name": service_name,
-                "gateway_token": gateway_token,
-                "status": "provisioning",
-                "substatus": None,
-                "owner_type": owner_type,
-            },
-        )
+        # Step 0: Upsert container record EARLY so frontend can start polling.
+        # Persist hook_token here so brand-new rows land with it set in the
+        # same write that creates the row — folding it into a separate
+        # set_hook_token call would no-op for first-time provisioning (the
+        # row doesn't exist until this upsert).
+        upsert_fields: dict = {
+            "service_name": service_name,
+            "gateway_token": gateway_token,
+            "status": "provisioning",
+            "substatus": None,
+            "owner_type": owner_type,
+        }
+        if hook_token:
+            upsert_fields["hook_token"] = hook_token
+            upsert_fields["hook_token_rotated_at"] = utc_now_iso()
+            # Stamp the backfill-style "this user is in the desired end-state"
+            # marker so a re-run of the backfill script's idempotency guard
+            # (which reads hook_token_provisioned_at) doesn't rotate native
+            # users' tokens and silently break their external integrations.
+            # Native provisioning achieves the desired state atomically here
+            # (token in DDB + env on task def + openclaw.json rendered with
+            # the hooks block); backfill achieves it after refresh + config
+            # patch. Both should stamp.
+            upsert_fields["hook_token_provisioned_at"] = utc_now_iso()
+        await container_repo.upsert(user_id, upsert_fields)
 
         try:
             # Step 1: Create per-user EFS access point
@@ -361,13 +497,15 @@ class EcsManager:
             )
 
             # Step 2: Register per-user task definition with that access point.
-            # Inject any per-user secrets (e.g. byo_key OPENAI/ANTHROPIC ARN)
-            # and per-user env vars (chatgpt_oauth CODEX_HOME) before the
+            # Inject any per-user secrets (e.g. byo_key OPENAI/ANTHROPIC ARN),
+            # per-user env vars, and the per-user OPENCLAW_HOOK_TOKEN (so the
+            # OpenClaw gateway can verify inbound webhook calls) before the
             # service is created so the first task pulls them.
             task_def_arn = self._register_task_definition(
                 access_point_id,
                 secrets_for_task=secrets_for_task,
                 environment_for_task=environment_for_task,
+                hook_token=hook_token,
             )
             await self._update_container(
                 user_id,
@@ -573,12 +711,36 @@ class EcsManager:
             # Reading from a prior per-user revision propagates any drift it
             # had (e.g., missing CLAWHUB_WORKDIR — incident 2026-04-17). Per-
             # user state (EFS access point, image, cpu/memory) is layered here.
+            # The hook_token is per-user state stored on the containers row;
+            # we must thread it through so the new task def keeps OPENCLAW_HOOK_TOKEN
+            # set (otherwise resize would silently strip the env var).
+            #
+            # Self-heal legacy rows that pre-date hook-token provisioning:
+            # build_openclaw_config_dict renders the hooks block unconditionally
+            # with the "${OPENCLAW_HOOK_TOKEN}" placeholder, but
+            # _build_register_kwargs_from_base only injects the env var when
+            # hook_token is truthy. Letting None pass through would leave the
+            # new revision without OPENCLAW_HOOK_TOKEN, so the container would
+            # boot with the unsubstituted placeholder string and 401 every
+            # webhook. Mint+persist here so the row, the env var, and the
+            # rendered config stay consistent.
+            hook_token = container.get("hook_token") or secrets.token_urlsafe(32)
+            if not container.get("hook_token"):
+                await container_repo.update_fields(
+                    user_id,
+                    {
+                        "hook_token": hook_token,
+                        "hook_token_rotated_at": utc_now_iso(),
+                        "hook_token_provisioned_at": utc_now_iso(),
+                    },
+                )
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
                 new_image=new_image,
                 new_cpu=new_cpu,
                 new_memory=new_memory,
+                hook_token=hook_token,
             )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
@@ -1120,12 +1282,40 @@ class EcsManager:
                         },
                     )
 
+                # Self-heal hook_token for legacy rows that pre-date hook-token
+                # provisioning. Without this, a legacy user hitting the restart
+                # path passes None for hook_token through write_user_configs and
+                # _register_task_definition. Because build_openclaw_config_dict
+                # renders the hooks block UNCONDITIONALLY with the literal
+                # "${OPENCLAW_HOOK_TOKEN}" placeholder while
+                # _build_register_kwargs_from_base gates env injection on
+                # `if hook_token:`, the new task-def would lack
+                # OPENCLAW_HOOK_TOKEN and the container would boot with the
+                # unsubstituted placeholder string as its hooks.token — every
+                # webhook 401s indefinitely. Mint+persist here so the row, the
+                # env var, and the rendered config stay consistent.
+                existing_hook_token = (existing.get("hook_token") if existing else None) or secrets.token_urlsafe(32)
+                if existing and not existing.get("hook_token"):
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "hook_token": existing_hook_token,
+                            "hook_token_rotated_at": utc_now_iso(),
+                            "hook_token_provisioned_at": utc_now_iso(),
+                        },
+                    )
+
                 try:
+                    # Reuse the existing (or freshly-minted) hook_token so the
+                    # rendered openclaw.json placeholder resolves at boot
+                    # against the env var we layer back onto the new task-def
+                    # below.
                     await self.write_user_configs(
                         user_id,
                         gateway_token,
                         provider_choice=provider_choice,
                         byo_provider=byo_provider,
+                        hook_token=existing_hook_token,
                     )
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
@@ -1137,6 +1327,9 @@ class EcsManager:
                 # that flows in via _build_byo_secrets_for_user above).
                 # We always re-register so the path is uniform across
                 # providers; oauth/bedrock_claude have empty secrets_for_task.
+                # Use the same existing/self-healed hook_token computed above
+                # so the env var on the new revision matches what
+                # write_user_configs just rendered.
                 access_point_id = existing.get("access_point_id") if existing else None
                 if access_point_id:
                     try:
@@ -1145,6 +1338,7 @@ class EcsManager:
                             access_point_id,
                             secrets_for_task=secrets_for_task,
                             environment_for_task=environment_for_task,
+                            hook_token=existing_hook_token,
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,
@@ -1291,19 +1485,30 @@ class EcsManager:
                 },
             )
 
-        # Step 1: Generate gateway token
+        # Step 1: Generate gateway token + hook token. The gateway token
+        # authorizes our backend's RPC calls into the OpenClaw HTTP API; the
+        # hook token authorizes inbound webhooks the container needs to
+        # verify (channel ingress, etc.). They are independent secrets.
+        # hook_token is persisted atomically with the rest of the row by
+        # create_user_service's upsert below — passing it as a separate
+        # set_hook_token call before the upsert would no-op for first-time
+        # provisioning since the row doesn't exist yet.
         gateway_token = secrets.token_urlsafe(32)
+        hook_token = secrets.token_urlsafe(32)
 
         # Step 2: Create ECS service (desiredCount=0). Per-user secrets (only
         # set for byo_key) and per-user env (only set for chatgpt_oauth, to
         # point CODEX_HOME at the EFS-staged auth.json dir) are layered onto
         # the per-user task def so the first task ECS launches has them.
+        # The hook_token is injected as OPENCLAW_HOOK_TOKEN on the primary
+        # container by create_user_service -> _register_task_definition.
         service_name = await self.create_user_service(
             user_id,
             gateway_token,
             owner_type=owner_type,
             secrets_for_task=secrets_for_task,
             environment_for_task=environment_for_task,
+            hook_token=hook_token,
         )
 
         # Step 3: Write configs to EFS
@@ -1313,6 +1518,7 @@ class EcsManager:
                 gateway_token,
                 provider_choice=provider_choice,
                 byo_provider=byo_provider,
+                hook_token=hook_token,
             )
         except Exception as e:
             put_metric("container.provision", dimensions={"status": "error"})
@@ -1501,6 +1707,7 @@ class EcsManager:
         *,
         provider_choice: str,
         byo_provider: str | None = None,
+        hook_token: str | None = None,
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
@@ -1539,6 +1746,13 @@ class EcsManager:
             byo_provider: ``"openai"`` or ``"anthropic"``. Required when
                 ``provider_choice == "byo_key"`` so the right model block is
                 emitted; ignored otherwise.
+            hook_token: Optional per-user OpenClaw webhook auth token. Not
+                interpolated into the rendered openclaw.json (it carries the
+                literal ``${OPENCLAW_HOOK_TOKEN}`` placeholder which OpenClaw
+                expands at boot from the per-user ECS task-def env var). The
+                arg is threaded through for signature symmetry with the env
+                injection in :meth:`_register_task_definition` and to leave
+                a hook for the rotate flow to land here without rewiring.
         """
         # Treat the inbound parameter as owner_id internally. Naming
         # mismatch with the API surface is intentional — preserves
@@ -1586,6 +1800,7 @@ class EcsManager:
             user_id=owner_id,
             byo_provider=byo_provider,
             paperclip_agents=paperclip_agents,
+            hook_token=hook_token,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

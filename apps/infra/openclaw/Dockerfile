@@ -147,27 +147,30 @@ RUN npm i -g --ignore-scripts \
       @anthropic-ai/claude-code @google/gemini-cli \
       @xdevplatform/xurl
 
-# Layers 8c (per-plugin npm prebake) and 8d (Playwright Chromium pre-download)
-# were removed during the v2026.5.7 bump. At v2026.4.23 they were necessary
-# workarounds: the upstream "fat" image didn't actually bundle plugin runtime
-# deps into <plugin>/node_modules/, and the browser plugin paid ~6min on cold
-# start downloading Chromium. Verified via upstream Dockerfile that v2026.5.7's
-# build now does both natively:
-#   - line 66:  pnpm install --frozen-lockfile  (resolves workspace: refs;
-#                 deps land in /app/node_modules with proper hoisting)
-#   - line 169: COPY --from=runtime-assets /app/node_modules ./node_modules
-#                 (hoisted deps are present in the runtime image)
-#   - line 217: node /app/node_modules/playwright-core/cli.js install
-#                   --with-deps chromium   (Chromium pre-installed)
+# ---- Layer 9: Playwright Chromium + Chromium system libs ----
+# Upstream openclaw:2026.5.7 ships the playwright npm package (at
+# /app/node_modules/playwright-core, v1.59.1) but NOT the Chromium binary
+# and NOT the GUI libs Chromium needs to launch. The chromium install is
+# gated behind upstream Dockerfile's `OPENCLAW_INSTALL_BROWSER` build arg,
+# which is empty by default; the published image is built without it.
 #
-# Our previous prebake also broke at 2026.5.7 because plugins now reference
-# each other via workspace:* — npm install (which we used) doesn't speak
-# workspace: protocol; only pnpm does. Trying to maintain a pnpm-aware
-# prebake on top of upstream's already-correct pnpm install is busywork.
+# Without this layer, every browser-using workload — OpenClaw's `browser`
+# tool AND any third-party MCP that imports playwright (Resy, etc.) —
+# fails at runtime with one of: missing Chromium executable, then missing
+# libatk-1.0.so.0 / libnss3 / libxkbcommon / libgbm / libasound. Fixing
+# that at runtime requires elevated exec, which we don't grant to webchat
+# senders, so the only sane place to install is image build time.
 #
-# If a specific plugin fails to start because its deps aren't bundled, add a
-# targeted RUN for just that plugin rather than reintroducing the broad
-# prebake. Document with a link to the failing run for next-time triage.
+# Installing playwright-core's pinned Chromium revision into the default
+# Playwright cache path ($HOME/.cache/ms-playwright for the node user)
+# satisfies OpenClaw's browser plugin directly. MCPs that bring a
+# different playwright version still need to download their own Chromium
+# revision on first launch, but the system libs installed here cover them
+# too — no apt-get, no elevation, just a small per-version binary fetch.
+RUN mkdir -p /home/node/.cache/ms-playwright && \
+    PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
+      node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
+    chown -R node:node /home/node/.cache/ms-playwright
 
 # ---- Restore runtime context ----
 USER node

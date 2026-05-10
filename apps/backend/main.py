@@ -39,6 +39,7 @@ from routers import (
     control_ui_proxy,
     debug,
     desktop_auth,
+    hooks_credentials,
     hooks_proxy,
     integrations,
     oauth,
@@ -588,6 +589,11 @@ app.include_router(oauth.router, prefix="/api/v1")
 # and we forward to the per-user OpenClaw container. See routers/hooks_proxy.py
 # for the auth model and forwarded-header rewriting rationale.
 app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
+
+# Clerk-authed read of the calling user's hook credentials. Backs the
+# Settings → Webhooks panel; the user's own browser fetches their own
+# webhook URL + token. See routers/hooks_credentials.py.
+app.include_router(hooks_credentials.router, prefix="/api/v1/hooks", tags=["hooks"])
 
 # Admin dashboard (#351) — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

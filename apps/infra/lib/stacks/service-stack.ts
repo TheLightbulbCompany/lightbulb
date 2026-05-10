@@ -692,6 +692,17 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
+        // Public-facing base URL of THIS API. Used by /hooks/credentials
+        // (and any future endpoint that surfaces an absolute URL back to
+        // the browser) to build the webhook URL the Settings panel
+        // displays to the user. Per-env API hostname, matches the DNS
+        // records provisioned by dns-stack.ts.
+        PUBLIC_API_BASE:
+          env === "local"
+            ? "http://localhost:8000"
+            : env === "prod"
+              ? "https://api.isol8.co"
+              : `https://api-${env}.isol8.co`,
         // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
         // (apps/backend/main.py) builds an empty dispatch host set, so requests
         // to `company-{env}.isol8.co` fall through to the default Isol8 API

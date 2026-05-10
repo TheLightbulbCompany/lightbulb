@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     # CORS Configuration (comma-separated origins; deployed values set by Terraform)
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
+    # Public-facing base URL for this API. Used to build absolute URLs in
+    # responses (e.g., the webhook URL surfaced via /hooks/credentials).
+    # Per env: https://api-dev.isol8.co, https://api-staging.isol8.co,
+    # https://api.isol8.co. Defaults to localhost for dev/test. Wired via
+    # CDK service-stack environment block per environment.
+    PUBLIC_API_BASE: str = os.getenv("PUBLIC_API_BASE", "http://localhost:8000")
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS_ORIGINS as comma-separated list."""

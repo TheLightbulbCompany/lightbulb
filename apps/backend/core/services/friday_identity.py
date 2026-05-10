@@ -8,6 +8,16 @@ EFS workspace dir BEFORE the container boots. OpenClaw's lazy
 fills only the gaps we don't seed (``AGENTS.md``, ``MEMORY.md``,
 ``TOOLS.md``, ``HEARTBEAT.md``).
 
+We also write ``.openclaw/workspace-state.json`` with
+``setupCompletedAt`` set. OpenClaw upstream (``src/agents/workspace.ts``
+``reconcileWorkspaceBootstrapCompletionState``) deletes BOOTSTRAP.md
+on boot when it sees customized IDENTITY/SOUL/USER files but no state
+marker — it interprets "already-customized profile" as evidence that
+the workspace bootstrap wizard has already completed and the file is
+stale. Pre-marking setup complete makes that reconcile early-return
+before reaching ``fs.rm(bootstrapPath)``, so BOOTSTRAP.md survives to
+be auto-loaded into Friday's first-chat context.
+
 Best-effort throughout: failures log + emit metrics, never raise. The
 caller (``ecs_manager.write_user_configs``) wraps this in try/except
 so a Clerk outage or EFS hiccup never blocks container provision.
@@ -18,7 +28,9 @@ See the design spec at
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 
 from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
@@ -406,6 +418,30 @@ async def pre_stage_friday_identity(
     friday_uuid = friday["id"]
     profile = await _resolve_owner_profile(owner_id)
     files = _render_templates(profile)
+
+    # Pre-mark OpenClaw setup complete so its boot-time reconcile doesn't
+    # rm BOOTSTRAP.md when it sees our customized IDENTITY/SOUL/USER. Written
+    # FIRST (before the template loop) so a partial template-write failure
+    # still leaves OpenClaw in a "treat as completed" state — it'll fill any
+    # missing customized files with its own neutral templates rather than
+    # running the bootstrap wizard. Idempotent via write_file_if_missing.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    state_rel_path = f"workspaces/{friday_uuid}/.openclaw/workspace-state.json"
+    workspace_state = {
+        "version": 1,
+        "bootstrapSeededAt": now_iso,
+        "setupCompletedAt": now_iso,
+    }
+    try:
+        workspace.write_file_if_missing(owner_id, state_rel_path, json.dumps(workspace_state))
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("friday_identity.seed.state_error")
+        logger.warning(
+            "friday_identity: workspace-state.json write failed for owner=%s: %s. "
+            "BOOTSTRAP.md may be deleted by OpenClaw on boot.",
+            owner_id,
+            exc,
+        )
 
     written: list[str] = []
     skipped: list[str] = []

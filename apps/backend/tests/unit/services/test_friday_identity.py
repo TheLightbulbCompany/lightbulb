@@ -70,8 +70,10 @@ async def test_personal_owner_writes_four_files(monkeypatch):
         workspace=workspace,
     )
 
-    # Four files written under the right path.
-    assert workspace.write_file_if_missing.call_count == 4
+    # Five files written under the right path: 4 markdown templates + the
+    # .openclaw/workspace-state.json marker that prevents OpenClaw's boot-time
+    # reconcile from deleting BOOTSTRAP.md.
+    assert workspace.write_file_if_missing.call_count == 5
     paths = [call.args[1] for call in workspace.write_file_if_missing.call_args_list]
     assert all(p.startswith("workspaces/f47ac10b-58cc-4372-a567-0e02b2c3d479/") for p in paths)
     assert sorted(p.rsplit("/", 1)[-1] for p in paths) == [
@@ -79,6 +81,7 @@ async def test_personal_owner_writes_four_files(monkeypatch):
         "IDENTITY.md",
         "SOUL.md",
         "USER.md",
+        "workspace-state.json",
     ]
 
     # Content interpolation works.
@@ -155,8 +158,91 @@ async def test_skipped_existing_when_files_already_present(monkeypatch):
         workspace=workspace,
     )
 
-    # Still attempted all four writes (write_file_if_missing handles the skip).
-    assert workspace.write_file_if_missing.call_count == 4
+    # Still attempted all five writes (4 markdown + 1 state file);
+    # write_file_if_missing handles the skip.
+    assert workspace.write_file_if_missing.call_count == 5
+
+
+@pytest.mark.asyncio
+async def test_state_file_written_first_with_setup_completed(monkeypatch):
+    """workspace-state.json:
+    - is the FIRST write (so a partial template-write failure still leaves
+      OpenClaw in setup-completed state and BOOTSTRAP.md isn't deleted)
+    - lives under .openclaw/ at the right path
+    - contains setupCompletedAt (the field upstream's reconcile checks)
+    """
+    import json as _json
+
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock(return_value=True)
+
+    async def fake_resolve(owner_id):
+        return {
+            "kind": "personal",
+            "owner_display": "Sam",
+            "first_name_or_fallback": "Sam",
+            "full_name": "Sam Rivers",
+            "email": "sam@example.com",
+            "provider_label": "Bedrock (Claude, Isol8-managed credits)",
+        }
+
+    monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)
+
+    await friday_identity.pre_stage_friday_identity(
+        owner_id="user_abc",
+        paperclip_agents=[{"id": "uuid-1", "role": "ceo"}],
+        workspace=workspace,
+    )
+
+    calls = workspace.write_file_if_missing.call_args_list
+    # First write is the state file (defensive ordering).
+    first_path = calls[0].args[1]
+    first_content = calls[0].args[2]
+    assert first_path == "workspaces/uuid-1/.openclaw/workspace-state.json"
+
+    state = _json.loads(first_content)
+    assert state["version"] == 1
+    # setupCompletedAt is the field reconcileWorkspaceBootstrapCompletionState
+    # checks at upstream src/agents/workspace.ts:278-282 — must be non-empty.
+    assert isinstance(state["setupCompletedAt"], str)
+    assert state["setupCompletedAt"]
+    assert isinstance(state["bootstrapSeededAt"], str)
+    assert state["bootstrapSeededAt"]
+
+
+@pytest.mark.asyncio
+async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
+    """If workspace-state.json write raises, the four markdown templates
+    still write (best-effort: state file is the floor, not the ceiling)."""
+    workspace = MagicMock()
+
+    # First call (state file) raises; subsequent calls (4 templates) succeed.
+    side_effects = [OSError("disk full")] + [True] * 4
+    workspace.write_file_if_missing = MagicMock(side_effect=side_effects)
+
+    async def fake_resolve(owner_id):
+        return {
+            "kind": "personal",
+            "owner_display": "Sam",
+            "first_name_or_fallback": "Sam",
+            "full_name": "Sam Rivers",
+            "email": "sam@example.com",
+            "provider_label": "Bedrock (Claude, Isol8-managed credits)",
+        }
+
+    monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)
+
+    # Should not raise.
+    await friday_identity.pre_stage_friday_identity(
+        owner_id="user_abc",
+        paperclip_agents=[{"id": "uuid-1", "role": "ceo"}],
+        workspace=workspace,
+    )
+
+    # 1 state-file attempt (failed) + 4 template writes = 5 calls.
+    assert workspace.write_file_if_missing.call_count == 5
+    template_names = sorted(c.args[1].rsplit("/", 1)[-1] for c in workspace.write_file_if_missing.call_args_list[1:])
+    assert template_names == ["BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md"]
 
 
 @pytest.mark.parametrize(

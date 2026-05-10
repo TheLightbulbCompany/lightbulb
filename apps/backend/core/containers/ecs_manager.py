@@ -333,7 +333,7 @@ class EcsManager:
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
-    async def refresh_task_definition(self, owner_id: str) -> bool:
+    async def refresh_task_definition(self, owner_id: str) -> str | None:
         """Re-register a user's ECS task definition with the current env list,
         then roll the running task onto the new revision.
 
@@ -355,12 +355,15 @@ class EcsManager:
         The EFS access point and DDB row are untouched — losing agent
         state would be a backfill regression.
 
-        Returns True on success, False if the user has no provisioned
-        container or the row is missing task_definition_arn.
+        Returns the new task definition ARN on success, or None if the user
+        has no provisioned container or the row is missing task_definition_arn.
+        Callers need the ARN so they can wait specifically for the PRIMARY
+        deployment to roll onto this revision (waiting for any RUNNING task
+        races against the OLD task during ``forceNewDeployment``).
         """
         container = await container_repo.get_by_owner_id(owner_id)
         if not container or not container.get("task_definition_arn"):
-            return False
+            return None
 
         # Read the current task-def to pull family/volumes/secrets/networkMode/etc.
         current = self._ecs.describe_task_definition(taskDefinition=container["task_definition_arn"])
@@ -400,7 +403,7 @@ class EcsManager:
         )
         # Persist the new ARN so subsequent operations see it.
         await container_repo.update_fields(owner_id, {"task_definition_arn": new_arn})
-        return True
+        return new_arn
 
     # ------------------------------------------------------------------
     # Safe DB helpers

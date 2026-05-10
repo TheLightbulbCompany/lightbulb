@@ -66,23 +66,23 @@ async def test_refresh_registers_new_taskdef_with_hook_token_env(monkeypatch):
     upd_kwargs = fake_ecs.update_service.call_args.kwargs
     assert upd_kwargs["taskDefinition"].endswith(":5")
 
-    assert result is True
+    assert result == "arn:aws:ecs:us-east-1:877352799272:task-definition/isol8-dev-openclaw-u-1:5"
 
 
 @pytest.mark.asyncio
-async def test_refresh_returns_false_when_no_container_row(monkeypatch):
+async def test_refresh_returns_none_when_no_container_row(monkeypatch):
     from core.containers import ecs_manager
 
     manager = ecs_manager.EcsManager()
     with patch("core.repositories.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)):
         result = await manager.refresh_task_definition("u_unknown")
-    assert result is False
+    assert result is None
 
 
 @pytest.mark.asyncio
-async def test_refresh_returns_false_when_row_missing_taskdef_arn(monkeypatch):
+async def test_refresh_returns_none_when_row_missing_taskdef_arn(monkeypatch):
     """Defensive: if a row exists but has no task_definition_arn (legacy/zombie
-    row), refresh should return False rather than crash on a missing key."""
+    row), refresh should return None rather than crash on a missing key."""
     from core.containers import ecs_manager
 
     manager = ecs_manager.EcsManager()
@@ -97,4 +97,4 @@ async def test_refresh_returns_false_when_row_missing_taskdef_arn(monkeypatch):
         ),
     ):
         result = await manager.refresh_task_definition("u_zombie")
-    assert result is False
+    assert result is None

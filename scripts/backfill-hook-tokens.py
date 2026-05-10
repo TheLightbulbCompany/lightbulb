@@ -28,6 +28,7 @@ import time
 # Allow running from the repo root.
 sys.path.insert(0, "apps/backend")
 
+from core.config import settings  # noqa: E402
 from core.containers.ecs_manager import EcsManager  # noqa: E402
 from core.repositories import container_repo  # noqa: E402
 from core.services.config_patcher import patch_openclaw_config  # noqa: E402
@@ -52,12 +53,48 @@ _HOOKS_PATCH = {
 }
 
 
-async def _wait_for_running(manager: EcsManager, owner_id: str, timeout_s: int = 300) -> bool:
-    """Poll resolve_running_container until the new revision lands a healthy IP."""
+async def _wait_for_new_revision_running(
+    manager: EcsManager,
+    container: dict,
+    new_task_def_arn: str,
+    timeout_s: int = 300,
+) -> bool:
+    """Poll describe_services until the PRIMARY deployment has rolled to
+    new_task_def_arn AND has at least one task running on it.
+
+    Different from resolve_running_container — that helper returns success
+    as soon as ANY task is up, which during a forceNewDeployment rollout is
+    the OLD task. We need to confirm the NEW revision is actually live
+    before we mark hook_token_provisioned_at; otherwise a subsequent
+    rollout failure leaves the row marked complete but the running
+    container rejecting the token the proxy stored.
+    """
     deadline = time.monotonic() + timeout_s
+    cluster = settings.ECS_CLUSTER_ARN
+    service_name = container["service_name"]
     while time.monotonic() < deadline:
-        _, ip = await manager.resolve_running_container(owner_id)
-        if ip:
+        try:
+            response = manager._ecs.describe_services(
+                cluster=cluster, services=[service_name]
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[%s] describe_services failed: %s", container.get("owner_id"), exc)
+            await asyncio.sleep(5)
+            continue
+        services = response.get("services") or []
+        if not services:
+            await asyncio.sleep(5)
+            continue
+        # PRIMARY is the deployment ECS is currently rolling out.
+        primary = next(
+            (d for d in services[0].get("deployments", []) if d.get("status") == "PRIMARY"),
+            None,
+        )
+        if (
+            primary
+            and primary.get("taskDefinition") == new_task_def_arn
+            and primary.get("runningCount", 0) >= 1
+        ):
             return True
         await asyncio.sleep(5)
     return False
@@ -81,13 +118,13 @@ async def backfill_one(manager: EcsManager, owner_id: str, dry_run: bool) -> str
     await container_repo.set_hook_token(owner_id, token)
     log.info("[%s] set hook_token", owner_id)
 
-    ok = await manager.refresh_task_definition(owner_id)
-    if not ok:
+    new_arn = await manager.refresh_task_definition(owner_id)
+    if not new_arn:
         return "refresh_failed"
-    log.info("[%s] task-def refreshed; waiting for new revision to RUNNING", owner_id)
+    log.info("[%s] task-def refreshed to %s; waiting for new revision to RUNNING", owner_id, new_arn)
 
-    if not await _wait_for_running(manager, owner_id):
-        return "timeout_waiting_for_running"
+    if not await _wait_for_new_revision_running(manager, container, new_arn):
+        return "timeout_waiting_for_new_revision"
 
     await patch_openclaw_config(owner_id, _HOOKS_PATCH)
     log.info("[%s] config patched", owner_id)

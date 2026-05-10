@@ -115,6 +115,15 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
     Returns the upstream's status code verbatim, or 401/404/429/503 for
     auth/lookup/rate-limit/availability failures.
     """
+    # Defense-in-depth: prevent path-traversal escape from the /hooks/* containment.
+    # Without this, a holder of a valid hook_token could probe non-/hooks paths on
+    # the OpenClaw gateway via httpx's RFC-3986 normalization. Today every other
+    # gateway endpoint requires gateway_token (which the hook_token holder doesn't
+    # have), so the impact is limited to /healthz / /ready info disclosure — but
+    # this guard pre-empts any future weakening of upstream auth.
+    if ".." in hook_path.split("/") or "\\" in hook_path:
+        raise HTTPException(status_code=400, detail="invalid_hook_path")
+
     # 1. Bearer extract
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
@@ -153,7 +162,14 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
     # 6. Forward
     body = await request.body()
     headers = _build_forwarded_headers(request, expected)
+    # Preserve the inbound query string verbatim — webhook senders carry
+    # signature/verification material there (Slack URL-verification
+    # ``?challenge=``, custom ``?routing_key=``, etc.). Dropping it
+    # silently breaks those handshakes.
+    query = request.url.query  # raw query string (no leading '?'), '' if absent
     target = f"http://{ip}:{GATEWAY_PORT}/hooks/{hook_path}"
+    if query:
+        target = f"{target}?{query}"
 
     upstream_status = 502
     upstream_body = b""

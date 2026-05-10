@@ -720,6 +720,24 @@ def build_openclaw_config_dict(
             },
         },
         "update": {"checkOnStart": False},
+        # Enable the chat-command surfaces the owner needs to manage their
+        # own container from chat. All three are off-by-default upstream
+        # because they're privileged surfaces that should not be exposed
+        # in shared/public deployments — but per-user Isol8 containers
+        # are owner-operated, so flipping them on is the right call.
+        # Skipped:
+        #   - /config — too broad; the control panel + config_patcher own
+        #     config writes, and we don't want chat to mutate provider /
+        #     billing-relevant keys.
+        #   - /bash — host-shell access from chat. Channel-linked accounts
+        #     (Telegram/Discord/Slack) widen the trust boundary too far
+        #     even with allowFrom narrowing; revisit if there's a clear
+        #     ask with a tighter scoping story.
+        "commands": {
+            "mcp": True,  # /mcp — list/set/unset MCP servers (same data as the MCP Servers panel)
+            "plugins": True,  # /plugins — list discovered plugins + toggle enablement
+            "debug": True,  # /debug — runtime-only overrides for diagnostics (not persisted)
+        },
     }
 
     return config

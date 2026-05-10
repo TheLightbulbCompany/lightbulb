@@ -191,6 +191,32 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["update"]["checkOnStart"] is False
 
+    def test_owner_chat_commands_enabled(self):
+        """The three owner-operated chat commands (/mcp, /plugins, /debug)
+        are off-by-default upstream. We flip them on for per-user Isol8
+        containers because the owner needs to manage their own container
+        from chat. /config and /bash stay off — broad config writes
+        belong to the control panel + config_patcher, and host-shell
+        access from chat widens the trust boundary too far given
+        channel-linked accounts."""
+        config = _cfg()
+        assert config["commands"]["mcp"] is True
+        assert config["commands"]["plugins"] is True
+        assert config["commands"]["debug"] is True
+        assert "config" not in config["commands"], (
+            "/config must stay off — chat must not be able to mutate provider/billing keys"
+        )
+        assert "bash" not in config["commands"], "/bash must stay off — host-shell access from chat is too broad"
+
+    def test_tools_elevated_not_enabled(self):
+        """tools.elevated.enabled gates the elevated tool path. We don't
+        need it because /bash (its only consumer here) is intentionally
+        disabled. If a future PR re-enables /bash, it must also flip
+        tools.elevated.enabled — the schema requires both."""
+        config = _cfg()
+        elevated = config.get("tools", {}).get("elevated") or {}
+        assert elevated.get("enabled") is not True
+
     def test_no_root_tts_key(self):
         """OpenClaw doesn't support tts at root level."""
         config = _cfg()

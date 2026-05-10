@@ -86,7 +86,13 @@ async def _read_mcp_servers(owner_id: str) -> dict:
 @router.get(
     "/integrations/mcp/servers",
     summary="List configured MCP servers",
-    description="Returns all MCP server entries from the owner's openclaw.json mcp.servers block.",
+    description=(
+        "Returns all MCP server entries from the owner's openclaw.json "
+        "mcp.servers block. Org callers must be org_admin — the entries "
+        "carry per-server `env` secrets that non-admin members shouldn't "
+        "see (mirrors the existing org-admin gate on the write endpoints "
+        "and the GET /config gate)."
+    ),
     response_model=ServersResponse,
     operation_id="list_mcp_servers",
     tags=["integrations"],
@@ -94,6 +100,11 @@ async def _read_mcp_servers(owner_id: str) -> dict:
 async def list_mcp_servers(
     auth: AuthContext = Depends(get_current_user),
 ):
+    # Mirror the WRITE-endpoint gate. Without this, any org member could
+    # read shared MCP server configs (including `env` secrets) even though
+    # they can't create/update/delete them. Codex P1 on PR #592.
+    if auth.is_org_context:
+        require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     servers = await _read_mcp_servers(owner_id)
     return {"servers": servers}

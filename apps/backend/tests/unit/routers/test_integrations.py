@@ -261,6 +261,35 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
 
     @pytest.mark.asyncio
+    async def test_list_servers_org_admin_allowed(self, app, patched_router):
+        """Org admins can read the shared MCP server list."""
+
+        async def _admin_auth():
+            return AuthContext(user_id="user_admin", org_id="org_1", org_role="org:admin")
+
+        app.dependency_overrides[get_current_user] = _admin_auth
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/v1/integrations/mcp/servers")
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_list_servers_org_member_rejected(self, app, patched_router):
+        """Non-admin org members can't read the shared MCP server list — the
+        entries carry per-server `env` secrets only the admin set up.
+        Mirrors the gate on the WRITE endpoints + GET /config (Codex P1, #592).
+        """
+
+        async def _member_auth():
+            return AuthContext(user_id="user_member", org_id="org_1", org_role="org:member")
+
+        app.dependency_overrides[get_current_user] = _member_auth
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/v1/integrations/mcp/servers")
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_container_not_ready_returns_503(self, app, auth_override):
         """When the patcher raises ConfigPatchError (container not provisioned),
         the endpoint returns 503 with a structured detail."""

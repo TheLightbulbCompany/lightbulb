@@ -42,6 +42,7 @@ export function McpServersTab(props: { agentId?: string }) {
   const api = useApi();
   const [servers, setServers] = useState<Record<string, McpServer>>({});
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [configInput, setConfigInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -49,11 +50,20 @@ export function McpServersTab(props: { agentId?: string }) {
 
   const fetchServers = useCallback(async () => {
     setLoading(true);
+    setForbidden(false);
     try {
       const resp = (await api.get("/integrations/mcp/servers")) as ServersResponse;
       setServers(resp.servers ?? {});
     } catch (err) {
-      console.error("Failed to fetch MCP servers:", err);
+      // Non-admin org members get 403 — entries carry env secrets only the
+      // admin set up. Show an empty-state with a clear message instead of
+      // a silent fail.
+      if ((err as { status?: number }).status === 403) {
+        setForbidden(true);
+        setServers({});
+      } else {
+        console.error("Failed to fetch MCP servers:", err);
+      }
     } finally {
       setLoading(false);
     }
@@ -130,6 +140,22 @@ export function McpServersTab(props: { agentId?: string }) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (forbidden) {
+    return (
+      <div className="p-6 space-y-3">
+        <h2 className="text-lg font-semibold">MCP Servers</h2>
+        <div className="rounded-lg border border-border bg-card/30 p-6 text-center">
+          <Server className="h-8 w-8 mx-auto mb-2 text-muted-foreground/60" />
+          <p className="text-sm font-medium">Org admins only.</p>
+          <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+            MCP server entries carry per-server <code>env</code> secrets only
+            the admin set up. Ask your org admin to manage them.
+          </p>
+        </div>
       </div>
     );
   }

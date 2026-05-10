@@ -160,11 +160,17 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
     "skills.status",
   );
 
-  // MCP server count via the integrations REST endpoint.
-  const { data: mcpData } = useSWR<McpServersResponse>(
+  // MCP server count via the integrations REST endpoint. The endpoint
+  // gates org-scoped reads behind org_admin (entries carry `env` secrets
+  // only the admin set up), so non-admin org members get 403 and we
+  // surface "—" rather than fabricate a count.
+  const { data: mcpData, error: mcpError } = useSWR<McpServersResponse>(
     "/integrations/mcp/servers",
     () => api.get("/integrations/mcp/servers") as Promise<McpServersResponse>,
+    { shouldRetryOnError: false },
   );
+  const mcpForbidden =
+    (mcpError as { status?: number } | undefined)?.status === 403;
 
   // Lazy-load the raw config — only fetch when the dialog opens, so the
   // overview panel doesn't pay for a config read on every mount.
@@ -229,8 +235,12 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
     ? skillsRaw
     : skillsRaw?.skills ?? [];
   const skillCount = skillsRaw === undefined ? undefined : skillsList.length;
-  const mcpCount =
-    mcpData === undefined ? undefined : Object.keys(mcpData.servers ?? {}).length;
+  // Count is unknown for forbidden (non-admin org member) — render "—".
+  const mcpCount = mcpForbidden
+    ? undefined
+    : mcpData === undefined
+      ? undefined
+      : Object.keys(mcpData.servers ?? {}).length;
 
   return (
     <div className="p-6 space-y-6">

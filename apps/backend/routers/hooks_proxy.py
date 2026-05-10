@@ -105,6 +105,16 @@ def _build_forwarded_headers(request: Request, hook_token: str) -> dict[str, str
 
 @router.post("/u/{owner_id}/{hook_path:path}")
 async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Response:
+    """Forward an external webhook call to the user's OpenClaw container.
+
+    Bearer-token authenticated against ``containers.hook_token`` via timing-safe
+    compare. Resolves the container's private IP via Cloud Map, rewrites
+    X-Forwarded-* with the true caller IP, and forwards to the container's
+    ``/hooks`` ingress. Audits every call to the ``hook-events`` DDB table.
+
+    Returns the upstream's status code verbatim, or 401/404/429/503 for
+    auth/lookup/rate-limit/availability failures.
+    """
     # 1. Bearer extract
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):

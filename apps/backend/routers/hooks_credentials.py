@@ -21,6 +21,11 @@ router = APIRouter()
 
 @router.get("/credentials")
 async def get_credentials(user: AuthContext = Depends(get_current_user)) -> dict:
+    """Return the calling user's webhook credentials for the Settings UI.
+
+    Clerk-authenticated. Returns ``{public_url, token, rotated_at}`` or
+    404 if the user has no provisioned container yet.
+    """
     owner_id = resolve_owner_id(user)
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:

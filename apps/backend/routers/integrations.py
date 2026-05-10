@@ -11,7 +11,6 @@ patch triggers OpenClaw's chokidar-based hot reload, so changes take effect
 without a container restart.
 """
 
-import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,11 +21,8 @@ from core.containers.config import read_openclaw_config_from_efs
 from core.services.config_patcher import (
     ConfigPatchError,
     delete_openclaw_config_path,
-    patch_openclaw_config,
     set_openclaw_config_path,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -120,7 +116,7 @@ async def replace_mcp_servers(
 @router.patch(
     "/integrations/mcp/servers/{name}",
     summary="Add or update a single MCP server",
-    description="Adds or updates a single MCP server entry by name (deep-merged into mcp.servers).",
+    description="Adds or replaces a single MCP server entry by name (full overwrite, not deep-merged).",
     response_model=ServersResponse,
     operation_id="upsert_mcp_server",
     tags=["integrations"],
@@ -135,7 +131,7 @@ async def upsert_mcp_server(
         require_org_admin(auth)
     entry = body.model_dump()
     try:
-        await patch_openclaw_config(owner_id, {"mcp": {"servers": {name: entry}}})
+        await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
     except ConfigPatchError as exc:
         raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
     servers = await _read_mcp_servers(owner_id)

@@ -1,5 +1,6 @@
 """Tests for the MCP server integrations router."""
 
+import copy
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -19,17 +20,9 @@ class TestIntegrationsRouter:
         async def read_config(owner_id: str):
             # Deep-copy to mimic real I/O semantics — the router shouldn't
             # mutate the underlying store directly.
-            import copy
             return copy.deepcopy(store["config"])
 
-        async def patch_config(owner_id: str, patch_dict: dict):
-            import copy
-            from core.services.config_patcher import _deep_merge
-
-            store["config"] = _deep_merge(store["config"], copy.deepcopy(patch_dict))
-
         async def set_path(owner_id: str, path: list[str], value):
-            import copy
             cursor = store["config"]
             for seg in path[:-1]:
                 if not isinstance(cursor.get(seg), dict):
@@ -48,17 +41,15 @@ class TestIntegrationsRouter:
         return {
             "store": store,
             "read": read_config,
-            "patch": patch_config,
             "set": set_path,
             "delete": delete_path,
         }
 
     @pytest.fixture
     def patched_router(self, fake_config):
-        """Patches all four config helpers used by integrations.py."""
+        """Patches all three config helpers used by integrations.py."""
         with (
             patch("routers.integrations.read_openclaw_config_from_efs", side_effect=fake_config["read"]),
-            patch("routers.integrations.patch_openclaw_config", side_effect=fake_config["patch"]),
             patch("routers.integrations.set_openclaw_config_path", side_effect=fake_config["set"]),
             patch("routers.integrations.delete_openclaw_config_path", side_effect=fake_config["delete"]),
         ):

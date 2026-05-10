@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Copy, Eye, EyeOff } from "lucide-react";
 
 import { useHookCredentials } from "@/hooks/useHookCredentials";
+import { ApiError } from "@/lib/api";
 
 export function WebhooksPanel() {
   const { credentials, isLoading, error } = useHookCredentials();
@@ -13,6 +14,22 @@ export function WebhooksPanel() {
     return (
       <div className="settings-panel" id="panel-webhooks" role="tabpanel">
         <div className="text-sm text-zinc-400">Loading…</div>
+      </div>
+    );
+  }
+  // 409 hook_token_pending — backend returns this for legacy rows that
+  // pre-date hook-token plumbing and haven't been backfilled yet (or
+  // haven't triggered a self-healing reprovision). Render a positive
+  // "still provisioning" message instead of the generic error so the
+  // user knows to wait rather than retrying or flagging the integration.
+  if (error instanceof ApiError && error.status === 409) {
+    return (
+      <div className="settings-panel" id="panel-webhooks" role="tabpanel">
+        <h1 className="settings-page-title">Webhooks</h1>
+        <p className="settings-page-desc">
+          Your webhook ingress is being provisioned. Refresh in a moment to see
+          your URL and token.
+        </p>
       </div>
     );
   }

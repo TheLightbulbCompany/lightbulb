@@ -126,7 +126,14 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
     assert forwarded_kwargs["headers"]["authorization"] == "Bearer " + fake_container["hook_token"]
     assert forwarded_kwargs["headers"]["x-forwarded-for"] != "1.2.3.4"  # rewritten, not passed
     assert forwarded_kwargs["headers"]["x-forwarded-proto"] == "https"
-    assert forwarded_kwargs["headers"]["x-forwarded-host"] == "api.isol8.co"
+    # Derived from PUBLIC_API_BASE — TestClient runs against the localhost
+    # default; in deployed envs this would be api-dev.isol8.co etc.
+    from urllib.parse import urlparse
+
+    from core.config import settings as _settings
+
+    expected_host = urlparse(_settings.PUBLIC_API_BASE).netloc
+    assert forwarded_kwargs["headers"]["x-forwarded-host"] == expected_host
     # Audit row:
     assert len(audit_writes) == 1
     assert audit_writes[0]["status_code"] == 200

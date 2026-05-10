@@ -99,5 +99,12 @@ async def test_hooks_proxy_end_to_end(stub_container, monkeypatch):
     assert json.loads(stub_container["received"]["body"]) == payload
     forwarded = stub_container["received"]["headers"]
     assert forwarded.get("X-Forwarded-Proto") == "https"
-    assert forwarded.get("X-Forwarded-Host") == "api.isol8.co"
+    # Derived from PUBLIC_API_BASE — TestClient runs against the localhost
+    # default; in deployed envs this would be api-dev.isol8.co etc.
+    from urllib.parse import urlparse
+
+    from core.config import settings as _settings
+
+    expected_host = urlparse(_settings.PUBLIC_API_BASE).netloc
+    assert forwarded.get("X-Forwarded-Host") == expected_host
     assert forwarded.get("Authorization") == f"Bearer {token}"

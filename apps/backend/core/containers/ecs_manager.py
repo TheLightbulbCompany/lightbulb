@@ -477,6 +477,15 @@ class EcsManager:
         if hook_token:
             upsert_fields["hook_token"] = hook_token
             upsert_fields["hook_token_rotated_at"] = utc_now_iso()
+            # Stamp the backfill-style "this user is in the desired end-state"
+            # marker so a re-run of the backfill script's idempotency guard
+            # (which reads hook_token_provisioned_at) doesn't rotate native
+            # users' tokens and silently break their external integrations.
+            # Native provisioning achieves the desired state atomically here
+            # (token in DDB + env on task def + openclaw.json rendered with
+            # the hooks block); backfill achieves it after refresh + config
+            # patch. Both should stamp.
+            upsert_fields["hook_token_provisioned_at"] = utc_now_iso()
         await container_repo.upsert(user_id, upsert_fields)
 
         try:
@@ -706,7 +715,26 @@ class EcsManager:
             # The hook_token is per-user state stored on the containers row;
             # we must thread it through so the new task def keeps OPENCLAW_HOOK_TOKEN
             # set (otherwise resize would silently strip the env var).
-            hook_token = container.get("hook_token")
+            #
+            # Self-heal legacy rows that pre-date hook-token provisioning:
+            # build_openclaw_config_dict renders the hooks block unconditionally
+            # with the "${OPENCLAW_HOOK_TOKEN}" placeholder, but
+            # _build_register_kwargs_from_base only injects the env var when
+            # hook_token is truthy. Letting None pass through would leave the
+            # new revision without OPENCLAW_HOOK_TOKEN, so the container would
+            # boot with the unsubstituted placeholder string and 401 every
+            # webhook. Mint+persist here so the row, the env var, and the
+            # rendered config stay consistent.
+            hook_token = container.get("hook_token") or secrets.token_urlsafe(32)
+            if not container.get("hook_token"):
+                await container_repo.update_fields(
+                    user_id,
+                    {
+                        "hook_token": hook_token,
+                        "hook_token_rotated_at": utc_now_iso(),
+                        "hook_token_provisioned_at": utc_now_iso(),
+                    },
+                )
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -1255,19 +1283,40 @@ class EcsManager:
                         },
                     )
 
+                # Self-heal hook_token for legacy rows that pre-date hook-token
+                # provisioning. Without this, a legacy user hitting the restart
+                # path passes None for hook_token through write_user_configs and
+                # _register_task_definition. Because build_openclaw_config_dict
+                # renders the hooks block UNCONDITIONALLY with the literal
+                # "${OPENCLAW_HOOK_TOKEN}" placeholder while
+                # _build_register_kwargs_from_base gates env injection on
+                # `if hook_token:`, the new task-def would lack
+                # OPENCLAW_HOOK_TOKEN and the container would boot with the
+                # unsubstituted placeholder string as its hooks.token — every
+                # webhook 401s indefinitely. Mint+persist here so the row, the
+                # env var, and the rendered config stay consistent.
+                existing_hook_token = (existing.get("hook_token") if existing else None) or secrets.token_urlsafe(32)
+                if existing and not existing.get("hook_token"):
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "hook_token": existing_hook_token,
+                            "hook_token_rotated_at": utc_now_iso(),
+                            "hook_token_provisioned_at": utc_now_iso(),
+                        },
+                    )
+
                 try:
-                    # Reuse the existing hook_token so the rendered
-                    # openclaw.json placeholder still resolves at boot
-                    # against the env var we layer back onto the new
-                    # task-def below. Legacy rows without one fall through
-                    # to None — backfill mints tokens for those out of band.
-                    existing_hook_token_for_write = existing.get("hook_token") if existing else None
+                    # Reuse the existing (or freshly-minted) hook_token so the
+                    # rendered openclaw.json placeholder resolves at boot
+                    # against the env var we layer back onto the new task-def
+                    # below.
                     await self.write_user_configs(
                         user_id,
                         gateway_token,
                         provider_choice=provider_choice,
                         byo_provider=byo_provider,
-                        hook_token=existing_hook_token_for_write,
+                        hook_token=existing_hook_token,
                     )
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
@@ -1279,14 +1328,12 @@ class EcsManager:
                 # that flows in via _build_byo_secrets_for_user above).
                 # We always re-register so the path is uniform across
                 # providers; oauth/bedrock_claude have empty secrets_for_task.
-                # Preserve the existing hook_token so the env var survives
-                # the re-register; legacy rows without one fall through to
-                # None (the env var is omitted, which matches pre-T2
-                # behavior — a backfill pass mints tokens for those).
+                # Use the same existing/self-healed hook_token computed above
+                # so the env var on the new revision matches what
+                # write_user_configs just rendered.
                 access_point_id = existing.get("access_point_id") if existing else None
                 if access_point_id:
                     try:
-                        existing_hook_token = existing.get("hook_token") if existing else None
                         new_task_def_arn = await asyncio.to_thread(
                             self._register_task_definition,
                             access_point_id,

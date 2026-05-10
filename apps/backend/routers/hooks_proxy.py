@@ -30,10 +30,12 @@ import hmac
 import logging
 import time
 from collections import defaultdict, deque
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from core.config import settings
 from core.containers import get_ecs_manager
 from core.repositories import container_repo, hook_event_repo
 
@@ -99,7 +101,12 @@ def _build_forwarded_headers(request: Request, hook_token: str) -> dict[str, str
     headers["Authorization"] = f"Bearer {hook_token}"
     headers["X-Forwarded-For"] = caller_ip
     headers["X-Forwarded-Proto"] = "https"
-    headers["X-Forwarded-Host"] = "api.isol8.co"
+    # Derive from PUBLIC_API_BASE so dev/staging containers see their own
+    # hostname instead of the prod literal. Today no upstream consumer reads
+    # this value meaningfully, but pinning the prod hostname in non-prod
+    # poisons audit trails and pre-stages a footgun for any future OAuth-
+    # callback / absolute-URL builder that reads X-Forwarded-Host.
+    headers["X-Forwarded-Host"] = urlparse(settings.PUBLIC_API_BASE).netloc
     return headers
 
 

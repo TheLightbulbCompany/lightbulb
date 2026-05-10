@@ -59,3 +59,22 @@ def test_credentials_404_if_not_provisioned(client, auth_user):
     ):
         r = client.get("/api/v1/hooks/credentials")
         assert r.status_code == 404
+
+
+def test_credentials_409_when_hook_token_pending(client, auth_user):
+    """Legacy row exists (provisioned before hook-token landed) but no
+    hook_token field yet. Returning 200 with token="" would render an
+    empty masked field in the Settings UI and silently copy a bad token
+    into Stripe etc. — surface the pending state as 409 instead."""
+    with patch(
+        "routers.hooks_credentials.container_repo.get_by_owner_id",
+        new=AsyncMock(
+            return_value={
+                "owner_id": "u_1",
+                # No hook_token / hook_token_rotated_at — pre-T2 legacy row.
+            }
+        ),
+    ):
+        r = client.get("/api/v1/hooks/credentials")
+        assert r.status_code == 409
+        assert r.json()["detail"] == "hook_token_pending"

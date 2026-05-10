@@ -147,30 +147,46 @@ RUN npm i -g --ignore-scripts \
       @anthropic-ai/claude-code @google/gemini-cli \
       @xdevplatform/xurl
 
-# ---- Layer 9: Playwright Chromium + Chromium system libs ----
+# ---- Layer 9: Playwright Chromium + Chromium system libs + /usr/bin symlink ----
 # Upstream openclaw:2026.5.7 ships the playwright npm package (at
 # /app/node_modules/playwright-core, v1.59.1) but NOT the Chromium binary
 # and NOT the GUI libs Chromium needs to launch. The chromium install is
 # gated behind upstream Dockerfile's `OPENCLAW_INSTALL_BROWSER` build arg,
 # which is empty by default; the published image is built without it.
 #
-# Without this layer, every browser-using workload — OpenClaw's `browser`
-# tool AND any third-party MCP that imports playwright (Resy, etc.) —
-# fails at runtime with one of: missing Chromium executable, then missing
-# libatk-1.0.so.0 / libnss3 / libxkbcommon / libgbm / libasound. Fixing
-# that at runtime requires elevated exec, which we don't grant to webchat
-# senders, so the only sane place to install is image build time.
+# This image now has two browser-using audiences, each with its own
+# (incompatible) idea of where Chromium lives:
 #
-# Installing playwright-core's pinned Chromium revision into the default
-# Playwright cache path ($HOME/.cache/ms-playwright for the node user)
-# satisfies OpenClaw's browser plugin directly. MCPs that bring a
-# different playwright version still need to download their own Chromium
-# revision on first launch, but the system libs installed here cover them
-# too — no apt-get, no elevation, just a small per-version binary fetch.
+#   1. Third-party Playwright-based MCPs (Resy, etc.) call
+#      `chromium.launch()`, which Playwright hardcodes to find its bundled
+#      binary at `$HOME/.cache/ms-playwright/chromium-<rev>/...`. Playwright
+#      ignores system Chromium by design.
+#
+#   2. OpenClaw's `browser` plugin spawns Chrome directly via CDP
+#      (`extensions/browser/src/browser/chrome.ts:417`), using a resolver
+#      that probes `/usr/bin/google-chrome`, `/usr/bin/chromium`, etc. It
+#      does NOT check Playwright's cache.
+#
+# We satisfy both by installing playwright-core's pinned Chromium into
+# Playwright's expected cache path (audience #1), then symlinking that
+# binary into `/usr/bin/chromium` (audience #2). One binary, two access
+# paths, no duplicated apt-installed Chromium.
+#
+# The `chromium-*` glob in the symlink target re-resolves at every image
+# rebuild — when upstream bumps playwright-core, the revision dir name
+# changes (e.g. chromium-1217 → chromium-1219) and the symlink picks up
+# the new dir automatically. Only one revision dir exists per build, so
+# the glob is unambiguous.
+#
+# --with-deps installs the GUI libs Chromium needs (libatk-1.0, libnss3,
+# libgbm, libxkbcommon, libasound, etc.) at the system level. These cover
+# any future MCP that brings a different Playwright version too — they
+# only need to download their own Chromium binary, not re-install libs.
 RUN mkdir -p /home/node/.cache/ms-playwright && \
     PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
       node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
-    chown -R node:node /home/node/.cache/ms-playwright
+    chown -R node:node /home/node/.cache/ms-playwright && \
+    ln -sf /home/node/.cache/ms-playwright/chromium-*/chrome-linux64/chrome /usr/bin/chromium
 
 # ---- Restore runtime context ----
 USER node

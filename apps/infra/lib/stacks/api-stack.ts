@@ -458,6 +458,38 @@ export class ApiStack extends cdk.Stack {
       autoDeploy: true,
     });
 
+    // Wire access logs + execution-log settings to the underlying CfnStage.
+    // The L2 WebSocketStage doesn't expose these, but they're required to
+    // surface API Gateway integration errors that are otherwise invisible —
+    // notably Management API @connections POST failures (PayloadTooLargeException,
+    // LimitExceededException) where boto3 returns an empty Error.Message field
+    // to the caller.
+    //
+    // dataTraceEnabled is intentionally false: it logs full message bodies,
+    // which contain user chat content. INFO-level logs without dataTrace
+    // capture status codes + integrationErrorMessage but not payload bodies.
+    const wsCfnStage = wsStageResource.node.defaultChild as apigatewayv2.CfnStage;
+    wsCfnStage.accessLogSettings = {
+      destinationArn: wsApiLogGroup.logGroupArn,
+      format: JSON.stringify({
+        requestId: "$context.requestId",
+        connectionId: "$context.connectionId",
+        eventType: "$context.eventType",
+        routeKey: "$context.routeKey",
+        status: "$context.status",
+        requestTime: "$context.requestTime",
+        integrationLatency: "$context.integrationLatency",
+        integrationError: "$context.integrationErrorMessage",
+        error: "$context.error.message",
+        messageId: "$context.messageId",
+      }),
+    };
+    wsCfnStage.defaultRouteSettings = {
+      loggingLevel: "INFO",
+      dataTraceEnabled: false,
+      detailedMetricsEnabled: true,
+    };
+
     this.wsApiId = wsApi.apiId;
     this.wsStage = env;
 

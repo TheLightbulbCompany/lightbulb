@@ -1316,6 +1316,7 @@ class EcsManager:
                         provider_choice=provider_choice,
                         byo_provider=byo_provider,
                         hook_token=existing_hook_token,
+                        owner_type=owner_type,
                     )
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
@@ -1519,6 +1520,7 @@ class EcsManager:
                 provider_choice=provider_choice,
                 byo_provider=byo_provider,
                 hook_token=hook_token,
+                owner_type=owner_type,
             )
         except Exception as e:
             put_metric("container.provision", dimensions={"status": "error"})
@@ -1708,6 +1710,7 @@ class EcsManager:
         provider_choice: str,
         byo_provider: str | None = None,
         hook_token: str | None = None,
+        owner_type: str = "personal",
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
@@ -1801,6 +1804,7 @@ class EcsManager:
             byo_provider=byo_provider,
             paperclip_agents=paperclip_agents,
             hook_token=hook_token,
+            owner_type=owner_type,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

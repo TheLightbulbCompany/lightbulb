@@ -89,6 +89,7 @@ async def provision_container(
             owner_id,
             gateway_token,
             provider_choice="bedrock_claude",
+            owner_type=owner_type,
         )
 
         # Step 3: Now start the container — configs are on EFS.
@@ -146,6 +147,7 @@ async def redeploy_container(
             container["gateway_token"],
             provider_choice="bedrock_claude",
             hook_token=container.get("hook_token"),
+            owner_type=owner_type,
         )
 
         await ecs_manager.start_user_service(owner_id)

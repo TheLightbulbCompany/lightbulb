@@ -93,6 +93,14 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     assert "sam@example.com" in contents_by_name["USER.md"]
     assert "Sam" in contents_by_name["BOOTSTRAP.md"]
 
+    # BOOTSTRAP.md must explicitly forbid tool use on the opening turn — the
+    # earlier template said "Delete this file" and frontier models would
+    # interpret that as an actionable task ahead of greeting the user.
+    bootstrap_md = contents_by_name["BOOTSTRAP.md"].lower()
+    assert "text only" in bootstrap_md
+    assert "do not run any tools" in bootstrap_md
+    assert "do not try to delete this file" in bootstrap_md
+
 
 @pytest.mark.asyncio
 async def test_org_owner_uses_org_template(monkeypatch):

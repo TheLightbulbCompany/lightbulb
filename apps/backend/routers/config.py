@@ -1,8 +1,8 @@
-"""Config router — unified EFS-write endpoint for openclaw.json patches.
+"""Config router — read + write endpoints for openclaw.json.
 
-Wraps patch_openclaw_config. Derives owner_id from the auth context,
-enforces org_admin for org callers, and tier-gates channel-related
-patches behind Starter+.
+GET wraps read_openclaw_config_from_efs; PATCH wraps patch_openclaw_config.
+Derives owner_id from the auth context, enforces org_admin for org callers
+on writes, and tier-gates channel-related patches behind Starter+.
 """
 
 import logging
@@ -98,6 +98,24 @@ async def _check_token_collision(owner_id: str, patch: dict) -> None:
                     status_code=409,
                     detail="token_already_assigned_to_other_agent",
                 )
+
+
+@router.get(
+    "",
+    summary="Read the caller's openclaw.json config",
+    description=(
+        "Returns the caller's owner_id openclaw.json from EFS, or null if "
+        "the file does not exist yet (e.g. mid-provisioning). Org callers "
+        "resolve to org-scoped config; personal callers to user-scoped. "
+        "Read access is open to any authenticated owner — no admin gate."
+    ),
+)
+async def get_config(
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = resolve_owner_id(auth)
+    config = await read_openclaw_config_from_efs(owner_id)
+    return {"owner_id": owner_id, "config": config}
 
 
 @router.patch(

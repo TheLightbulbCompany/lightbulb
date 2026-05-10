@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import useSWR from "swr";
 import {
   Loader2,
   RefreshCw,
@@ -13,12 +15,22 @@ import {
   MapPin,
   CreditCard,
   Activity,
+  Wrench,
+  FileText,
 } from "lucide-react";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useBilling } from "@/hooks/useBilling";
+import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -57,6 +69,25 @@ interface CronJob {
   name?: string;
   enabled?: boolean;
   [key: string]: unknown;
+}
+
+interface SkillEntry {
+  name?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
+interface SkillStatus {
+  skills?: SkillEntry[];
+}
+
+interface McpServersResponse {
+  servers?: Record<string, unknown>;
+}
+
+interface ConfigResponse {
+  owner_id: string;
+  config: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +130,14 @@ function formatTimeAgo(ts: number | string | undefined | null): string {
 // Component
 // ---------------------------------------------------------------------------
 
-export function OverviewPanel() {
+interface OverviewPanelProps {
+  onPanelChange?: (panel: string) => void;
+}
+
+export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
+  const api = useApi();
+  const [configOpen, setConfigOpen] = useState(false);
+
   const {
     data: rawHealth,
     error: healthError,
@@ -114,6 +152,26 @@ export function OverviewPanel() {
   const subscriptionStatus = account?.subscription_status ?? null;
 
   const { data: cronData } = useGatewayRpc<CronJob[]>("cron.list");
+
+  // Skills count comes from the same RPC SkillsPanel uses; pass no agentId
+  // to get the global skills inventory. Response can be either an array or
+  // {skills: [...]} depending on OpenClaw version (see SkillsPanel.tsx:230).
+  const { data: skillsRaw } = useGatewayRpc<SkillStatus | SkillEntry[]>(
+    "skills.status",
+  );
+
+  // MCP server count via the integrations REST endpoint.
+  const { data: mcpData } = useSWR<McpServersResponse>(
+    "/integrations/mcp/servers",
+    () => api.get("/integrations/mcp/servers") as Promise<McpServersResponse>,
+  );
+
+  // Lazy-load the raw config — only fetch when the dialog opens, so the
+  // overview panel doesn't pay for a config read on every mount.
+  const { data: configData, isLoading: configLoading } = useSWR<ConfigResponse>(
+    configOpen ? "/config" : null,
+    () => api.get("/config") as Promise<ConfigResponse>,
+  );
 
   const { state: healthState, reason: healthReason, canRecover, actionLabel, recover, isRecovering } = useSystemHealth();
 
@@ -153,9 +211,17 @@ export function OverviewPanel() {
   const isOnline = health.ok === true;
   const sessionCount = health.sessions?.count;
   const agentCount = health.agents?.length;
-  const cronEnabled = Array.isArray(cronData)
-    ? cronData.some((j) => j.enabled)
-    : false;
+  const cronCount = Array.isArray(cronData) ? cronData.length : undefined;
+  const cronEnabledCount = Array.isArray(cronData)
+    ? cronData.filter((j) => j.enabled).length
+    : 0;
+  // Normalize the skills.status response shape — same trick SkillsPanel uses.
+  const skillsList: SkillEntry[] = Array.isArray(skillsRaw)
+    ? skillsRaw
+    : skillsRaw?.skills ?? [];
+  const skillCount = skillsRaw === undefined ? undefined : skillsList.length;
+  const mcpCount =
+    mcpData === undefined ? undefined : Object.keys(mcpData.servers ?? {}).length;
 
   return (
     <div className="p-6 space-y-6">
@@ -167,9 +233,21 @@ export function OverviewPanel() {
             Container status and gateway health snapshot.
           </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={handleRefresh}>
-          <RefreshCw className="h-3.5 w-3.5" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setConfigOpen(true)}
+            className="text-xs gap-1.5"
+            title="View raw openclaw.json"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            Configuration
+          </Button>
+          <Button variant="ghost" size="sm" onClick={handleRefresh}>
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       {/* Two-column: Container Info + Snapshot */}
@@ -246,22 +324,45 @@ export function OverviewPanel() {
         </div>
       </div>
 
-      {/* Summary Row */}
-      <div className="grid grid-cols-3 gap-3">
+      {/* Summary Row \u2014 clickable cards deep-link to the relevant panel.
+          Cron deep-links to CronPanel; Skills + MCP both go to SkillsPanel
+          (MCP lives behind its "MCP Servers" tab there, not its own panel). */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <SummaryCard
           icon={Users}
           label="Instances"
           value={agentCount !== undefined ? String(agentCount) : "\u2014"}
+          onClick={onPanelChange ? () => onPanelChange("agents") : undefined}
         />
         <SummaryCard
           icon={MessageSquare}
           label="Sessions"
           value={sessionCount !== undefined ? String(sessionCount) : "\u2014"}
+          onClick={onPanelChange ? () => onPanelChange("sessions") : undefined}
         />
         <SummaryCard
           icon={Activity}
           label="Cron"
-          value={cronEnabled ? "Enabled" : "Disabled"}
+          value={
+            cronCount === undefined
+              ? "\u2014"
+              : cronCount === 0
+                ? "0"
+                : `${cronEnabledCount}/${cronCount}`
+          }
+          onClick={onPanelChange ? () => onPanelChange("cron") : undefined}
+        />
+        <SummaryCard
+          icon={Wrench}
+          label="Skills"
+          value={skillCount !== undefined ? String(skillCount) : "\u2014"}
+          onClick={onPanelChange ? () => onPanelChange("skills") : undefined}
+        />
+        <SummaryCard
+          icon={Server}
+          label="MCP"
+          value={mcpCount !== undefined ? String(mcpCount) : "\u2014"}
+          onClick={onPanelChange ? () => onPanelChange("skills") : undefined}
         />
       </div>
 
@@ -302,6 +403,35 @@ export function OverviewPanel() {
         </div>
         <p className="text-xs text-[#8a8578] mt-1">{healthReason}</p>
       </div>
+
+      {/* Raw openclaw.json viewer — read-only, syntax-highlighting kept
+          minimal (browser monospace + JSON.stringify). For an editable
+          surface, we'd add structured cards backed by PATCH /config. */}
+      <Dialog open={configOpen} onOpenChange={setConfigOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>openclaw.json</DialogTitle>
+            <DialogDescription>
+              Read-only view of the configuration your container is running.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-auto rounded-md border border-[#e0dbd0] bg-[#fafaf6] p-3">
+            {configLoading ? (
+              <div className="flex items-center gap-2 text-sm text-[#8a8578]">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+              </div>
+            ) : configData?.config ? (
+              <pre className="text-xs font-mono whitespace-pre-wrap break-words">
+                {JSON.stringify(configData.config, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-sm text-[#8a8578]">
+                No config on disk yet. This is normal during provisioning.
+              </p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -351,13 +481,25 @@ function SummaryCard({
   icon: Icon,
   label,
   value,
+  onClick,
 }: {
   icon: typeof Clock;
   label: string;
   value: string;
+  onClick?: () => void;
 }) {
+  const interactive = !!onClick;
+  const Tag = interactive ? "button" : "div";
   return (
-    <div className="rounded-lg border border-[#e0dbd0] bg-white p-3 text-center">
+    <Tag
+      type={interactive ? "button" : undefined}
+      onClick={onClick}
+      className={cn(
+        "rounded-lg border border-[#e0dbd0] bg-white p-3 text-center w-full",
+        interactive &&
+          "cursor-pointer hover:border-[#cfc7b8] hover:bg-[#fafaf6] transition focus:outline-none focus:ring-2 focus:ring-[#06402b]/30",
+      )}
+    >
       <div className="flex items-center justify-center gap-1.5 mb-1">
         <Icon className="h-3 w-3 text-[#8a8578]/60" />
         <span className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">
@@ -365,7 +507,7 @@ function SummaryCard({
         </span>
       </div>
       <div className="text-sm font-medium">{value}</div>
-    </div>
+    </Tag>
   );
 }
 

@@ -1,4 +1,4 @@
-"""Tests for PATCH /api/v1/config router."""
+"""Tests for GET + PATCH /api/v1/config router."""
 
 import os
 from unittest.mock import AsyncMock, patch
@@ -213,5 +213,75 @@ def test_patch_config_allows_overwriting_own_agent_token(client):
             )
         assert resp.status_code == 200
         mock_patch.assert_awaited_once()
+    finally:
+        cleanup()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/config
+# ---------------------------------------------------------------------------
+
+
+def test_get_config_personal_user_returns_dict(client):
+    """Personal callers read their own user-scoped openclaw.json."""
+    cleanup = _patch_auth(_personal_auth())
+    try:
+        with patch(
+            "routers.config.read_openclaw_config_from_efs",
+            AsyncMock(return_value={"identity": {"name": "main"}}),
+        ) as mock_read:
+            resp = client.get("/api/v1/config")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["owner_id"] == "user_personal"
+        assert body["config"] == {"identity": {"name": "main"}}
+        mock_read.assert_awaited_once_with("user_personal")
+    finally:
+        cleanup()
+
+
+def test_get_config_org_admin_resolves_to_org_id(client):
+    """Org callers read org-scoped config (owner_id is the org_id, not the user)."""
+    cleanup = _patch_auth(_org_admin_auth())
+    try:
+        with patch(
+            "routers.config.read_openclaw_config_from_efs",
+            AsyncMock(return_value={"agents": {"list": []}}),
+        ) as mock_read:
+            resp = client.get("/api/v1/config")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["owner_id"] == "org_1"
+        mock_read.assert_awaited_once_with("org_1")
+    finally:
+        cleanup()
+
+
+def test_get_config_org_member_allowed(client):
+    """Read access is open to any authenticated owner — no admin gate."""
+    cleanup = _patch_auth(_org_member_auth())
+    try:
+        with patch(
+            "routers.config.read_openclaw_config_from_efs",
+            AsyncMock(return_value={}),
+        ):
+            resp = client.get("/api/v1/config")
+        assert resp.status_code == 200
+    finally:
+        cleanup()
+
+
+def test_get_config_returns_null_when_missing(client):
+    """File missing on EFS (e.g., mid-provisioning) → config: null."""
+    cleanup = _patch_auth(_personal_auth())
+    try:
+        with patch(
+            "routers.config.read_openclaw_config_from_efs",
+            AsyncMock(return_value=None),
+        ):
+            resp = client.get("/api/v1/config")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["config"] is None
     finally:
         cleanup()

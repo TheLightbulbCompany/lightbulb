@@ -57,10 +57,14 @@ export function ControlPanelRouter({ panel, onPanelChange }: ControlPanelRouterP
     if (shouldFallbackFromCredits) onPanelChange?.("overview");
   }, [shouldFallbackFromCredits, onPanelChange]);
 
-  // LLMPanel needs the panel-switch callback for its "Manage credits →" deep-link;
-  // every other panel takes no props.
+  // LLMPanel and OverviewPanel both take the panel-switch callback for
+  // their deep-link affordances (LLM → Credits; Overview → Cron/Skills/etc).
+  // Every other panel takes no props.
   if (resolvedPanel === "llm") {
     return <LLMPanel onPanelChange={onPanelChange} />;
+  }
+  if (resolvedPanel === "overview") {
+    return <OverviewPanel onPanelChange={onPanelChange} />;
   }
 
   const Panel = PANELS[resolvedPanel] || PANELS.overview;

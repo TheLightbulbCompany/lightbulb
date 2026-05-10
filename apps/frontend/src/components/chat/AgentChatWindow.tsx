@@ -310,13 +310,6 @@ export function AgentChatWindow({
     [chatMessages],
   );
 
-  const lastAssistantToolUses = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant") return messages[i].toolUses;
-    }
-    return undefined;
-  }, [messages]);
-
   if (chatError) {
     return (
       <div className="flex flex-col h-full bg-[#faf7f2]">
@@ -328,7 +321,7 @@ export function AgentChatWindow({
             <p className="font-medium">Error</p>
             <p className="text-sm">{chatError}</p>
           </div>
-          <StreamingStatusBar isStreaming={isStreaming} toolUses={lastAssistantToolUses} />
+          <StreamingStatusBar isStreaming={isStreaming} messages={messages} />
           <ChatInput onSend={handleSend} onStop={cancelMessage} disabled={isTyping} isStreaming={isStreaming} isUploading={isUploading} />
         </div>
       </div>
@@ -383,7 +376,7 @@ export function AgentChatWindow({
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} agentName={agentName} onOpenFile={onOpenFile} onDecide={resolveApproval} />
       <UpdateBanner />
-      <StreamingStatusBar isStreaming={isStreaming} toolUses={lastAssistantToolUses} />
+      <StreamingStatusBar isStreaming={isStreaming} messages={messages} />
       <ChatInput
         onSend={handleSend}
         onStop={cancelMessage}

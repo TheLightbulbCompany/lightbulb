@@ -1,30 +1,44 @@
 import * as React from "react";
-import { AgentGlyph, type ToolUse } from "./MessageList";
+import { AgentGlyph, type Message } from "./MessageList";
 
 interface StreamingStatusBarProps {
   isStreaming: boolean;
-  /** toolUses from the last assistant message; used to surface the in-flight tool. */
-  toolUses?: ToolUse[];
+  messages: Message[];
 }
 
-function deriveLabel(toolUses: ToolUse[] | undefined): string {
-  if (!toolUses || toolUses.length === 0) return "Thinking";
-  // Pending approval blocks progress — surface it regardless of where it
-  // sits in the array, even if a later tool is still "running".
-  for (let i = toolUses.length - 1; i >= 0; i--) {
-    if (toolUses[i].status === "pending-approval") {
-      return `Awaiting approval: ${toolUses[i].tool}`;
+export function deriveStreamingLabel(messages: Message[]): string {
+  // Approvals block the agent run — surface any pending approval anywhere
+  // in the conversation, not just the latest bubble. An approval can land
+  // on an earlier assistant bubble after a newer bubble has already been
+  // created (see useAgentChat test "approval.requested event matches
+  // toolCallId across any assistant bubble"), so scoping this to the last
+  // bubble would hide what's actually blocking the user.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || !m.toolUses) continue;
+    for (const t of m.toolUses) {
+      if (t.status === "pending-approval") {
+        return `Awaiting approval: ${t.tool}`;
+      }
     }
   }
-  for (let i = toolUses.length - 1; i >= 0; i--) {
-    if (toolUses[i].status === "running") return `Running ${toolUses[i].tool}`;
+  // Running tools always sit on the most recent assistant bubble (a new
+  // run can't start while an approval is pending).
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant") continue;
+    const tools = m.toolUses ?? [];
+    for (let j = tools.length - 1; j >= 0; j--) {
+      if (tools[j].status === "running") return `Running ${tools[j].tool}`;
+    }
+    break;
   }
   return "Thinking";
 }
 
-export function StreamingStatusBar({ isStreaming, toolUses }: StreamingStatusBarProps) {
+export function StreamingStatusBar({ isStreaming, messages }: StreamingStatusBarProps) {
   if (!isStreaming) return null;
-  const label = deriveLabel(toolUses);
+  const label = deriveStreamingLabel(messages);
   return (
     <div
       data-testid="streaming-status-bar"

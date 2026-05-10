@@ -24,7 +24,6 @@ from core.containers.config import (
     build_device_paired_json,
     generate_node_device_identity,
     load_node_device_identity,
-    write_mcporter_config,
     write_openclaw_config,
 )
 from core.containers.workspace import get_workspace
@@ -1505,7 +1504,7 @@ class EcsManager:
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
-        Writes four files to the user's EFS workspace:
+        Writes three files to the user's EFS workspace:
 
         - `openclaw.json` — the gateway config (provider block driven by
           ``provider_choice``: chatgpt_oauth / byo_key / bedrock_claude).
@@ -1515,7 +1514,6 @@ class EcsManager:
           Paperclip is unreachable, ``fetch_paperclip_agents_for_owner``
           returns ``[]`` and ``build_openclaw_config_dict`` falls back to
           the legacy ``main`` agent so provision still succeeds.
-        - `.mcporter/mcporter.json` — MCP server registry (currently empty)
         - `devices/.node-device-key.pem` — the node role's private key, read
           by the in-container agent for loopback authentication
         - `devices/paired.json` — the combined trust store (node + operator)
@@ -1610,8 +1608,6 @@ class EcsManager:
                 exc,
             )
 
-        workspace = get_workspace()
-        workspace.write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
         await self.ensure_device_identities(owner_id, gateway_token)
 
     async def ensure_device_identities(self, user_id: str, gateway_token: str) -> None:

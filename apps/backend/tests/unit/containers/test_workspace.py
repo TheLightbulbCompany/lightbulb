@@ -6,7 +6,7 @@ Uses tmp_path fixture for real filesystem operations -- no mocking needed.
 import pytest
 
 from core.config import settings
-from core.containers.workspace import Workspace, WorkspaceError
+from core.containers.workspace import Workspace, WorkspaceError, _EXCLUDED_NAMES
 
 
 # ---------------------------------------------------------------------------
@@ -415,3 +415,34 @@ class TestWriteFileIfMissing:
         wrote = workspace.write_file_if_missing(user_id, rel_path, "soul content")
         assert wrote is True
         assert workspace.read_file(user_id, rel_path) == "soul content"
+
+
+# ---------------------------------------------------------------------------
+# mcporter removal (post mcp-cutover)
+# ---------------------------------------------------------------------------
+
+
+class TestMcporterRemoved:
+    """After the MCP cutover, `.mcporter/mcporter.json` is no longer part
+    of the per-user workspace contract. The integrations router reads/writes
+    `openclaw.json#mcp.servers` instead, so provisioning must not seed a
+    legacy mcporter file and the tree must not silently hide it.
+    """
+
+    def test_excluded_names_no_longer_includes_mcporter(self):
+        """`.mcporter` is gone from the workspace-tree exclusion set.
+
+        We don't create the directory any more, but we also don't want to
+        hide it: any orphan from a pre-cutover provision should surface as
+        plain workspace content rather than mysteriously disappear.
+        """
+        assert ".mcporter" not in _EXCLUDED_NAMES
+
+    def test_ensure_user_dir_does_not_create_mcporter(self, workspace, user_id):
+        """Provisioning must not write a default mcporter.json any more."""
+        user_dir = workspace.ensure_user_dir(user_id)
+        assert user_dir.exists(), "User dir should exist"
+        assert not (user_dir / ".mcporter").exists(), (
+            "mcporter dir should not be created"
+        )
+        assert not (user_dir / ".mcporter" / "mcporter.json").exists()

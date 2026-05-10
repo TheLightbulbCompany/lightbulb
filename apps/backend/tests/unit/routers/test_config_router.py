@@ -257,16 +257,19 @@ def test_get_config_org_admin_resolves_to_org_id(client):
         cleanup()
 
 
-def test_get_config_org_member_allowed(client):
-    """Read access is open to any authenticated owner — no admin gate."""
+def test_get_config_org_member_rejected(client):
+    """Non-admin org members can't read the shared org config — it carries
+    secrets (channel botTokens, MCP env, etc.) only the admin set up."""
     cleanup = _patch_auth(_org_member_auth())
     try:
         with patch(
             "routers.config.read_openclaw_config_from_efs",
             AsyncMock(return_value={}),
-        ):
+        ) as mock_read:
             resp = client.get("/api/v1/config")
-        assert resp.status_code == 200
+        assert resp.status_code == 403
+        # Read should never have been attempted.
+        mock_read.assert_not_awaited()
     finally:
         cleanup()
 

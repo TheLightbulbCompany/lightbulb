@@ -107,12 +107,20 @@ async def _check_token_collision(owner_id: str, patch: dict) -> None:
         "Returns the caller's owner_id openclaw.json from EFS, or null if "
         "the file does not exist yet (e.g. mid-provisioning). Org callers "
         "resolve to org-scoped config; personal callers to user-scoped. "
-        "Read access is open to any authenticated owner — no admin gate."
+        "Org callers must be org_admin — the config carries shared secrets "
+        "(channels.*.accounts.*.botToken, future MCP env, etc.) that "
+        "non-admin members shouldn't see. Personal callers always own "
+        "their own secrets, so no extra gate."
     ),
 )
 async def get_config(
     auth: AuthContext = Depends(get_current_user),
 ):
+    # Mirror patch_config's gate. The shared org config carries secrets
+    # only the admin set up; without this, a non-admin member could read
+    # botTokens / MCP env via this endpoint or the Overview Configuration
+    # button even though they can't manage them via PATCH /config.
+    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     config = await read_openclaw_config_from_efs(owner_id)
     return {"owner_id": owner_id, "config": config}

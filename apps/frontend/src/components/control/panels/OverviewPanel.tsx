@@ -168,10 +168,19 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
 
   // Lazy-load the raw config — only fetch when the dialog opens, so the
   // overview panel doesn't pay for a config read on every mount.
-  const { data: configData, isLoading: configLoading } = useSWR<ConfigResponse>(
+  // Non-admin org members get 403 from this endpoint (the config carries
+  // shared secrets); we surface that as a "ask your admin" message rather
+  // than the generic "no config on disk" fallback.
+  const {
+    data: configData,
+    error: configError,
+    isLoading: configLoading,
+  } = useSWR<ConfigResponse>(
     configOpen ? "/config" : null,
     () => api.get("/config") as Promise<ConfigResponse>,
   );
+  const configForbidden =
+    (configError as { status?: number } | undefined)?.status === 403;
 
   const { state: healthState, reason: healthReason, canRecover, actionLabel, recover, isRecovering } = useSystemHealth();
 
@@ -420,6 +429,11 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
               <div className="flex items-center gap-2 text-sm text-[#8a8578]">
                 <Loader2 className="h-4 w-4 animate-spin" /> Loading…
               </div>
+            ) : configForbidden ? (
+              <p className="text-sm text-[#8a8578]">
+                Org admins only. The configuration carries shared secrets
+                (channel tokens, MCP env) — ask your org admin to view it.
+              </p>
             ) : configData?.config ? (
               <pre className="text-xs font-mono whitespace-pre-wrap break-words">
                 {JSON.stringify(configData.config, null, 2)}

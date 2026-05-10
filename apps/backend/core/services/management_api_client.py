@@ -119,15 +119,26 @@ class ManagementApiClient:
                 )
                 return False
 
-            # Other errors are unexpected and should be raised
+            # Other errors are unexpected and should be raised. boto3
+            # sometimes returns Message="" (empty string, not missing), so
+            # `dict.get("Message", default)` doesn't fall back — use
+            # `or str(e)`. Also surface the error Code + HTTPStatusCode +
+            # payload size so PayloadTooLargeException / LimitExceeded
+            # are diagnosable without a redeploy.
+            error_message = e.response.get("Error", {}).get("Message") or str(e)
+            http_status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             logger.error(
-                "Failed to send message to connection %s: %s",
+                "Failed to send message to connection %s: code=%s status=%s payload_bytes=%d msg=%s",
                 connection_id,
-                e.response.get("Error", {}).get("Message", str(e)),
+                error_code or "<unknown>",
+                http_status,
+                len(data),
+                error_message,
             )
             raise ManagementApiClientError(
                 f"Failed to send message to connection {connection_id}: "
-                f"{e.response.get('Error', {}).get('Message', str(e))}"
+                f"code={error_code or '<unknown>'} status={http_status} "
+                f"payload_bytes={len(data)} msg={error_message}"
             ) from e
 
     def close_connection(self, connection_id: str) -> None:
@@ -160,12 +171,18 @@ class ManagementApiClient:
                 )
                 return
 
-            # Other errors are unexpected and should be raised
+            # Other errors are unexpected and should be raised. Same
+            # empty-Message defensive pattern as send_message above.
+            error_message = e.response.get("Error", {}).get("Message") or str(e)
+            http_status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             logger.error(
-                "Failed to close connection %s: %s",
+                "Failed to close connection %s: code=%s status=%s msg=%s",
                 connection_id,
-                e.response.get("Error", {}).get("Message", str(e)),
+                error_code or "<unknown>",
+                http_status,
+                error_message,
             )
             raise ManagementApiClientError(
-                f"Failed to close connection {connection_id}: {e.response.get('Error', {}).get('Message', str(e))}"
+                f"Failed to close connection {connection_id}: "
+                f"code={error_code or '<unknown>'} status={http_status} msg={error_message}"
             ) from e

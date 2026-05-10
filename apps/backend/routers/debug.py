@@ -79,10 +79,10 @@ async def provision_container(
 
         # Step 2: Write all configs to EFS before the container boots. This
         # is the single source of truth for per-container files — it writes
-        # openclaw.json, .mcporter/mcporter.json, the node device PEM, and
-        # the combined devices/paired.json (with BOTH the node and the
-        # operator device entries, KMS-encrypted operator seed persisted to
-        # the DynamoDB containers row).
+        # openclaw.json, the node device PEM, and the combined
+        # devices/paired.json (with BOTH the node and the operator device
+        # entries, KMS-encrypted operator seed persisted to the DynamoDB
+        # containers row).
         # Plan 2 Task 13 shim: provider_choice defaults to bedrock_claude for
         # dev provisioning until Plan 3 wires the user's saved choice through.
         await ecs_manager.write_user_configs(

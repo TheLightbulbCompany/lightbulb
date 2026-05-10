@@ -147,7 +147,7 @@ export function McpServersTab(props: { agentId?: string }) {
       {/* Paste config section */}
       <div className="space-y-2">
         <p className="text-xs text-muted-foreground">
-          Add a new MCP server by pasting its mcporter configuration:
+          Add a new MCP server by pasting its configuration:
         </p>
         <textarea
           className="w-full h-36 rounded-lg border border-border bg-background p-3 text-xs font-mono resize-y focus:outline-none focus:ring-1 focus:ring-ring"

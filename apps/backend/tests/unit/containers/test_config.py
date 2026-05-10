@@ -10,7 +10,6 @@ from core.containers.config import (
     OPENCLAW_UPSTREAM_VERSION,
     build_openclaw_config_dict,
     write_openclaw_config,
-    write_mcporter_config,
     merge_openclaw_config,
     _deep_merge,
 )
@@ -269,36 +268,6 @@ class TestWriteOpenclawConfigAsync:
             user_id="u_1",
         )
         assert nested.exists()
-
-
-class TestWriteMcporterConfig:
-    """Test mcporter.json generation."""
-
-    def test_generates_valid_json(self):
-        result = write_mcporter_config()
-        parsed = json.loads(result)
-        assert isinstance(parsed, dict)
-
-    def test_default_empty_servers(self):
-        config = json.loads(write_mcporter_config())
-        assert config["servers"] == {}
-
-    def test_custom_servers(self):
-        servers = {
-            "github": {
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-github"],
-                "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_test"},
-            }
-        }
-        config = json.loads(write_mcporter_config(servers=servers))
-        assert "github" in config["servers"]
-        assert config["servers"]["github"]["command"] == "npx"
-        assert config["servers"]["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_test"
-
-    def test_none_servers_returns_empty(self):
-        config = json.loads(write_mcporter_config(servers=None))
-        assert config["servers"] == {}
 
 
 class TestPatchOpenclawConfig:

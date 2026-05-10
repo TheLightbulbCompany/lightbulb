@@ -16,6 +16,7 @@ from core.services.config_patcher import (  # noqa: E402
     delete_openclaw_config_path,
     patch_openclaw_config,
     remove_from_openclaw_config_list,
+    set_openclaw_config_path,
 )
 
 
@@ -706,3 +707,95 @@ async def test_append_cron_jobs_recovers_from_corrupt_file(cron_efs_dir):
         data = json.load(f)
     assert data["version"] == 1
     assert [j["name"] for j in data["jobs"]] == ["Recovery"]
+
+
+# ------------------------------------------------------------------
+# set_openclaw_config_path (replace-leaf semantics)
+# ------------------------------------------------------------------
+
+
+@pytest.fixture
+def set_efs_root(monkeypatch):
+    """Point config_patcher at a temp EFS root for set_openclaw_config_path tests."""
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", d)
+        yield d
+
+
+def _seed_set_config(efs_root: str, owner_id: str, config: dict) -> str:
+    user_dir = os.path.join(efs_root, owner_id)
+    os.makedirs(user_dir, exist_ok=True)
+    config_path = os.path.join(user_dir, "openclaw.json")
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    return config_path
+
+
+class TestSetOpenclawConfigPath:
+    @pytest.mark.asyncio
+    async def test_replaces_existing_leaf(self, set_efs_root):
+        config_path = _seed_set_config(
+            set_efs_root,
+            "user_set_1",
+            {"mcp": {"servers": {"old": {"command": "x"}}}},
+        )
+        await set_openclaw_config_path(
+            "user_set_1",
+            ["mcp", "servers"],
+            {"new": {"command": "y"}},
+        )
+        with open(config_path) as f:
+            result = json.load(f)
+        assert result["mcp"]["servers"] == {"new": {"command": "y"}}
+
+    @pytest.mark.asyncio
+    async def test_creates_missing_intermediates(self, set_efs_root):
+        config_path = _seed_set_config(set_efs_root, "user_set_2", {})
+        await set_openclaw_config_path(
+            "user_set_2",
+            ["mcp", "servers"],
+            {"a": {"command": "b"}},
+        )
+        with open(config_path) as f:
+            result = json.load(f)
+        assert result["mcp"]["servers"] == {"a": {"command": "b"}}
+
+    @pytest.mark.asyncio
+    async def test_overwrites_non_dict_intermediate(self, set_efs_root):
+        """If an intermediate path segment is not a dict, replace it."""
+        config_path = _seed_set_config(set_efs_root, "user_set_3", {"mcp": "stringy"})
+        await set_openclaw_config_path(
+            "user_set_3",
+            ["mcp", "servers"],
+            {"a": {"command": "b"}},
+        )
+        with open(config_path) as f:
+            result = json.load(f)
+        assert result["mcp"] == {"servers": {"a": {"command": "b"}}}
+
+    @pytest.mark.asyncio
+    async def test_empty_path_raises(self, set_efs_root):
+        _seed_set_config(set_efs_root, "user_set_4", {})
+        with pytest.raises(ConfigPatchError):
+            await set_openclaw_config_path("user_set_4", [], {"x": 1})
+
+    @pytest.mark.asyncio
+    async def test_missing_config_raises(self, set_efs_root):
+        with pytest.raises(ConfigPatchError):
+            await set_openclaw_config_path("nonexistent_owner", ["mcp", "servers"], {})
+
+    @pytest.mark.asyncio
+    async def test_noop_when_value_unchanged(self, set_efs_root):
+        """Setting an identical value should not bump the file mtime."""
+        config_path = _seed_set_config(
+            set_efs_root,
+            "user_set_5",
+            {"mcp": {"servers": {"a": {"command": "b"}}}},
+        )
+        original_mtime = os.stat(config_path).st_mtime_ns
+        await set_openclaw_config_path(
+            "user_set_5",
+            ["mcp", "servers"],
+            {"a": {"command": "b"}},
+        )
+        assert os.stat(config_path).st_mtime_ns == original_mtime

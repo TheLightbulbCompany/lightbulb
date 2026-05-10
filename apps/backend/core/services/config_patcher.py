@@ -343,6 +343,44 @@ async def delete_openclaw_config_path(
     await _locked_rmw(owner_id, _mutate, f"delete path={path}")
 
 
+async def set_openclaw_config_path(
+    owner_id: str,
+    path: list[str],
+    value: Any,
+) -> None:
+    """Replace the leaf at `path` with `value` in the owner's openclaw.json.
+
+    Semantics:
+    - Creates missing intermediate dicts.
+    - If an intermediate segment exists but is not a dict, it is replaced
+      with a dict (consistent with treating the path as authoritative).
+    - No-op if the leaf already equals `value` (skips write + chokidar reload).
+    - Same fcntl.lockf exclusive lock as the other helpers.
+
+    Used for "replace this entire subtree" semantics that deep-merge cannot
+    express (e.g. PUT /integrations/mcp/servers wipes any server not in the
+    new dict).
+    """
+    if not path:
+        raise ConfigPatchError("path must not be empty")
+
+    def _mutate(current: dict) -> bool:
+        cursor = current
+        for segment in path[:-1]:
+            existing = cursor.get(segment)
+            if not isinstance(existing, dict):
+                cursor[segment] = {}
+            cursor = cursor[segment]
+
+        leaf_key = path[-1]
+        if cursor.get(leaf_key) == value:
+            return False  # already the desired value, skip the write
+        cursor[leaf_key] = copy.deepcopy(value)
+        return True
+
+    await _locked_rmw(owner_id, _mutate, f"set path={path}")
+
+
 async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
     """Atomically append cron jobs to ``{owner_id}/cron/jobs.json``.
 

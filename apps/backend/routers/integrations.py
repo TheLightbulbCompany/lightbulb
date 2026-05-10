@@ -1,25 +1,30 @@
 """MCP server integration management endpoints.
 
-CRUD for mcporter config (MCP server definitions) stored on the user's
-EFS workspace at .mcporter/mcporter.json.
+CRUD for OpenClaw-native MCP server definitions stored under ``mcp.servers``
+in the owner's ``openclaw.json``. Equivalent to ``openclaw mcp list/show/set/unset``
+inside the container — but operated from the Isol8 control panel via the
+file-locked patcher in ``core.services.config_patcher``.
+
+Reads use ``read_openclaw_config_from_efs``. Writes use the same atomic
+file-lock + chown machinery as channels, updates, catalog, admin — every
+patch triggers OpenClaw's chokidar-based hot reload, so changes take effect
+without a container restart.
 """
 
-import json
-import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.containers import get_workspace
-from core.containers.workspace import WorkspaceError
-
-logger = logging.getLogger(__name__)
+from core.containers.config import read_openclaw_config_from_efs
+from core.services.config_patcher import (
+    ConfigPatchError,
+    delete_openclaw_config_path,
+    set_openclaw_config_path,
+)
 
 router = APIRouter()
-
-MCPORTER_CONFIG_PATH = ".mcporter/mcporter.json"
 
 
 class ServerEntry(BaseModel):
@@ -42,44 +47,46 @@ class PatchServerRequest(BaseModel):
     env: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
 
 
-def _read_mcporter_config(user_id: str) -> dict:
-    """Read and parse the user's mcporter.json, returning empty servers if missing."""
-    workspace = get_workspace()
-    try:
-        raw = workspace.read_file(user_id, MCPORTER_CONFIG_PATH)
-        return json.loads(raw)
-    except WorkspaceError:
-        return {"servers": {}}
-    except json.JSONDecodeError:
-        logger.warning("Corrupt mcporter.json for user %s, resetting", user_id)
-        return {"servers": {}}
-
-
-def _write_mcporter_config(user_id: str, config: dict) -> None:
-    """Write the user's mcporter.json."""
-    workspace = get_workspace()
-    workspace.write_file(user_id, MCPORTER_CONFIG_PATH, json.dumps(config, indent=2))
-
-
 def _validate_servers(servers: dict) -> None:
-    """Validate that each server entry has at minimum a command field (string)."""
+    """Validate each server entry against the ``ServerEntry`` schema.
+
+    Strict per-entry validation matters now that writes go straight into
+    ``openclaw.json``: malformed shapes (e.g. ``args: "--stdio"``,
+    ``env: {"K": 123}``) get past Pydantic's ``Dict[str, Any]`` body
+    validation but then fail OpenClaw's chokidar hot-reload, leaving the
+    API at 200 with the agent state silently broken. Reject at the API.
+    """
     for name, entry in servers.items():
         if not isinstance(entry, dict):
             raise HTTPException(
                 status_code=422,
                 detail=f"Server '{name}' must be an object",
             )
-        if "command" not in entry or not isinstance(entry["command"], str):
+        try:
+            ServerEntry.model_validate(entry)
+        except ValidationError as exc:
             raise HTTPException(
                 status_code=422,
-                detail=f"Server '{name}' must have a 'command' string field",
-            )
+                detail=f"Server '{name}' is invalid: {exc.errors()}",
+            ) from exc
+
+
+async def _read_mcp_servers(owner_id: str) -> dict:
+    """Return the current ``mcp.servers`` block, or empty dict if absent."""
+    config = await read_openclaw_config_from_efs(owner_id)
+    if not isinstance(config, dict):
+        return {}
+    mcp = config.get("mcp")
+    if not isinstance(mcp, dict):
+        return {}
+    servers = mcp.get("servers")
+    return servers if isinstance(servers, dict) else {}
 
 
 @router.get(
     "/integrations/mcp/servers",
     summary="List configured MCP servers",
-    description="Returns all MCP server entries from the user's mcporter.json config.",
+    description="Returns all MCP server entries from the owner's openclaw.json mcp.servers block.",
     response_model=ServersResponse,
     operation_id="list_mcp_servers",
     tags=["integrations"],
@@ -88,14 +95,14 @@ async def list_mcp_servers(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    config = _read_mcporter_config(owner_id)
-    return {"servers": config.get("servers", {})}
+    servers = await _read_mcp_servers(owner_id)
+    return {"servers": servers}
 
 
 @router.put(
     "/integrations/mcp/servers",
     summary="Replace all MCP server configurations",
-    description="Replaces the entire servers dict in the user's mcporter.json config.",
+    description="Replaces the entire mcp.servers dict in the owner's openclaw.json.",
     response_model=ServersResponse,
     operation_id="replace_mcp_servers",
     tags=["integrations"],
@@ -108,16 +115,17 @@ async def replace_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     _validate_servers(body.servers)
-    config = _read_mcporter_config(owner_id)
-    config["servers"] = body.servers
-    _write_mcporter_config(owner_id, config)
-    return {"servers": config["servers"]}
+    try:
+        await set_openclaw_config_path(owner_id, ["mcp", "servers"], body.servers)
+    except ConfigPatchError as exc:
+        raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
+    return {"servers": body.servers}
 
 
 @router.patch(
     "/integrations/mcp/servers/{name}",
     summary="Add or update a single MCP server",
-    description="Adds or updates a single MCP server entry by name.",
+    description="Adds or replaces a single MCP server entry by name (full overwrite, not deep-merged).",
     response_model=ServersResponse,
     operation_id="upsert_mcp_server",
     tags=["integrations"],
@@ -130,18 +138,19 @@ async def upsert_mcp_server(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
-    config = _read_mcporter_config(owner_id)
-    servers = config.get("servers", {})
-    servers[name] = body.model_dump()
-    config["servers"] = servers
-    _write_mcporter_config(owner_id, config)
-    return {"servers": config["servers"]}
+    entry = body.model_dump()
+    try:
+        await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
+    except ConfigPatchError as exc:
+        raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
+    servers = await _read_mcp_servers(owner_id)
+    return {"servers": servers}
 
 
 @router.delete(
     "/integrations/mcp/servers/{name}",
     summary="Remove an MCP server",
-    description="Removes an MCP server entry by name.",
+    description="Removes an MCP server entry by name from the owner's openclaw.json mcp.servers.",
     response_model=ServersResponse,
     operation_id="delete_mcp_server",
     tags=["integrations"],
@@ -153,9 +162,9 @@ async def delete_mcp_server(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
-    config = _read_mcporter_config(owner_id)
-    servers = config.get("servers", {})
-    servers.pop(name, None)
-    config["servers"] = servers
-    _write_mcporter_config(owner_id, config)
-    return {"servers": config["servers"]}
+    try:
+        await delete_openclaw_config_path(owner_id, ["mcp", "servers", name])
+    except ConfigPatchError as exc:
+        raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
+    servers = await _read_mcp_servers(owner_id)
+    return {"servers": servers}

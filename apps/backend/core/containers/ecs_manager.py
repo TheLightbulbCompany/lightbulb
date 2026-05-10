@@ -1186,11 +1186,20 @@ class EcsManager:
                     )
 
                 try:
+                    # Reuse the existing hook_token so the rendered
+                    # openclaw.json placeholder still resolves at boot
+                    # against the env var we layer back onto the new
+                    # task-def below. Legacy rows without one fall through
+                    # to None — backfill mints tokens for those out of band.
+                    existing_hook_token_for_write = (
+                        existing.get("hook_token") if existing else None
+                    )
                     await self.write_user_configs(
                         user_id,
                         gateway_token,
                         provider_choice=provider_choice,
                         byo_provider=byo_provider,
+                        hook_token=existing_hook_token_for_write,
                     )
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
@@ -1397,6 +1406,7 @@ class EcsManager:
                 gateway_token,
                 provider_choice=provider_choice,
                 byo_provider=byo_provider,
+                hook_token=hook_token,
             )
         except Exception as e:
             put_metric("container.provision", dimensions={"status": "error"})
@@ -1585,6 +1595,7 @@ class EcsManager:
         *,
         provider_choice: str,
         byo_provider: str | None = None,
+        hook_token: str | None = None,
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
@@ -1624,6 +1635,13 @@ class EcsManager:
             byo_provider: ``"openai"`` or ``"anthropic"``. Required when
                 ``provider_choice == "byo_key"`` so the right model block is
                 emitted; ignored otherwise.
+            hook_token: Optional per-user OpenClaw webhook auth token. Not
+                interpolated into the rendered openclaw.json (it carries the
+                literal ``${OPENCLAW_HOOK_TOKEN}`` placeholder which OpenClaw
+                expands at boot from the per-user ECS task-def env var). The
+                arg is threaded through for signature symmetry with the env
+                injection in :meth:`_register_task_definition` and to leave
+                a hook for the rotate flow to land here without rewiring.
         """
         # Treat the inbound parameter as owner_id internally. Naming
         # mismatch with the API surface is intentional — preserves
@@ -1671,6 +1689,7 @@ class EcsManager:
             user_id=owner_id,
             byo_provider=byo_provider,
             paperclip_agents=paperclip_agents,
+            hook_token=hook_token,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

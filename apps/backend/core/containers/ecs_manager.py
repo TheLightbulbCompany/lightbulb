@@ -57,9 +57,7 @@ def _build_per_user_environment(
     task-def carried no token, but a half-complete prior backfill could have
     left a stale one).
     """
-    out: list[dict] = [
-        e for e in existing if e.get("name") != "OPENCLAW_HOOK_TOKEN"
-    ]
+    out: list[dict] = [e for e in existing if e.get("name") != "OPENCLAW_HOOK_TOKEN"]
     out.append({"name": "OPENCLAW_HOOK_TOKEN", "value": hook_token})
     return out
 
@@ -334,6 +332,75 @@ class EcsManager:
             logger.info("Deregistered task definition %s", task_definition_arn)
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
+
+    async def refresh_task_definition(self, owner_id: str) -> bool:
+        """Re-register a user's ECS task definition with the current env list,
+        then roll the running task onto the new revision.
+
+        Used by the hook-token backfill: existing per-user task-defs were
+        registered before OPENCLAW_HOOK_TOKEN existed; just patching
+        openclaw.json on EFS leaves the env var undefined inside the running
+        container, so the gateway's ${VAR} substitution resolves to empty.
+        This helper rebuilds the env list (now including the freshly-set
+        hook_token from the containers row) and updates the service to
+        deploy a new task-def revision.
+
+        Unlike ``_register_task_definition`` (which clones from the CDK base
+        family via ``_build_register_kwargs_from_base``), the backfill path
+        must preserve every per-user mutation already on the live revision
+        (BYOK provider secrets, chatgpt_oauth ``CODEX_HOME``, etc.). So we
+        describe the user's CURRENT task-def, swap its env list, and
+        re-register that — the base-cloning seam doesn't fit here.
+
+        The EFS access point and DDB row are untouched — losing agent
+        state would be a backfill regression.
+
+        Returns True on success, False if the user has no provisioned
+        container or the row is missing task_definition_arn.
+        """
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container or not container.get("task_definition_arn"):
+            return False
+
+        # Read the current task-def to pull family/volumes/secrets/networkMode/etc.
+        current = self._ecs.describe_task_definition(taskDefinition=container["task_definition_arn"])
+        td = current["taskDefinition"]
+
+        # Rebuild the openclaw container-def with a fresh environment list
+        # that includes the freshly-set OPENCLAW_HOOK_TOKEN.
+        existing_env = next(c for c in td["containerDefinitions"] if c["name"] == "openclaw")["environment"]
+        new_env = _build_per_user_environment(
+            hook_token=container.get("hook_token") or "",
+            existing=existing_env,
+        )
+        for cd in td["containerDefinitions"]:
+            if cd["name"] == "openclaw":
+                cd["environment"] = new_env
+
+        register_kwargs = {
+            "family": td["family"],
+            "containerDefinitions": td["containerDefinitions"],
+            "volumes": td.get("volumes", []),
+            "networkMode": td["networkMode"],
+            "requiresCompatibilities": td.get("requiresCompatibilities", []),
+            "cpu": td.get("cpu"),
+            "memory": td.get("memory"),
+            "executionRoleArn": td.get("executionRoleArn"),
+            "taskRoleArn": td.get("taskRoleArn"),
+        }
+        register_kwargs = {k: v for k, v in register_kwargs.items() if v is not None}
+        new_td = self._ecs.register_task_definition(**register_kwargs)
+        new_arn = new_td["taskDefinition"]["taskDefinitionArn"]
+
+        self._ecs.update_service(
+            cluster=settings.ECS_CLUSTER_ARN,
+            service=container["service_name"],
+            taskDefinition=new_arn,
+            forceNewDeployment=True,
+        )
+        # Persist the new ARN so subsequent operations see it.
+        await container_repo.update_fields(owner_id, {"task_definition_arn": new_arn})
+        return True
 
     # ------------------------------------------------------------------
     # Safe DB helpers
@@ -1191,9 +1258,7 @@ class EcsManager:
                     # against the env var we layer back onto the new
                     # task-def below. Legacy rows without one fall through
                     # to None — backfill mints tokens for those out of band.
-                    existing_hook_token_for_write = (
-                        existing.get("hook_token") if existing else None
-                    )
+                    existing_hook_token_for_write = existing.get("hook_token") if existing else None
                     await self.write_user_configs(
                         user_id,
                         gateway_token,
@@ -1218,9 +1283,7 @@ class EcsManager:
                 access_point_id = existing.get("access_point_id") if existing else None
                 if access_point_id:
                     try:
-                        existing_hook_token = (
-                            existing.get("hook_token") if existing else None
-                        )
+                        existing_hook_token = existing.get("hook_token") if existing else None
                         new_task_def_arn = await asyncio.to_thread(
                             self._register_task_definition,
                             access_point_id,

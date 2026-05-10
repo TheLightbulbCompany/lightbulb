@@ -496,6 +496,7 @@ def build_openclaw_config_dict(
     byo_provider: str | None = None,
     paperclip_agents: list[dict] | None = None,
     hook_token: str | None = None,
+    owner_type: str = "personal",
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -566,6 +567,20 @@ def build_openclaw_config_dict(
             "http": {
                 "endpoints": {
                     "chatCompletions": {"enabled": False},
+                },
+            },
+            # Per-owner browser-routing posture. `auto` lets browser tool
+            # calls auto-route to a connected node when one's paired —
+            # safe for personal owners (one human, one Mac, no
+            # ambiguity). `manual` forces explicit `target: "node"` +
+            # `node: <id>` per call — required for orgs because
+            # selectDefaultNodeFromList in extensions/browser has no
+            # session-ownership awareness, so auto-routing in an org
+            # with two paired Macs could send a Telegram peer's
+            # request to the wrong member's Chrome.
+            "nodes": {
+                "browser": {
+                    "mode": "auto" if owner_type == "personal" else "manual",
                 },
             },
         },
@@ -735,13 +750,20 @@ def build_openclaw_config_dict(
             "enabled": True,
         },
         "browser": {
-            # Enables OpenClaw's browser tool. Default profile is `user`
-            # which attaches to the user's real signed-in Chrome 144+ via
-            # chrome-devtools-mcp + CDP. No Chromium bundled in the
-            # container image.
+            # Two profiles always defined; the `user` profile is
+            # statically declared but only routable when a desktop node
+            # is paired (extensions/browser/src/browser-tool.ts:243
+            # filters by node.connected). Default is `openclaw` so
+            # not-yet-bound sessions (channels, cron, unpaired UI) get
+            # container Chromium — bundled in the extended image since
+            # PR #596.
             "enabled": True,
-            "defaultProfile": "user",
+            "defaultProfile": "openclaw",
             "profiles": {
+                "openclaw": {
+                    "driver": "openclaw",
+                    "color": "#FF4500",
+                },
                 "user": {
                     "driver": "existing-session",
                     # Required since OpenClaw bumped its config schema —
@@ -749,15 +771,6 @@ def build_openclaw_config_dict(
                     # Surfaces in the OpenClaw UI as the profile chip.
                     "color": "#0066FF",
                 },
-            },
-        },
-        "nodeHost": {
-            "browserProxy": {
-                # Auto-route browser tool calls to the paired desktop
-                # node. The Isol8 Tauri app runs the sidecar
-                # (openclaw/extensions/browser + chrome-devtools-mcp)
-                # colocated with Chrome on the user's Mac.
-                "enabled": True,
             },
         },
         "update": {"checkOnStart": False},
@@ -793,6 +806,7 @@ async def write_openclaw_config(
     byo_provider: str | None = None,
     paperclip_agents: list[dict] | None = None,
     hook_token: str | None = None,
+    owner_type: str = "personal",
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -836,6 +850,7 @@ async def write_openclaw_config(
         byo_provider=byo_provider,
         paperclip_agents=paperclip_agents,
         hook_token=hook_token,
+        owner_type=owner_type,
     )
 
     def _write() -> None:

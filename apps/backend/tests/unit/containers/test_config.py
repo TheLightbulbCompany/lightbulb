@@ -172,20 +172,50 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["session"]["dmScope"] == "per-account-channel-peer"
 
-    def test_browser_user_profile(self):
-        """Default profile attaches to the user's real Chrome via CDP."""
+    def test_browser_two_profiles_default_openclaw(self):
+        """Both profiles are statically defined; default is the cloud
+        Chromium profile so unbound sessions (channels, cron, unpaired
+        UI) don't try to hit a non-existent desktop. The `user` profile
+        only routes when a desktop node is paired."""
         config = _cfg()
         browser = config["browser"]
         assert browser["enabled"] is True
-        assert browser["defaultProfile"] == "user"
+        assert browser["defaultProfile"] == "openclaw"
+        # Container Chromium (bundled in the extended image since PR #596).
+        assert browser["profiles"]["openclaw"]["driver"] == "openclaw"
+        assert isinstance(browser["profiles"]["openclaw"]["color"], str)
+        # Real signed-in Chrome via Chrome DevTools MCP — only routable
+        # when the desktop sidecar is paired as a browser-capable node.
         assert browser["profiles"]["user"]["driver"] == "existing-session"
-        # color is required since OpenClaw's schema bump.
         assert isinstance(browser["profiles"]["user"]["color"], str)
 
-    def test_node_host_browser_proxy_enabled(self):
-        """Auto-routes browser tool calls to the paired desktop node."""
+    def test_no_node_host_block(self):
+        """`nodeHost.browserProxy` is a node-host-side config (read by
+        `openclaw node run` on the desktop), not a gateway config. It
+        must not appear in the gateway/container's openclaw.json — it
+        was dead config there."""
         config = _cfg()
-        assert config["nodeHost"]["browserProxy"]["enabled"] is True
+        assert "nodeHost" not in config
+
+    def test_gateway_nodes_browser_mode_personal_auto(self):
+        """Personal owners: one human, one Mac — auto-route browser tool
+        calls to the paired desktop when one's connected."""
+        config = _cfg(owner_type="personal")
+        assert config["gateway"]["nodes"]["browser"]["mode"] == "auto"
+
+    def test_gateway_nodes_browser_mode_org_manual(self):
+        """Org owners: multi-member ambiguity — agent must explicitly
+        pick a node (`target: "node"` + `node: <id>`) per call,
+        otherwise selectDefaultNodeFromList could route a peer's
+        request to the wrong member's Chrome."""
+        config = _cfg(owner_type="org")
+        assert config["gateway"]["nodes"]["browser"]["mode"] == "manual"
+
+    def test_gateway_nodes_browser_mode_defaults_to_personal(self):
+        """Backwards-compat: callers that don't pass owner_type get
+        the personal default."""
+        config = _cfg()
+        assert config["gateway"]["nodes"]["browser"]["mode"] == "auto"
 
     def test_update_check_disabled(self):
         config = _cfg()
@@ -282,8 +312,9 @@ class TestWriteOpenclawConfigAsync:
         assert cfg["memory"]["backend"] == "builtin"
         assert cfg["tools"]["exec"]["security"] == "allowlist"
         assert cfg["channels"]["telegram"]["enabled"] is True
-        assert cfg["browser"]["defaultProfile"] == "user"
-        assert cfg["nodeHost"]["browserProxy"]["enabled"] is True
+        assert cfg["browser"]["defaultProfile"] == "openclaw"
+        assert "nodeHost" not in cfg
+        assert cfg["gateway"]["nodes"]["browser"]["mode"] == "auto"
 
     async def test_creates_parent_dir(self, tmp_path):
         nested = tmp_path / "a" / "b" / "openclaw.json"

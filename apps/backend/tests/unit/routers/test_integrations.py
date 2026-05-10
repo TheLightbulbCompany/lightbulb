@@ -6,31 +6,63 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 from core.auth import get_current_user, AuthContext
-from core.containers.workspace import WorkspaceError
 
 
 class TestIntegrationsRouter:
     """Test /integrations/mcp/servers CRUD endpoints."""
 
     @pytest.fixture
-    def mock_workspace(self):
-        """Mock workspace that stores files in memory."""
-        files: dict[str, str] = {}
-        ws = MagicMock()
+    def fake_config(self):
+        """In-memory openclaw.json that the patched helpers operate on."""
+        store = {"config": {"mcp": {"servers": {}}}}
 
-        def read_file(user_id: str, path: str) -> str:
-            key = f"{user_id}/{path}"
-            if key not in files:
-                raise WorkspaceError(f"File not found: {path!r}", user_id=user_id)
-            return files[key]
+        async def read_config(owner_id: str):
+            # Deep-copy to mimic real I/O semantics — the router shouldn't
+            # mutate the underlying store directly.
+            import copy
+            return copy.deepcopy(store["config"])
 
-        def write_file(user_id: str, path: str, content: str) -> None:
-            files[f"{user_id}/{path}"] = content
+        async def patch_config(owner_id: str, patch_dict: dict):
+            import copy
+            from core.services.config_patcher import _deep_merge
 
-        ws.read_file = MagicMock(side_effect=read_file)
-        ws.write_file = MagicMock(side_effect=write_file)
-        ws._files = files
-        return ws
+            store["config"] = _deep_merge(store["config"], copy.deepcopy(patch_dict))
+
+        async def set_path(owner_id: str, path: list[str], value):
+            import copy
+            cursor = store["config"]
+            for seg in path[:-1]:
+                if not isinstance(cursor.get(seg), dict):
+                    cursor[seg] = {}
+                cursor = cursor[seg]
+            cursor[path[-1]] = copy.deepcopy(value)
+
+        async def delete_path(owner_id: str, path: list[str]):
+            cursor = store["config"]
+            for seg in path[:-1]:
+                if not isinstance(cursor.get(seg), dict):
+                    return
+                cursor = cursor[seg]
+            cursor.pop(path[-1], None)
+
+        return {
+            "store": store,
+            "read": read_config,
+            "patch": patch_config,
+            "set": set_path,
+            "delete": delete_path,
+        }
+
+    @pytest.fixture
+    def patched_router(self, fake_config):
+        """Patches all four config helpers used by integrations.py."""
+        with (
+            patch("routers.integrations.read_openclaw_config_from_efs", side_effect=fake_config["read"]),
+            patch("routers.integrations.patch_openclaw_config", side_effect=fake_config["patch"]),
+            patch("routers.integrations.set_openclaw_config_path", side_effect=fake_config["set"]),
+            patch("routers.integrations.delete_openclaw_config_path", side_effect=fake_config["delete"]),
+        ):
+            yield fake_config
 
     @pytest.fixture
     def auth_override(self):
@@ -42,12 +74,11 @@ class TestIntegrationsRouter:
         return _mock
 
     @pytest.mark.asyncio
-    async def test_list_empty_servers(self, app, mock_workspace, auth_override):
-        """GET returns empty servers when no config exists."""
+    async def test_list_empty_servers(self, app, patched_router, auth_override):
+        """GET returns empty servers when openclaw.json has no mcp.servers."""
         app.dependency_overrides[get_current_user] = auth_override
-        with patch("routers.integrations.get_workspace", return_value=mock_workspace):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.get("/api/v1/integrations/mcp/servers")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/v1/integrations/mcp/servers")
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
         assert resp.json()["servers"] == {}

@@ -60,6 +60,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     marketplacePurchasesTable: dynamodb.Table;
     marketplacePayoutAccountsTable: dynamodb.Table;
     marketplaceTakedownsTable: dynamodb.Table;
+    hookEventsTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -314,6 +315,12 @@ export class ServiceStack extends cdk.Stack {
     props.database.marketplacePurchasesTable.grantReadWriteData(this.taskRole);
     props.database.marketplacePayoutAccountsTable.grantReadWriteData(this.taskRole);
     props.database.marketplaceTakedownsTable.grantReadWriteData(this.taskRole);
+
+    // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
+    // T5 repo writes one row per delivery; T6 proxy + admin views read.
+    // KMS encrypt/decrypt is already covered by the broader KmsAccess
+    // statement above (kmsKeyArn is the same CMK the table uses).
+    props.database.hookEventsTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(

@@ -337,8 +337,45 @@ function ToolUseIndicator({
   );
 }
 
-const AGENT_GLYPH_PATH =
+export const AGENT_GLYPH_PATH =
     "M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z";
+
+export function AgentGlyph({
+    state,
+    size = 18,
+    className,
+}: {
+    state: "idle" | "thinking";
+    size?: number;
+    className?: string;
+}) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 12"
+            fill="none"
+            className={cn("agent-glyph", state === "thinking" && "agent-glyph--thinking", className)}
+        >
+            <path
+                className="agent-glyph-base"
+                d={AGENT_GLYPH_PATH}
+                strokeWidth="1.6"
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+            <path
+                className="agent-glyph-tracer"
+                d={AGENT_GLYPH_PATH}
+                strokeWidth="1.6"
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+        </svg>
+    );
+}
 
 function AgentHead({ name, state }: { name: string; state: "idle" | "thinking" }) {
     return (
@@ -347,30 +384,7 @@ function AgentHead({ name, state }: { name: string; state: "idle" | "thinking" }
                 {name}
             </span>
             <span className="inline-flex items-center justify-center w-5 h-5">
-                <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 12"
-                    fill="none"
-                    className={cn("agent-glyph", state === "thinking" && "agent-glyph--thinking")}
-                >
-                    <path
-                        className="agent-glyph-base"
-                        d={AGENT_GLYPH_PATH}
-                        strokeWidth="1.6"
-                        fill="none"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    />
-                    <path
-                        className="agent-glyph-tracer"
-                        d={AGENT_GLYPH_PATH}
-                        strokeWidth="1.6"
-                        fill="none"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    />
-                </svg>
+                <AgentGlyph state={state} size={18} />
             </span>
             <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                 <Copy className="h-3 w-3" />

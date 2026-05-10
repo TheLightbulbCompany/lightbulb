@@ -14,7 +14,7 @@ without a container restart.
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.containers.config import read_openclaw_config_from_efs
@@ -48,18 +48,27 @@ class PatchServerRequest(BaseModel):
 
 
 def _validate_servers(servers: dict) -> None:
-    """Validate that each server entry has at minimum a command field (string)."""
+    """Validate each server entry against the ``ServerEntry`` schema.
+
+    Strict per-entry validation matters now that writes go straight into
+    ``openclaw.json``: malformed shapes (e.g. ``args: "--stdio"``,
+    ``env: {"K": 123}``) get past Pydantic's ``Dict[str, Any]`` body
+    validation but then fail OpenClaw's chokidar hot-reload, leaving the
+    API at 200 with the agent state silently broken. Reject at the API.
+    """
     for name, entry in servers.items():
         if not isinstance(entry, dict):
             raise HTTPException(
                 status_code=422,
                 detail=f"Server '{name}' must be an object",
             )
-        if "command" not in entry or not isinstance(entry["command"], str):
+        try:
+            ServerEntry.model_validate(entry)
+        except ValidationError as exc:
             raise HTTPException(
                 status_code=422,
-                detail=f"Server '{name}' must have a 'command' string field",
-            )
+                detail=f"Server '{name}' is invalid: {exc.errors()}",
+            ) from exc
 
 
 async def _read_mcp_servers(owner_id: str) -> dict:

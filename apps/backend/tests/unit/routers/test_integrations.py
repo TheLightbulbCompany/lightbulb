@@ -194,6 +194,41 @@ class TestIntegrationsRouter:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
+    async def test_put_rejects_args_as_string(self, app, patched_router, auth_override):
+        """PUT rejects entries whose args are not a list of strings.
+
+        Regression guard for the Codex P2 finding on PR #590: pre-fix
+        validation only checked that command was a string, so a string
+        args field would land in openclaw.json and silently break
+        OpenClaw's hot reload.
+        """
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={"servers": {"bad": {"command": "npx", "args": "--stdio"}}},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+        assert "bad" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_env_with_non_string_values(self, app, patched_router, auth_override):
+        """PUT rejects entries whose env contains non-string values.
+
+        Same regression guard as above — env: {"TOKEN": 1} would have
+        slipped through pre-fix validation.
+        """
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={"servers": {"bad": {"command": "npx", "env": {"TOKEN": 1}}}},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
     async def test_unauthenticated_request_rejected(self, app, patched_router):
         """Requests without auth are rejected."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

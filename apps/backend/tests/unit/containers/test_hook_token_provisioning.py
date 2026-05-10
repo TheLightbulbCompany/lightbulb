@@ -34,9 +34,7 @@ from core.containers.ecs_manager import EcsManager
 @pytest.fixture
 def mock_ecs_client():
     client = MagicMock()
-    client.create_service.return_value = {
-        "service": {"serviceName": "openclaw-user_test_123-f4ae64abb2db"}
-    }
+    client.create_service.return_value = {"service": {"serviceName": "openclaw-user_test_123-f4ae64abb2db"}}
     client.update_service.return_value = {}
     client.delete_service.return_value = {}
     client.describe_task_definition.return_value = {
@@ -45,9 +43,7 @@ def mock_ecs_client():
             "taskRoleArn": "arn:aws:iam::123456789:role/task-role",
             "executionRoleArn": "arn:aws:iam::123456789:role/exec-role",
             "networkMode": "awsvpc",
-            "containerDefinitions": [
-                {"name": "openclaw", "image": "alpine/openclaw:latest"}
-            ],
+            "containerDefinitions": [{"name": "openclaw", "image": "alpine/openclaw:latest"}],
             "volumes": [
                 {
                     "name": "openclaw-workspace",
@@ -68,9 +64,7 @@ def mock_ecs_client():
         }
     }
     client.register_task_definition.return_value = {
-        "taskDefinition": {
-            "taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789:task-definition/isol8-dev-openclaw:42"
-        }
+        "taskDefinition": {"taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789:task-definition/isol8-dev-openclaw:42"}
     }
     client.describe_services.return_value = {"services": []}
     client.list_tasks.return_value = {"taskArns": []}
@@ -85,9 +79,7 @@ def mock_efs_client():
     client.create_access_point.return_value = {"AccessPointId": "fsap-user123"}
     client.delete_access_point.return_value = {}
     client.exceptions = MagicMock()
-    client.exceptions.AccessPointNotFound = type(
-        "AccessPointNotFound", (Exception,), {}
-    )
+    client.exceptions.AccessPointNotFound = type("AccessPointNotFound", (Exception,), {})
     return client
 
 
@@ -99,9 +91,7 @@ def mock_settings():
         s.ECS_CLUSTER_ARN = "arn:aws:ecs:us-east-1:123456789:cluster/test-cluster"
         s.ECS_SUBNETS = "subnet-aaa,subnet-bbb"
         s.ECS_SECURITY_GROUP_ID = "sg-12345"
-        s.CLOUD_MAP_SERVICE_ARN = (
-            "arn:aws:servicediscovery:us-east-1:123456789:service/srv-test"
-        )
+        s.CLOUD_MAP_SERVICE_ARN = "arn:aws:servicediscovery:us-east-1:123456789:service/srv-test"
         s.EFS_FILE_SYSTEM_ID = "fs-test123"
         yield s
 
@@ -109,6 +99,7 @@ def mock_settings():
 @pytest.fixture
 def manager(mock_settings, mock_ecs_client, mock_efs_client):
     with patch("core.containers.ecs_manager.boto3") as mock_boto3:
+
         def client_factory(service, **kwargs):
             if service == "ecs":
                 return mock_ecs_client
@@ -193,9 +184,7 @@ def test_environment_for_task_overrides_stale_hook_token():
 
 
 @pytest.mark.asyncio
-async def test_provision_generates_hook_token_and_persists_it(
-    manager, mock_ecs_client, mock_efs_client
-):
+async def test_provision_generates_hook_token_and_persists_it(manager, mock_ecs_client, mock_efs_client):
     """provision_user_container generates a non-empty hook_token, persists
     it onto the containers row via the upsert inside create_user_service
     (atomic with row creation, so first-time provisioning lands the token),
@@ -218,19 +207,11 @@ async def test_provision_generates_hook_token_and_persists_it(
         patch.object(manager, "write_user_configs", new_callable=AsyncMock),
     ):
         mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-        mock_repo.upsert = AsyncMock(
-            return_value=_make_container_dict(status="provisioning")
-        )
-        mock_repo.update_fields = AsyncMock(
-            return_value=_make_container_dict(status="provisioning")
-        )
-        mock_repo.update_status = AsyncMock(
-            return_value=_make_container_dict(status="provisioning")
-        )
+        mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+        mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+        mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
 
-        await manager.provision_user_container(
-            "user_test_123", provider_choice="bedrock_claude"
-        )
+        await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
 
         # Persistence: the upsert that creates/updates the containers row
         # must carry hook_token + hook_token_rotated_at as fields, so a
@@ -250,8 +231,7 @@ async def test_provision_generates_hook_token_and_persists_it(
         assert isinstance(token, str)
         assert len(token) >= 32
         assert "hook_token_rotated_at" in upsert_fields, (
-            "Persist hook_token_rotated_at alongside the token so the "
-            "rotation timestamp tracks the current value."
+            "Persist hook_token_rotated_at alongside the token so the rotation timestamp tracks the current value."
         )
 
         # Injection: the registered task def carries OPENCLAW_HOOK_TOKEN
@@ -259,12 +239,6 @@ async def test_provision_generates_hook_token_and_persists_it(
         # bug where DDB has one token and the running container another.
         reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
         envs = reg_kwargs["containerDefinitions"][0].get("environment") or []
-        hook_entry = next(
-            (e for e in envs if e["name"] == "OPENCLAW_HOOK_TOKEN"), None
-        )
-        assert hook_entry is not None, (
-            "Per-user task def must carry OPENCLAW_HOOK_TOKEN env var"
-        )
-        assert hook_entry["value"] == token, (
-            "Token persisted to DDB must match the env var on the running task"
-        )
+        hook_entry = next((e for e in envs if e["name"] == "OPENCLAW_HOOK_TOKEN"), None)
+        assert hook_entry is not None, "Per-user task def must carry OPENCLAW_HOOK_TOKEN env var"
+        assert hook_entry["value"] == token, "Token persisted to DDB must match the env var on the running task"

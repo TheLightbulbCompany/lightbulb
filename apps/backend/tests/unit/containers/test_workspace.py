@@ -442,7 +442,5 @@ class TestMcporterRemoved:
         """Provisioning must not write a default mcporter.json any more."""
         user_dir = workspace.ensure_user_dir(user_id)
         assert user_dir.exists(), "User dir should exist"
-        assert not (user_dir / ".mcporter").exists(), (
-            "mcporter dir should not be created"
-        )
+        assert not (user_dir / ".mcporter").exists(), "mcporter dir should not be created"
         assert not (user_dir / ".mcporter" / "mcporter.json").exists()

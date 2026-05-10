@@ -50,4 +50,16 @@ describe('StreamingStatusBar', () => {
     render(<StreamingStatusBar isStreaming={true} toolUses={toolUses} />);
     expect(screen.getByText(/Awaiting approval: exec/)).toBeInTheDocument();
   });
+
+  it('surfaces pending-approval even when a newer tool is still running', () => {
+    // Order matters: approval first, then running. The label must still
+    // prefer the blocking approval — otherwise the user can't see what's
+    // holding things up.
+    const toolUses: ToolUse[] = [
+      { tool: 'exec', status: 'pending-approval' },
+      { tool: 'shell', status: 'running' },
+    ];
+    render(<StreamingStatusBar isStreaming={true} toolUses={toolUses} />);
+    expect(screen.getByText(/Awaiting approval: exec/)).toBeInTheDocument();
+  });
 });

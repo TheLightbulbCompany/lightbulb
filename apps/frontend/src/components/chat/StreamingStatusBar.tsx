@@ -9,10 +9,15 @@ interface StreamingStatusBarProps {
 
 function deriveLabel(toolUses: ToolUse[] | undefined): string {
   if (!toolUses || toolUses.length === 0) return "Thinking";
+  // Pending approval blocks progress — surface it regardless of where it
+  // sits in the array, even if a later tool is still "running".
   for (let i = toolUses.length - 1; i >= 0; i--) {
-    const t = toolUses[i];
-    if (t.status === "pending-approval") return `Awaiting approval: ${t.tool}`;
-    if (t.status === "running") return `Running ${t.tool}`;
+    if (toolUses[i].status === "pending-approval") {
+      return `Awaiting approval: ${toolUses[i].tool}`;
+    }
+  }
+  for (let i = toolUses.length - 1; i >= 0; i--) {
+    if (toolUses[i].status === "running") return `Running ${toolUses[i].tool}`;
   }
   return "Thinking";
 }

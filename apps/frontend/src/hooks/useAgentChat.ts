@@ -26,6 +26,15 @@ export type { ToolUse } from "@/components/chat/MessageList";
 
 // =============================================================================
 // Friendly error messages
+//
+// Patterns map low-level transport / startup errors to user-friendly copy.
+// We deliberately do NOT mask backend-forwarded agent errors here — those
+// carry rich detail from the LLM provider (rate limits, context-length,
+// auth failures, etc.) that the user needs to see verbatim. The typed
+// ErrorCard component in MessageList renders a tailored UI when the
+// backend includes an `errorCode`; otherwise the raw upstream message
+// is shown so the user has something actionable, not "encountered an
+// error, please try again."
 // =============================================================================
 
 const ERROR_PATTERNS: [RegExp, string][] = [
@@ -36,7 +45,6 @@ const ERROR_PATTERNS: [RegExp, string][] = [
   [/Connection closed/i, "Connection to your agent was interrupted. Please try again."],
   [/session file locked/i, "Your agent is busy with another request. Please wait a moment and try again."],
   [/Model access is denied/i, "This model is not available. Try switching to a different model in settings."],
-  [/Agent run failed/i, "Your agent encountered an error. Please try again."],
 ];
 
 function friendlyError(raw: string): string {
@@ -83,6 +91,14 @@ export interface AgentMessage {
   content: string;
   thinking?: string;
   toolUses?: ToolUse[];
+  /**
+   * Set when the assistant bubble represents a terminal agent error. The
+   * value is OpenClaw's `errorKind` (refusal | timeout | rate_limit |
+   * context_length | unknown) forwarded by the backend. MessageList uses
+   * this to render a typed error card with tailored copy / actions.
+   * Undefined for normal assistant bubbles.
+   */
+  errorCode?: string;
 }
 
 export const BOOTSTRAP_MESSAGE =
@@ -106,6 +122,7 @@ interface InternalMessage {
   content: string;
   thinking?: string;
   toolUses?: ToolUse[];
+  errorCode?: string;
 }
 
 // =============================================================================
@@ -422,6 +439,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       if (msg.type === "error") {
         const displayError = friendlyError(msg.message);
+        const errorCode = msg.code;
 
         if (msg.runId) {
           // Scoped error: finalize that bubble only. Other runs continue.
@@ -430,7 +448,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             const messageId = run.messageId;
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === messageId ? { ...m, content: `Error: ${displayError}` } : m,
+                m.id === messageId
+                  ? { ...m, content: `Error: ${displayError}`, errorCode }
+                  : m,
               ),
             );
             finalizeBubble(msg.runId, { errored: true });
@@ -445,7 +465,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             const errMsgId = `assistant-${crypto.randomUUID()}`;
             setMessages((prev) => [
               ...prev,
-              { id: errMsgId, role: "assistant", content: `Error: ${displayError}` },
+              {
+                id: errMsgId,
+                role: "assistant",
+                content: `Error: ${displayError}`,
+                errorCode,
+              },
             ]);
             // Remember this runId as finalized so any late straggler events
             // for it don't create a ghost bubble.
@@ -477,7 +502,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         setMessages((prev) =>
           prev.map((m) =>
             activeMessageIds.has(m.id)
-              ? { ...m, content: `Error: ${displayError}` }
+              ? { ...m, content: `Error: ${displayError}`, errorCode }
               : m,
           ),
         );
@@ -767,11 +792,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const externalMessages: AgentMessage[] = useMemo(
     () =>
-      messages.map(({ role, content, thinking, toolUses }) => ({
+      messages.map(({ role, content, thinking, toolUses, errorCode }) => ({
         role,
         content,
         ...(thinking ? { thinking } : {}),
         ...(toolUses?.length ? { toolUses } : {}),
+        ...(errorCode ? { errorCode } : {}),
       })),
     [messages],
   );

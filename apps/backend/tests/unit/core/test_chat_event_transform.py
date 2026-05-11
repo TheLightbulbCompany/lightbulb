@@ -436,19 +436,77 @@ class TestHandleMessage:
         )
         assert calls[-1] == call("conn-1", {"type": "done", "agent_id": "agent-1", "runId": "run-cmd"})
 
-    def test_chat_error_with_dict(self, connection, mock_management_api):
+    def test_chat_error_carries_upstream_errorMessage(self, connection, mock_management_api):
+        """Upstream OpenClaw emits `errorMessage` (string) on chat-state-error events.
+
+        See src/gateway/protocol/schema/logs-chat.ts ChatEventSchema in the
+        OpenClaw repo — the wire shape is `{ state: "error", errorMessage,
+        errorKind? }`, not `{ error: ... }`. The backend must forward the
+        upstream message verbatim so the user sees the real failure reason
+        instead of a generic "Agent run failed" fallback.
+        """
         connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "error", "runId": "run-1", "error": {"message": "Rate limited"}},
+                "payload": {
+                    "state": "error",
+                    "runId": "run-1",
+                    "errorMessage": "Provider returned 429: ChatGPT Plus usage limit reached.",
+                },
             }
         )
         mock_management_api.send_message.assert_called_once_with(
-            "conn-1", {"type": "error", "message": "Rate limited", "runId": "run-1"}
+            "conn-1",
+            {
+                "type": "error",
+                "message": "Provider returned 429: ChatGPT Plus usage limit reached.",
+                "runId": "run-1",
+            },
         )
 
-    def test_chat_error_with_string(self, connection, mock_management_api):
+    def test_chat_error_forwards_errorKind_as_code(self, connection, mock_management_api):
+        """`errorKind` (refusal | timeout | rate_limit | context_length | unknown)
+        is forwarded as `code` so the frontend can render a typed error card.
+        """
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "runId": "run-1",
+                    "errorMessage": "Rate limit reached. Try again later.",
+                    "errorKind": "rate_limit",
+                },
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1",
+            {
+                "type": "error",
+                "message": "Rate limit reached. Try again later.",
+                "code": "rate_limit",
+                "runId": "run-1",
+            },
+        )
+
+    def test_chat_error_legacy_error_dict_fallback(self, connection, mock_management_api):
+        """Defensive fallback: if some path emits the older `error: {message:...}`
+        shape, we still extract the message rather than dropping it.
+        """
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "error", "runId": "run-1", "error": {"message": "Legacy"}},
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "error", "message": "Legacy", "runId": "run-1"}
+        )
+
+    def test_chat_error_legacy_error_string_fallback(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
@@ -458,6 +516,20 @@ class TestHandleMessage:
         )
         mock_management_api.send_message.assert_called_once_with(
             "conn-1", {"type": "error", "message": "Something broke", "runId": "run-1"}
+        )
+
+    def test_chat_error_no_message_uses_generic_fallback(self, connection, mock_management_api):
+        """If neither field is present we still need to ship *something* so the
+        frontend can finalize the bubble — but log it via the generic message."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "error", "runId": "run-1"},
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "error", "message": "Agent run failed", "runId": "run-1"}
         )
 
     def test_chat_aborted(self, connection, mock_management_api):

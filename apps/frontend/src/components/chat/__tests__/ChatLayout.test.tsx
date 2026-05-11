@@ -47,7 +47,13 @@ vi.mock("posthog-js/react", () => ({
   PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({ nodeConnected: false }),
+  useGateway: () => ({
+    nodeConnected: false,
+    // useExecApprovals (mounted by ChatLayout) subscribes to onEvent and
+    // calls sendReq on resolve, so the mock has to satisfy both.
+    onEvent: () => () => {},
+    sendReq: () => Promise.resolve(),
+  }),
 }));
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => ({

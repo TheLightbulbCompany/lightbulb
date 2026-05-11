@@ -377,49 +377,15 @@ describe("useAgentChat — multi-bubble", () => {
     expect(result.current.error).toBeTruthy();
   });
 
-  it("approval.requested event matches toolCallId across any assistant bubble", async () => {
-    const useAgentChat = await importHook();
-    const agentId = nextAgent();
-    const { result } = renderHook(() => useAgentChat(agentId, "main"));
-
-    await act(async () => {
-      await result.current.sendMessage("install");
-    });
-
-    // Chunk + tool_start into R1
-    emit({ type: "chunk", content: "Running", agent_id: agentId, runId: "R1" });
-    emit({
-      type: "tool_start",
-      tool: "exec",
-      toolCallId: "tc-1",
-      agent_id: agentId,
-      runId: "R1",
-    });
-
-    // First run finishes with tool_use; second run starts
-    emit({ type: "done", agent_id: agentId, runId: "R1" });
-    emit({ type: "chunk", content: "More", agent_id: agentId, runId: "R2" });
-
-    // Approval event arrives for the tool in R1's bubble (not the active R2).
-    emitEvent("exec.approval.requested", {
-      id: "appr-1",
-      request: {
-        command: "rm -rf /tmp/foo",
-        host: "gateway" as const,
-        agentId: agentId,
-        toolCallId: "tc-1",
-        allowedDecisions: ["allow-once", "deny"],
-      },
-    });
-
-    // Expect R1's bubble to have the tool in pending-approval status.
-    const r1 = result.current.messages.find((m) =>
-      m.toolUses?.some((t) => t.toolCallId === "tc-1"),
-    );
-    expect(r1).toBeDefined();
-    const tool = r1!.toolUses!.find((t) => t.toolCallId === "tc-1")!;
-    expect(tool.status).toBe("pending-approval");
-  });
+  // Removed: "approval.requested event matches toolCallId across any assistant bubble".
+  // The previous design glued exec approvals to tool-use bubbles inside
+  // useAgentChat's `messages` state. That coupling was the source of the
+  // orphan-pending-approval bug and the inline-card-in-wrong-bubble UX.
+  // Approvals now live in a separate global queue (useExecApprovals) and
+  // render as a modal at the chat-shell level. useAgentChat no longer
+  // subscribes to exec.approval.* events at all, and ToolUse no longer
+  // has a "pending-approval" status. Coverage for the new flow belongs in
+  // useExecApprovals tests (follow-up).
 
   it("late events after cancelMessage do not resurrect a ghost bubble", async () => {
     // Regression test for Codex P2 (useAgentChat line ~912/930): cancelMessage

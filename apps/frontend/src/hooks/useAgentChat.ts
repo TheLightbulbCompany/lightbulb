@@ -18,11 +18,7 @@ import {
   useGateway,
   type ChatIncomingMessage,
 } from "@/hooks/useGateway";
-import type {
-  ApprovalRequest,
-  ExecApprovalDecision,
-  ToolUse,
-} from "@/components/chat/MessageList";
+import type { ToolUse } from "@/components/chat/MessageList";
 import { capture } from "@/lib/analytics";
 
 // Re-export ToolUse so existing consumers (AgentChatWindow) keep working
@@ -103,7 +99,6 @@ export interface UseAgentChatReturn {
   isConnected: boolean;
   isLoadingHistory: boolean;
   needsBootstrap: boolean;
-  resolveApproval: (id: string, decision: ExecApprovalDecision) => Promise<void>;
 }
 
 interface InternalMessage {
@@ -633,180 +628,24 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     });
   }, [onChatMessage]);
 
-  // ---- Approval event handler ----
-  useEffect(() => {
-    const unsubRequested = onEvent((eventName, data) => {
-      if (eventName !== "exec.approval.requested") return;
-      const payload = data as {
-        id?: string;
-        request?: {
-          command?: string;
-          commandArgv?: string[];
-          host?: ApprovalRequest["host"];
-          cwd?: string;
-          resolvedPath?: string;
-          agentId?: string;
-          sessionKey?: string;
-          allowedDecisions?: ExecApprovalDecision[];
-          toolCallId?: string;
-          approvalCorrelationId?: string;
-        };
-        createdAtMs?: number;
-        expiresAtMs?: number;
-      };
-      if (!payload?.id || !payload.request?.command) return;
-
-      // Scope to this chat's agent. The backend forwards non-agent/chat events
-      // as generic events (see connection_pool.py), so a parallel tab or
-      // another agent's session for the same user would otherwise inject a
-      // foreign approval card here and let the user resolve the wrong id.
-      const eventAgentId = payload.request.agentId;
-      if (eventAgentId && eventAgentId !== agentIdRef.current) return;
-
-      const req: ApprovalRequest = {
-        id: payload.id,
-        command: payload.request.command,
-        commandArgv: payload.request.commandArgv,
-        host: payload.request.host ?? "gateway",
-        cwd: payload.request.cwd,
-        resolvedPath: payload.request.resolvedPath,
-        agentId: payload.request.agentId,
-        sessionKey: payload.request.sessionKey,
-        allowedDecisions: payload.request.allowedDecisions ?? ["allow-once", "deny"],
-        expiresAtMs: payload.expiresAtMs,
-      };
-      const correlation = payload.request.toolCallId ?? payload.request.approvalCorrelationId;
-
-      setMessages((prev) => {
-        // Idempotent: a retry/reconnect can redeliver the same approval.
-        // First pass: find any existing bubble that already has this approval
-        // id (dedupe).
-        for (const m of prev) {
-          if (m.role !== "assistant") continue;
-          const idx = (m.toolUses ?? []).findIndex(
-            (t) => t.pendingApproval?.id === req.id,
-          );
-          if (idx >= 0) {
-            return prev.map((row) => {
-              if (row.id !== m.id) return row;
-              const next = (row.toolUses ?? []).slice();
-              next[idx] = {
-                ...next[idx],
-                status: "pending-approval",
-                pendingApproval: req,
-              };
-              return { ...row, toolUses: next };
-            });
-          }
-        }
-
-        // Second pass: find the target tool use by correlation id across
-        // all assistant messages. Prefer exact toolCallId match; for
-        // correlationless events, bind to the NEWEST running exec.
-        if (correlation) {
-          for (const m of prev) {
-            if (m.role !== "assistant") continue;
-            const idx = (m.toolUses ?? []).findIndex(
-              (t) => t.toolCallId === correlation,
-            );
-            if (idx >= 0) {
-              return prev.map((row) => {
-                if (row.id !== m.id) return row;
-                const next = (row.toolUses ?? []).slice();
-                next[idx] = {
-                  ...next[idx],
-                  status: "pending-approval",
-                  pendingApproval: req,
-                };
-                return { ...row, toolUses: next };
-              });
-            }
-          }
-        } else {
-          // Scan from newest message backwards for a running exec.
-          for (let i = prev.length - 1; i >= 0; i--) {
-            const m = prev[i];
-            if (m.role !== "assistant") continue;
-            const toolUses = m.toolUses ?? [];
-            for (let j = toolUses.length - 1; j >= 0; j--) {
-              if (toolUses[j].tool === "exec" && toolUses[j].status === "running") {
-                return prev.map((row, rowIdx) => {
-                  if (rowIdx !== i) return row;
-                  const next = toolUses.slice();
-                  next[j] = {
-                    ...next[j],
-                    status: "pending-approval",
-                    pendingApproval: req,
-                  };
-                  return { ...row, toolUses: next };
-                });
-              }
-            }
-          }
-        }
-
-        // Nothing matched — attach to the newest assistant message as a new
-        // tool entry (preserves old behavior for correlationless cases
-        // where no tool has started yet).
-        // Protocol invariant: OpenClaw emits `tool_start` (which creates the
-        // bubble and the toolCall entry) before `exec.approval.requested` for
-        // that toolCall, so at least one assistant bubble exists by the time
-        // we get here. The `lastAssistantIdx < 0` guard is a safety net for
-        // protocol violations, not a normal code path.
-        const lastAssistantIdx = (() => {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].role === "assistant") return i;
-          }
-          return -1;
-        })();
-        if (lastAssistantIdx < 0) return prev;
-        return prev.map((row, i) => {
-          if (i !== lastAssistantIdx) return row;
-          return {
-            ...row,
-            toolUses: [
-              ...(row.toolUses ?? []),
-              {
-                tool: "exec",
-                toolCallId: correlation,
-                status: "pending-approval",
-                pendingApproval: req,
-              },
-            ],
-          };
-        });
-      });
-    });
-
-    const unsubResolved = onEvent((eventName, data) => {
-      if (eventName !== "exec.approval.resolved") return;
-      const payload = data as { id?: string; decision?: ExecApprovalDecision };
-      if (!payload?.id) return;
-
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (!m.toolUses?.some((t) => t.pendingApproval?.id === payload.id)) return m;
-          const next = m.toolUses.map((t) => {
-            if (t.pendingApproval?.id !== payload.id) return t;
-            const nextStatus: ToolUse["status"] =
-              payload.decision === "deny" ? "denied" : "running";
-            return {
-              ...t,
-              status: nextStatus,
-              pendingApproval: undefined,
-              resolvedDecision: payload.decision,
-            };
-          });
-          return { ...m, toolUses: next };
-        }),
-      );
-    });
-
-    return () => {
-      unsubRequested();
-      unsubResolved();
-    };
-  }, [onEvent]);
+  // ---- Approval handling moved out of useAgentChat ----
+  //
+  // Exec approvals now live in a global queue (see useExecApprovals) and
+  // render as a modal dialog at the chat-shell level. The previous design
+  // glued each pending approval onto a tool-use bubble inside `messages`
+  // state, which:
+  //   1. Accumulated orphans — no expiresAtMs honoring meant the queue
+  //      grew forever.
+  //   2. Bound the card to whichever bubble had a "running exec" first
+  //      when scanning backwards, so it landed on stale bubbles offscreen.
+  //   3. Forced fallback to the `/approve <id>` slash-command UX from
+  //      OpenClaw's CLI when the inline card never rendered.
+  //
+  // Mirrors OpenClaw's native `execApprovalQueue` pattern at
+  // ~/Desktop/openclaw/ui/src/ui/app-gateway.ts (`enqueueApprovalRequest`)
+  // and ~/Desktop/openclaw/ui/src/ui/views/exec-approval.ts.
+  //
+  // This hook no longer subscribes to exec.approval.* events.
 
   // ---- Send message ----
 
@@ -922,15 +761,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     pendingCancelRef.current = true;
   }, [sessionName, finalizeAllActiveRuns]);
 
-  // ---- Resolve approval (allow-once / allow-always / deny) ----
-
-  const resolveApproval = React.useCallback(
-    async (id: string, decision: ExecApprovalDecision): Promise<void> => {
-      await sendReq("exec.approval.resolve", { id, decision });
-    },
-    [sendReq],
-  );
-
   // ---- External interface ----
 
   const externalMessages: AgentMessage[] = useMemo(
@@ -961,6 +791,5 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     isConnected,
     isLoadingHistory,
     needsBootstrap,
-    resolveApproval,
   };
 }

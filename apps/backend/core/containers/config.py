@@ -759,6 +759,16 @@ def build_openclaw_config_dict(
             # PR #596.
             "enabled": True,
             "defaultProfile": "openclaw",
+            # Required because the gateway runs as root inside the
+            # per-user ECS container (for oom-score-adj and EFS perms),
+            # and Chromium refuses to start as root with the security
+            # sandbox enabled. The container itself is the security
+            # boundary in this architecture (per-user, single-tenant,
+            # network-isolated), so the renderer-process sandbox isn't
+            # protecting against anything we'd actually face. Without
+            # this, OpenClaw's managed driver fails with "Running as
+            # root without --no-sandbox is not supported."
+            "noSandbox": True,
             "profiles": {
                 "openclaw": {
                     "driver": "openclaw",

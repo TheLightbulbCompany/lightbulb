@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { capture } from "@/lib/analytics";
 import { ChatInput } from "./ChatInput";
 import { MessageList, MessageListHandle } from "./MessageList";
+import { StreamingStatusBar } from "./StreamingStatusBar";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useApi } from "@/lib/api";
@@ -320,6 +321,7 @@ export function AgentChatWindow({
             <p className="font-medium">Error</p>
             <p className="text-sm">{chatError}</p>
           </div>
+          <StreamingStatusBar isStreaming={isStreaming} messages={messages} />
           <ChatInput onSend={handleSend} onStop={cancelMessage} disabled={isTyping} isStreaming={isStreaming} isUploading={isUploading} />
         </div>
       </div>
@@ -374,6 +376,7 @@ export function AgentChatWindow({
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} agentName={agentName} onOpenFile={onOpenFile} onDecide={resolveApproval} />
       <UpdateBanner />
+      <StreamingStatusBar isStreaming={isStreaming} messages={messages} />
       <ChatInput
         onSend={handleSend}
         onStop={cancelMessage}

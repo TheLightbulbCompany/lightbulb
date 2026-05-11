@@ -29,6 +29,7 @@
 
 import * as React from "react";
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { useGateway } from "@/hooks/useGateway";
 
 export type ExecApprovalDecision = "allow-once" | "allow-always" | "deny";
@@ -118,8 +119,41 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
   };
 }
 
+/**
+ * Returns true when the request is for the currently signed-in member
+ * (or when we can't tell — see comment).
+ *
+ * In an org with multiple connected members, the backend's
+ * connection_pool.py routes events by top-level `payload.sessionKey`,
+ * but exec.approval.requested carries `sessionKey` under `payload.request`
+ * — so the routing falls through to the broadcast path, and every
+ * member's browser receives every member's approval. Without this
+ * filter, member B could see and resolve member A's pending exec.
+ *
+ * sessionKey format from OpenClaw: `agent:<agentId>:user_<userIdLowercase>`.
+ * We do a lowercase substring check against the Clerk user.id; mixed
+ * casing in Clerk IDs vs. lowercase normalization in OpenClaw means an
+ * exact-equality check would falsely reject. If the request has no
+ * sessionKey (defensive: malformed event, or old emitter), we still
+ * accept — the alternative is dropping legitimate events on personal
+ * accounts that may not always populate sessionKey.
+ */
+function isApprovalForCurrentUser(
+  req: ExecApprovalRequest,
+  userId: string | null | undefined,
+): boolean {
+  if (!userId) return false; // not signed in — drop everything
+  if (!req.sessionKey) return true; // no scoping signal; accept (legacy emitters)
+  return req.sessionKey.toLowerCase().includes(userId.toLowerCase());
+}
+
 export function useExecApprovals(): UseExecApprovalsReturn {
   const { onEvent, sendReq } = useGateway();
+  const { userId } = useAuth();
+  const userIdRef = useRef(userId);
+  useEffect(() => {
+    userIdRef.current = userId;
+  }, [userId]);
   const [queue, setQueue] = useState<ExecApprovalRequest[]>([]);
   const [error, setError] = useState<string | null>(null);
   // Per-id auto-prune timers. Cleared when the entry is removed (resolved
@@ -141,6 +175,9 @@ export function useExecApprovals(): UseExecApprovalsReturn {
       if (eventName !== "exec.approval.requested") return;
       const req = parseRequest(data);
       if (!req) return;
+      // Multi-tenancy guard: drop approvals targeting other org members.
+      // See isApprovalForCurrentUser for the why and the routing context.
+      if (!isApprovalForCurrentUser(req, userIdRef.current)) return;
 
       setQueue((prev) => {
         // Idempotent: a retry/reconnect can redeliver the same approval.

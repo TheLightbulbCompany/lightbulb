@@ -20,6 +20,7 @@ vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({
     isSignedIn: clerkState.isSignedIn,
     isLoaded: true,
+    userId: clerkState.user?.id ?? null,
     getToken: vi.fn().mockResolvedValue("test-jwt"),
   }),
   useUser: () => ({ user: clerkState.user, isLoaded: true }),

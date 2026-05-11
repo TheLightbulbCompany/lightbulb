@@ -7,23 +7,10 @@ interface StreamingStatusBarProps {
 }
 
 export function deriveStreamingLabel(messages: Message[]): string {
-  // Approvals block the agent run — surface any pending approval anywhere
-  // in the conversation, not just the latest bubble. An approval can land
-  // on an earlier assistant bubble after a newer bubble has already been
-  // created (see useAgentChat test "approval.requested event matches
-  // toolCallId across any assistant bubble"), so scoping this to the last
-  // bubble would hide what's actually blocking the user.
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role !== "assistant" || !m.toolUses) continue;
-    for (const t of m.toolUses) {
-      if (t.status === "pending-approval") {
-        return `Awaiting approval: ${t.tool}`;
-      }
-    }
-  }
-  // Running tools always sit on the most recent assistant bubble (a new
-  // run can't start while an approval is pending).
+  // Pending approvals are surfaced by the global ExecApprovalDialog
+  // (mounted at the chat-shell level via useExecApprovals). They no
+  // longer flow through messages.toolUses, so this label only reflects
+  // running tool execution and the "thinking" idle state.
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "assistant") continue;

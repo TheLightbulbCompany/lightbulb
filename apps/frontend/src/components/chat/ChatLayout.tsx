@@ -15,6 +15,8 @@ import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { useGateway } from "@/hooks/useGateway";
+import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
+import { ExecApprovalDialog } from "@/components/chat/ExecApprovalDialog";
 import { useApi } from "@/lib/api";
 import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
@@ -255,7 +257,8 @@ export function ChatLayout({
   }
 
   return (
-    <>
+    <ExecApprovalsProvider>
+      <ExecApprovalDialog />
 
       <div className={`app-shell${fileViewerOpen ? " with-file-viewer" : ""}`}>
         <div className={`sidebar-backdrop${sidebarOpen ? " visible" : ""}`} onClick={() => setSidebarOpen(false)} />
@@ -520,6 +523,6 @@ export function ChatLayout({
           }}
         />
       </div>
-    </>
+    </ExecApprovalsProvider>
   );
 }

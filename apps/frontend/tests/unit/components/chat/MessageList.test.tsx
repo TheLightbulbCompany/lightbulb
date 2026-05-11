@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MessageList } from '@/components/chat/MessageList';
-import type { ToolUse, ApprovalRequest } from '@/components/chat/MessageList';
 
 const mockMessages = [
   { id: '1', role: 'user' as const, content: 'Hello there!' },
@@ -263,50 +262,10 @@ describe('MessageList', () => {
   });
 });
 
-describe('MessageList approval rendering', () => {
-  const pendingApproval: ApprovalRequest = {
-    id: 'approval-xyz',
-    command: 'whoami',
-    host: 'node',
-    allowedDecisions: ['allow-once', 'allow-always', 'deny'],
-  };
-
-  const pendingToolUse: ToolUse = {
-    tool: 'exec',
-    toolCallId: 'call-1',
-    status: 'pending-approval',
-    pendingApproval,
-  };
-
-  const deniedToolUse: ToolUse = {
-    tool: 'exec',
-    toolCallId: 'call-2',
-    status: 'denied',
-    resolvedDecision: 'deny',
-  };
-
-  it('renders ApprovalCard when a tool is pending approval', () => {
-    render(
-      <MessageList
-        messages={[
-          { id: 'a1', role: 'assistant', content: '', toolUses: [pendingToolUse] },
-        ]}
-        onDecide={vi.fn()}
-      />,
-    );
-    expect(screen.getByText('whoami')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /allow once/i })).toBeInTheDocument();
-  });
-
-  it('renders a denied chip when a tool was denied', () => {
-    render(
-      <MessageList
-        messages={[
-          { id: 'a2', role: 'assistant', content: '', toolUses: [deniedToolUse] },
-        ]}
-        onDecide={vi.fn()}
-      />,
-    );
-    expect(screen.getByText(/denied/i)).toBeInTheDocument();
-  });
-});
+// Removed: "MessageList approval rendering" describe block. Approvals
+// are no longer surfaced inline on tool bubbles — they live in the
+// global queue managed by useExecApprovals and render via the modal
+// ExecApprovalDialog mounted at the chat-shell level. ToolUse no longer
+// has "pending-approval" or "denied" statuses; MessageList no longer
+// accepts an `onDecide` prop. Coverage for the new flow belongs in
+// useExecApprovals + ExecApprovalDialog tests (follow-up).

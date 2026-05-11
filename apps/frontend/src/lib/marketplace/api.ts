@@ -127,3 +127,43 @@ export async function myAgentsSummary(opts: { jwt: string }): Promise<{ agents: 
   if (!resp.ok) throw new Error(`myAgentsSummary failed: ${resp.status}`);
   return (await resp.json()) as { agents: AgentSummary[] };
 }
+
+// ---------------------------------------------------------------------------
+// Publish wizard — artifact preview (Bundle step + Review safety_flags)
+// ---------------------------------------------------------------------------
+
+export type SkillBucket = "bundled" | "entries" | "workspace" | "extra_dirs" | "unknown";
+
+export interface AvailableSkill {
+  name: string;
+  bucket: SkillBucket;
+}
+
+export interface SafetyFlag {
+  pattern: string;
+  severity: "high" | "medium" | "low";
+  file: string;
+  line: number | null;
+  snippet: string;
+}
+
+export interface ArtifactPreview {
+  agent_id: string;
+  available_mcps: string[];
+  available_skills: AvailableSkill[];
+  persona_files: string[];
+  safety_flags: SafetyFlag[];
+  needs_config_patch: boolean;
+}
+
+export async function artifactPreview(opts: {
+  jwt: string;
+  agentId: string;
+}): Promise<ArtifactPreview> {
+  const resp = await fetch(
+    `${API}/marketplace/me/agents/${encodeURIComponent(opts.agentId)}/artifact-preview`,
+    { headers: { Authorization: `Bearer ${opts.jwt}` } },
+  );
+  if (!resp.ok) throw new Error(`artifactPreview failed: ${resp.status}`);
+  return (await resp.json()) as ArtifactPreview;
+}

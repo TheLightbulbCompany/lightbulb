@@ -4,8 +4,61 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
-import { myAgentsSummary, type AgentSummary } from "@/lib/marketplace/api";
+import {
+  artifactPreview,
+  myAgentsSummary,
+  type AgentSummary,
+  type ArtifactPreview,
+  type AvailableSkill,
+  type SafetyFlag,
+} from "@/lib/marketplace/api";
 import type { PublishForm } from "./PublishWizard";
+
+
+/**
+ * Fetch the artifact preview once per agentId and share it across Bundle +
+ * Review steps. Selection state lives in the form; the preview's
+ * available_mcps / available_skills / persona_files / safety_flags are
+ * a pure read of the agent's workspace so they don't change as the seller
+ * toggles checkboxes — fetched once, reused everywhere.
+ */
+function useArtifactPreview(agentId: string | undefined): {
+  preview: ArtifactPreview | null;
+  error: string | null;
+  isLoading: boolean;
+} {
+  const { getToken } = useAuth();
+  const [preview, setPreview] = useState<ArtifactPreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!agentId) {
+      setPreview(null);
+      setError(null);
+      return;
+    }
+    let alive = true;
+    setLoading(true);
+    (async () => {
+      const jwt = await getToken();
+      if (!jwt) return;
+      try {
+        const p = await artifactPreview({ jwt, agentId });
+        if (alive) setPreview(p);
+      } catch (e) {
+        if (alive) setError((e as Error).message || "Failed to load preview");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [agentId, getToken]);
+
+  return { preview, error, isLoading };
+}
 
 export function PickAgentStep({
   selected,
@@ -203,6 +256,179 @@ function Field({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Bundle step — seller picks which MCPs + skills ride along in the listing.
+// Persona files (IDENTITY/SOUL/USER/BOOTSTRAP/MEMORY/HEARTBEAT) ship in
+// the tarball unconditionally; safety flags surface in the Review step.
+// ---------------------------------------------------------------------------
+
+const BUCKET_LABEL: Record<AvailableSkill["bucket"], string> = {
+  bundled: "built-in",
+  entries: "configured",
+  workspace: "in workspace",
+  extra_dirs: "container-wide",
+  unknown: "not found",
+};
+
+const BUCKET_TONE: Record<AvailableSkill["bucket"], string> = {
+  bundled: "bg-[#eef4ee] text-[#4d6b54]",
+  entries: "bg-[#f4efe1] text-[#7d5f1a]", // amber — secrets to fill on buyer side
+  workspace: "bg-[#eef0f6] text-[#4f458b]",
+  extra_dirs: "bg-[#fbe9e7] text-[#8a3a2a]",
+  unknown: "bg-[#f3eee5] text-[#5b5b5b]",
+};
+
+export function BundleStep({
+  form,
+  onChange,
+}: {
+  form: PublishForm;
+  onChange: (patch: Partial<PublishForm>) => void;
+}) {
+  const { preview, error, isLoading } = useArtifactPreview(form.agentId);
+
+  function toggleMcp(name: string) {
+    const next = form.bundleMcps.includes(name)
+      ? form.bundleMcps.filter((m) => m !== name)
+      : [...form.bundleMcps, name];
+    onChange({ bundleMcps: next });
+  }
+  function toggleSkill(name: string) {
+    const next = form.bundleSkills.includes(name)
+      ? form.bundleSkills.filter((s) => s !== name)
+      : [...form.bundleSkills, name];
+    onChange({ bundleSkills: next });
+  }
+
+  return (
+    <div>
+      <p className="text-[14px] text-[#5b5b5b] leading-snug mb-4">
+        Pick which integrations ride along with your agent. Buyers will need to
+        fill in their own credentials for any MCP or configured skill.
+      </p>
+
+      {isLoading && <div className="text-[13px] text-[#5b5b5b]">Loading…</div>}
+      {error && (
+        <div role="alert" className="text-[13px] text-[#b32424] mb-3">
+          Couldn&apos;t load preview: {error}
+        </div>
+      )}
+
+      {preview && (
+        <>
+          <section className="mb-5" data-testid="bundle-mcps">
+            <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-2">
+              MCP servers
+            </h4>
+            {preview.available_mcps.length === 0 ? (
+              <p className="text-[12.5px] text-[#5b5b5b]">
+                No MCP servers configured on your container.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {preview.available_mcps.map((name) => (
+                  <li key={name}>
+                    <label className="flex items-center gap-2 cursor-pointer text-[13px]">
+                      <input
+                        type="checkbox"
+                        checked={form.bundleMcps.includes(name)}
+                        onChange={() => toggleMcp(name)}
+                        aria-label={`bundle MCP ${name}`}
+                      />
+                      <span className="font-mono text-[12.5px]">{name}</span>
+                      <span className="text-[10.5px] px-1.5 py-0.5 rounded-full bg-[#f4efe1] text-[#7d5f1a]">
+                        secrets scrubbed
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="mb-5" data-testid="bundle-skills">
+            <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-2">
+              Skills
+            </h4>
+            {preview.available_skills.length === 0 ? (
+              <p className="text-[12.5px] text-[#5b5b5b]">
+                This agent has no skills configured.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {preview.available_skills.map((s) => (
+                  <li key={s.name}>
+                    <label className="flex items-center gap-2 cursor-pointer text-[13px]">
+                      <input
+                        type="checkbox"
+                        checked={form.bundleSkills.includes(s.name)}
+                        onChange={() => toggleSkill(s.name)}
+                        aria-label={`bundle skill ${s.name}`}
+                      />
+                      <span className="font-mono text-[12.5px]">{s.name}</span>
+                      <span
+                        className={`text-[10.5px] px-1.5 py-0.5 rounded-full ${BUCKET_TONE[s.bucket]}`}
+                        title={`bucket: ${s.bucket}`}
+                      >
+                        {BUCKET_LABEL[s.bucket]}
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {preview.persona_files.length > 0 && (
+            <section className="mb-2" data-testid="bundle-persona-files">
+              <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5">
+                Personality files (always included)
+              </h4>
+              <p className="text-[11.5px] text-[#5b5b5b] mb-1.5">
+                These ship as authored. Review your wording before submitting —
+                anything you wrote, your buyer reads.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {preview.persona_files.map((name) => (
+                  <span
+                    key={name}
+                    className="font-mono text-[11px] px-2 py-0.5 rounded-full bg-[#eef4ee] text-[#4d6b54]"
+                  >
+                    {name}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SafetyFlagRow({ flag }: { flag: SafetyFlag }) {
+  const tone =
+    flag.severity === "high"
+      ? "bg-[#fbe9e7] text-[#8a3a2a] border-[#f0b3a8]"
+      : flag.severity === "medium"
+        ? "bg-[#fff4d6] text-[#7d5f1a] border-[#e8d49a]"
+        : "bg-[#f3eee5] text-[#5b5b5b] border-[#e0dbd0]";
+  return (
+    <li className={`border rounded-lg px-2.5 py-1.5 text-[12px] ${tone}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[11.5px]">{flag.pattern}</span>
+        <span className="font-mono text-[11px] opacity-80">
+          {flag.file}
+          {flag.line ? `:${flag.line}` : ""}
+        </span>
+      </div>
+      <div className="font-mono text-[11.5px] opacity-90 mt-0.5 break-all">
+        {flag.snippet}
+      </div>
+    </li>
+  );
+}
+
 export function PricingStep({
   form,
   onChange,
@@ -306,26 +532,20 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 export function ReviewStep({ form }: { form: PublishForm }) {
-  const { getToken } = useAuth();
-  const [summary, setSummary] = useState<AgentSummary | null>(null);
-
-  useEffect(() => {
-    if (!form.agentId) return;
-    let alive = true;
-    (async () => {
-      const jwt = await getToken();
-      if (!jwt) return;
-      const r = await myAgentsSummary({ jwt });
-      if (!alive) return;
-      const match = r.agents.find((a) => a.agent_id === form.agentId);
-      if (match) setSummary(match);
-    })().catch(() => {
-      // best effort — leave summary null
-    });
-    return () => {
-      alive = false;
-    };
-  }, [form.agentId, getToken]);
+  const { preview } = useArtifactPreview(form.agentId);
+  const mcpCount = form.bundleMcps.length;
+  const skillCount = form.bundleSkills.length;
+  const personaCount = preview?.persona_files.length ?? 0;
+  // Show warning only if the selection actually adds something to the
+  // buyer's openclaw.json (an MCP, or a skill in a config-keyed bucket).
+  const needsConfigPatch =
+    mcpCount > 0 ||
+    (preview != null &&
+      form.bundleSkills.some((name) => {
+        const s = preview.available_skills.find((x) => x.name === name);
+        return s?.bucket === "entries" || s?.bucket === "bundled";
+      }));
+  const safetyFlags = preview?.safety_flags ?? [];
 
   return (
     <div>
@@ -350,16 +570,50 @@ export function ReviewStep({ form }: { form: PublishForm }) {
           </div>
         )}
         <div className="flex justify-between text-[12.5px] text-[#5b5b5b] mt-3 pt-3 border-t border-dashed border-[#e0dbd0]">
-          <span>
-            {summary
-              ? `Bundled: ${summary.skill_count} skill${summary.skill_count === 1 ? "" : "s"} · ${summary.cron_count} cron${summary.cron_count === 1 ? "" : "s"} · ${summary.channel_count} channel${summary.channel_count === 1 ? "" : "s"}`
-              : "Bundled: …"}
+          <span data-testid="review-bundle-summary">
+            Bundled: {mcpCount} MCP{mcpCount === 1 ? "" : "s"} · {skillCount} skill
+            {skillCount === 1 ? "" : "s"} · {personaCount} persona file
+            {personaCount === 1 ? "" : "s"}
           </span>
           <span className="font-semibold text-[#06402b]">
             {form.priceTier === "free" ? "Free" : "Premium tier"}
           </span>
         </div>
       </div>
+
+      {needsConfigPatch && (
+        <div
+          role="status"
+          data-testid="review-config-patch-warning"
+          className="mt-3 rounded-xl border border-[#e8d49a] bg-[#fff4d6] px-3.5 py-2.5 text-[12.5px] text-[#7d5f1a] leading-snug"
+        >
+          Heads up — installing this listing will patch your buyer&apos;s
+          openclaw.json (MCPs / configured skills). Buyers will need to fill in
+          their own credentials before those integrations work.
+        </div>
+      )}
+
+      {safetyFlags.length > 0 && (
+        <section
+          className="mt-3"
+          aria-label="Safety scan findings"
+          data-testid="review-safety-flags"
+        >
+          <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5">
+            Safety scan: {safetyFlags.length} finding{safetyFlags.length === 1 ? "" : "s"}
+          </h4>
+          <p className="text-[11.5px] text-[#5b5b5b] mb-2">
+            Found these patterns in your listing files. Trust check before submit
+            — edit the source, then come back to re-snapshot.
+          </p>
+          <ul className="space-y-1.5">
+            {safetyFlags.map((f, i) => (
+              <SafetyFlagRow flag={f} key={`${f.file}-${f.line ?? 0}-${i}`} />
+            ))}
+          </ul>
+        </section>
+      )}
+
       <p className="text-[12px] text-[#5b5b5b] leading-snug mt-3">
         By publishing, you agree to the{" "}
         <a href="#" className="text-[#06402b] underline">

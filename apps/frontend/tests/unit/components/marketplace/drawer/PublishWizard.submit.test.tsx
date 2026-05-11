@@ -32,9 +32,10 @@ vi.mock("@/components/marketplace/drawer/wizardSteps", () => ({
   DetailsStep: ({ form }: { form: { name: string; tagline: string } }) => (
     <div>step2 — name={form.name} tag={form.tagline}</div>
   ),
-  PricingStep: () => <div>step3</div>,
-  ReviewStep: () => <div>step4</div>,
-  SuccessStep: () => <div>step5</div>,
+  BundleStep: () => <div>step3-bundle</div>,
+  PricingStep: () => <div>step4-pricing</div>,
+  ReviewStep: () => <div>step5-review</div>,
+  SuccessStep: () => <div>step6-success</div>,
 }));
 
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
@@ -49,7 +50,7 @@ describe("PublishWizard — submit chain", () => {
     setView.mockReset();
   });
 
-  it("3-call submit chain calls listings → artifact → submit, then advances to step 5", async () => {
+  it("3-call submit chain calls listings → artifact → submit, then advances to success", async () => {
     apiPost
       .mockResolvedValueOnce({ listing_id: "list_42" })
       .mockResolvedValueOnce({ ok: true })
@@ -58,11 +59,12 @@ describe("PublishWizard — submit chain", () => {
     const user = userEvent.setup();
     render(<PublishWizard />);
 
-    // Drive through the wizard: pick agent → step 4 → submit
+    // Drive through the wizard: pick agent → review → submit
     await user.click(screen.getByText("pick"));
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 2
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 2 (Details)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3 (Bundle)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4 (Pricing)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 5 (Review)
     await user.click(screen.getByRole("button", { name: /submit for review/i }));
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(3));
@@ -76,9 +78,15 @@ describe("PublishWizard — submit chain", () => {
       }),
     );
     expect(apiPost.mock.calls[1][0]).toBe("/marketplace/listings/list_42/artifact-from-agent");
+    // Empty default-bundle is still sent so the backend can branch on
+    // selection presence without sniffing for the key.
+    expect(apiPost.mock.calls[1][1]).toMatchObject({
+      agent_id: "agent_pulse",
+      bundle: { mcps: [], skills: [] },
+    });
     expect(apiPost.mock.calls[2][0]).toBe("/marketplace/listings/list_42/submit");
 
-    await waitFor(() => expect(screen.getByText("step5")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("step6-success")).toBeInTheDocument());
   });
 
   it("on 409 slug collision, surfaces error and returns to Step 2 without preserving draft id", async () => {
@@ -92,8 +100,9 @@ describe("PublishWizard — submit chain", () => {
     render(<PublishWizard />);
     await user.click(screen.getByText("pick"));
     await user.click(screen.getByRole("button", { name: /continue/i })); // → step 2
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3 (Bundle)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4 (Pricing)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 5 (Review)
     await user.click(screen.getByRole("button", { name: /submit for review/i }));
 
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/slug is already taken/i));
@@ -116,8 +125,9 @@ describe("PublishWizard — submit chain", () => {
     render(<PublishWizard />);
     await user.click(screen.getByText("pick"));
     await user.click(screen.getByRole("button", { name: /continue/i })); // → step 2
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3 (Bundle)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4 (Pricing)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 5 (Review)
     await user.click(screen.getByRole("button", { name: /submit for review/i }));
 
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/snapshot failed/i));

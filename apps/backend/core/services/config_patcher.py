@@ -136,6 +136,68 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict) -> None:
                 bindings.append(new_binding)
 
 
+async def replace_provider_block(
+    owner_id: str,
+    *,
+    providers: dict,
+    default_model: dict,
+    plugin_entries: dict,
+) -> None:
+    """Atomically swap the three openclaw.json subtrees that define the LLM
+    provider: ``models.providers``, ``agents.defaults.model``, and
+    ``plugins.entries``.
+
+    Used by the post-onboarding change-provider hot path
+    (``billing_service.change_provider`` for Bedrock ↔ ChatGPT switches).
+    A deep-merge can't express "replace this subtree" — merging an empty
+    ``providers`` dict over an existing ``{"amazon-bedrock": ...}`` would
+    leave the old entry in place. So we do leaf-level *replacement* on
+    each of the three keys.
+
+    All three replacements happen inside a single ``_locked_rmw`` write
+    so chokidar (running with ``CHOKIDAR_USEPOLLING=true`` on EFS) fires
+    exactly one reload event. OpenClaw's reload-plan classifies all
+    three keys as ``kind: "hot"`` with actions ``restart-heartbeat`` +
+    ``reload-plugins`` (see openclaw/src/gateway/config-reload-plan.ts),
+    so the gateway picks up the new provider without a process restart.
+
+    Intermediate dicts (``models``, ``agents``, ``agents.defaults``,
+    ``plugins``) are created or coerced as needed — a partial existing
+    structure from a legacy config doesn't block the swap.
+
+    Raises ``ConfigPatchError`` (via ``_locked_rmw``) if the owner has
+    no ``openclaw.json`` on EFS yet. Callers should fall back to a full
+    re-provision in that case.
+    """
+
+    def _mutate(current: dict) -> bool:
+        models = current.get("models")
+        if not isinstance(models, dict):
+            models = {}
+            current["models"] = models
+        models["providers"] = copy.deepcopy(providers)
+
+        agents = current.get("agents")
+        if not isinstance(agents, dict):
+            agents = {}
+            current["agents"] = agents
+        defaults = agents.get("defaults")
+        if not isinstance(defaults, dict):
+            defaults = {}
+            agents["defaults"] = defaults
+        defaults["model"] = copy.deepcopy(default_model)
+
+        plugins = current.get("plugins")
+        if not isinstance(plugins, dict):
+            plugins = {}
+            current["plugins"] = plugins
+        plugins["entries"] = copy.deepcopy(plugin_entries)
+
+        return True
+
+    await _locked_rmw(owner_id, _mutate, "replace provider block")
+
+
 async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
     """Patch openclaw.json on EFS with file locking and atomic write.
 

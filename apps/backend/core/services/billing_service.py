@@ -643,24 +643,70 @@ async def change_provider(
                 current_byo,
             )
 
+    # Apply the swap to the running container.
+    #
+    # Two paths, picked by whether either side of the transition uses BYO:
+    #
+    # - **Cold path** (BYO involved on either side) — re-register the ECS
+    #   task definition and force a new deployment. Required because BYOK
+    #   injects ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` via task-def
+    #   ``secrets: [{valueFrom: <SecretsManagerARN>}]`` resolved at task
+    #   start; ECS does not let you mutate a running task's env vars.
+    #   Ends the user's current chat session.
+    #
+    # - **Hot path** (Bedrock ↔ ChatGPT OAuth only) — Track-1 patch the
+    #   three provider-block subtrees in openclaw.json (handled atomically
+    #   by ``config_patcher.replace_provider_block``) and, for a switch
+    #   *into* chatgpt_oauth, also pre-stage ``auth-profiles.json`` to EFS
+    #   *before* the patch so chokidar's reload reads it in place.
+    #   OpenClaw classifies all three keys as ``kind: "hot"`` in
+    #   ``gateway/config-reload-plan.ts`` (``restart-heartbeat`` +
+    #   ``reload-plugins``), so the gateway swaps providers without
+    #   restarting. No task-def env-var change → no container restart →
+    #   the chat session stays alive.
+    #
+    # On the hot path, if the owner has no ``openclaw.json`` on EFS yet
+    # (legacy / un-provisioned owner), ``replace_provider_block`` raises
+    # ``ConfigPatchError`` and we fall through to the cold path so the
+    # file gets written from scratch by ``provision_user_container``.
+    involves_byo = current_choice == "byo_key" or provider_choice == "byo_key"
+
+    if not involves_byo:
+        try:
+            await _hot_swap_provider(
+                owner_id=owner_id,
+                clerk_user_id=clerk_user_id,
+                new_provider=provider_choice,
+            )
+            put_metric(
+                "billing.provider.changed",
+                dimensions={
+                    "from": current_choice or "none",
+                    "to": provider_choice,
+                    "path": "hot",
+                },
+            )
+            return {
+                "status": "ok",
+                "provider_choice": provider_choice,
+                "byo_provider": next_byo,
+                "restart": False,
+            }
+        except _HotSwapUnavailableError:
+            # Owner has no openclaw.json on EFS yet — fall through to the
+            # cold path. logger inside _hot_swap_provider already recorded
+            # the reason.
+            pass
+
     put_metric(
         "billing.provider.changed",
         dimensions={
             "from": current_choice or "none",
             "to": provider_choice,
+            "path": "cold",
         },
     )
 
-    # Kick off a re-provision in the background so the response returns
-    # promptly. background_provision re-reads provider_choice from the
-    # billing row (which we just updated) and calls
-    # ecs_manager.provision_user_container, which:
-    #   - chatgpt_oauth: pre-stages auth-profiles.json on EFS
-    #   - byo_key: builds the per-provider Secrets Manager ref for the task def
-    #   - bedrock_claude: relies on the task IAM role (no extra setup)
-    # then writes a fresh openclaw.json, re-registers the task definition,
-    # and force-deploys. The current chat session ends as a side effect of
-    # the container restart — the UI surfaces this warning before the call.
     from core.services.container_provision import background_provision
 
     asyncio.create_task(background_provision(owner_id, clerk_user_id))
@@ -669,4 +715,80 @@ async def change_provider(
         "status": "ok",
         "provider_choice": provider_choice,
         "byo_provider": next_byo,
+        "restart": True,
     }
+
+
+class _HotSwapUnavailableError(Exception):
+    """Internal — signals change_provider to fall back to the cold path."""
+
+
+async def _hot_swap_provider(
+    *,
+    owner_id: str,
+    clerk_user_id: str,
+    new_provider: ProviderChoice,
+) -> None:
+    """Apply a Bedrock ↔ ChatGPT-OAuth provider switch hot, no container restart.
+
+    Step order matters:
+      1. If switching *to* chatgpt_oauth, write ``auth-profiles.json``
+         to EFS FIRST. Once we patch openclaw.json (step 2) chokidar fires
+         a reload and the openai-codex provider initializes — it needs the
+         auth file already in place.
+      2. Atomically swap the three openclaw.json subtrees via
+         ``replace_provider_block``. OpenClaw's reload-plan picks up the
+         change as ``kind: "hot"``.
+
+    Switching *away* from chatgpt_oauth has the symmetric cleanup
+    (``revoke_user_oauth`` + ``delete_auth_profile_store``) but that runs
+    in the caller's side-effect cleanup block earlier — not here — so the
+    stale auth file is already gone before we patch.
+
+    Raises ``_HotSwapUnavailableError`` if the owner has no openclaw.json
+    on EFS yet (legacy / un-provisioned), signaling the caller to fall
+    back to the cold path.
+    """
+    from core.containers.config import build_provider_block
+    from core.services.config_patcher import ConfigPatchError, replace_provider_block
+
+    if new_provider == "chatgpt_oauth":
+        # We already gated on tokens existing in the prerequisite check at
+        # the top of change_provider. Re-read so the file we write reflects
+        # whatever rotation may have happened concurrently.
+        from core.containers.workspace import pre_stage_auth_profile_store
+        from core.services import oauth_service
+
+        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id)
+        if not tokens:
+            # Lost the tokens between the prerequisite check and now (very
+            # rare — concurrent disconnect). Bail out to the cold path so
+            # the user lands on the oauth_required gate next instead of a
+            # silently misconfigured container.
+            logger.warning(
+                "change_provider hot path: tokens disappeared between gate and pre-stage for user=%s",
+                clerk_user_id,
+            )
+            raise _HotSwapUnavailableError("oauth_tokens_missing")
+        await pre_stage_auth_profile_store(user_id=clerk_user_id, oauth_tokens=tokens)
+
+    providers, default_model, plugin_entries = build_provider_block(
+        provider_choice=new_provider,
+        user_id=clerk_user_id,
+        byo_provider=None,  # hot path never carries byo_key
+    )
+
+    try:
+        await replace_provider_block(
+            owner_id,
+            providers=providers,
+            default_model=default_model,
+            plugin_entries=plugin_entries,
+        )
+    except ConfigPatchError as e:
+        logger.info(
+            "change_provider hot path: openclaw.json missing for owner=%s (%s) — falling back to cold path",
+            owner_id,
+            e,
+        )
+        raise _HotSwapUnavailableError("config_missing") from e

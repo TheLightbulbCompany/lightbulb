@@ -165,8 +165,10 @@ function ChangeProviderBody({
       <DialogHeader>
         <DialogTitle>Change provider</DialogTitle>
         <DialogDescription>
-          Switching ends your current chat session — your container restarts
-          with the new provider. Conversation history is preserved.
+          Bedrock and ChatGPT switches happen instantly without interrupting
+          your chat. Switching to or from Bring-Your-Own-Key restarts your
+          container (about 30s) — conversation history is preserved either
+          way.
         </DialogDescription>
       </DialogHeader>
 

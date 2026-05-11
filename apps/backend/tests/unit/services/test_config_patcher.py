@@ -16,6 +16,7 @@ from core.services.config_patcher import (  # noqa: E402
     delete_openclaw_config_path,
     patch_openclaw_config,
     remove_from_openclaw_config_list,
+    replace_provider_block,
     set_openclaw_config_path,
 )
 
@@ -799,3 +800,179 @@ class TestSetOpenclawConfigPath:
             {"a": {"command": "b"}},
         )
         assert os.stat(config_path).st_mtime_ns == original_mtime
+
+
+# ---------------------------------------------------------------------------
+# replace_provider_block — used by billing_service.change_provider's hot path
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tmp_efs_with_bedrock_provider(monkeypatch):
+    """Owner whose openclaw.json has the Bedrock provider block written
+    end-to-end (matches what write_openclaw_config produces post-onboarding
+    for a bedrock_claude owner). The replace test then swaps it out for
+    the chatgpt_oauth shape (empty providers + plugin entries)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_p")
+        os.makedirs(user_dir)
+        config = {
+            "gateway": {"mode": "local"},
+            "models": {
+                "providers": {
+                    "amazon-bedrock": {
+                        "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+                        "api": "bedrock-converse-stream",
+                        "auth": "aws-sdk",
+                        "models": [{"id": "us.anthropic.claude-sonnet-4-6"}],
+                    },
+                },
+            },
+            "agents": {
+                "defaults": {
+                    "model": {
+                        "primary": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
+                        "fallbacks": ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"],
+                    },
+                    "workspace": "/home/node/.openclaw/workspaces",
+                },
+                "list": [
+                    {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspaces/main"},
+                ],
+            },
+            "plugins": {
+                "entries": {
+                    "amazon-bedrock": {"config": {"discovery": {"enabled": False}}},
+                },
+            },
+            "tools": {"profile": "full"},
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", tmpdir)
+        yield tmpdir
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bedrock_provider):
+    """Bedrock → ChatGPT OAuth: amazon-bedrock provider entry MUST be
+    gone after the replace (a deep-merge into {} would leave it in place).
+    Same for plugins.entries."""
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["models"]["providers"] == {}
+    assert result["plugins"]["entries"] == {}
+    assert result["agents"]["defaults"]["model"]["primary"] == "openai-codex/gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_preserves_unrelated_subtrees(tmp_efs_with_bedrock_provider):
+    """The swap touches exactly three subtrees; agents.list, agents.defaults
+    .workspace, gateway, tools, etc must survive untouched. Catalog deploys
+    write to agents.list — a replace that nuked siblings would lose deployed
+    agents on every provider switch."""
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        result = json.load(f)
+    # agents.list (catalog-deployed agents) preserved.
+    assert result["agents"]["list"] == [
+        {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspaces/main"},
+    ]
+    # agents.defaults.workspace preserved (only .model swapped).
+    assert result["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspaces"
+    # Top-level siblings preserved.
+    assert result["gateway"] == {"mode": "local"}
+    assert result["tools"] == {"profile": "full"}
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_swaps_chatgpt_for_bedrock():
+    """ChatGPT OAuth → Bedrock: starting from an empty providers dict +
+    empty plugin entries, the bedrock block must land cleanly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_c")
+        os.makedirs(user_dir)
+        config = {
+            "models": {"providers": {}},
+            "agents": {
+                "defaults": {"model": {"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]}}
+            },
+            "plugins": {"entries": {}},
+            "tools": {"profile": "full"},
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await replace_provider_block(
+                "user_c",
+                providers={
+                    "amazon-bedrock": {
+                        "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+                        "api": "bedrock-converse-stream",
+                        "auth": "aws-sdk",
+                        "models": [{"id": "us.anthropic.claude-sonnet-4-6"}],
+                    },
+                },
+                default_model={
+                    "primary": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
+                    "fallbacks": ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"],
+                },
+                plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
+            )
+            with open(os.path.join(tmpdir, "user_c", "openclaw.json")) as f:
+                result = json.load(f)
+    assert result["models"]["providers"]["amazon-bedrock"]["api"] == "bedrock-converse-stream"
+    assert result["plugins"]["entries"]["amazon-bedrock"]["config"]["discovery"]["enabled"] is False
+    assert result["agents"]["defaults"]["model"]["primary"].startswith("amazon-bedrock/us.")
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_missing_config_raises():
+    """No openclaw.json on EFS — callers (change_provider) fall back to the
+    cold path. ConfigPatchError is the signal."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # No user dir / no openclaw.json.
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            with pytest.raises(ConfigPatchError):
+                await replace_provider_block(
+                    "user_missing",
+                    providers={},
+                    default_model={"primary": "x", "fallbacks": []},
+                    plugin_entries={},
+                )
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_creates_missing_intermediates(monkeypatch):
+    """A legacy openclaw.json missing ``models`` / ``plugins`` entirely should
+    still accept the swap — replace_provider_block populates the parent
+    dicts as needed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_legacy")
+        os.makedirs(user_dir)
+        config = {"gateway": {"mode": "local"}, "agents": {"defaults": {}}}
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", tmpdir)
+        await replace_provider_block(
+            "user_legacy",
+            providers={"amazon-bedrock": {"api": "bedrock-converse-stream"}},
+            default_model={"primary": "amazon-bedrock/x", "fallbacks": []},
+            plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
+        )
+        with open(os.path.join(tmpdir, "user_legacy", "openclaw.json")) as f:
+            result = json.load(f)
+    assert "amazon-bedrock" in result["models"]["providers"]
+    assert "amazon-bedrock" in result["plugins"]["entries"]
+    assert result["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/x"

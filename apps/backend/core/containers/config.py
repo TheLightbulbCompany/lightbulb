@@ -763,12 +763,28 @@ def build_openclaw_config_dict(
                 "openclaw": {
                     "driver": "openclaw",
                     "color": "#FF4500",
+                    # Required since OpenClaw v2026.5.7-0d10b38 — upstream
+                    # zod-schema.ts:483 now refines any non-`existing-session`
+                    # profile to require cdpPort or cdpUrl, with the message
+                    # "Profile must set cdpPort or cdpUrl". Without it the
+                    # gateway exits at boot with `Gateway failed to start:
+                    # Invalid config at /home/node/.openclaw/openclaw.json`
+                    # and the container loops failed-to-start forever.
+                    # 18800 matches upstream's documented default for the
+                    # bundled-Chromium openclaw driver (docs/tools/
+                    # browser-linux-troubleshooting.md, chrome.test.ts:921).
+                    # Each container is per-user-isolated so collisions
+                    # can't happen.
+                    "cdpPort": 18800,
                 },
                 "user": {
                     "driver": "existing-session",
                     # Required since OpenClaw bumped its config schema —
                     # `browser.profiles.*.color` is now a required string.
                     # Surfaces in the OpenClaw UI as the profile chip.
+                    # No cdpPort/cdpUrl needed — `existing-session` is
+                    # the one driver upstream's schema exempts from the
+                    # require-cdp check (zod-schema.ts:483).
                     "color": "#0066FF",
                 },
             },

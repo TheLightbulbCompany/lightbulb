@@ -184,10 +184,21 @@ class TestOpenclawConfigShape:
         # Container Chromium (bundled in the extended image since PR #596).
         assert browser["profiles"]["openclaw"]["driver"] == "openclaw"
         assert isinstance(browser["profiles"]["openclaw"]["color"], str)
+        # cdpPort required by upstream schema since v2026.5.7-0d10b38:
+        # zod-schema.ts:483 refines any non-`existing-session` profile
+        # to require cdpPort or cdpUrl. If this assertion ever fails
+        # the container will boot-loop with "Profile must set cdpPort
+        # or cdpUrl".
+        assert isinstance(browser["profiles"]["openclaw"]["cdpPort"], int)
+        assert 1 <= browser["profiles"]["openclaw"]["cdpPort"] <= 65535
         # Real signed-in Chrome via Chrome DevTools MCP — only routable
         # when the desktop sidecar is paired as a browser-capable node.
+        # `existing-session` is the one driver the schema exempts from
+        # the cdpPort-or-cdpUrl check, so this profile correctly omits both.
         assert browser["profiles"]["user"]["driver"] == "existing-session"
         assert isinstance(browser["profiles"]["user"]["color"], str)
+        assert "cdpPort" not in browser["profiles"]["user"]
+        assert "cdpUrl" not in browser["profiles"]["user"]
 
     def test_no_node_host_block(self):
         """`nodeHost.browserProxy` is a node-host-side config (read by

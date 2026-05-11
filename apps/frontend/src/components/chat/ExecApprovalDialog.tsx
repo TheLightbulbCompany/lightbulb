@@ -65,52 +65,34 @@ function useCountdown(expiresAtMs: number): number {
 export function ExecApprovalDialog() {
   const { queue, resolve, error } = useExecApprovalsContext();
   const active = queue[0];
-  const [busyDecision, setBusyDecision] = useState<ExecApprovalDecision | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-
-  // Reset details state when the head of queue changes — a new approval
-  // shouldn't inherit the expanded state of the previous one.
-  useEffect(() => {
-    setDetailsOpen(false);
-    setBusyDecision(null);
-  }, [active?.id]);
-
   if (!active) return null;
 
-  return <ActiveDialog
-    key={active.id}
-    active={active}
-    queueCount={queue.length}
-    busyDecision={busyDecision}
-    setBusyDecision={setBusyDecision}
-    detailsOpen={detailsOpen}
-    setDetailsOpen={setDetailsOpen}
-    error={error}
-    resolve={resolve}
-  />;
+  // ActiveDialog owns the per-approval transient state (busyDecision,
+  // detailsOpen). Keying by active.id remounts the subtree when the head
+  // of queue changes, so React resets that state automatically — no
+  // synchronous setState-in-effect needed (and avoids a
+  // react-hooks/set-state-in-effect lint failure).
+  return (
+    <ActiveDialog
+      key={active.id}
+      active={active}
+      queueCount={queue.length}
+      error={error}
+      resolve={resolve}
+    />
+  );
 }
 
 interface ActiveDialogProps {
   active: ExecApprovalRequest;
   queueCount: number;
-  busyDecision: ExecApprovalDecision | null;
-  setBusyDecision: (d: ExecApprovalDecision | null) => void;
-  detailsOpen: boolean;
-  setDetailsOpen: (v: boolean) => void;
   error: string | null;
   resolve: (id: string, decision: ExecApprovalDecision) => Promise<void>;
 }
 
-function ActiveDialog({
-  active,
-  queueCount,
-  busyDecision,
-  setBusyDecision,
-  detailsOpen,
-  setDetailsOpen,
-  error,
-  resolve,
-}: ActiveDialogProps) {
+function ActiveDialog({ active, queueCount, error, resolve }: ActiveDialogProps) {
+  const [busyDecision, setBusyDecision] = useState<ExecApprovalDecision | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const remainingMs = useCountdown(active.expiresAtMs);
   const allowsOnce = active.allowedDecisions.includes("allow-once");
   const allowsAlways = active.allowedDecisions.includes("allow-always");

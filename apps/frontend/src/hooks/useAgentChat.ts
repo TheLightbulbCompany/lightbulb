@@ -12,7 +12,6 @@
 
 "use client";
 
-import * as React from "react";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   useGateway,
@@ -130,7 +129,10 @@ const _needsBootstrap = new Set<string>();
 // =============================================================================
 
 export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
-  const { isConnected, sendChat, onChatMessage, onEvent, sendReq } = useGateway();
+  // onEvent is intentionally not destructured here — exec.approval.* is now
+  // owned by useExecApprovals at the chat-shell level (see commit message
+  // for the previous "Approval handling moved out of useAgentChat" comment).
+  const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
 
   // Cache key includes session name so org members don't share history cache
   const cacheKey = agentId ? `${agentId}:${sessionName}` : null;

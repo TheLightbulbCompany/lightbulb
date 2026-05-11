@@ -116,6 +116,7 @@ class TestGatewayConnectionPool:
         """send_rpc should reuse an existing connected GatewayConnection."""
         mock_conn = AsyncMock(spec=GatewayConnection)
         mock_conn.is_connected = True
+        mock_conn._parked = False  # send_rpc consults this before is_connected
         mock_conn.wait_for_response = AsyncMock(return_value={"data": 1})
         mock_conn._frontend_connections = set()
         pool._connections["user-1"] = mock_conn
@@ -137,10 +138,12 @@ class TestGatewayConnectionPool:
         """send_rpc closes and replaces a connection that is no longer connected."""
         stale_conn = AsyncMock(spec=GatewayConnection)
         stale_conn.is_connected = False
+        stale_conn._parked = False  # stale, not parked → close+recreate path
         pool._connections["user-1"] = stale_conn
 
         new_conn = AsyncMock(spec=GatewayConnection)
         new_conn.is_connected = True
+        new_conn._parked = False
         new_conn.wait_for_response = AsyncMock(return_value={"fresh": True})
         new_conn._frontend_connections = set()
 
@@ -692,7 +695,7 @@ class TestStatusChangeEvents:
         )
         conn._frontend_connections = {"conn_abc", "conn_def"}
 
-        conn._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
+        conn._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection lost")
 
         assert mock_mgmt.send_message.call_count == 2
 
@@ -713,7 +716,7 @@ class TestStatusChangeEvents:
         conn._frontend_connections = {"conn_abc"}
 
         # Should not raise
-        conn._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
+        conn._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection lost")
 
     @pytest.mark.asyncio
     async def test_emit_status_change_no_frontends(self):
@@ -826,3 +829,301 @@ class TestChatEventForwarding:
                     },
                 }
             )
+
+
+class TestActiveRunTracking:
+    """Active-run lifecycle: chat.send opens the window, chat-terminal
+    events close it. Drives the parked-vs-dead decision when the reader
+    loop exits, which in turn drives whether the cold-start
+    ProvisioningStepper re-engages on top of a live chat. See
+    `connection_pool._on_reader_loop_exit` for the dependent code.
+    """
+
+    @pytest.fixture
+    def connection(self):
+        return GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
+            user_id="user-active-run",
+            ip="10.0.0.1",
+            token="tok",
+            management_api=MagicMock(),
+        )
+
+    def test_mark_run_active_records_session(self, connection):
+        connection.mark_run_active("agent:main:user-active-run", agent_id="main")
+        assert "agent:main:user-active-run" in connection._active_runs
+        run = connection._active_runs["agent:main:user-active-run"]
+        assert run["agent_id"] == "main"
+        assert run["started_at"] > 0
+        assert run["last_event_at"] == run["started_at"]
+        assert connection.has_active_runs is True
+
+    def test_chat_final_clears_active_run(self, connection):
+        """chat.final on the matching sessionKey clears the active run."""
+        session_key = "agent:main:user-active-run"
+        connection.mark_run_active(session_key, agent_id="main")
+        connection._frontend_connections.add("conn-1")
+
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                },
+            }
+        )
+
+        assert connection.has_active_runs is False
+        assert session_key not in connection._active_runs
+
+    def test_chat_error_clears_active_run(self, connection):
+        session_key = "agent:main:user-active-run"
+        connection.mark_run_active(session_key, agent_id="main")
+        connection._frontend_connections.add("conn-1")
+
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "sessionKey": session_key,
+                    "runId": "run-err",
+                    "errorMessage": "rate limited",
+                    "errorKind": "rate_limit",
+                },
+            }
+        )
+
+        assert connection.has_active_runs is False
+
+    def test_chat_aborted_clears_active_run(self, connection):
+        session_key = "agent:main:user-active-run"
+        connection.mark_run_active(session_key, agent_id="main")
+        connection._frontend_connections.add("conn-1")
+
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "aborted",
+                    "sessionKey": session_key,
+                    "runId": "run-abort",
+                },
+            }
+        )
+
+        assert connection.has_active_runs is False
+
+    def test_touch_run_updates_last_event_at(self, connection):
+        """Any inbound event tagged with the sessionKey bumps last_event_at —
+        signal the deadlock watchdog uses to distinguish a stuck container
+        from a slow turn."""
+        session_key = "agent:main:user-active-run"
+        connection.mark_run_active(session_key, agent_id="main")
+        original = connection._active_runs[session_key]["last_event_at"]
+
+        # Wait a beat so the monotonic clock advances.
+        import time as _t
+
+        _t.sleep(0.01)
+
+        # Agent stream event for the same session
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "assistant",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {"text": "tok"},
+                },
+            }
+        )
+
+        bumped = connection._active_runs[session_key]["last_event_at"]
+        assert bumped > original
+
+    def test_touch_run_noop_for_unknown_session(self, connection):
+        """Untracked sessionKeys (cron / channel) must not create entries."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "assistant",
+                    "sessionKey": "agent:cron-agent:cron:job-7:run:r-1",
+                    "runId": "run-cron",
+                    "data": {"text": "tok"},
+                },
+            }
+        )
+        assert connection.has_active_runs is False
+
+
+class TestReaderLoopExitBranches:
+    """`_on_reader_loop_exit` decides between PARKED (active runs in flight)
+    and DEAD (no active runs). PARKED preserves `_pending_rpcs` and the
+    `is_alive` property so the cold-start phase resolver does NOT regress
+    /container/status back to "starting".
+    """
+
+    @pytest.fixture
+    def make_connection(self):
+        def _make():
+            return GatewayConnection(
+                frontend_connections=set(),
+                conn_member_map={},
+                user_id="user-exit-branch",
+                ip="10.0.0.1",
+                token="tok",
+                management_api=MagicMock(return_value=True),
+            )
+
+        return _make
+
+    @pytest.mark.asyncio
+    async def test_exit_parks_when_active_runs_in_flight(self, make_connection):
+        """Reader-loop exception with non-empty active_runs → park, do NOT
+        reject pending RPCs, do NOT clear active_runs, emit
+        GATEWAY_DOWN_LLM_BUSY (not GATEWAY_DOWN_DEAD)."""
+        conn = make_connection()
+        conn._frontend_connections.add("conn-1")
+        conn.mark_run_active("agent:main:user-exit-branch", agent_id="main")
+
+        loop = asyncio.get_running_loop()
+        pending = loop.create_future()
+        conn._pending_rpcs["sessions-list-1"] = pending
+
+        try:
+            conn._on_reader_loop_exit(RuntimeError("ping timeout"))
+
+            # _pending_rpcs preserved — the chat.send ack already returned,
+            # but a concurrent sessions.list still wants to resolve when the
+            # reopen lands. Rejecting here would manufacture a phantom error.
+            assert pending.done() is False
+            assert "sessions-list-1" in conn._pending_rpcs
+
+            # Active runs preserved — they're proof of life.
+            assert conn.has_active_runs is True
+
+            # Marked parked.
+            assert conn._parked is True
+            # is_alive remains True so the cold-start phase resolver keeps
+            # reporting "ready" and ProvisioningStepper stays suppressed.
+            assert conn.is_alive is True
+            assert conn.is_connected is False  # WS itself is gone
+
+            # Last status_change event was the LLM_BUSY variant.
+            sent_msgs = [c.args[1] for c in conn._management_api.send_message.call_args_list]
+            status_events = [m for m in sent_msgs if isinstance(m, dict) and m.get("event") == "status_change"]
+            assert status_events, "expected at least one status_change emit"
+            assert status_events[-1]["payload"]["state"] == "GATEWAY_DOWN_LLM_BUSY"
+
+            # Watchdog spawned with bounded lifetime.
+            assert conn._parked_watchdog_task is not None
+            assert not conn._parked_watchdog_task.done()
+        finally:
+            if conn._parked_watchdog_task and not conn._parked_watchdog_task.done():
+                conn._parked_watchdog_task.cancel()
+                try:
+                    await conn._parked_watchdog_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_exit_dies_when_no_active_runs(self, make_connection):
+        """Reader-loop exception with empty active_runs → DEAD: reject
+        pending RPCs (today's behavior intact), emit GATEWAY_DOWN_DEAD,
+        do not park, do not spawn watchdog."""
+        conn = make_connection()
+        conn._frontend_connections.add("conn-1")
+
+        loop = asyncio.get_running_loop()
+        pending = loop.create_future()
+        conn._pending_rpcs["agents-list-1"] = pending
+
+        conn._on_reader_loop_exit(RuntimeError("connection refused"))
+
+        assert pending.done()
+        with pytest.raises(RuntimeError, match="Gateway connection lost"):
+            pending.result()
+        assert len(conn._pending_rpcs) == 0
+
+        assert conn._parked is False
+        assert conn.is_alive is False
+        assert conn._parked_watchdog_task is None
+
+        sent_msgs = [c.args[1] for c in conn._management_api.send_message.call_args_list]
+        status_events = [m for m in sent_msgs if isinstance(m, dict) and m.get("event") == "status_change"]
+        assert status_events, "expected at least one status_change emit"
+        assert status_events[-1]["payload"]["state"] == "GATEWAY_DOWN_DEAD"
+
+    @pytest.mark.asyncio
+    async def test_is_alive_falls_to_false_when_parked_and_no_runs(self, make_connection):
+        """A parked conn without active runs is no longer alive — covers the
+        watchdog escalation path (clears _active_runs then checks).
+        """
+        conn = make_connection()
+        conn._parked = True
+        # No active runs.
+        assert conn.is_alive is False
+
+
+class TestPoolReconnectFloor:
+    """The pool's _respect_reconnect_floor blocks repeat reopen / recreate
+    within `_RECONNECT_FLOOR_S` of the last attempt. Protects the backend
+    open-handshake budget when a wedged container collides with frontend
+    exponential retry."""
+
+    @pytest.mark.asyncio
+    async def test_first_reconnect_attempt_allowed(self):
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        # No prior attempt — should not raise.
+        pool._respect_reconnect_floor("user-1")
+        assert "user-1" in pool._last_reconnect_at
+
+    @pytest.mark.asyncio
+    async def test_immediate_second_attempt_throttled(self):
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        pool._respect_reconnect_floor("user-1")
+        with pytest.raises(RuntimeError, match="throttled"):
+            pool._respect_reconnect_floor("user-1")
+
+    @pytest.mark.asyncio
+    async def test_pool_mark_run_active_noop_when_no_connection(self):
+        """The chat dispatcher calls mark_run_active BEFORE send_rpc creates
+        the connection on a cold start. The call must be safe to issue when
+        no connection exists — the first inbound event keyed on the same
+        sessionKey will populate _active_runs once the conn is up."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        # Should not raise.
+        pool.mark_run_active("user-1", "agent:main:user-1", "main")
+
+    @pytest.mark.asyncio
+    async def test_is_user_connected_true_for_parked_with_runs(self):
+        """The cold-start phase resolver consults is_user_connected. A
+        parked connection with active runs must read as connected so
+        /container/status keeps reporting phase=ready and
+        ProvisioningStepper does NOT re-engage."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
+            user_id="user-parked",
+            ip="10.0.0.1",
+            token="tok",
+            management_api=MagicMock(),
+        )
+        conn._parked = True
+        conn.mark_run_active("agent:main:user-parked", "main")
+        pool._connections["user-parked"] = conn
+
+        assert pool.is_user_connected("user-parked") is True

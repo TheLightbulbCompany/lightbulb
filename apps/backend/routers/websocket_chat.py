@@ -1054,6 +1054,15 @@ async def _process_agent_chat_background(
                 logger.warning("[%s] failed to deliver blocked-chat error event", user_id)
             return
 
+        # Open the active-run window BEFORE forwarding chat.send. If the WS
+        # to OpenClaw tears down mid-turn (ping timeout during a long Bedrock
+        # call), the pool's parked-vs-dead decision in `_on_reader_loop_exit`
+        # keys on whether `_active_runs` is non-empty — so marking here, not
+        # after the ack, is what keeps the connection in the PARKED branch
+        # during the streaming window. Idempotent for the cancel-and-retry
+        # race where the same sessionKey starts a fresh run.
+        pool.mark_run_active(owner_id, session_key, agent_id)
+
         result = await pool.send_rpc(
             user_id=owner_id,
             req_id=req_id,

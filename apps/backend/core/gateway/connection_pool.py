@@ -29,6 +29,31 @@ _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 
+# Application-level WebSocket keepalive tuned for long-running LLM turns.
+# The websockets library defaults ping_interval=20 / ping_timeout=20 — fine for
+# REST-shaped traffic, but the OpenClaw Node event loop legitimately blocks
+# >20s during long Bedrock/Chromium turns (Opus turns can run minutes,
+# browser-tool turns longer). At the default we'd declare a perfectly-alive
+# connection dead, tear down, and storm-reconnect. 300s comfortably exceeds
+# the longest realistic single-turn LLM wait while still surfacing genuinely
+# dead containers in a bounded window.
+_PING_INTERVAL = 20
+_PING_TIMEOUT = 300
+
+# Reconnect floor — refuse to reopen a parked or torn-down connection more
+# than once every 5s per user. Today the frontend reconnect cadence is
+# RECONNECT_DELAYS[]=1s,2s,4s,…; without a server-side floor each retry
+# triggered a fresh ws_connect upgrade. A 10s OpenClaw wedge therefore
+# burned ~5 simultaneous handshake attempts.
+_RECONNECT_FLOOR_S = 5
+
+# How stale `last_event_at` on an active run must be before the parked
+# connection counts as "agent appears stuck" for observability. Set by spec
+# §6 — we don't ESCALATE on this in this PR (deferred follow-up); we only
+# emit `gateway.run.long_idle` metrics + structured logs so the deadlock-
+# vs-slow-turn signal is greppable in CloudWatch Insights.
+_RUN_LONG_IDLE_S = 300
+
 
 class GatewayConnection:
     """Single persistent WebSocket to a user's OpenClaw gateway."""
@@ -60,6 +85,26 @@ class GatewayConnection:
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
         self._billing_tasks: Set[asyncio.Task] = set()
+        # Active LLM runs keyed by OpenClaw sessionKey (agent:{agentId}:{member}).
+        # Populated by `mark_run_active` when we dispatch chat.send; cleared by
+        # `_handle_message` when the matching chat-terminal event arrives.
+        # Non-emptiness is the load-bearing signal for the parked-vs-dead
+        # teardown decision in `_reader_loop` — see _on_reader_loop_exit.
+        self._active_runs: Dict[str, Dict[str, Any]] = {}
+        # True after the reader_loop has died with active runs in flight.
+        # Means: the OpenClaw process is presumed alive (we just saw it
+        # streaming) but our WS to it tore down (e.g. websockets ping
+        # timeout during a blocked Node event loop). `is_alive` still
+        # returns True so the cold-start phase resolver keeps reporting
+        # ready and ProvisioningStepper does not re-engage. Cleared on
+        # `_reopen` success.
+        self._parked = False
+        # Bounded-lifetime watchdog for parked connections. While parked,
+        # we presume the container is alive based on active_runs being
+        # non-empty + recent last_event_at. If `_RUN_LONG_IDLE_S` elapses
+        # without any event, the watchdog escalates parked → dead so a
+        # genuinely-deadlocked OpenClaw process can't leak state forever.
+        self._parked_watchdog_task: Optional[asyncio.Task] = None
 
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""
@@ -90,6 +135,14 @@ class GatewayConnection:
 
     @property
     def is_connected(self) -> bool:
+        """True iff the underlying WS is OPEN and not parked.
+
+        Used by ``send_rpc`` to decide whether to reopen the socket before
+        forwarding. ``is_alive`` is the broader liveness signal exposed to
+        the cold-start phase resolver.
+        """
+        if self._parked:
+            return False
         if self._ws is None:
             return False
         # websockets v16 uses .state enum; older versions used .closed bool
@@ -99,6 +152,62 @@ class GatewayConnection:
 
             return state == State.OPEN
         return not getattr(self._ws, "closed", True)
+
+    @property
+    def is_alive(self) -> bool:
+        """True if the OpenClaw process is presumed responsive.
+
+        Distinct from ``is_connected``: returns True while the WS is parked
+        as long as we have at least one active run in flight (the run is
+        proof of life — we just saw OpenClaw streaming events). The cold-
+        start phase resolver and pool.is_user_connected use this so a
+        transient ping-timeout during a long Bedrock turn does NOT flip
+        /container/status back to "starting" and re-engage the
+        ProvisioningStepper full-screen overlay.
+        """
+        if self.is_connected:
+            return True
+        return self._parked and bool(self._active_runs)
+
+    @property
+    def has_active_runs(self) -> bool:
+        return bool(self._active_runs)
+
+    def mark_run_active(self, session_key: str, agent_id: str | None = None) -> None:
+        """Record that a chat.send is being dispatched for *session_key*.
+
+        Called from the chat dispatcher BEFORE the chat.send RPC is forwarded
+        to OpenClaw, so the active-run window opens before the first inbound
+        event arrives. Idempotent — re-marking refreshes the started_at
+        without losing the existing last_event_at.
+        """
+        now = time.monotonic()
+        existing = self._active_runs.get(session_key)
+        if existing is not None:
+            existing["started_at"] = now
+            existing["last_event_at"] = now
+            if agent_id:
+                existing["agent_id"] = agent_id
+            return
+        self._active_runs[session_key] = {
+            "started_at": now,
+            "last_event_at": now,
+            "agent_id": agent_id or "",
+        }
+
+    def _touch_run(self, session_key: str) -> None:
+        """Bump ``last_event_at`` on the active run keyed by *session_key*.
+
+        No-op if no run is active for the key (e.g. cron / channel sessions).
+        Cheap enough to call on every inbound agent/chat event.
+        """
+        run = self._active_runs.get(session_key)
+        if run is not None:
+            run["last_event_at"] = time.monotonic()
+
+    def _clear_active_run(self, session_key: str) -> None:
+        """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
+        self._active_runs.pop(session_key, None)
 
     async def connect(self) -> None:
         """Open WebSocket, complete OpenClaw handshake, verify health, start reader."""
@@ -125,6 +234,8 @@ class GatewayConnection:
                 uri,
                 open_timeout=_HANDSHAKE_TIMEOUT,
                 close_timeout=5,
+                ping_interval=_PING_INTERVAL,
+                ping_timeout=_PING_TIMEOUT,
             )
         except Exception as exc:
             elapsed_ms = int((time.monotonic() - connect_started) * 1000)
@@ -868,6 +979,12 @@ class GatewayConnection:
                     event_name,
                 )
                 return
+
+            # Bump the active-run liveness timestamp for this session_key.
+            # No-op when no run is tracked for the key (cron/channel sessions,
+            # missed mark_run_active call) so it is cheap to call eagerly.
+            if session_key:
+                self._touch_run(session_key)
             if event_name != "agent":
                 state = payload.get("state", "") if isinstance(payload, dict) else ""
                 logger.info(
@@ -938,6 +1055,11 @@ class GatewayConnection:
                 # Delta/unknown states never forward, so they don't need it.
                 if state not in ("final", "error", "aborted"):
                     return
+                # Terminal state for this session_key — clear the active-run
+                # entry so subsequent reader_loop exits make the dead-vs-
+                # parked decision based on still-in-flight runs only.
+                if session_key:
+                    self._clear_active_run(session_key)
                 run_id = payload["runId"]
                 if state == "final":
                     put_metric("chat.message.count")
@@ -1031,14 +1153,162 @@ class GatewayConnection:
         except Exception as e:
             if self._closed:
                 return
-            put_metric("gateway.connection", dimensions={"event": "error"})
-            logger.error("Gateway reader loop error for user %s: %s", self.user_id, e)
-            self._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
-            # Reject all pending RPCs
-            for req_id, future in list(self._pending_rpcs.items()):
-                if not future.done():
-                    future.set_exception(RuntimeError("Gateway connection lost"))
-            self._pending_rpcs.clear()
+            self._on_reader_loop_exit(e)
+
+    def _on_reader_loop_exit(self, exc: BaseException) -> None:
+        """Decide between PARKED and DEAD when the reader loop dies.
+
+        The websockets library treats a >ping_timeout silent peer as a
+        connection error and tears the reader down. Historically this code
+        path unconditionally rejected every pending RPC and emitted
+        GATEWAY_DOWN, which during a long Bedrock turn would (a) fail
+        in-flight callers, (b) flip /container/status from ready to
+        starting, (c) re-engage ProvisioningStepper on top of the live
+        chat. With `_PING_TIMEOUT=300` that should almost never fire
+        during a healthy turn, but the defense-in-depth split below means
+        a genuinely-misbehaving timeout still lands us in PARKED (alive,
+        will reconnect lazily) rather than DEAD when a chat is in flight.
+
+        PARKED: active runs in flight → presume OpenClaw is alive, keep
+                `_pending_rpcs` (the in-flight chat.send was already acked,
+                non-chat RPCs will time out at `_RPC_TIMEOUT` on their own),
+                emit `GATEWAY_DOWN_LLM_BUSY`, spawn a watchdog that
+                escalates to DEAD after `_RUN_LONG_IDLE_S` of total
+                event silence.
+
+        DEAD:   no active runs → today's behavior. Reject pending RPCs,
+                emit `GATEWAY_DOWN_DEAD`. The pool will lazily reconnect
+                on the next outbound message subject to the reconnect
+                floor.
+        """
+        if self._active_runs:
+            self._parked = True
+            put_metric(
+                "gateway.connection",
+                dimensions={"event": "parked", "active_runs": str(len(self._active_runs))},
+            )
+            put_metric("gateway.parked.enter")
+            # Structured log so CloudWatch Insights can correlate parked
+            # teardown with the longest-idle run age. Aggregations over
+            # this signal feed the deferred deadlock-watchdog tuning work.
+            now = time.monotonic()
+            ages_ms = [int((now - run["last_event_at"]) * 1000) for run in self._active_runs.values()]
+            logger.warning(
+                "Gateway reader exited with %d active run(s) — parking user=%s "
+                "error_class=%s max_last_event_age_ms=%d sessions=%s",
+                len(self._active_runs),
+                self.user_id,
+                type(exc).__name__,
+                max(ages_ms) if ages_ms else 0,
+                list(self._active_runs.keys()),
+            )
+            self._emit_status_change(
+                "GATEWAY_DOWN_LLM_BUSY",
+                "Agent is still working — keeping the run alive",
+            )
+            if self._parked_watchdog_task is None or self._parked_watchdog_task.done():
+                self._parked_watchdog_task = asyncio.create_task(self._parked_watchdog())
+            return
+
+        # No active runs — dead-for-real path.
+        put_metric("gateway.connection", dimensions={"event": "error"})
+        logger.error(
+            "Gateway reader loop error for user %s: %s error_class=%s",
+            self.user_id,
+            exc,
+            type(exc).__name__,
+        )
+        self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection lost")
+        for req_id, future in list(self._pending_rpcs.items()):
+            if not future.done():
+                future.set_exception(RuntimeError("Gateway connection lost"))
+        self._pending_rpcs.clear()
+
+    async def _parked_watchdog(self) -> None:
+        """Bounded-lifetime guard for parked connections.
+
+        Sleeps until the earliest active run has been silent for
+        `_RUN_LONG_IDLE_S` seconds. On wake:
+          - If the connection was already reopened or closed, exit (the
+            reopen() / close() paths cancel us).
+          - If active runs still exist and they're ALL silent past the
+            threshold, escalate to DEAD: reject pending RPCs, clear
+            active_runs, emit `GATEWAY_DOWN_DEAD`. The next outbound
+            message triggers a fresh reconnect from the pool.
+          - Otherwise (some run saw activity since this watchdog was
+            scheduled — happens if a fresh chat.send marked a new run
+            during the parked window), reschedule with the updated
+            deadline.
+
+        Emits `gateway.run.long_idle` per escalation so the deadlock-
+        vs-slow-turn ratio is observable without parsing log lines.
+        """
+        try:
+            while True:
+                if self._closed or not self._parked:
+                    return
+                if not self._active_runs:
+                    return
+                now = time.monotonic()
+                # Time until the youngest run crosses the long-idle line.
+                # Watchdog escalates only when ALL runs are stale — if any
+                # one is still receiving events, the conn is alive.
+                youngest_age = min(now - run["last_event_at"] for run in self._active_runs.values())
+                wait = _RUN_LONG_IDLE_S - youngest_age
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                    continue
+
+                # All runs silent past the threshold — escalate.
+                put_metric(
+                    "gateway.run.long_idle",
+                    dimensions={"active_runs": str(len(self._active_runs))},
+                )
+                logger.error(
+                    "Parked connection long-idle for user=%s active_runs=%d — escalating to dead. Sessions: %s",
+                    self.user_id,
+                    len(self._active_runs),
+                    list(self._active_runs.keys()),
+                )
+                self._active_runs.clear()
+                self._parked = False
+                self._emit_status_change(
+                    "GATEWAY_DOWN_DEAD",
+                    "Agent appears stuck — try restarting the gateway",
+                )
+                for req_id, future in list(self._pending_rpcs.items()):
+                    if not future.done():
+                        future.set_exception(RuntimeError("Gateway connection lost"))
+                self._pending_rpcs.clear()
+                return
+        except asyncio.CancelledError:
+            return
+
+    async def reopen(self) -> None:
+        """Re-establish the underlying WS while preserving run state.
+
+        Used by the pool when a parked connection needs to forward a new
+        outbound message. Differs from `connect()`: we keep `_active_runs`
+        and `_pending_rpcs` (so chat.history / sessions.list polls that
+        were issued before the WS hiccup can still resolve on the fresh
+        socket), but rebuild the WS / handshake / health-verify chain
+        and start a fresh reader_loop.
+        """
+        # Cancel the parked watchdog before clearing _parked so the
+        # watchdog body sees the right state.
+        if self._parked_watchdog_task and not self._parked_watchdog_task.done():
+            self._parked_watchdog_task.cancel()
+        self._parked_watchdog_task = None
+        # Old WS is already torn down (reader_loop exited); just drop the ref.
+        self._ws = None
+        await self.connect()
+        self._parked = False
+        put_metric("gateway.parked.reopen")
+        logger.info(
+            "Reopened parked gateway connection user=%s active_runs=%d",
+            self.user_id,
+            len(self._active_runs),
+        )
 
     @property
     def has_frontend_connections(self) -> bool:
@@ -1046,7 +1316,7 @@ class GatewayConnection:
 
     async def close(self) -> None:
         """Shut down: cancel reader, close WebSocket."""
-        self._emit_status_change("GATEWAY_DOWN", "Gateway connection closed")
+        self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection closed")
         self._closed = True
         # Wait for any in-flight billing-resolver tasks to finish writing
         # so scale-to-zero teardown doesn't drop the last few usage events.
@@ -1063,6 +1333,12 @@ class GatewayConnection:
                 )
         if self._grace_task and not self._grace_task.done():
             self._grace_task.cancel()
+        if self._parked_watchdog_task and not self._parked_watchdog_task.done():
+            self._parked_watchdog_task.cancel()
+            try:
+                await self._parked_watchdog_task
+            except asyncio.CancelledError:
+                pass
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
             try:
@@ -1076,6 +1352,10 @@ class GatewayConnection:
             if not future.done():
                 future.set_exception(RuntimeError("Connection closed"))
         self._pending_rpcs.clear()
+        # Drop active-run state. close() means we don't expect to talk to
+        # this OpenClaw process again under this connection instance.
+        self._active_runs.clear()
+        self._parked = False
 
 
 class GatewayConnectionPool:
@@ -1091,20 +1371,45 @@ class GatewayConnectionPool:
         self._conn_member_map: Dict[str, str] = {}  # connection_id -> member_user_id
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
+        # Per-user reconnect attempt timestamps for the `_RECONNECT_FLOOR_S`
+        # storm guard. Tracks the start of the *most recent* reconnect (not
+        # success / failure) so a single bad container can't burn the
+        # backend's open-handshake budget at 1s cadence.
+        self._last_reconnect_at: Dict[str, float] = {}
 
     def is_user_connected(self, user_id: str) -> bool:
         """Whether the pool has a live, healthy gateway connection for this user.
 
         Used by the cold-start phase resolver in the container router. True
-        means TCP+WS+OpenClaw 4.5 signed handshake all completed AND the
-        post-handshake health RPC succeeded — i.e. openclaw is responsive
-        enough to take chat traffic. The 5+min sidecars.channels wedge
-        prevents this from going True until openclaw finishes that phase,
-        which is why we surface the intermediate "starting" phase to the
-        frontend instead of leaving users staring at a blank screen.
+        means EITHER the WS is fully open OR the connection is parked with
+        at least one active run in flight (presumed alive — OpenClaw was
+        streaming events recently, the WS just hiccupped). The parked case
+        is what keeps /container/status reporting `phase: "ready"` during
+        long Bedrock turns so the ProvisioningStepper doesn't re-engage
+        on top of an active chat.
         """
         conn = self._connections.get(user_id)
-        return conn is not None and conn.is_connected
+        return conn is not None and conn.is_alive
+
+    def mark_run_active(
+        self,
+        user_id: str,
+        session_key: str,
+        agent_id: str | None = None,
+    ) -> None:
+        """Public entry point for the chat dispatcher.
+
+        Records that a chat.send is being issued for *session_key* on the
+        per-user gateway connection. Silently no-ops when no connection
+        exists for *user_id* yet (the chat dispatcher will create one on
+        the same code path); the next inbound event keyed on this
+        session_key will populate ``_active_runs`` once the connection
+        is up. Idempotent.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        conn.mark_run_active(session_key, agent_id)
 
     async def gate_chat(self, *, user_id: str, owner_id: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users.
@@ -1200,10 +1505,27 @@ class GatewayConnectionPool:
         ip: str,
         token: str,
     ) -> Any:
-        """Send RPC via persistent connection (create if needed)."""
+        """Send RPC via persistent connection (create / reopen as needed).
+
+        Three repair paths:
+
+        - **Parked** (WS torn down with active runs in flight): reopen the
+          same connection, preserving `_active_runs` + `_pending_rpcs`.
+          The reconnect floor below guards against storm cadence.
+        - **Stale** (WS torn down with no active runs): close and recreate.
+        - **Absent**: create fresh.
+
+        The reconnect floor only gates the parked + stale repair paths,
+        not first-time creates — a fresh user landing on /chat shouldn't
+        wait 5s for the first connection.
+        """
         async with self._lock:
             conn = self._connections.get(user_id)
-            if conn is not None and not conn.is_connected:
+            if conn is not None and conn._parked:
+                self._respect_reconnect_floor(user_id)
+                await conn.reopen()
+            elif conn is not None and not conn.is_connected:
+                self._respect_reconnect_floor(user_id)
                 await conn.close()
                 conn = None
             if conn is None:
@@ -1215,6 +1537,25 @@ class GatewayConnectionPool:
         except Exception:
             put_metric("gateway.rpc.error", dimensions={"method": method})
             raise
+
+    def _respect_reconnect_floor(self, user_id: str) -> None:
+        """Raise if another reconnect for *user_id* fired within `_RECONNECT_FLOOR_S`.
+
+        Keeps a misbehaving container from burning the open-handshake
+        budget at sub-second cadence when the frontend's exponential
+        reconnect collides with multiple in-flight retries server-side.
+        Stamps the attempt time even when raising so the floor is
+        sticky across the caller-retry boundary.
+        """
+        now = time.monotonic()
+        last = self._last_reconnect_at.get(user_id, 0.0)
+        if last and (now - last) < _RECONNECT_FLOOR_S:
+            put_metric("gateway.connection", dimensions={"event": "reconnect_throttled"})
+            raise RuntimeError(
+                f"Gateway reconnect throttled for user {user_id} — "
+                f"last attempt {now - last:.1f}s ago, floor {_RECONNECT_FLOOR_S}s"
+            )
+        self._last_reconnect_at[user_id] = now
 
     def add_frontend_connection(
         self,
@@ -1270,6 +1611,10 @@ class GatewayConnectionPool:
             await conn.close()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
+        # Drop the reconnect-floor entry so a fresh user (e.g. someone who
+        # signed out and back in on the same backend task) doesn't inherit
+        # a stale throttle from the previous session.
+        self._last_reconnect_at.pop(user_id, None)
 
     async def broadcast_to_user(self, user_id: str, message: dict) -> None:
         """Send a message to all frontend connections for a user."""
@@ -1326,9 +1671,11 @@ class GatewayConnectionPool:
             logger.exception("running_gauges: get_by_status failed")
             return
 
+        parked_count = sum(1 for c in self._connections.values() if c._parked)
         try:
             gauge("gateway.running.count", len(rows))
             gauge("gateway.connection.open", len(self._connections))
+            gauge("gateway.connection.parked", parked_count)
         except Exception:
             pass
 

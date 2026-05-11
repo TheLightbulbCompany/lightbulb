@@ -261,7 +261,7 @@ async def container_recover(
             await _call_gateway_rpc(ip, owner_id, token, "update.run")
             return {
                 "action": "gateway_restart",
-                "state": "GATEWAY_DOWN",
+                "state": "GATEWAY_DOWN_DEAD",
                 "reason": "Gateway not responding — restarting",
             }
         except Exception:
@@ -281,6 +281,6 @@ async def container_recover(
                 raise HTTPException(status_code=502, detail="Re-provisioning failed")
             return {
                 "action": "reprovision",
-                "state": "GATEWAY_DOWN",
+                "state": "GATEWAY_DOWN_DEAD",
                 "reason": "Gateway restart failed — reprovisioning",
             }

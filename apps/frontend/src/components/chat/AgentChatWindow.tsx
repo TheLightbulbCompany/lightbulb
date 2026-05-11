@@ -305,6 +305,7 @@ export function AgentChatWindow({
         content: msg.content,
         ...(msg.thinking ? { thinking: msg.thinking } : {}),
         ...(msg.toolUses?.length ? { toolUses: msg.toolUses } : {}),
+        ...(msg.errorCode ? { errorCode: msg.errorCode } : {}),
       })),
     [chatMessages],
   );

@@ -4,6 +4,7 @@ import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/fi
 import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
+import { ChatErrorCard } from "@/components/chat/ChatErrorCard";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -36,6 +37,14 @@ export interface Message {
   thinking?: string;
   model?: string;
   toolUses?: ToolUse[];
+  /**
+   * Set when the bubble represents a terminal agent error. Carries
+   * OpenClaw's `errorKind` (forwarded by the backend as `code`) so we
+   * can render a typed ChatErrorCard with tailored copy / actions.
+   * `content` will still begin with the legacy `Error: ` prefix for
+   * back-compat with consumers that match on string.
+   */
+  errorCode?: string;
 }
 
 export interface MessageListProps {
@@ -447,6 +456,16 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               idx === messages.length - 1 ||
               messages.slice(idx + 1).every((m) => m.role !== "assistant")
             );
+            const isErrorBubble = msg.role === "assistant" && msg.content.startsWith("Error: ");
+            const errorBody = isErrorBubble ? msg.content.slice(7) : "";
+            // Typed cards take over the full bubble when we have a code —
+            // the upstream `errorKind` enum (rate_limit, context_length,
+            // refusal, timeout, unknown) lets us render tailored copy +
+            // an action button. Without a code we fall back to the legacy
+            // inline red text + ErrorToolbar so we don't regress untyped
+            // failure paths (transport errors, sendMessage catch branch).
+            const useTypedCard = isErrorBubble && (msg.errorCode || errorBody);
+
             return (
             <div
               key={msg.id}
@@ -458,7 +477,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
             >
               <div className="flex flex-col min-w-0 max-w-[85%]">
                 {msg.role === "assistant" && (
-                  msg.content.startsWith("Error: ")
+                  isErrorBubble
                     ? <ErrorToolbar messageId={msg.id} onRetry={onRetry} />
                     : <AgentHead
                         name={agentName || "Assistant"}
@@ -482,17 +501,25 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                   <ToolUseIndicator toolUses={msg.toolUses} />
                 )}
 
-                <div className={cn(
-                  "wrap-break-word",
-                  msg.role === "user" && "whitespace-pre-wrap",
-                  msg.role === "assistant" && msg.content.startsWith("Error: ") && "text-[#dc2626]"
-                )}>
-                  {msg.role === "assistant" && msg.content.startsWith("Error: ")
-                    ? msg.content.slice(7)
-                    : msg.role === "assistant" && msg.content
-                      ? <MarkdownContent content={msg.content} onOpenFile={onOpenFile} />
-                      : msg.content || null}
-                </div>
+                {useTypedCard ? (
+                  <ChatErrorCard
+                    message={errorBody}
+                    code={msg.errorCode}
+                    onRetry={onRetry ? () => onRetry(msg.id) : undefined}
+                  />
+                ) : (
+                  <div className={cn(
+                    "wrap-break-word",
+                    msg.role === "user" && "whitespace-pre-wrap",
+                    isErrorBubble && "text-[#dc2626]"
+                  )}>
+                    {isErrorBubble
+                      ? errorBody
+                      : msg.role === "assistant" && msg.content
+                        ? <MarkdownContent content={msg.content} onOpenFile={onOpenFile} />
+                        : msg.content || null}
+                  </div>
+                )}
                 </div>
               </div>
             </div>

@@ -972,14 +972,34 @@ class GatewayConnection:
                     fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
                 elif state == "error":
-                    put_metric("chat.error", dimensions={"reason": "agent_error"})
-                    err = payload.get("error", {})
-                    err_msg = (
-                        err.get("message", "Agent run failed")
-                        if isinstance(err, dict)
-                        else str(err or "Agent run failed")
+                    # OpenClaw's `chat` terminal error event carries the
+                    # human-readable text in `errorMessage` and a coarse,
+                    # closed-enum classification in `errorKind` (see
+                    # upstream src/gateway/protocol/schema/logs-chat.ts:
+                    # ChatEventSchema). `errorKind` is one of:
+                    #   refusal | timeout | rate_limit | context_length | unknown
+                    # We forward both so the frontend can render a typed
+                    # error card with tailored copy/actions instead of a
+                    # generic "Agent run failed" block. The legacy `error`
+                    # key is read as a defensive fallback in case some
+                    # older path still emits it.
+                    err_msg = payload.get("errorMessage")
+                    err_kind = payload.get("errorKind")
+                    if not err_msg:
+                        legacy_err = payload.get("error")
+                        if isinstance(legacy_err, dict):
+                            err_msg = legacy_err.get("message")
+                        elif legacy_err:
+                            err_msg = str(legacy_err)
+                    if not err_msg:
+                        err_msg = "Agent run failed"
+                    put_metric(
+                        "chat.error",
+                        dimensions={"reason": err_kind or "agent_error"},
                     )
                     fwd = {"type": "error", "message": err_msg}
+                    if err_kind:
+                        fwd["code"] = err_kind
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id

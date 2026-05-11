@@ -100,10 +100,17 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
   const p = payload as RequestPayload;
   if (!p.id || !p.request?.command) return null;
   const nowMs = Date.now();
-  const expiresAtMs =
-    typeof p.expiresAtMs === "number" && p.expiresAtMs > nowMs
-      ? p.expiresAtMs
-      : nowMs + DEFAULT_EXPIRY_MS;
+  // Only synthesize an expiry when the server omitted (or sent a malformed)
+  // timestamp. Server-supplied past timestamps must be preserved so that
+  // delayed/replayed events get pruned immediately by the local timer
+  // (Math.max(0, expiresAtMs - now + 500) → 500ms when in the past) rather
+  // than getting extended for another DEFAULT_EXPIRY_MS at the head of the
+  // queue with live buttons.
+  const hasValidServerTimestamp =
+    typeof p.expiresAtMs === "number" && Number.isFinite(p.expiresAtMs);
+  const expiresAtMs = hasValidServerTimestamp
+    ? p.expiresAtMs!
+    : nowMs + DEFAULT_EXPIRY_MS;
   return {
     id: p.id,
     command: p.request.command,
@@ -120,8 +127,7 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
 }
 
 /**
- * Returns true when the request is for the currently signed-in member
- * (or when we can't tell — see comment).
+ * Returns true when the request is for the currently signed-in member.
  *
  * In an org with multiple connected members, the backend's
  * connection_pool.py routes events by top-level `payload.sessionKey`,
@@ -130,13 +136,18 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
  * member's browser receives every member's approval. Without this
  * filter, member B could see and resolve member A's pending exec.
  *
- * sessionKey format from OpenClaw: `agent:<agentId>:user_<userIdLowercase>`.
- * We do a lowercase substring check against the Clerk user.id; mixed
- * casing in Clerk IDs vs. lowercase normalization in OpenClaw means an
- * exact-equality check would falsely reject. If the request has no
- * sessionKey (defensive: malformed event, or old emitter), we still
- * accept — the alternative is dropping legitimate events on personal
- * accounts that may not always populate sessionKey.
+ * sessionKey format from OpenClaw: `agent:<agentId>:<memberId>` where
+ * `<memberId>` is the Clerk user.id lowercased. We isolate the trailing
+ * member-id segment and compare it case-insensitively for an exact
+ * match. A naive `includes` would incorrectly accept a longer member
+ * id whose suffix matches the current user's (e.g. user `user_abc` would
+ * match `agent:.../user_abcd`).
+ *
+ * If the request has no sessionKey (defensive: malformed event, or
+ * legacy emitter), we still accept — the alternative is dropping
+ * legitimate events on personal accounts that may not always populate
+ * sessionKey. The broadcast leak this guards against only manifests in
+ * org contexts, where sessionKey is always present.
  */
 function isApprovalForCurrentUser(
   req: ExecApprovalRequest,
@@ -144,7 +155,9 @@ function isApprovalForCurrentUser(
 ): boolean {
   if (!userId) return false; // not signed in — drop everything
   if (!req.sessionKey) return true; // no scoping signal; accept (legacy emitters)
-  return req.sessionKey.toLowerCase().includes(userId.toLowerCase());
+  const segments = req.sessionKey.split(":");
+  const memberId = segments[segments.length - 1];
+  return memberId.toLowerCase() === userId.toLowerCase();
 }
 
 export function useExecApprovals(): UseExecApprovalsReturn {

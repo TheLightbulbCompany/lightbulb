@@ -37,12 +37,18 @@ interface ErrorPresentation {
 function describeError(code: string | undefined, message: string): ErrorPresentation {
   switch (code) {
     case "rate_limit":
+      // Generic "switch provider" framing is wrong here — switching to a BYO
+      // key has the same provider-quota problem. The three real remedies are
+      // (a) wait for the provider's quota to reset, (b) upgrade your plan
+      // with the provider, or (c) move this workspace to Isol8's
+      // Bedrock-managed credits, which sidesteps third-party quotas entirely.
+      // Upstream `message` ("The usage limit has been reached.") isn't
+      // actionable, so we always use our own copy here.
       return {
-        title: "Rate limit reached",
+        title: "Provider rate limit reached",
         description:
-          message ||
-          "Your model provider hit a usage limit. Wait a few minutes, or switch to a different provider to keep going.",
-        action: { label: "Change provider", href: "/chat?panel=llm" },
+          "Your model provider hit its usage cap. Three ways to keep going: wait for your quota to reset, upgrade your plan with the provider, or switch this workspace to Isol8's Bedrock-managed credits.",
+        action: { label: "Switch to Bedrock", href: "/chat?panel=llm" },
       };
     case "context_length":
       return {

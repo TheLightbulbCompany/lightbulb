@@ -14,11 +14,18 @@ vi.mock("next/link", () => ({
 }));
 
 describe("ChatErrorCard", () => {
-  it("renders the rate_limit variant with a change-provider action", () => {
+  it("renders the rate_limit variant with the three-remedies copy and Bedrock switch action", () => {
     render(<ChatErrorCard code="rate_limit" message="429 from upstream" />);
-    expect(screen.getByText("Rate limit reached")).toBeInTheDocument();
-    expect(screen.getByText("429 from upstream")).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Change provider" });
+    expect(screen.getByText("Provider rate limit reached")).toBeInTheDocument();
+    // Description spells out all three remedies so the user can choose:
+    // wait, upgrade their provider plan, or switch to Bedrock.
+    expect(screen.getByText(/wait for your quota to reset/i)).toBeInTheDocument();
+    expect(screen.getByText(/upgrade your plan with the provider/i)).toBeInTheDocument();
+    expect(screen.getByText(/Bedrock-managed credits/i)).toBeInTheDocument();
+    // Upstream "The usage limit has been reached." is intentionally NOT shown —
+    // it's not actionable and would compete with our copy.
+    expect(screen.queryByText("429 from upstream")).not.toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Switch to Bedrock" });
     expect(link).toHaveAttribute("href", "/chat?panel=llm");
   });
 

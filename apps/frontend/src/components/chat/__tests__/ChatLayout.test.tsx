@@ -10,7 +10,12 @@ vi.mock("next/navigation", () => ({
 
 let clerkState: {
   isSignedIn: boolean;
-  user: { unsafeMetadata?: Record<string, unknown>; fullName?: string; firstName?: string } | null;
+  user: {
+    id?: string;
+    unsafeMetadata?: Record<string, unknown>;
+    fullName?: string;
+    firstName?: string;
+  } | null;
   organization: { id: string } | null;
   memberships: unknown[];
   invitations: unknown[];

@@ -57,38 +57,10 @@ describe('StreamingStatusBar', () => {
     expect(screen.getByText(/Running fs\.read/)).toBeInTheDocument();
   });
 
-  it('surfaces pending-approval over a running tool in the same bubble', () => {
-    const messages = [
-      assistantMsg('a1', [
-        { tool: 'shell', status: 'running' },
-        { tool: 'exec', status: 'pending-approval' },
-      ]),
-    ];
-    render(<StreamingStatusBar isStreaming={true} messages={messages} />);
-    expect(screen.getByText(/Awaiting approval: exec/)).toBeInTheDocument();
-  });
-
-  it('surfaces pending-approval regardless of intra-bubble order', () => {
-    const messages = [
-      assistantMsg('a1', [
-        { tool: 'exec', status: 'pending-approval' },
-        { tool: 'shell', status: 'running' },
-      ]),
-    ];
-    render(<StreamingStatusBar isStreaming={true} messages={messages} />);
-    expect(screen.getByText(/Awaiting approval: exec/)).toBeInTheDocument();
-  });
-
-  it('surfaces pending-approval attached to an earlier bubble while a newer bubble is active', () => {
-    // Mirrors the useAgentChat invariant that approvals can arrive for an
-    // earlier run after a newer assistant bubble has already been created.
-    const messages = [
-      assistantMsg('a1', [{ tool: 'exec', status: 'pending-approval' }]),
-      assistantMsg('a2', [{ tool: 'shell', status: 'running' }]),
-    ];
-    render(<StreamingStatusBar isStreaming={true} messages={messages} />);
-    expect(screen.getByText(/Awaiting approval: exec/)).toBeInTheDocument();
-  });
+  // Removed: three "surfaces pending-approval" tests. Approvals are no
+  // longer in messages.toolUses — they live in the global queue managed
+  // by useExecApprovals and render via the modal ExecApprovalDialog.
+  // StreamingStatusBar now only reports running execution / Thinking.
 
   it('only counts running tools from the most recent assistant bubble', () => {
     const messages = [
@@ -103,8 +75,8 @@ describe('StreamingStatusBar', () => {
     expect(deriveStreamingLabel([])).toBe('Thinking');
     expect(
       deriveStreamingLabel([
-        assistantMsg('a1', [{ tool: 'exec', status: 'pending-approval' }]),
+        assistantMsg('a1', [{ tool: 'exec', status: 'running' }]),
       ])
-    ).toBe('Awaiting approval: exec');
+    ).toBe('Running exec');
   });
 });

@@ -501,6 +501,75 @@ async def create_trial_checkout(
 
 
 # ---------------------------------------------------------------------------
+# Post-onboarding provider switch (POST /billing/provider)
+# ---------------------------------------------------------------------------
+
+
+class ChangeProviderRequest(BaseModel):
+    # Same Literal as TrialCheckoutRequest. 422 on unknown values before
+    # any DDB read or container side-effect.
+    provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] = Field(
+        ...,
+        description="chatgpt_oauth | byo_key | bedrock_claude",
+    )
+    byo_provider: Literal["openai", "anthropic"] | None = Field(
+        None,
+        description=(
+            "Required when provider_choice == 'byo_key'. Switching to BYO "
+            "without a previously-uploaded matching API key returns 409 — "
+            "the caller must PUT /settings/keys/{provider} before this call."
+        ),
+    )
+
+
+@router.post(
+    "/provider",
+    summary="Change the owner's LLM provider mid-flight",
+    description=(
+        "Post-onboarding provider switch. Requires an active subscription "
+        "(subscribers only — pre-subscribe users hit /billing/trial-checkout). "
+        "Flips provider_choice on the billing row, clears the old provider's "
+        "side-effect state (OAuth tokens / BYOK Secrets Manager secrets), and "
+        "re-provisions the user's container with the new provider. The "
+        "container restart ends the current chat session — the frontend "
+        "surfaces this as a cutover warning before posting."
+    ),
+    operation_id="change_provider",
+)
+async def change_provider(
+    body: ChangeProviderRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    from core.services.billing_service import (
+        ChangeProviderError,
+        change_provider as change_provider_service,
+    )
+
+    # Org admins only — mirrors /trial-checkout. A non-admin member can't
+    # blow away the org's container by clicking "Change provider".
+    if auth.is_org_context:
+        require_org_admin(auth)
+
+    owner_id = resolve_owner_id(auth)
+    owner_type = get_owner_type(auth)
+
+    try:
+        return await change_provider_service(
+            owner_id=owner_id,
+            clerk_user_id=auth.user_id,
+            owner_type=owner_type,
+            is_org_context=auth.is_org_context,
+            provider_choice=body.provider_choice,
+            byo_provider=body.byo_provider,
+        )
+    except ChangeProviderError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "message": e.message},
+        ) from e
+
+
+# ---------------------------------------------------------------------------
 # Credit ledger endpoints (Plan 2 §6.2 / §6.4)
 # ---------------------------------------------------------------------------
 

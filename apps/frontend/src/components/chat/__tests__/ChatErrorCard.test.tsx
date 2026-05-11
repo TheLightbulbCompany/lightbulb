@@ -14,7 +14,7 @@ vi.mock("next/link", () => ({
 }));
 
 describe("ChatErrorCard", () => {
-  it("renders the rate_limit variant with the three-remedies copy and Bedrock switch action", () => {
+  it("renders the rate_limit variant with the three-remedies copy and Switch provider action", () => {
     render(<ChatErrorCard code="rate_limit" message="429 from upstream" />);
     expect(screen.getByText("Provider rate limit reached")).toBeInTheDocument();
     // Description spells out all three remedies so the user can choose:
@@ -25,15 +25,19 @@ describe("ChatErrorCard", () => {
     // Upstream "The usage limit has been reached." is intentionally NOT shown —
     // it's not actionable and would compete with our copy.
     expect(screen.queryByText("429 from upstream")).not.toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Switch to Bedrock" });
-    expect(link).toHaveAttribute("href", "/chat?panel=llm");
+    // ``action=change-provider`` is required so LLMPanel auto-opens the
+    // change-provider modal on landing — without it the user lands on a
+    // static panel and has to dig for the change button (the original
+    // dead-end this card was created to fix).
+    const link = screen.getByRole("link", { name: "Switch provider" });
+    expect(link).toHaveAttribute("href", "/chat?panel=llm&action=change-provider");
   });
 
-  it("renders the context_length variant with a change-model action", () => {
+  it("renders the context_length variant with a change-provider action", () => {
     render(<ChatErrorCard code="context_length" message="" />);
     expect(screen.getByText("Conversation too long")).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Change model" });
-    expect(link).toHaveAttribute("href", "/chat?panel=llm");
+    const link = screen.getByRole("link", { name: "Change provider" });
+    expect(link).toHaveAttribute("href", "/chat?panel=llm&action=change-provider");
   });
 
   it("renders the timeout variant with no action button", () => {

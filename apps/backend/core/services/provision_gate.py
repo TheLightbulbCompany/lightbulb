@@ -257,7 +257,30 @@ async def evaluate_provision_gate(
             owner_role=owner_role,
         )
 
-    # Layer 2/3 — provider-specific.
+    # Layer 2 — provider must be picked.
+    #
+    # Reads the raw value off the billing row (already in scope) rather than
+    # _get_provider_choice, which falls back to "bedrock_claude" for legacy
+    # callers. The fallback exists so background_provision keeps working for
+    # owners onboarded before Workstream B (and so a missing-row race
+    # doesn't 500 the provisioner), but the gate must distinguish
+    # "explicitly chose Bedrock" from "no choice on file" — otherwise a user
+    # who disconnects ChatGPT OAuth (which clears provider_choice) gets
+    # silently routed into the credits gate instead of the picker.
+    if account.get("provider_choice") is None:
+        return Gate(
+            code="provider_required",
+            title="Pick how to power your agents",
+            message=("Choose Bedrock-managed credits, ChatGPT OAuth, or your own API key to continue."),
+            action_label="Pick provider",
+            action_href="/chat?panel=llm&action=change-provider",
+            # Personal owners are always admin of themselves; org members
+            # can't change the org's provider — only the admin can.
+            action_admin_only=True,
+            owner_role=owner_role,
+        )
+
+    # Layer 3 — provider-specific prerequisites.
     # provider_choice lives on the billing row (Workstream B), keyed by owner_id.
     provider_choice = await _get_provider_choice(owner_id)
 

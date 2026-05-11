@@ -44,11 +44,17 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
       // Bedrock-managed credits, which sidesteps third-party quotas entirely.
       // Upstream `message` ("The usage limit has been reached.") isn't
       // actionable, so we always use our own copy here.
+      //
+      // The action URL carries ``action=change-provider`` so LLMPanel
+      // auto-opens the change-provider modal on mount — without that the
+      // user lands on a static panel showing their current provider with
+      // no obvious "what now" surface (the original bug that motivated
+      // this flow).
       return {
         title: "Provider rate limit reached",
         description:
           "Your model provider hit its usage cap. Three ways to keep going: wait for your quota to reset, upgrade your plan with the provider, or switch this workspace to Isol8's Bedrock-managed credits.",
-        action: { label: "Switch to Bedrock", href: "/chat?panel=llm" },
+        action: { label: "Switch provider", href: "/chat?panel=llm&action=change-provider" },
       };
     case "context_length":
       return {
@@ -56,7 +62,7 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
         description:
           message ||
           "The conversation exceeded the model's context window. Start a new chat or pick a model with a larger context.",
-        action: { label: "Change model", href: "/chat?panel=llm" },
+        action: { label: "Change provider", href: "/chat?panel=llm&action=change-provider" },
       };
     case "timeout":
       return {

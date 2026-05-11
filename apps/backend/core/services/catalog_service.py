@@ -140,10 +140,24 @@ class CatalogService:
                 # concurrent deploys cannot drop each other's agent entries.
                 plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
 
+                # Selection-aware additions (marketplace publish flow): the
+                # seller picked specific MCP servers + skills in the publish
+                # wizard; those land in the slice under ``mcp`` / ``skills``
+                # with secret fields already scrubbed to "" by
+                # ``catalog_slice``. The buyer fills in credentials before
+                # the integration becomes functional. ``None`` for either
+                # patch keeps legacy listing behavior (no MCP / skills
+                # registration) — backwards compatible with pre-bundle
+                # listings already in the marketplace.
+                mcp_patch = copy.deepcopy(slice_.get("mcp")) or None
+                skills_patch = copy.deepcopy(slice_.get("skills")) or None
+
                 await self._apply_deploy(
                     owner_id,
                     agent_entry,
                     plugins_patch,
+                    mcp_patch=mcp_patch,
+                    skills_patch=skills_patch,
                 )
 
             self._workspace.write_template_sidecar(

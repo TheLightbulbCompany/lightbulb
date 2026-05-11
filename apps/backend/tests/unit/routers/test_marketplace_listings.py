@@ -702,6 +702,189 @@ def test_my_agents_summary_unauthorized(unauth_client):
     assert resp.status_code in (401, 403)
 
 
+# ---------------------------------------------------------------------------
+# Friday-publish guard on /listings/{id}/artifact-from-agent
+# ---------------------------------------------------------------------------
+
+
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_blocks_friday(
+    mock_export,
+    mock_is_friday,
+    authed_client_factory,
+):
+    """When the picked agent is the owner's Paperclip CEO (Friday), the
+    publish endpoint must 400 and never call export_agent_from_efs.
+    """
+    mock_is_friday.return_value = True
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={"agent_id": "friday-uuid-001"},
+    )
+    assert resp.status_code == 400
+    assert "default agent" in resp.json()["detail"]
+    mock_export.assert_not_called()
+
+
+@patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_allows_non_friday(
+    mock_export,
+    mock_is_friday,
+    mock_replace,
+    authed_client_factory,
+):
+    """Non-CEO agent_id passes the guard and proceeds to export + replace."""
+    from core.services.catalog_package import CatalogPackage
+
+    mock_is_friday.return_value = False
+    mock_export.return_value = CatalogPackage(
+        format="openclaw",
+        manifest={"name": "x", "agent_id": "custom-1"},
+        openclaw_slice={"agent": {"name": "x"}, "plugins": {}, "tools": {}, "cron_jobs": []},
+        tarball_bytes=b"fake",
+        tarball_contents=["./openclaw.json"],
+    )
+    mock_replace.return_value = {
+        "listing_id": "lst_42",
+        "version": 1,
+        "manifest_sha256": "abc123",
+    }
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={"agent_id": "custom-1"},
+    )
+    assert resp.status_code == 200
+    mock_export.assert_called_once()
+    mock_replace.assert_called_once()
+
+
+@patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_passes_bundle_selection_through(
+    mock_export,
+    mock_is_friday,
+    mock_replace,
+    authed_client_factory,
+):
+    """The Bundle step's selection (MCPs + skills) must reach export_agent_from_efs
+    as keyword args so the slice carries them with secrets scrubbed."""
+    from core.services.catalog_package import CatalogPackage
+
+    mock_is_friday.return_value = False
+    mock_export.return_value = CatalogPackage(
+        format="openclaw",
+        manifest={"name": "x", "agent_id": "custom-1"},
+        openclaw_slice={"agent": {"name": "x"}, "plugins": {}, "tools": {}, "cron_jobs": []},
+        tarball_bytes=b"fake",
+        tarball_contents=[],
+    )
+    mock_replace.return_value = {"listing_id": "lst_42", "version": 1, "manifest_sha256": "x"}
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={
+            "agent_id": "custom-1",
+            "bundle": {"mcps": ["jira-mcp"], "skills": ["search", "jira"]},
+        },
+    )
+    assert resp.status_code == 200
+    call_kwargs = mock_export.call_args.kwargs
+    assert call_kwargs["selected_mcps"] == ["jira-mcp"]
+    assert call_kwargs["selected_skills"] == ["search", "jira"]
+
+
+# ---------------------------------------------------------------------------
+# GET /me/agents/{agent_id}/artifact-preview
+# ---------------------------------------------------------------------------
+
+
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.enumerate_for_preview")
+def test_artifact_preview_returns_available_mcps_skills_and_flags(
+    mock_enumerate,
+    mock_is_friday,
+    authed_client_factory,
+):
+    mock_is_friday.return_value = False
+    mock_enumerate.return_value = {
+        "agent_id": "custom-1",
+        "available_mcps": ["jira-mcp", "slack-mcp"],
+        "available_skills": [
+            {"name": "search", "bucket": "bundled"},
+            {"name": "jira", "bucket": "entries"},
+            {"name": "my-skill", "bucket": "workspace"},
+        ],
+        "persona_files": ["IDENTITY.md", "SOUL.md"],
+        "safety_flags": [
+            {
+                "pattern": "email-address",
+                "severity": "medium",
+                "file": "USER.md",
+                "line": 3,
+                "snippet": "Email: alice@example.com",
+            }
+        ],
+    }
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/me/agents/custom-1/artifact-preview")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["agent_id"] == "custom-1"
+    assert body["available_mcps"] == ["jira-mcp", "slack-mcp"]
+    by_name = {s["name"]: s["bucket"] for s in body["available_skills"]}
+    assert by_name["search"] == "bundled"
+    assert by_name["jira"] == "entries"
+    assert by_name["my-skill"] == "workspace"
+    assert "IDENTITY.md" in body["persona_files"]
+    assert body["safety_flags"][0]["pattern"] == "email-address"
+    # An MCP exists → needs_config_patch flag flips on so the wizard's
+    # Review step warns the seller their listing patches the buyer's config.
+    assert body["needs_config_patch"] is True
+
+
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.enumerate_for_preview")
+def test_artifact_preview_needs_config_patch_false_for_pure_workspace_listing(
+    mock_enumerate,
+    mock_is_friday,
+    authed_client_factory,
+):
+    """A listing that only ships workspace files (no MCPs, no entries/bundled
+    skills) doesn't touch the buyer's openclaw.json → no warning."""
+    mock_is_friday.return_value = False
+    mock_enumerate.return_value = {
+        "agent_id": "custom-1",
+        "available_mcps": [],
+        "available_skills": [{"name": "my-skill", "bucket": "workspace"}],
+        "persona_files": ["IDENTITY.md"],
+        "safety_flags": [],
+    }
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/me/agents/custom-1/artifact-preview")
+    assert resp.status_code == 200
+    assert resp.json()["needs_config_patch"] is False
+
+
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+def test_artifact_preview_blocks_friday(mock_is_friday, authed_client_factory):
+    mock_is_friday.return_value = True
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/me/agents/friday-uuid/artifact-preview")
+    assert resp.status_code == 400
+    assert "default agent" in resp.json()["detail"]
+
+
+def test_artifact_preview_unauthorized(unauth_client):
+    resp = unauth_client.get("/api/v1/marketplace/me/agents/x/artifact-preview")
+    assert resp.status_code in (401, 403)
+
+
 @patch("routers.marketplace_listings.get_workspace")
 def test_my_agents_summary_handles_array_shape_skills(mock_workspace_factory, authed_client_factory):
     """Real agent configs (e.g. atlas) store skills/channels as plain arrays.

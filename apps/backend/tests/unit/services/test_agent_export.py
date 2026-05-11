@@ -266,3 +266,193 @@ def test_export_agent_not_in_config_raises(fake_efs, tmp_path):
     (orphan_dir / "README.md").write_text("orphan", encoding="utf-8")
     with pytest.raises(agent_export.AgentNotInConfigError, match="not registered"):
         agent_export.export_agent_from_efs(seller_id=seller_id, agent_id="orphan-agent-99")
+
+
+# ---------------------------------------------------------------------------
+# is_reserved_friday_agent — Friday-publish guard
+# ---------------------------------------------------------------------------
+
+
+class _StubFetch:
+    """Async-callable stub for the Paperclip agents fetcher."""
+
+    def __init__(self, agents):
+        self.agents = agents
+        self.calls = 0
+
+    async def __call__(self, *, owner_id):
+        self.calls += 1
+        return self.agents
+
+
+@pytest.mark.asyncio
+async def test_is_reserved_friday_agent_true_when_id_matches_ceo():
+    fetch = _StubFetch(
+        [
+            {"id": "friday-uuid-001", "role": "ceo", "name": "Friday"},
+            {"id": "other-agent", "role": "engineer"},
+        ]
+    )
+    result = await agent_export.is_reserved_friday_agent(
+        owner_id="user_abc",
+        agent_id="friday-uuid-001",
+        fetch_paperclip_agents=fetch,
+    )
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_is_reserved_friday_agent_false_for_non_ceo_agent():
+    fetch = _StubFetch(
+        [
+            {"id": "friday-uuid-001", "role": "ceo"},
+            {"id": "my-custom-agent", "role": "engineer"},
+        ]
+    )
+    result = await agent_export.is_reserved_friday_agent(
+        owner_id="user_abc",
+        agent_id="my-custom-agent",
+        fetch_paperclip_agents=fetch,
+    )
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_is_reserved_friday_agent_false_when_no_paperclip_agents():
+    """Paperclip unreachable / not-yet-provisioned → empty list → not reserved.
+
+    Graceful degradation: don't block publishes because Paperclip is down.
+    """
+    fetch = _StubFetch([])
+    result = await agent_export.is_reserved_friday_agent(
+        owner_id="user_abc",
+        agent_id="my-custom-agent",
+        fetch_paperclip_agents=fetch,
+    )
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_is_reserved_friday_agent_false_when_no_ceo_in_list():
+    fetch = _StubFetch(
+        [
+            {"id": "engineer-1", "role": "engineer"},
+            {"id": "designer-1", "role": "designer"},
+        ]
+    )
+    result = await agent_export.is_reserved_friday_agent(
+        owner_id="user_abc",
+        agent_id="engineer-1",
+        fetch_paperclip_agents=fetch,
+    )
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Safety-scan integration: manifest.safety_flags
+# ---------------------------------------------------------------------------
+
+
+def test_export_attaches_empty_safety_flags_for_clean_workspace(fake_efs):
+    """Clean workspace (no emails, no AWS keys) → manifest carries an
+    empty safety_flags list. Field is always present so frontend can
+    rely on it without nullity checks.
+    """
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    assert pkg.manifest.get("safety_flags") == []
+
+
+def test_export_flags_email_in_persona_file(fake_efs, tmp_path):
+    """An email address pasted into USER.md surfaces in manifest.safety_flags
+    via the persona-format scan path (trust-seller posture — flag, don't
+    auto-redact)."""
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "USER.md").write_text("## Owner\n- Email: alice@example.com\n", encoding="utf-8")
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    flags = pkg.manifest.get("safety_flags", [])
+    assert any(f["pattern"] == "email-address" and "USER.md" in f["file"] for f in flags), flags
+
+
+def test_export_flags_aws_key_in_memory_file(fake_efs, tmp_path):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "MEMORY.md").write_text("## Notes\nOld key was AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    flags = pkg.manifest.get("safety_flags", [])
+    assert any(f["pattern"] == "aws-secret-key" and f["severity"] == "high" for f in flags), flags
+
+
+def test_export_safety_flag_schema(fake_efs, tmp_path):
+    """SafetyFlag is JSON-serializable (dataclass-as-dict). Manifest
+    consumers (frontend + admin preview) read pattern/severity/file/line/snippet."""
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "USER.md").write_text("alice@example.com\n", encoding="utf-8")
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    flags = pkg.manifest.get("safety_flags", [])
+    assert flags, "expected at least one flag"
+    f = flags[0]
+    assert {"pattern", "severity", "file", "line", "snippet"}.issubset(f.keys())
+
+
+# ---------------------------------------------------------------------------
+# enumerate_for_preview — dry-run preview backing the publish wizard
+# ---------------------------------------------------------------------------
+
+
+def test_enumerate_for_preview_lists_available_mcps(fake_efs, tmp_path):
+    seller_id, agent_id, _ = fake_efs
+    # Add MCPs to the seller's openclaw.json
+    user_config = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg = json.loads(user_config.read_text())
+    cfg["mcp"] = {"servers": {"jira-mcp": {"command": "node"}, "slack-mcp": {"command": "node"}}}
+    user_config.write_text(json.dumps(cfg))
+
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    assert sorted(preview["available_mcps"]) == ["jira-mcp", "slack-mcp"]
+
+
+def test_enumerate_for_preview_classifies_each_skill(fake_efs, tmp_path):
+    """agent.skills referenced in the seller config get bucket-classified
+    against the seller's full openclaw.json + workspace contents."""
+    seller_id, agent_id, agent_dir = fake_efs
+    # Pre-populate seller config: skill `jira` configured in entries,
+    # `search` is bundled, `custom-skill` lives in agent workspace.
+    user_config = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg = json.loads(user_config.read_text())
+    cfg["skills"] = {
+        "entries": {"jira": {"apiKey": "secret"}},
+        "allowBundled": ["search"],
+    }
+    # Reflect them into the agent's skills list so they show up in available.
+    cfg["agents"]["list"][0]["skills"] = ["jira", "search", "custom-skill"]
+    user_config.write_text(json.dumps(cfg))
+    # Workspace skill: a file under the agent's workspace skills/ dir.
+    skills_dir = agent_dir / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "custom-skill.md").write_text("# custom skill\n", encoding="utf-8")
+
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    by_name = {s["name"]: s["bucket"] for s in preview["available_skills"]}
+    assert by_name["jira"] == "entries"
+    assert by_name["search"] == "bundled"
+    assert by_name["custom-skill"] == "workspace"
+
+
+def test_enumerate_for_preview_lists_persona_files_present(fake_efs, tmp_path):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "IDENTITY.md").write_text("I am.\n", encoding="utf-8")
+    (agent_dir / "USER.md").write_text("Owner stuff.\n", encoding="utf-8")
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    persona = preview["persona_files"]
+    assert "IDENTITY.md" in persona
+    assert "USER.md" in persona
+    # SOUL.md not present → not listed.
+    assert "SOUL.md" not in persona
+
+
+def test_enumerate_for_preview_carries_safety_flags(fake_efs, tmp_path):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "USER.md").write_text("Email: alice@example.com\n", encoding="utf-8")
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    flags = preview["safety_flags"]
+    assert any(f["pattern"] == "email-address" for f in flags)

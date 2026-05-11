@@ -34,30 +34,37 @@ class _Pattern:
     name: str
     severity: Severity
     regex: re.Pattern[bytes]
-    applies_to: tuple[str, ...] = ("skillmd", "openclaw")
+    applies_to: tuple[str, ...] = ("skillmd", "openclaw", "persona")
 
 
 # Patterns. Names are short identifiers used in audit-log and UI surfaces.
+# applies_to defaults to all three formats; code-injection / write-side
+# patterns scope down to "openclaw" only, and PII-shaped patterns scope
+# down to "persona" only.
 _PATTERNS: tuple[_Pattern, ...] = (
     _Pattern(
         "curl-bash",
         "high",
         re.compile(rb"(?:curl|wget)\s+[^|\n]+\|\s*(?:bash|sh|zsh|ksh)\b"),
+        applies_to=("skillmd", "openclaw"),
     ),
     _Pattern(
         "eval",
         "high",
         re.compile(rb"\beval\s*\("),
+        applies_to=("skillmd", "openclaw"),
     ),
     _Pattern(
         "function-ctor",
         "high",
         re.compile(rb"\bnew\s+Function\s*\("),
+        applies_to=("skillmd", "openclaw"),
     ),
     _Pattern(
         "exec",
         "high",
         re.compile(rb"\b(?:os\.system|subprocess\.(?:run|Popen|call|check_call|check_output))\s*\("),
+        applies_to=("skillmd", "openclaw"),
     ),
     _Pattern(
         "child-process-shell",
@@ -65,9 +72,11 @@ _PATTERNS: tuple[_Pattern, ...] = (
         re.compile(
             rb"child_process\.(?:exec|execSync|spawn(?:Sync)?)\s*\([^)]*shell\s*[:=]\s*true",
         ),
+        applies_to=("skillmd", "openclaw"),
     ),
     # Hardcoded credentials. Tolerates underscore/dash variants and matches
-    # quoted values of 16+ alphanumeric/underscore/dash chars.
+    # quoted values of 16+ alphanumeric/underscore/dash chars. Applies to
+    # persona files too — sellers sometimes paste API keys into MEMORY.md.
     _Pattern(
         "hardcoded-secret",
         "high",
@@ -117,6 +126,24 @@ _PATTERNS: tuple[_Pattern, ...] = (
             )
             """
         ),
+        applies_to=("skillmd", "openclaw"),
+    ),
+    # ----- Persona-file PII patterns (format="persona") -----
+    # Trust-seller posture: we flag, the seller redacts. Same regex spirit
+    # as the env-var leak detection used elsewhere — surface for review.
+    _Pattern(
+        "email-address",
+        "medium",
+        re.compile(rb"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
+        applies_to=("persona",),
+    ),
+    _Pattern(
+        "phone-number",
+        "low",
+        # International / NANP phone numbers. Liberal but anchored on a
+        # leading + or area-code group to keep false-positive rate low.
+        re.compile(rb"(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}"),
+        applies_to=("persona",),
     ),
 )
 

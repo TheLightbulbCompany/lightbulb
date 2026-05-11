@@ -503,6 +503,94 @@ async def test_apply_deploy_mutation_sequential_deploys_keep_both_agents(catalog
 
 
 @pytest.mark.asyncio
+async def test_apply_deploy_mutation_merges_mcp_servers(catalog_efs_dir):
+    """mcp_patch={'servers': {...}} deep-merges into config['mcp']['servers'].
+    Existing MCPs untouched; same-name MCPs deep-merged so the buyer's
+    config wins for any pre-existing keys (their env values survive)."""
+    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
+    with open(config_path) as f:
+        cfg = json.load(f)
+    cfg["mcp"] = {"servers": {"existing-mcp": {"command": "echo"}}}
+    with open(config_path, "w") as f:
+        json.dump(cfg, f)
+
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "new_agent", "name": "New"},
+        {},
+        mcp_patch={
+            "servers": {
+                "jira-mcp": {
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {"JIRA_TOKEN": ""},
+                }
+            }
+        },
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    servers = result["mcp"]["servers"]
+    assert "existing-mcp" in servers
+    assert servers["jira-mcp"]["command"] == "node"
+    assert servers["jira-mcp"]["env"] == {"JIRA_TOKEN": ""}
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_mutation_merges_skills_entries_and_allowbundled(
+    catalog_efs_dir,
+):
+    """skills_patch with both `entries` and `allowBundled` merges into
+    config['skills']: entries deep-merged, allowBundled unioned (no dupes)."""
+    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
+    with open(config_path) as f:
+        cfg = json.load(f)
+    cfg["skills"] = {
+        "entries": {"existing-skill": {"enabled": True}},
+        "allowBundled": ["search"],
+    }
+    with open(config_path, "w") as f:
+        json.dump(cfg, f)
+
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "new_agent", "name": "New"},
+        {},
+        skills_patch={
+            "entries": {"jira": {"enabled": True, "apiKey": "", "env": {"JIRA_USER": ""}}},
+            "allowBundled": ["search", "fs-read"],
+        },
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    skills = result["skills"]
+    # Entries deep-merged, both old and new present.
+    assert "existing-skill" in skills["entries"]
+    assert skills["entries"]["jira"]["apiKey"] == ""
+    # allowBundled unioned without duplicates.
+    assert sorted(skills["allowBundled"]) == sorted(["search", "fs-read"])
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_mutation_none_patches_are_noops(catalog_efs_dir):
+    """Default (no mcp_patch / no skills_patch) keeps existing behavior:
+    only agent + plugins are mutated, no mcp / skills keys synthesized."""
+    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "new_agent", "name": "New"},
+        {},
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    assert "mcp" not in result
+    assert "skills" not in result
+
+
+@pytest.mark.asyncio
 async def test_apply_deploy_mutation_migrates_legacy_flat_list(catalog_efs_dir):
     """Codex P1 regression: if a config exists with the old flat-list shape
     (``agents: [...]``) from pre-schema-fix deploys, we must PROMOTE it into

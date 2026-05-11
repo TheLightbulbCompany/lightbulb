@@ -133,30 +133,6 @@ class Gate:
         }
 
 
-async def _get_provider_choice(owner_id: str) -> str:
-    """Read provider_choice from the billing row (Workstream B model).
-
-    Falls back to bedrock_claude when no row or choice is persisted —
-    matches the legacy default and keeps recovery flows working for
-    owners onboarded before Workstream B.
-    """
-    row = await billing_repo.get_by_owner_id(owner_id)
-    return (row or {}).get("provider_choice") or "bedrock_claude"
-
-
-async def _get_byo_provider(owner_id: str) -> str | None:
-    """Read byo_provider from the billing row.
-
-    ``None`` means the BYO provider hasn't been chosen yet (the owner
-    picked the BYO path but hasn't completed Anthropic/OpenAI setup).
-    Used by the BYO-setup gate to block ECS dispatch on incomplete BYO
-    selection — without it the provisioning path would 422 inside ECS
-    with "byo_provider is required when provider_choice == 'byo_key'".
-    """
-    row = await billing_repo.get_by_owner_id(owner_id)
-    return (row or {}).get("byo_provider") or None
-
-
 async def _has_oauth_tokens(clerk_user_id: str) -> bool:
     """Whether the calling Clerk user has ChatGPT OAuth tokens on file.
 
@@ -257,10 +233,28 @@ async def evaluate_provision_gate(
             owner_role=owner_role,
         )
 
-    # Layer 2/3 — provider-specific.
-    # provider_choice lives on the billing row (Workstream B), keyed by owner_id.
-    provider_choice = await _get_provider_choice(owner_id)
+    # Layer 2 — provider must be picked.
+    #
+    # Reads ``provider_choice`` directly off the billing row already in scope
+    # so we don't burn a second DDB call for the same field, and so the gate
+    # can never disagree with itself across two reads (a concurrent
+    # ChatGPT-OAuth disconnect clears provider_choice — a re-read here used
+    # to mask the null with the legacy "bedrock_claude" fallback).
+    provider_choice = account.get("provider_choice")
+    if provider_choice is None:
+        return Gate(
+            code="provider_required",
+            title="Pick how to power your agents",
+            message=("Choose Bedrock-managed credits, ChatGPT OAuth, or your own API key to continue."),
+            action_label="Pick provider",
+            action_href="/chat?panel=llm&action=change-provider",
+            # Personal owners are always admin of themselves; org members
+            # can't change the org's provider — only the admin can.
+            action_admin_only=True,
+            owner_role=owner_role,
+        )
 
+    # Layer 3 — provider-specific prerequisites.
     if provider_choice == "bedrock_claude":
         # Credits pool at the owner level — org members all draw from one
         # balance funded by the admin. clerk_user_id stays per-user for
@@ -299,7 +293,7 @@ async def evaluate_provision_gate(
         # ``needsProviderStep`` guard for this; the new poll-driven
         # /container/status trigger lost the guard, so we enforce it
         # here as the canonical gate site.
-        if not await _get_byo_provider(owner_id):
+        if not account.get("byo_provider"):
             return Gate(
                 code="byo_provider_required",
                 title="Choose your BYO provider",

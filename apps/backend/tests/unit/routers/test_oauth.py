@@ -74,6 +74,33 @@ async def test_disconnect_revokes(async_client):
     mock_revoke.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_disconnect_clears_provider_choice(async_client):
+    """Router-level pin: disconnect MUST clear provider_choice on the
+    billing row so the next /chat visit routes the user to the provider
+    picker (via the provider_required gate) instead of looping on a
+    chatgpt_oauth billing row with no auth.json.
+
+    The repo-level guarantee (billing_repo.clear_provider_choice no-op on
+    missing row) is covered separately. This test pins the integration —
+    swapping in a disconnect implementation that forgets the
+    clear_provider_choice call would silently regress the dead-end fix
+    shipped in PR #587.
+    """
+    with (
+        patch("routers.oauth.revoke_user_oauth", new=AsyncMock()),
+        patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()),
+        patch(
+            "core.repositories.billing_repo.clear_provider_choice",
+            new=AsyncMock(),
+        ) as mock_clear,
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
+
+    assert resp.status_code == 200
+    mock_clear.assert_awaited_once_with("user_test_123")
+
+
 class TestStartProviderRules:
     """POST /api/v1/oauth/chatgpt/start — org/personal context rules.
 

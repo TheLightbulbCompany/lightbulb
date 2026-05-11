@@ -118,13 +118,15 @@ async def test_canceled_subscription_with_cleared_subscription_id_routes_to_bill
 async def test_active_subscription_bedrock_zero_balance_returns_credits_required():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
         patch("core.services.provision_gate.credit_ledger") as cl,
     ):
         repo.get_by_owner_id = AsyncMock(
-            return_value={"subscription_status": "active", "stripe_subscription_id": "sub_x"},
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "bedrock_claude",
+            },
         )
-        gp.return_value = "bedrock_claude"
         cl.get_balance = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(
             owner_id="user_x",
@@ -138,19 +140,50 @@ async def test_active_subscription_bedrock_zero_balance_returns_credits_required
 async def test_trialing_with_credits_returns_none():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
         patch("core.services.provision_gate.credit_ledger") as cl,
     ):
         repo.get_by_owner_id = AsyncMock(
-            return_value={"subscription_status": "trialing", "stripe_subscription_id": "sub_x"},
+            return_value={
+                "subscription_status": "trialing",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "bedrock_claude",
+            },
         )
-        gp.return_value = "bedrock_claude"
         cl.get_balance = AsyncMock(return_value=500_000)  # 50 cents in microcents
         gate = await evaluate_provision_gate(
             owner_id="user_x",
             clerk_user_id="user_x",
         )
     assert gate is None  # all gates pass
+
+
+@pytest.mark.asyncio
+async def test_active_subscription_no_provider_choice_returns_provider_required():
+    """Active subscription + provider_choice absent (e.g. ChatGPT disconnect cleared it,
+    or the row pre-dates provider_choice writes) must surface provider_required
+    so the frontend routes the owner to the picker, not the credits/oauth/byo
+    gates which would silently treat the legacy fallback as Bedrock.
+    """
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                # No provider_choice on the row.
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+            clerk_user_id="user_x",
+        )
+    assert gate is not None
+    assert gate.code == "provider_required"
+    # Clicking the action must land on the LLM panel with the change-provider
+    # modal pre-opened. ChatErrorCard's rate_limit action shares this URL.
+    assert gate.action_href == "/chat?panel=llm&action=change-provider"
+    # Provider choice is an admin-only mutation for orgs; personal owners
+    # are admin of themselves so the action button still renders for them.
+    assert gate.action_admin_only is True
 
 
 @pytest.mark.asyncio
@@ -174,13 +207,15 @@ async def test_bedrock_balance_keyed_on_owner_id():
     after the org-pooled-credits cutover)."""
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
         patch("core.services.provision_gate.credit_ledger") as cl,
     ):
         repo.get_by_owner_id = AsyncMock(
-            return_value={"subscription_status": "active", "stripe_subscription_id": "sub_x"},
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "bedrock_claude",
+            },
         )
-        gp.return_value = "bedrock_claude"
         balance_mock = AsyncMock(return_value=5_000_000)
         cl.get_balance = balance_mock
         gate = await evaluate_provision_gate(
@@ -196,13 +231,15 @@ async def test_bedrock_balance_keyed_on_owner_id():
 async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
         patch("core.services.provision_gate._has_oauth_tokens", new_callable=AsyncMock) as ht,
     ):
         repo.get_by_owner_id = AsyncMock(
-            return_value={"subscription_status": "active", "stripe_subscription_id": "sub_x"},
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "chatgpt_oauth",
+            },
         )
-        gp.return_value = "chatgpt_oauth"
         ht.return_value = False
         gate = await evaluate_provision_gate(
             owner_id="user_x",
@@ -231,16 +268,15 @@ async def test_byo_key_without_byo_provider_returns_byo_provider_required():
 
     Symmetric with the chatgpt_oauth gate for personal owners.
     """
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
-        patch("core.services.provision_gate._get_byo_provider", new_callable=AsyncMock) as gbp,
-    ):
+    with patch("core.services.provision_gate.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(
-            return_value={"subscription_status": "trialing", "stripe_subscription_id": "sub_x"},
+            return_value={
+                "subscription_status": "trialing",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "byo_key",
+                # No byo_provider on the row — sub-choice not made yet.
+            },
         )
-        gp.return_value = "byo_key"
-        gbp.return_value = None  # BYO sub-choice not made yet
         gate = await evaluate_provision_gate(
             owner_id="user_x",
             clerk_user_id="user_x",
@@ -264,16 +300,15 @@ async def test_byo_key_with_byo_provider_set_passes():
     and provisioning is allowed. The downstream BYO-key existence check
     is the responsibility of ECS provisioning, not this gate — this
     layer only enforces "the sub-choice was made"."""
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
-        patch("core.services.provision_gate._get_byo_provider", new_callable=AsyncMock) as gbp,
-    ):
+    with patch("core.services.provision_gate.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(
-            return_value={"subscription_status": "trialing", "stripe_subscription_id": "sub_x"},
+            return_value={
+                "subscription_status": "trialing",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "byo_key",
+                "byo_provider": "anthropic",
+            },
         )
-        gp.return_value = "byo_key"
-        gbp.return_value = "anthropic"
         gate = await evaluate_provision_gate(
             owner_id="user_x",
             clerk_user_id="user_x",

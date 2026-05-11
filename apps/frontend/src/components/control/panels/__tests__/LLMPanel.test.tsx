@@ -20,7 +20,40 @@ vi.mock("@/lib/api", () => ({
 
 const mockDisconnect = vi.fn();
 vi.mock("@/hooks/useChatGPTOAuth", () => ({
-  useChatGPTOAuth: () => ({ disconnect: mockDisconnect }),
+  useChatGPTOAuth: () => ({
+    disconnect: mockDisconnect,
+    state: { status: "idle" },
+    start: vi.fn(),
+  }),
+}));
+
+// next/navigation isn't available in jsdom by default. useSearchParams
+// powers the ``?action=change-provider`` auto-open on mount; stub it to
+// return an empty params map so the modal stays closed unless the test
+// explicitly drives it open.
+const mockSearchParams = new URLSearchParams("");
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => mockSearchParams,
+}));
+
+// ChangeProviderModal renders a Radix Dialog portal — stub it out so the
+// existing LLMPanel tests don't have to teach the testing-library about
+// the Radix portal mount root. We just check that opening the modal is
+// triggered correctly via the dialog id; the modal's own behaviour is
+// covered in ChangeProviderModal tests.
+vi.mock("../ChangeProviderModal", () => ({
+  ChangeProviderModal: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="change-provider-modal-open" /> : null,
+}));
+
+// Clerk's useOrganization is pulled in transitively by ChangeProviderModal
+// (used to filter the chatgpt_oauth card on org context). The mock above
+// makes that path inert for these tests, but the import-time path still
+// resolves through ChangeProviderModal.tsx → @clerk/nextjs. The shared
+// LLMPanel render doesn't otherwise touch Clerk; stub it to a no-op org
+// so any code that reads it from LLMPanel directly stays happy.
+vi.mock("@clerk/nextjs", () => ({
+  useOrganization: () => ({ organization: null, membership: null }),
 }));
 
 describe("LLMPanel", () => {
@@ -117,23 +150,39 @@ describe("LLMPanel", () => {
     });
   });
 
-  it("renders the empty-state when provider_choice is null", () => {
+  it("renders the empty-state with an in-place Pick-a-provider button when provider_choice is null", () => {
     mockSWRData.mockReturnValue({ provider_choice: null });
     render(<LLMPanel />);
     // The empty-state copy uses a typographic apostrophe; match either.
     expect(screen.getByText(/haven.{1,3}t picked a provider/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /re-onboard/i })).toBeInTheDocument();
+    // Now offers in-place picker instead of bouncing to /onboarding —
+    // /onboarding's ProviderPicker requires no subscription, but this
+    // empty-state is reachable by *active subscribers* who disconnected
+    // ChatGPT OAuth (which clears provider_choice). Sending them to
+    // /onboarding would 409 already_subscribed at trial-checkout.
+    const button = screen.getByRole("button", { name: /pick a provider/i });
+    expect(button).toBeInTheDocument();
+    fireEvent.click(button);
+    expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
   });
 
-  it("renders the BYOK-incomplete empty-state when provider_choice='byo_key' but byo_provider is missing", () => {
+  it("renders the BYOK-incomplete empty-state with an in-place Pick-a-provider button when byo_provider is missing", () => {
     mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: null });
     render(<LLMPanel />);
     expect(
       screen.getByText(/bring-your-own-key configuration is incomplete/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /re-onboard/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /pick a provider/i })).toBeInTheDocument();
     // Should NOT render the BYO hero/form for an incomplete config.
     expect(screen.queryByText(/Bring your own (OpenAI|Anthropic) key/)).not.toBeInTheDocument();
+  });
+
+  it("renders a Change provider button on every populated block and opens the modal", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    render(<LLMPanel />);
+    expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /change provider/i }));
+    expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
   });
 
   it("surfaces a save error from PUT /settings/keys/{provider}", async () => {

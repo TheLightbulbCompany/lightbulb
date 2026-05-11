@@ -1,9 +1,11 @@
 """Service for Stripe billing operations — flat-fee model."""
 
+import asyncio
 import hashlib
 import logging
 import os
 import time
+from typing import Literal
 
 import stripe
 
@@ -12,6 +14,24 @@ from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
+
+ProviderChoice = Literal["chatgpt_oauth", "byo_key", "bedrock_claude"]
+ByoProvider = Literal["openai", "anthropic"]
+
+
+class ChangeProviderError(Exception):
+    """Raised when a post-onboarding provider switch is rejected.
+
+    ``code`` is a short machine-readable string the router maps to an
+    HTTP status; ``message`` is the user-facing detail.
+    """
+
+    def __init__(self, code: str, message: str, *, status_code: int = 400):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
@@ -439,3 +459,336 @@ async def mark_invoice_resolved(user_id: str, invoice_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         raise BillingServiceError(f"stripe_invoice_pay_failed: {e}")
     return {"status": "resolved", "invoice_id": invoice_id, "stripe_status": invoice.get("status")}
+
+
+# ---------------------------------------------------------------------------
+# Post-onboarding provider switch (POST /billing/provider)
+# ---------------------------------------------------------------------------
+#
+# Mid-flight provider changes have to do three things atomically:
+#   1. Flip provider_choice (+ byo_provider) on the billing row.
+#   2. Clear the *old* provider's side-effect state (OAuth tokens, BYOK
+#      Secrets Manager secrets) so a future re-switch doesn't read stale
+#      credentials. Cleared AFTER the new state is committed — partial
+#      failure leaves the owner with an extra row to garbage-collect, never
+#      an owner stranded with no provider.
+#   3. Re-provision the container. The new provider needs different
+#      task-def secrets (BYOK env vars) or different EFS pre-staging
+#      (chatgpt_oauth auth-profiles.json), neither of which a Track-1
+#      openclaw.json patch alone can achieve. Re-provisioning ends the
+#      current chat session — the frontend surfaces this as an explicit
+#      cutover warning before calling the endpoint.
+
+
+async def change_provider(
+    *,
+    owner_id: str,
+    clerk_user_id: str,
+    owner_type: str,
+    is_org_context: bool,
+    provider_choice: ProviderChoice,
+    byo_provider: ByoProvider | None = None,
+) -> dict:
+    """Apply a post-onboarding provider switch for an existing subscriber.
+
+    Args:
+        owner_id: org_id for org context, user_id for personal. Pins the
+            billing row + the container scope (re-provision target).
+        clerk_user_id: The signed-in human's Clerk user_id. Used for
+            personal-only side-effect reads (OAuth tokens, BYOK keys live
+            keyed on the calling user, not the org).
+        owner_type: ``"personal"`` or ``"org"``. Forwarded to set_provider_choice
+            so the org-invariant check (chatgpt_oauth banned on org rows)
+            fires at the repo layer too.
+        is_org_context: Whether the caller is in org mode. Used to enforce
+            the chatgpt_oauth=personal-only guard before any state changes.
+        provider_choice: Target provider.
+        byo_provider: Required when ``provider_choice == "byo_key"``; one of
+            "openai" or "anthropic".
+
+    Returns:
+        ``{"status": "ok"|"noop", "provider_choice": ..., "byo_provider": ...}``.
+        ``noop`` means the requested state matched the current billing-row
+        state and no work was done.
+
+    Raises:
+        ChangeProviderError: with a code + status_code the router maps to HTTP.
+    """
+    # Org guard — chatgpt_oauth is personal-only
+    # (memory/project_chatgpt_oauth_personal_only.md). Mirror the same guard
+    # /billing/trial-checkout uses so a savvy caller can't bypass it by
+    # going through the post-onboarding switch endpoint.
+    if provider_choice == "chatgpt_oauth" and is_org_context:
+        raise ChangeProviderError(
+            "org_chatgpt_oauth_forbidden",
+            "ChatGPT OAuth is not available for organization workspaces.",
+            status_code=403,
+        )
+
+    # Subscription must exist and be currently usable. The post-onboarding
+    # switch endpoint is NOT a substitute for /billing/trial-checkout —
+    # if there's no subscription we route the caller back through the
+    # signup picker rather than mutating provider state on a dead row.
+    from core.services.provision_gate import is_subscription_active
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account:
+        raise ChangeProviderError(
+            "no_billing_account",
+            "No billing account. Subscribe via /onboarding first.",
+            status_code=404,
+        )
+    if not is_subscription_active(account):
+        raise ChangeProviderError(
+            "subscription_inactive",
+            "Subscription is not active. Manage it in /settings/billing.",
+            status_code=409,
+        )
+
+    current_choice = account.get("provider_choice")
+    current_byo = account.get("byo_provider")
+    next_byo = byo_provider if provider_choice == "byo_key" else None
+
+    # Fast-path no-op. Returning early instead of re-provisioning prevents
+    # an idle "change provider" click from blowing away the user's chat
+    # session for no functional change. byo_key with the same byo_provider
+    # is treated as a no-op too — different byo_provider DOES re-provision
+    # because the env-var secret reference changes.
+    if current_choice == provider_choice and current_byo == next_byo:
+        return {
+            "status": "noop",
+            "provider_choice": provider_choice,
+            "byo_provider": next_byo,
+        }
+
+    # Prerequisite check for the *new* provider. Done before the DDB write
+    # so a missing prerequisite returns 409 with the chosen state still
+    # consistent — the caller can complete the prerequisite step in the UI
+    # (OAuth device flow / paste API key) and retry without our row in an
+    # intermediate state.
+    if provider_choice == "chatgpt_oauth":
+        from core.services import oauth_service
+
+        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id)
+        if not tokens:
+            raise ChangeProviderError(
+                "oauth_required",
+                "Complete the ChatGPT sign-in step before switching to ChatGPT OAuth.",
+                status_code=409,
+            )
+    elif provider_choice == "byo_key":
+        if byo_provider not in ("openai", "anthropic"):
+            raise ChangeProviderError(
+                "byo_provider_required",
+                "byo_provider must be 'openai' or 'anthropic' when switching to BYO key.",
+                status_code=422,
+            )
+        from core.repositories import api_key_repo
+
+        key_row = await api_key_repo.get_key(clerk_user_id, byo_provider)
+        if not key_row or not key_row.get("secret_arn"):
+            raise ChangeProviderError(
+                "byo_key_missing",
+                f"Save your {byo_provider.title()} API key before switching to BYO key.",
+                status_code=409,
+            )
+    # bedrock_claude: no prerequisite. The credits gate fires later via
+    # provision_gate.evaluate_provision_gate — we don't pre-block here so
+    # owners with zero balance can still pick Bedrock + see the structured
+    # gate UI prompting them to top up.
+
+    # Commit the new provider state. Done BEFORE side-effect cleanup so a
+    # crash mid-cleanup leaves the owner in a coherent state (new provider
+    # + a bit of stale OAuth/BYOK data, which the next sweep can reclaim).
+    await billing_repo.set_provider_choice(
+        owner_id,
+        provider_choice=provider_choice,
+        byo_provider=next_byo,
+        owner_type=owner_type,
+    )
+
+    # Side-effect cleanup: drop the OLD provider's credentials so a future
+    # switch back doesn't reuse stale state. Each branch is best-effort —
+    # a failure here is logged but does not roll back the billing-row
+    # update. The provider switch is the user-visible commit point; orphan
+    # secrets/tokens are an operator-sweep concern.
+    if current_choice == "chatgpt_oauth" and provider_choice != "chatgpt_oauth":
+        from core.containers.workspace import delete_auth_profile_store
+        from core.services.oauth_service import revoke_user_oauth
+
+        try:
+            await revoke_user_oauth(user_id=clerk_user_id)
+        except Exception:
+            logger.exception(
+                "change_provider: revoke_user_oauth failed for clerk_user_id=%s",
+                clerk_user_id,
+            )
+        try:
+            await delete_auth_profile_store(user_id=clerk_user_id)
+        except Exception:
+            logger.exception(
+                "change_provider: delete_auth_profile_store failed for clerk_user_id=%s",
+                clerk_user_id,
+            )
+
+    if current_choice == "byo_key" and provider_choice != "byo_key" and current_byo in ("openai", "anthropic"):
+        from core.services.key_service import KeyService
+
+        try:
+            await KeyService().delete_key(clerk_user_id, current_byo)
+        except Exception:
+            logger.exception(
+                "change_provider: delete_key failed for clerk_user_id=%s provider=%s",
+                clerk_user_id,
+                current_byo,
+            )
+
+    # Apply the swap to the running container.
+    #
+    # Two paths, picked by whether either side of the transition uses BYO:
+    #
+    # - **Cold path** (BYO involved on either side) — re-register the ECS
+    #   task definition and force a new deployment. Required because BYOK
+    #   injects ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` via task-def
+    #   ``secrets: [{valueFrom: <SecretsManagerARN>}]`` resolved at task
+    #   start; ECS does not let you mutate a running task's env vars.
+    #   Ends the user's current chat session.
+    #
+    # - **Hot path** (Bedrock ↔ ChatGPT OAuth only) — Track-1 patch the
+    #   three provider-block subtrees in openclaw.json (handled atomically
+    #   by ``config_patcher.replace_provider_block``) and, for a switch
+    #   *into* chatgpt_oauth, also pre-stage ``auth-profiles.json`` to EFS
+    #   *before* the patch so chokidar's reload reads it in place.
+    #   OpenClaw classifies all three keys as ``kind: "hot"`` in
+    #   ``gateway/config-reload-plan.ts`` (``restart-heartbeat`` +
+    #   ``reload-plugins``), so the gateway swaps providers without
+    #   restarting. No task-def env-var change → no container restart →
+    #   the chat session stays alive.
+    #
+    # On the hot path, if the owner has no ``openclaw.json`` on EFS yet
+    # (legacy / un-provisioned owner), ``replace_provider_block`` raises
+    # ``ConfigPatchError`` and we fall through to the cold path so the
+    # file gets written from scratch by ``provision_user_container``.
+    involves_byo = current_choice == "byo_key" or provider_choice == "byo_key"
+
+    if not involves_byo:
+        try:
+            await _hot_swap_provider(
+                owner_id=owner_id,
+                clerk_user_id=clerk_user_id,
+                new_provider=provider_choice,
+            )
+            put_metric(
+                "billing.provider.changed",
+                dimensions={
+                    "from": current_choice or "none",
+                    "to": provider_choice,
+                    "path": "hot",
+                },
+            )
+            return {
+                "status": "ok",
+                "provider_choice": provider_choice,
+                "byo_provider": next_byo,
+                "restart": False,
+            }
+        except _HotSwapUnavailableError:
+            # Owner has no openclaw.json on EFS yet — fall through to the
+            # cold path. logger inside _hot_swap_provider already recorded
+            # the reason.
+            pass
+
+    put_metric(
+        "billing.provider.changed",
+        dimensions={
+            "from": current_choice or "none",
+            "to": provider_choice,
+            "path": "cold",
+        },
+    )
+
+    from core.services.container_provision import background_provision
+
+    asyncio.create_task(background_provision(owner_id, clerk_user_id))
+
+    return {
+        "status": "ok",
+        "provider_choice": provider_choice,
+        "byo_provider": next_byo,
+        "restart": True,
+    }
+
+
+class _HotSwapUnavailableError(Exception):
+    """Internal — signals change_provider to fall back to the cold path."""
+
+
+async def _hot_swap_provider(
+    *,
+    owner_id: str,
+    clerk_user_id: str,
+    new_provider: ProviderChoice,
+) -> None:
+    """Apply a Bedrock ↔ ChatGPT-OAuth provider switch hot, no container restart.
+
+    Step order matters:
+      1. If switching *to* chatgpt_oauth, write ``auth-profiles.json``
+         to EFS FIRST. Once we patch openclaw.json (step 2) chokidar fires
+         a reload and the openai-codex provider initializes — it needs the
+         auth file already in place.
+      2. Atomically swap the three openclaw.json subtrees via
+         ``replace_provider_block``. OpenClaw's reload-plan picks up the
+         change as ``kind: "hot"``.
+
+    Switching *away* from chatgpt_oauth has the symmetric cleanup
+    (``revoke_user_oauth`` + ``delete_auth_profile_store``) but that runs
+    in the caller's side-effect cleanup block earlier — not here — so the
+    stale auth file is already gone before we patch.
+
+    Raises ``_HotSwapUnavailableError`` if the owner has no openclaw.json
+    on EFS yet (legacy / un-provisioned), signaling the caller to fall
+    back to the cold path.
+    """
+    from core.containers.config import build_provider_block
+    from core.services.config_patcher import ConfigPatchError, replace_provider_block
+
+    if new_provider == "chatgpt_oauth":
+        # We already gated on tokens existing in the prerequisite check at
+        # the top of change_provider. Re-read so the file we write reflects
+        # whatever rotation may have happened concurrently.
+        from core.containers.workspace import pre_stage_auth_profile_store
+        from core.services import oauth_service
+
+        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id)
+        if not tokens:
+            # Lost the tokens between the prerequisite check and now (very
+            # rare — concurrent disconnect). Bail out to the cold path so
+            # the user lands on the oauth_required gate next instead of a
+            # silently misconfigured container.
+            logger.warning(
+                "change_provider hot path: tokens disappeared between gate and pre-stage for user=%s",
+                clerk_user_id,
+            )
+            raise _HotSwapUnavailableError("oauth_tokens_missing")
+        await pre_stage_auth_profile_store(user_id=clerk_user_id, oauth_tokens=tokens)
+
+    providers, default_model, plugin_entries = build_provider_block(
+        provider_choice=new_provider,
+        user_id=clerk_user_id,
+        byo_provider=None,  # hot path never carries byo_key
+    )
+
+    try:
+        await replace_provider_block(
+            owner_id,
+            providers=providers,
+            default_model=default_model,
+            plugin_entries=plugin_entries,
+        )
+    except ConfigPatchError as e:
+        logger.info(
+            "change_provider hot path: openclaw.json missing for owner=%s (%s) — falling back to cold path",
+            owner_id,
+            e,
+        )
+        raise _HotSwapUnavailableError("config_missing") from e

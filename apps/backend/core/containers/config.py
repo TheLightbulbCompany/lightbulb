@@ -306,7 +306,7 @@ def _build_exec_policy() -> dict:
     }
 
 
-def _provider_block(
+def build_provider_block(
     *,
     provider_choice: str,
     user_id: str,
@@ -314,6 +314,12 @@ def _provider_block(
 ) -> tuple[dict, dict, dict]:
     """Build (models.providers, agents.defaults.model, plugins.entries) for the
     user's signup choice.
+
+    Public so the post-onboarding change-provider hot path (billing_service
+    .change_provider via config_patcher.replace_provider_block) can reuse
+    the same shape that ``write_openclaw_config`` writes at provision time.
+    Single source of truth for the provider-block contents — no per-call
+    site can drift from it.
 
     Per spec §4.2 (flat-fee pivot, 2026-04). API keys are NEVER embedded in
     openclaw.json — they're injected via ECS task definition secrets at task
@@ -529,7 +535,7 @@ def build_openclaw_config_dict(
     if not gateway_token:
         raise ValueError("gateway_token must be a non-empty string")
 
-    providers_config, default_model, plugin_entries = _provider_block(
+    providers_config, default_model, plugin_entries = build_provider_block(
         provider_choice=provider_choice,
         user_id=user_id,
         byo_provider=byo_provider,

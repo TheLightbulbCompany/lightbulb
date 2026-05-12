@@ -1,11 +1,49 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { capture } from "@/lib/analytics";
 
+type Arch = "aarch64" | "x64";
+
+// Browsers on macOS don't expose CPU architecture directly. Chromium-based
+// browsers offer it through navigator.userAgentData high-entropy hints
+// ("arm" or "x86"); Safari/Firefox don't support UA-CH on macOS at all.
+// We default to Apple Silicon (supermajority since 2020) and surface an
+// "Intel Mac?" fallback link so the minority can self-select.
+async function detectArch(): Promise<Arch> {
+  const uaData = (
+    navigator as Navigator & {
+      userAgentData?: {
+        getHighEntropyValues?: (
+          hints: string[],
+        ) => Promise<{ architecture?: string }>;
+      };
+    }
+  ).userAgentData;
+  if (!uaData?.getHighEntropyValues) return "aarch64";
+  try {
+    const v = await uaData.getHighEntropyValues(["architecture"]);
+    return v.architecture === "x86" ? "x64" : "aarch64";
+  } catch {
+    return "aarch64";
+  }
+}
+
 export function Hero() {
+  const [arch, setArch] = useState<Arch>("aarch64");
+
+  useEffect(() => {
+    let cancelled = false;
+    detectArch().then((a) => {
+      if (!cancelled) setArch(a);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const seq = document.getElementById("wfSeq");
     if (!seq || window.matchMedia("(prefers-reduced-motion: reduce)").matches)
@@ -175,14 +213,26 @@ export function Hero() {
         <p className="hero-fine">
           Free to start · No credit card required ·{" "}
           <a
-            href="https://github.com/Isol8AI/isol8/releases/latest"
-            target="_blank"
-            rel="noopener noreferrer"
+            href={`/api/download/desktop?arch=${arch}`}
             className="hero-download-link"
-            onClick={() => capture("landing_download_clicked")}
+            onClick={() => capture("landing_download_clicked", { arch })}
           >
             Download for Mac
           </a>
+          {arch === "aarch64" && (
+            <>
+              {" · "}
+              <a
+                href="/api/download/desktop?arch=x64"
+                className="hero-download-link"
+                onClick={() =>
+                  capture("landing_download_clicked", { arch: "x64" })
+                }
+              >
+                Intel Mac?
+              </a>
+            </>
+          )}
         </p>
       </div>
 

@@ -21,6 +21,9 @@ interface ChatInputProps {
   isUploading?: boolean;
   isStreaming?: boolean;
   suggestedMessage?: string;
+  queuedMessages?: { id: string; text: string }[];
+  onRemoveQueued?: (id: string) => void;
+  onClearQueue?: () => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -29,7 +32,18 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isStreaming, suggestedMessage }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  onStop,
+  disabled,
+  centered,
+  isUploading,
+  isStreaming,
+  suggestedMessage,
+  queuedMessages = [],
+  onRemoveQueued,
+  onClearQueue,
+}: ChatInputProps) {
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
   const [sizeError, setSizeError] = React.useState<{ id: number; message: string } | null>(null);
@@ -190,6 +204,41 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
           </div>
         )}
 
+        {queuedMessages.length > 0 && (
+          <div className="flex flex-col gap-1 mb-2 px-2 py-1 rounded-md bg-[#f3efe6] border border-[#e0dbd0]">
+            <div className="flex items-center justify-between text-xs text-[#8a8578]">
+              <span>{queuedMessages.length} queued</span>
+              {onClearQueue && (
+                <button
+                  type="button"
+                  onClick={onClearQueue}
+                  className="hover:underline"
+                >
+                  Clear queue
+                </button>
+              )}
+            </div>
+            {queuedMessages.map((q) => (
+              <div
+                key={q.id}
+                className="flex items-center gap-2 text-sm text-[#1a1a1a]"
+              >
+                <span className="flex-1 truncate">{q.text}</span>
+                {onRemoveQueued && (
+                  <button
+                    type="button"
+                    aria-label="Remove queued message"
+                    onClick={() => onRemoveQueued(q.id)}
+                    className="text-[#b5ae9e] hover:text-[#5a5549]"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="relative flex items-end gap-2 border border-[#e0dbd0] rounded-full bg-white px-3 py-2 focus-within:ring-1 focus-within:ring-[#06402B]/20 focus-within:border-[#06402B]/30 transition-all">
           <input
             ref={fileInputRef}
@@ -229,19 +278,22 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
             />
           </div>
 
-          {isStreaming ? (
+          <div className="flex items-center gap-2">
+            {isStreaming && onStop && (
+              <Button
+                type="button"
+                size="icon"
+                variant="destructive"
+                className="shrink-0 h-8 w-8 rounded-full"
+                onClick={() => { capture("chat_stopped"); onStop?.(); }}
+                data-testid="stop-button"
+                aria-label="Stop agent"
+              >
+                <Square className="h-3.5 w-3.5 fill-current" />
+              </Button>
+            )}
             <Button
-              size="icon"
-              variant="destructive"
-              className="shrink-0 h-8 w-8 rounded-full"
-              onClick={() => { capture("chat_stopped"); onStop?.(); }}
-              data-testid="stop-button"
-              aria-label="Stop agent"
-            >
-              <Square className="h-3.5 w-3.5 fill-current" />
-            </Button>
-          ) : (
-            <Button
+              type="button"
               size="icon"
               className="shrink-0 h-8 w-8 rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white disabled:bg-[#e0dbd0] disabled:text-[#b5ae9e]"
               onClick={handleSend}
@@ -255,7 +307,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
                 <SendHorizontal className="h-4 w-4" />
               )}
             </Button>
-          )}
+          </div>
         </div>
       </div>
     </div>

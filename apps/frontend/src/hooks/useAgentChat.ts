@@ -101,6 +101,18 @@ export interface AgentMessage {
   errorCode?: string;
 }
 
+/**
+ * A user-typed message that arrived while a previous turn was still in
+ * flight. Held in `queuedMessages` and drained one-at-a-time on the
+ * busy→idle transition. Mirrors upstream OpenClaw control-ui's chat
+ * queue (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217).
+ */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  createdAt: number;
+}
+
 export const BOOTSTRAP_MESSAGE =
   "Hello! Please run Bootstrap.md — I'd love to learn about everyday life use cases where you can be helpful and automate work for me.";
 
@@ -114,6 +126,11 @@ export interface UseAgentChatReturn {
   isConnected: boolean;
   isLoadingHistory: boolean;
   needsBootstrap: boolean;
+  // ↓ new: chat-queue surface, mirrors upstream OpenClaw control-ui
+  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217,420-426).
+  queuedMessages: QueuedMessage[];
+  removeQueuedMessage: (id: string) => void;
+  clearQueue: () => void;
 }
 
 interface InternalMessage {
@@ -213,6 +230,33 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // can read the current agent id without TS "used before declaration"
   // complaints. Kept in sync by the effect further down.
   const agentIdRef = useRef(agentId);
+
+  // Upstream pattern: one client-assigned UUID per user-initiated chat.send.
+  // Cleared only on the chat.final / aborted / error event whose runId
+  // matches this UUID. Distinct from runsRef (per-bubble) — they are
+  // orthogonal: bubbles are for display, this flag is for send gating.
+  // See ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:627-770.
+  const clientRunIdRef = useRef<string | null>(null);
+
+  // Frontend chat queue: when the user types while clientRunIdRef.current
+  // is set (user-turn in progress), new sends push here instead of firing
+  // immediately. Drained one-at-a-time on the busy→idle transition. Mirrors
+  // ~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217,388-417.
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const queuedMessagesRef = useRef<QueuedMessage[]>([]);
+  // Keep the ref in sync so setMessages-style updates can read fresh state
+  // from inside event handler callbacks without stale-closure bugs.
+  useEffect(() => {
+    queuedMessagesRef.current = queuedMessages;
+  }, [queuedMessages]);
+
+  const removeQueuedMessage = useCallback((id: string) => {
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    setQueuedMessages([]);
+  }, []);
 
   const getOrCreateBubble = useCallback((runId: string): string | null => {
     // Cancel-before-first-event race: if the user hit Stop/Clear BEFORE any
@@ -434,6 +478,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "done") {
         const runId = msg.runId;
         finalizeBubble(runId);
+        // Upstream pattern: only clear the user-turn busy flag when the
+        // terminal event matches OUR clientRunId. Sub-run dones (different
+        // runId) only finalize their bubble. See
+        // ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:769-770.
+        if (runId === clientRunIdRef.current) {
+          clientRunIdRef.current = null;
+        }
         return;
       }
 
@@ -492,6 +543,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             }
           }
           setError(displayError);
+          // Clear the busy gate if this error pertains to the user's turn.
+          // Scoped error with matching runId, or global error (no runId)
+          // both terminate the user turn.
+          if (!msg.runId || msg.runId === clientRunIdRef.current) {
+            clientRunIdRef.current = null;
+          }
           return;
         }
 
@@ -511,6 +568,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // Close the window for late stragglers whose runId we never saw.
         pendingCancelRef.current = true;
         setIsStreaming(false);
+        // Clear the busy gate if this error pertains to the user's turn.
+        // Scoped error with matching runId, or global error (no runId)
+        // both terminate the user turn.
+        if (!msg.runId || msg.runId === clientRunIdRef.current) {
+          clientRunIdRef.current = null;
+        }
         return;
       }
 
@@ -676,65 +739,113 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   // ---- Send message ----
 
-  const sendMessage = useCallback(
+  // Hoisted so both sendMessage and the flushQueue effect (added in Task 5)
+  // can call it. dispatchNow assumes the busy-gate has already been checked.
+  const dispatchNow = useCallback(
     async (message: string): Promise<void> => {
-      // A new turn invalidates any pending-cancel window from the previous
-      // turn. Events for this new turn must be allowed through normally.
-      pendingCancelRef.current = false;
-
-      if (!agentIdRef.current) {
-        throw new Error("No agent selected");
-      }
-
-      if (!isConnected) {
-        setError("Not connected. Please wait and try again.");
-        return;
-      }
-
-      setError(null);
-
-      const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
-      if (key) _needsBootstrap.delete(key);
+      const agentId = agentIdRef.current;
+      if (!agentId) return;
 
       const userMsgId = `user-${crypto.randomUUID()}`;
+      const newClientRunId = crypto.randomUUID();
+      clientRunIdRef.current = newClientRunId;
 
-      // Add only the user message. Assistant bubbles are created lazily
-      // when OpenClaw emits the first event for a new runId — matches
-      // OpenClaw control-ui's implicit-bubble design. See spec §4.
       setMessages((prev) => [
         ...prev,
         { id: userMsgId, role: "user", content: message },
       ]);
       setIsStreaming(true);
 
-      // Analytics: stamp the turn start AFTER validation succeeds so we
-      // don't attribute duration to failed early-exit paths. Capture the
-      // user-intent event with length only — message content is PII.
       turnStartedAtRef.current = Date.now();
       turnAssistantLenRef.current = 0;
       capture("chat_message_sent", {
-        agent_id: agentIdRef.current,
+        agent_id: agentId,
         message_length: message.length,
       });
 
       try {
-        sendChat(agentIdRef.current, message);
+        sendChat(agentId, message, newClientRunId);
       } catch (err) {
         const errorMessage = friendlyError(
           err instanceof Error ? err.message : "Failed to send message",
         );
         setError(errorMessage);
-        // No placeholder to update — append an error-marked assistant
-        // message so the user sees failure feedback.
         const errMsgId = `assistant-${crypto.randomUUID()}`;
         setMessages((prev) => [
           ...prev,
           { id: errMsgId, role: "assistant", content: `Error: ${errorMessage}` },
         ]);
         setIsStreaming(false);
+        clientRunIdRef.current = null; // failure path resets busy gate
       }
     },
-    [sendChat, isConnected, sessionName],
+    [sendChat],
+  );
+
+  // Drain queued messages one at a time on busy→idle transitions.
+  // We track the previous value of clientRunIdRef in a ref so a simple
+  // effect can detect the falling edge without polling.
+  const prevClientRunIdRef = useRef<string | null>(null);
+  // Deliberate no-deps effect: must run after every render so the ref-based
+  // falling-edge detector catches the busy→idle transition. The work is
+  // O(1) (two ref reads + comparison) when no transition occurred. Mirrors
+  // the pattern at apps/frontend/src/hooks/useChatGPTOAuth.ts:167.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const prev = prevClientRunIdRef.current;
+    const curr = clientRunIdRef.current;
+    prevClientRunIdRef.current = curr;
+    // Connection guard: if the WS is currently down, don't pop+dispatch —
+    // sendChat would throw (see useGateway.tsx) and dispatchNow's catch
+    // would reset clientRunIdRef, but the queued message would be lost.
+    // Leave the queue intact; when the WS reconnects and the next user-turn
+    // completes, this effect re-runs on the next falling edge.
+    if (
+      prev !== null &&
+      curr === null &&
+      queuedMessagesRef.current.length > 0 &&
+      isConnected
+    ) {
+      const next = queuedMessagesRef.current[0];
+      setQueuedMessages((q) => q.slice(1));
+      void dispatchNow(next.text);
+    }
+  });
+
+  const sendMessage = useCallback(
+    async (message: string): Promise<void> => {
+      pendingCancelRef.current = false;
+
+      if (!agentIdRef.current) {
+        throw new Error("No agent selected");
+      }
+      if (!isConnected) {
+        setError("Not connected. Please wait and try again.");
+        return;
+      }
+
+      const trimmed = message.trim();
+      if (!trimmed) return;
+
+      setError(null);
+      const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
+      if (key) _needsBootstrap.delete(key);
+
+      // Busy gate: if a user-turn is already in flight (clientRunIdRef
+      // is set), enqueue instead of firing chat.send. The flushQueue
+      // effect picks this up when clientRunIdRef clears.
+      if (clientRunIdRef.current !== null) {
+        const id = `queued-${crypto.randomUUID()}`;
+        setQueuedMessages((prev) => [
+          ...prev,
+          { id, text: trimmed, createdAt: Date.now() },
+        ]);
+        return;
+      }
+
+      await dispatchNow(trimmed);
+    },
+    [isConnected, sessionName, dispatchNow],
   );
 
   // ---- Cancel / stop agent ----
@@ -770,6 +881,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     // finalizeAllActiveRuns had no runIds to tombstone, so the next late
     // first-event would spawn a ghost bubble without this flag.
     pendingCancelRef.current = true;
+    // Cancel terminates the current user-turn. Queue is NOT cleared —
+    // upstream behavior is that abort only stops the active run; queued
+    // follow-ups keep draining. Users can clearQueue() explicitly if
+    // they want everything gone.
+    clientRunIdRef.current = null;
   }, [isStreaming, sendReq, sessionName, finalizeAllActiveRuns]);
 
   // ---- Clear messages ----
@@ -819,5 +935,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     isConnected,
     isLoadingHistory,
     needsBootstrap,
+    queuedMessages,
+    removeQueuedMessage,
+    clearQueue,
   };
 }

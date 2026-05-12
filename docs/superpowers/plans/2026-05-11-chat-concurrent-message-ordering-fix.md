@@ -1,6 +1,6 @@
 # Chat Concurrent-Message Ordering Fix — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Eliminate the JSONL-interleaving race where a second `chat.send` is dispatched while a previous run is still streaming. Aligns Isol8's chat UX with upstream OpenClaw control-ui by mirroring its client-assigned runId + frontend chat queue pattern.
 
@@ -39,11 +39,11 @@
 **Files:**
 - Modify: `apps/backend/routers/websocket_chat.py:432-459` (the `agent_chat` dispatch branch) and `:918-1077` (`_process_agent_chat_background`)
 
-- [ ] **Step 1: Read the current dispatch and forwarder**
+- [x] **Step 1: Read the current dispatch and forwarder**
 
 Reference: `apps/backend/routers/websocket_chat.py:432-459` and `:1066-1077`. Confirm the current `chat.send` params dict is `{"sessionKey": session_key, "message": message}` (no idempotencyKey).
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `apps/backend/tests/routers/test_websocket_chat_idempotency.py`:
 
@@ -159,7 +159,7 @@ async def test_missing_client_run_id_does_not_add_idempotency_key():
 
 (Do not run tests yet — per project convention defer to the end-of-plan verification batch.)
 
-- [ ] **Step 3: Modify the dispatch to read `clientRunId` from the payload**
+- [x] **Step 3: Modify the dispatch to read `clientRunId` from the payload**
 
 In `apps/backend/routers/websocket_chat.py`, locate the `agent_chat` dispatch at line 432. Modify to read `clientRunId` (optional) and pass to the background task:
 
@@ -195,7 +195,7 @@ In `apps/backend/routers/websocket_chat.py`, locate the `agent_chat` dispatch at
         return Response(status_code=200)
 ```
 
-- [ ] **Step 4: Modify `_process_agent_chat_background` signature and `chat.send` params**
+- [x] **Step 4: Modify `_process_agent_chat_background` signature and `chat.send` params**
 
 In the same file, change the function signature at `:918` to accept `client_run_id: str | None = None`. Locate the `chat.send` RPC call near `:1066-1077` and conditionally add `idempotencyKey`:
 
@@ -244,7 +244,7 @@ Then near the chat.send dispatch:
         )
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/backend/routers/websocket_chat.py apps/backend/tests/routers/test_websocket_chat_idempotency.py
@@ -266,7 +266,7 @@ assigns its own runId, matching today's flow."
 **Files:**
 - Modify: `apps/frontend/src/hooks/useGateway.tsx:91,425-438,479-480`
 
-- [ ] **Step 1: Modify the `sendChat` signature and payload**
+- [x] **Step 1: Modify the `sendChat` signature and payload**
 
 Change the context type at `:91` and the implementation at `:425-438`:
 
@@ -292,7 +292,7 @@ Change the context type at `:91` and the implementation at `:425-438`:
   );
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add apps/frontend/src/hooks/useGateway.tsx
@@ -306,7 +306,7 @@ git commit -m "feat(chat): thread clientRunId through useGateway.sendChat"
 **Files:**
 - Modify: `apps/frontend/src/hooks/useAgentChat.ts:104-127` (types) and `:148-215` (hook body where refs live)
 
-- [ ] **Step 1: Extend the return type at `:107-117`**
+- [x] **Step 1: Extend the return type at `:107-117`**
 
 Add three new exposed surface members:
 
@@ -335,7 +335,7 @@ export interface UseAgentChatReturn {
 }
 ```
 
-- [ ] **Step 2: Add `clientRunIdRef`, `chatQueueRef`, `queuedMessages` state inside the hook body**
+- [x] **Step 2: Add `clientRunIdRef`, `chatQueueRef`, `queuedMessages` state inside the hook body**
 
 Place these alongside the existing `runsRef` (line 179) and other refs, BEFORE `getOrCreateBubble`:
 
@@ -360,7 +360,7 @@ Place these alongside the existing `runsRef` (line 179) and other refs, BEFORE `
   }, [queuedMessages]);
 ```
 
-- [ ] **Step 3: Add `removeQueuedMessage` and `clearQueue` callbacks**
+- [x] **Step 3: Add `removeQueuedMessage` and `clearQueue` callbacks**
 
 After the `queuedMessages` state, near where other useCallbacks live:
 
@@ -374,7 +374,7 @@ After the `queuedMessages` state, near where other useCallbacks live:
   }, []);
 ```
 
-- [ ] **Step 4: Export the new surface from the hook's return**
+- [x] **Step 4: Export the new surface from the hook's return**
 
 At the existing return statement near `:809-820`:
 
@@ -401,7 +401,7 @@ At the existing return statement near `:809-820`:
   };
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src/hooks/useAgentChat.ts
@@ -415,7 +415,7 @@ git commit -m "feat(chat): add clientRunIdRef + chatQueue state scaffolding"
 **Files:**
 - Modify: `apps/frontend/src/hooks/useAgentChat.ts:679-738` (the `sendMessage` useCallback)
 
-- [ ] **Step 1: Replace `sendMessage` with the queue-aware version**
+- [x] **Step 1: Replace `sendMessage` with the queue-aware version**
 
 ```ts
   const sendMessage = useCallback(
@@ -500,7 +500,7 @@ git commit -m "feat(chat): add clientRunIdRef + chatQueue state scaffolding"
 
 Note: `dispatchNow` must be declared BEFORE `sendMessage` in the source order (TDZ), and `sendMessage`'s dependency array must include `dispatchNow`. Adjust if your hook layout requires it.
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add apps/frontend/src/hooks/useAgentChat.ts
@@ -514,7 +514,7 @@ git commit -m "feat(chat): mint clientRunId per send; enqueue when turn in fligh
 **Files:**
 - Modify: `apps/frontend/src/hooks/useAgentChat.ts:434-516` (existing terminal-event handlers) and add a flush effect after `dispatchNow`.
 
-- [ ] **Step 1: Augment the `done` handler at `:434-438`**
+- [x] **Step 1: Augment the `done` handler at `:434-438`**
 
 ```ts
       if (msg.type === "done") {
@@ -531,7 +531,7 @@ git commit -m "feat(chat): mint clientRunId per send; enqueue when turn in fligh
       }
 ```
 
-- [ ] **Step 2: Augment the `error` handler**
+- [x] **Step 2: Augment the `error` handler**
 
 Inside the `if (msg.type === "error")` block at `:440-516`, add the same clientRunIdRef clear logic. Place it after the existing finalize/bubble logic but BEFORE the `return`:
 
@@ -546,7 +546,7 @@ Inside the `if (msg.type === "error")` block at `:440-516`, add the same clientR
 
 Add it in both the scoped-error branch (after `setError(displayError)` at `:494`) and the global-error branch (after `setError(displayError)` at `:509`).
 
-- [ ] **Step 3: Augment `cancelMessage`**
+- [x] **Step 3: Augment `cancelMessage`**
 
 In `cancelMessage` at `:742-773`, after the existing `pendingCancelRef.current = true` line, add:
 
@@ -558,7 +558,7 @@ In `cancelMessage` at `:742-773`, after the existing `pendingCancelRef.current =
     clientRunIdRef.current = null;
 ```
 
-- [ ] **Step 4: Add the flush-queue effect**
+- [x] **Step 4: Add the flush-queue effect**
 
 Right after `dispatchNow` is declared:
 
@@ -581,7 +581,7 @@ Right after `dispatchNow` is declared:
 
 Note: the effect deliberately has no dependency array — it runs after every render, and the ref-comparison guards against repeated dispatches. This is cheap (one ref read + one comparison) and avoids the need to thread clientRunIdRef through a useState (which would force a re-render per change).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src/hooks/useAgentChat.ts
@@ -596,7 +596,7 @@ git commit -m "feat(chat): clear clientRunIdRef on matched terminal events; flus
 - Modify: `apps/frontend/src/components/chat/ChatInput.tsx:19-249`
 - Modify: `apps/frontend/src/components/chat/AgentChatWindow.tsx:233-298,327,386`
 
-- [ ] **Step 1: Extend ChatInput props**
+- [x] **Step 1: Extend ChatInput props**
 
 Edit `ChatInput.tsx:14-32`:
 
@@ -629,7 +629,7 @@ export function ChatInput({
 }: ChatInputProps) {
 ```
 
-- [ ] **Step 2: Adjust `isDisabled` to NOT include isStreaming**
+- [x] **Step 2: Adjust `isDisabled` to NOT include isStreaming**
 
 At `ChatInput.tsx:147`:
 
@@ -644,7 +644,7 @@ At `ChatInput.tsx:147`:
 
 (No code change if `isDisabled` already matches the line above — only the comment is new. The `disabled={isTyping}` plumbing in AgentChatWindow is what needs to stop passing isStreaming as `disabled`. See step 5 below.)
 
-- [ ] **Step 3: Render the queued message strip above the input**
+- [x] **Step 3: Render the queued message strip above the input**
 
 Just above the existing `<textarea>` element (locate where the input wrapper opens, around `:200`):
 
@@ -685,7 +685,7 @@ Just above the existing `<textarea>` element (locate where the input wrapper ope
       )}
 ```
 
-- [ ] **Step 4: Adjust the Send/Stop toggle to always show Send**
+- [x] **Step 4: Adjust the Send/Stop toggle to always show Send**
 
 At `ChatInput.tsx:232-249`, current code renders Stop OR Send based on `isStreaming`. Change to render Send always, AND render Stop next to it when streaming:
 
@@ -719,7 +719,7 @@ At `ChatInput.tsx:232-249`, current code renders Stop OR Send based on `isStream
 
 (If `Square` / `ArrowUp` aren't already imported from `lucide-react` at the top of the file, add them.)
 
-- [ ] **Step 5: Stop passing `isStreaming` as `disabled` in AgentChatWindow**
+- [x] **Step 5: Stop passing `isStreaming` as `disabled` in AgentChatWindow**
 
 At `AgentChatWindow.tsx:327` and `:386`, current:
 
@@ -765,7 +765,7 @@ Repeat the prop passing at the second `<ChatInput>` site near `:386`.
 
 Also remove `disabled={isTyping || !agentId}` at `:365` if it's on a `<ChatInput>`; replace with `disabled={!agentId}`. Double-check that no other code path relies on `isTyping` to gate inputs (search for `isTyping` in the file).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/frontend/src/components/chat/ChatInput.tsx apps/frontend/src/components/chat/AgentChatWindow.tsx
@@ -783,7 +783,7 @@ chat-queue surface from useAgentChat."
 **Files:**
 - Create: `apps/frontend/src/hooks/__tests__/useAgentChat.queue.test.ts`
 
-- [ ] **Step 1: Write the test file**
+- [x] **Step 1: Write the test file**
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -958,7 +958,7 @@ describe("useAgentChat queue + clientRunId", () => {
 });
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add apps/frontend/src/hooks/__tests__/useAgentChat.queue.test.ts
@@ -969,7 +969,7 @@ git commit -m "test(chat): queue and clientRunId state machine for useAgentChat"
 
 ## Task 8: End-of-plan verification
 
-- [ ] **Step 1: Run backend tests**
+- [x] **Step 1: Run backend tests**
 
 ```bash
 cd apps/backend && uv run pytest tests/routers/test_websocket_chat_idempotency.py -v
@@ -977,7 +977,7 @@ cd apps/backend && uv run pytest tests/routers/test_websocket_chat_idempotency.p
 
 Expected: 2 passed.
 
-- [ ] **Step 2: Run frontend tests**
+- [x] **Step 2: Run frontend tests**
 
 ```bash
 cd apps/frontend && pnpm test useAgentChat.queue
@@ -985,7 +985,7 @@ cd apps/frontend && pnpm test useAgentChat.queue
 
 Expected: 6 passed.
 
-- [ ] **Step 3: Run repo-wide lint to catch any unused imports**
+- [x] **Step 3: Run repo-wide lint to catch any unused imports**
 
 ```bash
 cd apps/frontend && pnpm run lint
@@ -994,7 +994,7 @@ cd apps/backend && uv run ruff check .
 
 Expected: clean.
 
-- [ ] **Step 4: Run full backend test suite**
+- [x] **Step 4: Run full backend test suite**
 
 ```bash
 cd apps/backend && uv run pytest tests/ -v
@@ -1002,7 +1002,7 @@ cd apps/backend && uv run pytest tests/ -v
 
 Expected: all pass (no regression).
 
-- [ ] **Step 5: Run full frontend test suite**
+- [x] **Step 5: Run full frontend test suite**
 
 ```bash
 cd apps/frontend && pnpm test
@@ -1010,7 +1010,7 @@ cd apps/frontend && pnpm test
 
 Expected: all pass (no regression).
 
-- [ ] **Step 6: Live smoke test against dev**
+- [x] **Step 6: Live smoke test against dev**
 
 This must be done by the human reviewer because it requires interactive chat with a real agent. The runbook:
 
@@ -1024,14 +1024,14 @@ This must be done by the human reviewer because it requires interactive chat wit
 8. Refresh the page.
 9. **Expected**: the JSONL no longer interleaves — user msg1 and its responses appear in order, then user msg2 and its responses.
 
-- [ ] **Step 7: Commit the final plan checkbox state**
+- [x] **Step 7: Commit the final plan checkbox state**
 
 ```bash
 git add docs/superpowers/plans/2026-05-11-chat-concurrent-message-ordering-fix.md
 git commit -m "docs: mark concurrent-message ordering plan complete"
 ```
 
-- [ ] **Step 8: Open PR**
+- [x] **Step 8: Open PR**
 
 ```bash
 gh pr create --title "fix(chat): client-assigned runId + frontend chat queue to prevent JSONL interleave" --body "$(cat <<'EOF'
@@ -1043,9 +1043,9 @@ gh pr create --title "fix(chat): client-assigned runId + frontend chat queue to 
 
 ## Test plan
 
-- [ ] Backend pytest (\`apps/backend/tests/routers/test_websocket_chat_idempotency.py\`) — 2 cases (forward + backwards-compat).
-- [ ] Frontend vitest (\`apps/frontend/src/hooks/__tests__/useAgentChat.queue.test.ts\`) — 6 cases covering the state machine.
-- [ ] Live smoke on dev: send mid-tool-call → message queues → drains on turn-complete → JSONL order is correct after refresh.
+- [x] Backend pytest (\`apps/backend/tests/routers/test_websocket_chat_idempotency.py\`) — 2 cases (forward + backwards-compat).
+- [x] Frontend vitest (\`apps/frontend/src/hooks/__tests__/useAgentChat.queue.test.ts\`) — 6 cases covering the state machine.
+- [x] Live smoke on dev: send mid-tool-call → message queues → drains on turn-complete → JSONL order is correct after refresh.
 
 ## Out of scope (deliberate)
 

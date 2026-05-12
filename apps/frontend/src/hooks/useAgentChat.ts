@@ -163,10 +163,14 @@ const _needsBootstrap = new Set<string>();
 // =============================================================================
 
 export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
-  // onEvent is intentionally not destructured here — exec.approval.* is now
-  // owned by useExecApprovals at the chat-shell level (see commit message
-  // for the previous "Approval handling moved out of useAgentChat" comment).
-  const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
+  // `onEvent` is now also consumed here to track exec.approval.{requested,
+  // resolved} lifecycle for the per-session busy gate. The exec-approval
+  // card rendering is still owned by useExecApprovals at the chat-shell
+  // level — we only listen so we know not to clear `clientRunIdRef` mid-
+  // approval (upstream issue openclaw/openclaw#70953: exec approvals don't
+  // actually pause the agent turn; chat.final fires while the user is
+  // still deciding, then a new run is initiated on resolve).
+  const { isConnected, sendChat, onChatMessage, sendReq, onEvent } = useGateway();
 
   // Cache key includes session name so org members don't share history cache
   const cacheKey = agentId ? `${agentId}:${sessionName}` : null;
@@ -238,6 +242,25 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // See ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:627-770.
   const clientRunIdRef = useRef<string | null>(null);
 
+  // Exec-approval pause tracking. Upstream (openclaw/openclaw#70953) does
+  // not actually suspend the agent run when a tool needs approval — the
+  // exec tool returns `approval-pending` as a normal tool result, chat.final
+  // fires for the run, and a fresh run is started when the user resolves.
+  // Without these refs, the chat.final clears `clientRunIdRef`, the busy
+  // gate opens, and any user send during the approval pause races with the
+  // eventual resume — re-introducing the JSONL interleave fixed in #621.
+  //
+  // pendingApprovalsRef: set of approvalId values currently awaiting the
+  //   user's decision, scoped to THIS session (agent + member). The done /
+  //   error handlers check this set and skip clearing clientRunIdRef while
+  //   non-empty.
+  // awaitingResumeAfterApprovalRef: true between the last pending approval
+  //   being resolved and the first agent event of the resumed run arriving.
+  //   getOrCreateBubble swaps clientRunIdRef onto the resumed run's id so
+  //   the eventual chat.final for the new run will clear the gate.
+  const pendingApprovalsRef = useRef<Set<string>>(new Set());
+  const awaitingResumeAfterApprovalRef = useRef<boolean>(false);
+
   // Frontend chat queue: when the user types while clientRunIdRef.current
   // is set (user-turn in progress), new sends push here instead of firing
   // immediately. Drained one-at-a-time on the busy→idle transition. Mirrors
@@ -257,6 +280,43 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const clearQueue = useCallback(() => {
     setQueuedMessages([]);
   }, []);
+
+  // Subscribe to exec.approval.{requested,resolved} for this session. See
+  // the pendingApprovalsRef declaration above for why we care: chat.final
+  // fires mid-approval upstream, and the busy-gate must stay armed until
+  // the approval is resolved AND the resumed run starts. Event filter
+  // matches useExecApprovals' isApprovalForCurrentUser semantics: the
+  // sessionKey on the request payload is `agent:<agentId>:<memberId>`,
+  // and we only care about approvals for the agent + member this hook
+  // instance is tracking. Returning the unsubscribe callback from the
+  // effect cleans up on unmount or agent switch.
+  useEffect(() => {
+    return onEvent((eventName, data) => {
+      if (eventName === "exec.approval.requested") {
+        const p = data as { id?: string; request?: { sessionKey?: string } };
+        const currentAgentId = agentIdRef.current;
+        if (!p?.id || !currentAgentId) return;
+        const expectedSessionKey = `agent:${currentAgentId}:${sessionName}`;
+        if (p.request?.sessionKey === expectedSessionKey) {
+          pendingApprovalsRef.current.add(p.id);
+        }
+        return;
+      }
+      if (eventName === "exec.approval.resolved") {
+        const p = data as { id?: string };
+        if (!p?.id) return;
+        // Only react if THIS hook tracked the matching request. A
+        // server-side resolution (CLI, another tab) for an approval we
+        // never tracked would otherwise spuriously arm
+        // awaitingResumeAfterApprovalRef and confuse the resume-swap.
+        if (pendingApprovalsRef.current.delete(p.id)) {
+          if (pendingApprovalsRef.current.size === 0) {
+            awaitingResumeAfterApprovalRef.current = true;
+          }
+        }
+      }
+    });
+  }, [onEvent, sessionName]);
 
   const getOrCreateBubble = useCallback((runId: string): string | null => {
     // Cancel-before-first-event race: if the user hit Stop/Clear BEFORE any
@@ -286,6 +346,23 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
 
     if (existing) return existing.messageId;
+
+    // Resume-swap: if we're awaiting a resumed run after an exec-approval
+    // resolution and this is the first event for an unseen runId, transfer
+    // the busy gate from the (already-finalized) prior runId onto this new
+    // run. The next chat.final for THIS runId will correctly clear the gate.
+    // Conditions:
+    //   - clientRunIdRef armed AND mismatched (otherwise no transfer needed)
+    //   - awaitingResumeAfterApprovalRef set (we expect a resume)
+    //   - runId not in runsRef (genuinely new — first event for the run)
+    if (
+      awaitingResumeAfterApprovalRef.current &&
+      clientRunIdRef.current !== null &&
+      clientRunIdRef.current !== runId
+    ) {
+      clientRunIdRef.current = runId;
+      awaitingResumeAfterApprovalRef.current = false;
+    }
 
     const messageId = `assistant-${crypto.randomUUID()}`;
     runsRef.current.set(runId, { messageId, streamContent: "", thinking: "" });
@@ -482,8 +559,20 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // terminal event matches OUR clientRunId. Sub-run dones (different
         // runId) only finalize their bubble. See
         // ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:769-770.
+        //
+        // Approval-pause guard: chat.final fires mid-approval upstream
+        // (openclaw/openclaw#70953), so this matching done event may NOT
+        // mean the user turn is over. If approvals are pending or we're
+        // waiting for the resumed run's first event, keep the gate armed
+        // — the next chat.final (for the resumed run via getOrCreateBubble's
+        // resume-swap) will clear it then.
         if (runId === clientRunIdRef.current) {
-          clientRunIdRef.current = null;
+          if (
+            pendingApprovalsRef.current.size === 0 &&
+            !awaitingResumeAfterApprovalRef.current
+          ) {
+            clientRunIdRef.current = null;
+          }
         }
         return;
       }
@@ -544,10 +633,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           }
           setError(displayError);
           // Clear the busy gate if this error pertains to the user's turn.
-          // Scoped error with matching runId, or global error (no runId)
-          // both terminate the user turn.
+          // Approval-pause guard mirrors the done handler: keep the gate
+          // armed if approvals are still pending or a resume is incoming.
           if (!msg.runId || msg.runId === clientRunIdRef.current) {
-            clientRunIdRef.current = null;
+            if (
+              pendingApprovalsRef.current.size === 0 &&
+              !awaitingResumeAfterApprovalRef.current
+            ) {
+              clientRunIdRef.current = null;
+            }
           }
           return;
         }
@@ -568,12 +662,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // Close the window for late stragglers whose runId we never saw.
         pendingCancelRef.current = true;
         setIsStreaming(false);
-        // Clear the busy gate if this error pertains to the user's turn.
-        // Scoped error with matching runId, or global error (no runId)
-        // both terminate the user turn.
-        if (!msg.runId || msg.runId === clientRunIdRef.current) {
-          clientRunIdRef.current = null;
-        }
+        // Global error terminates the user turn unconditionally — even
+        // mid-approval, a global error means the session has failed and
+        // any in-flight approval is moot. Reset approval refs so a
+        // subsequent send starts cleanly.
+        clientRunIdRef.current = null;
+        pendingApprovalsRef.current.clear();
+        awaitingResumeAfterApprovalRef.current = false;
         return;
       }
 
@@ -884,8 +979,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     // Cancel terminates the current user-turn. Queue is NOT cleared —
     // upstream behavior is that abort only stops the active run; queued
     // follow-ups keep draining. Users can clearQueue() explicitly if
-    // they want everything gone.
+    // they want everything gone. Approval refs are also reset: a queued
+    // approval card may still display from useExecApprovals, but for the
+    // busy-gate's purposes, this turn is over.
     clientRunIdRef.current = null;
+    pendingApprovalsRef.current.clear();
+    awaitingResumeAfterApprovalRef.current = false;
   }, [isStreaming, sendReq, sessionName, finalizeAllActiveRuns]);
 
   // ---- Clear messages ----
@@ -902,6 +1001,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     // Same reasoning as cancelMessage: cover the case where clear fires
     // before any event for the in-flight turn has arrived.
     pendingCancelRef.current = true;
+    clientRunIdRef.current = null;
+    pendingApprovalsRef.current.clear();
+    awaitingResumeAfterApprovalRef.current = false;
   }, [sessionName, finalizeAllActiveRuns]);
 
   // ---- External interface ----

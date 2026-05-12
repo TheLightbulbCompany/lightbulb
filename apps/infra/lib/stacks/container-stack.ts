@@ -371,6 +371,41 @@ export class ContainerStack extends cdk.Stack {
         logGroup: openclawLogGroup,
         streamPrefix: "openclaw",
       }),
+      // Liveness probe against the upstream gateway's /healthz endpoint
+      // (exposed by openclaw.mjs gateway — see upstream Dockerfile and
+      // src/gateway/server-http.ts:152-157, where /healthz is auth-
+      // bypassed and runs on the Node event loop). When Node's event
+      // loop wedges on EFS NFS RPC (see investigation 2026-05-11), the
+      // /healthz async handler can't run; ECS marks the task UNHEALTHY
+      // after retries * interval and replaces it. TCP-only probes
+      // (e.g. nc -z) are insufficient here because TCP accept stays in
+      // the kernel while the JS event loop is frozen.
+      healthCheck: {
+        command: [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ],
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
+        // 120s start period covers the upstream `clawhub install
+        // markdown-converter` pre-step (slow on EFS first-touch) plus
+        // gateway boot (~5s warm). Tunable if dev observes false
+        // positives during cold provisioning.
+        startPeriod: cdk.Duration.seconds(120),
+      },
+      // Inject Fargate's init process (tini-equivalent) as PID 1. The
+      // openclaw container runs `sh -c "... ; exec node ..."` so Node
+      // would otherwise be PID 1, and Node doesn't reap orphan children
+      // by default. When chromium subprocesses' immediate parent dies
+      // and they get re-parented to PID 1 — which is exactly what we
+      // observed in the 2026-05-11 wedge (51 chrome/crashpad zombies
+      // with ppid=1) — init reaps them unconditionally regardless of
+      // whether Node's event loop is responsive. Does NOT prevent the
+      // NFS wedge itself; pairs with the chromium-tmpfs PR for that.
+      linuxParameters: new ecs.LinuxParameters(this, "OpenclawLinuxParams", {
+        initProcessEnabled: true,
+      }),
     });
 
     // Mount EFS workspace — OpenClaw reads openclaw.json and agent files from here

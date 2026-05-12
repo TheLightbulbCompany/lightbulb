@@ -7,10 +7,10 @@ interface StreamingStatusBarProps {
 }
 
 export function deriveStreamingLabel(messages: Message[]): string {
-  // Pending approvals are surfaced by the global ExecApprovalDialog
-  // (mounted at the chat-shell level via useExecApprovals). They no
-  // longer flow through messages.toolUses, so this label only reflects
-  // running tool execution and the "thinking" idle state.
+  // Pending approvals are surfaced by ExecApprovalCards (rendered above
+  // ChatInput, fed by useExecApprovals). They no longer flow through
+  // messages.toolUses, so this label only reflects running tool execution
+  // and the "thinking" idle state.
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "assistant") continue;

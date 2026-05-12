@@ -77,22 +77,18 @@ describe("PublishWizard", () => {
 });
 
 const useAgentsMock = vi.fn();
-const myAgentsSummaryMock = vi.fn();
 
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => useAgentsMock(),
   agentDisplayName: (a: { name?: string; identity?: { name?: string } }) =>
     a.identity?.name || a.name || "?",
 }));
-vi.mock("@/lib/marketplace/api", () => ({
-  myAgentsSummary: (opts: unknown) => myAgentsSummaryMock(opts),
-}));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: vi.fn().mockResolvedValue("tok_abc") }),
 }));
 
 describe("PickAgentStep", () => {
-  it("renders agents from useAgents and marks main as disabled", async () => {
+  it("renders agents from useAgents and marks main as disabled with a 'not publishable' subline", async () => {
     useAgentsMock.mockReturnValue({
       agents: [
         { id: "agent_main", name: "main", identity: { name: "main" } },
@@ -100,23 +96,22 @@ describe("PickAgentStep", () => {
       ],
       defaultId: "agent_main",
     });
-    myAgentsSummaryMock.mockResolvedValueOnce({
-      agents: [
-        { agent_id: "agent_main", name: "main", skill_count: 0, channel_count: 0, cron_count: 0 },
-        { agent_id: "agent_pulse", name: "Pulse", skill_count: 3, channel_count: 1, cron_count: 1 },
-      ],
-    });
     const onSelect = vi.fn();
     const { PickAgentStep } = await vi.importActual<
       typeof import("@/components/marketplace/drawer/wizardSteps")
     >("@/components/marketplace/drawer/wizardSteps");
     render(<PickAgentStep onSelect={onSelect} />);
     await waitFor(() => expect(screen.getByText("Pulse")).toBeInTheDocument());
-    expect(screen.getByText(/3 skills/)).toBeInTheDocument();
-    expect(screen.getByText(/1 cron/)).toBeInTheDocument();
 
     const mainCard = screen.getByText("main").closest('[role="button"]');
     expect(mainCard).toHaveAttribute("aria-disabled", "true");
+    // Friday/main keeps its informational subline so sellers know it's reserved.
+    expect(screen.getByText(/not publishable/)).toBeInTheDocument();
+    // Non-main cards no longer carry a stale `0 skills · 0 crons` count —
+    // the real artifact breakdown lives in the Bundle step (Step 3) now.
+    const pulseCard = screen.getByText("Pulse").closest('[role="button"]');
+    expect(pulseCard?.textContent).not.toMatch(/skill/);
+    expect(pulseCard?.textContent).not.toMatch(/cron/);
   });
 
   it("clicking a card calls onSelect with agent id", async () => {
@@ -124,7 +119,6 @@ describe("PickAgentStep", () => {
       agents: [{ id: "agent_pulse", name: "pulse", identity: { name: "Pulse" } }],
       defaultId: "agent_main",
     });
-    myAgentsSummaryMock.mockResolvedValueOnce({ agents: [] });
     const onSelect = vi.fn();
     const user = userEvent.setup();
     const { PickAgentStep } = await vi.importActual<

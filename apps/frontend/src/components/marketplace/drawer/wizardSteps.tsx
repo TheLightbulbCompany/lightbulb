@@ -6,8 +6,6 @@ import { useAuth } from "@clerk/nextjs";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import {
   artifactPreview,
-  myAgentsSummary,
-  type AgentSummary,
   type ArtifactPreview,
   type AvailableSkill,
   type SafetyFlag,
@@ -71,40 +69,17 @@ export function PickAgentStep({
     agents: Agent[];
     defaultId?: string;
   };
-  const { getToken } = useAuth();
-  const [summary, setSummary] = useState<AgentSummary[] | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const jwt = await getToken();
-      if (!jwt) return;
-      const r = await myAgentsSummary({ jwt });
-      if (alive) setSummary(r.agents);
-    })().catch(() => {
-      if (alive) setSummary([]);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [getToken]);
-
-  const summaryById: Record<string, AgentSummary> = (summary ?? []).reduce(
-    (acc, a) => ({ ...acc, [a.agent_id]: a }),
-    {},
-  );
 
   return (
     <div>
       <p className="text-[14px] text-[#5b5b5b] leading-snug mb-4">
-        Pick which agent in your workspace you&apos;d like to publish. We&apos;ll bundle its config,
-        skills, and cron jobs into a deployable artifact.
+        Pick which agent in your workspace you&apos;d like to publish. The next
+        step lets you choose which integrations ride along.
       </p>
       <div className="grid grid-cols-2 gap-2.5">
         {agents.map((agent) => {
           const isMain = agent.id === defaultId || agent.identity?.name === "main";
           const isSelected = agent.id === selected;
-          const sub = summaryById[agent.id];
           return (
             <div
               key={agent.id}
@@ -126,13 +101,9 @@ export function PickAgentStep({
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] font-medium">{agentDisplayName(agent)}</div>
-                <div className="text-[11px] text-[#5b5b5b]">
-                  {isMain
-                    ? "core agent · not publishable"
-                    : sub
-                      ? `${sub.skill_count} skill${sub.skill_count === 1 ? "" : "s"} · ${sub.cron_count} cron${sub.cron_count === 1 ? "" : "s"}`
-                      : "…"}
-                </div>
+                {isMain && (
+                  <div className="text-[11px] text-[#5b5b5b]">core agent · not publishable</div>
+                )}
               </div>
             </div>
           );

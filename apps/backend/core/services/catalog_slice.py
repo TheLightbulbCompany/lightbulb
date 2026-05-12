@@ -14,9 +14,113 @@ Behavioral fields stay:
 from __future__ import annotations
 
 import copy
+import enum
+from collections.abc import Iterable
 from typing import Any
 
 _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
+
+# Secret-shaped field names scrubbed from slice copies of mcp.servers[*] /
+# skills.entries[*]. Values are replaced with empty strings (key names
+# preserved so the buyer sees what to fill in on their side). Mirrors
+# upstream OpenClaw's zod ``z.sensitive()`` markers — see
+# ``openclaw/src/config/zod-schema.ts`` (apiKey, env, headers,
+# webhookToken). The publisher's values never leave their container.
+_SECRET_FIELD_NAMES = frozenset({"apiKey", "env", "headers", "webhookToken"})
+
+
+class SkillBucket(str, enum.Enum):
+    """Where a skill lives on the seller's container.
+
+    Drives publish-time slice synthesis and buyer-side deploy:
+      - ``BUNDLED``  → name baked into the buyer's OpenClaw image already.
+                      Slice carries it in ``skills.allowBundled``.
+      - ``ENTRIES``  → name configured in ``skills.entries[name]`` with
+                      apiKey/env. Slice copies the entry with secrets
+                      scrubbed; deploy deep-merges into buyer's config.
+      - ``WORKSPACE``→ skill source files live under the agent's workspace
+                      and ship in the tarball directly. No openclaw.json
+                      mutation needed.
+      - ``EXTRA_DIRS``→ skill lives at a container-wide path outside the
+                      agent workspace (``skills.load.extraDirs``). v1
+                      surfaces a warning — auto-packaging deferred.
+      - ``UNKNOWN``  → name not found anywhere on the seller's container.
+                      The wizard surfaces this so the seller can correct
+                      before publishing.
+    """
+
+    BUNDLED = "bundled"
+    ENTRIES = "entries"
+    WORKSPACE = "workspace"
+    EXTRA_DIRS = "extra_dirs"
+    UNKNOWN = "unknown"
+
+
+def _scrub_secret_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of ``entry`` with every secret-shaped field value
+    replaced by an empty string (or ``{k: ""}`` for dict-typed fields like
+    ``env`` and ``headers``). Key names are preserved so the buyer sees
+    which environment variables / headers the integration expects.
+
+    Recurses one level: an MCP server's top-level ``env`` is scrubbed, but
+    we don't deep-walk arbitrary nested structures — the upstream schema
+    pins secret fields to the entry's top level.
+    """
+    result = copy.deepcopy(entry)
+    for k in _SECRET_FIELD_NAMES:
+        if k not in result:
+            continue
+        val = result[k]
+        if isinstance(val, dict):
+            result[k] = {kk: "" for kk in val.keys()}
+        elif isinstance(val, list):
+            result[k] = []
+        else:
+            result[k] = ""
+    return result
+
+
+def classify_skill(
+    name: str,
+    openclaw_json: dict[str, Any],
+    *,
+    workspace_skill_names: Iterable[str] = (),
+    extra_dir_skill_names: Iterable[str] = (),
+) -> SkillBucket:
+    """Classify a skill by where it lives on the seller's container.
+
+    Resolution order (most specific first):
+      1. ``skills.entries[name]``      → ``ENTRIES``  (config-registered)
+      2. ``skills.allowBundled[*]``    → ``BUNDLED``  (image-baked)
+      3. ``workspace_skill_names``     → ``WORKSPACE`` (ships in tarball)
+      4. ``extra_dir_skill_names``     → ``EXTRA_DIRS`` (container-wide path)
+      5. otherwise                     → ``UNKNOWN``
+
+    ENTRIES wins over BUNDLED when a skill appears in both: a configured
+    entry with secrets is more specific than just being on the
+    allowBundled list.
+    """
+    skills_cfg = openclaw_json.get("skills") if isinstance(openclaw_json, dict) else None
+    if not isinstance(skills_cfg, dict):
+        skills_cfg = {}
+
+    entries = skills_cfg.get("entries")
+    if isinstance(entries, dict) and name in entries:
+        return SkillBucket.ENTRIES
+
+    allow_bundled = skills_cfg.get("allowBundled")
+    if isinstance(allow_bundled, list) and name in allow_bundled:
+        return SkillBucket.BUNDLED
+
+    if name in set(workspace_skill_names):
+        return SkillBucket.WORKSPACE
+
+    if name in set(extra_dir_skill_names):
+        return SkillBucket.EXTRA_DIRS
+
+    return SkillBucket.UNKNOWN
+
+
 # Cron-job fields stripped at slice time. Each is either runtime state (set
 # by OpenClaw on first execution) or user-specific provenance regenerated
 # at deploy. Schema reference: openclaw/src/config/types.cron.ts +
@@ -113,13 +217,37 @@ def filter_cron_jobs_for_agent(
     return out
 
 
-def extract_agent_slice(openclaw_json: dict[str, Any], agent_id: str) -> dict[str, Any]:
+def extract_agent_slice(
+    openclaw_json: dict[str, Any],
+    agent_id: str,
+    *,
+    selected_mcps: list[str] | None = None,
+    selected_skills: list[str] | None = None,
+    workspace_skill_names: Iterable[str] = (),
+    extra_dir_skill_names: Iterable[str] = (),
+) -> dict[str, Any]:
     """Return a dict with the sliced agent entry plus the required plugins/tools
     from the publisher's config. Raises KeyError if the agent_id isn't present.
 
-    Also tolerates stray non-dict entries in ``agents.list`` (bare strings have
-    been observed from hand-editing / partial runtime writes) — skip anything
-    that isn't a dict rather than crashing with AttributeError.
+    When ``selected_mcps`` / ``selected_skills`` are provided (even as empty
+    lists), the returned slice also carries:
+
+      - ``mcp.servers``        — {name → scrubbed entry} for each selected MCP
+      - ``skills.entries``     — {name → scrubbed entry} for each ENTRIES-bucket skill
+      - ``skills.allowBundled``— list of BUNDLED-bucket skill names
+
+    All secret-shaped fields (``apiKey``, ``env``, ``headers``,
+    ``webhookToken``) are scrubbed to empty strings; the buyer's deploy
+    deep-merges these into their openclaw.json and they fill in their
+    own credentials.
+
+    When the selections are ``None`` (the default), the slice is backwards-
+    compatible: ``{agent, plugins, tools}`` — same shape the legacy deploy
+    path expects.
+
+    Also tolerates stray non-dict entries in ``agents.list`` (bare strings
+    have been observed from hand-editing / partial runtime writes) — skip
+    anything that isn't a dict rather than crashing with AttributeError.
     """
     agents = _agents_list(openclaw_json)
     matching = [a for a in agents if isinstance(a, dict) and a.get("id") == agent_id]
@@ -127,8 +255,44 @@ def extract_agent_slice(openclaw_json: dict[str, Any], agent_id: str) -> dict[st
         raise KeyError(f"agent {agent_id!r} not found in openclaw.json")
     agent_entry = matching[0]
 
-    return {
+    slice_: dict[str, Any] = {
         "agent": strip_user_specific_fields(agent_entry),
         "plugins": copy.deepcopy(openclaw_json.get("plugins") or {}),
         "tools": copy.deepcopy(openclaw_json.get("tools") or {}),
     }
+
+    if selected_mcps is not None:
+        mcp_servers_src = (openclaw_json.get("mcp") or {}).get("servers") or {}
+        slice_["mcp"] = {
+            "servers": {
+                name: _scrub_secret_fields(mcp_servers_src[name])
+                for name in selected_mcps
+                if isinstance(mcp_servers_src.get(name), dict)
+            }
+        }
+
+    if selected_skills is not None:
+        skills_src = openclaw_json.get("skills") or {}
+        entries_src = skills_src.get("entries") if isinstance(skills_src, dict) else None
+        entries_src = entries_src if isinstance(entries_src, dict) else {}
+        entries_out: dict[str, Any] = {}
+        allow_bundled_out: list[str] = []
+        for name in selected_skills:
+            bucket = classify_skill(
+                name,
+                openclaw_json,
+                workspace_skill_names=workspace_skill_names,
+                extra_dir_skill_names=extra_dir_skill_names,
+            )
+            if bucket is SkillBucket.ENTRIES and isinstance(entries_src.get(name), dict):
+                entries_out[name] = _scrub_secret_fields(entries_src[name])
+            elif bucket is SkillBucket.BUNDLED:
+                allow_bundled_out.append(name)
+            # WORKSPACE: ships in the tarball, no slice mutation.
+            # EXTRA_DIRS / UNKNOWN: surfaced by the wizard; not packaged in v1.
+        slice_["skills"] = {
+            "entries": entries_out,
+            "allowBundled": allow_bundled_out,
+        }
+
+    return slice_

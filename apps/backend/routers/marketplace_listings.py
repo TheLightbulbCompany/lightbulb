@@ -446,6 +446,70 @@ async def submit(
 
 
 # ---------------------------------------------------------------------------
+# Artifact dry-run preview — drives the publish wizard's Bundle + Review
+# steps so the seller sees exactly what will ship before submit.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/me/agents/{agent_id}/artifact-preview",
+    response_model=schemas.ArtifactPreviewResponse,
+)
+async def my_agent_artifact_preview(
+    agent_id: str,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+):
+    """Dry-run preview of the artifact the seller would publish for ``agent_id``.
+
+    Snapshots the agent dir + scans (no S3, no DDB writes) so the wizard
+    can render MCP / skill checkboxes with bucket tags, list persona files
+    that will ship, and surface safety_flags inline. Friday-guarded the
+    same way as the actual publish endpoint.
+    """
+    owner_id = resolve_owner_id(auth)
+
+    if await agent_export.is_reserved_friday_agent(
+        owner_id=owner_id,
+        agent_id=agent_id,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=agent_export.FRIDAY_PUBLISH_ERROR_MSG,
+        )
+
+    try:
+        preview = agent_export.enumerate_for_preview(
+            seller_id=owner_id,
+            agent_id=agent_id,
+        )
+    except agent_export.InvalidAgentIdError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.AgentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except agent_export.AgentNotInConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # needs_config_patch flips True iff anything we'd merge into the
+    # buyer's openclaw.json is present: an MCP exists at all OR a skill
+    # in entries/bundled bucket is referenced. The wizard surfaces this
+    # as a yellow warning on the Review step.
+    needs_config_patch = bool(preview["available_mcps"]) or any(
+        s["bucket"] in ("entries", "bundled") for s in preview["available_skills"]
+    )
+
+    return schemas.ArtifactPreviewResponse(
+        agent_id=preview["agent_id"],
+        available_mcps=preview["available_mcps"],
+        available_skills=[
+            schemas.AvailableSkill(name=s["name"], bucket=s["bucket"]) for s in preview["available_skills"]
+        ],
+        persona_files=preview["persona_files"],
+        safety_flags=[schemas.SafetyFlag(**f) for f in preview["safety_flags"]],
+        needs_config_patch=needs_config_patch,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Artifact upload — Path B (snapshot from EFS); Path A (zip upload) is
 # explicitly out of v0 scope per the Isol8-internal reduction.
 # ---------------------------------------------------------------------------
@@ -478,8 +542,29 @@ async def upload_artifact_from_agent(
     below stays as auth.user_id — that's the author/attribution field.
     """
     owner_id = resolve_owner_id(auth)
+
+    # Friday-publish guard: the per-owner CEO agent is reserved (its
+    # IDENTITY/USER files are owner-keyed and Paperclip wires it into the
+    # CEO slot). Run BEFORE the snapshot so we don't tar Friday's dir.
+    if await agent_export.is_reserved_friday_agent(
+        owner_id=owner_id,
+        agent_id=payload.agent_id,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=agent_export.FRIDAY_PUBLISH_ERROR_MSG,
+        )
+
+    selected_mcps = payload.bundle.mcps if payload.bundle else None
+    selected_skills = payload.bundle.skills if payload.bundle else None
+
     try:
-        package = agent_export.export_agent_from_efs(seller_id=owner_id, agent_id=payload.agent_id)
+        package = agent_export.export_agent_from_efs(
+            seller_id=owner_id,
+            agent_id=payload.agent_id,
+            selected_mcps=selected_mcps,
+            selected_skills=selected_skills,
+        )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except agent_export.AgentNotFoundError as e:

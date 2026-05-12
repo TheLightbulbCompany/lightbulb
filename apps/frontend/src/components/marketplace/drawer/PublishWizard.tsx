@@ -8,6 +8,7 @@ import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import {
   PickAgentStep,
   DetailsStep,
+  BundleStep,
   PricingStep,
   ReviewStep,
   SuccessStep,
@@ -22,6 +23,12 @@ export interface PublishForm {
   tags: string[];
   priceTier: "free" | "paid";
   priceDollars: number;
+  // Bundle step — seller's explicit MCP + skill selection. Empty arrays
+  // (the default) mean "don't bundle anything"; the listing ships the
+  // agent's workspace files only and the buyer's openclaw.json is left
+  // alone for MCPs/skills.
+  bundleMcps: string[];
+  bundleSkills: string[];
 }
 
 const INITIAL_FORM: PublishForm = {
@@ -32,9 +39,12 @@ const INITIAL_FORM: PublishForm = {
   tags: [],
   priceTier: "free",
   priceDollars: 10,
+  bundleMcps: [],
+  bundleSkills: [],
 };
 
-type Step = 1 | 2 | 3 | 4 | 5;
+// Pick → Details → Bundle → Pricing → Review → Success
+type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
 export function PublishWizard() {
   const { setView, state } = useMarketplaceDrawer();
@@ -61,15 +71,15 @@ export function PublishWizard() {
   function canContinue() {
     if (step === 1) return !!form.agentId;
     if (step === 2) return form.name.trim().length > 0 && form.tagline.trim().length > 0;
-    if (step === 3) return form.priceTier === "free" || form.priceDollars >= 1;
-    if (step === 4) return true;
+    if (step === 3) return true; // Bundle step: any selection (including empty) is valid
+    if (step === 4) return form.priceTier === "free" || form.priceDollars >= 1;
+    if (step === 5) return true;
     return false;
   }
 
   function next() {
-    if (step < 4) setStep((s) => (s + 1) as Step);
-    else if (step === 4) {
-      // Submit chain — Task 14 fills this in
+    if (step < 5) setStep((s) => (s + 1) as Step);
+    else if (step === 5) {
       void submit();
     }
   }
@@ -105,9 +115,10 @@ export function PublishWizard() {
       }
       await api.post(`/marketplace/listings/${listingId}/artifact-from-agent`, {
         agent_id: form.agentId,
+        bundle: { mcps: form.bundleMcps, skills: form.bundleSkills },
       });
       await api.post(`/marketplace/listings/${listingId}/submit`, {});
-      setStep(5);
+      setStep(6);
     } catch (err) {
       // useApi's ApiError doesn't expose `.detail` directly; the body's
       // detail string lives at `.body.detail` and is also serialized into
@@ -135,26 +146,27 @@ export function PublishWizard() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-1.5 mb-4">
-        {[1, 2, 3, 4].map((n) => (
+        {[1, 2, 3, 4, 5].map((n) => (
           <span
             key={n}
             className={`w-5 h-1 rounded-full ${n <= step ? "bg-[#06402b]" : "bg-[#e0dbd0]"}`}
           />
         ))}
         <span className="text-[11.5px] text-[#5b5b5b] ml-2">
-          {step === 5 ? "Submitted" : `Step ${step} of 4`}
+          {step === 6 ? "Submitted" : `Step ${step} of 5`}
         </span>
       </div>
 
       <div className="flex-1">
         {step === 1 && <PickAgentStep selected={form.agentId} onSelect={setAgent} />}
         {step === 2 && <DetailsStep form={form} onChange={updateForm} />}
-        {step === 3 && <PricingStep form={form} onChange={updateForm} />}
-        {step === 4 && <ReviewStep form={form} />}
-        {step === 5 && <SuccessStep onViewMine={() => setView("mine")} />}
+        {step === 3 && <BundleStep form={form} onChange={updateForm} />}
+        {step === 4 && <PricingStep form={form} onChange={updateForm} />}
+        {step === 5 && <ReviewStep form={form} />}
+        {step === 6 && <SuccessStep onViewMine={() => setView("mine")} />}
       </div>
 
-      {step <= 4 && (
+      {step <= 5 && (
         <div className="flex justify-between gap-2 pt-3 mt-4 border-t border-[#e0dbd0]">
           <button
             type="button"
@@ -179,7 +191,7 @@ export function PublishWizard() {
               disabled={!canContinue() || submitting}
               className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold disabled:opacity-50"
             >
-              {step === 4 ? "Submit for review →" : "Continue →"}
+              {step === 5 ? "Submit for review →" : "Continue →"}
             </button>
           </div>
         </div>

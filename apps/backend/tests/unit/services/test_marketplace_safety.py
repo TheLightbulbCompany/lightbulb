@@ -90,3 +90,61 @@ def test_to_rejection_notes_empty_when_no_high_findings():
         ),
     ]
     assert marketplace_safety.to_rejection_notes(flags) == ""
+
+
+# ---------------------------------------------------------------------------
+# Persona-file scanning (added 2026-05-11)
+# Persona files (IDENTITY.md, SOUL.md, USER.md, BOOTSTRAP.md, MEMORY.md)
+# ride along in the marketplace tarball. Sellers author them by hand —
+# anything from emails to phone numbers to pasted API keys can land in
+# them. The "persona" format runs PII-shaped patterns + the existing
+# credential patterns so the wizard's Review step can surface findings
+# inline (same trust-seller posture used for env-var leak detection
+# elsewhere).
+# ---------------------------------------------------------------------------
+
+
+def test_persona_email_address_flagged():
+    flags = marketplace_safety.scan({"USER.md": b"## About\n- Email: alice@example.com\n"}, format="persona")
+    assert any(f.pattern == "email-address" for f in flags)
+
+
+def test_persona_phone_number_flagged():
+    flags = marketplace_safety.scan({"USER.md": b"## Contact\nPhone: +1 (555) 867-5309\n"}, format="persona")
+    assert any(f.pattern == "phone-number" for f in flags)
+
+
+def test_persona_inherits_credential_patterns():
+    """A pasted AWS key in MEMORY.md or USER.md must still flag."""
+    flags = marketplace_safety.scan({"MEMORY.md": b"My old key was AKIAIOSFODNN7EXAMPLE\n"}, format="persona")
+    assert any(f.pattern == "aws-secret-key" and f.severity == "high" for f in flags)
+
+
+def test_persona_inherits_hardcoded_secret_pattern():
+    flags = marketplace_safety.scan(
+        {"MEMORY.md": b'I noted that apiKey = "abc12345defghi67890jklmn"'},
+        format="persona",
+    )
+    assert any(f.pattern == "hardcoded-secret" and f.severity == "high" for f in flags)
+
+
+def test_persona_format_skips_code_injection_only_patterns():
+    """``process.env.X = '...'`` and ``fs.writeFileSync('/etc/...', …)`` are
+    openclaw-only patterns; they should not fire on persona MD files.
+    """
+    flags = marketplace_safety.scan(
+        {"USER.md": b"Here is a doc string: process.env.FOO = 'bar'\n"},
+        format="persona",
+    )
+    assert all(f.pattern != "process-env-write" for f in flags)
+
+
+def test_persona_clean_content_produces_no_flags():
+    flags = marketplace_safety.scan(
+        {
+            "IDENTITY.md": b"# IDENTITY.md\n\nI am an agent who helps with research.\n",
+            "SOUL.md": b"# SOUL.md\n\nI am thoughtful and concise.\n",
+        },
+        format="persona",
+    )
+    assert flags == []

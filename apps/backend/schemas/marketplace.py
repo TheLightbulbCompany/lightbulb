@@ -95,8 +95,33 @@ class ArtifactUploadResponse(BaseModel):
     bytes: int
 
 
+class BundleSelection(BaseModel):
+    """Seller's explicit choice of MCPs and skills to include in a listing.
+
+    Sent by the publish wizard's Bundle step. Empty lists (or None at the
+    parent ``ArtifactFromAgentRequest`` level) mean "don't bundle anything"
+    — the listing ships the agent's workspace files only and the buyer's
+    openclaw.json isn't touched for MCPs/skills.
+    """
+
+    mcps: list[str] = Field(default_factory=list, max_length=64)
+    skills: list[str] = Field(default_factory=list, max_length=128)
+
+
 class ArtifactFromAgentRequest(BaseModel):
     agent_id: str = Field(..., min_length=4, max_length=64)
+    bundle: BundleSelection | None = None
+
+
+class AvailableSkill(BaseModel):
+    """A skill referenced by the seller's agent + where it lives."""
+
+    name: str
+    # Mirrors core.services.catalog_slice.SkillBucket — keep in sync.
+    bucket: Literal["bundled", "entries", "workspace", "extra_dirs", "unknown"]
+
+
+# ArtifactPreviewResponse is defined below SafetyFlag — it references that type.
 
 
 class PurchaseSummary(BaseModel):
@@ -160,3 +185,20 @@ class ListingPreviewResponse(BaseModel):
     skill_md_text: str | None = None
     openclaw_summary: OpenclawSummary | None = None
     safety_flags: list[SafetyFlag]
+
+
+class ArtifactPreviewResponse(BaseModel):
+    """Dry-run preview of the artifact the seller would publish.
+
+    Drives the publish wizard's Bundle step (MCP / skill checkboxes with
+    bucket tags) and Review step (manifest breakdown + safety_flags).
+    Computed by snapshotting the agent's EFS dir (no S3 upload, no DDB
+    write) so the seller sees exactly what will ship before they submit.
+    """
+
+    agent_id: str
+    available_mcps: list[str] = Field(default_factory=list)
+    available_skills: list[AvailableSkill] = Field(default_factory=list)
+    persona_files: list[str] = Field(default_factory=list)
+    safety_flags: list[SafetyFlag] = Field(default_factory=list)
+    needs_config_patch: bool = False

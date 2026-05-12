@@ -13,9 +13,10 @@ vi.mock("@/components/marketplace/drawer/wizardSteps", () => ({
   DetailsStep: ({ form }: { form: { name: string; tagline: string } }) => (
     <div>step2 — name={form.name} tag={form.tagline}</div>
   ),
-  PricingStep: () => <div>step3</div>,
-  ReviewStep: () => <div>step4</div>,
-  SuccessStep: () => <div>step5</div>,
+  BundleStep: () => <div>step3-bundle</div>,
+  PricingStep: () => <div>step4-pricing</div>,
+  ReviewStep: () => <div>step5-review</div>,
+  SuccessStep: () => <div>step6-success</div>,
 }));
 
 const setView = vi.fn();
@@ -63,13 +64,14 @@ describe("PublishWizard", () => {
     expect(setView).toHaveBeenCalledWith("browse");
   });
 
-  it("Step 4 Continue text is 'Submit for review'", async () => {
+  it("Step 5 (Review) Continue text is 'Submit for review'", async () => {
     const user = userEvent.setup();
     render(<PublishWizard />);
     await user.click(screen.getByText("pick"));
     await user.click(screen.getByRole("button", { name: /continue/i })); // → step 2
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3 (Bundle)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4 (Pricing)
+    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 5 (Review)
     expect(screen.getByRole("button", { name: /submit for review/i })).toBeInTheDocument();
   });
 });

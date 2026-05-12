@@ -107,6 +107,53 @@ describe("ContainerStack — dev", () => {
       ]),
     });
   });
+
+  test("openclaw container migrates legacy /home/node/.openclaw/browser and symlinks it to ephemeral storage", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          // ECS Command array for command=["sh","-c",<startupCommand>]
+          // renders as exactly those three array elements in synthesized
+          // CFN. Three ordered segments separated by `.*`:
+          //   1) the archive-rename guard for a legacy REAL directory
+          //   2) the actual mv to a timestamped archive path
+          //   3) mkdir + symlink to ephemeral /tmp/openclaw-browser
+          //      then directly `exec node` to launch the gateway
+          //      (no pre-step `clawhub install` anymore — markdown-
+          //      converter wasn't needed and was bloating cold-start).
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(
+              "^\\[ -e /home/node/\\.openclaw/browser \\] && \\[ ! -L /home/node/\\.openclaw/browser \\].*"
+              + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*"
+              + "mkdir -p /tmp/openclaw-browser && ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser.*"
+              + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
+            ),
+          ],
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw container startup no longer runs `clawhub install markdown-converter`", () => {
+    // Standalone assertion (independent of the symlink ordering) so
+    // future refactors of the command can't accidentally re-introduce
+    // the markdown-converter install.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: Match.not(
+            Match.arrayWith([Match.stringLikeRegexp("clawhub install markdown-converter")]),
+          ),
+        }),
+      ]),
+    });
+  });
 });
 
 describe("ContainerStack — prod", () => {

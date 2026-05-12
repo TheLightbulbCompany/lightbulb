@@ -93,6 +93,20 @@ describe("ContainerStack — dev", () => {
       ]),
     });
   });
+
+  test("openclaw container enables Fargate init process for zombie reaping", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          LinuxParameters: Match.objectLike({
+            InitProcessEnabled: true,
+          }),
+        }),
+      ]),
+    });
+  });
 });
 
 describe("ContainerStack — prod", () => {

@@ -108,6 +108,62 @@ jobs:
       - name: Vendor browser sidecar (${{ matrix.rust-target }})
         run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh ${{ matrix.rust-target }}
 
+      # We import the Developer ID Application cert ourselves (rather
+      # than letting tauri-action do it) because we need the cert in
+      # the keychain BEFORE tauri-action runs, so we can pre-sign the
+      # vendored native modules under bin/openclaw-host-*/node_modules
+      # in the next step. tauri-action then uses the same keychain
+      # for its own signing of the outer .app + DMG.
+      - name: Set up signing keychain
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/isol8-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          # Prepend our keychain to the user search list (existing
+          # keychains are preserved so codesign can still find system roots).
+          security list-keychain -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychain -d user | tr -d '" \t')
+          # Grant codesign/security tools access without an interactive
+          # password prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          rm -f "$CERT_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "Identity in keychain:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      # Apple's notary rejects bundles containing any unsigned Mach-O.
+      # Tauri signs the outer .app + the binaries it produces itself,
+      # but the vendored openclaw npm package ships prebuilt-unsigned
+      # native modules (.node / .dylib / .so under node_modules/) that
+      # need to be signed before bundle assembly. Sign them all with
+      # the same Developer ID + hardened runtime + secure timestamp.
+      - name: Pre-sign embedded native modules
+        run: |
+          set -euo pipefail
+          SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+          BIN_ROOT="apps/desktop/src-tauri/bin"
+          count=0
+          while IFS= read -r f; do
+            codesign --force --options runtime --timestamp \
+              --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
+            count=$((count + 1))
+          done < <(find "$BIN_ROOT" -type f \
+            \( -name "*.node" -o -name "*.dylib" -o -name "*.so" \))
+          echo "Signed $count native modules."
+
       - name: Build desktop app (${{ matrix.rust-target }})
         uses: tauri-apps/tauri-action@v0
         with:
@@ -119,13 +175,12 @@ jobs:
           args: --target ${{ matrix.rust-target }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # tauri-action creates a temp keychain, imports the base64-
-          # encoded p12 via APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD,
-          # signs with the identity already in tauri.conf.json, then
-          # notarizes via APPLE_ID + APPLE_PASSWORD (app-specific) +
-          # APPLE_TEAM_ID. Same flow for dev and prod tags.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD are
+          # intentionally NOT passed here — we set up the keychain in
+          # the earlier step so we could also pre-sign nested native
+          # modules. tauri-action sees no APPLE_CERTIFICATE and skips
+          # its own keychain setup; codesign then uses our keychain
+          # via the user search list.
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

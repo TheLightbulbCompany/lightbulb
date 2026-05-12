@@ -478,6 +478,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "done") {
         const runId = msg.runId;
         finalizeBubble(runId);
+        // Upstream pattern: only clear the user-turn busy flag when the
+        // terminal event matches OUR clientRunId. Sub-run dones (different
+        // runId) only finalize their bubble. See
+        // ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:769-770.
+        if (runId === clientRunIdRef.current) {
+          clientRunIdRef.current = null;
+        }
         return;
       }
 
@@ -536,6 +543,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             }
           }
           setError(displayError);
+          // Clear the busy gate if this error pertains to the user's turn.
+          // Scoped error with matching runId, or global error (no runId)
+          // both terminate the user turn.
+          if (!msg.runId || msg.runId === clientRunIdRef.current) {
+            clientRunIdRef.current = null;
+          }
           return;
         }
 
@@ -555,6 +568,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // Close the window for late stragglers whose runId we never saw.
         pendingCancelRef.current = true;
         setIsStreaming(false);
+        // Clear the busy gate if this error pertains to the user's turn.
+        // Scoped error with matching runId, or global error (no runId)
+        // both terminate the user turn.
+        if (!msg.runId || msg.runId === clientRunIdRef.current) {
+          clientRunIdRef.current = null;
+        }
         return;
       }
 
@@ -763,6 +782,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     [sendChat],
   );
 
+  // Drain queued messages one at a time on busy→idle transitions.
+  // We track the previous value of clientRunIdRef in a ref so a simple
+  // effect can detect the falling edge without polling.
+  const prevClientRunIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevClientRunIdRef.current;
+    const curr = clientRunIdRef.current;
+    prevClientRunIdRef.current = curr;
+    if (prev !== null && curr === null && queuedMessagesRef.current.length > 0) {
+      const next = queuedMessagesRef.current[0];
+      setQueuedMessages((q) => q.slice(1));
+      void dispatchNow(next.text);
+    }
+  });
+
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {
       pendingCancelRef.current = false;
@@ -832,6 +866,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     // finalizeAllActiveRuns had no runIds to tombstone, so the next late
     // first-event would spawn a ghost bubble without this flag.
     pendingCancelRef.current = true;
+    // Cancel terminates the current user-turn. Queue is NOT cleared —
+    // upstream behavior is that abort only stops the active run; queued
+    // follow-ups keep draining. Users can clearQueue() explicitly if
+    // they want everything gone.
+    clientRunIdRef.current = null;
   }, [isStreaming, sendReq, sessionName, finalizeAllActiveRuns]);
 
   // ---- Clear messages ----

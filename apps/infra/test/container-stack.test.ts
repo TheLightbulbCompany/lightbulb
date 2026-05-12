@@ -70,6 +70,29 @@ describe("ContainerStack — dev", () => {
       }),
     });
   });
+
+  test("openclaw container has a /healthz healthcheck on port 18789", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          HealthCheck: {
+            Command: [
+              "CMD-SHELL",
+              Match.stringLikeRegexp(
+                "fetch\\('http://127\\.0\\.0\\.1:18789/healthz'\\)",
+              ),
+            ],
+            Interval: 30,
+            Timeout: 5,
+            Retries: 3,
+            StartPeriod: 120,
+          },
+        }),
+      ]),
+    });
+  });
 });
 
 describe("ContainerStack — prod", () => {

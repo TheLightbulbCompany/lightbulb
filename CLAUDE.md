@@ -494,7 +494,7 @@ React 19, Tailwind CSS v4, Clerk auth, Framer Motion, SWR, lucide-react icons.
 | `/teams` | Teams Inbox surface — agents, threads, messages, channels (Clerk-protected; consumes `routers/teams/` BFF) |
 | `/onboarding` | Post-signup provisioning flow (Clerk-protected) |
 | `/settings` | Settings layout (Clerk-protected) |
-| `/admin` | Admin surface — accessible only via allowed admin hosts (`admin.isol8.co`, `admin-dev.isol8.co`); 404s on non-admin hosts |
+| `/admin` | Admin surface — accessible only via allowed admin hosts (`admin.isol8.co`, `admin.dev.isol8.co`, `admin.localhost:3000`); 404s on non-admin hosts. Allowlist lives in `apps/frontend/src/middleware.ts`. |
 | `/sign-in`, `/sign-up` | Clerk auth pages |
 | `/auth/desktop-callback` | Desktop app OAuth callback |
 | `/privacy`, `/terms`, `/support` | Static marketing pages |

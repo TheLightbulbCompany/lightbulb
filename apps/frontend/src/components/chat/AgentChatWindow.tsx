@@ -237,6 +237,9 @@ export function AgentChatWindow({
     clearMessages,
     isLoadingHistory,
     needsBootstrap,
+    queuedMessages,
+    removeQueuedMessage,
+    clearQueue,
   } = useAgentChat(agentId, sessionName);
 
   const { agents } = useAgents();
@@ -324,7 +327,16 @@ export function AgentChatWindow({
           </div>
           <StreamingStatusBar isStreaming={isStreaming} messages={messages} />
           <ExecApprovalCards />
-          <ChatInput onSend={handleSend} onStop={cancelMessage} disabled={isTyping} isStreaming={isStreaming} isUploading={isUploading} />
+          <ChatInput
+            onSend={handleSend}
+            onStop={cancelMessage}
+            disabled={!agentId}
+            isStreaming={isStreaming}
+            isUploading={isUploading}
+            queuedMessages={queuedMessages}
+            onRemoveQueued={removeQueuedMessage}
+            onClearQueue={clearQueue}
+          />
         </div>
       </div>
     );
@@ -362,11 +374,14 @@ export function AgentChatWindow({
             <ChatInput
               onSend={handleSend}
               onStop={cancelMessage}
-              disabled={isTyping || !agentId}
+              disabled={!agentId}
               isStreaming={isStreaming}
               centered
               isUploading={isUploading}
               suggestedMessage={needsBootstrap ? BOOTSTRAP_MESSAGE : undefined}
+              queuedMessages={queuedMessages}
+              onRemoveQueued={removeQueuedMessage}
+              onClearQueue={clearQueue}
             />
           </div>
         </div>
@@ -383,9 +398,12 @@ export function AgentChatWindow({
       <ChatInput
         onSend={handleSend}
         onStop={cancelMessage}
-        disabled={isTyping}
+        disabled={!agentId}
         isStreaming={isStreaming}
         isUploading={isUploading}
+        queuedMessages={queuedMessages}
+        onRemoveQueued={removeQueuedMessage}
+        onClearQueue={clearQueue}
       />
     </div>
   );

@@ -107,7 +107,7 @@ class TestContainerRecover:
         assert response.status_code == 200
         data = response.json()
         assert data["action"] == "gateway_restart"
-        assert data["state"] == "GATEWAY_DOWN"
+        assert data["state"] == "GATEWAY_DOWN_DEAD"
 
     @pytest.mark.asyncio
     async def test_recover_gateway_down_escalates_to_reprovision(

@@ -9,7 +9,11 @@ const DOT_STYLES: Record<HealthState, string> = {
   HEALTHY: "bg-[#2d8a4e]",
   STARTING: "bg-yellow-500 animate-pulse",
   RECOVERING: "bg-yellow-500 animate-pulse",
-  GATEWAY_DOWN: "bg-red-500",
+  // GATEWAY_BUSY = parked backend WS, agent still working. Calm yellow with
+  // a pulse so the user sees motion (the run is alive); NOT the red alarm
+  // we used to show during a normal long Bedrock turn.
+  GATEWAY_BUSY: "bg-yellow-500 animate-pulse",
+  GATEWAY_DOWN_DEAD: "bg-red-500",
   CONTAINER_DOWN: "bg-red-500",
 };
 
@@ -17,7 +21,8 @@ const LABEL_STYLES: Record<HealthState, string> = {
   HEALTHY: "text-[#8a8578]",
   STARTING: "text-yellow-600",
   RECOVERING: "text-yellow-600",
-  GATEWAY_DOWN: "text-red-500",
+  GATEWAY_BUSY: "text-yellow-600",
+  GATEWAY_DOWN_DEAD: "text-red-500",
   CONTAINER_DOWN: "text-red-500",
 };
 
@@ -64,7 +69,9 @@ export function HealthIndicator({
             ? reason
             : state === "STARTING"
               ? "Starting..."
-              : reason}
+              : state === "GATEWAY_BUSY"
+                ? "Agent thinking..."
+                : reason}
       </span>
 
       {/* Action button */}

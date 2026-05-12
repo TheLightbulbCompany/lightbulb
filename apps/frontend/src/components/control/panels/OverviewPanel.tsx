@@ -393,7 +393,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
               className={cn(
                 "h-2.5 w-2.5 rounded-full",
                 healthState === "HEALTHY" ? "bg-[#2d8a4e]" :
-                healthState === "STARTING" || healthState === "RECOVERING" ? "bg-yellow-500 animate-pulse" :
+                healthState === "STARTING" || healthState === "RECOVERING" || healthState === "GATEWAY_BUSY" ? "bg-yellow-500 animate-pulse" :
                 "bg-red-500"
               )}
             />
@@ -401,7 +401,8 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
               {healthState === "HEALTHY" ? "System Healthy" :
                healthState === "STARTING" ? "Starting..." :
                healthState === "RECOVERING" ? "Recovering..." :
-               healthState === "GATEWAY_DOWN" ? "Gateway Down" :
+               healthState === "GATEWAY_BUSY" ? "Agent Thinking" :
+               healthState === "GATEWAY_DOWN_DEAD" ? "Gateway Down" :
                "Container Down"}
             </span>
           </div>

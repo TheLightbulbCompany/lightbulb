@@ -20,6 +20,12 @@ def conn():
     c._pending_rpcs = {}
     c._management_api = MagicMock()
     c._billing_tasks = set()
+    # Active-run tracking state (see _on_reader_loop_exit). These are set by
+    # __init__ in real usage; tests that use __new__ to bypass init have to
+    # populate them by hand.
+    c._active_runs = {}
+    c._parked = False
+    c._parked_watchdog_task = None
     return c
 
 

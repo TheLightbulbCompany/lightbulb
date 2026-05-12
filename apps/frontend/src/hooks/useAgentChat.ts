@@ -786,6 +786,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // We track the previous value of clientRunIdRef in a ref so a simple
   // effect can detect the falling edge without polling.
   const prevClientRunIdRef = useRef<string | null>(null);
+  // Deliberate no-deps effect: must run after every render so the ref-based
+  // falling-edge detector catches the busy→idle transition. The work is
+  // O(1) (two ref reads + comparison) when no transition occurred. Mirrors
+  // the pattern at apps/frontend/src/hooks/useChatGPTOAuth.ts:167.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const prev = prevClientRunIdRef.current;
     const curr = clientRunIdRef.current;

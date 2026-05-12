@@ -147,9 +147,11 @@ jobs:
       # Apple's notary rejects bundles containing any unsigned Mach-O.
       # Tauri signs the outer .app + the binaries it produces itself,
       # but the vendored openclaw npm package ships prebuilt-unsigned
-      # native modules (.node / .dylib / .so under node_modules/) that
-      # need to be signed before bundle assembly. Sign them all with
-      # the same Developer ID + hardened runtime + secure timestamp.
+      # native code under node_modules/ — both files with predictable
+      # extensions (.node / .dylib / .so) AND bare-name executables
+      # like @lydell/node-pty's `spawn-helper`. Detect every Mach-O
+      # via `file` rather than extension-matching, then sign each one
+      # with the same Developer ID + hardened runtime + secure timestamp.
       - name: Pre-sign embedded native modules
         run: |
           set -euo pipefail
@@ -157,12 +159,17 @@ jobs:
           BIN_ROOT="apps/desktop/src-tauri/bin"
           count=0
           while IFS= read -r f; do
-            codesign --force --options runtime --timestamp \
-              --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
-            count=$((count + 1))
-          done < <(find "$BIN_ROOT" -type f \
-            \( -name "*.node" -o -name "*.dylib" -o -name "*.so" \))
-          echo "Signed $count native modules."
+            # `file` may report "Mach-O 64-bit executable arm64",
+            # "Mach-O 64-bit bundle arm64", "Mach-O 64-bit dynamically
+            # linked shared library arm64", or "Mach-O universal
+            # binary with 2 architectures". One substring covers all.
+            if file -b "$f" | grep -q "Mach-O"; then
+              codesign --force --options runtime --timestamp \
+                --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
+              count=$((count + 1))
+            fi
+          done < <(find "$BIN_ROOT" -type f)
+          echo "Signed $count Mach-O binaries under $BIN_ROOT."
 
       - name: Build desktop app (${{ matrix.rust-target }})
         uses: tauri-apps/tauri-action@v0

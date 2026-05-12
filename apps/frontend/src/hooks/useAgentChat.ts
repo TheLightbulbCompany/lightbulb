@@ -101,6 +101,18 @@ export interface AgentMessage {
   errorCode?: string;
 }
 
+/**
+ * A user-typed message that arrived while a previous turn was still in
+ * flight. Held in `queuedMessages` and drained one-at-a-time on the
+ * busy→idle transition. Mirrors upstream OpenClaw control-ui's chat
+ * queue (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217).
+ */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  createdAt: number;
+}
+
 export const BOOTSTRAP_MESSAGE =
   "Hello! Please run Bootstrap.md — I'd love to learn about everyday life use cases where you can be helpful and automate work for me.";
 
@@ -114,6 +126,11 @@ export interface UseAgentChatReturn {
   isConnected: boolean;
   isLoadingHistory: boolean;
   needsBootstrap: boolean;
+  // ↓ new: chat-queue surface, mirrors upstream OpenClaw control-ui
+  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217,420-426).
+  queuedMessages: QueuedMessage[];
+  removeQueuedMessage: (id: string) => void;
+  clearQueue: () => void;
 }
 
 interface InternalMessage {
@@ -213,6 +230,33 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // can read the current agent id without TS "used before declaration"
   // complaints. Kept in sync by the effect further down.
   const agentIdRef = useRef(agentId);
+
+  // Upstream pattern: one client-assigned UUID per user-initiated chat.send.
+  // Cleared only on the chat.final / aborted / error event whose runId
+  // matches this UUID. Distinct from runsRef (per-bubble) — they are
+  // orthogonal: bubbles are for display, this flag is for send gating.
+  // See ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:627-770.
+  const clientRunIdRef = useRef<string | null>(null);
+
+  // Frontend chat queue: when the user types while clientRunIdRef.current
+  // is set (user-turn in progress), new sends push here instead of firing
+  // immediately. Drained one-at-a-time on the busy→idle transition. Mirrors
+  // ~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217,388-417.
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const queuedMessagesRef = useRef<QueuedMessage[]>([]);
+  // Keep the ref in sync so setMessages-style updates can read fresh state
+  // from inside event handler callbacks without stale-closure bugs.
+  useEffect(() => {
+    queuedMessagesRef.current = queuedMessages;
+  }, [queuedMessages]);
+
+  const removeQueuedMessage = useCallback((id: string) => {
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    setQueuedMessages([]);
+  }, []);
 
   const getOrCreateBubble = useCallback((runId: string): string | null => {
     // Cancel-before-first-event race: if the user hit Stop/Clear BEFORE any
@@ -819,5 +863,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     isConnected,
     isLoadingHistory,
     needsBootstrap,
+    queuedMessages,
+    removeQueuedMessage,
+    clearQueue,
   };
 }

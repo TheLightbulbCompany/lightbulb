@@ -394,6 +394,18 @@ export class ContainerStack extends cdk.Stack {
         // positives during cold provisioning.
         startPeriod: cdk.Duration.seconds(120),
       },
+      // Inject Fargate's init process (tini-equivalent) as PID 1. The
+      // openclaw container runs `sh -c "... ; exec node ..."` so Node
+      // would otherwise be PID 1, and Node doesn't reap orphan children
+      // by default. When chromium subprocesses' immediate parent dies
+      // and they get re-parented to PID 1 — which is exactly what we
+      // observed in the 2026-05-11 wedge (51 chrome/crashpad zombies
+      // with ppid=1) — init reaps them unconditionally regardless of
+      // whether Node's event loop is responsive. Does NOT prevent the
+      // NFS wedge itself; pairs with the chromium-tmpfs PR for that.
+      linuxParameters: new ecs.LinuxParameters(this, "OpenclawLinuxParams", {
+        initProcessEnabled: true,
+      }),
     });
 
     // Mount EFS workspace — OpenClaw reads openclaw.json and agent files from here

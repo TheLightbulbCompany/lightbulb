@@ -65,16 +65,9 @@ jobs:
       - name: Resolve target environment
         id: env
         run: |
-          # Dev URLs append a Vercel deployment-protection bypass so the
-          # embedded webview can walk past the auth wall on first load
-          # (cookie persists via x-vercel-set-bypass-cookie=true). The
-          # secret is treated as low-sensitivity by Vercel and is OK to
-          # ship in an internal-testing binary — Clerk still gates /chat
-          # behind real auth. Prod URLs are unprotected so no bypass.
-          DEV_BYPASS_QS="?x-vercel-protection-bypass=${VERCEL_AUTOMATION_BYPASS_SECRET}&x-vercel-set-bypass-cookie=true"
           if [[ "${GITHUB_REF}" == refs/tags/desktop-dev-v* ]]; then
             echo "target_env=dev" >> "$GITHUB_OUTPUT"
-            echo "frontend_url=https://dev.isol8.co/chat${DEV_BYPASS_QS}" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=https://dev.isol8.co/chat" >> "$GITHUB_OUTPUT"
             echo "callback_url=https://dev.isol8.co/auth/desktop-callback" >> "$GITHUB_OUTPUT"
             echo "release_name=Isol8 Desktop [DEV] ${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           elif [[ "${GITHUB_REF}" == refs/tags/desktop-v* ]]; then
@@ -87,12 +80,10 @@ jobs:
             # so we never accidentally ship a prod-pointing binary from
             # a non-tag trigger.
             echo "target_env=dev" >> "$GITHUB_OUTPUT"
-            echo "frontend_url=https://dev.isol8.co/chat${DEV_BYPASS_QS}" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=https://dev.isol8.co/chat" >> "$GITHUB_OUTPUT"
             echo "callback_url=https://dev.isol8.co/auth/desktop-callback" >> "$GITHUB_OUTPUT"
             echo "release_name=Isol8 Desktop [DEV] dispatch" >> "$GITHUB_OUTPUT"
           fi
-        env:
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
 
       - name: Patch tauri.conf.json for ${{ steps.env.outputs.target_env }}
         run: |

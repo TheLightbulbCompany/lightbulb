@@ -350,12 +350,29 @@ export class ContainerStack extends cdk.Stack {
     //
     // Cold-start: was ~5s with clawhub pre-install, drops slightly
     // further now that we skip the markdown-converter step.
+    // Failure semantics: each step that MUST succeed is suffixed with
+    // `|| exit 1` so the container fails fast and ECS replaces it
+    // rather than silently degrading. Naïve `set -e` or
+    // `&&`-everywhere would break the happy path because Step A's
+    // `[ -e ] && [ ! -L ]` legitimately returns non-zero on the
+    // steady-state case (path is already a symlink → no migration
+    // needed). The conditional migration uses `{ ... ; }` (command
+    // group in the same shell, NOT a subshell — `exit 1` inside a
+    // subshell would only exit the subshell and the parent would
+    // continue, defeating the purpose). Without these guards, an NFS
+    // hiccup that fails `mv` would let Step B's `ln -sfn` silently
+    // nest the symlink inside the legacy real directory (empirically
+    // verified: `ln -sfn target real-dir` exits 0 and creates
+    // `real-dir/target -> ...` rather than replacing `real-dir`),
+    // shipping a no-op that LOOKS deployed.
     const startupCommand = [
-      // Step A — migration. POSIX-sh: `[ ... ]`, `&&`, `$(...)` are all
-      // portable to `sh -c` (the container's command shell).
-      "[ -e /home/node/.openclaw/browser ] && [ ! -L /home/node/.openclaw/browser ] && mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-$(date +%s) 2>/dev/null",
+      // Step A — migration. POSIX-sh: `[ ... ]`, `&&`, `$(...)`,
+      // and `{ ... ; }` are all portable to `sh -c`. The trailing
+      // `; ` inside `{ ... ; }` is required by POSIX shell syntax.
+      "[ -e /home/node/.openclaw/browser ] && [ ! -L /home/node/.openclaw/browser ] && { mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-$(date +%s) || exit 1; }",
       // Step B — symlink chromium user-data to ephemeral task storage.
-      "mkdir -p /tmp/openclaw-browser && ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser",
+      "mkdir -p /tmp/openclaw-browser || exit 1",
+      "ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1",
       // Step C — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");

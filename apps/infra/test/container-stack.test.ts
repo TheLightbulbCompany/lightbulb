@@ -127,9 +127,15 @@ describe("ContainerStack — dev", () => {
             "sh",
             "-c",
             Match.stringLikeRegexp(
+              // Migration step + mandatory `|| exit 1` on each required
+              // action so an NFS hiccup that fails `mv` doesn't let
+              // Step B silently nest the symlink inside the legacy real
+              // directory. `\\|` escapes the regex alternation operator
+              // so we match a literal `|`.
               "^\\[ -e /home/node/\\.openclaw/browser \\] && \\[ ! -L /home/node/\\.openclaw/browser \\].*"
-              + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*"
-              + "mkdir -p /tmp/openclaw-browser && ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser.*"
+              + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*\\|\\| exit 1.*"
+              + "mkdir -p /tmp/openclaw-browser \\|\\| exit 1.*"
+              + "ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser \\|\\| exit 1.*"
               + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
             ),
           ],

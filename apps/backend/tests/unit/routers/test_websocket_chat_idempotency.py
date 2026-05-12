@@ -62,10 +62,11 @@ async def test_client_run_id_is_forwarded_as_idempotency_key():
 
 
 @pytest.mark.asyncio
-async def test_missing_client_run_id_does_not_add_idempotency_key():
-    """Backwards-compat: old frontend clients that don't send clientRunId
-    still work — the backend just omits idempotencyKey, and OpenClaw
-    assigns its own runId (existing behavior). Same shape as today."""
+async def test_missing_client_run_id_falls_back_to_backend_minted_uuid():
+    """Backwards-compat: when the frontend doesn't send clientRunId, the
+    backend mints its own UUID so OpenClaw's chat.send always has an
+    idempotencyKey (preserves the historical contract — see
+    ~/Desktop/openclaw/src/gateway/server-methods/chat.ts:2037-2052)."""
 
     fake_pool = MagicMock()
     fake_pool.send_rpc = AsyncMock(return_value={"ok": True})
@@ -104,4 +105,9 @@ async def test_missing_client_run_id_does_not_add_idempotency_key():
     ]
     assert len(chat_send_calls) == 1
     params = chat_send_calls[0].kwargs["params"]
-    assert "idempotencyKey" not in params
+    # Backend mints a UUID — assert presence + valid UUID format.
+    assert "idempotencyKey" in params
+    assert isinstance(params["idempotencyKey"], str)
+    # uuid4 hex form with dashes: 8-4-4-4-12
+    assert len(params["idempotencyKey"]) == 36
+    assert params["idempotencyKey"].count("-") == 4

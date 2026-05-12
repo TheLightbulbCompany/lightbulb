@@ -942,9 +942,9 @@ async def _process_agent_chat_background(
     client_run_id (optional): frontend-minted UUID for this user turn.
     When provided, forwarded to OpenClaw's chat.send as ``idempotencyKey``
     so the frontend can match the eventual chat.final / aborted / error
-    event back to the originating send (used to drain the client-side
-    chat queue). Absent → OpenClaw assigns its own runId, matching the
-    pre-clientRunId behavior; existing callers stay backwards-compatible.
+    event back to the originating send (drains the client-side chat queue).
+    Absent → backend mints a UUID instead so the chat.send call always
+    carries an idempotencyKey (preserves upstream's dedupe contract).
     """
     logger.info(
         "[%s] chat.send START agent=%s owner=%s conn=%s msg_len=%d",
@@ -1079,16 +1079,21 @@ async def _process_agent_chat_background(
         # race where the same sessionKey starts a fresh run.
         pool.mark_run_active(owner_id, session_key, agent_id)
 
+        # Idempotency key for OpenClaw's chat.send. We always send one so
+        # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`) and
+        # in-flight detection (`context.chatAbortControllers.get(clientRunId)`)
+        # in ~/Desktop/openclaw/src/gateway/server-methods/chat.ts:2037-2052
+        # have a stable key to match against. When the frontend supplies
+        # `clientRunId`, we use it so the frontend can correlate the eventual
+        # chat.final back to its send (drives the local chat queue drain).
+        # When absent (old client), we mint a backend UUID — matches the
+        # pre-clientRunId behavior. Upstream chat.ts:2174 calls
+        # `context.addChatRun(clientRunId, ...)` with whichever value we pass.
         chat_send_params: dict[str, str] = {
             "sessionKey": session_key,
             "message": message,
+            "idempotencyKey": client_run_id or str(uuid4()),
         }
-        if client_run_id:
-            # Upstream chat.ts:2174 calls `context.addChatRun(clientRunId, ...)`
-            # — this makes our UUID the run identifier. The frontend's
-            # clientRunIdRef matches against the runId on the chat.final
-            # event to know when the user-turn truly ended.
-            chat_send_params["idempotencyKey"] = client_run_id
 
         result = await pool.send_rpc(
             user_id=owner_id,

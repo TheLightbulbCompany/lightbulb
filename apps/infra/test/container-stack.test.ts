@@ -107,6 +107,59 @@ describe("ContainerStack — dev", () => {
       ]),
     });
   });
+
+  test("openclaw container migrates legacy /home/node/.openclaw/browser and symlinks it to ephemeral storage", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          // ECS Command array for command=["sh","-c",<startupCommand>]
+          // renders as exactly those three array elements in synthesized
+          // CFN. Three ordered segments separated by `.*`:
+          //   1) the archive-rename guard for a legacy REAL directory
+          //   2) the actual mv to a timestamped archive path
+          //   3) mkdir + symlink to ephemeral /tmp/openclaw-browser
+          //      then directly `exec node` to launch the gateway
+          //      (no pre-step `clawhub install` anymore — markdown-
+          //      converter wasn't needed and was bloating cold-start).
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(
+              // Migration step + mandatory `|| exit 1` on each required
+              // action so an NFS hiccup that fails `mv` doesn't let
+              // Step B silently nest the symlink inside the legacy real
+              // directory. `\\|` escapes the regex alternation operator
+              // so we match a literal `|`.
+              "^\\[ -e /home/node/\\.openclaw/browser \\] && \\[ ! -L /home/node/\\.openclaw/browser \\].*"
+              + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*\\|\\| exit 1.*"
+              + "mkdir -p /tmp/openclaw-browser \\|\\| exit 1.*"
+              + "ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser \\|\\| exit 1.*"
+              + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
+            ),
+          ],
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw container startup no longer runs `clawhub install markdown-converter`", () => {
+    // Standalone assertion (independent of the symlink ordering) so
+    // future refactors of the command can't accidentally re-introduce
+    // the markdown-converter install.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: Match.not(
+            Match.arrayWith([Match.stringLikeRegexp("clawhub install markdown-converter")]),
+          ),
+        }),
+      ]),
+    });
+  });
 });
 
 describe("ContainerStack — prod", () => {

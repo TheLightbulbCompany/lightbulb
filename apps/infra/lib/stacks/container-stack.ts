@@ -311,14 +311,69 @@ export class ContainerStack extends cdk.Stack {
     // no SSM coupling needed and the cache-at-startup bug class is gone.
 
     // Startup command — almost everything (apt packages, pip, npm globals,
-    // gh, uv) is now baked into the extended OpenClaw image. We only:
-    //   1. Install markdown-converter via clawhub (lives at clawhub.com,
-    //      not bundled in the image — landing dir comes from
-    //      CLAWHUB_WORKDIR=/home/node/.openclaw, set as a container env var).
-    //   2. Launch the gateway.
-    // Cold-start drops from ~30s to ~5s.
+    // gh, uv) is baked into the extended OpenClaw image. The boot sequence:
+    //
+    // Step A (migration): rename a legacy real `~/.openclaw/browser`
+    // directory aside. This handles the first boot per per-user EFS
+    // access point after this change deploys — without it, Step B's
+    // `ln -sfn` would silently nest a symlink inside the existing
+    // real directory (empirically verified: `ln -sfn target real-dir`
+    // exits 0 with no error and creates `real-dir/target -> ...`
+    // rather than replacing `real-dir`). After the first boot the
+    // path is a symlink and `[ ! -L ]` is false, so the mv is skipped
+    // on every subsequent start (idempotent). The archive name keeps
+    // the prior chromium profile on EFS for forensic recovery; ops
+    // can delete it manually later. `mv` on NFS is one rename
+    // syscall, cheap; `rm -rf` of a deep chromium tree on NFS would
+    // itself risk the very wedge class this PR fixes.
+    //
+    // Step B (symlink): point `~/.openclaw/browser` at Fargate
+    // disk-backed ephemeral task storage (`/tmp`, NOT kernel tmpfs —
+    // true tmpfs requires EC2 launch type, unavailable on Fargate).
+    // Chromium's `--user-data-dir` (LevelDB + SQLite + cache files)
+    // now lives on local disk instead of EFS NFS. Upstream
+    // chrome.ts:resolveOpenClawUserDataDir constructs
+    // `path.join(CONFIG_DIR, "browser", profileName, "user-data")`
+    // and Node's fs.* follow the symlink transparently. Motivated by
+    // the 2026-05-11 wedge investigation: chromium fsync + lock
+    // traffic against NFSv4.1 EFS is the most likely trigger of the
+    // NFS RPC stalls that wedge Node's event loop
+    // (rpc_wait_bit_killable). Tradeoff: chromium cookies /
+    // localStorage are ephemeral per container restart. Container
+    // restart frequency is bounded by the /healthz task healthcheck
+    // (sibling PR), so this is rare in steady state.
+    //
+    // Step C: launch the gateway. (Markdown-converter clawhub
+    // install was previously here; removed since nothing in agent
+    // configs actually depended on it. Agents that need
+    // markdown-converter can `clawhub install` it at runtime.)
+    //
+    // Cold-start: was ~5s with clawhub pre-install, drops slightly
+    // further now that we skip the markdown-converter step.
+    // Failure semantics: each step that MUST succeed is suffixed with
+    // `|| exit 1` so the container fails fast and ECS replaces it
+    // rather than silently degrading. Naïve `set -e` or
+    // `&&`-everywhere would break the happy path because Step A's
+    // `[ -e ] && [ ! -L ]` legitimately returns non-zero on the
+    // steady-state case (path is already a symlink → no migration
+    // needed). The conditional migration uses `{ ... ; }` (command
+    // group in the same shell, NOT a subshell — `exit 1` inside a
+    // subshell would only exit the subshell and the parent would
+    // continue, defeating the purpose). Without these guards, an NFS
+    // hiccup that fails `mv` would let Step B's `ln -sfn` silently
+    // nest the symlink inside the legacy real directory (empirically
+    // verified: `ln -sfn target real-dir` exits 0 and creates
+    // `real-dir/target -> ...` rather than replacing `real-dir`),
+    // shipping a no-op that LOOKS deployed.
     const startupCommand = [
-      "clawhub install markdown-converter --no-input 2>/dev/null",
+      // Step A — migration. POSIX-sh: `[ ... ]`, `&&`, `$(...)`,
+      // and `{ ... ; }` are all portable to `sh -c`. The trailing
+      // `; ` inside `{ ... ; }` is required by POSIX shell syntax.
+      "[ -e /home/node/.openclaw/browser ] && [ ! -L /home/node/.openclaw/browser ] && { mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-$(date +%s) || exit 1; }",
+      // Step B — symlink chromium user-data to ephemeral task storage.
+      "mkdir -p /tmp/openclaw-browser || exit 1",
+      "ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1",
+      // Step C — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");
 

@@ -795,7 +795,17 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     const prev = prevClientRunIdRef.current;
     const curr = clientRunIdRef.current;
     prevClientRunIdRef.current = curr;
-    if (prev !== null && curr === null && queuedMessagesRef.current.length > 0) {
+    // Connection guard: if the WS is currently down, don't pop+dispatch —
+    // sendChat would throw (see useGateway.tsx) and dispatchNow's catch
+    // would reset clientRunIdRef, but the queued message would be lost.
+    // Leave the queue intact; when the WS reconnects and the next user-turn
+    // completes, this effect re-runs on the next falling edge.
+    if (
+      prev !== null &&
+      curr === null &&
+      queuedMessagesRef.current.length > 0 &&
+      isConnected
+    ) {
       const next = queuedMessagesRef.current[0];
       setQueuedMessages((q) => q.slice(1));
       void dispatchNow(next.text);

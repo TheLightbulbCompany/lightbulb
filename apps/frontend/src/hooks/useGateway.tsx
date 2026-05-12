@@ -424,16 +424,22 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   const sendChat = useCallback(
     (agentId: string, message: string, clientRunId: string) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: "agent_chat",
-            agent_id: agentId,
-            message,
-            clientRunId,
-          }),
-        );
+      // Throw on closed socket instead of silently no-op'ing. Callers like
+      // useAgentChat.dispatchNow rely on a thrown error to reset their per-
+      // user-turn busy gate (clientRunIdRef). Silent no-op leaves the turn
+      // marked in-flight with no chat.final ever arriving, wedging the
+      // local chat queue.
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        throw new Error("Gateway connection lost");
       }
+      wsRef.current.send(
+        JSON.stringify({
+          type: "agent_chat",
+          agent_id: agentId,
+          message,
+          clientRunId,
+        }),
+      );
     },
     [],
   );

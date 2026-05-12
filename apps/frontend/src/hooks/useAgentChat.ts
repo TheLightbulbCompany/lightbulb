@@ -720,65 +720,83 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   // ---- Send message ----
 
-  const sendMessage = useCallback(
+  // Hoisted so both sendMessage and the flushQueue effect (added in Task 5)
+  // can call it. dispatchNow assumes the busy-gate has already been checked.
+  const dispatchNow = useCallback(
     async (message: string): Promise<void> => {
-      // A new turn invalidates any pending-cancel window from the previous
-      // turn. Events for this new turn must be allowed through normally.
-      pendingCancelRef.current = false;
-
-      if (!agentIdRef.current) {
-        throw new Error("No agent selected");
-      }
-
-      if (!isConnected) {
-        setError("Not connected. Please wait and try again.");
-        return;
-      }
-
-      setError(null);
-
-      const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
-      if (key) _needsBootstrap.delete(key);
+      const agentId = agentIdRef.current;
+      if (!agentId) return;
 
       const userMsgId = `user-${crypto.randomUUID()}`;
+      const newClientRunId = crypto.randomUUID();
+      clientRunIdRef.current = newClientRunId;
 
-      // Add only the user message. Assistant bubbles are created lazily
-      // when OpenClaw emits the first event for a new runId — matches
-      // OpenClaw control-ui's implicit-bubble design. See spec §4.
       setMessages((prev) => [
         ...prev,
         { id: userMsgId, role: "user", content: message },
       ]);
       setIsStreaming(true);
 
-      // Analytics: stamp the turn start AFTER validation succeeds so we
-      // don't attribute duration to failed early-exit paths. Capture the
-      // user-intent event with length only — message content is PII.
       turnStartedAtRef.current = Date.now();
       turnAssistantLenRef.current = 0;
       capture("chat_message_sent", {
-        agent_id: agentIdRef.current,
+        agent_id: agentId,
         message_length: message.length,
       });
 
       try {
-        sendChat(agentIdRef.current, message);
+        sendChat(agentId, message, newClientRunId);
       } catch (err) {
         const errorMessage = friendlyError(
           err instanceof Error ? err.message : "Failed to send message",
         );
         setError(errorMessage);
-        // No placeholder to update — append an error-marked assistant
-        // message so the user sees failure feedback.
         const errMsgId = `assistant-${crypto.randomUUID()}`;
         setMessages((prev) => [
           ...prev,
           { id: errMsgId, role: "assistant", content: `Error: ${errorMessage}` },
         ]);
         setIsStreaming(false);
+        clientRunIdRef.current = null; // failure path resets busy gate
       }
     },
-    [sendChat, isConnected, sessionName],
+    [sendChat],
+  );
+
+  const sendMessage = useCallback(
+    async (message: string): Promise<void> => {
+      pendingCancelRef.current = false;
+
+      if (!agentIdRef.current) {
+        throw new Error("No agent selected");
+      }
+      if (!isConnected) {
+        setError("Not connected. Please wait and try again.");
+        return;
+      }
+
+      const trimmed = message.trim();
+      if (!trimmed) return;
+
+      setError(null);
+      const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
+      if (key) _needsBootstrap.delete(key);
+
+      // Busy gate: if a user-turn is already in flight (clientRunIdRef
+      // is set), enqueue instead of firing chat.send. The flushQueue
+      // effect picks this up when clientRunIdRef clears.
+      if (clientRunIdRef.current !== null) {
+        const id = `queued-${crypto.randomUUID()}`;
+        setQueuedMessages((prev) => [
+          ...prev,
+          { id, text: trimmed, createdAt: Date.now() },
+        ]);
+        return;
+      }
+
+      await dispatchNow(trimmed);
+    },
+    [isConnected, sessionName, dispatchNow],
   );
 
   // ---- Cancel / stop agent ----

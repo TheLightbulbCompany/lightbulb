@@ -62,4 +62,43 @@ describe('decideAdminHostRouting (admin host gate)', () => {
       decideAdminHostRouting('ADMIN.ISOL8.CO', '/admin/users', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
+
+  // ---------------------------------------------------------------------------
+  // Sign-in / sign-up passthrough on admin hosts.
+  // Bug: AdminLayout server-component redirects unauth users to /sign-in.
+  // The admin-host gate previously bounced /sign-in back to /admin, which
+  // immediately triggered AdminLayout's redirect to /sign-in again → infinite
+  // 307 loop (ERR_TOO_MANY_REDIRECTS). Clerk auth paths must passthrough so
+  // the admin host can complete sign-in inline.
+  // ---------------------------------------------------------------------------
+
+  it('passes through /sign-in on admin hosts so AdminLayout can complete auth', () => {
+    expect(
+      decideAdminHostRouting('admin.isol8.co', '/sign-in', ADMIN_HOSTS),
+    ).toEqual({ kind: 'passthrough' });
+  });
+
+  it('passes through /sign-up on admin hosts', () => {
+    expect(
+      decideAdminHostRouting('admin.isol8.co', '/sign-up', ADMIN_HOSTS),
+    ).toEqual({ kind: 'passthrough' });
+  });
+
+  it('passes through Clerk catchall sub-paths under /sign-in', () => {
+    // Clerk renders /sign-in/factor-one, /sign-in/sso-callback, etc.
+    expect(
+      decideAdminHostRouting('admin.isol8.co', '/sign-in/factor-one', ADMIN_HOSTS),
+    ).toEqual({ kind: 'passthrough' });
+    expect(
+      decideAdminHostRouting('admin.isol8.co', '/sign-up/verify-email-address', ADMIN_HOSTS),
+    ).toEqual({ kind: 'passthrough' });
+  });
+
+  it('still redirects truly off-admin paths (e.g. /chat) on admin hosts', () => {
+    // Regression guard — the original gate behavior for non-auth, non-admin
+    // paths is preserved.
+    expect(
+      decideAdminHostRouting('admin.isol8.co', '/chat', ADMIN_HOSTS),
+    ).toEqual({ kind: 'redirect', to: '/admin' });
+  });
 });

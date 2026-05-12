@@ -27,6 +27,21 @@ export type AdminHostDecision =
   | { kind: "not_found" }
   | { kind: "redirect"; to: string };
 
+// Paths that must passthrough on admin hosts even though they sit outside
+// /admin*. AdminLayout (server component) redirects unauth users to
+// /sign-in; without this allowlist the gate immediately bounces /sign-in
+// back to /admin, AdminLayout redirects to /sign-in again — infinite 307
+// loop (ERR_TOO_MANY_REDIRECTS). Clerk's catchall routes (e.g.
+// /sign-in/factor-one, /sign-in/sso-callback) are also included.
+function isAdminHostAllowedNonAdminPath(pathname: string): boolean {
+  return (
+    pathname === "/sign-in" ||
+    pathname.startsWith("/sign-in/") ||
+    pathname === "/sign-up" ||
+    pathname.startsWith("/sign-up/")
+  );
+}
+
 /**
  * Pure host/path -> decision function for the admin gate. Exported so the
  * branching logic can be unit-tested without a Next.js request object.
@@ -34,7 +49,10 @@ export type AdminHostDecision =
  * Defense in depth (CEO A1): unknown hosts hitting `/admin*` get a 404, not a
  * 403 — we don't want host-header probes to confirm the path even exists.
  * Conversely, an admin host that strays off `/admin` is funneled back to
- * `/admin` so admins can't accidentally land on the public app.
+ * `/admin` so admins can't accidentally land on the public app. Clerk's
+ * auth paths (`/sign-in`, `/sign-up`, and their catchall sub-paths) are
+ * exempted from that funnel so AdminLayout's sign-in redirect can resolve
+ * instead of looping back through the gate.
  */
 export function decideAdminHostRouting(
   host: string | null | undefined,
@@ -49,6 +67,9 @@ export function decideAdminHostRouting(
     return { kind: "not_found" };
   }
   if (isAdminHost && !isAdminPath) {
+    if (isAdminHostAllowedNonAdminPath(pathname)) {
+      return { kind: "passthrough" };
+    }
     return { kind: "redirect", to: "/admin" };
   }
   return { kind: "passthrough" };

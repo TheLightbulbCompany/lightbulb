@@ -265,7 +265,10 @@ class TestProcessAgentChatBackground:
         params = call_kwargs["params"]
         assert params["sessionKey"] == "agent:luna:user-1"
         assert params["message"] == "Hello!"
-        assert "idempotencyKey" in params  # UUID, just check it's present
+        # idempotencyKey is now only set when the frontend supplies
+        # clientRunId. When absent, OpenClaw assigns its own runId — see
+        # tests/routers/test_websocket_chat_idempotency.py for both paths.
+        assert "idempotencyKey" not in params
         assert call_kwargs["ip"] == "10.0.1.5"
         assert call_kwargs["token"] == "test-gw-token"
 

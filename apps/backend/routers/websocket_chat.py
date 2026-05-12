@@ -432,6 +432,13 @@ async def ws_message(
     if msg_type == "agent_chat":
         agent_id = body.get("agent_id")
         message = body.get("message")
+        # Frontend-minted UUID per user turn. Forwarded to OpenClaw as
+        # idempotencyKey so the frontend can match the chat.final event
+        # to the user's send and drain its local chat queue. Mirrors
+        # upstream ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:502.
+        # Optional for backwards-compat with old frontend builds — without
+        # it, OpenClaw assigns its own runId (existing behavior).
+        client_run_id = body.get("clientRunId")
 
         if not agent_id or not message:
             management_api = await get_management_api_client()
@@ -455,6 +462,7 @@ async def ws_message(
             owner_id=owner_id,
             agent_id=agent_id,
             message=message,
+            client_run_id=client_run_id,
         )
         return Response(status_code=200)
 
@@ -921,6 +929,7 @@ async def _process_agent_chat_background(
     owner_id: str,
     agent_id: str,
     message: str,
+    client_run_id: str | None = None,
 ) -> None:
     """
     Process agent chat message via OpenClaw's native chat.send RPC.
@@ -929,6 +938,13 @@ async def _process_agent_chat_background(
     The RPC returns immediately with an ack; streaming response events
     (text_delta, turn_completed, etc.) are handled by the pool's reader
     task and forwarded to the frontend automatically.
+
+    client_run_id (optional): frontend-minted UUID for this user turn.
+    When provided, forwarded to OpenClaw's chat.send as ``idempotencyKey``
+    so the frontend can match the eventual chat.final / aborted / error
+    event back to the originating send (used to drain the client-side
+    chat queue). Absent → OpenClaw assigns its own runId, matching the
+    pre-clientRunId behavior; existing callers stay backwards-compatible.
     """
     logger.info(
         "[%s] chat.send START agent=%s owner=%s conn=%s msg_len=%d",
@@ -1063,15 +1079,22 @@ async def _process_agent_chat_background(
         # race where the same sessionKey starts a fresh run.
         pool.mark_run_active(owner_id, session_key, agent_id)
 
+        chat_send_params: dict[str, str] = {
+            "sessionKey": session_key,
+            "message": message,
+        }
+        if client_run_id:
+            # Upstream chat.ts:2174 calls `context.addChatRun(clientRunId, ...)`
+            # — this makes our UUID the run identifier. The frontend's
+            # clientRunIdRef matches against the runId on the chat.final
+            # event to know when the user-turn truly ended.
+            chat_send_params["idempotencyKey"] = client_run_id
+
         result = await pool.send_rpc(
             user_id=owner_id,
             req_id=req_id,
             method="chat.send",
-            params={
-                "sessionKey": session_key,
-                "message": message,
-                "idempotencyKey": str(uuid4()),
-            },
+            params=chat_send_params,
             ip=ip,
             token=container["gateway_token"],
         )

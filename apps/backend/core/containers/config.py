@@ -736,32 +736,40 @@ def build_openclaw_config_dict(
         # restart, not a gateway restart. Plugins with no `accounts`
         # entries sit idle safely.
         "channels": {
-            # Chat through the gateway resolves messageChannel="webchat"
-            # (openclaw src/gateway/server-methods/chat.ts:2220 hard-codes
-            # Provider/Surface to INTERNAL_MESSAGE_CHANNEL when chat.send
-            # arrives without an explicit originatingChannel — which is
-            # our path, see routers/websocket_chat.py:1066-1077).
+            # REVERTED 2026-05-12: PR #616 added a `channels.webchat` entry
+            # here to flip the system-prompt builder to Mode A (rely on
+            # native approval cards instead of telling Ray to print
+            # `/approve <id> allow-once` in chat). It never worked.
             #
-            # Without this `capabilities: ["nativeApprovals"]` declaration,
-            # the agent's system-prompt builder lands in Mode B and tells
-            # Ray to "include the concrete /approve command from the tool
-            # output's 'Reply with:' line as plain chat text for the user"
-            # (openclaw src/agents/system-prompt.ts:181-195). The CLI
-            # fallback then leaks into chat ("Let me fix that: /approve
-            # <id> allow-once"), even though our ExecApprovalCards UI is
-            # already rendering the request.
+            # Upstream's config validator at src/config/validation.ts:1260
+            # rejects any `channels.<id>` whose id is not in
+            # `[...CHANNEL_IDS, ...registry.plugins[].channels]`. "webchat"
+            # is neither bundled (src/channels/ids.ts) nor a plugin-backed
+            # channel, so both startup validation AND chokidar hot-reload
+            # rejected the block (`config reload skipped (invalid config):
+            # channels.webchat: unknown channel id: webchat`). The runtime
+            # config never picked up the capability — Ray kept emitting the
+            # CLI fallback the entire time, and FRESH provisions boot-
+            # looped (cofounder onboarding 2026-05-12 04:25 UTC was the
+            # symptom that exposed this).
             #
-            # Webchat isn't in upstream's `isKnownNativeApprovalPromptChannel`
-            # allowlist (src/channels/plugins/native-approval-prompt.ts:12-18)
-            # and isn't a plugin-backed channel, so the capability won't
-            # be inferred for us — operators have to declare it explicitly.
-            # `resolveChannelCapabilities` accepts a bare string array
-            # (src/config/channel-capabilities.ts:13-21) and `ChannelsSchema`
-            # is `.passthrough()` (src/config/zod-schema.providers.ts:46-62)
-            # so this passes upstream zod validation.
-            "webchat": {
-                "capabilities": ["nativeApprovals"],
-            },
+            # The native-approval system prompt builder has three paths to
+            # Mode A (src/agents/system-prompt.ts:187-191):
+            #   (1) runtimeCapabilities.has("inlinebuttons")
+            #   (2) runtimeCapabilities.has("nativeapprovals")
+            #   (3) runtimeChannel in {discord,matrix,qqbot,slack,telegram}
+            # Paths (1)/(2) source from `cfg.channels[X].capabilities` —
+            # which still has to pass the validator's channel-id allowlist.
+            # Path (3) is a hardcoded set we don't own.
+            #
+            # Real-fix options (none clean, all need a separate PR):
+            #   B. Pass `originatingChannel: "telegram"` from chat.send so
+            #      path (3) fires — side effect: upstream may attempt to
+            #      route replies through telegram-config, needs testing.
+            #   C. Submit an upstream PR adding "webchat" to CHANNEL_IDS +
+            #      KNOWN_NATIVE_APPROVAL_PROMPT_CHANNELS, bump
+            #      openclaw-version.json once it merges.
+            #   D. Bump upstream to a tag where webchat is registered.
             "telegram": {
                 "enabled": True,
                 "dmPolicy": "pairing",

@@ -88,24 +88,17 @@ jobs:
       - name: Patch tauri.conf.json for ${{ steps.env.outputs.target_env }}
         run: |
           TAURI_CFG="apps/desktop/src-tauri/tauri.conf.json"
-          # Patch URLs for the target environment.
+          # Patch URLs for the target environment. Both dev and prod sign +
+          # notarize with the same Developer ID Application cert (Team
+          # WZX4U3C22Y) — tauri-action imports it from APPLE_CERTIFICATE
+          # below. See apps/desktop/SIGNING.md for the one-time secret
+          # setup.
           jq --arg url "${{ steps.env.outputs.frontend_url }}" '
             .build.devUrl = $url |
             .build.frontendDist = $url |
             .app.windows[0].url = $url
           ' "$TAURI_CFG" > "$TAURI_CFG.new"
           mv "$TAURI_CFG.new" "$TAURI_CFG"
-          # Dev builds skip codesigning. Runners have no Developer ID cert
-          # in the keychain (we only supply APPLE_ID for notarization).
-          # Strip signingIdentity so Tauri produces an unsigned DMG —
-          # testers bypass Gatekeeper via right-click > Open. Prod builds
-          # require a .p12 imported via APPLE_CERTIFICATE /
-          # APPLE_CERTIFICATE_PASSWORD secrets (separate follow-up).
-          if [[ "${{ steps.env.outputs.target_env }}" == "dev" ]]; then
-            jq 'del(.bundle.macOS.signingIdentity)' "$TAURI_CFG" > "$TAURI_CFG.new"
-            mv "$TAURI_CFG.new" "$TAURI_CFG"
-            echo "Dev build: stripped signingIdentity (unsigned DMG)"
-          fi
           echo "Patched tauri.conf.json:"
           jq '{devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity}' "$TAURI_CFG"
 
@@ -126,6 +119,13 @@ jobs:
           args: --target ${{ matrix.rust-target }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # tauri-action creates a temp keychain, imports the base64-
+          # encoded p12 via APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD,
+          # signs with the identity already in tauri.conf.json, then
+          # notarizes via APPLE_ID + APPLE_PASSWORD (app-specific) +
+          # APPLE_TEAM_ID. Same flow for dev and prod tags.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

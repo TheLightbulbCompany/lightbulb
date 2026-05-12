@@ -139,7 +139,9 @@ describe("PaperclipStack — Fargate service shape", () => {
     expect(envMap.PGDATABASE).toBe("paperclip");
     expect(envMap.PGPORT).toBe("5432");
     expect(envMap.PAPERCLIP_BIND).toBe("lan");
-    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://company-dev.isol8.co");
+    // Dev / non-prod URL shape is `<env>.company.isol8.co` (matches the
+    // `https://${env}.company.isol8.co` template in paperclip-stack.ts).
+    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://dev.company.isol8.co");
   });
 
   test("container has DATABASE_URL-building shim with URL-encoded password and bypasses gosu", () => {
@@ -363,7 +365,16 @@ describe("PaperclipStack — prod public URL", () => {
     expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://company.isol8.co");
   });
 
-  test("prod blocks public sign-up; admin is provisioned out-of-band", () => {
+  test("prod keeps public sign-up enabled (no out-of-band admin path upstream)", () => {
+    // Upstream Paperclip's first-admin bootstrap path is the same email/
+    // password sign-up endpoint (POST /api/auth/sign-up/email). There is
+    // no separate out-of-band provisioning path, so disabling sign-up
+    // here would make the deployment un-bootstrappable. Practical
+    // exposure is bounded: `company.isol8.co` has no DNS record, the
+    // task is in private subnets, and the backend's paperclip_proxy
+    // route-filters /api/auth/*. See the long-form rationale comment
+    // in paperclip-stack.ts around the PAPERCLIP_AUTH_DISABLE_SIGN_UP
+    // line.
     const tasks = template.findResources("AWS::ECS::TaskDefinition", {
       Properties: { Family: "isol8-prod-paperclip-server" },
     });
@@ -373,7 +384,7 @@ describe("PaperclipStack — prod public URL", () => {
       Value: string;
     }>;
     const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
-    expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("true");
+    expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("false");
   });
 
   test("prod log group uses RETAIN removal policy", () => {

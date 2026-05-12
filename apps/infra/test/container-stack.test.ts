@@ -25,20 +25,14 @@ describe("ContainerStack — dev", () => {
     template = buildStack("dev");
   });
 
-  test("creates the extended OpenClaw ECR repo with immutable tags + scan-on-push", () => {
-    template.hasResourceProperties("AWS::ECR::Repository", {
-      RepositoryName: "isol8/openclaw-extended",
-      ImageScanningConfiguration: { ScanOnPush: true },
-      ImageTagMutability: "IMMUTABLE",
-    });
-  });
-
-  test("ECR repo has a 30-image lifecycle policy", () => {
-    template.hasResourceProperties("AWS::ECR::Repository", {
-      LifecyclePolicy: {
-        LifecyclePolicyText: Match.stringLikeRegexp('"countNumber"\\s*:\\s*30'),
-      },
-    });
+  test("does NOT create the extended OpenClaw ECR repo (referenced by name, account-scoped)", () => {
+    // Both dev and prod now use `ecr.Repository.fromRepositoryName(...)` —
+    // the repo is managed as existing AWS state outside any stack to avoid
+    // the "RETAIN orphan blocks recreate" trap. See container-stack.ts
+    // (around the OpenclawExtendedRepo declaration) for the rationale.
+    // Lifecycle, immutability, and scan-on-push settings live on the repo
+    // itself in AWS, not in CDK.
+    template.resourceCountIs("AWS::ECR::Repository", 0);
   });
 
   test("creates the openclaw-image-builder OIDC role for CI image pushes", () => {

@@ -436,8 +436,10 @@ async def ws_message(
         # idempotencyKey so the frontend can match the chat.final event
         # to the user's send and drain its local chat queue. Mirrors
         # upstream ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:502.
-        # Optional for backwards-compat with old frontend builds — without
-        # it, OpenClaw assigns its own runId (existing behavior).
+        # Optional for backwards-compat with old frontend builds — when
+        # absent, the backend mints a UUID below so OpenClaw's chat.send
+        # always carries an idempotencyKey (the field is required by
+        # upstream chat.ts:2002 which does `const clientRunId = p.idempotencyKey`).
         client_run_id = body.get("clientRunId")
 
         if not agent_id or not message:

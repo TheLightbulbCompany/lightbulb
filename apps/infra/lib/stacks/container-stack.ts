@@ -371,6 +371,29 @@ export class ContainerStack extends cdk.Stack {
         logGroup: openclawLogGroup,
         streamPrefix: "openclaw",
       }),
+      // Liveness probe against the upstream gateway's /healthz endpoint
+      // (exposed by openclaw.mjs gateway — see upstream Dockerfile and
+      // src/gateway/server-http.ts:152-157, where /healthz is auth-
+      // bypassed and runs on the Node event loop). When Node's event
+      // loop wedges on EFS NFS RPC (see investigation 2026-05-11), the
+      // /healthz async handler can't run; ECS marks the task UNHEALTHY
+      // after retries * interval and replaces it. TCP-only probes
+      // (e.g. nc -z) are insufficient here because TCP accept stays in
+      // the kernel while the JS event loop is frozen.
+      healthCheck: {
+        command: [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ],
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
+        // 120s start period covers the upstream `clawhub install
+        // markdown-converter` pre-step (slow on EFS first-touch) plus
+        // gateway boot (~5s warm). Tunable if dev observes false
+        // positives during cold provisioning.
+        startPeriod: cdk.Duration.seconds(120),
+      },
     });
 
     // Mount EFS workspace — OpenClaw reads openclaw.json and agent files from here

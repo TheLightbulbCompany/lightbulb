@@ -203,6 +203,9 @@ class TestAgentChatBackgroundTask:
             owner_id="test-user-456",
             agent_id="luna",
             message="Tell me a story",
+            # Frontend payload omitted clientRunId; backend forwards None so
+            # _process_agent_chat_background mints a fallback UUID downstream.
+            client_run_id=None,
         )
 
 

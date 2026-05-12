@@ -38,7 +38,10 @@ async def test_client_run_id_is_forwarded_as_idempotency_key():
             "routers.websocket_chat.get_management_api_client",
             AsyncMock(return_value=fake_mgmt),
         ),
-        patch("routers.websocket_chat.get_user_node", return_value=None),
+        # get_user_node is imported lazily INSIDE _process_agent_chat_background
+        # (from core.services.node_proxy), so it's not a module-level attribute
+        # on routers.websocket_chat — patch the source module instead.
+        patch("core.services.node_proxy.get_user_node", return_value=None),
     ):
         await _process_agent_chat_background(
             connection_id="c1",
@@ -50,10 +53,7 @@ async def test_client_run_id_is_forwarded_as_idempotency_key():
         )
 
     # Find the chat.send RPC call among any other RPC calls (e.g., sessions.patch)
-    chat_send_calls = [
-        c for c in fake_pool.send_rpc.await_args_list
-        if c.kwargs.get("method") == "chat.send"
-    ]
+    chat_send_calls = [c for c in fake_pool.send_rpc.await_args_list if c.kwargs.get("method") == "chat.send"]
     assert len(chat_send_calls) == 1, "expected exactly one chat.send call"
     params = chat_send_calls[0].kwargs["params"]
     assert params["idempotencyKey"] == "11111111-2222-3333-4444-555555555555"
@@ -88,7 +88,8 @@ async def test_missing_client_run_id_falls_back_to_backend_minted_uuid():
             "routers.websocket_chat.get_management_api_client",
             AsyncMock(return_value=fake_mgmt),
         ),
-        patch("routers.websocket_chat.get_user_node", return_value=None),
+        # See note on get_user_node patch target above.
+        patch("core.services.node_proxy.get_user_node", return_value=None),
     ):
         await _process_agent_chat_background(
             connection_id="c1",
@@ -99,10 +100,7 @@ async def test_missing_client_run_id_falls_back_to_backend_minted_uuid():
             client_run_id=None,
         )
 
-    chat_send_calls = [
-        c for c in fake_pool.send_rpc.await_args_list
-        if c.kwargs.get("method") == "chat.send"
-    ]
+    chat_send_calls = [c for c in fake_pool.send_rpc.await_args_list if c.kwargs.get("method") == "chat.send"]
     assert len(chat_send_calls) == 1
     params = chat_send_calls[0].kwargs["params"]
     # Backend mints a UUID — assert presence + valid UUID format.

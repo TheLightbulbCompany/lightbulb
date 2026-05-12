@@ -736,6 +736,32 @@ def build_openclaw_config_dict(
         # restart, not a gateway restart. Plugins with no `accounts`
         # entries sit idle safely.
         "channels": {
+            # Chat through the gateway resolves messageChannel="webchat"
+            # (openclaw src/gateway/server-methods/chat.ts:2220 hard-codes
+            # Provider/Surface to INTERNAL_MESSAGE_CHANNEL when chat.send
+            # arrives without an explicit originatingChannel — which is
+            # our path, see routers/websocket_chat.py:1066-1077).
+            #
+            # Without this `capabilities: ["nativeApprovals"]` declaration,
+            # the agent's system-prompt builder lands in Mode B and tells
+            # Ray to "include the concrete /approve command from the tool
+            # output's 'Reply with:' line as plain chat text for the user"
+            # (openclaw src/agents/system-prompt.ts:181-195). The CLI
+            # fallback then leaks into chat ("Let me fix that: /approve
+            # <id> allow-once"), even though our ExecApprovalCards UI is
+            # already rendering the request.
+            #
+            # Webchat isn't in upstream's `isKnownNativeApprovalPromptChannel`
+            # allowlist (src/channels/plugins/native-approval-prompt.ts:12-18)
+            # and isn't a plugin-backed channel, so the capability won't
+            # be inferred for us — operators have to declare it explicitly.
+            # `resolveChannelCapabilities` accepts a bare string array
+            # (src/config/channel-capabilities.ts:13-21) and `ChannelsSchema`
+            # is `.passthrough()` (src/config/zod-schema.providers.ts:46-62)
+            # so this passes upstream zod validation.
+            "webchat": {
+                "capabilities": ["nativeApprovals"],
+            },
             "telegram": {
                 "enabled": True,
                 "dmPolicy": "pairing",

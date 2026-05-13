@@ -303,34 +303,29 @@ where
 {
     const STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-    // Step 1: read a frame until we see connect.challenge (skipping any
-    // keepalive "tick" events the gateway may have sent first).
-    let challenge = loop {
-        let msg = tokio::time::timeout(STEP_TIMEOUT, ws_read.next())
-            .await
-            .map_err(|_| "timed out waiting for connect.challenge".to_string())?
-            .ok_or_else(|| "connection closed before connect.challenge".to_string())?
-            .map_err(|e| format!("read error: {}", e))?;
-        let Message::Text(text) = msg else {
-            crate::log(&format!("[node-client] pre-handshake non-text frame: {:?}", msg));
-            continue;
-        };
-        crate::log(&format!("[node-client] pre-handshake frame: {}", truncate(&text, 300)));
-        let frame: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {}", e))?;
-        if frame.get("type").and_then(|v| v.as_str()) == Some("event")
-            && frame.get("event").and_then(|v| v.as_str()) == Some("connect.challenge")
-        {
-            break frame;
-        }
-        // Ignore pre-handshake ticks/other events.
-    };
-    // Nonce is currently unused on this side (backend signs upstream) but
-    // present in the challenge payload; acknowledge it exists.
-    let _ = challenge;
+    // Cloud-native handshake (client speaks first).
+    //
+    // In native OpenClaw deployments, the gateway sends `connect.challenge`
+    // inline on WS open and the client signs the nonce. Our cloud bridge
+    // (AWS API Gateway → FastAPI backend) can only push frames back to a
+    // client through `boto3.post_to_connection` (Management API), which
+    // races against API Gateway finalizing the WebSocket after $connect —
+    // the push frequently lands in API Gateway's transient "GoneException"
+    // window (~37ms post-$connect on dev) and the frame is silently
+    // swallowed by management_api_client.py's GoneException handler, so a
+    // server-first handshake stalls until our 10s timeout. The backend
+    // already supports a client-first flow for operator clients (chat WS)
+    // and signs the upstream container's real challenge itself with the
+    // per-user EFS device key in `handle_node_connect`, so any nonce
+    // signing we'd do here is decorative — the backend ignores it.
+    //
+    // Send `connect` immediately. Backend's `/ws/message` handler
+    // (apps/backend/routers/websocket_chat.py:343) processes it
+    // synchronously, opens the upstream WS to the container, completes
+    // the real handshake server-side, and replies `hello-ok` on the same
+    // response cycle. No Management API push, no race.
 
-    crate::log("[node-client] received connect.challenge, sending connect req");
-
-    // Step 2: send connect.
+    // Step 1: send connect.
     let connect_id = Uuid::new_v4().to_string();
     let connect_msg = json!({
         "type": "req",
@@ -378,7 +373,7 @@ where
         .await
         .map_err(|e| format!("write connect: {}", e))?;
 
-    // Step 3: wait for the res with our connect_id, skipping unrelated
+    // Step 2: wait for the res with our connect_id, skipping unrelated
     // frames. The backend (apps/backend/routers/websocket_chat.py) rewrites
     // the forwarded hello's id to match our req_id before sending, so strict
     // id-match is correct per JSON-RPC correlation. Fail on ok:false so a

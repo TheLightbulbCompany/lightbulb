@@ -640,6 +640,32 @@ def build_openclaw_config_dict(
                 "browser": {
                     "mode": "auto" if owner_type == "personal" else "manual",
                 },
+                # Per-platform node-command allowlist (Stage 2 of OpenClaw's
+                # node-invoke gate, docs/nodes/index.md:193-203). Without
+                # an explicit list, macOS nodes only accept canvas.*,
+                # camera.list, location.get, screen.snapshot and reject
+                # everything else with `INVALID_REQUEST: node command not
+                # allowed`. Mirror the commands our Rust client advertises
+                # in apps/desktop/src-tauri/src/node_client.rs (Stage 1
+                # gate); adding entries here without the client declaring
+                # them is a no-op since Stage 1 still rejects.
+                #
+                # File-transfer commands (dir.list, file.fetch, file.write,
+                # dir.fetch) are intentionally omitted — our Rust client
+                # doesn't bundle the file-transfer plugin yet.
+                "allowCommands": [
+                    "system.run",
+                    "system.run.prepare",
+                    "system.which",
+                    "system.notify",
+                    "system.execApprovals.get",
+                    "system.execApprovals.set",
+                    "browser.proxy",
+                    "device.info",
+                    "device.status",
+                    "device.health",
+                    "device.permissions",
+                ],
             },
         },
         "models": {

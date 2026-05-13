@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import tempfile
 import threading
 import time
@@ -114,7 +115,23 @@ def load_node_device_identity(private_key_pem: str) -> dict:
 
 
 def _build_node_paired_entry(device_id: str, public_key_b64: str) -> dict:
-    """One `devices/paired.json` entry for the in-container node role."""
+    """One `devices/paired.json` entry for the in-container node role.
+
+    The ``tokens.node`` sub-entry is load-bearing in OpenClaw >= 2026.5.7.
+    Upstream's ``listEffectivePairedDeviceRoles`` (src/infra/device-pairing.ts:246)
+    fails closed for tokenless paired records — even with ``role: "node"``
+    and ``roles: ["node"]`` set, the WS handshake's role-upgrade gate
+    (server/ws-connection/message-handler.ts:1188-1206) rejects the
+    connect with ``PAIRING_REQUIRED reason=role-upgrade`` because
+    ``listActiveTokenRoles(undefined) === undefined`` resolves the
+    effective role set to ``[]``. Pre-2026.5.x records without
+    ``tokens`` worked under the legacy ``role``/``roles`` fields; that
+    backstop is gone now.
+
+    The token value itself is just a per-device random the gateway uses
+    to disambiguate role rotations — it isn't presented on the wire by
+    the desktop or backend, so a fresh ``secrets.token_urlsafe`` works.
+    """
     now_ms = int(time.time() * 1000)
     return {
         "deviceId": device_id,
@@ -123,6 +140,14 @@ def _build_node_paired_entry(device_id: str, public_key_b64: str) -> dict:
         "roles": ["node"],
         "scopes": [],
         "approvedScopes": [],
+        "tokens": {
+            "node": {
+                "token": secrets.token_urlsafe(32),
+                "role": "node",
+                "scopes": [],
+                "createdAtMs": now_ms,
+            },
+        },
         "createdAtMs": now_ms,
         "approvedAtMs": now_ms,
     }
@@ -212,9 +237,36 @@ def ensure_node_paired_entry(
                 entries = {}
 
             if device_id in entries:
-                return False  # Already registered — no-op.
-
-            entries[device_id] = _build_node_paired_entry(device_id, public_key_b64)
+                existing = entries[device_id]
+                # OpenClaw 2026.5.7+ requires a `tokens.<role>` entry for
+                # role-upgrade gate (see _build_node_paired_entry docstring).
+                # Existing pre-2026.5.7 records written without a tokens
+                # block fail closed; patch them in-place on next connect.
+                if (
+                    isinstance(existing, dict)
+                    and isinstance(existing.get("tokens"), dict)
+                    and isinstance(existing["tokens"].get("node"), dict)
+                    and existing["tokens"]["node"].get("token")
+                ):
+                    return False  # Already has tokens.node — true no-op.
+                if not isinstance(existing, dict):
+                    # Garbage entry — replace wholesale.
+                    entries[device_id] = _build_node_paired_entry(device_id, public_key_b64)
+                else:
+                    # Preserve existing fields, just patch in the token.
+                    existing.setdefault("tokens", {})["node"] = {
+                        "token": secrets.token_urlsafe(32),
+                        "role": "node",
+                        "scopes": [],
+                        "createdAtMs": int(time.time() * 1000),
+                    }
+                    logger.info(
+                        "Upgraded tokenless paired entry %s with tokens.node for owner %s",
+                        device_id[:16],
+                        owner_id,
+                    )
+            else:
+                entries[device_id] = _build_node_paired_entry(device_id, public_key_b64)
 
             fd, tmp_path = tempfile.mkstemp(dir=paired_dir, suffix=".tmp")
             try:

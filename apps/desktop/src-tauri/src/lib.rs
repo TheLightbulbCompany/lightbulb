@@ -1,5 +1,7 @@
 pub mod browser_sidecar;
 mod exec_approvals;
+pub mod file_access;
+pub mod file_transfer;
 mod node_client;
 mod node_invoke;
 mod tray;
@@ -149,6 +151,41 @@ fn is_desktop() -> bool {
 #[tauri::command]
 fn get_node_status(state: State<'_, NodeState>) -> String {
     state.status.lock().unwrap().clone()
+}
+
+// ============================================================================
+// File-access allowlist Tauri commands (consumed by the Settings UI).
+// ============================================================================
+
+/// Returns the current list of canonical paths the agent is allowed to
+/// read/write through file.* and dir.* commands.
+#[tauri::command]
+fn file_access_list_paths() -> Vec<String> {
+    file_access::list_paths()
+}
+
+/// Adds `path` to the allowlist after canonicalizing it. Returns the
+/// canonical form. Idempotent. Errors if the path doesn't exist or
+/// isn't accessible.
+#[tauri::command]
+fn file_access_add_path(path: String) -> Result<String, String> {
+    file_access::add_path(&path).map_err(|e| e.to_string())
+}
+
+/// Removes `path` from the allowlist (canonical match). Returns true if
+/// something was removed.
+#[tauri::command]
+fn file_access_remove_path(path: String) -> Result<bool, String> {
+    file_access::remove_path(&path).map_err(|e| e.to_string())
+}
+
+/// Convenience for the Settings UI to show the auto-seed path even
+/// before a user has added anything custom.
+#[tauri::command]
+fn file_access_default_path() -> Result<String, String> {
+    file_access::default_seed_path()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Result of an updater check, serialized for the webview.
@@ -348,6 +385,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("oauth-intercept")
                 .on_navigation(|_window, url| {
@@ -405,9 +443,21 @@ end tell"#,
             get_node_status,
             check_for_updates,
             install_update,
+            file_access_list_paths,
+            file_access_add_path,
+            file_access_remove_path,
+            file_access_default_path,
         ])
         .setup(|app| {
             log("[setup] Isol8 desktop app starting");
+
+            // Seed the file-access allowlist (creates ~/Isol8/ and adds
+            // it on first launch). Non-fatal on failure — file ops will
+            // just be denied with a clear error until the user fixes it
+            // via the Settings UI.
+            if let Err(e) = file_access::init() {
+                log(&format!("[setup] file_access::init failed: {}", e));
+            }
 
             // Force-register isol8:// with this running binary's path so
             // macOS LaunchServices dispatches deep links here. Without

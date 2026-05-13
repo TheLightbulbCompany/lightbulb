@@ -111,6 +111,35 @@ pub async fn handle_invoke(
             error: None,
         }),
         "browser.proxy" => handle_browser_proxy(&request, app.clone()).await,
+        // file-transfer plugin commands (ported from openclaw's
+        // extensions/file-transfer/src/node-host/*). Each returns the
+        // upstream JSON envelope { ok, ... } directly so agent-side
+        // tool wrappers work unmodified. The Rust impls enforce the
+        // user-managed allowlist client-side; this is the safety
+        // boundary, not just the backend's allowedPaths config.
+        "file.fetch" => {
+            let params = parse_ft_params(&request.params_json);
+            wrap_ft_payload(&request, crate::file_transfer::handle_file_fetch(&params).await)
+        }
+        "file.write" => {
+            let params = parse_ft_params(&request.params_json);
+            wrap_ft_payload(&request, crate::file_transfer::handle_file_write(&params).await)
+        }
+        "dir.list" => {
+            let params = parse_ft_params(&request.params_json);
+            wrap_ft_payload(&request, crate::file_transfer::handle_dir_list(&params).await)
+        }
+        "dir.fetch" => {
+            let params = parse_ft_params(&request.params_json);
+            wrap_ft_payload(&request, crate::file_transfer::handle_dir_fetch(&params).await)
+        }
+        "screen.snapshot" => {
+            let params = parse_ft_params(&request.params_json);
+            wrap_ft_payload(
+                &request,
+                crate::file_transfer::handle_screen_snapshot(&params).await,
+            )
+        }
         cmd if NOT_IMPLEMENTED_COMMANDS.contains(&cmd) => Ok(NodeInvokeResult {
             id,
             node_id,
@@ -541,6 +570,51 @@ fn parse_params<T: serde::de::DeserializeOwned>(
         Some(json) => Ok(serde_json::from_str(json)?),
         None => Err("Missing params".into()),
     }
+}
+
+/// Decode the inbound params_json into a serde_json::Value, defaulting
+/// to Null when missing or malformed. The file-transfer handlers each
+/// re-validate the shape themselves, so a Null here just propagates as
+/// "missing required field" through their normal error paths.
+fn parse_ft_params(params_json: &Option<String>) -> serde_json::Value {
+    match params_json {
+        Some(s) => serde_json::from_str(s).unwrap_or(serde_json::Value::Null),
+        None => serde_json::Value::Null,
+    }
+}
+
+/// Wrap a file_transfer handler's `{ok, code?, message?, ...}` payload
+/// in the dispatch loop's NodeInvokeResult shape. The payload becomes
+/// `payload_json`; on `ok:false` we ALSO mirror code/message into the
+/// outer `error` field so the gateway's upstream see the same status
+/// it would for any other handler-returned error.
+fn wrap_ft_payload(
+    request: &NodeInvokeRequest,
+    payload: serde_json::Value,
+) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
+    let ok = payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    Ok(NodeInvokeResult {
+        id: request.id.clone(),
+        node_id: request.node_id.clone(),
+        ok,
+        payload_json: Some(payload.to_string()),
+        error: if ok {
+            None
+        } else {
+            Some(InvokeError {
+                code: payload
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("INVOKE_FAILED")
+                    .to_string(),
+                message: payload
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("file-transfer handler error")
+                    .to_string(),
+            })
+        },
+    })
 }
 
 fn truncate_output(bytes: &[u8]) -> String {

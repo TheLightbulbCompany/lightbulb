@@ -27,6 +27,7 @@ import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { myListings } from "@/lib/marketplace/api";
+import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -423,7 +424,7 @@ export function ChatLayout({
               </div>
               {subscriptionStatus && <span className="plan-badge">{subscriptionStatus}</span>}
             </div>
-            <div className="version-text">isol8 v0.1</div>
+            <DesktopUpdater version="0.1" />
           </div>
         </div>
 

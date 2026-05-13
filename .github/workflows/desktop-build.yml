@@ -93,14 +93,23 @@ jobs:
           # WZX4U3C22Y) — tauri-action imports it from APPLE_CERTIFICATE
           # below. See apps/desktop/SIGNING.md for the one-time secret
           # setup.
-          jq --arg url "${{ steps.env.outputs.frontend_url }}" '
+          #
+          # The updater endpoint is also env-specific: dev builds poll
+          # dev.isol8.co/api/desktop/update; prod builds poll isol8.co.
+          # Each endpoint queries GitHub Releases under the corresponding
+          # tag prefix (`desktop-dev-v*` vs `desktop-v*`) and returns a
+          # Tauri-compatible manifest. See apps/frontend/src/app/api/desktop/update/.
+          UPDATE_URL="${{ steps.env.outputs.frontend_url == 'https://dev.isol8.co/chat' && 'https://dev.isol8.co' || 'https://isol8.co' }}/api/desktop/update/{{target}}/{{current_version}}"
+          jq --arg url "${{ steps.env.outputs.frontend_url }}" \
+             --arg updateUrl "$UPDATE_URL" '
             .build.devUrl = $url |
             .build.frontendDist = $url |
-            .app.windows[0].url = $url
+            .app.windows[0].url = $url |
+            .plugins.updater.endpoints = [$updateUrl]
           ' "$TAURI_CFG" > "$TAURI_CFG.new"
           mv "$TAURI_CFG.new" "$TAURI_CFG"
           echo "Patched tauri.conf.json:"
-          jq '{devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity}' "$TAURI_CFG"
+          jq '{devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity, updaterEndpoints: .plugins.updater.endpoints}' "$TAURI_CFG"
 
       # Vendor Node.js + pinned `openclaw` npm package for THIS arch only.
       # Previously vendored both arches for the universal build; with the
@@ -191,4 +200,13 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Tauri updater bundle signing (separate from Apple code
+          # signing). When createUpdaterArtifacts:true is set in
+          # tauri.conf.json and these env vars are present, tauri-action
+          # emits Isol8_<ver>_<arch>.app.tar.gz + a matching .sig
+          # signed with the minisign-format Ed25519 key. The .sig content
+          # is what the updater endpoint embeds in its manifest; client-
+          # side verification uses the pubkey baked into tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ISOL8_CALLBACK_URL: ${{ steps.env.outputs.callback_url }}

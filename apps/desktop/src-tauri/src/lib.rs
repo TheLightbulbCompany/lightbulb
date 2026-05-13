@@ -7,6 +7,7 @@ mod tray;
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, Manager, State, Url};
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_updater::UpdaterExt;
 
 /// Shared auth token state
 pub struct AuthState {
@@ -150,6 +151,86 @@ fn get_node_status(state: State<'_, NodeState>) -> String {
     state.status.lock().unwrap().clone()
 }
 
+/// Result of an updater check, serialized for the webview.
+///
+/// `UpToDate` means the running version matches the latest published.
+/// `Available` carries the new version + release notes so the UI can
+/// surface a friendly prompt before the user opts in to install.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+enum UpdateCheckResult {
+    UpToDate,
+    Available {
+        version: String,
+        notes: Option<String>,
+    },
+}
+
+/// Ask the updater endpoint if a newer signed build exists.
+///
+/// The endpoint URL is in tauri.conf.json (plugins.updater.endpoints) and
+/// served by apps/frontend/src/app/api/desktop/update/[target]/[current_version]/route.ts.
+/// Returns up_to_date or available — never errors on "no update", only on
+/// network / verification failures.
+#[tauri::command]
+async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
+    log("[updater] check requested");
+    let updater = app.updater().map_err(|e| {
+        log(&format!("[updater] failed to acquire updater: {}", e));
+        e.to_string()
+    })?;
+    match updater.check().await {
+        Ok(Some(update)) => {
+            log(&format!(
+                "[updater] update available: {} -> {}",
+                update.current_version, update.version
+            ));
+            Ok(UpdateCheckResult::Available {
+                version: update.version.clone(),
+                notes: update.body.clone(),
+            })
+        }
+        Ok(None) => {
+            log("[updater] up to date");
+            Ok(UpdateCheckResult::UpToDate)
+        }
+        Err(e) => {
+            log(&format!("[updater] check failed: {}", e));
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Download + install the available update, then restart the app.
+///
+/// Tauri's updater verifies the bundle's minisign signature against
+/// the pubkey in tauri.conf.json before installing — a wrong-key bundle
+/// is rejected. After install completes the app is restarted into the
+/// new version.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    log("[updater] install requested");
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no update available".to_string())?;
+    log(&format!(
+        "[updater] installing {} -> {}",
+        update.current_version, update.version
+    ));
+    update
+        .download_and_install(|_chunk, _total| {}, || log("[updater] download finished, installing"))
+        .await
+        .map_err(|e| {
+            log(&format!("[updater] install failed: {}", e));
+            e.to_string()
+        })?;
+    log("[updater] install complete, restarting");
+    app.restart();
+}
+
 /// OAuth domains that must open in the system browser. Clerk's OAuth flow
 /// redirects through Clerk's own frontend API first (e.g.
 /// `up-moth-55.clerk.accounts.dev/v1/oauth_callback/...`), THEN to the
@@ -266,6 +347,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("oauth-intercept")
                 .on_navigation(|_window, url| {
@@ -321,6 +403,8 @@ end tell"#,
             send_auth_token,
             is_desktop,
             get_node_status,
+            check_for_updates,
+            install_update,
         ])
         .setup(|app| {
             log("[setup] Isol8 desktop app starting");

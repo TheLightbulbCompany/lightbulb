@@ -89,6 +89,8 @@ export type AnalyticsEvent =
   // Desktop app
   | "desktop_update_check_clicked"
   | "desktop_update_install_clicked"
+  | "desktop_file_access_added"
+  | "desktop_file_access_removed"
   // Cron
   | "cron_job_created"
   | "cron_job_deleted"

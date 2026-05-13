@@ -10,13 +10,14 @@ import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
+import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
 import { cn } from "@/lib/utils";
 
 // =============================================================================
 // Types & Navigation
 // =============================================================================
 
-type Panel = "profile" | "billing" | "channels" | "webhooks";
+type Panel = "profile" | "billing" | "channels" | "webhooks" | "desktop";
 
 const NAV_SECTIONS = [
   {
@@ -26,6 +27,7 @@ const NAV_SECTIONS = [
       { id: "billing" as Panel, name: "Billing", icon: "billing" },
       { id: "channels" as Panel, name: "Channels", icon: "channels" },
       { id: "webhooks" as Panel, name: "Webhooks", icon: "webhooks" },
+      { id: "desktop" as Panel, name: "Desktop", icon: "desktop" },
     ],
   },
 ];
@@ -251,6 +253,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   billing: BillingPanel,
   channels: ChannelsPanel,
   webhooks: WebhooksPanel,
+  desktop: DesktopFileAccess,
 };
 
 // =============================================================================
@@ -276,7 +279,7 @@ function SettingsPageInner() {
   const searchParams = useSearchParams();
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
-    initialPanelParam === "billing" || initialPanelParam === "channels" || initialPanelParam === "webhooks" ? initialPanelParam : "profile";
+    initialPanelParam === "billing" || initialPanelParam === "channels" || initialPanelParam === "webhooks" || initialPanelParam === "desktop" ? initialPanelParam : "profile";
   const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 

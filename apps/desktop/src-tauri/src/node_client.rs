@@ -363,6 +363,15 @@ where
                 "device.health",
                 "device.permissions",
                 "browser.proxy",
+                // file-transfer + screen capture commands (handlers in
+                // src/file_transfer.rs). Path-policy enforcement happens
+                // client-side via file_access::ensure_inside_allowlist;
+                // gateway's allowedPaths is defense-in-depth only.
+                "file.fetch",
+                "file.write",
+                "dir.list",
+                "dir.fetch",
+                "screen.snapshot",
             ],
             "pathEnv": std::env::var("PATH").unwrap_or_default(),
             "auth": {},

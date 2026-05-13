@@ -114,7 +114,11 @@ def load_node_device_identity(private_key_pem: str) -> dict:
     }
 
 
-def _build_node_paired_entry(device_id: str, public_key_b64: str) -> dict:
+def _build_node_paired_entry(
+    device_id: str,
+    public_key_b64: str,
+    declared_commands: list[str] | None = None,
+) -> dict:
     """One `devices/paired.json` entry for the in-container node role.
 
     The ``tokens.node`` sub-entry is load-bearing in OpenClaw >= 2026.5.7.
@@ -140,6 +144,14 @@ def _build_node_paired_entry(device_id: str, public_key_b64: str) -> dict:
         "roles": ["node"],
         "scopes": [],
         "approvedScopes": [],
+        # Pre-approved commands list — `reconcileNodePairingOnConnect`
+        # in upstream's gateway/node-connect-reconcile.ts compares the
+        # device's declared commands against this on every reconnect.
+        # If the declared list has anything not here, the gateway opens
+        # a pending pairing request AND zeros out effectiveCommands —
+        # which makes `exec host=node` fail with "node doesn't support
+        # system.run". Mirror whatever the desktop just declared.
+        "commands": declared_commands or [],
         "tokens": {
             "node": {
                 "token": secrets.token_urlsafe(32),
@@ -158,6 +170,7 @@ def ensure_node_paired_entry(
     owner_id: str,
     device_id: str,
     public_key_b64: str,
+    declared_commands: list[str] | None = None,
 ) -> bool:
     """Idempotently append a ``node`` entry to ``<owner>/devices/paired.json``.
 
@@ -236,37 +249,54 @@ def ensure_node_paired_entry(
                 )
                 entries = {}
 
-            if device_id in entries:
-                existing = entries[device_id]
-                # OpenClaw 2026.5.7+ requires a `tokens.<role>` entry for
-                # role-upgrade gate (see _build_node_paired_entry docstring).
-                # Existing pre-2026.5.7 records written without a tokens
-                # block fail closed; patch them in-place on next connect.
-                if (
-                    isinstance(existing, dict)
-                    and isinstance(existing.get("tokens"), dict)
-                    and isinstance(existing["tokens"].get("node"), dict)
-                    and existing["tokens"]["node"].get("token")
-                ):
-                    return False  # Already has tokens.node — true no-op.
-                if not isinstance(existing, dict):
-                    # Garbage entry — replace wholesale.
-                    entries[device_id] = _build_node_paired_entry(device_id, public_key_b64)
-                else:
-                    # Preserve existing fields, just patch in the token.
-                    existing.setdefault("tokens", {})["node"] = {
-                        "token": secrets.token_urlsafe(32),
+            # Single merge path: build the entry we want from
+            # (existing fields, if any) ∪ (required fields for the
+            # current OpenClaw protocol). Avoids forking "create" vs
+            # "upgrade" branches — the function is called on every WS
+            # reconnect anyway, and we want the paired record to keep
+            # converging with the protocol contract over time.
+            #
+            # Required fields per 2026.5.7:
+            #   - tokens.node.token (role-upgrade gate)
+            #   - commands ⊇ desktop's declared list (command-upgrade gate)
+            #   - role / roles / publicKey (basic pairing)
+            existing = entries.get(device_id) if isinstance(entries.get(device_id), dict) else {}
+            want_commands = sorted(set(existing.get("commands") or []) | set(declared_commands or []))
+            existing_token = (
+                existing.get("tokens", {}).get("node", {}).get("token")
+                if isinstance(existing.get("tokens"), dict)
+                else None
+            )
+            now_ms = int(time.time() * 1000)
+            merged = {
+                **existing,
+                "deviceId": device_id,
+                "publicKey": public_key_b64,
+                "role": existing.get("role") or "node",
+                "roles": existing.get("roles") or ["node"],
+                "scopes": existing.get("scopes") or [],
+                "approvedScopes": existing.get("approvedScopes") or [],
+                "commands": want_commands,
+                "tokens": {
+                    **(existing.get("tokens") if isinstance(existing.get("tokens"), dict) else {}),
+                    "node": {
+                        "token": existing_token or secrets.token_urlsafe(32),
                         "role": "node",
                         "scopes": [],
-                        "createdAtMs": int(time.time() * 1000),
-                    }
-                    logger.info(
-                        "Upgraded tokenless paired entry %s with tokens.node for owner %s",
-                        device_id[:16],
-                        owner_id,
-                    )
-            else:
-                entries[device_id] = _build_node_paired_entry(device_id, public_key_b64)
+                        "createdAtMs": (
+                            existing.get("tokens", {}).get("node", {}).get("createdAtMs")
+                            if isinstance(existing.get("tokens"), dict)
+                            else None
+                        )
+                        or now_ms,
+                    },
+                },
+                "createdAtMs": existing.get("createdAtMs") or now_ms,
+                "approvedAtMs": existing.get("approvedAtMs") or now_ms,
+            }
+            if merged == entries.get(device_id):
+                return False  # No diff — skip the disk write.
+            entries[device_id] = merged
 
             fd, tmp_path = tempfile.mkstemp(dir=paired_dir, suffix=".tmp")
             try:
@@ -650,9 +680,13 @@ def build_openclaw_config_dict(
                 # gate); adding entries here without the client declaring
                 # them is a no-op since Stage 1 still rejects.
                 #
-                # File-transfer commands (dir.list, file.fetch, file.write,
-                # dir.fetch) are intentionally omitted — our Rust client
-                # doesn't bundle the file-transfer plugin yet.
+                # File-transfer commands (file.fetch, file.write,
+                # dir.list, dir.fetch) and screen.snapshot are handled
+                # natively by the Rust client (apps/desktop/src-tauri/
+                # src/file_transfer.rs) — NOT through openclaw's bundled
+                # file-transfer plugin's node-host TS code. The Rust impl
+                # enforces a user-managed allowlist client-side
+                # (file_access.rs); this list is just the Stage 2 gate.
                 "allowCommands": [
                     "system.run",
                     "system.run.prepare",
@@ -665,6 +699,11 @@ def build_openclaw_config_dict(
                     "device.status",
                     "device.health",
                     "device.permissions",
+                    "file.fetch",
+                    "file.write",
+                    "dir.list",
+                    "dir.fetch",
+                    "screen.snapshot",
                 ],
             },
         },

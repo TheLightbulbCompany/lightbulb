@@ -650,9 +650,13 @@ def build_openclaw_config_dict(
                 # gate); adding entries here without the client declaring
                 # them is a no-op since Stage 1 still rejects.
                 #
-                # File-transfer commands (dir.list, file.fetch, file.write,
-                # dir.fetch) are intentionally omitted — our Rust client
-                # doesn't bundle the file-transfer plugin yet.
+                # File-transfer commands (file.fetch, file.write,
+                # dir.list, dir.fetch) and screen.snapshot are handled
+                # natively by the Rust client (apps/desktop/src-tauri/
+                # src/file_transfer.rs) — NOT through openclaw's bundled
+                # file-transfer plugin's node-host TS code. The Rust impl
+                # enforces a user-managed allowlist client-side
+                # (file_access.rs); this list is just the Stage 2 gate.
                 "allowCommands": [
                     "system.run",
                     "system.run.prepare",
@@ -665,6 +669,11 @@ def build_openclaw_config_dict(
                     "device.status",
                     "device.health",
                     "device.permissions",
+                    "file.fetch",
+                    "file.write",
+                    "dir.list",
+                    "dir.fetch",
+                    "screen.snapshot",
                 ],
             },
         },

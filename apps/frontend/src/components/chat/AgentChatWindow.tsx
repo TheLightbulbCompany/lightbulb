@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { capture } from "@/lib/analytics";
 import { ChatInput } from "./ChatInput";
@@ -16,17 +16,7 @@ import { Loader2, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGateway } from "@/hooks/useGateway";
 
-import type { ToolUse } from "@/hooks/useAgentChat";
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
-
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  thinking?: string;
-  model?: string;
-  toolUses?: ToolUse[];
-}
 
 interface AgentChatWindowProps {
   agentId: string | null;
@@ -229,7 +219,8 @@ export function AgentChatWindow({
   // userId is always defined here — ChatLayout gates on clerkLoaded && isSignedIn.
   const sessionName = userId!;
   const {
-    messages: chatMessages,
+    renderGroups,
+    renderItems,
     isStreaming,
     error: chatError,
     sendMessage,
@@ -250,8 +241,7 @@ export function AgentChatWindow({
   const [isUploading, setIsUploading] = useState(false);
   const messageListRef = useRef<MessageListHandle>(null);
 
-  const isInitialState = chatMessages.length === 0;
-  const isTyping = isStreaming;
+  const isInitialState = renderGroups.length === 0;
 
   const prevAgentIdRef = useRef<string | null | undefined>(undefined);
 
@@ -301,31 +291,25 @@ export function AgentChatWindow({
     [sendMessage, api, agentId],
   );
 
-  const messages: Message[] = useMemo(
-    () =>
-      chatMessages.map((msg, i) => ({
-        id: String(i),
-        role: msg.role,
-        content: msg.content,
-        ...(msg.thinking ? { thinking: msg.thinking } : {}),
-        ...(msg.toolUses?.length ? { toolUses: msg.toolUses } : {}),
-        ...(msg.errorCode ? { errorCode: msg.errorCode } : {}),
-      })),
-    [chatMessages],
-  );
-
   if (chatError) {
     return (
       <div className="flex flex-col h-full bg-[#faf7f2]">
         <div className="flex-1 flex flex-col">
-          {messages.length > 0 && (
-            <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} agentName={agentName} onOpenFile={onOpenFile} />
+          {renderGroups.length > 0 && (
+            <MessageList
+              ref={messageListRef}
+              renderGroups={renderGroups}
+              agentName={agentName}
+              onOpenFile={onOpenFile}
+              isStreaming={isStreaming}
+              isTyping={isStreaming}
+            />
           )}
           <div className="p-4 m-4 bg-[#fce4ec] border border-[#f8bbd0] text-[#a5311f] rounded-lg">
             <p className="font-medium">Error</p>
             <p className="text-sm">{chatError}</p>
           </div>
-          <StreamingStatusBar isStreaming={isStreaming} messages={messages} />
+          <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} />
           <ExecApprovalCards />
           <ChatInput
             onSend={handleSend}
@@ -391,9 +375,16 @@ export function AgentChatWindow({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
-      <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} agentName={agentName} onOpenFile={onOpenFile} />
+      <MessageList
+        ref={messageListRef}
+        renderGroups={renderGroups}
+        agentName={agentName}
+        onOpenFile={onOpenFile}
+        isStreaming={isStreaming}
+        isTyping={isStreaming}
+      />
       <UpdateBanner />
-      <StreamingStatusBar isStreaming={isStreaming} messages={messages} />
+      <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} />
       <ExecApprovalCards />
       <ChatInput
         onSend={handleSend}

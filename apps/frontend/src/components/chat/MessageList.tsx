@@ -45,10 +45,15 @@ export interface ToolUse {
 }
 
 /**
- * Legacy flat-message shape. Retained as a transitional export so external
- * consumers (StreamingStatusBar, RunTranscript via sessionMessageAdapter)
- * keep typechecking until Tasks 7 + 8 cut them over. Internally, MessageList
- * walks `renderGroups` from useAgentChat instead.
+ * Legacy flat-message shape. As of Task 8 (plan 2026-05-13), no `src/`
+ * consumer references it any more — RunTranscript and StreamingStatusBar
+ * have both been migrated. The only remaining importer is
+ * `tests/unit/components/chat/StreamingStatusBar.test.tsx`, which tests
+ * the pre-migration `messages` prop shape. Once that test is rewritten
+ * or removed (see Task 9 / 10 of the flat-chat-timeline plan), these
+ * transitional types (Message + ToolUse + ToolResultBlock) can be
+ * deleted outright.
+ * TODO(flat-chat-timeline): remove after StreamingStatusBar test is updated.
  */
 export interface Message {
   id: string;

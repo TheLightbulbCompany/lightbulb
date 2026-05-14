@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -155,19 +156,157 @@ async def _friday_poll_pass(
                 changed.append((issue_id, prev, status))
             cache[issue_id] = status
 
-        if changed:
-            put_metric("friday_poll.status_change_detected", value=len(changed))
-            for issue_id, prev, new in changed:
-                logger.info(
-                    "friday_poll: status change detected owner=%s issue=%s %s→%s",
-                    owner_id, issue_id, prev, new,
-                )
-            # TODO(orchestration): wake Friday for this owner with a
-            # synthetic session key (``paperclip:poll:<owner_id>``) so
-            # she can call paperclip_get_issue_status and triage. The
-            # wake mechanism needs the gateway protocol confirmed —
-            # specifically how to send a ``req agent`` frame outside
-            # of an issue-driven Paperclip wake. Tracked separately.
+        if not changed:
+            continue
+
+        put_metric("friday_poll.status_change_detected", value=len(changed))
+        for issue_id, prev, new in changed:
+            logger.info(
+                "friday_poll: status change detected owner=%s issue=%s %s→%s",
+                owner_id, issue_id, prev, new,
+            )
+
+        # Look up Friday's UUID from the roster (role="ceo"). If there's
+        # no CEO yet, skip the wake — the company was provisioned without
+        # Friday somehow, and there's nothing to wake.
+        try:
+            roster = await admin_client.list_agents(
+                session_cookie=cookie,
+                company_id=company_id,
+            )
+        except (PaperclipApiError, httpx.HTTPError) as e:
+            logger.warning(
+                "friday_poll: list_agents failed for owner=%s company=%s: %s",
+                owner_id, company_id, e,
+            )
+            put_metric("friday_poll.list_agents.error")
+            continue
+
+        if not isinstance(roster, list):
+            continue
+        friday = next((a for a in roster if a.get("role") == "ceo"), None)
+        if friday is None or not friday.get("id"):
+            logger.info(
+                "friday_poll: no CEO in roster for owner=%s — skipping wake",
+                owner_id,
+            )
+            continue
+
+        await _wake_friday_for_status_changes(
+            owner_id=owner_id,
+            friday_uuid=friday["id"],
+            changed=changed,
+        )
+
+
+def _build_wake_message(changed: list[tuple[str, str, str]]) -> str:
+    """Build the chat.send message body for a poll-wake.
+
+    Friday reads this on a fresh session keyed to ``paperclip:poll:<owner_id>``
+    and is expected to call ``paperclip_get_issue_status`` per issue + triage
+    per her AGENTS.md doctrine.
+    """
+    if len(changed) == 1:
+        issue_id, prev, new = changed[0]
+        return (
+            f"Issue {issue_id} just changed status: {prev} → {new}. "
+            "Call paperclip_get_issue_status to read the latest, then triage "
+            "(self-resolve, reroute, ask the user, hire, or be honest about a "
+            "dead end). If the user needs to know, post in chat."
+        )
+    lines = [f"  • {iid} ({prev} → {new})" for iid, prev, new in changed]
+    return (
+        f"{len(changed)} issues just changed status:\n"
+        + "\n".join(lines)
+        + "\n\nCall paperclip_get_issue_status on each and triage per your "
+        "playbook. Surface anything the user should know in chat."
+    )
+
+
+async def _wake_friday_for_status_changes(
+    *,
+    owner_id: str,
+    friday_uuid: str,
+    changed: list[tuple[str, str, str]],
+) -> None:
+    """Send Friday a chat.send poll-wake.
+
+    Mirrors ``routers/websocket_chat.py:_process_agent_chat_background``:
+    resolve the owner's container row → grab the singleton gateway pool →
+    ``mark_run_active`` → ``send_rpc(method="chat.send", ...)``. There is
+    no separate "wake" frame — the gateway only has one knock, and it's
+    the same ``chat.send`` RPC the user-typed chat path uses (the {type:
+    "req"} envelope around it is constructed inside the pool — see
+    ``core/gateway/connection_pool.py``).
+
+    send_rpc returns only the ack. Streaming chunks come back via the
+    pool's reader task fanning out to whatever WS connections the user
+    has registered. For a backend-initiated wake there is no human WS
+    to fan to — that's fine for a triage poke, since Friday's run +
+    memory write happens inside OpenClaw regardless. If we ever want
+    the wake's output surfaced (e.g. to send a notification), we'd
+    register a synthetic subscriber rather than reading send_rpc's
+    return value.
+    """
+    from core.containers import get_ecs_manager, get_gateway_pool
+
+    ecs_manager = get_ecs_manager()
+    pool = get_gateway_pool()
+
+    try:
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
+    except Exception:
+        logger.exception("friday_poll.wake: resolve_running_container raised for owner=%s", owner_id)
+        put_metric("friday_poll.wake.resolve_error")
+        return
+
+    if not container or not ip:
+        # Container scaled to zero or not yet provisioned — skip the wake.
+        # Status changes already cached; next pass will re-trigger if the
+        # container is reachable then.
+        put_metric("friday_poll.wake.container_unreachable")
+        logger.info(
+            "friday_poll.wake: container unreachable for owner=%s — skipping",
+            owner_id,
+        )
+        return
+
+    session_key = f"paperclip:poll:{owner_id}"
+    message = _build_wake_message(changed)
+
+    # Open the active-run window BEFORE forwarding chat.send so the WS
+    # parked-vs-dead decision keys correctly if the connection drops
+    # mid-turn. Mirrors the rationale at websocket_chat.py:1075-1082.
+    pool.mark_run_active(owner_id, session_key, friday_uuid)
+
+    try:
+        await pool.send_rpc(
+            user_id=owner_id,
+            req_id=f"friday-poll-{uuid4()}",
+            method="chat.send",
+            params={
+                "sessionKey": session_key,
+                "message": message,
+                "idempotencyKey": str(uuid4()),
+            },
+            ip=ip,
+            token=container["gateway_token"],
+        )
+    except Exception:
+        # Wake failures are best-effort — next pass tries again. Don't
+        # let one bad container break the loop for other owners.
+        logger.exception(
+            "friday_poll.wake: send_rpc failed for owner=%s friday=%s",
+            owner_id, friday_uuid,
+        )
+        put_metric("friday_poll.wake.error")
+        return
+
+    put_metric("friday_poll.wake.success")
+    logger.info(
+        "friday_poll.wake: woke Friday owner=%s session=%s changes=%d",
+        owner_id, session_key, len(changed),
+    )
 
 
 async def _iter_active_companies(repo: PaperclipRepo) -> list[Any]:

@@ -2,10 +2,17 @@
 /**
  * Agent chat hook that uses the shared GatewayProvider WebSocket.
  *
+ * State model mirrors upstream OpenClaw control-ui's flat-message + parallel
+ * arrays shape (chatMessages + chatStream + chatStreamSegments +
+ * chatToolMessages + toolStreamById). Live thinking is preserved as an
+ * Isol8-specific addition.
+ *
  * Message protocol (unchanged):
  * - Send: { type: "agent_chat", agent_id: string, message: string }
- * - Receive: { type: "chunk", content: string }
- * - Receive: { type: "done" }
+ * - Receive: { type: "chunk", content: string, runId }
+ * - Receive: { type: "thinking", content: string, runId }
+ * - Receive: { type: "tool_start" | "tool_end" | "tool_error", ... }
+ * - Receive: { type: "done", runId }
  * - Receive: { type: "error", message: string }
  * - Receive: { type: "heartbeat" }
  */
@@ -17,12 +24,26 @@ import {
   useGateway,
   type ChatIncomingMessage,
 } from "@/hooks/useGateway";
-import type { ToolUse } from "@/components/chat/MessageList";
 import { capture } from "@/lib/analytics";
+import type {
+  HistoryMessage,
+  ContentBlock,
+  ToolStreamEntry,
+  ChatRenderItem,
+  RenderGroup,
+} from "./internal/types";
+import { projectChatHistoryMessages } from "./internal/chatHistoryFilters";
+import { buildChatItems } from "./internal/buildChatItems";
+import { groupBySide } from "./internal/groupBySide";
 
-// Re-export ToolUse so existing consumers (AgentChatWindow) keep working
-// after this hook switched to the canonical MessageList definition.
-export type { ToolUse } from "@/components/chat/MessageList";
+// Re-export types from internal modules for consumers.
+export type {
+  HistoryMessage,
+  ContentBlock,
+  ChatRenderItem,
+  RenderGroup,
+  RenderSide,
+} from "./internal/types";
 
 // =============================================================================
 // Friendly error messages
@@ -55,51 +76,11 @@ function friendlyError(raw: string): string {
 }
 
 // =============================================================================
-// Content extraction
-// =============================================================================
-
-/**
- * Extract text from OpenClaw message content blocks.
- * chat.history returns content as an array of blocks: [{ type: "text", text: "..." }, ...]
- */
-interface ContentBlock {
-  type: string;
-  text?: string;
-  thinking?: string;
-}
-
-function extractTextContent(content: ContentBlock[]): string {
-  return content
-    .filter((block) => block.type === "text" || block.type === "output_text" || block.type === "input_text")
-    .map((block) => block.text ?? "")
-    .join("");
-}
-
-function extractThinkingContent(content: ContentBlock[]): string {
-  return content
-    .filter((block) => block.type === "thinking")
-    .map((block) => block.thinking ?? block.text ?? "")
-    .join("\n\n");
-}
-
-// =============================================================================
 // Types
 // =============================================================================
 
-export interface AgentMessage {
-  role: "user" | "assistant";
-  content: string;
-  thinking?: string;
-  toolUses?: ToolUse[];
-  /**
-   * Set when the assistant bubble represents a terminal agent error. The
-   * value is OpenClaw's `errorKind` (refusal | timeout | rate_limit |
-   * context_length | unknown) forwarded by the backend. MessageList uses
-   * this to render a typed error card with tailored copy / actions.
-   * Undefined for normal assistant bubbles.
-   */
-  errorCode?: string;
-}
+export const BOOTSTRAP_MESSAGE =
+  "Hello! Please run Bootstrap.md — I'd love to learn about everyday life use cases where you can be helpful and automate work for me.";
 
 /**
  * A user-typed message that arrived while a previous turn was still in
@@ -113,11 +94,12 @@ export interface QueuedMessage {
   createdAt: number;
 }
 
-export const BOOTSTRAP_MESSAGE =
-  "Hello! Please run Bootstrap.md — I'd love to learn about everyday life use cases where you can be helpful and automate work for me.";
-
 export interface UseAgentChatReturn {
-  messages: AgentMessage[];
+  /** Final rendered groups, ready for MessageList to walk. */
+  renderGroups: RenderGroup[];
+  /** Raw flat items before grouping — exposed for snapshot testing and StreamingStatusBar. */
+  renderItems: ChatRenderItem[];
+  /** Whether a user-turn is in flight (chatStream non-null OR live tools running OR clientRunIdRef set). */
   isStreaming: boolean;
   error: string | null;
   sendMessage: (message: string) => Promise<void>;
@@ -126,20 +108,9 @@ export interface UseAgentChatReturn {
   isConnected: boolean;
   isLoadingHistory: boolean;
   needsBootstrap: boolean;
-  // ↓ new: chat-queue surface, mirrors upstream OpenClaw control-ui
-  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217,420-426).
   queuedMessages: QueuedMessage[];
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
-}
-
-interface InternalMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  thinking?: string;
-  toolUses?: ToolUse[];
-  errorCode?: string;
 }
 
 // =============================================================================
@@ -150,7 +121,7 @@ interface InternalMessage {
 // is preserved independently.
 // =============================================================================
 
-const _messageCache = new Map<string, InternalMessage[]>();
+const _messageCache = new Map<string, HistoryMessage[]>();
 const _needsBootstrap = new Set<string>();
 
 // =============================================================================
@@ -163,112 +134,60 @@ const _needsBootstrap = new Set<string>();
 // =============================================================================
 
 export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
-  // `onEvent` is now also consumed here to track exec.approval.{requested,
-  // resolved} lifecycle for the per-session busy gate. The exec-approval
-  // card rendering is still owned by useExecApprovals at the chat-shell
-  // level — we only listen so we know not to clear `clientRunIdRef` mid-
-  // approval (upstream issue openclaw/openclaw#70953: exec approvals don't
-  // actually pause the agent turn; chat.final fires while the user is
-  // still deciding, then a new run is initiated on resolve).
-  const { isConnected, sendChat, onChatMessage, sendReq, onEvent } = useGateway();
+  const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
 
   // Cache key includes session name so org members don't share history cache
   const cacheKey = agentId ? `${agentId}:${sessionName}` : null;
 
-  const [messages, setMessages] = useState<InternalMessage[]>(
+  // Persisted messages — from chat.history + chat.final synthesis.
+  const [chatMessages, setChatMessages] = useState<HistoryMessage[]>(
     () => (cacheKey ? _messageCache.get(cacheKey) ?? [] : []),
   );
+
+  // Live state for the in-flight run.
+  const [chatStream, setChatStream] = useState<string | null>(null);
+  const chatStreamRunIdRef = useRef<string | null>(null);
+  const chatStreamStartedAtRef = useRef<number | null>(null);
+
+  // Live thinking — Isol8 addition.
+  const [chatStreamThinking, setChatStreamThinking] = useState<string | null>(null);
+  const chatStreamThinkingRunIdRef = useRef<string | null>(null);
+
+  // Stream segments (text fragments committed when a tool interrupts streaming).
+  const [chatStreamSegments, setChatStreamSegments] = useState<Array<{ text: string; ts: number }>>([]);
+
+  // Live tool state.
+  const [chatToolMessages, setChatToolMessages] = useState<HistoryMessage[]>([]);
+  const toolStreamByIdRef = useRef<Map<string, ToolStreamEntry>>(new Map());
+  const toolStreamOrderRef = useRef<string[]>([]);
+
   const [isStreaming, _setIsStreamingRaw] = useState(false);
   const isStreamingRef = useRef(false);
   const setIsStreaming = useCallback((value: boolean) => {
     isStreamingRef.current = value;
     _setIsStreamingRaw(value);
   }, []);
+
   const [error, setError] = useState<string | null>(null);
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
 
-  // Multi-bubble: one assistant message per OpenClaw runId. OpenClaw assigns
-  // a new runId per LLM turn within a single chat.send; each turn gets its
-  // own bubble.
-  // See docs/superpowers/specs/2026-04-21-multi-bubble-chat-design.md.
-  type RunState = {
-    messageId: string;
-    streamContent: string;
-    thinking: string;
-  };
-  const runsRef = useRef<Map<string, RunState>>(new Map());
-
-  // Tracks runIds that have been finalized (done / error / budget / cancel /
-  // clear / agent-drop). Any late chunk/thinking/tool_start event arriving for
-  // one of these runIds is silently dropped by getOrCreateBubble — without
-  // this, such a late event would create a brand-new empty assistant bubble
-  // and flip isStreaming back to true (ghost-bubble regression, M1).
-  //
-  // Bounded to ~100 entries via FIFO eviction below; the first-inserted runId
-  // is evicted when the set would otherwise grow past the cap. This avoids
-  // unbounded growth over long sessions while still covering the protocol's
-  // realistic out-of-order window (events straggle within a single turn, not
-  // across dozens of turns).
-  const finalizedRunsRef = useRef<Set<string>>(new Set());
-
-  // When cancelMessage/clearMessages fires before any event has arrived for
-  // the in-flight turn, we don't know what runId the server will use — so
-  // we can't pre-populate finalizedRunsRef. This flag closes the window:
-  // any unknown runId arriving while pending-cancel is set is treated as
-  // the cancelled turn and silently dropped. Cleared on the next
-  // sendMessage.
+  // Cancel-before-first-event window (preserved from previous design).
   const pendingCancelRef = useRef<boolean>(false);
 
-  // Analytics: wall-clock when the user hit send (one per turn). Used to
-  // compute duration_ms for the `chat_completed` event. Cleared on the
-  // terminal event for the turn (all runs finalized, cancel, or error).
+  // Analytics counters.
   const turnStartedAtRef = useRef<number | null>(null);
-  // Accumulates assistant content length across all runs in the current
-  // turn — multiple runIds can stream in a single chat.send when the agent
-  // chains sub-turns. We sum the FINAL streamContent of each run when it
-  // finalizes so `assistant_message_length` reflects what the user saw.
   const turnAssistantLenRef = useRef<number>(0);
 
-  // Hoisted above finalizeBubble so the turn-complete analytics capture
-  // can read the current agent id without TS "used before declaration"
-  // complaints. Kept in sync by the effect further down.
+  // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
 
-  // Upstream pattern: one client-assigned UUID per user-initiated chat.send.
-  // Cleared only on the chat.final / aborted / error event whose runId
-  // matches this UUID. Distinct from runsRef (per-bubble) — they are
-  // orthogonal: bubbles are for display, this flag is for send gating.
-  // See ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:627-770.
+  // Busy gate — preserved from PR #621. NO approval-pause guard from #628.
   const clientRunIdRef = useRef<string | null>(null);
 
-  // Exec-approval pause tracking. Upstream (openclaw/openclaw#70953) does
-  // not actually suspend the agent run when a tool needs approval — the
-  // exec tool returns `approval-pending` as a normal tool result, chat.final
-  // fires for the run, and a fresh run is started when the user resolves.
-  // Without these refs, the chat.final clears `clientRunIdRef`, the busy
-  // gate opens, and any user send during the approval pause races with the
-  // eventual resume — re-introducing the JSONL interleave fixed in #621.
-  //
-  // pendingApprovalsRef: set of approvalId values currently awaiting the
-  //   user's decision, scoped to THIS session (agent + member). The done /
-  //   error handlers check this set and skip clearing clientRunIdRef while
-  //   non-empty.
-  // awaitingResumeAfterApprovalRef: true between the last pending approval
-  //   being resolved and the first agent event of the resumed run arriving.
-  //   getOrCreateBubble swaps clientRunIdRef onto the resumed run's id so
-  //   the eventual chat.final for the new run will clear the gate.
-  const pendingApprovalsRef = useRef<Set<string>>(new Set());
-  const awaitingResumeAfterApprovalRef = useRef<boolean>(false);
-
-  // Frontend chat queue: when the user types while clientRunIdRef.current
-  // is set (user-turn in progress), new sends push here instead of firing
-  // immediately. Drained one-at-a-time on the busy→idle transition. Mirrors
-  // ~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217,388-417.
+  // Queue (preserved from #621).
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
-  // Keep the ref in sync so setMessages-style updates can read fresh state
-  // from inside event handler callbacks without stale-closure bugs.
   useEffect(() => {
     queuedMessagesRef.current = queuedMessages;
   }, [queuedMessages]);
@@ -281,182 +200,78 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setQueuedMessages([]);
   }, []);
 
-  // Subscribe to exec.approval.{requested,resolved} for this session. See
-  // the pendingApprovalsRef declaration above for why we care: chat.final
-  // fires mid-approval upstream, and the busy-gate must stay armed until
-  // the approval is resolved AND the resumed run starts. Event filter
-  // matches useExecApprovals' isApprovalForCurrentUser semantics: the
-  // sessionKey on the request payload is `agent:<agentId>:<memberId>`,
-  // and we only care about approvals for the agent + member this hook
-  // instance is tracking. Returning the unsubscribe callback from the
-  // effect cleans up on unmount or agent switch.
-  useEffect(() => {
-    return onEvent((eventName, data) => {
-      if (eventName === "exec.approval.requested") {
-        const p = data as { id?: string; request?: { sessionKey?: string } };
-        const currentAgentId = agentIdRef.current;
-        if (!p?.id || !currentAgentId) return;
-        const expectedSessionKey = `agent:${currentAgentId}:${sessionName}`;
-        if (p.request?.sessionKey === expectedSessionKey) {
-          pendingApprovalsRef.current.add(p.id);
-        }
-        return;
-      }
-      if (eventName === "exec.approval.resolved") {
-        const p = data as { id?: string };
-        if (!p?.id) return;
-        // Only react if THIS hook tracked the matching request. A
-        // server-side resolution (CLI, another tab) for an approval we
-        // never tracked would otherwise spuriously arm
-        // awaitingResumeAfterApprovalRef and confuse the resume-swap.
-        if (pendingApprovalsRef.current.delete(p.id)) {
-          if (pendingApprovalsRef.current.size === 0) {
-            awaitingResumeAfterApprovalRef.current = true;
-          }
-        }
-      }
-    });
-  }, [onEvent, sessionName]);
-
-  const getOrCreateBubble = useCallback((runId: string): string | null => {
-    // Cancel-before-first-event race: if the user hit Stop/Clear BEFORE any
-    // chunk/thinking/tool_start arrived for the in-flight turn, runsRef was
-    // empty — so finalizeAllActiveRuns had no runIds to tombstone. A late
-    // first event for that cancelled turn would otherwise fall through to
-    // bubble-creation below, spawning a ghost bubble and flipping
-    // isStreaming back to true (silently undoing the cancel). Treat any
-    // unknown runId arriving during the pending-cancel window as the
-    // cancelled turn and drop it.
-    const existing = runsRef.current.get(runId);
-    if (!existing && pendingCancelRef.current) {
-      finalizedRunsRef.current.add(runId);
-      if (finalizedRunsRef.current.size > 100) {
-        const first = finalizedRunsRef.current.values().next().value;
-        if (first) finalizedRunsRef.current.delete(first);
-      }
-      return null;
-    }
-
-    // Late event for an already-finalized run — drop silently. This
-    // replicates the old `if (!currentAssistantIdRef.current) return;`
-    // blanket guard, but scoped to truly-finalized runs instead of the
-    // global streaming flag.
-    if (finalizedRunsRef.current.has(runId)) {
-      return null;
-    }
-
-    if (existing) return existing.messageId;
-
-    // Resume-swap: if we're awaiting a resumed run after an exec-approval
-    // resolution and this is the first event for an unseen runId, transfer
-    // the busy gate from the (already-finalized) prior runId onto this new
-    // run. The next chat.final for THIS runId will correctly clear the gate.
-    // Conditions:
-    //   - clientRunIdRef armed AND mismatched (otherwise no transfer needed)
-    //   - awaitingResumeAfterApprovalRef set (we expect a resume)
-    //   - runId not in runsRef (genuinely new — first event for the run)
-    if (
-      awaitingResumeAfterApprovalRef.current &&
-      clientRunIdRef.current !== null &&
-      clientRunIdRef.current !== runId
-    ) {
-      clientRunIdRef.current = runId;
-      awaitingResumeAfterApprovalRef.current = false;
-    }
-
-    const messageId = `assistant-${crypto.randomUUID()}`;
-    runsRef.current.set(runId, { messageId, streamContent: "", thinking: "" });
-    setMessages((prev) => [
-      ...prev,
-      { id: messageId, role: "assistant", content: "" },
-    ]);
-    if (!isStreamingRef.current) {
-      setIsStreaming(true);
-    }
-    return messageId;
-  }, [setIsStreaming]);
-
-  const finalizeBubble = useCallback((runId: string, options?: { errored?: boolean }) => {
-    // Accumulate this run's final assistant content length into the
-    // per-turn counter before we drop the run — the streamContent on the
-    // RunState is the last chunk we received (chunks are replacements,
-    // not deltas), so its length is the final bubble size.
-    const run = runsRef.current.get(runId);
-    if (run) {
-      turnAssistantLenRef.current += run.streamContent.length;
-    }
-    runsRef.current.delete(runId);
-    finalizedRunsRef.current.add(runId);
-    // Bounded LRU-ish: cap size to avoid unbounded growth on long sessions.
-    // Set iteration order is insertion order, so values().next() gives the
-    // oldest entry.
-    if (finalizedRunsRef.current.size > 100) {
-      const first = finalizedRunsRef.current.values().next().value;
-      if (first) finalizedRunsRef.current.delete(first);
-    }
-    if (runsRef.current.size === 0) {
-      setIsStreaming(false);
-      // Skip chat_completed on error paths (Codex P2 on PR #383): scoped
-      // errors call this to clear the bubble, but a failed turn should NOT
-      // be recorded as `chat_completed`. Reset the per-turn counters so a
-      // late successful `done` arriving after the error doesn't emit either.
-      if (options?.errored) {
-        turnStartedAtRef.current = null;
-        turnAssistantLenRef.current = 0;
-        return;
-      }
-      // Turn is fully complete — emit `chat_completed` exactly once per
-      // user-initiated turn. turnStartedAtRef is null for late-arriving
-      // events after cancel/clear, in which case we skip the event.
-      const startedAt = turnStartedAtRef.current;
-      if (startedAt !== null) {
-        capture("chat_completed", {
-          agent_id: agentIdRef.current ?? undefined,
-          duration_ms: Date.now() - startedAt,
-          assistant_message_length: turnAssistantLenRef.current,
-        });
-        turnStartedAtRef.current = null;
-        turnAssistantLenRef.current = 0;
-      }
-    }
-  }, [setIsStreaming]);
-
-  // Mark every currently-active run as finalized, then clear runsRef. Used by
-  // cancel / clear / global-error branches: wiping runsRef without also
-  // populating finalizedRunsRef would let a late in-flight chunk/thinking/
-  // tool_start event slip past getOrCreateBubble (it wouldn't find the runId
-  // in either ref) and spawn a ghost assistant bubble that re-enables
-  // isStreaming — silently undoing the cancel/clear. Never clear
-  // finalizedRunsRef for the same reason; rely on the 100-entry FIFO cap in
-  // finalizeBubble to bound growth.
-  const finalizeAllActiveRuns = useCallback(() => {
-    for (const runId of runsRef.current.keys()) {
-      finalizedRunsRef.current.add(runId);
-      if (finalizedRunsRef.current.size > 100) {
-        const first = finalizedRunsRef.current.values().next().value;
-        if (first) finalizedRunsRef.current.delete(first);
-      }
-    }
-    runsRef.current.clear();
-    // Wipe the per-turn analytics state too. This path runs on terminal
-    // errors (global error, budget exceeded, cancel, clear) where
-    // `chat_completed` should NOT fire — clearing turnStartedAtRef here
-    // is belt-and-braces against a late `done` event sneaking in and
-    // firing a spurious completion capture.
-    turnStartedAtRef.current = null;
-    turnAssistantLenRef.current = 0;
-  }, []);
-
   useEffect(() => {
     agentIdRef.current = agentId;
   }, [agentId]);
 
-  // ---- Sync messages to module-level cache ----
+  // ---- Sync chatMessages to module-level cache ----
   useEffect(() => {
-    if (cacheKey && messages.length > 0) {
-      _messageCache.set(cacheKey, messages);
+    if (cacheKey && chatMessages.length > 0) {
+      _messageCache.set(cacheKey, chatMessages);
     }
-  }, [cacheKey, messages]);
+  }, [cacheKey, chatMessages]);
+
+  // ---- Tool stream sync (Map → state array) ----
+  //
+  // Sync toolStreamById Map → chatToolMessages array (state) for rendering.
+  // Throttled at 80ms (matches upstream) but force-flushed on tool_end.
+  const toolStreamSyncTimerRef = useRef<number | null>(null);
+  const TOOL_STREAM_THROTTLE_MS = 80;
+
+  const syncToolStreamMessages = useCallback(() => {
+    const flush = () => {
+      const ordered: HistoryMessage[] = toolStreamOrderRef.current
+        .map((id) => toolStreamByIdRef.current.get(id))
+        .filter((e): e is ToolStreamEntry => Boolean(e))
+        .map((e) => ({
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: e.toolCallId,
+              name: e.name,
+              args: e.args,
+            },
+            ...(e.output !== undefined
+              ? [
+                  {
+                    type: "tool_result",
+                    tool_use_id: e.toolCallId,
+                    content: e.output,
+                    ...(e.status === "error" ? { isError: true } : {}),
+                  } as ContentBlock,
+                ]
+              : []),
+          ],
+          timestamp: e.updatedAt,
+          runId: e.runId,
+        }));
+      setChatToolMessages(ordered);
+      toolStreamSyncTimerRef.current = null;
+    };
+    if (toolStreamSyncTimerRef.current !== null) {
+      return; // already scheduled
+    }
+    // Force-flush immediately if any entry is in terminal state.
+    const hasTerminal = Array.from(toolStreamByIdRef.current.values()).some(
+      (e) => e.status !== "running",
+    );
+    if (hasTerminal) {
+      flush();
+      return;
+    }
+    toolStreamSyncTimerRef.current = window.setTimeout(flush, TOOL_STREAM_THROTTLE_MS);
+  }, []);
+
+  // Clean up the throttle timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (toolStreamSyncTimerRef.current !== null) {
+        window.clearTimeout(toolStreamSyncTimerRef.current);
+        toolStreamSyncTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // ---- Fetch history on mount / agent change ----
   const historyLoadedRef = useRef<Set<string>>(new Set());
@@ -464,52 +279,26 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   useEffect(() => {
     if (!agentId || !cacheKey || !isConnected) return;
     if (historyLoadedRef.current.has(cacheKey)) return;
-    // Don't fetch if we already have cached messages
     if (_messageCache.has(cacheKey)) {
       historyLoadedRef.current.add(cacheKey);
       return;
     }
-
-    // Session key must match the backend's convention (websocket_chat.py:588):
-    // all users get agent:{agentId}:{userId} to isolate from cron/system activity
     const sessionKey = `agent:${agentId}:${sessionName}`;
-
-    // Use Promise.resolve to move setState into a callback (satisfies react-hooks/set-state-in-effect)
     Promise.resolve().then(() => setHistoryLoadState("loading"));
-
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
-        const historyResult = result as {
-          messages?: Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
-        };
+        const historyResult = result as { messages?: HistoryMessage[] };
         historyLoadedRef.current.add(cacheKey);
         setHistoryLoadState("done");
-
-        if (!historyResult?.messages?.length) {
-          // No history = first time. Flag for bootstrap suggestion in chat input.
+        const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
+        const projected = projectChatHistoryMessages(raw);
+        if (projected.length === 0) {
           _needsBootstrap.add(cacheKey);
           return;
         }
-
-        if (agentIdRef.current !== agentId) return; // agent changed during fetch
-
-        const loaded: InternalMessage[] = historyResult.messages
-          .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { role: string; content: ContentBlock[] }, i: number) => {
-            const thinking = extractThinkingContent(m.content);
-            return {
-              id: `history-${i}`,
-              role: m.role as "user" | "assistant",
-              content: extractTextContent(m.content),
-              ...(thinking ? { thinking } : {}),
-            };
-          })
-          .filter((m) => m.content.length > 0);
-
-        if (loaded.length > 0) {
-          setMessages(loaded);
-          _messageCache.set(cacheKey, loaded);
-        }
+        if (agentIdRef.current !== agentId) return;
+        setChatMessages(projected);
+        _messageCache.set(cacheKey, projected);
       })
       .catch((err: unknown) => {
         console.warn("Failed to fetch chat history:", err);
@@ -521,16 +310,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
   // mutable values are accessed through refs, avoiding stale closures.
-
   useEffect(() => {
     return onChatMessage((msg: ChatIncomingMessage) => {
-      // Drop messages meant for a different agent. Heartbeat and
-      // update_available aren't tied to a specific run. Errors are
-      // allowed through even without agent_id as a safety valve —
-      // some failure paths (client-side validation, etc.) have no
-      // agent context but still need to clear the streaming state.
-      const isUntaggedBroadcast =
-        msg.type === "heartbeat" || msg.type === "update_available";
+      // Drop messages for a different agent (heartbeat / update_available
+      // are broadcast; errors are allowed through for safety).
+      const isUntaggedBroadcast = msg.type === "heartbeat" || msg.type === "update_available";
       const isUntaggedError = msg.type === "error" && msg.agent_id === undefined;
       if (!isUntaggedBroadcast && !isUntaggedError && msg.agent_id !== agentIdRef.current) {
         return;
@@ -538,40 +322,126 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       if (msg.type === "chunk") {
         const runId = msg.runId;
-        const messageId = getOrCreateBubble(runId);
-        // Late event for a finalized run — drop.
-        if (!messageId) return;
-        const run = runsRef.current.get(runId)!;
-        run.streamContent = msg.content;
-        const updatedContent = run.streamContent;
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === messageId ? { ...m, content: updatedContent } : m,
-          ),
-        );
+        // Sub-run boundary: if the incoming chunk has a new runId, commit
+        // the prior stream into chatStreamSegments first.
+        if (chatStreamRunIdRef.current !== null && chatStreamRunIdRef.current !== runId) {
+          const prior = chatStream;
+          if (prior && prior.length > 0) {
+            setChatStreamSegments((segs) => [...segs, { text: prior, ts: Date.now() }]);
+          }
+        }
+        setChatStream(msg.content);
+        chatStreamRunIdRef.current = runId;
+        if (chatStreamStartedAtRef.current === null) {
+          chatStreamStartedAtRef.current = Date.now();
+        }
+        if (!isStreamingRef.current) setIsStreaming(true);
+        return;
+      }
+
+      if (msg.type === "thinking") {
+        const runId = msg.runId;
+        if (chatStreamThinkingRunIdRef.current !== null && chatStreamThinkingRunIdRef.current !== runId) {
+          // No need to commit prior thinking to segments — thinking is rendered
+          // inside its bubble live; final assistant message will carry the
+          // finalized thinking content if any.
+        }
+        setChatStreamThinking(msg.content);
+        chatStreamThinkingRunIdRef.current = runId;
+        if (!isStreamingRef.current) setIsStreaming(true);
+        return;
+      }
+
+      if (msg.type === "tool_start") {
+        const runId = msg.runId;
+        const toolCallId = msg.toolCallId;
+        if (!toolCallId) return;
+
+        // Commit any in-progress chatStream to segments before the tool runs.
+        if (chatStream && chatStream.length > 0) {
+          setChatStreamSegments((segs) => [...segs, { text: chatStream, ts: Date.now() }]);
+          setChatStream(null);
+          chatStreamRunIdRef.current = null;
+        }
+
+        const now = Date.now();
+        const entry: ToolStreamEntry = {
+          toolCallId,
+          runId,
+          name: msg.tool,
+          args: msg.args,
+          status: "running",
+          startedAt: now,
+          updatedAt: now,
+        };
+        toolStreamByIdRef.current.set(toolCallId, entry);
+        if (!toolStreamOrderRef.current.includes(toolCallId)) {
+          toolStreamOrderRef.current.push(toolCallId);
+        }
+        syncToolStreamMessages();
+        if (!isStreamingRef.current) setIsStreaming(true);
+        return;
+      }
+
+      if (msg.type === "tool_end" || msg.type === "tool_error") {
+        const toolCallId = msg.toolCallId;
+        if (!toolCallId) return;
+        const entry = toolStreamByIdRef.current.get(toolCallId);
+        if (!entry) return;
+        entry.output = msg.result;
+        entry.status = msg.type === "tool_error" ? "error" : "done";
+        entry.updatedAt = Date.now();
+        toolStreamByIdRef.current.set(toolCallId, entry);
+        syncToolStreamMessages();
         return;
       }
 
       if (msg.type === "done") {
         const runId = msg.runId;
-        finalizeBubble(runId);
-        // Upstream pattern: only clear the user-turn busy flag when the
-        // terminal event matches OUR clientRunId. Sub-run dones (different
-        // runId) only finalize their bubble. See
-        // ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:769-770.
-        //
-        // Approval-pause guard: chat.final fires mid-approval upstream
-        // (openclaw/openclaw#70953), so this matching done event may NOT
-        // mean the user turn is over. If approvals are pending or we're
-        // waiting for the resumed run's first event, keep the gate armed
-        // — the next chat.final (for the resumed run via getOrCreateBubble's
-        // resume-swap) will clear it then.
+        // Commit any pending stream into a synthesized assistant message.
+        const stream = chatStream;
+        const thinking = chatStreamThinking;
+        if ((stream && stream.length > 0) || (thinking && thinking.length > 0)) {
+          const content: ContentBlock[] = [];
+          if (thinking) content.push({ type: "thinking", thinking });
+          if (stream) content.push({ type: "text", text: stream });
+          const synthesized: HistoryMessage = {
+            role: "assistant",
+            content,
+            timestamp: Date.now(),
+            runId,
+          };
+          setChatMessages((prev) => [...prev, synthesized]);
+          turnAssistantLenRef.current += stream?.length ?? 0;
+        }
+        setChatStream(null);
+        chatStreamRunIdRef.current = null;
+        chatStreamStartedAtRef.current = null;
+        setChatStreamThinking(null);
+        chatStreamThinkingRunIdRef.current = null;
+
+        // Busy-gate clear (no approval-pause guard).
         if (runId === clientRunIdRef.current) {
-          if (
-            pendingApprovalsRef.current.size === 0 &&
-            !awaitingResumeAfterApprovalRef.current
-          ) {
-            clientRunIdRef.current = null;
+          clientRunIdRef.current = null;
+        }
+
+        // If the user-turn truly ended (no more live state), drop isStreaming.
+        if (
+          toolStreamByIdRef.current.size === 0 ||
+          Array.from(toolStreamByIdRef.current.values()).every((e) => e.status !== "running")
+        ) {
+          if (clientRunIdRef.current === null) {
+            setIsStreaming(false);
+            const startedAt = turnStartedAtRef.current;
+            if (startedAt !== null) {
+              capture("chat_completed", {
+                agent_id: agentIdRef.current ?? undefined,
+                duration_ms: Date.now() - startedAt,
+                assistant_message_length: turnAssistantLenRef.current,
+              });
+              turnStartedAtRef.current = null;
+              turnAssistantLenRef.current = 0;
+            }
           }
         }
         return;
@@ -580,275 +450,61 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "error") {
         const displayError = friendlyError(msg.message);
         const errorCode = msg.code;
-
-        if (msg.runId) {
-          // Scoped error: finalize that bubble only. Other runs continue.
-          const run = runsRef.current.get(msg.runId);
-          if (run) {
-            const messageId = run.messageId;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === messageId
-                  ? { ...m, content: `Error: ${displayError}`, errorCode }
-                  : m,
-              ),
-            );
-            finalizeBubble(msg.runId, { errored: true });
-          } else {
-            // Unknown runId: the error fired before any chunk/thinking/
-            // tool_start arrived, so no bubble exists yet. Append a visible
-            // error-marked assistant message so the user sees the failure
-            // (same UX as the sendMessage catch branch below), and clear
-            // the streaming flag if no other runs are active — otherwise
-            // sendMessage's early setIsStreaming(true) leaves the input
-            // stuck in "Stop" mode (Codex P1 / S3).
-            const errMsgId = `assistant-${crypto.randomUUID()}`;
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: errMsgId,
-                role: "assistant",
-                content: `Error: ${displayError}`,
-                errorCode,
-              },
-            ]);
-            // Remember this runId as finalized so any late straggler events
-            // for it don't create a ghost bubble.
-            finalizedRunsRef.current.add(msg.runId);
-            if (finalizedRunsRef.current.size > 100) {
-              const first = finalizedRunsRef.current.values().next().value;
-              if (first) finalizedRunsRef.current.delete(first);
-            }
-            if (runsRef.current.size === 0) {
-              setIsStreaming(false);
-              // Codex P2 (PR #383 fix follow-up): the unknown-run error
-              // branch must also reset per-turn analytics counters. If a
-              // later `done` arrives for an unrelated late run, finalizeBubble
-              // would otherwise see runsRef.size===0 + a populated
-              // turnStartedAtRef and emit a bogus chat_completed for what
-              // was actually an errored turn.
-              turnStartedAtRef.current = null;
-              turnAssistantLenRef.current = 0;
-            }
-          }
-          setError(displayError);
-          // Clear the busy gate if this error pertains to the user's turn.
-          // Approval-pause guard mirrors the done handler: keep the gate
-          // armed if approvals are still pending or a resume is incoming.
-          if (!msg.runId || msg.runId === clientRunIdRef.current) {
-            if (
-              pendingApprovalsRef.current.size === 0 &&
-              !awaitingResumeAfterApprovalRef.current
-            ) {
-              clientRunIdRef.current = null;
-            }
-          }
-          return;
-        }
-
-        // Global error (no runId): mark every active bubble and clear state.
-        const activeMessageIds = new Set(
-          Array.from(runsRef.current.values()).map((r) => r.messageId),
-        );
-        setMessages((prev) =>
-          prev.map((m) =>
-            activeMessageIds.has(m.id)
-              ? { ...m, content: `Error: ${displayError}`, errorCode }
-              : m,
-          ),
-        );
+        // Append an assistant-role error message to chatMessages.
+        const errMsg: HistoryMessage = {
+          role: "assistant",
+          content: [{ type: "text", text: `Error: ${displayError}` }],
+          timestamp: Date.now(),
+          runId: msg.runId,
+          errorCode,
+        };
+        setChatMessages((prev) => [...prev, errMsg]);
+        // Clear live state.
+        setChatStream(null);
+        chatStreamRunIdRef.current = null;
+        setChatStreamThinking(null);
+        chatStreamThinkingRunIdRef.current = null;
         setError(displayError);
-        finalizeAllActiveRuns();
-        // Close the window for late stragglers whose runId we never saw.
-        pendingCancelRef.current = true;
-        setIsStreaming(false);
-        // Global error terminates the user turn unconditionally — even
-        // mid-approval, a global error means the session has failed and
-        // any in-flight approval is moot. Reset approval refs so a
-        // subsequent send starts cleanly.
-        clientRunIdRef.current = null;
-        pendingApprovalsRef.current.clear();
-        awaitingResumeAfterApprovalRef.current = false;
-        return;
-      }
-
-      if (msg.type === "thinking") {
-        const runId = msg.runId;
-        const messageId = getOrCreateBubble(runId);
-        // Late event for a finalized run — drop.
-        if (!messageId) return;
-        const run = runsRef.current.get(runId)!;
-        run.thinking = msg.content;
-        const updatedThinking = run.thinking;
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === messageId ? { ...m, thinking: updatedThinking } : m,
-          ),
-        );
-        return;
-      }
-
-      if (msg.type === "tool_start") {
-        const runId = msg.runId;
-        const messageId = getOrCreateBubble(runId);
-        // Late event for a finalized run — drop.
-        if (!messageId) return;
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== messageId) return m;
-            const existing = m.toolUses ?? [];
-            const existingIdx =
-              msg.toolCallId !== undefined
-                ? existing.findIndex((t) => t.toolCallId === msg.toolCallId)
-                : -1;
-            if (existingIdx >= 0) {
-              const next = existing.slice();
-              const prior = next[existingIdx];
-              next[existingIdx] = {
-                ...prior,
-                tool: msg.tool,
-                status: prior.status ?? ("running" as const),
-                ...(msg.args ? { args: msg.args } : {}),
-              };
-              return { ...m, toolUses: next };
-            }
-            return {
-              ...m,
-              toolUses: [
-                ...existing,
-                {
-                  tool: msg.tool,
-                  toolCallId: msg.toolCallId,
-                  status: "running" as const,
-                  ...(msg.args ? { args: msg.args } : {}),
-                },
-              ],
-            };
-          }),
-        );
-        return;
-      }
-
-      if (msg.type === "tool_end" || msg.type === "tool_error") {
-        const runId = msg.runId;
-        const run = runsRef.current.get(runId);
-        const messageId = run?.messageId;
-        const nextStatus = msg.type === "tool_end" ? "done" : "error";
-
-        if (!messageId) {
-          // No active run for this runId — the bubble was already finalized
-          // (late tool_end after chat.final, or error-scoped-unknown-run).
-          // Fall back to a toolCallId scan across all assistant messages so
-          // the toolCall doesn't stay stuck at status "running" forever (S2).
-          if (msg.toolCallId !== undefined) {
-            const targetCallId = msg.toolCallId;
-            setMessages((prev) => {
-              let matched = false;
-              const next = prev.map((m) => {
-                if (m.role !== "assistant") return m;
-                const toolUses = m.toolUses ?? [];
-                const idx = toolUses.findIndex(
-                  (t) => t.toolCallId === targetCallId && t.status === "running",
-                );
-                if (idx < 0) return m;
-                matched = true;
-                const updated = toolUses.slice();
-                updated[idx] = {
-                  ...updated[idx],
-                  status: nextStatus as "done" | "error",
-                  ...(msg.result ? { result: msg.result } : {}),
-                  ...(msg.meta ? { meta: msg.meta } : {}),
-                };
-                return { ...m, toolUses: updated };
-              });
-              return matched ? next : prev;
-            });
-          }
-          // If no toolCallId or no match, silently drop (same as before).
-          return;
+        if (!msg.runId || msg.runId === clientRunIdRef.current) {
+          clientRunIdRef.current = null;
         }
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== messageId) return m;
-            const toolUses = (m.toolUses || []).map((t) => {
-              const matchesCallId =
-                msg.toolCallId !== undefined &&
-                t.toolCallId === msg.toolCallId;
-              const matchesName =
-                msg.toolCallId === undefined && t.tool === msg.tool;
-              const isRunning = t.status === "running";
-              if (isRunning && (matchesCallId || matchesName)) {
-                return {
-                  ...t,
-                  status: nextStatus as "done" | "error",
-                  ...(msg.result ? { result: msg.result } : {}),
-                  ...(msg.meta ? { meta: msg.meta } : {}),
-                };
-              }
-              return t;
-            });
-            return { ...m, toolUses };
-          }),
+        // Drop isStreaming if no other activity.
+        const stillRunning = Array.from(toolStreamByIdRef.current.values()).some(
+          (e) => e.status === "running",
         );
+        if (!stillRunning && clientRunIdRef.current === null) {
+          setIsStreaming(false);
+        }
         return;
       }
 
-      if (msg.type === "heartbeat") {
-        // If any run has empty content so far, show a "working..." hint on
-        // its bubble. Picks the first empty run (usually there's only one).
-        for (const run of runsRef.current.values()) {
-          if (!run.streamContent) {
-            const messageId = run.messageId;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === messageId && !m.content
-                  ? { ...m, content: "Agent is working..." }
-                  : m,
-              ),
-            );
-            break;
-          }
-        }
-      }
+      // heartbeat / update_available — no chat-state mutation.
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onChatMessage]);
-
-  // ---- Approval handling moved out of useAgentChat ----
-  //
-  // Exec approvals now live in a global queue (see useExecApprovals) and
-  // render as a modal dialog at the chat-shell level. The previous design
-  // glued each pending approval onto a tool-use bubble inside `messages`
-  // state, which:
-  //   1. Accumulated orphans — no expiresAtMs honoring meant the queue
-  //      grew forever.
-  //   2. Bound the card to whichever bubble had a "running exec" first
-  //      when scanning backwards, so it landed on stale bubbles offscreen.
-  //   3. Forced fallback to the `/approve <id>` slash-command UX from
-  //      OpenClaw's CLI when the inline card never rendered.
-  //
-  // Mirrors OpenClaw's native `execApprovalQueue` pattern at
-  // ~/Desktop/openclaw/ui/src/ui/app-gateway.ts (`enqueueApprovalRequest`)
-  // and ~/Desktop/openclaw/ui/src/ui/views/exec-approval.ts.
-  //
-  // This hook no longer subscribes to exec.approval.* events.
 
   // ---- Send message ----
 
-  // Hoisted so both sendMessage and the flushQueue effect (added in Task 5)
-  // can call it. dispatchNow assumes the busy-gate has already been checked.
+  // Hoisted so both sendMessage and the flushQueue effect can call it.
+  // dispatchNow assumes the busy-gate has already been checked.
   const dispatchNow = useCallback(
     async (message: string): Promise<void> => {
       const agentId = agentIdRef.current;
       if (!agentId) return;
+      if (!isConnected) {
+        setError("Not connected. Please wait and try again.");
+        return;
+      }
 
-      const userMsgId = `user-${crypto.randomUUID()}`;
       const newClientRunId = crypto.randomUUID();
       clientRunIdRef.current = newClientRunId;
 
-      setMessages((prev) => [
-        ...prev,
-        { id: userMsgId, role: "user", content: message },
-      ]);
+      const userMsg: HistoryMessage = {
+        role: "user",
+        content: [{ type: "text", text: message }],
+        timestamp: Date.now(),
+      };
+      setChatMessages((prev) => [...prev, userMsg]);
       setIsStreaming(true);
 
       turnStartedAtRef.current = Date.now();
@@ -865,16 +521,17 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           err instanceof Error ? err.message : "Failed to send message",
         );
         setError(errorMessage);
-        const errMsgId = `assistant-${crypto.randomUUID()}`;
-        setMessages((prev) => [
-          ...prev,
-          { id: errMsgId, role: "assistant", content: `Error: ${errorMessage}` },
-        ]);
+        const errMsg: HistoryMessage = {
+          role: "assistant",
+          content: [{ type: "text", text: `Error: ${errorMessage}` }],
+          timestamp: Date.now(),
+        };
+        setChatMessages((prev) => [...prev, errMsg]);
         setIsStreaming(false);
-        clientRunIdRef.current = null; // failure path resets busy gate
+        clientRunIdRef.current = null;
       }
     },
-    [sendChat],
+    [sendChat, isConnected, setIsStreaming],
   );
 
   // Drain queued messages one at a time on busy→idle transitions.
@@ -883,18 +540,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const prevClientRunIdRef = useRef<string | null>(null);
   // Deliberate no-deps effect: must run after every render so the ref-based
   // falling-edge detector catches the busy→idle transition. The work is
-  // O(1) (two ref reads + comparison) when no transition occurred. Mirrors
-  // the pattern at apps/frontend/src/hooks/useChatGPTOAuth.ts:167.
+  // O(1) (two ref reads + comparison) when no transition occurred.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const prev = prevClientRunIdRef.current;
     const curr = clientRunIdRef.current;
     prevClientRunIdRef.current = curr;
-    // Connection guard: if the WS is currently down, don't pop+dispatch —
-    // sendChat would throw (see useGateway.tsx) and dispatchNow's catch
-    // would reset clientRunIdRef, but the queued message would be lost.
-    // Leave the queue intact; when the WS reconnects and the next user-turn
-    // completes, this effect re-runs on the next falling edge.
     if (
       prev !== null &&
       curr === null &&
@@ -948,11 +599,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const cancelMessage = useCallback(async () => {
     if (!agentIdRef.current || !isStreaming) return;
 
-    // Analytics: emit `chat_aborted` on user intent (stop click / RPC).
-    // Compute elapsed from turn start; if we never got a turn start
-    // (shouldn't happen when isStreaming is true, but belt-and-braces)
-    // fall back to 0. Clear the turn refs so the terminal `done` from
-    // the backend doesn't also emit `chat_completed` for this same turn.
     const startedAt = turnStartedAtRef.current;
     capture("chat_aborted", {
       agent_id: agentIdRef.current,
@@ -968,67 +614,66 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       console.warn("Failed to abort agent run:", err);
     }
 
-    // Immediately update local state so the UI feels responsive
     setIsStreaming(false);
-    finalizeAllActiveRuns();
-    // Close the cancel-before-first-event window: if runsRef was empty at
-    // this point (cancel fired before any event for the in-flight turn),
-    // finalizeAllActiveRuns had no runIds to tombstone, so the next late
-    // first-event would spawn a ghost bubble without this flag.
+    setChatStream(null);
+    chatStreamRunIdRef.current = null;
+    setChatStreamThinking(null);
+    chatStreamThinkingRunIdRef.current = null;
     pendingCancelRef.current = true;
-    // Cancel terminates the current user-turn. Queue is NOT cleared —
-    // upstream behavior is that abort only stops the active run; queued
-    // follow-ups keep draining. Users can clearQueue() explicitly if
-    // they want everything gone. Approval refs are also reset: a queued
-    // approval card may still display from useExecApprovals, but for the
-    // busy-gate's purposes, this turn is over.
     clientRunIdRef.current = null;
-    pendingApprovalsRef.current.clear();
-    awaitingResumeAfterApprovalRef.current = false;
-  }, [isStreaming, sendReq, sessionName, finalizeAllActiveRuns]);
+    // Live tools stay rendered with their last-known status.
+  }, [isStreaming, sendReq, sessionName, setIsStreaming]);
 
   // ---- Clear messages ----
 
   const clearMessages = useCallback(() => {
-    setMessages([]);
+    setChatMessages([]);
+    setChatStream(null);
+    chatStreamRunIdRef.current = null;
+    setChatStreamThinking(null);
+    chatStreamThinkingRunIdRef.current = null;
+    setChatStreamSegments([]);
+    setChatToolMessages([]);
+    toolStreamByIdRef.current.clear();
+    toolStreamOrderRef.current = [];
     const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
-    if (key) {
-      _messageCache.delete(key);
-    }
+    if (key) _messageCache.delete(key);
     setError(null);
     setIsStreaming(false);
-    finalizeAllActiveRuns();
-    // Same reasoning as cancelMessage: cover the case where clear fires
-    // before any event for the in-flight turn has arrived.
     pendingCancelRef.current = true;
     clientRunIdRef.current = null;
-    pendingApprovalsRef.current.clear();
-    awaitingResumeAfterApprovalRef.current = false;
-  }, [sessionName, finalizeAllActiveRuns]);
+  }, [sessionName, setIsStreaming]);
 
   // ---- External interface ----
 
-  const externalMessages: AgentMessage[] = useMemo(
+  // Compute render output from state. memo for stability.
+  const renderItems = useMemo<ChatRenderItem[]>(
     () =>
-      messages.map(({ role, content, thinking, toolUses, errorCode }) => ({
-        role,
-        content,
-        ...(thinking ? { thinking } : {}),
-        ...(toolUses?.length ? { toolUses } : {}),
-        ...(errorCode ? { errorCode } : {}),
-      })),
-    [messages],
+      buildChatItems({
+        chatMessages,
+        chatStream,
+        chatStreamRunId: chatStreamRunIdRef.current,
+        chatStreamThinking,
+        chatStreamThinkingRunId: chatStreamThinkingRunIdRef.current,
+        chatStreamSegments,
+        chatToolMessages,
+        sessionKey: `agent:${agentId ?? ""}:${sessionName}`,
+      }),
+    [chatMessages, chatStream, chatStreamThinking, chatStreamSegments, chatToolMessages, agentId, sessionName],
   );
+
+  const renderGroups = useMemo<RenderGroup[]>(() => groupBySide(renderItems), [renderItems]);
 
   const needsBootstrap = !!(
     cacheKey &&
     _needsBootstrap.has(cacheKey) &&
-    messages.length === 0 &&
+    chatMessages.length === 0 &&
     historyLoadState === "done"
   );
 
   return {
-    messages: externalMessages,
+    renderGroups,
+    renderItems,
     isStreaming,
     error,
     sendMessage,

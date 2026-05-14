@@ -125,6 +125,61 @@ const _messageCache = new Map<string, HistoryMessage[]>();
 const _needsBootstrap = new Set<string>();
 
 // =============================================================================
+// foldLiveTurnIntoContent
+//
+// Pure helper: takes a snapshot of the live-turn state (segments + tools +
+// tail stream/thinking) and produces an ordered ContentBlock[] suitable for
+// folding into a single assistant HistoryMessage. Used by the `done` handler
+// AND by cancelMessage so that orphan segments/tools never linger past the
+// end of a turn — leaving them in the live arrays would cause them to render
+// AFTER the next user message at the buildChatItems tail (cross-turn
+// ordering bug).
+// =============================================================================
+
+function foldLiveTurnIntoContent(params: {
+  segments: Array<{ text: string; ts: number }>;
+  toolEntries: Map<string, ToolStreamEntry>;
+  toolOrder: string[];
+  tailStream: string | null;
+  tailThinking: string | null;
+}): ContentBlock[] {
+  const { segments, toolEntries, toolOrder, tailStream, tailThinking } = params;
+  const toolBlocks: ContentBlock[][] = toolOrder
+    .map((id) => toolEntries.get(id))
+    .filter((e): e is ToolStreamEntry => Boolean(e))
+    .map((e) => {
+      const blocks: ContentBlock[] = [
+        { type: "tool_use", id: e.toolCallId, name: e.name, args: e.args },
+      ];
+      if (e.output !== undefined) {
+        blocks.push({
+          type: "tool_result",
+          tool_use_id: e.toolCallId,
+          content: e.output,
+          ...(e.status === "error" ? { isError: true } : {}),
+        });
+      }
+      return blocks;
+    });
+
+  const content: ContentBlock[] = [];
+  const n = Math.max(segments.length, toolBlocks.length);
+  for (let i = 0; i < n; i++) {
+    const seg = segments[i];
+    if (seg && seg.text.length > 0) content.push({ type: "text", text: seg.text });
+    const tool = toolBlocks[i];
+    if (tool) content.push(...tool);
+  }
+  if (tailThinking && tailThinking.length > 0) {
+    content.push({ type: "thinking", thinking: tailThinking });
+  }
+  if (tailStream && tailStream.length > 0) {
+    content.push({ type: "text", text: tailStream });
+  }
+  return content;
+}
+
+// =============================================================================
 // Hook
 //
 // NOTE: Only one useAgentChat instance should be active at a time. The backend
@@ -205,6 +260,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // Analytics counters.
   const turnStartedAtRef = useRef<number | null>(null);
   const turnAssistantLenRef = useRef<number>(0);
+
+  // RunIds the user has explicitly aborted/cleared. Late chunk/thinking/
+  // tool_start/tool_end events for these runs are dropped to prevent
+  // ghost-bubble regressions (the previous getOrCreateBubble guard
+  // protected against this implicitly).
+  //
+  // Entries are removed when the matching `error` arrives (chat.aborted →
+  // error transform per connection_pool.py) — that's the cleanup point for
+  // an aborted run.
+  const cancelledRunIdsRef = useRef<Set<string>>(new Set());
 
   // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
@@ -355,6 +420,22 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
+      // Drop late stream/tool events for a runId the user already aborted
+      // or cleared. Without this, an event landing after cancelMessage()
+      // (e.g. a chunk that was in flight when the user hit Stop) would
+      // reanimate live state and flip isStreaming back on. `done`/`error`
+      // are allowed through so they can clean up the cancelled-runIds set.
+      if (
+        (msg.type === "chunk" ||
+          msg.type === "thinking" ||
+          msg.type === "tool_start" ||
+          msg.type === "tool_end" ||
+          msg.type === "tool_error") &&
+        cancelledRunIdsRef.current.has(msg.runId)
+      ) {
+        return;
+      }
+
       if (msg.type === "chunk") {
         const runId = msg.runId;
         // Sub-run boundary: if the incoming chunk has a new runId, commit
@@ -435,55 +516,19 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "done") {
         const runId = msg.runId;
         // Fold the entire live turn into a single synthesized assistant
-        // message so chronological order is preserved across turns.
-        //
-        // Why fold (not just keep the parallel arrays around): the next turn
-        // appends fresh tools/segments to chatStreamSegments + toolStream*.
-        // If we left this turn's content there, the on-the-fly history
-        // messages (which include the synthesized tail-only message) would
-        // come BEFORE the now-orphaned segments/tools at render time —
-        // putting pre-tool text after post-tool text. Folding keeps each
-        // completed turn as one ordered HistoryMessage and lets us safely
-        // clear the parallel arrays for the next turn.
+        // message so chronological order is preserved across turns. Leaving
+        // segments/tools in the live arrays would cause them to render
+        // AFTER the next user message (cross-turn ordering bug).
         const segments = chatStreamSegmentsRef.current;
         const tailStream = chatStreamRef.current;
         const tailThinking = chatStreamThinkingRef.current;
-        // Build tool-message content from refs (not chatToolMessagesRef) —
-        // refs are always up-to-date; the throttled state sync may lag.
-        const toolBlocks: ContentBlock[][] = toolStreamOrderRef.current
-          .map((id) => toolStreamByIdRef.current.get(id))
-          .filter((e): e is ToolStreamEntry => Boolean(e))
-          .map((e) => {
-            const blocks: ContentBlock[] = [
-              { type: "tool_use", id: e.toolCallId, name: e.name, args: e.args },
-            ];
-            if (e.output !== undefined) {
-              blocks.push({
-                type: "tool_result",
-                tool_use_id: e.toolCallId,
-                content: e.output,
-                ...(e.status === "error" ? { isError: true } : {}),
-              });
-            }
-            return blocks;
-          });
-
-        const content: ContentBlock[] = [];
-        // Interleave segments[i] with toolBlocks[i] — matches buildChatItems'
-        // walk so the synthesized message reads the same as the live render.
-        const n = Math.max(segments.length, toolBlocks.length);
-        for (let i = 0; i < n; i++) {
-          const seg = segments[i];
-          if (seg && seg.text.length > 0) content.push({ type: "text", text: seg.text });
-          const tool = toolBlocks[i];
-          if (tool) content.push(...tool);
-        }
-        if (tailThinking && tailThinking.length > 0) {
-          content.push({ type: "thinking", thinking: tailThinking });
-        }
-        if (tailStream && tailStream.length > 0) {
-          content.push({ type: "text", text: tailStream });
-        }
+        const content = foldLiveTurnIntoContent({
+          segments,
+          toolEntries: toolStreamByIdRef.current,
+          toolOrder: toolStreamOrderRef.current,
+          tailStream,
+          tailThinking,
+        });
 
         if (content.length > 0) {
           const synthesized: HistoryMessage = {
@@ -507,6 +552,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         toolStreamByIdRef.current.clear();
         toolStreamOrderRef.current = [];
         setChatToolMessages([]);
+        if (runId) cancelledRunIdsRef.current.delete(runId);
 
         // Busy-gate clear (no approval-pause guard).
         if (runId === clientRunIdRef.current) {
@@ -547,20 +593,24 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           errorCode,
         };
         setChatMessages((prev) => [...prev, errMsg]);
-        // Clear live state.
+        // Clear ALL live state — including tool state. Without clearing
+        // tools, a tool that was still `running` when the error arrived
+        // would keep the stillRunning check true forever and block
+        // setIsStreaming(false), leaving the chat stuck in streaming mode.
         setChatStream(null);
         chatStreamRunIdRef.current = null;
         setChatStreamThinking(null);
         chatStreamThinkingRunIdRef.current = null;
+        setChatStreamSegments([]);
+        toolStreamByIdRef.current.clear();
+        toolStreamOrderRef.current = [];
+        setChatToolMessages([]);
         setError(displayError);
         if (!msg.runId || msg.runId === clientRunIdRef.current) {
           clientRunIdRef.current = null;
         }
-        // Drop isStreaming if no other activity.
-        const stillRunning = Array.from(toolStreamByIdRef.current.values()).some(
-          (e) => e.status === "running",
-        );
-        if (!stillRunning && clientRunIdRef.current === null) {
+        if (msg.runId) cancelledRunIdsRef.current.delete(msg.runId);
+        if (clientRunIdRef.current === null) {
           setIsStreaming(false);
         }
         return;
@@ -693,6 +743,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     turnStartedAtRef.current = null;
     turnAssistantLenRef.current = 0;
 
+    // Remember the cancelled runId so any chunk/thinking/tool events still
+    // in flight from this run get dropped instead of reanimating live state.
+    // The server's chat.aborted event will eventually arrive as a terminal
+    // `error` which removes the entry.
+    const cancelledRunId = clientRunIdRef.current;
+    if (cancelledRunId) cancelledRunIdsRef.current.add(cancelledRunId);
+
     const sessionKey = `agent:${agentIdRef.current}:${sessionName}`;
     try {
       await sendReq("chat.abort", { sessionKey });
@@ -700,18 +757,56 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       console.warn("Failed to abort agent run:", err);
     }
 
+    // Fold the in-progress turn into a single assistant HistoryMessage so
+    // the user sees what they cancelled preserved in chat history. Without
+    // this fold, the live segments/tools would render AFTER the next user
+    // message at the buildChatItems tail — same cross-turn ordering bug
+    // that bit the `done` path.
+    const content = foldLiveTurnIntoContent({
+      segments: chatStreamSegmentsRef.current,
+      toolEntries: toolStreamByIdRef.current,
+      toolOrder: toolStreamOrderRef.current,
+      tailStream: chatStreamRef.current,
+      tailThinking: chatStreamThinkingRef.current,
+    });
+    if (content.length > 0) {
+      const synthesized: HistoryMessage = {
+        role: "assistant",
+        content,
+        timestamp: Date.now(),
+        runId: cancelledRunId ?? undefined,
+      };
+      setChatMessages((prev) => [...prev, synthesized]);
+    }
+
     setIsStreaming(false);
     setChatStream(null);
     chatStreamRunIdRef.current = null;
     setChatStreamThinking(null);
     chatStreamThinkingRunIdRef.current = null;
+    setChatStreamSegments([]);
+    toolStreamByIdRef.current.clear();
+    toolStreamOrderRef.current = [];
+    setChatToolMessages([]);
     clientRunIdRef.current = null;
-    // Live tools stay rendered with their last-known status.
-  }, [isStreaming, sendReq, sessionName, setIsStreaming, setChatStream, setChatStreamThinking]);
+  }, [
+    isStreaming,
+    sendReq,
+    sessionName,
+    setIsStreaming,
+    setChatStream,
+    setChatStreamThinking,
+    setChatStreamSegments,
+    setChatToolMessages,
+  ]);
 
   // ---- Clear messages ----
 
   const clearMessages = useCallback(() => {
+    // Late events for the cleared run shouldn't repopulate the now-empty
+    // chat — mark its runId as cancelled so the handler drops them.
+    const activeRunId = clientRunIdRef.current;
+    if (activeRunId) cancelledRunIdsRef.current.add(activeRunId);
     setChatMessages([]);
     setChatStream(null);
     chatStreamRunIdRef.current = null;

@@ -175,11 +175,17 @@ Filter helpers live in a new `apps/frontend/src/hooks/internal/chatHistoryFilter
 
 ### Busy gate behavior (intentionally limited)
 
-`clientRunIdRef` is set on user send (from `dispatchNow`), cleared on chat.final / error / aborted matching the runId. **No approval-pause guard from #628 — we accept upstream's race vulnerability** in exchange for matching upstream's simpler model.
+`clientRunIdRef` is set on user send (from `dispatchNow`), cleared on chat.final / error / aborted matching the runId. **No approval-pause guard from #628.**
 
-Practical consequence: if the user types and sends during the brief window between `chat.final` and the user's approval click, the send fires immediately and two concurrent runs may interleave on the JSONL. Upstream has the same vulnerability and ships it. Our bet: the new continuous-bubble visual makes this rare in practice. If telemetry shows otherwise, deriving the busy signal from `useExecApprovals` adds ~5 LOC and reverts the bet — tracked as a follow-up option, not in this PR.
+**Mid-pause sends are an intended feature, not a bug.** When the agent emits an approval request, the user should be free to keep chatting without first deciding on the tool call — for example to add context, ask a clarifying question, or change direction. This matches upstream's behavior and matches the user's mental model of a fluid conversation. The frontend does NOT block mid-pause sends.
 
-Queue mechanic from #621 stays: extra sends fired in rapid succession (e.g., double-click) still serialize through `queuedMessages`.
+The previous PRs (#621 queue, #628 approval guards) were trying to prevent the user from being able to send mid-pause. That was the wrong model. This PR removes that gating.
+
+What the frontend IS responsible for: rendering whatever the server emits accurately and in order. If the server returns interleaved responses (because two concurrent agent runs wrote to the JSONL), we render them in the order they arrived — separated by the second user message that broke the chat flow. The visual model handles this naturally: user-turn-1's items group into one assistant bubble, the user-turn-2 message breaks the chain, user-turn-2's items group into the next assistant bubble.
+
+Any "confused output" the user sees when sending mid-pause comes from the server-side handling of concurrent runs on a single session JSONL — that's a backend concern (and arguably an upstream issue [#69386](https://github.com/openclaw/openclaw/issues/69386)). This frontend spec does not address it.
+
+Queue mechanic from #621 stays: extra sends fired in rapid succession (e.g., double-click) still serialize through `queuedMessages` to avoid clobbering the WS frame ordering.
 
 ## Affected files
 
@@ -193,11 +199,12 @@ Queue mechanic from #621 stays: extra sends fired in rapid succession (e.g., dou
 - `apps/frontend/src/components/control/panels/cron/sessionMessageAdapter.ts` — update for `RunTranscript`'s use of `MessageList`.
 
 **Tests:**
-- `apps/frontend/src/hooks/__tests__/useAgentChat.test.ts` — heavy rewrite (per-bubble assertions retire).
-- `apps/frontend/src/hooks/__tests__/useAgentChat.queue.test.ts` — mostly bubble-agnostic; minor updates.
+- `apps/frontend/src/hooks/__tests__/useAgentChat.test.ts` — DELETE. The existing 521-line file is integration-style assertions on the per-bubble model (bubble counts, ghost-bubble M1 regression, runId resume-swap, etc.). Post-migration those assertions don't apply and rewriting them as integration tests against the new state shape duplicates what the helper unit tests already cover. The hook's behavior is verified through `chatHistoryFilters` + `buildChatItems` unit tests + the `MessageList` visual snapshot + the human end-of-PR smoke test.
+- `apps/frontend/src/hooks/__tests__/useAgentChat.queue.test.ts` — DELETE for the same reason. The queue surface is small enough that the human end-of-PR smoke test covers it.
 - `apps/frontend/src/hooks/__tests__/useAgentChat.approval.test.ts` — DELETE (approval-tracking refs go away).
 - `apps/frontend/src/hooks/__tests__/chatHistoryFilters.test.ts` — new.
 - `apps/frontend/src/hooks/__tests__/buildChatItems.test.ts` — new.
+- `apps/frontend/src/components/chat/__tests__/MessageList.snapshot.test.tsx` — new (or extend existing) visual-snapshot test.
 - `apps/frontend/src/lib/__tests__/analytics.instrumentation.test.ts` — adjust per-turn counter sources (`assistant_message_length` redefined as the synthesized assistant message's text length on chat.final).
 
 **Docs:**
@@ -206,7 +213,7 @@ Queue mechanic from #621 stays: extra sends fired in rapid succession (e.g., dou
 
 ## Risks and tradeoffs
 
-1. **Accepted race**: mid-pause sends can still trigger the JSONL interleave (matches upstream). Mitigated by better visual cue; if it reappears, the cross-hook signal is a 5-LOC follow-up.
+1. **Mid-pause sends are allowed**: not a risk — intended UX. The frontend no longer tries to gate them. Any user-visible interleaving comes from server-side concurrent-run handling, which is out of scope for this spec.
 
 2. **`StreamingStatusBar` brief darkness mid-turn**: between `chat.final` of sub-run A and first chunk of resumed sub-run B, both `chatStream` and `clientRunIdRef` are null. The pill flickers off and on. Same flicker as today; the new continuous-bubble visual compensates.
 
@@ -226,23 +233,23 @@ Queue mechanic from #621 stays: extra sends fired in rapid succession (e.g., dou
 
 - **The async-completion text leak** (e.g., "An async command the user already approved has completed...") — separate display bug, requires upstream filtering. Spec is unaware of this content category; renders it as plain text for now.
 
-- **Cross-hook busy signal** (read from `useExecApprovals`) — explicitly deferred. Re-evaluate if mid-pause races appear in real usage.
-
 - **Visual redesign** of tools, thinking, etc. — keep current aesthetics; no UI rework.
 
+- **Server-side concurrent-run handling** — backend-level serialization of chat.send on a single session, or upstream's [#69386](https://github.com/openclaw/openclaw/issues/69386) work, are separate workstreams. This spec does not address them.
+
 ## Testing strategy
+
+Test-driven development per the existing project convention (`feedback_write_tests_run_at_end`): each implementation task writes its tests first, but tests are **not run per-task**. A single end-of-plan verification batch runs the full suite.
 
 1. **Unit tests** for `chatHistoryFilters.ts`: each filter as isolated function with fixture cases (silent reply, heartbeat-ack, synthetic-repair, empty-user, compaction divider passthrough, message-level toolCallId synthesis).
 
 2. **Unit tests** for `buildChatItems.ts`: fixture states (no items, history-only, history + stream-segments + tool-messages, live thinking, live stream, all combined) → assert rendered-item ordering.
 
-3. **Integration tests** for `useAgentChat`: rewrite around event-sequence fixtures (chunk, thinking, tool_start, tool_end, done) and assert the resulting `chatMessages` + parallel-arrays state. Cover the multi-sub-run scenario explicitly: a sequence of events producing two `chat.final`s within one user-turn yields ONE visual bubble in the rendered output.
+3. **Visual snapshot** for `MessageList`: render the same item-state fixture → assert DOM structure. Covers the rendering refactor without trying to test pixel-perfect output.
 
-4. **Visual snapshot** for `MessageList`: render the same item-state fixture → assert DOM structure. Covers the rendering refactor without trying to test pixel-perfect output.
-
-5. **End-of-PR live smoke** (human):
+4. **End-of-PR live smoke** (human):
    - Send a message that triggers an exec-approval card.
    - Verify the assistant bubble does not visually close when chat.final fires.
    - Click Allow; verify the resumed run's content appends to the SAME bubble.
    - Refresh the page; verify the chat.history reload shows the full transcript including tool calls/results.
-   - Verify approval-pause race is still possible (sad-path documentation; matches upstream).
+   - Type and send a message during the approval pause; verify the second message appears as expected and the agent's response (whatever it is) renders cleanly in a new bubble after the user-turn-2 boundary.

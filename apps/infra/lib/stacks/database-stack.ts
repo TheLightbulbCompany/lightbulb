@@ -46,6 +46,12 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplacePurchasesTable: dynamodb.Table;
   public readonly marketplacePayoutAccountsTable: dynamodb.Table;
   public readonly marketplaceTakedownsTable: dynamodb.Table;
+  // Marketplace seller handles — claimed at first publish, unique
+  // platform-wide. The PK is the lowercased canonical form; a
+  // conditional PutItem with attribute_not_exists is the uniqueness
+  // oracle. The user's row mirrors the same handle for fast lookup by
+  // user_id. See ``core/services/seller_identity.py``.
+  public readonly sellerUsernamesTable: dynamodb.Table;
 
   // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
   // Per-owner event history for /hooks/{owner_id}/{path} requests proxied
@@ -367,6 +373,24 @@ export class DatabaseStack extends cdk.Stack {
       tableName: `isol8-${env}-marketplace-takedowns`,
       partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "takedown_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    // Seller usernames — platform-wide unique handle reservation. PK is
+    // the lowercased canonical form. The backend service writes via
+    // conditional PutItem (attribute_not_exists) -- a failed condition
+    // is the "handle taken" signal. The username `isol8` should be
+    // seeded post-deploy by an operator (it's also in the in-code
+    // reserved list, so end users can never claim it). No GSI: reverse
+    // lookup (user_id -> handle) is satisfied by the mirror column on
+    // the users-table row, not by scanning this table.
+    this.sellerUsernamesTable = new dynamodb.Table(this, "SellerUsernamesTable", {
+      tableName: `isol8-${env}-seller-usernames`,
+      partitionKey: { name: "username_lower", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,

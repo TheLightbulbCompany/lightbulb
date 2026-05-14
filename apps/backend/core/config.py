@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     MARKETPLACE_TAKEDOWNS_TABLE: str = os.getenv("MARKETPLACE_TAKEDOWNS_TABLE", "")
     MARKETPLACE_ARTIFACTS_BUCKET: str = os.getenv("MARKETPLACE_ARTIFACTS_BUCKET", "")
 
+    # Marketplace seller-username reservation table. The backend accesses
+    # this table via the prefix-based helper (``get_table("seller-usernames")``)
+    # so this env var is informational only — wired by CDK for parity with
+    # the other marketplace tables.
+    SELLER_USERNAMES_TABLE: str = os.getenv("SELLER_USERNAMES_TABLE", "")
+
     # Stripe Connect (seller payout onboarding) — environment-specific URLs
     # set by CDK so the marketplace UI can return the user back to the right
     # host after Stripe-hosted onboarding.

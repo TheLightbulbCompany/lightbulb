@@ -1,7 +1,7 @@
 "use client";
 
 import "./settings.css";
-import React, { Suspense, useState, useCallback } from "react";
+import React, { Suspense, useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -10,13 +10,14 @@ import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
+import { useApi, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 // =============================================================================
 // Types & Navigation
 // =============================================================================
 
-type Panel = "profile" | "billing" | "channels" | "webhooks";
+type Panel = "profile" | "billing" | "channels" | "webhooks" | "seller";
 
 const NAV_SECTIONS = [
   {
@@ -26,6 +27,7 @@ const NAV_SECTIONS = [
       { id: "billing" as Panel, name: "Billing", icon: "billing" },
       { id: "channels" as Panel, name: "Channels", icon: "channels" },
       { id: "webhooks" as Panel, name: "Webhooks", icon: "webhooks" },
+      { id: "seller" as Panel, name: "Seller handle", icon: "profile" },
     ],
   },
 ];
@@ -243,6 +245,180 @@ function ChannelsPanel() {
 }
 
 // =============================================================================
+// Seller Panel — claim + change marketplace handle
+// =============================================================================
+
+const USERNAME_REGEX = /^[a-z0-9_-]+$/;
+const USERNAME_MIN = 3;
+const USERNAME_MAX = 30;
+
+interface SellerState {
+  username: string;
+  last_changed_at: string | null;
+  cooldown_ends_at: string | null;
+}
+
+function SellerPanel() {
+  const api = useApi();
+  const [state, setState] = useState<SellerState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [input, setInput] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [okMessage, setOkMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = (await api.get("/sellers/me")) as SellerState;
+        if (!cancelled) {
+          setState(s);
+          setInput(s.username);
+        }
+      } catch (err) {
+        const e = err as ApiError;
+        // 404 = not yet claimed; keep state=null so the UI renders the
+        // claim form rather than the change form.
+        if (e?.status !== 404 && !cancelled) {
+          setError(e?.message || "Failed to load handle");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const trimmed = input.trim().toLowerCase();
+  const formatOk =
+    trimmed.length >= USERNAME_MIN &&
+    trimmed.length <= USERNAME_MAX &&
+    USERNAME_REGEX.test(trimmed);
+
+  const cooldownActive = (() => {
+    if (!state?.cooldown_ends_at) return false;
+    return new Date(state.cooldown_ends_at).getTime() > Date.now();
+  })();
+
+  async function submit() {
+    setSubmitting(true);
+    setError(null);
+    setOkMessage(null);
+    try {
+      const next = (await api.post("/sellers/me/username", {
+        username: trimmed,
+      })) as SellerState;
+      setState(next);
+      setInput(next.username);
+      setOkMessage(`Handle set to @${next.username}.`);
+    } catch (err) {
+      const e = err as ApiError;
+      const body = e?.body as { detail?: { error?: string; cooldown_ends_at?: string } } | null;
+      const code = body?.detail?.error ?? "";
+      if (code === "taken") {
+        setError("That handle is taken.");
+      } else if (code === "reserved") {
+        setError("That handle is reserved.");
+      } else if (code === "invalid_format") {
+        setError("Use 3-30 lowercase letters, digits, hyphens, or underscores.");
+      } else if (code === "cooldown_active") {
+        const next = body?.detail?.cooldown_ends_at;
+        setError(
+          next
+            ? `You can change your handle again on ${new Date(next).toLocaleDateString()}.`
+            : "You can only change your handle every 90 days.",
+        );
+      } else {
+        setError(e?.message || "Failed to update handle");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="settings-panel" id="panel-seller" role="tabpanel">
+      <h1 className="settings-page-title">Seller handle</h1>
+      <p className="settings-page-desc">
+        Public marketplace handle. Buyers see <strong>by @{state?.username ?? "yourhandle"}</strong>{" "}
+        on every listing you publish. Handles are unique and can be changed once every 90 days.
+      </p>
+
+      <div className="settings-card">
+        <div className="settings-card-desc" style={{ marginBottom: 12 }}>
+          {loading
+            ? "Loading…"
+            : state
+              ? `Current handle: @${state.username}`
+              : "Not set — claim one before publishing your first listing."}
+        </div>
+
+        {cooldownActive && state?.cooldown_ends_at && (
+          <div className="settings-alert" style={{ marginBottom: 12 }}>
+            You can change this handle again on{" "}
+            {new Date(state.cooldown_ends_at).toLocaleDateString()}.
+          </div>
+        )}
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <span style={{ color: "#5b5b5b" }}>@</span>
+          <input
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setError(null);
+              setOkMessage(null);
+            }}
+            placeholder="ledger"
+            maxLength={USERNAME_MAX}
+            disabled={cooldownActive || submitting}
+            className="settings-input"
+            style={{
+              flex: 1,
+              padding: "8px 12px",
+              border: "1px solid #e0dbd0",
+              borderRadius: 10,
+              fontSize: 14,
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={
+              !formatOk ||
+              submitting ||
+              cooldownActive ||
+              trimmed === state?.username
+            }
+            className="settings-btn-save"
+          >
+            {state ? "Change" : "Claim"}
+          </button>
+        </div>
+        <div className="settings-card-desc">
+          3-30 chars · lowercase letters, digits, hyphen, underscore.
+        </div>
+
+        {error && (
+          <p role="alert" className="settings-alert settings-alert-error" style={{ marginTop: 12 }}>
+            {error}
+          </p>
+        )}
+        {okMessage && (
+          <p className="settings-alert" style={{ marginTop: 12 }}>
+            {okMessage}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
 // Panel Registry
 // =============================================================================
 
@@ -251,6 +427,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   billing: BillingPanel,
   channels: ChannelsPanel,
   webhooks: WebhooksPanel,
+  seller: SellerPanel,
 };
 
 // =============================================================================
@@ -276,7 +453,12 @@ function SettingsPageInner() {
   const searchParams = useSearchParams();
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
-    initialPanelParam === "billing" || initialPanelParam === "channels" || initialPanelParam === "webhooks" ? initialPanelParam : "profile";
+    initialPanelParam === "billing" ||
+    initialPanelParam === "channels" ||
+    initialPanelParam === "webhooks" ||
+    initialPanelParam === "seller"
+      ? initialPanelParam
+      : "profile";
   const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 

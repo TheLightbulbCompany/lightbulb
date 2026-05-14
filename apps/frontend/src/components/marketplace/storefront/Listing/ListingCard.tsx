@@ -36,7 +36,9 @@ export function ListingCard({ listing }: { listing: Listing }) {
         </div>
       )}
       <div className="mt-5 flex items-center justify-between border-t border-[var(--edge)] pt-3 text-[12px] text-[var(--mute)]">
-        <span className="font-mono uppercase tracking-[0.12em]">View detail</span>
+        <span className="font-mono uppercase tracking-[0.12em]">
+          by {listing.seller_username ?? "@isol8"}
+        </span>
         <span className="font-bold text-[var(--forest)] transition group-hover:translate-x-0.5">
           →
         </span>

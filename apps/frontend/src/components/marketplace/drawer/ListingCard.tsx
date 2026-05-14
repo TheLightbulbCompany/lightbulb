@@ -32,7 +32,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
       </Link>
       <p className="text-[13px] text-[#5b5b5b] leading-snug flex-1 line-clamp-2">{tagline}</p>
       <div className="flex items-center justify-between pt-2.5 border-t border-dashed border-[#e0dbd0]">
-        <span className="text-[11.5px] italic text-[#5b5b5b]">by {listing.seller_id}</span>
+        <span className="text-[11.5px] italic text-[#5b5b5b]">by {listing.seller_username ?? "@isol8"}</span>
         {installed ? (
           <button
             type="button"

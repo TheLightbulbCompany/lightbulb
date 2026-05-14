@@ -642,6 +642,13 @@ from routers import marketplace_admin  # noqa: E402
 
 app.include_router(marketplace_admin.router)
 
+# Seller identity (handle claim + cooldown). Router carries its own
+# /api/v1/sellers prefix. The publish wizard preflights against
+# GET /sellers/me to decide whether to show the ClaimUsernameStep.
+from routers import sellers  # noqa: E402
+
+app.include_router(sellers.router)
+
 
 @app.get(
     "/",

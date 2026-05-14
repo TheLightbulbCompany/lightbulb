@@ -18,6 +18,14 @@ export interface Listing {
   price_cents: number;
   tags: string[];
   seller_id: string;
+  /**
+   * Renderable seller handle, prefixed with `@` (e.g. `"@ledger"` or
+   * `"@isol8"`). Annotated by the backend at the router boundary so
+   * cards never have to display the raw `seller_id` (Clerk user_id).
+   * Older payloads may omit this field; callers should fall back to
+   * `"@isol8"` (the in-house default) rather than to `seller_id`.
+   */
+  seller_username?: string;
   status: ListingStatus;
   version: number;
   published_at: string | null;

@@ -17,7 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from core.auth import AuthContext, get_current_user, get_optional_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_workspace
-from core.services import agent_export, curator, marketplace_search, marketplace_service
+from core.services import (
+    agent_export,
+    curator,
+    marketplace_search,
+    marketplace_service,
+    seller_identity,
+)
 from core.services.catalog_service import get_catalog_service
 from schemas import marketplace as schemas
 
@@ -141,6 +147,12 @@ async def search_listings(
         include_unpublished=include_unpublished,
         status_in=status_list,
     )
+    # Annotate each listing with the renderable ``@handle`` form so the
+    # ListingCard never has to render a raw Clerk user_id. We enrich at
+    # the router boundary rather than in the search service so the
+    # search cache stays in lockstep with the DDB scan (the per-user
+    # handle is a write-time mirror; reads keep the cache hot).
+    items = await seller_identity.enrich_listings_with_seller_display(items)
     return {"items": items}
 
 
@@ -175,6 +187,7 @@ async def featured_listings(
     if not curator_id:
         return {"items": []}
     items = await marketplace_search.search(query=None, format=format, limit=limit, seller_id=curator_id)
+    items = await seller_identity.enrich_listings_with_seller_display(items)
     return {"items": items}
 
 
@@ -245,6 +258,12 @@ async def get_listing(slug: str, response: Response):
     # status="published" instead — same gate /deploy and /checkout enforce.
     if not listing or listing.get("status") != "published":
         raise HTTPException(status_code=404, detail="listing not found")
+
+    # Annotate seller display before the manifest fetch so even a
+    # manifest-fetch failure still returns the right ``@handle``.
+    listing["seller_username"] = await seller_identity.resolve_seller_display(
+        listing.get("seller_id")
+    )
 
     manifest: dict | None = None
     s3_prefix = listing.get("s3_prefix")
@@ -411,7 +430,20 @@ async def create_listing(
     payload: schemas.ListingCreate,
     auth: Annotated[AuthContext, Depends(get_current_user)],
 ):
-    """Create a draft listing (requires authenticated seller)."""
+    """Create a draft listing (requires authenticated seller).
+
+    Publish requires a claimed seller handle so the listing card can
+    render ``by @<handle>`` instead of leaking a raw Clerk user_id. We
+    gate at create time (412 Precondition Failed) so the wizard's
+    ClaimUsernameStep can route the user back to the handle picker
+    before any listing row / S3 artifact is written.
+    """
+    state = await seller_identity.get_for_user(auth.user_id)
+    if state is None:
+        raise HTTPException(
+            status_code=412,
+            detail={"error": "seller_username_required"},
+        )
     try:
         listing = await marketplace_service.create_draft(
             seller_id=auth.user_id,

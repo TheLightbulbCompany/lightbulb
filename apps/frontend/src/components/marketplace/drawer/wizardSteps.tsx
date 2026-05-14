@@ -601,6 +601,84 @@ export function ReviewStep({ form }: { form: PublishForm }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Claim-username step — shown only when the user hasn't claimed a seller
+// handle yet. The wizard's pre-flight (PublishWizard) hits GET /sellers/me;
+// 404 routes here, 200 skips straight to Pick.
+// ---------------------------------------------------------------------------
+
+const USERNAME_REGEX = /^[a-z0-9_-]+$/;
+const USERNAME_MIN = 3;
+const USERNAME_MAX = 30;
+
+export function ClaimUsernameStep({
+  value,
+  onChange,
+  error,
+  onSubmit,
+  submitting,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  error: string | null;
+  onSubmit: () => void;
+  submitting: boolean;
+}) {
+  // Inline format check mirrors the backend regex so users get instant
+  // feedback before submission. Reserved/taken/cooldown errors come from
+  // the server-side check on submit.
+  const trimmed = value.trim().toLowerCase();
+  const formatOk =
+    trimmed.length >= USERNAME_MIN &&
+    trimmed.length <= USERNAME_MAX &&
+    USERNAME_REGEX.test(trimmed);
+
+  return (
+    <div>
+      <h3 className="font-editorial-serif text-xl mb-1">Pick a seller handle.</h3>
+      <p className="text-[14px] text-[#5b5b5b] leading-snug mb-4">
+        Buyers will see <span className="font-mono">by @{trimmed || "yourhandle"}</span>{" "}
+        on every listing card. Handles are unique platform-wide and can
+        only be changed every 90 days.
+      </p>
+      <div className="flex flex-col gap-1.5 mb-3.5">
+        <label className="text-[12.5px] font-semibold text-[#1a1a1a]">
+          Handle
+        </label>
+        <div className="flex items-center border border-[#e0dbd0] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus-within:border-[#06402b]">
+          <span className="text-[#5b5b5b] mr-1">@</span>
+          <input
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="ledger"
+            autoFocus
+            maxLength={USERNAME_MAX}
+            className="flex-1 outline-0 bg-transparent text-sm"
+          />
+        </div>
+        <span className="text-[11.5px] text-[#5b5b5b]">
+          3-30 chars · lowercase letters, digits, hyphen, underscore.
+        </span>
+      </div>
+
+      {error && (
+        <p role="alert" className="text-[13px] text-[#b32424] mb-2">
+          {error}
+        </p>
+      )}
+
+      <button
+        type="button"
+        onClick={onSubmit}
+        disabled={!formatOk || submitting}
+        className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold disabled:opacity-50"
+      >
+        {submitting ? "Claiming…" : "Claim handle →"}
+      </button>
+    </div>
+  );
+}
+
 export function SuccessStep({ onViewMine }: { onViewMine: () => void }) {
   return (
     <div className="text-center py-8">

@@ -107,15 +107,22 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     # know to hand her multi-step work.
     assert "orchestrate" in bootstrap_md or "specialists" in bootstrap_md
 
-    # AGENTS.md is the orchestration playbook — decompose, delegate, triage.
-    # Must reference the three orchestration tools by name so Friday knows
-    # how to actually act on the doctrine.
+    # AGENTS.md is the orchestration playbook. References the native
+    # Paperclip MCP tool names + the heartbeat doctrine — Friday's
+    # coordination goes through the @paperclipai/mcp-server MCP wired
+    # in openclaw.json, not through Isol8-backend wrappers.
     agents_md = contents_by_name["AGENTS.md"]
-    assert "paperclip_list_agents" in agents_md
-    assert "paperclip_create_issue" in agents_md
-    assert "paperclip_get_issue_status" in agents_md
-    # In-house roster present so Friday has baseline knowledge of specialists
-    # before her first paperclip_list_agents call.
+    # MCP tool names appear (camelCase Paperclip MCP surface).
+    assert "paperclipCreateIssue" in agents_md
+    assert "paperclipListAgents" in agents_md
+    assert "paperclipGetHeartbeatContext" in agents_md
+    assert "paperclipCheckoutIssue" in agents_md
+    # Heartbeat doctrine from the paperclip skill.
+    assert "PAPERCLIP_WAKE_REASON" in agents_md
+    assert "PAPERCLIP_RUN_ID" in agents_md
+    assert "409" in agents_md  # 'never retry a 409' rule
+    # In-house roster present so Friday has baseline knowledge of
+    # specialists before her first paperclipListAgents call.
     assert "Atlas" in agents_md
     assert "Pulse" in agents_md
     # Owner display interpolated.

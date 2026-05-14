@@ -60,6 +60,14 @@ async def test_invokes_seeder_after_write_openclaw_config(monkeypatch, tmp_path,
             "core.services.friday_identity.pre_stage_friday_identity",
             seeder_mock,
         ),
+        patch(
+            "core.services.paperclip_api_key.ensure_paperclip_api_key",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.paperclip_openclaw_pairing._resolve_company_id_for_owner",
+            AsyncMock(return_value=None),
+        ),
         patch.object(manager, "ensure_device_identities", ensure_devices_mock),
         patch("httpx.AsyncClient", _make_async_httpx_client_mock()),
     ):
@@ -96,6 +104,14 @@ async def test_swallows_seeder_failure_and_continues(monkeypatch, tmp_path, mana
         patch(
             "core.services.friday_identity.pre_stage_friday_identity",
             seeder_mock,
+        ),
+        patch(
+            "core.services.paperclip_api_key.ensure_paperclip_api_key",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.paperclip_openclaw_pairing._resolve_company_id_for_owner",
+            AsyncMock(return_value=None),
         ),
         patch.object(manager, "ensure_device_identities", ensure_devices_mock),
         patch("httpx.AsyncClient", _make_async_httpx_client_mock()),

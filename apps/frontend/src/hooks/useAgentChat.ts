@@ -151,11 +151,16 @@ function foldLiveTurnIntoContent(params: {
       const blocks: ContentBlock[] = [
         { type: "tool_use", id: e.toolCallId, name: e.name, args: e.args },
       ];
-      if (e.output !== undefined) {
+      // Emit tool_result whenever the tool has reached a terminal state,
+      // even if the backend produced no payload — MessageBlocks derives
+      // tool status from tool_use ↔ tool_result pairing in the flat
+      // model, so a "done" tool with no output but no tool_result block
+      // would otherwise render as still-running forever.
+      if (e.status !== "running") {
         blocks.push({
           type: "tool_result",
           tool_use_id: e.toolCallId,
-          content: e.output,
+          content: e.output ?? "",
           ...(e.status === "error" ? { isError: true } : {}),
         });
       }
@@ -206,6 +211,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const chatStreamRef = useRef<string | null>(null);
   const chatStreamRunIdRef = useRef<string | null>(null);
   const chatStreamStartedAtRef = useRef<number | null>(null);
+  // Cumulative-replacement guard: OpenClaw chunks deliver the FULL assistant
+  // text from the start of the run on every event (see
+  // backend/core/gateway/connection_pool.py:1080 "chunks use cumulative
+  // replacement"). When a tool interrupts streaming we commit the in-progress
+  // chatStream into chatStreamSegments; subsequent chunks for the same run
+  // still arrive cumulative (pre-tool + post-tool text), so we must slice
+  // off the already-committed prefix before storing the new chatStream.
+  // Otherwise the segment + tail would both contain the pre-tool text and
+  // the synthesized assistant message at `done` would duplicate it.
+  const streamCommittedOffsetRef = useRef<number>(0);
   const setChatStream = useCallback((value: string | null) => {
     chatStreamRef.current = value;
     _setChatStreamRaw(value);
@@ -324,12 +339,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
               name: e.name,
               args: e.args,
             },
-            ...(e.output !== undefined
+            // Emit tool_result on terminal state regardless of payload —
+            // see foldLiveTurnIntoContent for rationale.
+            ...(e.status !== "running"
               ? [
                   {
                     type: "tool_result",
                     tool_use_id: e.toolCallId,
-                    content: e.output,
+                    content: e.output ?? "",
                     ...(e.status === "error" ? { isError: true } : {}),
                   } as ContentBlock,
                 ]
@@ -438,15 +455,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       if (msg.type === "chunk") {
         const runId = msg.runId;
-        // Sub-run boundary: if the incoming chunk has a new runId, commit
-        // the prior stream into chatStreamSegments first.
-        if (chatStreamRunIdRef.current !== null && chatStreamRunIdRef.current !== runId) {
+        // Run boundary: either first event of a fresh turn (current === null)
+        // or a new sub-run (current !== runId). Commit any in-progress stream
+        // as a segment and reset the cumulative-replacement offset so the
+        // new run's chunks start at slice(0).
+        if (chatStreamRunIdRef.current === null || chatStreamRunIdRef.current !== runId) {
           const prior = chatStreamRef.current;
           if (prior && prior.length > 0) {
             setChatStreamSegments((segs) => [...segs, { text: prior, ts: Date.now() }]);
           }
+          streamCommittedOffsetRef.current = 0;
         }
-        setChatStream(msg.content);
+        // Slice off the already-committed prefix; msg.content is cumulative
+        // from the start of the run.
+        const tail = msg.content.slice(streamCommittedOffsetRef.current);
+        setChatStream(tail.length > 0 ? tail : null);
         chatStreamRunIdRef.current = runId;
         if (chatStreamStartedAtRef.current === null) {
           chatStreamStartedAtRef.current = Date.now();
@@ -474,11 +497,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         if (!toolCallId) return;
 
         // Commit any in-progress chatStream to segments before the tool runs.
+        // Advance streamCommittedOffsetRef by the committed length so the
+        // next post-tool chunk (which arrives cumulative from start-of-run)
+        // can slice off the already-committed prefix instead of duplicating
+        // it at fold time. Do NOT clear chatStreamRunIdRef — the same run
+        // continues after the tool returns.
         const priorStream = chatStreamRef.current;
         if (priorStream && priorStream.length > 0) {
           setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
+          streamCommittedOffsetRef.current += priorStream.length;
           setChatStream(null);
-          chatStreamRunIdRef.current = null;
         }
 
         const now = Date.now();
@@ -546,6 +574,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         setChatStream(null);
         chatStreamRunIdRef.current = null;
         chatStreamStartedAtRef.current = null;
+        streamCommittedOffsetRef.current = 0;
         setChatStreamThinking(null);
         chatStreamThinkingRunIdRef.current = null;
         setChatStreamSegments([]);
@@ -599,6 +628,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // setIsStreaming(false), leaving the chat stuck in streaming mode.
         setChatStream(null);
         chatStreamRunIdRef.current = null;
+        streamCommittedOffsetRef.current = 0;
         setChatStreamThinking(null);
         chatStreamThinkingRunIdRef.current = null;
         setChatStreamSegments([]);
@@ -782,6 +812,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setIsStreaming(false);
     setChatStream(null);
     chatStreamRunIdRef.current = null;
+    streamCommittedOffsetRef.current = 0;
     setChatStreamThinking(null);
     chatStreamThinkingRunIdRef.current = null;
     setChatStreamSegments([]);
@@ -810,6 +841,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setChatMessages([]);
     setChatStream(null);
     chatStreamRunIdRef.current = null;
+    streamCommittedOffsetRef.current = 0;
     setChatStreamThinking(null);
     chatStreamThinkingRunIdRef.current = null;
     setChatStreamSegments([]);

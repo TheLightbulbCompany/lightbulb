@@ -122,8 +122,13 @@ async def search_listings(
     TTL) so CloudFront / browser caches don't outpace the underlying
     snapshot.
     """
+    # Seller-scoped reads compare the requested seller_id against the
+    # caller's owner_id (Clerk org_id for org members, user_id for
+    # personal). Listings are owner-scoped, not user-scoped, so a member
+    # of an org can read their org's drafts.
+    auth_owner_id = resolve_owner_id(auth) if auth is not None else None
     include_unpublished = (
-        seller_id is not None and auth is not None and seller_id == auth.user_id and status_in is not None
+        seller_id is not None and auth_owner_id is not None and seller_id == auth_owner_id and status_in is not None
     )
     if include_unpublished:
         # Seller-scoped reads can include drafts/review/retired rows that
@@ -438,7 +443,8 @@ async def create_listing(
     ClaimUsernameStep can route the user back to the handle picker
     before any listing row / S3 artifact is written.
     """
-    state = await seller_identity.get_for_user(auth.user_id)
+    owner_id = resolve_owner_id(auth)
+    state = await seller_identity.get_for_owner(owner_id)
     if state is None:
         raise HTTPException(
             status_code=412,
@@ -446,7 +452,7 @@ async def create_listing(
         )
     try:
         listing = await marketplace_service.create_draft(
-            seller_id=auth.user_id,
+            seller_id=owner_id,
             slug=payload.slug,
             name=payload.name,
             description_md=payload.description_md,
@@ -469,7 +475,9 @@ async def submit(
 ):
     """Transition draft -> review."""
     try:
-        result = await marketplace_service.submit_for_review(listing_id=listing_id, seller_id=auth.user_id)
+        result = await marketplace_service.submit_for_review(
+            listing_id=listing_id, seller_id=resolve_owner_id(auth)
+        )
     except marketplace_service.ArtifactNotUploadedError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except marketplace_service.InvalidStateError as e:
@@ -571,7 +579,8 @@ async def upload_artifact_from_agent(
 
     EFS workspace is keyed by owner_id (= org_id for org members), so
     the export must use the resolved id. The listing row's seller_id
-    below stays as auth.user_id — that's the author/attribution field.
+    is also owner_id — handles attach to the *owner* (matches the rest of
+    the platform; e.g. an org's listing shows as ``by @<org-handle>``).
     """
     owner_id = resolve_owner_id(auth)
 
@@ -607,7 +616,7 @@ async def upload_artifact_from_agent(
     try:
         result = await marketplace_service.replace_artifact(
             listing_id=listing_id,
-            seller_id=auth.user_id,
+            seller_id=owner_id,
             artifact_bytes=package.tarball_bytes,
             manifest=package.manifest,
             openclaw_slice=package.openclaw_slice,

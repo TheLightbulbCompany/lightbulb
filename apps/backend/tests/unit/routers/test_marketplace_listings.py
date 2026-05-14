@@ -15,24 +15,23 @@ from core.auth import AuthContext  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _short_circuit_seller_enrichment(monkeypatch):
-    """The marketplace search router now annotates each returned listing
-    with ``seller_username = "@<handle>"`` so cards never have to render
-    a raw Clerk user_id. The annotation does a per-seller_id DDB lookup
-    against the users table -- which without moto wraps would hit real
-    AWS in unit tests. Stub the user-row lookup to None across this
-    module so every listing falls back to ``@isol8`` (the in-house
-    display) and tests stay hermetic. Tests that specifically need
-    handle-resolution behaviour can override this with a tighter
-    monkeypatch.
+    """The marketplace search router annotates each returned listing with
+    ``seller_username = "@<handle>"`` so cards never render a raw Clerk
+    user_id. The annotation queries the seller-usernames GSI by owner_id
+    — which without moto wraps would hit real AWS in unit tests. Stub
+    the lookup to None across this module so every listing falls back
+    to ``@isol8`` (the in-house display) and tests stay hermetic. Tests
+    that specifically need handle-resolution behaviour can override this
+    with a tighter monkeypatch.
     """
     from core.services import seller_identity
 
-    async def _no_handle(user_id: str):  # noqa: ARG001
+    async def _no_handle(owner_id: str):  # noqa: ARG001
         return None
 
     monkeypatch.setattr(
-        seller_identity.user_repo,
-        "get_seller_username",
+        seller_identity.seller_username_repo,
+        "get_current_for_owner",
         _no_handle,
     )
 
@@ -649,7 +648,7 @@ def test_search_seller_scoped_status_in_filters_results(mock_search, authed_clie
     assert call_kwargs["include_unpublished"] is True
 
 
-@patch("routers.marketplace_listings.seller_identity.get_for_user", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.seller_identity.get_for_owner", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.marketplace_service.create_draft", new_callable=AsyncMock)
 def test_create_listing_persists_category(mock_create, mock_seller_identity, authed_client_factory):
     """Wizard's category selection (Step 4 of the publish flow) must thread
@@ -683,7 +682,7 @@ def test_create_listing_persists_category(mock_create, mock_seller_identity, aut
     assert mock_create.call_args.kwargs["category"] == "engineering"
 
 
-@patch("routers.marketplace_listings.seller_identity.get_for_user", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.seller_identity.get_for_owner", new_callable=AsyncMock)
 def test_create_listing_blocks_without_seller_username(mock_seller_identity, authed_client_factory):
     """The publish gate returns 412 when the caller hasn't yet claimed a
     seller handle. Frontend pre-flight catches this with GET /sellers/me,

@@ -5,23 +5,38 @@ claimed at first publish, is unique platform-wide (case-insensitive), and
 can only be changed every 90 days. This module is the single source of
 truth for those rules.
 
-Storage shape:
-    * Authoritative reservation lives in the ``seller_usernames`` table,
-      keyed by ``username_lower`` (see ``seller_username_repo``). The
-      conditional ``PutItem`` is the uniqueness oracle.
-    * The lowercased handle + ``last_changed_at`` ISO timestamp are also
-      mirrored onto the user's row in the ``users`` table so per-listing
-      reads can resolve ``seller_id -> @handle`` without a second indexed
-      lookup.
+**Owner-scoped, not user-scoped.** Handles attach to the *owner* of the
+marketplace seller account, which is:
+
+  * For personal sellers: ``owner_id == clerk user_id``
+  * For org sellers:      ``owner_id == clerk org_id``
+
+This matches how every other surface keys ownership (containers, billing,
+Paperclip company). All call sites resolve ``owner_id`` via
+``core.auth.resolve_owner_id(auth)`` and pass it in.
+
+Storage shape (single table, single source of truth):
+
+  * ``seller_usernames`` keyed by ``username_lower`` (PK) — the conditional
+    ``PutItem`` is the uniqueness oracle.
+  * GSI ``by-owner-id`` (PK ``owner_id``, sort key ``claimed_at``) — fast
+    reverse lookup ("what handle does this owner currently hold?") without
+    a separate mirror table. The latest row per owner is the partition's
+    tail.
+  * Old rows from prior handle changes stay in the table so the previous
+    handle can't be immediately re-claimed by someone else (impersonation
+    guard).
 
 Public surface (referenced by ``routers/sellers.py`` and the marketplace
 publish gate):
 
-    * ``SellerUsernameError`` -- typed errors raised from this module.
-    * ``validate_format(username)``
-    * ``check_reserved(username)``
-    * ``claim_username(user_id, username)`` -- atomic two-table write.
-    * ``get_for_user(user_id)``
+  * ``SellerUsernameError`` — typed errors raised from this module.
+  * ``validate_format(username)``
+  * ``check_reserved(username)``
+  * ``claim_username(owner_id, username)`` — atomic single-write claim.
+  * ``get_for_owner(owner_id)``
+  * ``resolve_seller_display(seller_id)`` — listing-card display lookup.
+  * ``enrich_listings_with_seller_display(listings)`` — batched form.
 """
 
 from __future__ import annotations
@@ -30,7 +45,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from core.dynamodb import utc_now_iso
-from core.repositories import seller_username_repo, user_repo
+from core.repositories import seller_username_repo
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +95,7 @@ class SellerUsernameError(Exception):
         - ``"invalid_format"`` -- regex / length check failed.
         - ``"reserved"``       -- handle is in the reserved list.
         - ``"taken"``          -- conditional write hit an existing row.
-        - ``"cooldown_active"`` -- user changed handle within 90 days.
+        - ``"cooldown_active"`` -- owner changed handle within 90 days.
 
     For ``cooldown_active`` the exception's ``extra`` carries the
     ``cooldown_ends_at`` ISO timestamp so the route can surface it.
@@ -129,7 +144,7 @@ def check_reserved(username: str) -> None:
 def _parse_iso(value: str | None) -> datetime | None:
     """Best-effort ISO-8601 parse. Accepts the canonical form written by
     ``utc_now_iso`` plus a few common variants. Returns ``None`` on parse
-    failure so a corrupt cell can't permanently lock a user out of a
+    failure so a corrupt cell can't permanently lock an owner out of a
     handle change.
     """
     if not value or not isinstance(value, str):
@@ -173,40 +188,42 @@ def _cooldown_active(last_changed_at: str | None) -> tuple[bool, str | None]:
 # ---------------------------------------------------------------------------
 
 
-async def claim_username(user_id: str, username: str) -> dict:
-    """Claim ``username`` for ``user_id``.
+async def claim_username(owner_id: str, username: str) -> dict:
+    """Claim ``username`` for ``owner_id``.
 
     Validates format + reserved list, enforces the 90-day cooldown if the
-    user has changed handles before, then atomically writes the
-    seller-usernames reservation row and updates the users row. The
-    reservation row's conditional ``PutItem`` is the uniqueness oracle --
-    if a row already exists for ``username_lower`` we raise ``taken``.
+    owner has changed handles before, then atomically writes the
+    seller-usernames reservation row. The reservation row's conditional
+    ``PutItem`` is the uniqueness oracle -- if a row already exists for
+    ``username_lower`` we raise ``taken``.
+
+    ``owner_id`` is the value returned by ``core.auth.resolve_owner_id(auth)``
+    — Clerk org_id for org owners, Clerk user_id for personal owners.
 
     Returns the post-claim state shape consumed by ``routers/sellers.py``.
     """
     canonical = validate_format(username)
     check_reserved(canonical)
 
-    # Cooldown gate -- if the user has a prior change <90 days ago we
-    # reject before touching the reservation table.
-    existing = await user_repo.get_seller_username(user_id)
-    if existing and existing.get("seller_username") == canonical:
+    # Cooldown gate -- check the owner's current handle (latest row by
+    # claimed_at on the by-owner-id GSI). If they hold this exact handle
+    # already, the call is idempotent. Otherwise enforce the cooldown
+    # window before we touch the reservation table.
+    existing = await seller_username_repo.get_current_for_owner(owner_id)
+    if existing and existing.get("username_lower") == canonical:
         # Idempotent re-claim of the same handle is a no-op. Return the
         # current state so the route can return 200 + the same body the
         # GET endpoint would. We deliberately don't bump
-        # ``last_changed_at`` here -- the cooldown clock should track the
-        # last *actual* change.
+        # ``claimed_at`` here -- the cooldown clock should track the last
+        # *actual* change.
+        prev_at = existing.get("claimed_at")
         return {
             "username": canonical,
-            "last_changed_at": existing.get("seller_username_changed_at"),
-            "cooldown_ends_at": _cooldown_ends_at(
-                existing.get("seller_username_changed_at")
-            ),
+            "last_changed_at": prev_at,
+            "cooldown_ends_at": _cooldown_ends_at(prev_at),
         }
-    if existing and existing.get("seller_username_changed_at"):
-        active, ends_at = _cooldown_active(
-            existing.get("seller_username_changed_at")
-        )
+    if existing and existing.get("claimed_at"):
+        active, ends_at = _cooldown_active(existing.get("claimed_at"))
         if active:
             raise SellerUsernameError(
                 "cooldown_active",
@@ -217,17 +234,11 @@ async def claim_username(user_id: str, username: str) -> dict:
     try:
         await seller_username_repo.claim(
             username_lower=canonical,
-            user_id=user_id,
+            owner_id=owner_id,
             claimed_at=now_iso,
         )
     except seller_username_repo.UsernameTakenError as exc:
         raise SellerUsernameError("taken") from exc
-
-    await user_repo.set_seller_username(
-        user_id=user_id,
-        username=canonical,
-        last_changed_at=now_iso,
-    )
 
     return {
         "username": canonical,
@@ -236,8 +247,8 @@ async def claim_username(user_id: str, username: str) -> dict:
     }
 
 
-async def get_for_user(user_id: str) -> dict | None:
-    """Return the user's claimed-handle state, or None when unclaimed.
+async def get_for_owner(owner_id: str) -> dict | None:
+    """Return the owner's current claimed-handle state, or None when unclaimed.
 
     Shape::
 
@@ -247,23 +258,22 @@ async def get_for_user(user_id: str) -> dict | None:
             "cooldown_ends_at":   "<ISO-8601>",
         }
     """
-    row = await user_repo.get_seller_username(user_id)
+    row = await seller_username_repo.get_current_for_owner(owner_id)
     if not row:
         return None
-    last_changed = row.get("seller_username_changed_at")
+    claimed_at = row.get("claimed_at")
     return {
-        "username": row["seller_username"],
-        "last_changed_at": last_changed,
-        "cooldown_ends_at": _cooldown_ends_at(last_changed),
+        "username": row["username_lower"],
+        "last_changed_at": claimed_at,
+        "cooldown_ends_at": _cooldown_ends_at(claimed_at),
     }
 
 
-# In-house listing fallback. ``curator.get_curator_user_id`` resolves the
-# admin@isol8.co Clerk account at runtime — but we want the
-# ``by @isol8`` display to work even before the curator account onboards
-# (and even if its handle hasn't been seeded yet). So we hardcode the
-# fallback here. The actual handle reservation should still be seeded
-# post-deploy by an operator so the row exists in the dedicated table.
+# In-house listing fallback. The platform's own listings use the reserved
+# ``isol8`` handle. The actual handle reservation should be seeded post-deploy
+# by an operator so the row exists in the seller_usernames table for the
+# admin user_id — but we want the ``by @isol8`` display to work even before
+# that seeding happens.
 ISOL8_DISPLAY_HANDLE = "isol8"
 
 
@@ -274,8 +284,9 @@ async def enrich_listings_with_seller_display(
 
     The frontend ListingCard renders ``by {listing.seller_username}``
     (e.g. ``by @ledger`` or ``by @isol8``). This helper resolves each
-    unique seller_id to its mirrored handle once, then writes the
-    ``@<handle>`` form back onto every listing dict.
+    unique ``seller_id`` (== ``owner_id`` for the seller) to its current
+    handle once, then writes the ``@<handle>`` form back onto every
+    listing dict.
 
     Mutates and returns the same list -- the marketplace_search cache
     holds these dicts, but the cache snapshot is reset on every
@@ -283,7 +294,7 @@ async def enrich_listings_with_seller_display(
     lookup failures fall back to ``@isol8`` so a transient DDB issue
     can't break the listings grid.
     """
-    # Resolve each unique seller_id exactly once -- catalog reads can
+    # Resolve each unique owner_id exactly once -- catalog reads can
     # easily hit dozens of listings from the same curator account.
     unique_ids = {li.get("seller_id") for li in listings if li.get("seller_id")}
     display_by_id: dict[str, str] = {}
@@ -307,14 +318,16 @@ async def resolve_seller_display(seller_id: str | None) -> str:
     """Return the ``@handle`` to render for a listing whose ``seller_id``
     column is ``seller_id``.
 
+    ``seller_id`` is the listing's owner — Clerk org_id for org sellers,
+    Clerk user_id for personal sellers. We query the seller_usernames
+    GSI by owner_id and return whatever handle is current.
+
     Resolution order:
-        1. If the user has a claimed handle in the users-table mirror
-           column, return ``@<handle>``.
-        2. If the seller is the in-house curator account, return ``@isol8``.
-        3. Otherwise return ``@isol8`` as the safest fallback -- the only
-           way to reach this branch in v0 is an in-house listing whose
-           seller is the curator account (and we never want to leak a
-           raw user_id into the UI).
+        1. If the owner has a claimed handle, return ``@<handle>``.
+        2. Otherwise return ``@isol8`` as the safe fallback (covers
+           in-house listings whose handle row may not be seeded yet
+           plus any edge case where a listing somehow lacks a claimed
+           seller).
 
     This function never raises -- DDB read failures fall through to the
     in-house fallback so a single misbehaving row doesn't break the
@@ -322,9 +335,9 @@ async def resolve_seller_display(seller_id: str | None) -> str:
     """
     if seller_id:
         try:
-            row = await user_repo.get_seller_username(seller_id)
-            if row and row.get("seller_username"):
-                return f"@{row['seller_username']}"
+            row = await seller_username_repo.get_current_for_owner(seller_id)
+            if row and row.get("username_lower"):
+                return f"@{row['username_lower']}"
         except Exception:
             # Defensive: DDB throttling / encryption errors must not break
             # the public listing page. Fall through to the in-house

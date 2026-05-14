@@ -3,6 +3,11 @@
 Uses the standard ``async_client`` fixture (Clerk-mocked auth, personal
 mode user_test_123). Service-layer DDB interactions are patched so these
 tests are pure-Python.
+
+Handles are owner-scoped (codex feedback on PR #642). For the personal
+test user the resolved ``owner_id`` is just their ``user_id``, so the
+seller_username_repo mocks here key on that. Tests cover both the
+storage shape and the routing path.
 """
 
 from __future__ import annotations
@@ -20,8 +25,10 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_get_me_returns_404_when_unclaimed(async_client) -> None:
-    with patch("core.services.seller_identity.user_repo") as mock_user_repo:
-        mock_user_repo.get_seller_username = AsyncMock(return_value=None)
+    with patch(
+        "core.services.seller_identity.seller_username_repo"
+    ) as mock_repo:
+        mock_repo.get_current_for_owner = AsyncMock(return_value=None)
         resp = await async_client.get("/api/v1/sellers/me")
     assert resp.status_code == 404
     assert resp.json()["detail"] == "seller_username_not_set"
@@ -30,11 +37,14 @@ async def test_get_me_returns_404_when_unclaimed(async_client) -> None:
 @pytest.mark.asyncio
 async def test_get_me_returns_state_when_claimed(async_client) -> None:
     ts = datetime.now(timezone.utc).isoformat()
-    with patch("core.services.seller_identity.user_repo") as mock_user_repo:
-        mock_user_repo.get_seller_username = AsyncMock(
+    with patch(
+        "core.services.seller_identity.seller_username_repo"
+    ) as mock_repo:
+        mock_repo.get_current_for_owner = AsyncMock(
             return_value={
-                "seller_username": "ledger",
-                "seller_username_changed_at": ts,
+                "username_lower": "ledger",
+                "owner_id": "user_test_123",
+                "claimed_at": ts,
             },
         )
         resp = await async_client.get("/api/v1/sellers/me")
@@ -52,12 +62,10 @@ async def test_get_me_returns_state_when_claimed(async_client) -> None:
 
 @pytest.mark.asyncio
 async def test_post_claim_succeeds_on_free_handle(async_client) -> None:
-    with (
-        patch("core.services.seller_identity.user_repo") as mock_user_repo,
-        patch("core.services.seller_identity.seller_username_repo") as mock_repo,
-    ):
-        mock_user_repo.get_seller_username = AsyncMock(return_value=None)
-        mock_user_repo.set_seller_username = AsyncMock()
+    with patch(
+        "core.services.seller_identity.seller_username_repo"
+    ) as mock_repo:
+        mock_repo.get_current_for_owner = AsyncMock(return_value=None)
         mock_repo.claim = AsyncMock(return_value={"username_lower": "ledger"})
 
         resp = await async_client.post(
@@ -68,17 +76,18 @@ async def test_post_claim_succeeds_on_free_handle(async_client) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["username"] == "ledger"
+    # owner_id resolved from auth context is what got persisted.
+    assert mock_repo.claim.await_args.kwargs["owner_id"] == "user_test_123"
 
 
 @pytest.mark.asyncio
 async def test_post_returns_409_on_taken(async_client) -> None:
     from core.repositories import seller_username_repo
 
-    with (
-        patch("core.services.seller_identity.user_repo") as mock_user_repo,
-        patch("core.services.seller_identity.seller_username_repo") as mock_repo,
-    ):
-        mock_user_repo.get_seller_username = AsyncMock(return_value=None)
+    with patch(
+        "core.services.seller_identity.seller_username_repo"
+    ) as mock_repo:
+        mock_repo.get_current_for_owner = AsyncMock(return_value=None)
         mock_repo.claim = AsyncMock(
             side_effect=seller_username_repo.UsernameTakenError("ledger"),
         )
@@ -96,11 +105,14 @@ async def test_post_returns_409_on_taken(async_client) -> None:
 @pytest.mark.asyncio
 async def test_post_returns_409_cooldown_with_ends_at(async_client) -> None:
     recent = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
-    with patch("core.services.seller_identity.user_repo") as mock_user_repo:
-        mock_user_repo.get_seller_username = AsyncMock(
+    with patch(
+        "core.services.seller_identity.seller_username_repo"
+    ) as mock_repo:
+        mock_repo.get_current_for_owner = AsyncMock(
             return_value={
-                "seller_username": "oldhandle",
-                "seller_username_changed_at": recent,
+                "username_lower": "oldhandle",
+                "owner_id": "user_test_123",
+                "claimed_at": recent,
             },
         )
 

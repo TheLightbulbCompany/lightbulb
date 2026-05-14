@@ -6,15 +6,27 @@ Every claim goes through a conditional ``PutItem`` with
 ``attribute_not_exists(username_lower)``; a failed conditional check is
 how we detect "this handle is already taken" without a separate read.
 
+A GSI on ``owner_id`` enables reverse lookups — "what handle does this
+owner currently hold?" — without a table scan. Used by
+``seller_identity.get_for_owner`` (cooldown check) and by the catalog-read
+enrichment that resolves ``seller_id -> @handle`` per listing card.
+
 Row shape::
 
     {
-        "username_lower": "ledger",     # PK -- always lowercased
-        "user_id":        "user_xxx",   # the claimant's Clerk user_id
+        "username_lower": "ledger",      # PK — always lowercased
+        "owner_id":       "org_xxx",     # GSI PK — the owner that claimed it
+                                          # (Clerk user_id for personal owners,
+                                          #  Clerk org_id for org owners)
         "claimed_at":     "<ISO-8601>",
     }
+
+Owners may end up with multiple rows over time (handle changes leave the
+old row dangling so it can't be re-claimed). The "current" handle for an
+owner is the row with the latest ``claimed_at`` — see ``get_current_for_owner``.
 """
 
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread
@@ -25,6 +37,11 @@ class UsernameTakenError(Exception):
     this lowercased username. The service layer surfaces this as a
     ``SellerUsernameError('taken')`` to the caller.
     """
+
+
+# GSI name on the seller-usernames table — keyed by owner_id, sorted by
+# claimed_at (so the latest row per owner is the partition's tail).
+OWNER_ID_GSI = "by-owner-id"
 
 
 def _get_table():
@@ -44,16 +61,21 @@ async def get(username_lower: str) -> dict | None:
     return response.get("Item")
 
 
-async def claim(*, username_lower: str, user_id: str, claimed_at: str) -> dict:
-    """Atomically reserve ``username_lower`` for ``user_id``.
+async def claim(*, username_lower: str, owner_id: str, claimed_at: str) -> dict:
+    """Atomically reserve ``username_lower`` for ``owner_id``.
 
     Conditional on ``attribute_not_exists(username_lower)``. Raises
-    ``UsernameTakenError`` if another user already owns the row.
+    ``UsernameTakenError`` if another owner already holds the row.
+
+    ``owner_id`` is the Clerk org_id for org owners, the Clerk user_id for
+    personal owners — i.e., the value returned by
+    ``core.auth.resolve_owner_id(auth)``. This mirrors how every other
+    Isol8 surface (containers, billing) keys ownership.
     """
     table = _get_table()
     item = {
         "username_lower": username_lower,
-        "user_id": user_id,
+        "owner_id": owner_id,
         "claimed_at": claimed_at,
     }
     try:
@@ -68,6 +90,27 @@ async def claim(*, username_lower: str, user_id: str, claimed_at: str) -> dict:
             raise UsernameTakenError(username_lower) from exc
         raise
     return item
+
+
+async def get_current_for_owner(owner_id: str) -> dict | None:
+    """Return the current (latest) reservation row for ``owner_id``.
+
+    Queries the ``by-owner-id`` GSI. An owner may have multiple rows
+    (handle changes leave the old row dangling for re-claim protection);
+    we return the one with the latest ``claimed_at``.
+
+    Returns None when the owner has never claimed a handle.
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        IndexName=OWNER_ID_GSI,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+        ScanIndexForward=False,  # newest first by claimed_at sort key
+        Limit=1,
+    )
+    items = response.get("Items") or []
+    return items[0] if items else None
 
 
 async def release(username_lower: str) -> None:

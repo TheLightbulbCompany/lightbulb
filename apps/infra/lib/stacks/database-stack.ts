@@ -385,9 +385,16 @@ export class DatabaseStack extends cdk.Stack {
     // conditional PutItem (attribute_not_exists) -- a failed condition
     // is the "handle taken" signal. The username `isol8` should be
     // seeded post-deploy by an operator (it's also in the in-code
-    // reserved list, so end users can never claim it). No GSI: reverse
-    // lookup (user_id -> handle) is satisfied by the mirror column on
-    // the users-table row, not by scanning this table.
+    // reserved list, so end users can never claim it).
+    //
+    // `by-owner-id` GSI supports the reverse lookup -- "what handle does
+    // this owner currently hold?" -- without scanning. `owner_id` is the
+    // Clerk org_id for org owners, Clerk user_id for personal owners (the
+    // value returned by `core.auth.resolve_owner_id`). Sort key
+    // `claimed_at` (ISO-8601) lets us read the latest row per owner with
+    // `ScanIndexForward=False, Limit=1`. The mirror column on the users
+    // row was removed in favour of this GSI so org owners (no users-row)
+    // can own handles too.
     this.sellerUsernamesTable = new dynamodb.Table(this, "SellerUsernamesTable", {
       tableName: `isol8-${env}-seller-usernames`,
       partitionKey: { name: "username_lower", type: dynamodb.AttributeType.STRING },
@@ -396,6 +403,12 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: props.kmsKey,
+    });
+    this.sellerUsernamesTable.addGlobalSecondaryIndex({
+      indexName: "by-owner-id",
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "claimed_at", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // OpenClaw webhook ingress audit table — every /hooks/{owner_id}/{path}

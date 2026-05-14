@@ -12,7 +12,13 @@ Endpoints (all under ``/api/v1/sellers``):
                                      on validation/cooldown/taken failures.
 
 The publish gate in ``routers/marketplace_listings.py`` calls
-``seller_identity.get_for_user`` directly rather than going through HTTP.
+``seller_identity.get_for_owner`` directly rather than going through HTTP.
+
+**Owner-scoped semantics.** Handles attach to the marketplace seller's
+owner — the Clerk org_id when the caller is acting in an org context,
+the Clerk user_id when personal. We resolve via ``resolve_owner_id(auth)``
+on every call so an org admin's claim shows up under the org, not their
+personal user row.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.services import seller_identity
 
 
@@ -45,11 +51,12 @@ async def get_my_seller_username(
 ) -> SellerUsernameState:
     """Return the caller's claimed seller handle + cooldown state.
 
-    Returns 404 when the caller has never claimed a handle -- the
+    Returns 404 when the caller's owner has never claimed a handle -- the
     frontend uses that to decide whether to render the ClaimUsernameStep
     in the publish wizard.
     """
-    state = await seller_identity.get_for_user(auth.user_id)
+    owner_id = resolve_owner_id(auth)
+    state = await seller_identity.get_for_owner(owner_id)
     if state is None:
         raise HTTPException(status_code=404, detail="seller_username_not_set")
     return SellerUsernameState(**state)
@@ -60,7 +67,7 @@ async def claim_my_seller_username(
     payload: ClaimUsernameRequest,
     auth: Annotated[AuthContext, Depends(get_current_user)],
 ) -> SellerUsernameState:
-    """Claim ``payload.username`` for the caller.
+    """Claim ``payload.username`` for the caller's owner.
 
     Maps ``SellerUsernameError`` codes to structured HTTP errors:
 
@@ -73,9 +80,10 @@ async def claim_my_seller_username(
     The frontend's PublishWizard + Settings page switch on these codes
     to render inline error copy.
     """
+    owner_id = resolve_owner_id(auth)
     try:
         state = await seller_identity.claim_username(
-            user_id=auth.user_id,
+            owner_id=owner_id,
             username=payload.username,
         )
     except seller_identity.SellerUsernameError as exc:

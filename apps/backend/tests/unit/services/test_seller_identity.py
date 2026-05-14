@@ -4,10 +4,16 @@ Covers:
     * ``validate_format`` rejects too-short, too-long, illegal chars,
       uppercase, leading/trailing punctuation.
     * ``check_reserved`` blocks each reserved name.
-    * ``claim_username`` on a free name writes both tables.
+    * ``claim_username`` on a free name writes the reservation row.
     * ``claim_username`` on a taken name raises ``SellerUsernameError('taken')``.
     * ``claim_username`` within cooldown raises ``cooldown_active``.
-    * ``get_for_user`` returns None when unclaimed, dict when claimed.
+    * ``get_for_owner`` returns None when unclaimed, dict when claimed.
+    * ``resolve_seller_display`` / ``enrich_listings_with_seller_display``.
+
+Storage model: the seller-usernames table is the single source of truth
+(no users-row mirror). The ``by-owner-id`` GSI is the reverse-lookup index;
+``seller_username_repo.get_current_for_owner`` queries it. Tests mock the
+repo directly.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from core.services.seller_identity import (
     SellerUsernameError,
     check_reserved,
     claim_username,
-    get_for_user,
+    get_for_owner,
     validate_format,
 )
 
@@ -93,13 +99,11 @@ class TestCheckReserved:
 
 @pytest.mark.asyncio
 class TestClaimUsername:
-    async def test_happy_path_writes_both_tables(self) -> None:
-        with (
-            patch("core.services.seller_identity.user_repo") as mock_user_repo,
-            patch("core.services.seller_identity.seller_username_repo") as mock_repo,
-        ):
-            mock_user_repo.get_seller_username = AsyncMock(return_value=None)
-            mock_user_repo.set_seller_username = AsyncMock()
+    async def test_happy_path_writes_reservation(self) -> None:
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(return_value=None)
             mock_repo.claim = AsyncMock(return_value={"username_lower": "ledger"})
 
             result = await claim_username("user_abc", "Ledger")
@@ -107,25 +111,32 @@ class TestClaimUsername:
         assert result["username"] == "ledger"
         assert result["last_changed_at"]
         assert result["cooldown_ends_at"]
-        # Reservation row written
+        # Reservation row written with owner_id (not user_id).
         mock_repo.claim.assert_awaited_once()
         kwargs = mock_repo.claim.await_args.kwargs
         assert kwargs["username_lower"] == "ledger"
-        assert kwargs["user_id"] == "user_abc"
-        # users-row mirror updated
-        mock_user_repo.set_seller_username.assert_awaited_once()
-        mirror_kwargs = mock_user_repo.set_seller_username.await_args.kwargs
-        assert mirror_kwargs["username"] == "ledger"
+        assert kwargs["owner_id"] == "user_abc"
+
+    async def test_org_owner_id_passed_through(self) -> None:
+        """Codex feedback: handles attach to owner, not user. An org_*
+        owner_id must be stored as the claimant on the reservation row."""
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(return_value=None)
+            mock_repo.claim = AsyncMock(return_value={"username_lower": "acmeco"})
+
+            await claim_username("org_acme", "acmeco")
+
+        assert mock_repo.claim.await_args.kwargs["owner_id"] == "org_acme"
 
     async def test_taken_username_raises_taken(self) -> None:
         from core.repositories import seller_username_repo
 
-        with (
-            patch("core.services.seller_identity.user_repo") as mock_user_repo,
-            patch("core.services.seller_identity.seller_username_repo") as mock_repo,
-        ):
-            mock_user_repo.get_seller_username = AsyncMock(return_value=None)
-            mock_user_repo.set_seller_username = AsyncMock()
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(return_value=None)
             mock_repo.claim = AsyncMock(
                 side_effect=seller_username_repo.UsernameTakenError("ledger"),
             )
@@ -137,22 +148,19 @@ class TestClaimUsername:
                 await claim_username("user_abc", "ledger")
 
         assert exc.value.code == "taken"
-        # No mirror write on collision.
-        mock_user_repo.set_seller_username.assert_not_awaited()
 
     async def test_cooldown_active_rejects(self) -> None:
         recent = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
-        with (
-            patch("core.services.seller_identity.user_repo") as mock_user_repo,
-            patch("core.services.seller_identity.seller_username_repo") as mock_repo,
-        ):
-            mock_user_repo.get_seller_username = AsyncMock(
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(
                 return_value={
-                    "seller_username": "oldhandle",
-                    "seller_username_changed_at": recent,
+                    "username_lower": "oldhandle",
+                    "owner_id": "user_abc",
+                    "claimed_at": recent,
                 },
             )
-            mock_user_repo.set_seller_username = AsyncMock()
             mock_repo.claim = AsyncMock()
 
             with pytest.raises(SellerUsernameError) as exc:
@@ -162,38 +170,36 @@ class TestClaimUsername:
         assert "cooldown_ends_at" in exc.value.extra
         # Reservation must NOT have been attempted.
         mock_repo.claim.assert_not_awaited()
-        mock_user_repo.set_seller_username.assert_not_awaited()
 
     async def test_idempotent_reclaim_of_same_handle(self) -> None:
         """Re-claiming the EXACT same handle (in cooldown) is a no-op,
         not a cooldown_active error -- it just returns the current
         state."""
         recent = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
-        with (
-            patch("core.services.seller_identity.user_repo") as mock_user_repo,
-            patch("core.services.seller_identity.seller_username_repo") as mock_repo,
-        ):
-            mock_user_repo.get_seller_username = AsyncMock(
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(
                 return_value={
-                    "seller_username": "ledger",
-                    "seller_username_changed_at": recent,
+                    "username_lower": "ledger",
+                    "owner_id": "user_abc",
+                    "claimed_at": recent,
                 },
             )
-            mock_user_repo.set_seller_username = AsyncMock()
             mock_repo.claim = AsyncMock()
 
             result = await claim_username("user_abc", "Ledger")
 
         assert result["username"] == "ledger"
-        # No reservation write; no mirror write.
+        assert result["last_changed_at"] == recent
+        # No reservation write.
         mock_repo.claim.assert_not_awaited()
-        mock_user_repo.set_seller_username.assert_not_awaited()
 
     async def test_invalid_format_rejected_before_reservation(self) -> None:
-        with (
-            patch("core.services.seller_identity.user_repo") as mock_user_repo,
-            patch("core.services.seller_identity.seller_username_repo") as mock_repo,
-        ):
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock()
             mock_repo.claim = AsyncMock()
 
             with pytest.raises(SellerUsernameError) as exc:
@@ -201,11 +207,14 @@ class TestClaimUsername:
             assert exc.value.code == "invalid_format"
 
             mock_repo.claim.assert_not_awaited()
-            mock_user_repo.get_seller_username.assert_not_called()  # not even read
+            mock_repo.get_current_for_owner.assert_not_called()  # not even read
 
     async def test_reserved_name_rejected_before_reservation(self) -> None:
-        with patch("core.services.seller_identity.seller_username_repo") as mock_repo:
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
             mock_repo.claim = AsyncMock()
+            mock_repo.get_current_for_owner = AsyncMock()
             with pytest.raises(SellerUsernameError) as exc:
                 await claim_username("user_abc", "isol8")
             assert exc.value.code == "reserved"
@@ -213,32 +222,56 @@ class TestClaimUsername:
 
 
 # ---------------------------------------------------------------------------
-# get_for_user
+# get_for_owner
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-class TestGetForUser:
+class TestGetForOwner:
     async def test_returns_none_when_unclaimed(self) -> None:
-        with patch("core.services.seller_identity.user_repo") as mock_user_repo:
-            mock_user_repo.get_seller_username = AsyncMock(return_value=None)
-            result = await get_for_user("user_abc")
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(return_value=None)
+            result = await get_for_owner("user_abc")
         assert result is None
 
     async def test_returns_state_when_claimed(self) -> None:
         ts = datetime.now(timezone.utc).isoformat()
-        with patch("core.services.seller_identity.user_repo") as mock_user_repo:
-            mock_user_repo.get_seller_username = AsyncMock(
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(
                 return_value={
-                    "seller_username": "ledger",
-                    "seller_username_changed_at": ts,
+                    "username_lower": "ledger",
+                    "owner_id": "user_abc",
+                    "claimed_at": ts,
                 },
             )
-            result = await get_for_user("user_abc")
+            result = await get_for_owner("user_abc")
         assert result is not None
         assert result["username"] == "ledger"
         assert result["last_changed_at"] == ts
         assert result["cooldown_ends_at"]
+
+    async def test_works_for_org_owner(self) -> None:
+        """Codex feedback: org owners (no users-row) must still be able to
+        own and read a handle. The GSI on owner_id makes this work without
+        any user_repo dependency."""
+        ts = datetime.now(timezone.utc).isoformat()
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(
+                return_value={
+                    "username_lower": "acmeco",
+                    "owner_id": "org_acme",
+                    "claimed_at": ts,
+                },
+            )
+            result = await get_for_owner("org_acme")
+        assert result is not None
+        assert result["username"] == "acmeco"
 
 
 # ---------------------------------------------------------------------------
@@ -248,16 +281,29 @@ class TestGetForUser:
 
 @pytest.mark.asyncio
 class TestResolveSellerDisplay:
-    async def test_returns_handle_when_user_has_one(self) -> None:
-        with patch("core.services.seller_identity.user_repo") as mock_user_repo:
-            mock_user_repo.get_seller_username = AsyncMock(
-                return_value={"seller_username": "ledger"},
+    async def test_returns_handle_when_owner_has_one(self) -> None:
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(
+                return_value={"username_lower": "ledger", "owner_id": "user_abc"},
             )
             assert await seller_identity.resolve_seller_display("user_abc") == "@ledger"
 
+    async def test_returns_handle_for_org_owner(self) -> None:
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(
+                return_value={"username_lower": "acmeco", "owner_id": "org_acme"},
+            )
+            assert await seller_identity.resolve_seller_display("org_acme") == "@acmeco"
+
     async def test_falls_back_to_isol8_when_no_handle(self) -> None:
-        with patch("core.services.seller_identity.user_repo") as mock_user_repo:
-            mock_user_repo.get_seller_username = AsyncMock(return_value=None)
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(return_value=None)
             assert (
                 await seller_identity.resolve_seller_display("user_abc") == "@isol8"
             )
@@ -266,12 +312,14 @@ class TestResolveSellerDisplay:
         assert await seller_identity.resolve_seller_display(None) == "@isol8"
 
     async def test_enrich_listings_writes_field(self) -> None:
-        with patch("core.services.seller_identity.user_repo") as mock_user_repo:
-            mock_user_repo.get_seller_username = AsyncMock(
-                side_effect=lambda uid: {
-                    "user_a": {"seller_username": "ledger"},
+        with patch(
+            "core.services.seller_identity.seller_username_repo"
+        ) as mock_repo:
+            mock_repo.get_current_for_owner = AsyncMock(
+                side_effect=lambda owner_id: {
+                    "user_a": {"username_lower": "ledger", "owner_id": "user_a"},
                     "user_b": None,
-                }.get(uid),
+                }.get(owner_id),
             )
             listings = [
                 {"listing_id": "l1", "seller_id": "user_a"},

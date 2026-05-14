@@ -685,8 +685,8 @@ class Workspace:
 # OpenClaw's auth-profile store schema. Mirrors the upstream
 # AuthProfileStore type defined in src/agents/auth-profiles/types.ts; the
 # version constant is `AUTH_STORE_VERSION = 1` from
-# src/agents/auth-profiles/constants.ts at the openclaw version we're
-# pinned to (2026.5.7). Bump _AUTH_STORE_VERSION here when bumping
+# src/agents/auth-profiles/constants.ts, last verified at openclaw
+# v2026.5.7. Bump _AUTH_STORE_VERSION here when bumping
 # openclaw-version.json#upstream past a release that changes the schema.
 _AUTH_STORE_VERSION = 1
 

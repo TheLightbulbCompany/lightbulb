@@ -20,7 +20,6 @@ import {
 } from "@/hooks/internal/toolBlockExtract";
 import type {
   ChatRenderItem,
-  ContentBlock,
   RenderGroup,
   HistoryMessage,
 } from "@/hooks/internal/types";
@@ -360,16 +359,7 @@ function MessageBlocks({
   message: HistoryMessage;
   onOpenFile?: (path: string) => void;
 }) {
-  // Defensive fallback for assistant items that use the legacy top-level
-  // `text` field instead of structured `content[]` (e.g. cached entries or
-  // upstream paths that haven't been migrated). Without this synthesis the
-  // bubble would render empty (Codex P2: render assistant history messages
-  // that only have text).
-  const blocks: ContentBlock[] = Array.isArray(message.content)
-    ? message.content
-    : typeof message.text === "string" && message.text.length > 0
-      ? [{ type: "text", text: message.text }]
-      : [];
+  const blocks = Array.isArray(message.content) ? message.content : [];
   const pairs = pairToolBlocks(blocks);
   const renderedToolIds = new Set(pairs.map((p) => p.toolUseId));
   const rendered: React.ReactNode[] = [];

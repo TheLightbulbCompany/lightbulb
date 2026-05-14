@@ -144,14 +144,26 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     () => (cacheKey ? _messageCache.get(cacheKey) ?? [] : []),
   );
 
-  // Live state for the in-flight run.
-  const [chatStream, setChatStream] = useState<string | null>(null);
+  // Live state for the in-flight run. Refs mirror the state so the
+  // onChatMessage handler (registered once per mount with stable deps)
+  // can read the live values without stale-closure bugs.
+  const [chatStream, _setChatStreamRaw] = useState<string | null>(null);
+  const chatStreamRef = useRef<string | null>(null);
   const chatStreamRunIdRef = useRef<string | null>(null);
   const chatStreamStartedAtRef = useRef<number | null>(null);
+  const setChatStream = useCallback((value: string | null) => {
+    chatStreamRef.current = value;
+    _setChatStreamRaw(value);
+  }, []);
 
   // Live thinking — Isol8 addition.
-  const [chatStreamThinking, setChatStreamThinking] = useState<string | null>(null);
+  const [chatStreamThinking, _setChatStreamThinkingRaw] = useState<string | null>(null);
+  const chatStreamThinkingRef = useRef<string | null>(null);
   const chatStreamThinkingRunIdRef = useRef<string | null>(null);
+  const setChatStreamThinking = useCallback((value: string | null) => {
+    chatStreamThinkingRef.current = value;
+    _setChatStreamThinkingRaw(value);
+  }, []);
 
   // Stream segments (text fragments committed when a tool interrupts streaming).
   const [chatStreamSegments, setChatStreamSegments] = useState<Array<{ text: string; ts: number }>>([]);
@@ -325,7 +337,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // Sub-run boundary: if the incoming chunk has a new runId, commit
         // the prior stream into chatStreamSegments first.
         if (chatStreamRunIdRef.current !== null && chatStreamRunIdRef.current !== runId) {
-          const prior = chatStream;
+          const prior = chatStreamRef.current;
           if (prior && prior.length > 0) {
             setChatStreamSegments((segs) => [...segs, { text: prior, ts: Date.now() }]);
           }
@@ -358,8 +370,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         if (!toolCallId) return;
 
         // Commit any in-progress chatStream to segments before the tool runs.
-        if (chatStream && chatStream.length > 0) {
-          setChatStreamSegments((segs) => [...segs, { text: chatStream, ts: Date.now() }]);
+        const priorStream = chatStreamRef.current;
+        if (priorStream && priorStream.length > 0) {
+          setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
           setChatStream(null);
           chatStreamRunIdRef.current = null;
         }
@@ -399,8 +412,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "done") {
         const runId = msg.runId;
         // Commit any pending stream into a synthesized assistant message.
-        const stream = chatStream;
-        const thinking = chatStreamThinking;
+        const stream = chatStreamRef.current;
+        const thinking = chatStreamThinkingRef.current;
         if ((stream && stream.length > 0) || (thinking && thinking.length > 0)) {
           const content: ContentBlock[] = [];
           if (thinking) content.push({ type: "thinking", thinking });

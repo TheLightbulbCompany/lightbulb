@@ -9,6 +9,20 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import {
+  pairToolBlocks,
+  isToolUseBlock,
+  isToolResultBlock,
+  isThinkingBlock,
+  isTextBlock,
+  resolveToolUseId,
+  resolveToolArgs,
+} from "@/hooks/internal/toolBlockExtract";
+import type {
+  ChatRenderItem,
+  RenderGroup,
+  HistoryMessage,
+} from "@/hooks/internal/types";
 // Approval rendering moved to ExecApprovalDialog (mounted at chat-shell level
 // via useExecApprovals). Tool pills now only represent execution state —
 // running / done / error. See ExecApprovalDialog.tsx for the modal that
@@ -30,6 +44,12 @@ export interface ToolUse {
   meta?: string;
 }
 
+/**
+ * Legacy flat-message shape. Retained as a transitional export so external
+ * consumers (StreamingStatusBar, RunTranscript via sessionMessageAdapter)
+ * keep typechecking until Tasks 7 + 8 cut them over. Internally, MessageList
+ * walks `renderGroups` from useAgentChat instead.
+ */
 export interface Message {
   id: string;
   role: "user" | "assistant";
@@ -48,10 +68,10 @@ export interface Message {
 }
 
 export interface MessageListProps {
-  messages: Message[];
-  isTyping?: boolean;
+  renderGroups: RenderGroup[];
   agentName?: string;
-  onRetry?: (assistantMsgId: string) => void;
+  isStreaming?: boolean;
+  isTyping?: boolean;
   onOpenFile?: (path: string) => void;
 }
 
@@ -194,20 +214,50 @@ const TOOL_STYLES = {
   },
 } as const;
 
-function renderToolResult(blocks: ToolResultBlock[] | undefined): string | null {
-  if (!blocks?.length) return null;
+/**
+ * Render a tool_result block's content for display in the pill expansion.
+ * `tool_result.content` may be a string OR an array of inner blocks
+ * (Anthropic shape). We accept both. `result` is the legacy field name
+ * pairToolBlocks falls back to.
+ */
+function renderToolOutput(content: unknown): string | null {
+  if (content == null) return null;
+  if (typeof content === "string") return content || null;
+  if (!Array.isArray(content)) {
+    try {
+      return JSON.stringify(content, null, 2);
+    } catch {
+      return null;
+    }
+  }
   const parts: string[] = [];
-  for (const b of blocks) {
-    if (b.type === "text" && b.text) parts.push(b.text);
-    else if (b.omitted) parts.push(`[${b.type} — ${b.bytes ?? "?"} bytes, omitted]`);
+  for (const b of content) {
+    if (!b || typeof b !== "object") continue;
+    const obj = b as { type?: string; text?: string; omitted?: boolean; bytes?: number };
+    if (obj.type === "text" && typeof obj.text === "string") parts.push(obj.text);
+    else if (obj.omitted) parts.push(`[${obj.type ?? "blob"} — ${obj.bytes ?? "?"} bytes, omitted]`);
   }
   return parts.join("\n\n") || null;
 }
 
-function ToolPill({ t }: { t: ToolUse }) {
+interface ToolPillState {
+  id: string;
+  name: string;
+  args: unknown;
+  result: unknown;
+  status: "running" | "done" | "error";
+}
+
+function ToolPill({ tool }: { tool: ToolPillState }) {
   const [open, setOpen] = React.useState(false);
-  const s = TOOL_STYLES[t.status];
-  const hasDetails = !!(t.args || t.result || t.meta);
+  const s = TOOL_STYLES[tool.status];
+  const output = renderToolOutput(tool.result);
+  const hasArgs = !!(
+    tool.args &&
+    typeof tool.args === "object" &&
+    Object.keys(tool.args as Record<string, unknown>).length > 0
+  );
+  const hasDetails = hasArgs || !!output;
 
   return (
     <div className="inline-block">
@@ -223,8 +273,8 @@ function ToolPill({ t }: { t: ToolUse }) {
         aria-expanded={open}
       >
         <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
-        <span>{t.tool}</span>
-        {t.status === "error" && <span>failed</span>}
+        <span>{tool.name}</span>
+        {tool.status === "error" && <span>failed</span>}
         {hasDetails &&
           (open ? (
             <ChevronDown className="h-3 w-3 opacity-70" />
@@ -234,26 +284,21 @@ function ToolPill({ t }: { t: ToolUse }) {
       </button>
       {open && hasDetails && (
         <div className="mt-1.5 max-w-xl rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-2 text-xs space-y-2">
-          {t.meta && (
-            <div className="text-[#8a8578]">
-              <span className="font-medium text-[#302d28]">target:</span> {t.meta}
-            </div>
-          )}
-          {t.args && Object.keys(t.args).length > 0 && (
+          {hasArgs && (
             <div>
               <div className="font-medium text-[#302d28] mb-0.5">input</div>
               <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[#f3efe6] rounded px-2 py-1 max-h-48 overflow-auto">
-                {JSON.stringify(t.args, null, 2)}
+                {JSON.stringify(tool.args, null, 2)}
               </pre>
             </div>
           )}
-          {renderToolResult(t.result) && (
+          {output && (
             <div>
               <div className="font-medium text-[#302d28] mb-0.5">
-                {t.status === "error" ? "error" : "output"}
+                {tool.status === "error" ? "error" : "output"}
               </div>
               <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[#f3efe6] rounded px-2 py-1 max-h-48 overflow-auto">
-                {renderToolResult(t.result)}
+                {output}
               </pre>
             </div>
           )}
@@ -263,13 +308,16 @@ function ToolPill({ t }: { t: ToolUse }) {
   );
 }
 
-function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
-  if (toolUses.length === 0) return null;
+/**
+ * Single-tool indicator. Plan §6 changes the prop from `toolUses: ToolUse[]`
+ * to a single tool object — pairing now happens upstream in MessageBlocks
+ * (one indicator per tool_use block), so this component renders one pill
+ * per call.
+ */
+function ToolUseIndicator({ tool }: { tool: ToolPillState }) {
   return (
     <div className="mb-3 flex flex-wrap gap-2 items-start">
-      {toolUses.map((t, i) => (
-        <ToolPill key={t.toolCallId ?? `${t.tool}-${i}`} t={t} />
-      ))}
+      <ToolPill tool={tool} />
     </div>
   );
 }
@@ -278,11 +326,11 @@ export const AGENT_GLYPH_PATH =
     "M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z";
 
 export function AgentGlyph({
-    state,
+    state = "idle",
     size = 18,
     className,
 }: {
-    state: "idle" | "thinking";
+    state?: "idle" | "thinking";
     size?: number;
     className?: string;
 }) {
@@ -314,7 +362,7 @@ export function AgentGlyph({
     );
 }
 
-function AgentHead({ name, state }: { name: string; state: "idle" | "thinking" }) {
+function AgentHead({ name, state = "idle" }: { name: string; state?: "idle" | "thinking" }) {
     return (
         <div className="flex items-center gap-2 mb-2">
             <span className="text-xs font-semibold text-[#302d28] tracking-tight">
@@ -336,22 +384,204 @@ function AgentHead({ name, state }: { name: string; state: "idle" | "thinking" }
     );
 }
 
-function ErrorToolbar({ messageId, onRetry }: { messageId: string; onRetry?: (id: string) => void }) {
-    return (
-        <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-medium text-[#dc2626]">Failed to generate</span>
-            {onRetry && (
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 text-[#dc2626] hover:text-[#1a1a1a] hover:bg-[#f3efe6]"
-                    onClick={() => onRetry(messageId)}
-                >
-                    <RefreshCw className="h-3 w-3" />
-                </Button>
-            )}
+/**
+ * Walks a HistoryMessage's content blocks and renders them in order:
+ * text → MarkdownContent, thinking → ThinkingBlock, tool_use →
+ * ToolUseIndicator paired with its matching tool_result. tool_result
+ * blocks are skipped — they're rendered implicitly as part of the
+ * matching tool_use pair.
+ */
+function MessageBlocks({
+  message,
+  onOpenFile,
+}: {
+  message: HistoryMessage;
+  onOpenFile?: (path: string) => void;
+}) {
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  const pairs = pairToolBlocks(blocks);
+  const renderedToolIds = new Set(pairs.map((p) => p.toolUseId));
+  const rendered: React.ReactNode[] = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (isToolResultBlock(b)) {
+      // Rendered as part of the matching tool_use's pair.
+      continue;
+    }
+    if (isToolUseBlock(b)) {
+      const id = resolveToolUseId(b);
+      if (id && renderedToolIds.has(id)) {
+        const pair = pairs.find((p) => p.toolUseId === id)!;
+        const resultBlock = pair.toolResultBlock as
+          | { content?: unknown; result?: unknown; isError?: boolean }
+          | undefined;
+        const status: "running" | "done" | "error" = resultBlock
+          ? resultBlock.isError
+            ? "error"
+            : "done"
+          : "running";
+        rendered.push(
+          <ToolUseIndicator
+            key={`tool:${id}`}
+            tool={{
+              id,
+              name: b.name ?? "tool",
+              args: resolveToolArgs(b),
+              result: resultBlock?.content ?? resultBlock?.result,
+              status,
+            }}
+          />
+        );
+        renderedToolIds.delete(id);
+      }
+      continue;
+    }
+    if (isThinkingBlock(b)) {
+      const text = (b.thinking ?? b.text ?? "") as string;
+      if (text.length > 0) {
+        rendered.push(<ThinkingBlock key={`think:${i}`} content={text} />);
+      }
+      continue;
+    }
+    if (isTextBlock(b)) {
+      const text = (b.text ?? "") as string;
+      if (text.length > 0) {
+        // Surface terminal agent errors via the typed card when the message
+        // carries an errorCode, otherwise just render plain markdown.
+        if (message.errorCode && text.startsWith("Error: ")) {
+          rendered.push(
+            <ChatErrorCard
+              key={`err:${i}`}
+              message={text.slice("Error: ".length)}
+              code={message.errorCode}
+            />
+          );
+        } else {
+          rendered.push(
+            <MarkdownContent
+              key={`text:${i}`}
+              content={text}
+              onOpenFile={onOpenFile}
+            />
+          );
+        }
+      }
+      continue;
+    }
+    // Unknown block — skip.
+  }
+  return <>{rendered}</>;
+}
+
+function UserMessageRow({ message }: { message: HistoryMessage }) {
+  const text = Array.isArray(message.content)
+    ? message.content
+        .filter(isTextBlock)
+        .map((b) => (b.text ?? "") as string)
+        .join("")
+    : (message.text ?? "");
+  return (
+    <div className="flex w-full justify-end" data-role="user">
+      <div className="flex flex-col min-w-0 max-w-[85%]">
+        <div className="relative text-sm leading-7 bg-[#f0ebe2] text-[#1a1a1a] rounded-2xl rounded-br-md px-4 py-2.5">
+          <div className="wrap-break-word whitespace-pre-wrap">{text}</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Renders one item from a RenderGroup. Stream / live-thinking / divider
+ * items map directly to existing block primitives; {kind:"message"} items
+ * defer to MessageBlocks which walks the message's content[] array.
+ */
+function ItemRenderer({
+  item,
+  onOpenFile,
+}: {
+  item: ChatRenderItem;
+  onOpenFile?: (path: string) => void;
+}) {
+  if (item.kind === "divider") {
+    return (
+      <div className="my-3 flex items-center gap-2 text-[11px] text-[#8a8578]">
+        <span className="flex-1 h-px bg-[#e0dbd0]" />
+        <span className="uppercase tracking-wide">{item.label}</span>
+        <span className="flex-1 h-px bg-[#e0dbd0]" />
+      </div>
     );
+  }
+  if (item.kind === "stream" || item.kind === "stream-segment") {
+    return <MarkdownContent content={item.text} onOpenFile={onOpenFile} />;
+  }
+  if (item.kind === "live-thinking") {
+    return <ThinkingBlock content={item.text} />;
+  }
+  if (item.kind === "message") {
+    return <MessageBlocks message={item.message} onOpenFile={onOpenFile} />;
+  }
+  return null;
+}
+
+/**
+ * One visual bubble group. User-side groups expand to one bubble per item
+ * (each user message stands alone). Assistant-side groups render a single
+ * rounded container with all items flowing inside it.
+ */
+function BubbleGroup({
+  group,
+  agentName,
+  isStreaming,
+  isLastAssistantGroup,
+  onOpenFile,
+}: {
+  group: RenderGroup;
+  agentName?: string;
+  isStreaming?: boolean;
+  isLastAssistantGroup?: boolean;
+  onOpenFile?: (path: string) => void;
+}) {
+  if (group.side === "user") {
+    return (
+      <>
+        {group.items.map((item) =>
+          item.kind === "message" ? (
+            <UserMessageRow key={item.key} message={item.message} />
+          ) : null
+        )}
+      </>
+    );
+  }
+  // Assistant side
+  return (
+    <div className="flex w-full justify-start" data-role="assistant">
+      <div className="flex flex-col min-w-0 max-w-[85%] group relative">
+        <AgentHead
+          name={agentName || "Assistant"}
+          state={isStreaming && isLastAssistantGroup ? "thinking" : "idle"}
+        />
+        <div className="relative text-sm leading-7 text-[#302d28] w-full">
+          {group.items.map((item) => (
+            <ItemRenderer key={item.key} item={item} onOpenFile={onOpenFile} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TypingPlaceholder({ agentName }: { agentName?: string }) {
+  return (
+    <div
+      data-testid="typing-placeholder"
+      className="flex w-full justify-start"
+    >
+      <div className="flex flex-col min-w-0 max-w-[85%]">
+        <AgentHead name={agentName || "Assistant"} state="thinking" />
+      </div>
+    </div>
+  );
 }
 
 export interface MessageListHandle {
@@ -359,7 +589,7 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile }, ref) {
+  function MessageList({ renderGroups, isStreaming, isTyping, agentName, onOpenFile }, ref) {
     const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
     // Track whether the user is at (or near) the bottom of the scroll
@@ -369,9 +599,9 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     // Tailwind's `space-y-10` (~40px) plus a comfortable margin.
     const isNearBottomRef = React.useRef(true);
     const hasMountedRef = React.useRef(false);
-    const prevMessagesLengthRef = React.useRef(0);
-    const prevLastContentLengthRef = React.useRef(0);
-    const prevLastRoleRef = React.useRef<"user" | "assistant" | undefined>(undefined);
+    const prevTotalItemsRef = React.useRef(0);
+    const prevLastTailLengthRef = React.useRef(0);
+    const prevLastSideRef = React.useRef<"user" | "assistant" | undefined>(undefined);
 
     React.useImperativeHandle(ref, () => ({
       scrollToBottom,
@@ -384,64 +614,86 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       isNearBottomRef.current = distance < 120;
     }, [containerRef]);
 
+    // Auto-scroll signals. Plan §6 keys on `totalItems` (sum of items across
+    // groups) instead of `messages.length`, plus a "tail item's text-length
+    // grew" heuristic for streaming.
+    const totalItems = React.useMemo(
+      () => renderGroups.reduce((acc, g) => acc + g.items.length, 0),
+      [renderGroups],
+    );
+
+    // Length of the trailing item's text (only meaningful for stream /
+    // stream-segment / live-thinking items where the same item grows).
+    const lastTailLength = React.useMemo(() => {
+      const lastGroup = renderGroups[renderGroups.length - 1];
+      if (!lastGroup) return 0;
+      const lastItem = lastGroup.items[lastGroup.items.length - 1];
+      if (!lastItem) return 0;
+      if (lastItem.kind === "stream" || lastItem.kind === "stream-segment" || lastItem.kind === "live-thinking") {
+        return lastItem.text.length;
+      }
+      return 0;
+    }, [renderGroups]);
+
+    const lastSide = renderGroups[renderGroups.length - 1]?.side;
+
     // Auto-scroll rules:
     //   - First render (agent switch / history load) → snap to bottom.
-    //   - Length increased → a new message arrived; snap if near bottom,
-    //     or unconditionally if the new message is from the user (they
-    //     just sent it, they want to see it).
-    //   - Length same, last message's content grew → streaming chunk on
-    //     the tail bubble; snap only if near bottom (so a user who
-    //     scrolled up isn't yanked back while reading).
+    //   - totalItems increased → a new item arrived; snap if near bottom,
+    //     or unconditionally if the new group's tail is a user message
+    //     (they just sent it, they want to see it).
+    //   - totalItems same, tail item's text grew → streaming chunk on
+    //     the trailing assistant item; snap only if near bottom (so a
+    //     user who scrolled up isn't yanked back while reading).
     React.useEffect(() => {
       const container = containerRef.current;
       const end = endRef.current;
       if (!container || !end) return;
 
-      const lastMsg = messages[messages.length - 1];
-      const lastContentLength = lastMsg?.content?.length ?? 0;
-      const lastRole = lastMsg?.role;
-
-      const lengthIncreased = messages.length > prevMessagesLengthRef.current;
-      const contentGrew =
-        messages.length === prevMessagesLengthRef.current &&
-        lastContentLength > prevLastContentLengthRef.current;
-      // Any new message whose tail is a user message is a fresh user send
-      // (multi-bubble `sendMessage` appends only the user row, and a
-      // cancel-before-first-event turn can leave the previous tail as
-      // user too — so don't gate on role *changing*, just on "new tail
-      // is user"). Always snap so the user's own message is visible.
-      const newUserMessage = lengthIncreased && lastRole === "user";
-
-      const isFirstPaintWithMessages = !hasMountedRef.current && messages.length > 0;
+      const itemsIncreased = totalItems > prevTotalItemsRef.current;
+      const tailGrew =
+        totalItems === prevTotalItemsRef.current &&
+        lastTailLength > prevLastTailLengthRef.current;
+      const newUserMessage = itemsIncreased && lastSide === "user";
+      const isFirstPaintWithItems = !hasMountedRef.current && totalItems > 0;
 
       // JSDOM test envs don't always polyfill scrollIntoView; production
       // browsers always have it. Optional-chain so tests that don't mock
       // it don't crash when they transitively render MessageList.
-      if (isFirstPaintWithMessages || newUserMessage) {
+      if (isFirstPaintWithItems || newUserMessage) {
         end.scrollIntoView?.({ behavior: "auto", block: "end" });
         isNearBottomRef.current = true;
         hasMountedRef.current = true;
-      } else if ((lengthIncreased || contentGrew) && isNearBottomRef.current) {
+      } else if ((itemsIncreased || tailGrew) && isNearBottomRef.current) {
         end.scrollIntoView?.({ behavior: "auto", block: "end" });
       }
 
-      if (messages.length > 0) hasMountedRef.current = true;
-      prevMessagesLengthRef.current = messages.length;
-      prevLastContentLengthRef.current = lastContentLength;
-      prevLastRoleRef.current = lastRole;
-    }, [messages, containerRef, endRef]);
+      if (totalItems > 0) hasMountedRef.current = true;
+      prevTotalItemsRef.current = totalItems;
+      prevLastTailLengthRef.current = lastTailLength;
+      prevLastSideRef.current = lastSide;
+    }, [totalItems, lastTailLength, lastSide, containerRef, endRef]);
 
     // The "typing placeholder" shows the agent header (animated thinking
     // glyph) during the window between `sendMessage` and the first
-    // streamed chunk. Since multi-bubble rendering creates assistant
-    // bubbles lazily on first event (spec §4), nothing else is on screen
-    // to signal "the agent received your message and is working." This
-    // placeholder is rendered only when streaming is active AND the last
-    // message is a user message (or there are no messages yet).
+    // streamed chunk. Since the flat-timeline rendering creates assistant
+    // items lazily on first event, nothing else is on screen to signal
+    // "the agent received your message and is working." This placeholder
+    // is rendered only when streaming is active AND the trailing group
+    // side is user (or no groups yet).
     const showTypingPlaceholder =
-      !!isTyping &&
-      (messages.length === 0 ||
-        messages[messages.length - 1].role === "user");
+      !!isTyping && (renderGroups.length === 0 || lastSide === "user");
+
+    // Find the index of the last assistant-side group (for "thinking"
+    // glyph wiring). We only animate the head of the bottommost assistant
+    // bubble while streaming.
+    let lastAssistantGroupIndex = -1;
+    for (let i = renderGroups.length - 1; i >= 0; i--) {
+      if (renderGroups[i].side === "assistant") {
+        lastAssistantGroupIndex = i;
+        break;
+      }
+    }
 
     return (
       <div
@@ -451,90 +703,17 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
         data-lenis-prevent
       >
         <div className="max-w-3xl mx-auto space-y-10 py-8">
-          {messages.map((msg, idx) => {
-            const isLastAssistant = msg.role === "assistant" && (
-              idx === messages.length - 1 ||
-              messages.slice(idx + 1).every((m) => m.role !== "assistant")
-            );
-            const isErrorBubble = msg.role === "assistant" && msg.content.startsWith("Error: ");
-            const errorBody = isErrorBubble ? msg.content.slice(7) : "";
-            // Typed cards take over the full bubble when we have a code —
-            // the upstream `errorKind` enum (rate_limit, context_length,
-            // refusal, timeout, unknown) lets us render tailored copy +
-            // an action button. Without a code we fall back to the legacy
-            // inline red text + ErrorToolbar so we don't regress untyped
-            // failure paths (transport errors, sendMessage catch branch).
-            const useTypedCard = isErrorBubble && (msg.errorCode || errorBody);
-
-            return (
-            <div
-              key={msg.id}
-              data-role={msg.role}
-              className={cn(
-                "flex w-full group relative",
-                msg.role === "user" ? "justify-end" : "justify-start"
-              )}
-            >
-              <div className="flex flex-col min-w-0 max-w-[85%]">
-                {msg.role === "assistant" && (
-                  isErrorBubble
-                    ? <ErrorToolbar messageId={msg.id} onRetry={onRetry} />
-                    : <AgentHead
-                        name={agentName || "Assistant"}
-                        state={isTyping && isLastAssistant ? "thinking" : "idle"}
-                      />
-                )}
-
-                <div
-                  className={cn(
-                    "relative text-sm leading-7",
-                    msg.role === "user"
-                      ? "bg-[#f0ebe2] text-[#1a1a1a] rounded-2xl rounded-br-md px-4 py-2.5"
-                      : "text-[#302d28] w-full"
-                  )}
-                >
-                {msg.role === "assistant" && msg.thinking && (
-                   <ThinkingBlock content={msg.thinking} />
-                )}
-
-                {msg.role === "assistant" && msg.toolUses && msg.toolUses.length > 0 && (
-                  <ToolUseIndicator toolUses={msg.toolUses} />
-                )}
-
-                {useTypedCard ? (
-                  <ChatErrorCard
-                    message={errorBody}
-                    code={msg.errorCode}
-                    onRetry={onRetry ? () => onRetry(msg.id) : undefined}
-                  />
-                ) : (
-                  <div className={cn(
-                    "wrap-break-word",
-                    msg.role === "user" && "whitespace-pre-wrap",
-                    isErrorBubble && "text-[#dc2626]"
-                  )}>
-                    {isErrorBubble
-                      ? errorBody
-                      : msg.role === "assistant" && msg.content
-                        ? <MarkdownContent content={msg.content} onOpenFile={onOpenFile} />
-                        : msg.content || null}
-                  </div>
-                )}
-                </div>
-              </div>
-            </div>
-          );
-          })}
-          {showTypingPlaceholder && (
-            <div
-              data-testid="typing-placeholder"
-              className="flex w-full justify-start"
-            >
-              <div className="flex flex-col min-w-0 max-w-[85%]">
-                <AgentHead name={agentName || "Assistant"} state="thinking" />
-              </div>
-            </div>
-          )}
+          {renderGroups.map((group, idx) => (
+            <BubbleGroup
+              key={group.key}
+              group={group}
+              agentName={agentName}
+              isStreaming={isStreaming}
+              isLastAssistantGroup={idx === lastAssistantGroupIndex}
+              onOpenFile={onOpenFile}
+            />
+          ))}
+          {showTypingPlaceholder && <TypingPlaceholder agentName={agentName} />}
           <div ref={endRef} />
         </div>
       </div>

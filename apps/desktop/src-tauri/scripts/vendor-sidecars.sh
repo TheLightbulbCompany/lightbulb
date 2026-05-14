@@ -78,10 +78,17 @@ EOF
     )
 }
 
-# Write a per-triple launcher shim that finds node + openclaw-host
-# at runtime. In dev builds the shim sits next to the siblings in
-# target/debug/; in packaged builds the launcher is in
-# Contents/MacOS/ and the resources land in Contents/Resources/.
+# Write a per-triple launcher shim that finds node + openclaw-host at
+# runtime. Asset locations differ per build mode:
+#
+#   - dev (`cargo tauri dev`): shim + siblings co-located in target/debug/
+#   - packaged (`tauri build`): shim lands in Contents/MacOS/, resources
+#     in Contents/Resources/bin/ (Tauri preserves the relative `bin/`
+#     directory from the resources glob in tauri.conf.json:
+#     `bin/node-*`, `bin/openclaw-host-*/**/*`).
+#
+# Check the packaged Resources/bin path first (most installs), then a
+# flat Resources/ fallback (older bundle layouts), finally co-located.
 write_launcher() {
     local TRIPLE="$1"
     local LAUNCHER="$BIN_DIR/isol8-browser-service-${TRIPLE}"
@@ -89,7 +96,9 @@ write_launcher() {
 #!/usr/bin/env bash
 set -euo pipefail
 HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
+if [ -f "\$HERE/../Resources/bin/node-${TRIPLE}" ]; then
+    ASSETS="\$HERE/../Resources/bin"
+elif [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
     ASSETS="\$HERE/../Resources"
 else
     ASSETS="\$HERE"

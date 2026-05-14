@@ -103,6 +103,16 @@ elif [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
 else
     ASSETS="\$HERE"
 fi
+# Isolate the bundled openclaw's config dir from the user's
+# personal ~/.openclaw/. Without OPENCLAW_HOME, both the CLI install
+# and our bundled copy read the same ~/.openclaw/openclaw.json — so
+# user-installed plugins (e.g. a Discord bot referencing
+# @buape/carbon) make our bundled node_modules fail to resolve
+# imports it never had. Putting our state under macOS' standard
+# per-app Application Support dir gives full isolation; users keep
+# their CLI openclaw setup intact.
+export OPENCLAW_HOME="\${HOME}/Library/Application Support/co.isol8.desktop/openclaw"
+mkdir -p "\$OPENCLAW_HOME"
 exec "\$ASSETS/node-${TRIPLE}" \\
     "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
     node run --host 127.0.0.1 --port 18789 "\$@"

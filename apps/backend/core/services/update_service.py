@@ -367,11 +367,16 @@ async def run_scheduled_worker() -> None:
     """Background worker: poll for due scheduled updates and apply them.
 
     Runs every 60 seconds indefinitely. Each iteration also runs the
-    Paperclip retry pass (every loop) and the Paperclip purge pass
-    (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h).
+    Paperclip retry pass (every loop), the Paperclip purge pass
+    (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h), and the Friday
+    poll pass (throttled to its own interval inside
+    ``maybe_run_friday_poll_pass``).
     """
     logger.info("Scheduled update worker started")
     last_purge_pass_at: float = 0.0  # epoch seconds; 0 forces a run on first iteration
+    # Single-element list so maybe_run_friday_poll_pass can mutate the
+    # timestamp across iterations without making this function stateful.
+    friday_poll_last_at: list[float] = [0.0]
     while True:
         try:
             put_metric("update.scheduled_worker.heartbeat")
@@ -405,6 +410,25 @@ async def run_scheduled_worker() -> None:
                 except Exception:
                     logger.exception("paperclip_purge_pass crashed")
                 last_purge_pass_at = now
+
+            # Friday poll pass — detects status changes on issues she's
+            # tracking and (TODO) wakes her to triage. Internally throttled
+            # so this is safe to call every outer iteration.
+            try:
+                from core.services.friday_poll import maybe_run_friday_poll_pass
+                from core.services.paperclip_admin_client import PaperclipAdminClient
+                _, http, repo = _build_paperclip_provisioning()
+                try:
+                    admin = PaperclipAdminClient(http_client=http)
+                    await maybe_run_friday_poll_pass(
+                        paperclip_repo=repo,
+                        admin_client=admin,
+                        last_pass_at_holder=friday_poll_last_at,
+                    )
+                finally:
+                    await http.aclose()
+            except Exception:
+                logger.exception("friday_poll_pass crashed")
         except Exception:
             put_metric("update.scheduled_worker.error")
             logger.exception("Error in scheduled update worker loop")

@@ -130,13 +130,20 @@ describe("instrumentation: useAgentChat", () => {
       message_length: "hello world".length,
     });
 
+    // useAgentChat mints a clientRunId per sendMessage and gates the busy
+    // state on it. The `done` handler only clears the busy gate (and
+    // therefore emits chat_completed) when the incoming runId matches the
+    // active clientRunId. We grab it from the sendChat mock — third arg.
+    const clientRunId = sendChat.mock.calls[0]?.[2] as string;
+    expect(typeof clientRunId).toBe("string");
+
     // Simulate the stream: a chunk to open the bubble, then `done`.
     act(() => {
       chatHandlers.forEach((h) =>
         h({
           type: "chunk",
           agent_id: "agent-X",
-          runId: "run-1",
+          runId: clientRunId,
           content: "hi back",
         } as ChatIncomingMessage),
       );
@@ -146,7 +153,7 @@ describe("instrumentation: useAgentChat", () => {
         h({
           type: "done",
           agent_id: "agent-X",
-          runId: "run-1",
+          runId: clientRunId,
         } as ChatIncomingMessage),
       );
     });

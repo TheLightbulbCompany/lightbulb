@@ -1,9 +1,9 @@
 {
   "$schema": "./openclaw-version.schema.json",
-  "upstream": "ghcr.io/openclaw/openclaw:2026.5.7",
+  "upstream": "ghcr.io/openclaw/openclaw:2026.5.12",
   "image": "ghcr.io/openclaw/openclaw",
-  "tag": "2026.5.7",
-  "full": "ghcr.io/openclaw/openclaw:2026.5.7",
+  "tag": "2026.5.12",
+  "full": "ghcr.io/openclaw/openclaw:2026.5.12",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended",
   "dev":  { "tag": "2026.5.7-0d10b38" },
   "prod": { "tag": "2026.5.7-0d10b38" },

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # itself self-writes (io.ts:879 uses `VERSION` from package.json).
 # A drift test in tests/unit/containers/test_config.py asserts this
 # stays in sync with openclaw-version.json on every CI run.
-OPENCLAW_UPSTREAM_VERSION = "2026.5.7"
+OPENCLAW_UPSTREAM_VERSION = "2026.5.12"
 
 
 # ``fcntl.lockf`` serializes ACROSS processes but not across threads within a

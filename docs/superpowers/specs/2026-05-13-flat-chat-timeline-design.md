@@ -1,8 +1,8 @@
 # Flat Chat Timeline — Design
 
-> Status: Draft (brainstorming complete, awaiting user spec-review).
+> Status: Implemented (this PR).
 > Authors: prez2307, Claude.
-> Supersedes: `docs/superpowers/specs/2026-04-21-multi-bubble-chat-design.md` (the per-runId multi-bubble design retired by this work).
+> Supersedes: the multi-bubble chat design from PR-branch `fix/e2e-wait-loop-with-wizard` (commit `cf67e689`, never landed on main) that informed the now-retired `runsRef`/`getOrCreateBubble`/`finalizeBubble` model in `useAgentChat`.
 
 ## Problem
 

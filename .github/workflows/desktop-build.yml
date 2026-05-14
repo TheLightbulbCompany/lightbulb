@@ -57,6 +57,22 @@ jobs:
         with:
           targets: ${{ matrix.rust-target }}
 
+      # Cache cargo registry/git + apps/desktop/src-tauri/target across
+      # builds. Tauri pulls ~300 transitive crates; without this the
+      # release compile rebuilds them every run (~15-20min of the
+      # Tauri build step). With the cache, second+ builds on the same
+      # Cargo.lock skip that work entirely.
+      #
+      # `workspaces:` matches Cargo.toml location so the action knows
+      # which target/ to cache. `key:` includes the matrix rust-target
+      # so arm64 and x64 builds don't collide.
+      - name: Cache Rust target dir
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          key: ${{ matrix.rust-target }}
+          shared-key: desktop
+
       - name: Install dependencies
         run: pnpm install
 
@@ -177,44 +193,92 @@ jobs:
       # like @lydell/node-pty's `spawn-helper`. Detect every Mach-O
       # via `file` rather than extension-matching, then sign each one
       # with the same Developer ID + hardened runtime + secure timestamp.
+      # Each `codesign --timestamp` round-trips Apple's RFC3161 timestamp
+      # server (per-file network call). Running serially this took ~6min
+      # for ~50 Mach-Os in the bundle. Running 8 in parallel via xargs
+      # collapses that to ~1min because the timestamp RTT dominates.
+      #
+      # The bundled `node-*-apple-darwin` binary runs V8, which
+      # allocates JIT pages via pthread_jit_write_protect_np().
+      # Under hardened runtime, that call SIGTRAPs unless the
+      # binary carries com.apple.security.cs.allow-jit. Other
+      # Mach-Os in the bundle (helper executables, .node addons,
+      # .dylibs) don't run V8 themselves — they get loaded INTO
+      # node — so they inherit node's JIT permission and don't
+      # need the entitlement on their own signatures.
       - name: Pre-sign embedded native modules
         run: |
           set -euo pipefail
-          SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+          export SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+          export NODE_ENTITLEMENTS="$PWD/apps/desktop/src-tauri/entitlements-node.plist"
           BIN_ROOT="apps/desktop/src-tauri/bin"
-          # The bundled `node-*-apple-darwin` binary runs V8, which
-          # allocates JIT pages via pthread_jit_write_protect_np().
-          # Under hardened runtime, that call SIGTRAPs unless the
-          # binary carries com.apple.security.cs.allow-jit. Other
-          # Mach-Os in the bundle (helper executables, .node addons,
-          # .dylibs) don't run V8 themselves — they get loaded INTO
-          # node — so they inherit node's JIT permission and don't
-          # need the entitlement on their own signatures.
-          NODE_ENTITLEMENTS="apps/desktop/src-tauri/entitlements-node.plist"
-          count=0
-          while IFS= read -r f; do
-            # `file` may report "Mach-O 64-bit executable arm64",
-            # "Mach-O 64-bit bundle arm64", "Mach-O 64-bit dynamically
-            # linked shared library arm64", or "Mach-O universal
-            # binary with 2 architectures". One substring covers all.
+
+          # Two-pass to find Mach-Os fast:
+          # Pass 1 (filename pattern, ~1s): find native-binary
+          #   candidates by extension/name. bin/ has ~50k post-npm
+          #   files; running `file -b` per entry forks 50k
+          #   subprocesses and dominated the original step's runtime.
+          #   Pattern catches a superset (~30 files) including
+          #   Linux/Windows binaries npm ships in cross-platform
+          #   prebuilt addons (koffi/linux_ia32, @snazzah/davey-
+          #   linux-x64-gnu, etc.).
+          # Pass 2 (`file -b` on those ~30, ~30ms): keep only true
+          #   Mach-O. Codesigning the non-Darwin ones would just
+          #   error.
+          # Patterns:
+          #   *.node      — native NAPI/N-API addons
+          #   *.dylib     — shared libs (sqlite-vec etc.)
+          #   *.so        — fallback ext (rare on Darwin)
+          #   spawn-helper — @lydell/node-pty's bare-name helper
+          #   node-*-apple-darwin — our vendored Node runtime
+          # If we ever add a new bundled bare-name Darwin binary
+          # that notary rejects unsigned, add it to the Pass-1
+          # pattern list.
+          CANDIDATES=$(mktemp)
+          MACHO_LIST=$(mktemp)
+          find "$BIN_ROOT" \( \
+            -name '*.node' -o \
+            -name '*.dylib' -o \
+            -name '*.so' -o \
+            -name 'spawn-helper' -o \
+            -name 'node-*-apple-darwin' \
+          \) -type f -print0 > "$CANDIDATES"
+          while IFS= read -r -d '' f; do
             if file -b "$f" | grep -q "Mach-O"; then
-              ENT_ARGS=()
-              case "$(basename "$f")" in
-                node-*-apple-darwin)
-                  ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
-                  ;;
-              esac
-              # ${ENT_ARGS[@]+...} guards the expansion: bash 3.2
-              # (default on macOS runners) errors on "${arr[@]}" when
-              # the array is empty under `set -u`. The +alt form only
-              # expands when ENT_ARGS is set, so empty stays empty.
-              codesign --force --options runtime --timestamp \
-                ${ENT_ARGS[@]+"${ENT_ARGS[@]}"} \
-                --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
-              count=$((count + 1))
+              printf '%s\0' "$f" >> "$MACHO_LIST"
             fi
-          done < <(find "$BIN_ROOT" -type f)
-          echo "Signed $count Mach-O binaries under $BIN_ROOT."
+          done < "$CANDIDATES"
+          rm -f "$CANDIDATES"
+          MACHO_COUNT=$(tr -dc '\0' < "$MACHO_LIST" | wc -c | tr -d ' ')
+          echo "Found $MACHO_COUNT Mach-O binaries to sign under $BIN_ROOT."
+
+          # Worker called once per Mach-O. Applies the JIT entitlement
+          # plist only to the V8-running node binary; everything else
+          # signs with no entitlements. ${ENT_ARGS[@]+...} guards the
+          # empty-array expansion under bash 3.2 + set -u (default on
+          # macOS runners).
+          cat > /tmp/sign-one.sh <<'WORKER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          f="$1"
+          ENT_ARGS=()
+          case "$(basename "$f")" in
+            node-*-apple-darwin)
+              ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
+              ;;
+          esac
+          codesign --force --options runtime --timestamp \
+            ${ENT_ARGS[@]+"${ENT_ARGS[@]}"} \
+            --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
+          WORKER
+          chmod +x /tmp/sign-one.sh
+
+          # -P 8 = 8 parallel codesigns. The bottleneck is Apple's
+          # timestamp server RTT (~1-2s/file). Higher parallelism
+          # risks rate limiting. -n 1 = one file per worker for clean
+          # error attribution.
+          xargs -0 -P 8 -n 1 /tmp/sign-one.sh < "$MACHO_LIST"
+          rm -f "$MACHO_LIST"
 
       - name: Build desktop app (${{ matrix.rust-target }})
         uses: tauri-apps/tauri-action@v0

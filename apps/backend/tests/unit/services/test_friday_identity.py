@@ -70,13 +70,14 @@ async def test_personal_owner_writes_four_files(monkeypatch):
         workspace=workspace,
     )
 
-    # Five files written under the right path: 4 markdown templates + the
+    # Six files written under the right path: 5 markdown templates + the
     # .openclaw/workspace-state.json marker that prevents OpenClaw's boot-time
     # reconcile from deleting BOOTSTRAP.md.
-    assert workspace.write_file_if_missing.call_count == 5
+    assert workspace.write_file_if_missing.call_count == 6
     paths = [call.args[1] for call in workspace.write_file_if_missing.call_args_list]
     assert all(p.startswith("workspaces/f47ac10b-58cc-4372-a567-0e02b2c3d479/") for p in paths)
     assert sorted(p.rsplit("/", 1)[-1] for p in paths) == [
+        "AGENTS.md",
         "BOOTSTRAP.md",
         "IDENTITY.md",
         "SOUL.md",
@@ -100,6 +101,27 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     assert "text only" in bootstrap_md
     assert "do not run any tools" in bootstrap_md
     assert "do not try to delete this file" in bootstrap_md
+
+    # BOOTSTRAP greeting must plant the orchestration seed when the user
+    # describes a goal — telegraphs Friday's concierge capability so users
+    # know to hand her multi-step work.
+    assert "orchestrate" in bootstrap_md or "specialists" in bootstrap_md
+
+    # AGENTS.md is the orchestration playbook — decompose, delegate, triage.
+    # Must reference the three orchestration tools by name so Friday knows
+    # how to actually act on the doctrine.
+    agents_md = contents_by_name["AGENTS.md"]
+    assert "paperclip_list_agents" in agents_md
+    assert "paperclip_create_issue" in agents_md
+    assert "paperclip_get_issue_status" in agents_md
+    # In-house roster present so Friday has baseline knowledge of specialists
+    # before her first paperclip_list_agents call.
+    assert "Atlas" in agents_md
+    assert "Pulse" in agents_md
+    # Owner display interpolated.
+    assert "Sam's AI company" in agents_md or "Sam" in agents_md
+    # Triage section present — handles bubble-ups from stuck specialists.
+    assert "triage" in agents_md.lower() or "bubble-up" in agents_md.lower()
 
 
 @pytest.mark.asyncio
@@ -166,9 +188,9 @@ async def test_skipped_existing_when_files_already_present(monkeypatch):
         workspace=workspace,
     )
 
-    # Still attempted all five writes (4 markdown + 1 state file);
+    # Still attempted all six writes (5 markdown + 1 state file);
     # write_file_if_missing handles the skip.
-    assert workspace.write_file_if_missing.call_count == 5
+    assert workspace.write_file_if_missing.call_count == 6
 
 
 @pytest.mark.asyncio
@@ -247,10 +269,10 @@ async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
         workspace=workspace,
     )
 
-    # 1 state-file attempt (failed) + 4 template writes = 5 calls.
-    assert workspace.write_file_if_missing.call_count == 5
+    # 1 state-file attempt (failed) + 5 template writes = 6 calls.
+    assert workspace.write_file_if_missing.call_count == 6
     template_names = sorted(c.args[1].rsplit("/", 1)[-1] for c in workspace.write_file_if_missing.call_args_list[1:])
-    assert template_names == ["BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md"]
+    assert template_names == ["AGENTS.md", "BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md"]
 
 
 @pytest.mark.parametrize(

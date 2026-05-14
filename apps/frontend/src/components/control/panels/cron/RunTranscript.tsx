@@ -2,7 +2,10 @@
 
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { MessageList } from "@/components/chat/MessageList";
-import { adaptSessionMessages, type AdaptedMessage } from "./sessionMessageAdapter";
+import { buildChatItems } from "@/hooks/internal/buildChatItems";
+import { groupBySide } from "@/hooks/internal/groupBySide";
+import type { HistoryMessage } from "@/hooks/internal/types";
+import { projectSessionMessages } from "./sessionMessageAdapter";
 
 interface ChatHistoryResp {
   messages?: unknown[];
@@ -15,11 +18,12 @@ export function RunTranscript({
 }: {
   sessionKey: string | undefined;
   /**
-   * When provided, filters transcript messages to those whose `ts` lies in
-   * `[afterTs, beforeTs]`. Messages with no `ts` are conservatively kept so
-   * older OpenClaw history formats (pre-ts) still render. Used by
-   * RunDetailPanel to scope the transcript to a specific run in multi-run
-   * sessions (non-isolated cron jobs share a sessionKey across runs).
+   * When provided, filters transcript messages to those whose `timestamp`
+   * lies in `[afterTs, beforeTs]`. Messages with no `timestamp` are
+   * conservatively kept so older OpenClaw history formats (pre-timestamp)
+   * still render. Used by RunDetailPanel to scope the transcript to a
+   * specific run in multi-run sessions (non-isolated cron jobs share a
+   * sessionKey across runs).
    */
   afterTs?: number;
   beforeTs?: number;
@@ -59,56 +63,92 @@ export function RunTranscript({
     );
   }
 
-  const allMessages = adaptSessionMessages(data?.messages);
-  const messages = scopeMessagesToRun(allMessages, afterTs, beforeTs);
-  if (messages.length === 0) {
+  // Project + scope the raw history payload BEFORE handing it to the
+  // bubble pipeline so MessageList receives only the messages belonging
+  // to this run. Order matters: hide-filter first (matches live chat),
+  // then run-window scope, then buildChatItems + groupBySide.
+  const projected = projectSessionMessages(data?.messages);
+  const scoped = scopeMessagesToRun(projected, afterTs, beforeTs);
+  if (scoped.length === 0) {
     return (
       <div className="p-6 text-sm text-[#8a8578]">
         No transcript available for this run.
       </div>
     );
   }
+  const items = buildChatItems({
+    chatMessages: scoped,
+    chatStream: null,
+    chatStreamRunId: null,
+    chatStreamThinking: null,
+    chatStreamThinkingRunId: null,
+    chatStreamSegments: [],
+    chatToolMessages: [],
+    sessionKey,
+  });
+  const renderGroups = groupBySide(items);
 
-  return <MessageList messages={messages} />;
+  return (
+    <MessageList renderGroups={renderGroups} isStreaming={false} isTyping={false} />
+  );
 }
 
 /**
- * Filters `messages` to those whose `ts` is within `[afterTs, beforeTs]`.
+ * Filters `messages` to those whose `timestamp` is within
+ * `[afterTs, beforeTs]`.
  *
- * - Messages with `ts === undefined` are kept conservatively (older history
- *   formats that predate the timestamp field).
+ * - Messages with `timestamp === undefined` are kept conservatively
+ *   (older history formats that predate the timestamp field).
  * - When `afterTs` is undefined, no lower bound is applied.
  * - When `beforeTs` is undefined, no upper bound is applied.
  */
 export function scopeMessagesToRun(
-  messages: AdaptedMessage[],
+  messages: HistoryMessage[],
   afterTs?: number,
   beforeTs?: number,
-): AdaptedMessage[] {
+): HistoryMessage[] {
   if (afterTs === undefined && beforeTs === undefined) return messages;
   return messages.filter((m) => {
-    if (m.ts === undefined) return true;
-    if (afterTs !== undefined && m.ts < afterTs) return false;
-    if (beforeTs !== undefined && m.ts > beforeTs) return false;
+    if (m.timestamp === undefined) return true;
+    if (afterTs !== undefined && m.timestamp < afterTs) return false;
+    if (beforeTs !== undefined && m.timestamp > beforeTs) return false;
     return true;
   });
 }
 
 /**
- * Returns the first user message in `messages`.
+ * Extracts the first text-only content from a HistoryMessage. Mirrors
+ * what the old AdaptedMessage.content used to surface — concatenates
+ * any "text" content blocks, falling back to a top-level `text` field.
+ */
+function extractUserText(m: HistoryMessage): string {
+  if (Array.isArray(m.content)) {
+    const parts: string[] = [];
+    for (const b of m.content) {
+      if (b && typeof b === "object" && b.type === "text" && typeof b.text === "string") {
+        parts.push(b.text);
+      }
+    }
+    if (parts.length > 0) return parts.join("");
+  }
+  return typeof m.text === "string" ? m.text : "";
+}
+
+/**
+ * Returns the first user message text in `messages`.
  *
- * - When `afterTs` is provided, returns the first user message whose `ts`
- *   is `>= afterTs` (and `<= beforeTs` if provided). No tolerance window:
- *   in shared/non-isolated sessions with back-to-back manual reruns, a
- *   tolerance can let the previous run's prompt slip in. If no message
- *   has a `ts` in range, returns `undefined` (we deliberately do NOT fall
- *   back to the earliest-overall message — that was the old too-permissive
- *   behavior).
+ * - When `afterTs` is provided, returns the first user message whose
+ *   `timestamp` is `>= afterTs` (and `<= beforeTs` if provided). No
+ *   tolerance window: in shared/non-isolated sessions with back-to-back
+ *   manual reruns, a tolerance can let the previous run's prompt slip
+ *   in. If no message has a `timestamp` in range, returns `undefined`
+ *   (we deliberately do NOT fall back to the earliest-overall message
+ *   — that was the old too-permissive behavior).
  * - When `afterTs` is undefined, returns the first user message overall
- *   without any `ts` check.
+ *   without any `timestamp` check.
  */
 export function firstUserMessage(
-  messages: AdaptedMessage[],
+  messages: HistoryMessage[],
   afterTs?: number,
   beforeTs?: number,
 ): string | undefined {
@@ -116,11 +156,12 @@ export function firstUserMessage(
     const scoped = messages.find(
       (m) =>
         m.role === "user" &&
-        m.ts !== undefined &&
-        m.ts >= afterTs &&
-        (beforeTs === undefined || m.ts <= beforeTs),
+        m.timestamp !== undefined &&
+        m.timestamp >= afterTs &&
+        (beforeTs === undefined || m.timestamp <= beforeTs),
     );
-    return scoped?.content;
+    return scoped ? extractUserText(scoped) || undefined : undefined;
   }
-  return messages.find((m) => m.role === "user")?.content;
+  const first = messages.find((m) => m.role === "user");
+  return first ? extractUserText(first) || undefined : undefined;
 }

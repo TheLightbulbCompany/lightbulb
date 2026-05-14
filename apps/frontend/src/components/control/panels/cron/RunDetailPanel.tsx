@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { RunTranscript, firstUserMessage } from "./RunTranscript";
 import { RunMetadata } from "./RunMetadata";
-import { adaptSessionMessages } from "./sessionMessageAdapter";
+import { projectSessionMessages } from "./sessionMessageAdapter";
 import { formatAbsoluteTime, formatDuration } from "./formatters";
 import type { CronJob, CronRunEntry } from "./types";
 
@@ -38,12 +38,12 @@ export function RunDetailPanel({
     run.sessionKey ? "chat.history" : null,
     run.sessionKey ? { sessionKey: run.sessionKey, limit: 200 } : undefined,
   );
-  const adaptedMessages = adaptSessionMessages(transcriptData?.messages);
+  const projectedMessages = projectSessionMessages(transcriptData?.messages);
   // Scope the prompt lookup to messages from this run so multi-run sessions
   // (non-isolated cron jobs that share a sessionKey across runs) don't
   // surface the very first prompt the session ever saw.
   const firstUserMsg = firstUserMessage(
-    adaptedMessages,
+    projectedMessages,
     run.triggeredAtMs,
     run.completedAtMs,
   );

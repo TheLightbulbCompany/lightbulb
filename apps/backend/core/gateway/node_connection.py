@@ -209,17 +209,31 @@ class NodeUpstreamConnection:
             pass
 
         # Register (or verify registration of) this device_id in paired.json.
-        # Idempotent — no-op if the entry is already there. This is what
-        # gets OpenClaw's connect handler past the NOT_PAIRED check for
-        # new per-member keys.
+        # Idempotent — no-op if the entry already matches what the
+        # desktop just declared. This is what gets OpenClaw's connect
+        # handler past the NOT_PAIRED check for new per-member keys AND
+        # past 2026.5.7's role-upgrade / command-upgrade gates.
+        #
+        # Forward the desktop's declared commands list so the paired
+        # record stays in sync with what the Rust client supports.
+        # Without this, reconcileNodePairingOnConnect compares the
+        # device's declared commands against an empty paired.commands
+        # field, decides every command is an "upgrade", creates a
+        # pending pairing request, and zeros out effectiveCommands in
+        # the node registry — making `exec host=node` fail with
+        # "node doesn't support system.run".
         raw_pub = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
         device_id = hashlib.sha256(raw_pub).hexdigest()
         public_key_b64 = _base64url_encode(raw_pub)
+        declared_commands = self.node_connect_params.get("commands") or []
+        if not isinstance(declared_commands, list):
+            declared_commands = []
         ensure_node_paired_entry(
             efs_mount_path=self.efs_mount_path,
             owner_id=self.owner_id,
             device_id=device_id,
             public_key_b64=public_key_b64,
+            declared_commands=declared_commands,
         )
 
         return private_key

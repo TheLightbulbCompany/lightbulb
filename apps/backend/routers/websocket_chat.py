@@ -1014,7 +1014,21 @@ async def _process_agent_chat_background(
             node_id = node_info["nodeId"]
             cached = get_patched_session(session_key)
             if cached != node_id:
-                # Patch the session to bind exec to this user's node.
+                # Patch the session so the agent KNOWS which node to use
+                # when it chooses host=node — but DON'T force every exec
+                # through the node. Setting execHost="node" pinned the
+                # whole session to the user's Mac, which:
+                #   1. routed trivial commands (echo, whoami) over the
+                #      WS to the Mac for no benefit, and
+                #   2. forced every exec through openclaw's exec-approval
+                #      flow, which is upstream-broken for the webchat
+                #      surface (APPROVAL_CLIENT_MISMATCH — see upstream
+                #      bug filed by us).
+                # Setting execNode without execHost lets exec.host
+                # default to "auto" (exec-defaults.ts:47): the agent
+                # picks per-command. When it explicitly targets node,
+                # execNode is already bound. When it picks sandbox or
+                # gateway, no node round-trip + no approval gate.
                 # req_id MUST be unique per call — the connection pool keys
                 # pending-response futures by req_id and a duplicate ID
                 # orphans the earlier future, hanging one caller 30s.
@@ -1030,13 +1044,20 @@ async def _process_agent_chat_background(
                         params={
                             "key": session_key,
                             "execNode": node_id,
-                            "execHost": "node",
+                            # Explicitly clear any stale execHost pin.
+                            # Sessions that were patched before this
+                            # change still have execHost="node" on
+                            # disk; session.patch only updates fields
+                            # present in params, so omitting this
+                            # would leave them pinned. None resets
+                            # back to global default (auto).
+                            "execHost": None,
                         },
                         ip=ip,
                         token=container["gateway_token"],
                     )
                     set_patched_session(session_key, node_id)
-                    logger.info("Bound session %s to node %s", session_key, node_id[:16])
+                    logger.info("Bound session %s to node %s (host=auto)", session_key, node_id[:16])
                 except Exception:
                     logger.warning("Failed to bind session %s to node", session_key)
 

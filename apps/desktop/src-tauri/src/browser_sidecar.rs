@@ -96,23 +96,28 @@ impl BrowserSidecar {
 
 impl BrowserSidecar {
     /// Production constructor: resolves the externalBin sidecar path.
-    /// Tauri places externalBin binaries next to the main executable
-    /// (not in Resources/) with a `-<target-triple>` suffix — mirror
-    /// that resolution here. Works for both dev (`target/debug/`) and
-    /// packaged builds (`Isol8.app/Contents/MacOS/`).
     ///
-    /// We ship a universal-apple-darwin dispatch shim (a bash script
-    /// that picks node-<arch> + openclaw-host-<arch> at runtime via
-    /// uname -m), so this always resolves the same filename regardless
-    /// of the slice the loader selected.
+    /// Tauri's externalBin convention: configured as
+    /// `bin/isol8-browser-service` in tauri.conf.json, the bundler
+    /// finds `bin/isol8-browser-service-<target-triple>` at BUILD time,
+    /// strips the triple suffix, and places the file in the .app at
+    /// `Contents/MacOS/isol8-browser-service` (no suffix). So at
+    /// RUNTIME the file we exec is the un-suffixed base name.
+    ///
+    /// Dev builds (`cargo tauri dev`) replicate the same layout —
+    /// `target/debug/isol8-browser-service` next to the main binary.
+    ///
+    /// We previously appended the triple at runtime ("…-aarch64-apple-
+    /// darwin") because the universal-apple-darwin build kept it; the
+    /// per-arch matrix introduced in desktop-build.yml strips it via
+    /// Tauri's standard externalBin handling.
     pub fn for_app(_app: &tauri::AppHandle) -> Result<Self, String> {
         let exe = std::env::current_exe()
             .map_err(|e| format!("current_exe: {}", e))?;
         let parent = exe
             .parent()
             .ok_or_else(|| "current_exe has no parent".to_string())?;
-        let triple = current_sidecar_triple()?;
-        let binary = parent.join(format!("isol8-browser-service-{}", triple));
+        let binary = parent.join("isol8-browser-service");
         if !binary.exists() {
             return Err(format!(
                 "sidecar binary not found at {} (arch={})",
@@ -125,18 +130,6 @@ impl BrowserSidecar {
             args: vec![],
             child: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         })
-    }
-}
-
-/// Sidecar filename suffix for the running binary's arch. We ship
-/// per-arch DMGs (aarch64 + x86_64), so `std::env::consts::ARCH`
-/// reflects the arch of THIS compiled binary — matches the one
-/// tauri-bundler copied next to the main executable.
-fn current_sidecar_triple() -> Result<String, String> {
-    match std::env::consts::ARCH {
-        "aarch64" => Ok("aarch64-apple-darwin".into()),
-        "x86_64" => Ok("x86_64-apple-darwin".into()),
-        other => Err(format!("unsupported sidecar arch: {}", other)),
     }
 }
 

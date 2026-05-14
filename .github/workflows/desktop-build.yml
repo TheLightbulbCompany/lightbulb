@@ -86,6 +86,8 @@ jobs:
           fi
 
       - name: Patch tauri.conf.json for ${{ steps.env.outputs.target_env }}
+        env:
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
           TAURI_CFG="apps/desktop/src-tauri/tauri.conf.json"
           # Patch URLs for the target environment. Both dev and prod sign +
@@ -99,7 +101,21 @@ jobs:
           # Each endpoint queries GitHub Releases under the corresponding
           # tag prefix (`desktop-dev-v*` vs `desktop-v*`) and returns a
           # Tauri-compatible manifest. See apps/frontend/src/app/api/desktop/update/.
-          UPDATE_URL="${{ steps.env.outputs.frontend_url == 'https://dev.isol8.co/chat' && 'https://dev.isol8.co' || 'https://isol8.co' }}/api/desktop/update/{{target}}/{{current_version}}"
+          #
+          # dev.isol8.co is gated by Vercel deployment protection.
+          # Tauri's updater is a plain HTTPS client and can't do the
+          # interactive Vercel auth dance, so the GET 401s and the
+          # update check fails. Append Vercel's documented bypass query
+          # param so the request walks past protection. Leaking the
+          # token from `strings` on the DMG is OK here because the
+          # endpoint only returns public GitHub Release manifest data
+          # (the same URLs github.com serves anonymously). Prod
+          # (isol8.co) has no deployment protection — no bypass needed.
+          UPDATE_HOST="${{ steps.env.outputs.frontend_url == 'https://dev.isol8.co/chat' && 'https://dev.isol8.co' || 'https://isol8.co' }}"
+          UPDATE_URL="${UPDATE_HOST}/api/desktop/update/{{target}}/{{current_version}}"
+          if [[ "$UPDATE_HOST" == "https://dev.isol8.co" ]]; then
+            UPDATE_URL="${UPDATE_URL}?x-vercel-protection-bypass=${VERCEL_AUTOMATION_BYPASS_SECRET}&x-vercel-set-bypass-cookie=true"
+          fi
           jq --arg url "${{ steps.env.outputs.frontend_url }}" \
              --arg updateUrl "$UPDATE_URL" '
             .build.devUrl = $url |

@@ -78,7 +78,7 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/openclaw/openclaw:2026.5.7
+FROM ghcr.io/openclaw/openclaw:2026.5.12
 
 USER root
 
@@ -148,7 +148,7 @@ RUN npm i -g --ignore-scripts \
       @xdevplatform/xurl
 
 # ---- Layer 9: Playwright Chromium + Chromium system libs + /usr/bin symlink ----
-# Upstream openclaw:2026.5.7 ships the playwright npm package (at
+# Upstream openclaw:2026.5.12 ships the playwright npm package (at
 # /app/node_modules/playwright-core, v1.59.1) but NOT the Chromium binary
 # and NOT the GUI libs Chromium needs to launch. The chromium install is
 # gated behind upstream Dockerfile's `OPENCLAW_INSTALL_BROWSER` build arg,

@@ -166,10 +166,28 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   }, []);
 
   // Stream segments (text fragments committed when a tool interrupts streaming).
-  const [chatStreamSegments, setChatStreamSegments] = useState<Array<{ text: string; ts: number }>>([]);
+  // Ref mirrors state so the once-registered onChatMessage handler can read
+  // the live value without stale-closure bugs (same pattern as chatStream).
+  const [chatStreamSegments, _setChatStreamSegmentsRaw] = useState<Array<{ text: string; ts: number }>>([]);
+  const chatStreamSegmentsRef = useRef<Array<{ text: string; ts: number }>>([]);
+  const setChatStreamSegments = useCallback(
+    (updater: Array<{ text: string; ts: number }> | ((prev: Array<{ text: string; ts: number }>) => Array<{ text: string; ts: number }>)) => {
+      _setChatStreamSegmentsRaw((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        chatStreamSegmentsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   // Live tool state.
-  const [chatToolMessages, setChatToolMessages] = useState<HistoryMessage[]>([]);
+  const [chatToolMessages, _setChatToolMessagesRaw] = useState<HistoryMessage[]>([]);
+  const chatToolMessagesRef = useRef<HistoryMessage[]>([]);
+  const setChatToolMessages = useCallback((next: HistoryMessage[]) => {
+    chatToolMessagesRef.current = next;
+    _setChatToolMessagesRaw(next);
+  }, []);
   const toolStreamByIdRef = useRef<Map<string, ToolStreamEntry>>(new Map());
   const toolStreamOrderRef = useRef<string[]>([]);
 
@@ -183,9 +201,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const [error, setError] = useState<string | null>(null);
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
-
-  // Cancel-before-first-event window (preserved from previous design).
-  const pendingCancelRef = useRef<boolean>(false);
 
   // Analytics counters.
   const turnStartedAtRef = useRef<number | null>(null);
@@ -261,19 +276,27 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       setChatToolMessages(ordered);
       toolStreamSyncTimerRef.current = null;
     };
-    if (toolStreamSyncTimerRef.current !== null) {
-      return; // already scheduled
-    }
-    // Force-flush immediately if any entry is in terminal state.
+    // Force-flush immediately if any entry is in terminal state — this must
+    // run BEFORE the "already scheduled" early-return, otherwise a tool_end
+    // arriving while a throttle timer is pending gets stuck behind the timer
+    // (terminal-state tool_result lands ~80ms late and the UI flashes a
+    // half-finished tool card).
     const hasTerminal = Array.from(toolStreamByIdRef.current.values()).some(
       (e) => e.status !== "running",
     );
     if (hasTerminal) {
+      if (toolStreamSyncTimerRef.current !== null) {
+        window.clearTimeout(toolStreamSyncTimerRef.current);
+        toolStreamSyncTimerRef.current = null;
+      }
       flush();
       return;
     }
+    if (toolStreamSyncTimerRef.current !== null) {
+      return; // already scheduled
+    }
     toolStreamSyncTimerRef.current = window.setTimeout(flush, TOOL_STREAM_THROTTLE_MS);
-  }, []);
+  }, [setChatToolMessages]);
 
   // Clean up the throttle timer on unmount.
   useEffect(() => {
@@ -411,13 +434,58 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       if (msg.type === "done") {
         const runId = msg.runId;
-        // Commit any pending stream into a synthesized assistant message.
-        const stream = chatStreamRef.current;
-        const thinking = chatStreamThinkingRef.current;
-        if ((stream && stream.length > 0) || (thinking && thinking.length > 0)) {
-          const content: ContentBlock[] = [];
-          if (thinking) content.push({ type: "thinking", thinking });
-          if (stream) content.push({ type: "text", text: stream });
+        // Fold the entire live turn into a single synthesized assistant
+        // message so chronological order is preserved across turns.
+        //
+        // Why fold (not just keep the parallel arrays around): the next turn
+        // appends fresh tools/segments to chatStreamSegments + toolStream*.
+        // If we left this turn's content there, the on-the-fly history
+        // messages (which include the synthesized tail-only message) would
+        // come BEFORE the now-orphaned segments/tools at render time —
+        // putting pre-tool text after post-tool text. Folding keeps each
+        // completed turn as one ordered HistoryMessage and lets us safely
+        // clear the parallel arrays for the next turn.
+        const segments = chatStreamSegmentsRef.current;
+        const tailStream = chatStreamRef.current;
+        const tailThinking = chatStreamThinkingRef.current;
+        // Build tool-message content from refs (not chatToolMessagesRef) —
+        // refs are always up-to-date; the throttled state sync may lag.
+        const toolBlocks: ContentBlock[][] = toolStreamOrderRef.current
+          .map((id) => toolStreamByIdRef.current.get(id))
+          .filter((e): e is ToolStreamEntry => Boolean(e))
+          .map((e) => {
+            const blocks: ContentBlock[] = [
+              { type: "tool_use", id: e.toolCallId, name: e.name, args: e.args },
+            ];
+            if (e.output !== undefined) {
+              blocks.push({
+                type: "tool_result",
+                tool_use_id: e.toolCallId,
+                content: e.output,
+                ...(e.status === "error" ? { isError: true } : {}),
+              });
+            }
+            return blocks;
+          });
+
+        const content: ContentBlock[] = [];
+        // Interleave segments[i] with toolBlocks[i] — matches buildChatItems'
+        // walk so the synthesized message reads the same as the live render.
+        const n = Math.max(segments.length, toolBlocks.length);
+        for (let i = 0; i < n; i++) {
+          const seg = segments[i];
+          if (seg && seg.text.length > 0) content.push({ type: "text", text: seg.text });
+          const tool = toolBlocks[i];
+          if (tool) content.push(...tool);
+        }
+        if (tailThinking && tailThinking.length > 0) {
+          content.push({ type: "thinking", thinking: tailThinking });
+        }
+        if (tailStream && tailStream.length > 0) {
+          content.push({ type: "text", text: tailStream });
+        }
+
+        if (content.length > 0) {
           const synthesized: HistoryMessage = {
             role: "assistant",
             content,
@@ -425,13 +493,20 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             runId,
           };
           setChatMessages((prev) => [...prev, synthesized]);
-          turnAssistantLenRef.current += stream?.length ?? 0;
+          const segText = segments.reduce((acc, s) => acc + s.text.length, 0);
+          turnAssistantLenRef.current += segText + (tailStream?.length ?? 0);
         }
+
+        // Clear ALL live state so the next turn starts from a blank slate.
         setChatStream(null);
         chatStreamRunIdRef.current = null;
         chatStreamStartedAtRef.current = null;
         setChatStreamThinking(null);
         chatStreamThinkingRunIdRef.current = null;
+        setChatStreamSegments([]);
+        toolStreamByIdRef.current.clear();
+        toolStreamOrderRef.current = [];
+        setChatToolMessages([]);
 
         // Busy-gate clear (no approval-pause guard).
         if (runId === clientRunIdRef.current) {
@@ -573,8 +648,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {
-      pendingCancelRef.current = false;
-
       if (!agentIdRef.current) {
         throw new Error("No agent selected");
       }
@@ -632,10 +705,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     chatStreamRunIdRef.current = null;
     setChatStreamThinking(null);
     chatStreamThinkingRunIdRef.current = null;
-    pendingCancelRef.current = true;
     clientRunIdRef.current = null;
     // Live tools stay rendered with their last-known status.
-  }, [isStreaming, sendReq, sessionName, setIsStreaming]);
+  }, [isStreaming, sendReq, sessionName, setIsStreaming, setChatStream, setChatStreamThinking]);
 
   // ---- Clear messages ----
 
@@ -653,9 +725,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     if (key) _messageCache.delete(key);
     setError(null);
     setIsStreaming(false);
-    pendingCancelRef.current = true;
     clientRunIdRef.current = null;
-  }, [sessionName, setIsStreaming]);
+  }, [
+    sessionName,
+    setIsStreaming,
+    setChatStream,
+    setChatStreamThinking,
+    setChatStreamSegments,
+    setChatToolMessages,
+  ]);
 
   // ---- External interface ----
 

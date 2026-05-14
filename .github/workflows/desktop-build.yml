@@ -182,6 +182,15 @@ jobs:
           set -euo pipefail
           SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
           BIN_ROOT="apps/desktop/src-tauri/bin"
+          # The bundled `node-*-apple-darwin` binary runs V8, which
+          # allocates JIT pages via pthread_jit_write_protect_np().
+          # Under hardened runtime, that call SIGTRAPs unless the
+          # binary carries com.apple.security.cs.allow-jit. Other
+          # Mach-Os in the bundle (helper executables, .node addons,
+          # .dylibs) don't run V8 themselves — they get loaded INTO
+          # node — so they inherit node's JIT permission and don't
+          # need the entitlement on their own signatures.
+          NODE_ENTITLEMENTS="apps/desktop/src-tauri/entitlements-node.plist"
           count=0
           while IFS= read -r f; do
             # `file` may report "Mach-O 64-bit executable arm64",
@@ -189,7 +198,18 @@ jobs:
             # linked shared library arm64", or "Mach-O universal
             # binary with 2 architectures". One substring covers all.
             if file -b "$f" | grep -q "Mach-O"; then
+              ENT_ARGS=()
+              case "$(basename "$f")" in
+                node-*-apple-darwin)
+                  ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
+                  ;;
+              esac
+              # ${ENT_ARGS[@]+...} guards the expansion: bash 3.2
+              # (default on macOS runners) errors on "${arr[@]}" when
+              # the array is empty under `set -u`. The +alt form only
+              # expands when ENT_ARGS is set, so empty stays empty.
               codesign --force --options runtime --timestamp \
+                ${ENT_ARGS[@]+"${ENT_ARGS[@]}"} \
                 --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
               count=$((count + 1))
             fi

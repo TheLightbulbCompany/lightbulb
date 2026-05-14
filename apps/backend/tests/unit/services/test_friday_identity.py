@@ -108,14 +108,23 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     assert "orchestrate" in bootstrap_md or "specialists" in bootstrap_md
 
     # AGENTS.md is the orchestration playbook — decompose, delegate, triage.
-    # Must reference the three orchestration tools by name so Friday knows
-    # how to actually act on the doctrine.
+    # Must reference the native Paperclip skill + REST API so Friday calls
+    # the canonical endpoints rather than custom backend wrappers. Per
+    # dev feedback on PR #640: orchestration lives in Paperclip, not in
+    # our backend.
     agents_md = contents_by_name["AGENTS.md"]
-    assert "paperclip_list_agents" in agents_md
-    assert "paperclip_create_issue" in agents_md
-    assert "paperclip_get_issue_status" in agents_md
-    # In-house roster present so Friday has baseline knowledge of specialists
-    # before her first paperclip_list_agents call.
+    # Native paperclip skill + API auth surface.
+    assert "paperclip" in agents_md.lower()
+    assert "PAPERCLIP_API_KEY" in agents_md
+    assert "PAPERCLIP_RUN_ID" in agents_md
+    # Canonical endpoints for the orchestration loop.
+    assert "POST /api/companies" in agents_md and "/issues" in agents_md
+    assert "/heartbeat-context" in agents_md
+    # Wake-context env vars Friday must read on heartbeat triage.
+    assert "PAPERCLIP_WAKE_REASON" in agents_md
+    assert "PAPERCLIP_TASK_ID" in agents_md
+    # In-house roster present so Friday has baseline knowledge of
+    # specialists before her first roster fetch.
     assert "Atlas" in agents_md
     assert "Pulse" in agents_md
     # Owner display interpolated.

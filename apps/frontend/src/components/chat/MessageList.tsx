@@ -28,50 +28,6 @@ import type {
 // running / done / error. See ExecApprovalDialog.tsx for the modal that
 // surfaces pending exec approvals from the global queue.
 
-export interface ToolResultBlock {
-  type: string;
-  text?: string;
-  bytes?: number;
-  omitted?: boolean;
-}
-
-export interface ToolUse {
-  tool: string;
-  toolCallId?: string;
-  status: "running" | "done" | "error";
-  args?: Record<string, unknown>;
-  result?: ToolResultBlock[];
-  meta?: string;
-}
-
-/**
- * Legacy flat-message shape. As of Task 8 (plan 2026-05-13), no `src/`
- * consumer references it any more — RunTranscript and StreamingStatusBar
- * have both been migrated. The only remaining importer is
- * `tests/unit/components/chat/StreamingStatusBar.test.tsx`, which tests
- * the pre-migration `messages` prop shape. Once that test is rewritten
- * or removed (see Task 9 / 10 of the flat-chat-timeline plan), these
- * transitional types (Message + ToolUse + ToolResultBlock) can be
- * deleted outright.
- * TODO(flat-chat-timeline): remove after StreamingStatusBar test is updated.
- */
-export interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  thinking?: string;
-  model?: string;
-  toolUses?: ToolUse[];
-  /**
-   * Set when the bubble represents a terminal agent error. Carries
-   * OpenClaw's `errorKind` (forwarded by the backend as `code`) so we
-   * can render a typed ChatErrorCard with tailored copy / actions.
-   * `content` will still begin with the legacy `Error: ` prefix for
-   * back-compat with consumers that match on string.
-   */
-  errorCode?: string;
-}
-
 export interface MessageListProps {
   renderGroups: RenderGroup[];
   agentName?: string;

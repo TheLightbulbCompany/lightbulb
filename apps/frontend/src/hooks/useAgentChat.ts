@@ -496,15 +496,22 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         const toolCallId = msg.toolCallId;
         if (!toolCallId) return;
 
-        // Commit any in-progress chatStream to segments before the tool runs.
+        // Always push a segment (possibly empty-text) so chatStreamSegments[i]
+        // stays index-aligned with chatToolMessages[i] — buildChatItems and
+        // foldLiveTurnIntoContent both rely on the contract that segments[i]
+        // is "the text immediately before tool[i]". Without the sentinel push
+        // a tool firing before any text would shift post-tool text into
+        // segment[0], making interleave emit it BEFORE its tool (Codex P2:
+        // tool-first ordering). buildChatItems/fold already skip empty
+        // segments so the sentinel is invisible at render time.
+        //
         // Advance streamCommittedOffsetRef by the committed length so the
         // next post-tool chunk (which arrives cumulative from start-of-run)
-        // can slice off the already-committed prefix instead of duplicating
-        // it at fold time. Do NOT clear chatStreamRunIdRef — the same run
-        // continues after the tool returns.
-        const priorStream = chatStreamRef.current;
-        if (priorStream && priorStream.length > 0) {
-          setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
+        // slices off the already-committed prefix. Do NOT clear
+        // chatStreamRunIdRef — the same run continues after the tool returns.
+        const priorStream = chatStreamRef.current ?? "";
+        setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
+        if (priorStream.length > 0) {
           streamCommittedOffsetRef.current += priorStream.length;
           setChatStream(null);
         }

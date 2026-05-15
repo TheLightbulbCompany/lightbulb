@@ -6,13 +6,18 @@ name: Desktop App Build
 # Both cut a draft GitHub release with DMGs attached; approve + publish
 # manually to make it visible.
 #
-# Build matrix: per-arch native builds instead of --target universal-apple-darwin.
-# Rationale:
-#   - tauri-apps/tauri#12160 closed as not-planned — universal DMG unsupported.
-#   - actions/runner-images#12482 — macos-latest (14) has a broken hdiutil
-#     flow since the Provisioner bump on 2025-06-19, causing DMG bundler to
-#     hang ~10min then fail. Pinning macos-15 (ARM) / macos-13 (Intel)
-#     sidesteps the regression.
+# Apple Silicon only. We dropped the x86_64 leg because:
+#   - GitHub is deprecating macos-13 Intel runners; queues had hit 1h+ on
+#     desktop-dev-v0.2.6 with no runner assignment.
+#   - >90% of new Mac users are Apple Silicon.
+# `matrix.include` is kept (single entry) so the per-arch step
+# parameterization stays in place if we ever re-add a second arch
+# (likely via cross-compile from macos-15 rather than a separate runner).
+#
+# macos-15 over macos-latest: actions/runner-images#12482 — macos-14's
+# hdiutil bundler hangs ~10min then fails since the 2025-06-19 Provisioner
+# bump. Universal DMG (--target universal-apple-darwin) is not a path:
+# tauri-apps/tauri#12160 closed as not-planned.
 on:
   push:
     tags:
@@ -28,15 +33,13 @@ jobs:
         include:
           - runs-on: macos-15
             rust-target: aarch64-apple-darwin
-          - runs-on: macos-13
-            rust-target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.runs-on }}
     # tauri-action creates a draft release + uploads artifacts via the
     # GitHub REST API using GITHUB_TOKEN. Default token is read-only
-    # for contents; grant write so create-release doesn't 403. The
-    # second job in the matrix uploads to the same draft release
-    # created by the first (tauri-action is idempotent on tagName).
+    # for contents; grant write so create-release doesn't 403. Kept
+    # idempotent on tagName so a future second matrix leg can attach
+    # to the same draft release without reorganizing this job.
     permissions:
       contents: write
     steps:
@@ -143,9 +146,8 @@ jobs:
           echo "Patched tauri.conf.json:"
           jq '{devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity, updaterEndpoints: .plugins.updater.endpoints}' "$TAURI_CFG"
 
-      # Vendor Node.js + pinned `openclaw` npm package for THIS arch only.
-      # Previously vendored both arches for the universal build; with the
-      # per-arch matrix each job only needs its own.
+      # Vendor Node.js + pinned `openclaw` npm package for the matrix
+      # arch only (single arch today; matrix scaffolding kept for later).
       - name: Vendor browser sidecar (${{ matrix.rust-target }})
         run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh ${{ matrix.rust-target }}
 

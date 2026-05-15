@@ -203,7 +203,7 @@ Pair flow:
 4. Tauri POSTs `/api/v1/desktop/pair` with `{tauriMacPubKey, cliPubKey, commandsMac[], commandsCli[]}` and Clerk JWT bearer.
 5. Backend:
    - Validates Clerk identity, resolves `(user_id, owner_id)` from JWT context
-   - Writes both public keys to `<owner_container>/paired.json` with `role: "node"` and respective command sets
+   - Writes both public keys to `<owner_container>/paired.json` with `role: "node"`, respective command sets, AND a generated `tokens.node` sub-entry per device. Per the existing `core/containers/config.py` helper, `tokens.node` is load-bearing — `listEffectivePairedDeviceRoles` requires it for the role-upgrade gate; tokenless paired entries connect but lose effective commands like `system.run`. Backend mints these tokens (same flow as today's `_build_node_paired_entry`); they are NOT tied to the device private key (which clients own) and are safe to be backend-controlled.
    - Asserts the two command sets are disjoint before writing
    - Returns `{gatewayUrl, deviceIdMac, deviceIdCli}`
    - Idempotent: if entries already exist with matching pubkeys, no-op
@@ -272,9 +272,14 @@ Modified:
   - Add `force_close_device(device_id)` for revocation kick.
 - `core/gateway/node_connection.py`: simplify the v2 signature path — backend no longer constructs `_build_device_identity` (subprocess and Tauri Rust both sign locally). The bridge becomes a pure protocol relay: receives the proxy's client-first `connect`, opens upstream to container, receives container's `connect.challenge`, pushes it down to the client via Management API (lands well past the GoneException race because the inbound `connect` already flowed), forwards the client's signed reply upstream. The handshake-sequencing scaffolding (the same machinery that makes today's Tauri Rust flow work) stays; only the signing step deletes.
 - `core/containers/config.py`:
-  - `ensure_node_paired_entry`: accept public key directly instead of deriving from server-stored private key.
+  - `ensure_node_paired_entry`: accept public key directly instead of deriving from server-stored private key. Continue to generate `tokens.node` per device (load-bearing for the role-upgrade gate).
   - `write_openclaw_config`: when `owner_type == "org"`, extend the existing `nodes.browser.mode = "manual"` pattern to `nodes.fileTransfer.mode` and `nodes.screen.mode`. Personal owners keep `auto`.
-- `routers/websocket_chat.py`: session-binding logic updates `_user_nodes[user_id]["cli"].deviceId` (not the unscoped `nodeId`) when calling `sessions.patch { execNode: ... }`. Stops being overwritten by the Tauri-mac connection.
+- `routers/websocket_chat.py`: session-binding logic updates `_user_nodes[user_id]["cli"].deviceId` (not the unscoped `nodeId`) when calling `sessions.patch { execNode: ... }`. Stops being overwritten by the Tauri-mac connection. `ws_connect` reads `clientId` from forwarded headers (see Infrastructure changes); skips `_send_connect_challenge` when `clientId in {"node-host", "openclaw-macos"}` so node-host clients never receive the synthetic nonce.
+
+### Infrastructure changes
+
+- `apps/infra/lambda/ws-connect/index.py`: currently forwards `x-connection-id`, `x-user-id`, `x-org-id` headers to FastAPI from API Gateway's `$connect` event but DROPS `queryStringParameters`. Modify to also forward `clientId` from `event["queryStringParameters"]["clientId"]` as `x-client-id` header (alongside existing token-extraction logic for the authorizer). Without this, FastAPI's `ws_connect` never sees the `clientId` query param and can't skip the synthetic challenge for node-host connections.
+- No other infra changes. API Gateway WSS route and DNS unchanged. Lambda authorizer unchanged (it already reads `token` from queryStringParameters for JWT validation).
 
 Deleted:
 - `_generate_member_device_key` and EFS device-key persistence under `<efs>/<owner_id>/devices/<user_id>/.node-device-key.pem` — Keychain on user's Mac is the source of truth now.

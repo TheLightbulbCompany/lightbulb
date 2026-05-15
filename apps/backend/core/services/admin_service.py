@@ -515,20 +515,37 @@ async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
     from core.config import settings
 
     client = boto3.client("ecr", region_name=settings.AWS_REGION)
-    try:
-        resp = await asyncio.to_thread(
-            client.describe_images,
-            repositoryName=_OPENCLAW_EXTENDED_REPO,
-            maxResults=min(max(limit, 1), 100),
-            filter={"tagStatus": "TAGGED"},
-        )
-    except (BotoCoreError, ClientError) as exc:
-        logger.warning("list_extended_image_tags: ECR call failed: %s", exc)
-        return []
 
-    images = resp.get("imageDetails", []) or []
+    # ECR's describe_images doesn't guarantee ordering across pages, so we
+    # must paginate the whole tagged set before sorting — otherwise the
+    # actually-newest tag can land on page 2 and we'd silently default the
+    # dropdown to an older image (Codex #657 P2). Bounded at MAX_PAGES so a
+    # misconfigured filter can't loop forever; the openclaw-extended repo is
+    # small enough that we expect <= 2 pages in practice.
+    MAX_PAGES = 10
+    images: list[dict[str, Any]] = []
+    next_token: str | None = None
+    for _ in range(MAX_PAGES):
+        kwargs: dict[str, Any] = {
+            "repositoryName": _OPENCLAW_EXTENDED_REPO,
+            "maxResults": 100,
+            "filter": {"tagStatus": "TAGGED"},
+        }
+        if next_token:
+            kwargs["nextToken"] = next_token
+        try:
+            resp = await asyncio.to_thread(client.describe_images, **kwargs)
+        except (BotoCoreError, ClientError) as exc:
+            logger.warning("list_extended_image_tags: ECR call failed: %s", exc)
+            return []
+        images.extend(resp.get("imageDetails", []) or [])
+        next_token = resp.get("nextToken")
+        if not next_token:
+            break
+
     images.sort(key=lambda d: d.get("imagePushedAt") or 0, reverse=True)
 
+    capped = min(max(limit, 1), 100)
     rows: list[dict[str, Any]] = []
     seen_tags: set[str] = set()
     for img in images:
@@ -547,4 +564,6 @@ async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
                     "pushed_at": pushed_iso,
                 }
             )
+            if len(rows) >= capped:
+                return rows
     return rows

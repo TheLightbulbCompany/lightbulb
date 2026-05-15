@@ -92,18 +92,27 @@ export async function resizeContainer(userId: string): Promise<ActionResult> {
   );
 }
 
+/**
+ * Queue a Track 2 image update for an owner. Targets the existing
+ * `POST /api/v1/updates` endpoint (platform-admin-gated since #653).
+ *
+ * `ownerId` here is the openclaw billing owner: equal to `user_id` for
+ * personal accounts, equal to the `org_id` for org members. The admin
+ * dashboard's per-user container page passes the route's `user_id`
+ * which works for personal users (the dev-test case). Org-member
+ * support needs a server-side resolve step — add when needed.
+ */
 export async function queueImageUpdate(
-  userId: string,
+  ownerId: string,
   newImage: string,
   description?: string,
 ): Promise<ActionResult> {
-  return adminPost(
-    `/admin/users/${encodeURIComponent(userId)}/container/queue-image-update`,
-    {
-      new_image: newImage,
-      ...(description ? { description } : {}),
-    },
-  );
+  return adminPost(`/updates`, {
+    owner_id: ownerId,
+    update_type: "image_update",
+    description: description?.trim() || `Image update to ${newImage}`,
+    changes: { new_image: newImage },
+  });
 }
 
 // NOTE: see catalog.ts — "use server" files must export ONLY async functions.

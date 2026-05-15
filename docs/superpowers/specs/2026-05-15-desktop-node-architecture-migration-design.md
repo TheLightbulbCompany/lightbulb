@@ -48,22 +48,46 @@ The root issue is that we ported a copy of upstream's macOS Swift app pattern in
 
 Two processes run on each Mac inside the Tauri `.app` bundle:
 
-**Tauri Rust process** (the "isol8-mac" node)
+**Tauri Rust process** (the Mac companion node)
 - Hosts the chat webview (unchanged)
 - Owns macOS-native capabilities: `system.notify`, `screen.snapshot`, `device.info`, `device.status`, `device.health`, `device.permissions`, optional `canvas.*`, `camera.*`, `screen.record`, `location.get` if enabled
-- Generates and persists Ed25519 keypairs in macOS Keychain (Tauri-mac + CLI subprocess)
+- Generates and persists Ed25519 keypairs in macOS Keychain (one for itself, one for the CLI subprocess to use)
 - Bootstraps + supervises the CLI subprocess
-- Speaks openclaw protocol v4 directly over WSS to API Gateway with Clerk JWT
-- Advertises `clientId: "isol8-mac"`, `clientMode: "node"`, `role: "node"`, `displayName: "<User> | Isol8 Mac"`
+- Runs a tiny local WSS proxy (loopback) so the subprocess can connect to the gateway via Tauri-managed JWT injection — see "JWT injection" below
+- Speaks openclaw protocol v4 directly over WSS to API Gateway with Clerk JWT in URL query (`?token=<jwt>`)
+- Advertises `clientId: "openclaw-macos"` (upstream-allowlisted — see `src/gateway/protocol/client-info.ts:3-17`), `clientMode: "node"`, `role: "node"`, `displayName: "<User> | Isol8 Mac"`
 
-**openclaw CLI subprocess** (the "isol8-node" node)
-- Runs `openclaw node run` from the bundled npm package
-- Owns cross-platform capabilities: `system.run.*`, `system.execApprovals.*`, `browser.proxy`, `file.fetch`, `file.write`, `dir.list`, `dir.fetch`, plus upstream plugin commands inherited from `browser` and `file-transfer` extensions
-- Loads its Ed25519 identity from `OPENCLAW_HOME/node-identity.json`, written by Tauri at spawn time, source-of-truth in Keychain
-- Connects independently to API Gateway WSS with Clerk JWT (re-using the same JWT Tauri provides)
-- Advertises `clientId: "isol8-node"`, `clientMode: "node"`, `role: "node"`, `displayName: "<User> | Isol8 Desktop (CLI)"`
+**openclaw CLI subprocess** (the node-host)
+- Runs `openclaw node run` from the bundled npm package, **unmodified**
+- Owns cross-platform capabilities: `system.run.*`, `browser.proxy`, `file.fetch`, `file.write`, `dir.list`, `dir.fetch`, plus upstream plugin commands inherited from `browser` and `file-transfer` extensions. (`system.execApprovals.*` are NOT node-invoke commands — they go through a separate `exec.approvals.node.*` gateway method.)
+- Loads its Ed25519 identity from `OPENCLAW_HOME/identity/device.json` (upstream-canonical path — see `src/infra/device-identity.ts` + `src/config/paths.ts`), written by Tauri at spawn time, source-of-truth in Keychain
+- Connects to **Tauri's local WSS proxy** (`ws://127.0.0.1:<random_port>/`) — Tauri proxies frames to/from `wss://ws-dev.isol8.co/?token=<jwt>` with JWT injection
+- Advertises `clientId: "node-host"` (upstream-allowlisted), `clientMode: "node"`, `role: "node"`, `displayName: "<User> | Isol8 Desktop (CLI)"`
 
-Both processes appear in `node.list` as distinct entries with distinct nodeIds. Routing is by command — disjoint command sets mean every invoke has exactly one target node.
+Both processes appear in `node.list` as distinct entries with distinct nodeIds. `clientId` is exposed in the schema (`buildEffectiveKnownNode` in `node-catalog.ts:136-169`), so the agent can distinguish "Mac companion" from "CLI node-host" without fuzzy-matching displayNames.
+
+### JWT injection (the Tauri local WSS proxy)
+
+The unmodified `openclaw node run` CLI constructs its WSS URL as `${scheme}://${host}:${port}` with no support for query string params (`src/node-host/runner.ts:216-219`). But our `apps/infra/lambda/websocket-authorizer/index.py` reads Clerk JWT from `queryStringParameters["token"]` at `$connect`. Subprocess cannot put `?token=<jwt>` in its outbound URL, so it would get rejected at $connect before any frames are exchanged.
+
+Resolution: Tauri runs a small loopback WSS proxy. Subprocess connects to it (no auth needed locally); Tauri opens the real upstream connection with JWT in URL and forwards frames in both directions.
+
+```rust
+// apps/desktop/src-tauri/src/proxy.rs — new file, ~80 lines
+// 1. Bind ws://127.0.0.1:0 on app launch (random port)
+// 2. On accept: Tauri opens wss://ws-dev.isol8.co/?token=<current_jwt>
+// 3. Bidirectional frame forwarding (subprocess ↔ proxy ↔ API Gateway)
+// 4. On JWT rotation: close upstream half, reopen with new token; subprocess
+//    sees a transient disconnect + reconnect, no restart needed
+// 5. On proxy shutdown: close subprocess connection cleanly
+```
+
+Why this works:
+- Subprocess sees a normal WS server; speaks openclaw protocol unmodified.
+- API Gateway sees the normal Clerk JWT in URL query at $connect; Lambda authorizer validates as today.
+- Tauri owns JWT lifecycle (rotation is transparent to subprocess).
+- Single API Gateway ingress — no new infra.
+- The proxy is pure transport-layer plumbing (~80 lines), not a re-implementation of the openclaw protocol. The subprocess is genuinely unmodified upstream code.
 
 ### Session binding (two-node-aware)
 
@@ -71,14 +95,14 @@ The existing backend pins each chat session to a specific exec target via `sessi
 
 `tools.exec.host` stays at upstream's default `"auto"` (which resolves to `gateway` when no sandbox is active). Agent explicitly opts into `host=node` per-call when it needs the user's Mac. We do **not** globally pin `tools.exec.node` in the container's `openclaw.json`, because in an org context the container is shared by multiple members — pinning to one member's deviceId would force everyone's exec to that one Mac.
 
-Instead, we reuse upstream's per-session `execNode` mechanism (the existing `sessions.patch { execNode: <deviceId> }` call), but extend our backend's user→device mapping to know about both kinds. The `clientId` field on the `PairedDevice` schema (set by each process during its connect handshake — `"isol8-node"` for the CLI, `"isol8-mac"` for Tauri Rust) is how we slot a paired device into the right bucket:
+Instead, we reuse upstream's per-session `execNode` mechanism (the existing `sessions.patch { execNode: <deviceId> }` call), extending our backend's user→device mapping to know about both kinds. The `clientId` field on each `PairedDevice` (set by each process during its connect handshake) is how we slot a paired device into the right bucket:
 
 ```python
 # core/services/node_proxy.py
 # Before: _user_nodes[user_id] = { nodeId, connection_id, owner_id }
 # After:  _user_nodes[user_id] = {
-#           "cli": { nodeId, connection_id, owner_id, clientId: "isol8-node" },
-#           "mac": { nodeId, connection_id, owner_id, clientId: "isol8-mac" },
+#           "cli": { nodeId, connection_id, owner_id, clientId: "node-host" },
+#           "mac": { nodeId, connection_id, owner_id, clientId: "openclaw-macos" },
 #         }
 
 def get_user_cli_node(user_id: str) -> dict | None: ...
@@ -94,35 +118,21 @@ Division of labor between upstream and Isol8 layers:
 
 | Concern                                | Owner            | How                                                                 |
 |----------------------------------------|------------------|---------------------------------------------------------------------|
-| Per-session exec pinning               | upstream-native  | `sessions.patch { execNode: <deviceId> }` — openclaw's gateway routes |
-| Distinguishing the two devices on one Mac | upstream-native  | `clientId` field in `PairedDevice` (`"isol8-mac"` vs `"isol8-node"`) |
-| User → deviceId lookup (multi-tenant) | Isol8 backend    | `_user_nodes[user_id][kind]` in-memory map (built from connect handshakes) |
+| Per-session exec pinning               | upstream-native  | `sessions.patch { execNode: <deviceId> }` — `params.boundNode` flows through `resolveNodeExecutionTarget` (`bash-tools.exec-host-node-phases.ts:96-127`) |
+| Distinguishing the two devices on one Mac | upstream-native  | `clientId` field on `PairedDevice` and in `node.list` output (`"openclaw-macos"` vs `"node-host"`) |
+| User → deviceId lookup (multi-tenant) | Isol8 backend    | `_user_nodes[user_id][kind]` in-memory map, populated from each process's connect handshake |
 
 Openclaw itself is single-user — there's no native concept of "which device is whose." That's the part our backend layers on top, because the container is shared across an org's members.
 
-For plugin-routed commands, behavior depends on owner type:
+For non-exec plugin commands (browser, file, screen), routing model:
 
-- **Personal owner**: only one user means only one CLI node + one Tauri-mac node per container. Command-name routing works: gateway sees only one node advertising each command, routes correctly. No pinning needed.
-- **Org owner**: multiple members → multiple CLI nodes all advertising `browser.proxy`/`file.*`/`dir.*`/`screen.snapshot` (cross-platform commands the CLI subprocess loads). `selectDefaultNodeFromList` has no session-ownership awareness, so auto-routing could send a request to the wrong member's Mac.
-
-The existing config already handles this for browser: `nodes.browser.mode = "manual"` for orgs (`apps/backend/core/containers/config.py:660-668`) forces agent to specify `node: <id>` per call. The migration **extends this pattern** to every plugin command class the CLI subprocess owns in orgs:
-
-```python
-# core/containers/config.py — when writing openclaw.json for an org-owned container:
-"nodes": {
-    "browser":      { "mode": "manual" if owner_type == "org" else "auto" },
-    "fileTransfer": { "mode": "manual" if owner_type == "org" else "auto" },  # new
-    "screen":       { "mode": "manual" if owner_type == "org" else "auto" },  # new
-    # device.* and system.notify go to the Tauri-mac node which is per-user
-    # already in our routing — no manual mode needed there.
-}
-```
-
-For per-call node selection, the agent's session context already includes the requesting user (Clerk identity propagated through the session), and `_user_nodes[user_id]["cli"].deviceId` is the node ID to inject. The existing browser-tool prompt scaffolding tells the LLM how to pick a node from `nodes.list` based on session context; same scaffolding extends to file/screen tools.
+- **Per-call selection by the agent**, not auto-routing. `node.invoke` (`src/gateway/server-methods/nodes.ts:1048-1101`) requires an explicit `nodeId` from the caller; the gateway only validates that the chosen node advertises the command. There is no gateway-side "route by command name" mechanism.
+- **Personal owner**: agent calls `nodes.list`, sees two entries, picks the one whose `clientId` matches the command class (CLI for browser/file/screen, Mac for notify/device/screen.snapshot). Simple.
+- **Org owner**: multiple members each have a CLI node advertising browser/file/screen. Agent must pick the CLI deviceId of the *requesting* user. Existing pattern: container config sets `nodes.browser.mode = "manual"` for orgs (`apps/backend/core/containers/config.py:660-668`); the migration extends this to fileTransfer + screen (see "Backend changes" below). Agent gets the requesting user's CLI deviceId from session metadata (Clerk identity → backend-injected `requesterCliNodeId` field — added to the session-binding step alongside `execNode`).
 
 Result for routing:
-- Personal owner: their session pins to their CLI node; exec on node = their Mac.
-- Org member Alice: her session pins to her CLI node; exec on node = her Mac. Bob's session pins to his.
+- Personal owner: their session pins to their CLI node; exec on node = their Mac. Agent picks Mac vs CLI for non-exec via clientId on `nodes.list` entries.
+- Org member Alice: her session pins to her CLI node; her exec = her Mac. Bob's session pins to his.
 - Channel-triggered run (no member): execNode unset; agent must specify `node=<id>` per-call or stay on gateway.
 
 ### Connection path / handshake bridge
@@ -133,7 +143,7 @@ If we removed the backend bridge entirely, the subprocess would connect, wait fo
 
 **The bridge stays — but its role changes.** Backend no longer signs upstream challenges itself (it doesn't have the subprocess's private key). Instead:
 
-1. Subprocess connects to `wss://ws-dev.isol8.co/` with Clerk JWT (API Gateway, Lambda authorizer validates).
+1. Subprocess connects to Tauri's loopback WSS proxy (`ws://127.0.0.1:<random_port>/`). Tauri's proxy opens upstream to `wss://ws-dev.isol8.co/?token=<jwt>` (API Gateway, Lambda authorizer validates). Tauri-mac process connects directly to the same upstream URL with the same JWT.
 2. Backend's `handle_node_connect` opens upstream WS to the user's container with `role: "node"`.
 3. Container sends `connect.challenge` upstream with a fresh nonce.
 4. Backend forwards the challenge to the subprocess via Management API push, with a ~150ms post-`$connect` delay to avoid the GoneException window.
@@ -159,11 +169,11 @@ Both deferred to implementation if needed; v1 takes the simple delay approach.
 
 ### Process supervision
 
-- Tauri spawns subprocess on first Clerk JWT receipt (after webview sign-in).
-- Subprocess gets `OPENCLAW_HOME=<app-support>/openclaw` env, JWT via stdin pipe (rotates on JWT refresh).
+- Tauri starts the loopback WSS proxy at app launch (binds `ws://127.0.0.1:0`, captures the assigned port).
+- Tauri spawns subprocess on first Clerk JWT receipt (after webview sign-in), passing `--host 127.0.0.1 --port <proxy-port>` so the subprocess targets the local proxy. Env: `OPENCLAW_HOME=<app-support>/co.isol8.desktop/openclaw`, `OPENCLAW_GATEWAY_TOKEN=<container-gateway-token>`.
 - Subprocess crashes → Tauri respawns with same identity, exponential backoff.
-- Tauri exit → subprocess killed via `kill_on_drop`.
-- JWT rotation: Tauri writes new JWT to subprocess's stdin; subprocess's existing connection re-handshakes with fresh token (openclaw client supports in-flight token rotation via `gateway.auth.token` config refresh).
+- Tauri exit → subprocess killed via `kill_on_drop`; proxy shuts down on Tauri Drop.
+- JWT rotation: Tauri's proxy reopens its upstream connection with the fresh JWT; subprocess sees a transient transport blip (handled by openclaw's native reconnect/backoff). No subprocess restart.
 
 ### Identity & pairing
 
@@ -214,8 +224,7 @@ This is the HIGH-severity revocation fix from the security review: today, removi
 | Command                          | Owner             | Implementation                                           |
 |----------------------------------|-------------------|----------------------------------------------------------|
 | `system.run`, `system.run.prepare`, `system.which` | CLI subprocess | Upstream `NODE_SYSTEM_RUN_COMMANDS`           |
-| `system.execApprovals.get/set`   | CLI subprocess    | Upstream `NODE_EXEC_APPROVALS_COMMANDS`                  |
-| `browser.proxy`                  | CLI subprocess    | Upstream `extensions/browser/`                            |
+| `browser.proxy`                  | CLI subprocess    | Upstream `extensions/browser/`. Note: in remote-gateway mode the Mac companion does NOT advertise `browser` (`MacNodeModeCoordinator.swift:143-145` gates it on `connectionMode == .local`), so the CLI is the only path — matches upstream's intended split. |
 | `file.fetch`, `file.write`       | CLI subprocess    | Upstream `extensions/file-transfer/`                      |
 | `dir.list`, `dir.fetch`          | CLI subprocess    | Upstream `extensions/file-transfer/`                      |
 | `system.notify`                  | Tauri-mac         | UNUserNotificationCenter binding (existing Rust)         |
@@ -224,6 +233,8 @@ This is the HIGH-severity revocation fix from the security review: today, removi
 | `device.status`                  | Tauri-mac         | Uptime + battery (existing Rust)                          |
 | `device.health`                  | Tauri-mac         | Thermal + power (existing Rust)                           |
 | `device.permissions`             | Tauri-mac         | TCC permission introspection (existing Rust)              |
+
+**`system.execApprovals.get/set` are NOT in this table.** Although built into the CLI node-host as `NODE_EXEC_APPROVALS_COMMANDS`, they're not routable via `node.invoke` — `server-methods/nodes.ts:1074-1085` rejects them with `INVALID_REQUEST`. The agent's exec-approval interactions go through a separate gateway method (`exec.approvals.node.*`), which is wholly upstream-internal. Our backend doesn't proxy or advertise these commands; openclaw handles them end-to-end inside the subprocess.
 
 Future opt-in (Tauri-mac, upstream-shaped):
 - `camera.list`, `camera.snap`, `camera.clip` — AVCaptureSession
@@ -359,7 +370,13 @@ Same paths Tauri Rust uses today. No change in UX.
 - Impact: in-flight invoke may fail when subprocess is killed mid-call during context switch.
 - Mitigation: subprocess shutdown is graceful with a 1-second drain; ongoing invokes complete or return a clean error. Agent retries acceptable.
 
-**R6: macOS App-Translocation breaks subprocess paths on first download.**
+**R6: Operator-noticed gotchas from upstream (subagent verification).**
+- Default `displayName` is the machine name on both processes; we MUST set explicit distinct names (`<User> | Isol8 Mac`, `<User> | Isol8 Desktop (CLI)`) or they're indistinguishable in `nodes.list`.
+- Two pairing prompts at first run for upstream operators — we sidestep via backend pre-pairing, but two paired entries exist per Mac.
+- Separate `exec-approvals.json` stores (CLI's `~/.openclaw/exec-approvals.json` and Mac companion's in-app store). For our split where browser/exec only flow through the CLI side, the Mac side's approvals store is unused. **Leave `OPENCLAW_NODE_EXEC_HOST` UNSET**; setting it to `"app"` would re-couple CLI exec to the Tauri-mac process (CLI's `system.run` would fail if Tauri-mac is down).
+- `isLocalMacNode` heuristic in upstream `nodes-utils.ts:74-80` matches `nodeId.startsWith("mac-")` but real deviceIds are SHA-256 hex — so `pickDefaultNode`'s "prefer local Mac" tiebreaker never fires. Doesn't affect us because we use per-session `execNode` binding, not auto-pick, but worth noting if we ever rely on auto-pick.
+
+**R7: macOS App-Translocation breaks subprocess paths on first download.**
 - Likelihood: medium (Apple's translocation can put .app at `/private/var/folders/.../`).
 - Impact: subprocess fails to find bundled node/openclaw assets.
 - Mitigation: existing launcher already uses `$(dirname "${BASH_SOURCE[0]}")` for path discovery, which works under translocation; verify in integration test.

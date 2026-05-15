@@ -200,7 +200,7 @@ Pair flow:
 1. User signs into Tauri webview via Clerk.
 2. Webview emits Clerk JWT to Tauri Rust (existing `send_auth_token` flow).
 3. Tauri checks Keychain. Missing → generate both Ed25519 keypairs locally.
-4. Tauri POSTs `/api/v1/desktop/pair` with `{tauriMacPubKey, cliPubKey, commandsMac[], commandsCli[]}` and Clerk JWT bearer.
+4. Tauri POSTs `/api/v1/desktop/pair` with `{tauriMacPubKey, cliPubKey}` and Clerk JWT bearer. Response includes server-derived `commandsMac[]` / `commandsCli[]` (NOT client-submitted — see Backend changes).
 5. Backend:
    - Validates Clerk identity, resolves `(user_id, owner_id)` from JWT context
    - Writes both public keys to `<owner_container>/paired.json` with `role: "node"`, respective command sets, AND a generated `tokens.node` sub-entry per device. Per the existing `core/containers/config.py` helper, `tokens.node` is load-bearing — `listEffectivePairedDeviceRoles` requires it for the role-upgrade gate; tokenless paired entries connect but lose effective commands like `system.run`. Backend mints these tokens (same flow as today's `_build_node_paired_entry`); they are NOT tied to the device private key (which clients own) and are safe to be backend-controlled.
@@ -261,7 +261,7 @@ These are NOT in v1 scope. Listed for forward-compatibility.
 ### Backend changes
 
 New endpoints:
-- `POST /api/v1/desktop/pair` (Clerk-authed): idempotent pair flow described above. Request: `{tauriMacPubKey, cliPubKey, commandsMac[], commandsCli[]}`. Response: `{gatewayUrl, deviceIdMac, deviceIdCli, gatewayToken}` — the `gatewayToken` is the container's pre-shared `gateway.auth.token` needed by the subprocess to sign its connect.
+- `POST /api/v1/desktop/pair` (Clerk-authed): idempotent pair flow described above. Request: `{tauriMacPubKey, cliPubKey}`. Response: `{gatewayUrl, deviceIdMac, deviceIdCli, gatewayToken, commandsMac[], commandsCli[]}`. The command sets are **derived server-side** from backend constants (e.g. `DESKTOP_MAC_COMMANDS` and `DESKTOP_CLI_COMMANDS` in `core/services/node_proxy.py`) — the client does NOT submit them. This prevents a buggy or compromised desktop from pre-pairing its Mac-companion pubkey with a broader command surface like `system.run` and defeating cross-process isolation. Backend asserts the two constant sets are disjoint at module-load time as a defensive guard. The response includes the derived command lists so the desktop knows what each process should advertise on its outbound `connect` handshake (and so a future audit can verify the client honored the contract). The `gatewayToken` is the container's pre-shared `gateway.auth.token` needed by the subprocess to sign its connect.
 - `DELETE /api/v1/desktop/devices/{device_id}` (Clerk-authed): revoke + live-kick
 
 Modified:

@@ -93,6 +93,11 @@ pipeline.addStageWithGitHubOptions(devStage, {
           run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.isol8.co --token=$VERCEL_TOKEN",
           env: vercelEnv,
         },
+        {
+          name: "Alias to admin.dev.isol8.co",
+          run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} admin.dev.isol8.co --token=$VERCEL_TOKEN",
+          env: vercelEnv,
+        },
       ],
     }),
   ],
@@ -138,6 +143,11 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         {
           name: "Alias to isol8.co",
           run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} isol8.co --token=$VERCEL_TOKEN",
+          env: vercelEnv,
+        },
+        {
+          name: "Alias to admin.isol8.co",
+          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} admin.isol8.co --token=$VERCEL_TOKEN",
           env: vercelEnv,
         },
       ],

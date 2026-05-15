@@ -246,17 +246,32 @@ async def get_optional_user(
 # just trusts the JWT claim.
 _PLATFORM_ADMIN_EMAIL_DOMAIN = "@isol8.co"
 
+# Hardcoded extra-admin allowlist for individuals without an ``@isol8.co``
+# mailbox (e.g. team members using personal email while Workspace is being
+# set up). Listed in code so changes are auditable in git history. Applies
+# to every environment — adding an entry here grants prod admin too, so
+# keep the list short and reviewed.
+_PLATFORM_ADMIN_EXTRA_EMAILS: frozenset[str] = frozenset(
+    {
+        "prasiddha@gmail.com",
+    }
+)
+
 
 def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
     """
     Allow only platform admins (Isol8 team) — distinct from customer org admins.
 
-    Gate: the Clerk JWT's ``email`` claim must end with ``@isol8.co``. Clerk
-    populates the claim from the user's primary verified email. Removing
-    someone from the team = deleting their Clerk user (or deleting their
-    ``@isol8.co`` email from Clerk) — same workflow as any other SSO app.
+    Gate: the Clerk JWT's ``email`` claim must end with ``@isol8.co`` OR
+    appear in ``_PLATFORM_ADMIN_EXTRA_EMAILS``. Clerk populates the claim
+    from the user's primary verified email. Removing someone from the team
+    = deleting their Clerk user (or removing their address from the extra
+    list / Clerk's @isol8.co email).
     """
     email = (auth.email or "").lower()
-    if not email.endswith(_PLATFORM_ADMIN_EMAIL_DOMAIN):
+    if (
+        not email.endswith(_PLATFORM_ADMIN_EMAIL_DOMAIN)
+        and email not in _PLATFORM_ADMIN_EXTRA_EMAILS
+    ):
         raise HTTPException(status_code=403, detail="Platform admin access required")
     return auth

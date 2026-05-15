@@ -498,6 +498,15 @@ async def get_actions_audit(
 _OPENCLAW_EXTENDED_REPO = "isol8/openclaw-extended"
 _OPENCLAW_EXTENDED_REGISTRY = "877352799272"
 
+# Mirrors of openclaw-version.json#dev.tag / #prod.tag. Surfaced to the admin
+# dropdown so each row can render "(current dev)" / "(current prod)" badges
+# without the frontend needing to read the JSON file (which isn't in the
+# Vercel build context). Drift test in test_admin_service.py keeps these
+# locked to the pinned values, mirroring the OPENCLAW_UPSTREAM_VERSION
+# pattern in core/containers/config.py.
+CURRENT_DEV_TAG = "2026.5.12-570e197"
+CURRENT_PROD_TAG = "2026.5.7-0d10b38"
+
 
 async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
     """Return recently-pushed tags from the openclaw-extended ECR repo.

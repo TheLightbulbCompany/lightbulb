@@ -351,6 +351,10 @@ export interface AvailableImage {
 
 export interface AvailableImagesResponse {
   images: AvailableImage[];
+  /** Mirrors openclaw-version.json#dev.tag at the time of the request. */
+  current_dev_tag?: string;
+  /** Mirrors openclaw-version.json#prod.tag at the time of the request. */
+  current_prod_tag?: string;
 }
 
 export async function listAvailableImages(

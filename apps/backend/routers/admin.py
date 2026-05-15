@@ -296,7 +296,11 @@ async def admin_container_available_images(
     auth: AuthContext = Depends(require_platform_admin),
 ):
     images = await admin_service.list_extended_image_tags(limit=limit)
-    return {"images": images}
+    return {
+        "images": images,
+        "current_dev_tag": admin_service.CURRENT_DEV_TAG,
+        "current_prod_tag": admin_service.CURRENT_PROD_TAG,
+    }
 
 
 @router.post(

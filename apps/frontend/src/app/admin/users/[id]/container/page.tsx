@@ -108,12 +108,12 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
 
   const { getToken } = await auth();
   const token = await getToken();
-  const [overview, availableImages] = token
-    ? await Promise.all([
-        getOverview(token, id),
-        listAvailableImages(token).then((r) => r.images),
-      ])
-    : [null, [] as AvailableImage[]];
+  const [overview, imagesPayload] = token
+    ? await Promise.all([getOverview(token, id), listAvailableImages(token)])
+    : [null, { images: [] as AvailableImage[] } as Awaited<ReturnType<typeof listAvailableImages>>];
+  const availableImages = imagesPayload.images;
+  const currentDevTag = imagesPayload.current_dev_tag;
+  const currentProdTag = imagesPayload.current_prod_tag;
 
   if (!overview) {
     return (
@@ -188,7 +188,12 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
       </section>
 
       {/* Actions */}
-      <ContainerActionsPanel userId={id} availableImages={availableImages} />
+      <ContainerActionsPanel
+        userId={id}
+        availableImages={availableImages}
+        currentDevTag={currentDevTag}
+        currentProdTag={currentProdTag}
+      />
     </div>
   );
 }

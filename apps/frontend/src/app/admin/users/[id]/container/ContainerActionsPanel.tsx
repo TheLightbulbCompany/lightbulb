@@ -34,6 +34,10 @@ export interface ContainerActionsPanelProps {
    * free-text input so the admin isn't blocked.
    */
   availableImages?: AvailableImage[];
+  /** Tag pinned as dev in openclaw-version.json — rendered as a badge on the matching row. */
+  currentDevTag?: string;
+  /** Tag pinned as prod in openclaw-version.json — rendered as a badge on the matching row. */
+  currentProdTag?: string;
 }
 
 /**
@@ -49,6 +53,8 @@ export interface ContainerActionsPanelProps {
 export function ContainerActionsPanel({
   userId,
   availableImages,
+  currentDevTag,
+  currentProdTag,
 }: ContainerActionsPanelProps) {
   const router = useRouter();
   const images = availableImages ?? [];
@@ -232,14 +238,32 @@ export function ContainerActionsPanel({
             <SelectContent>
               {images.map((img) => {
                 const date = formatPushedAt(img.pushed_at);
+                const isDev = currentDevTag != null && img.tag === currentDevTag;
+                const isProd = currentProdTag != null && img.tag === currentProdTag;
+                const badge = isDev ? "current dev" : isProd ? "current prod" : null;
                 return (
                   <SelectItem
                     key={img.image_uri}
                     value={img.image_uri}
                     className="font-mono text-xs"
                   >
-                    {img.tag}
-                    {date ? `  ·  ${date}` : ""}
+                    <span className="flex items-center gap-2">
+                      <span>
+                        {img.tag}
+                        {date ? `  ·  ${date}` : ""}
+                      </span>
+                      {badge ? (
+                        <span
+                          className={
+                            isDev
+                              ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-emerald-300"
+                              : "rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-amber-300"
+                          }
+                        >
+                          {badge}
+                        </span>
+                      ) : null}
+                    </span>
                   </SelectItem>
                 );
               })}

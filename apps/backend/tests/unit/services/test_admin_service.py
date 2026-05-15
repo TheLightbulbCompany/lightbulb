@@ -391,3 +391,30 @@ async def test_get_actions_audit_requires_either_target_or_admin():
 
     with pytest.raises(ValueError):
         await admin_service.get_actions_audit()
+
+
+def test_current_image_tag_mirrors_match_openclaw_version_json():
+    """admin_service.CURRENT_DEV_TAG / CURRENT_PROD_TAG must stay in sync
+    with openclaw-version.json so the admin dropdown's "(current dev/prod)"
+    badges reflect reality. Drift in either direction breaks CI. Same
+    pattern as test_openclaw_upstream_version_matches_pinned_json in
+    tests/unit/containers/test_config.py.
+    """
+    import json
+    from pathlib import Path
+
+    from core.services import admin_service
+
+    # apps/backend/tests/unit/services/test_admin_service.py -> repo root is parents[5]
+    repo_root = Path(__file__).resolve().parents[5]
+    pinned = json.loads((repo_root / "openclaw-version.json").read_text())
+    assert admin_service.CURRENT_DEV_TAG == pinned["dev"]["tag"], (
+        f"admin_service.CURRENT_DEV_TAG ({admin_service.CURRENT_DEV_TAG!r}) "
+        f"is out of sync with openclaw-version.json#dev.tag "
+        f"({pinned['dev']['tag']!r}). Update both."
+    )
+    assert admin_service.CURRENT_PROD_TAG == pinned["prod"]["tag"], (
+        f"admin_service.CURRENT_PROD_TAG ({admin_service.CURRENT_PROD_TAG!r}) "
+        f"is out of sync with openclaw-version.json#prod.tag "
+        f"({pinned['prod']['tag']!r}). Update both."
+    )

@@ -100,7 +100,25 @@ Division of labor between upstream and Isol8 layers:
 
 Openclaw itself is single-user — there's no native concept of "which device is whose." That's the part our backend layers on top, because the container is shared across an org's members.
 
-For plugin-routed commands (`browser.proxy`, `system.notify`, `device.*`, `screen.snapshot`, `file.*`), no pinning needed: openclaw's gateway routes by command name, and our disjoint-by-design command sets mean exactly one node owns each.
+For plugin-routed commands, behavior depends on owner type:
+
+- **Personal owner**: only one user means only one CLI node + one Tauri-mac node per container. Command-name routing works: gateway sees only one node advertising each command, routes correctly. No pinning needed.
+- **Org owner**: multiple members → multiple CLI nodes all advertising `browser.proxy`/`file.*`/`dir.*`/`screen.snapshot` (cross-platform commands the CLI subprocess loads). `selectDefaultNodeFromList` has no session-ownership awareness, so auto-routing could send a request to the wrong member's Mac.
+
+The existing config already handles this for browser: `nodes.browser.mode = "manual"` for orgs (`apps/backend/core/containers/config.py:660-668`) forces agent to specify `node: <id>` per call. The migration **extends this pattern** to every plugin command class the CLI subprocess owns in orgs:
+
+```python
+# core/containers/config.py — when writing openclaw.json for an org-owned container:
+"nodes": {
+    "browser":      { "mode": "manual" if owner_type == "org" else "auto" },
+    "fileTransfer": { "mode": "manual" if owner_type == "org" else "auto" },  # new
+    "screen":       { "mode": "manual" if owner_type == "org" else "auto" },  # new
+    # device.* and system.notify go to the Tauri-mac node which is per-user
+    # already in our routing — no manual mode needed there.
+}
+```
+
+For per-call node selection, the agent's session context already includes the requesting user (Clerk identity propagated through the session), and `_user_nodes[user_id]["cli"].deviceId` is the node ID to inject. The existing browser-tool prompt scaffolding tells the LLM how to pick a node from `nodes.list` based on session context; same scaffolding extends to file/screen tools.
 
 Result for routing:
 - Personal owner: their session pins to their CLI node; exec on node = their Mac.
@@ -119,10 +137,18 @@ If we removed the backend bridge entirely, the subprocess would connect, wait fo
 2. Backend's `handle_node_connect` opens upstream WS to the user's container with `role: "node"`.
 3. Container sends `connect.challenge` upstream with a fresh nonce.
 4. Backend forwards the challenge to the subprocess via Management API push, with a ~150ms post-`$connect` delay to avoid the GoneException window.
-5. Subprocess signs the nonce with its locally-held private key, sends signed `connect` back via `$default` route.
-6. Backend forwards the signed `connect` upstream to the container.
-7. Container validates the signature against the pre-paired pubkey, returns `hello-ok` upstream.
-8. Backend proxies `hello-ok` to the subprocess.
+5. Subprocess signs the nonce with its locally-held private key. The signature payload **includes the container's `gateway.auth.token`** in `connect.params.auth.token` (openclaw's v2 signature payload binds the token, so it has to be present at signing time — see `core/gateway/node_connection.py:255-263`).
+6. Subprocess sends signed `connect` back via `$default` route.
+7. Backend forwards the signed `connect` upstream to the container.
+8. Container validates: outer `auth.token` matches its `gateway.auth.token`, AND signature against pre-paired pubkey covers nonce + token + identity claims. Returns `hello-ok` upstream.
+9. Backend proxies `hello-ok` to the subprocess.
+
+**Container `gateway_token` ships to the desktop at pair time.** Today the backend holds the container's `gateway_token` privately and mutates `connect_params["auth"]` to inject it before signing — that no longer works once the CLI signs locally. Fix: `/api/v1/desktop/pair` response includes `gatewayToken` alongside `gatewayUrl` and `deviceIds`. Tauri persists it in Keychain (entry `co.isol8.desktop.container.gateway_token`) and passes it to the subprocess via the upstream-supported `OPENCLAW_GATEWAY_TOKEN` env var (per `docs/nodes/index.md`: "Env vars are preferred: `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD`"). Subprocess's openclaw config picks it up, includes it in `auth.token` before signing.
+
+Security note on `gateway_token` distribution:
+- The token is per-container (per-owner), not per-user. Members of an org already have lawful access to that container; receiving its `gateway_token` doesn't expand their existing access.
+- Token alone is insufficient to act as any specific member — the device-signature layer still requires the right private key.
+- Token rotates when the container is reprovisioned; backend would re-ship via `/api/v1/desktop/pair` (idempotent endpoint, called on every JWT refresh anyway).
 
 The bridge becomes a pure protocol relay — no key material on backend, just frame-forwarding with a small delay to defeat the API Gateway timing race. If the 150ms delay turns out fragile in practice, fallback options:
 
@@ -210,13 +236,20 @@ These are NOT in v1 scope. Listed for forward-compatibility.
 ### Backend changes
 
 New endpoints:
-- `POST /api/v1/desktop/pair` (Clerk-authed): idempotent pair flow described above
+- `POST /api/v1/desktop/pair` (Clerk-authed): idempotent pair flow described above. Request: `{tauriMacPubKey, cliPubKey, commandsMac[], commandsCli[]}`. Response: `{gatewayUrl, deviceIdMac, deviceIdCli, gatewayToken}` — the `gatewayToken` is the container's pre-shared `gateway.auth.token` needed by the subprocess to sign its connect.
 - `DELETE /api/v1/desktop/devices/{device_id}` (Clerk-authed): revoke + live-kick
 
 Modified:
-- `core/services/node_proxy.py`: stop generating device keys server-side; clients own keys now. Keep WSS relay to container. Add `force_close_device(device_id)` for revocation kick.
-- `core/gateway/node_connection.py`: simplify — backend's role is now pure relay, no longer constructs `_build_device_identity` (clients do that natively in openclaw). Most of this file deletes.
-- `core/containers/config.py` (`ensure_node_paired_entry`): accept public key directly instead of deriving from server-stored private key.
+- `core/services/node_proxy.py`:
+  - Stop generating device keys server-side; clients own keys now.
+  - `_user_nodes[user_id]` becomes `{cli, mac}` keyed by `clientId`; `get_user_cli_node()` / `get_user_mac_node()` accessors. Connect handler reads the connecting process's `clientId` from the handshake to slot the deviceId into the right bucket.
+  - Keep WSS relay to container.
+  - Add `force_close_device(device_id)` for revocation kick.
+- `core/gateway/node_connection.py`: simplify the v2 signature path — backend no longer constructs `_build_device_identity` (subprocess and Tauri Rust both sign locally). The bridge becomes a pure protocol relay: it receives `connect.challenge` from upstream, pushes to client via Management API with a ~150ms post-`$connect` delay, forwards the client's signed reply upstream. Most code deletes, but the relay scaffolding stays.
+- `core/containers/config.py`:
+  - `ensure_node_paired_entry`: accept public key directly instead of deriving from server-stored private key.
+  - `write_openclaw_config`: when `owner_type == "org"`, extend the existing `nodes.browser.mode = "manual"` pattern to `nodes.fileTransfer.mode` and `nodes.screen.mode`. Personal owners keep `auto`.
+- `routers/websocket_chat.py`: session-binding logic updates `_user_nodes[user_id]["cli"].deviceId` (not the unscoped `nodeId`) when calling `sessions.patch { execNode: ... }`. Stops being overwritten by the Tauri-mac connection.
 
 Deleted:
 - `_generate_member_device_key` and EFS device-key persistence under `<efs>/<owner_id>/devices/<user_id>/.node-device-key.pem` — Keychain on user's Mac is the source of truth now.

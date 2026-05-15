@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, require_platform_admin
 from core.containers import get_ecs_manager, get_gateway_pool
-from core.repositories import admin_actions_repo  # noqa: F401 — patch target for tests
+from core.repositories import admin_actions_repo, update_repo  # noqa: F401 — admin_actions_repo is patch target for tests
 from core.services import (
     admin_service,
     billing_service,
@@ -54,6 +54,21 @@ class MarkInvoiceResolvedRequest(BaseModel):
 
 class ConfigPatchRequest(BaseModel):
     patch: dict = Field(..., description="Config patch to deep-merge into openclaw.json")
+
+
+class QueueImageUpdateRequest(BaseModel):
+    new_image: str = Field(
+        ...,
+        min_length=1,
+        description="ECR image URL to queue (e.g. 877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:2026.5.12-570e197)",
+    )
+    description: str | None = Field(
+        default=None,
+        description="Human-readable change summary shown to the owner in their update banner",
+    )
+    # NB: deliberately omitting `force_by` — update_repo persists it but the
+    # scheduled worker never reads it (Codex #653 P2). Plumbing it through
+    # would belong in a separate PR that wires the worker to honor it.
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +283,34 @@ async def admin_container_resize(
     return await ecs.reapply_standard_sizing(owner_id)
 
 
-# Per-user image updates use the existing `POST /api/v1/updates` endpoint
-# (now platform-admin-gated). The admin dashboard's "Queue image update"
-# button calls it with owner_id resolved client-side from the user_id URL.
+@router.post(
+    "/users/{user_id}/container/queue-image-update",
+    description=(
+        "Queue a Track 2 image update for the user. Resolves user_id to owner_id "
+        "(so org members route to their org's container), then creates the pending "
+        "update. The owner sees a banner in chat and applies via "
+        "POST /api/v1/container/updates/{id}/apply when ready. Non-destructive: "
+        "container keeps running on the old image until accepted. Idempotency-Key "
+        "supported."
+    ),
+)
+@idempotency()
+@audit_admin_action("container.queue_image_update")
+async def admin_container_queue_image_update(
+    user_id: str,
+    body: QueueImageUpdateRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    description = body.description or f"Image update to {body.new_image}"
+    item = await update_repo.create(
+        owner_id=owner_id,
+        update_type="image_update",
+        description=description,
+        changes={"new_image": body.new_image},
+    )
+    return {"status": "queued", "update": item}
 
 
 # ---------------------------------------------------------------------------

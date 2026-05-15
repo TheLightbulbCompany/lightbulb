@@ -7,7 +7,15 @@ import { ConfirmActionDialog } from "@/components/admin/ConfirmActionDialog";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import type { AvailableImage } from "@/app/admin/_lib/api";
 import {
   queueImageUpdate,
   reprovisionContainer,
@@ -16,8 +24,16 @@ import {
   stopContainer,
 } from "@/app/admin/_actions/container";
 
+const CUSTOM_IMAGE_VALUE = "__custom__";
+
 export interface ContainerActionsPanelProps {
   userId: string;
+  /**
+   * Recently-pushed ECR tags from /admin/container/available-images, newest
+   * first. Empty when ECR is unreachable — the UI then falls back to a plain
+   * free-text input so the admin isn't blocked.
+   */
+  availableImages?: AvailableImage[];
 }
 
 /**
@@ -30,13 +46,28 @@ export interface ContainerActionsPanelProps {
  * with the canonical per-user resource profile. The backend's resize
  * endpoint accepts and ignores the legacy `tier` argument.
  */
-export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
+export function ContainerActionsPanel({
+  userId,
+  availableImages,
+}: ContainerActionsPanelProps) {
   const router = useRouter();
+  const images = availableImages ?? [];
+  const hasImages = images.length > 0;
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
-  const [imageUrl, setImageUrl] = React.useState("");
+  // Default to the most-recently-pushed image when ECR returned tags; the
+  // first row is the freshest build, which is the common case for the
+  // "bump this user to the new dev image" workflow. Falls back to "custom"
+  // when ECR errored out so the free-text field gets a useful starting state.
+  const [selectedUri, setSelectedUri] = React.useState<string>(
+    hasImages ? images[0].image_uri : CUSTOM_IMAGE_VALUE,
+  );
+  const [customImageUrl, setCustomImageUrl] = React.useState("");
   const [imageDescription, setImageDescription] = React.useState("");
   const [queueing, setQueueing] = React.useState(false);
+
+  const usingCustom = selectedUri === CUSTOM_IMAGE_VALUE;
+  const effectiveImageUrl = usingCustom ? customImageUrl : selectedUri;
 
   function clearStatus() {
     setError(null);
@@ -81,7 +112,7 @@ export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
 
   async function handleQueueImageUpdate() {
     clearStatus();
-    const trimmedUrl = imageUrl.trim();
+    const trimmedUrl = effectiveImageUrl.trim();
     if (!trimmedUrl) {
       setError("Image URL is required.");
       return;
@@ -95,12 +126,20 @@ export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
       );
       applyResult("Queue image update", result.ok, result.error);
       if (result.ok) {
-        setImageUrl("");
+        setCustomImageUrl("");
         setImageDescription("");
+        if (hasImages) setSelectedUri(images[0].image_uri);
       }
     } finally {
       setQueueing(false);
     }
+  }
+
+  function formatPushedAt(iso: string | null | undefined): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toISOString().slice(0, 10);
   }
 
   return (
@@ -176,19 +215,57 @@ export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
           Creates a pending Track 2 image update for this owner. They&apos;ll see a
           banner in chat and choose when to apply (Update now / Tonight / Remind
           later). The container keeps running on the current image until they
-          accept. For the current dev image URL, see{" "}
-          <code className="font-mono text-zinc-300">openclaw-version.json</code>{" "}
-          on main.
+          accept.
         </p>
-        <Input
-          type="text"
-          placeholder="877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:2026.5.12-570e197"
-          value={imageUrl}
-          onChange={(e) => setImageUrl(e.target.value)}
-          disabled={queueing}
-          aria-label="New image URL"
-          className="font-mono text-xs"
-        />
+        {hasImages ? (
+          <Select
+            value={selectedUri}
+            onValueChange={setSelectedUri}
+            disabled={queueing}
+          >
+            <SelectTrigger
+              aria-label="Choose an openclaw-extended tag"
+              className="font-mono text-xs"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {images.map((img) => {
+                const date = formatPushedAt(img.pushed_at);
+                return (
+                  <SelectItem
+                    key={img.image_uri}
+                    value={img.image_uri}
+                    className="font-mono text-xs"
+                  >
+                    {img.tag}
+                    {date ? `  ·  ${date}` : ""}
+                  </SelectItem>
+                );
+              })}
+              <SelectItem value={CUSTOM_IMAGE_VALUE} className="text-xs">
+                Custom image URL…
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        ) : (
+          <p className="text-xs text-amber-300">
+            Couldn&apos;t list ECR tags — enter the full image URL manually. See{" "}
+            <code className="font-mono text-zinc-300">openclaw-version.json</code>{" "}
+            on main for the current dev tag.
+          </p>
+        )}
+        {(usingCustom || !hasImages) && (
+          <Input
+            type="text"
+            placeholder="877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:2026.5.12-570e197"
+            value={customImageUrl}
+            onChange={(e) => setCustomImageUrl(e.target.value)}
+            disabled={queueing}
+            aria-label="New image URL"
+            className="font-mono text-xs"
+          />
+        )}
         <Textarea
           placeholder="(optional) Short description shown in the owner's update banner"
           value={imageDescription}
@@ -203,7 +280,7 @@ export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
           variant="default"
           size="sm"
           onClick={handleQueueImageUpdate}
-          disabled={queueing || imageUrl.trim().length === 0}
+          disabled={queueing || effectiveImageUrl.trim().length === 0}
         >
           {queueing ? "Queueing…" : "Queue image update"}
         </Button>

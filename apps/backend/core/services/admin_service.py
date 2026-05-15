@@ -489,3 +489,81 @@ async def get_actions_audit(
     if admin_user_id:
         return await admin_actions_repo.query_by_admin(admin_user_id, limit=limit, cursor=cursor)
     raise ValueError("get_actions_audit requires target_user_id or admin_user_id")
+
+
+# ---------------------------------------------------------------------------
+# ECR image listing (powers the admin queue-image-update dropdown)
+# ---------------------------------------------------------------------------
+
+_OPENCLAW_EXTENDED_REPO = "isol8/openclaw-extended"
+_OPENCLAW_EXTENDED_REGISTRY = "877352799272"
+
+
+async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
+    """Return recently-pushed tags from the openclaw-extended ECR repo.
+
+    Sorted newest-first by imagePushedAt. Each row carries the full ECR URI
+    plus the bare tag, so the frontend can drop a fully-qualified value into
+    the queue-image-update form without string-concat.
+
+    Failures degrade to an empty list so the admin UI falls back to free
+    text rather than blocking on an ECR outage.
+    """
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    from core.config import settings
+
+    client = boto3.client("ecr", region_name=settings.AWS_REGION)
+
+    # ECR's describe_images doesn't guarantee ordering across pages, so we
+    # must paginate the whole tagged set before sorting — otherwise the
+    # actually-newest tag can land on page 2 and we'd silently default the
+    # dropdown to an older image (Codex #657 P2). Bounded at MAX_PAGES so a
+    # misconfigured filter can't loop forever; the openclaw-extended repo is
+    # small enough that we expect <= 2 pages in practice.
+    MAX_PAGES = 10
+    images: list[dict[str, Any]] = []
+    next_token: str | None = None
+    for _ in range(MAX_PAGES):
+        kwargs: dict[str, Any] = {
+            "repositoryName": _OPENCLAW_EXTENDED_REPO,
+            "maxResults": 100,
+            "filter": {"tagStatus": "TAGGED"},
+        }
+        if next_token:
+            kwargs["nextToken"] = next_token
+        try:
+            resp = await asyncio.to_thread(client.describe_images, **kwargs)
+        except (BotoCoreError, ClientError) as exc:
+            logger.warning("list_extended_image_tags: ECR call failed: %s", exc)
+            return []
+        images.extend(resp.get("imageDetails", []) or [])
+        next_token = resp.get("nextToken")
+        if not next_token:
+            break
+
+    images.sort(key=lambda d: d.get("imagePushedAt") or 0, reverse=True)
+
+    capped = min(max(limit, 1), 100)
+    rows: list[dict[str, Any]] = []
+    seen_tags: set[str] = set()
+    for img in images:
+        digest = img.get("imageDigest")
+        pushed = img.get("imagePushedAt")
+        pushed_iso = pushed.isoformat() if hasattr(pushed, "isoformat") else None
+        for tag in img.get("imageTags", []) or []:
+            if tag in seen_tags:
+                continue
+            seen_tags.add(tag)
+            rows.append(
+                {
+                    "image_uri": f"{_OPENCLAW_EXTENDED_REGISTRY}.dkr.ecr.{settings.AWS_REGION}.amazonaws.com/{_OPENCLAW_EXTENDED_REPO}:{tag}",
+                    "tag": tag,
+                    "digest": digest,
+                    "pushed_at": pushed_iso,
+                }
+            )
+            if len(rows) >= capped:
+                return rows
+    return rows

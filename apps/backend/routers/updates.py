@@ -7,7 +7,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import (
+    AuthContext,
+    get_current_user,
+    require_org_admin,
+    require_platform_admin,
+    resolve_owner_id,
+)
 from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
@@ -102,16 +108,17 @@ async def apply_or_schedule_update(
 @router.post(
     "/updates",
     summary="Admin: create updates",
-    description="Create a pending update for a specific owner or all owners (fleet-wide image update).",
+    description=(
+        "Create a pending update for a specific owner or all owners (fleet-wide image update). "
+        "Platform-admin only: targets arbitrary owner_ids (incl. 'all'), so leaving it open to any "
+        "signed-in user would let a non-admin queue updates for anyone else's container. The earlier "
+        "is_org_context-only guard was effectively unauthenticated in personal context."
+    ),
 )
 async def admin_create_update(
     body: AdminUpdateRequest,
-    auth: AuthContext = Depends(get_current_user),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
-    # Admin endpoint -- require org admin in org context
-    if auth.is_org_context:
-        require_org_admin(auth)
-
     if body.owner_id == "all" and body.update_type == "image_update":
         new_image = body.changes.get("new_image", "")
         if not new_image:

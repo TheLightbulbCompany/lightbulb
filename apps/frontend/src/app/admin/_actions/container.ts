@@ -92,6 +92,28 @@ export async function resizeContainer(userId: string): Promise<ActionResult> {
   );
 }
 
+/**
+ * Queue a Track 2 image update for an owner. Targets the thin
+ * `/admin/users/{user_id}/container/queue-image-update` endpoint,
+ * which resolves user_id to owner_id server-side (handles both
+ * personal users where they're equal, and org members where the
+ * billing owner is the org). Mirrors the resolve pattern used by
+ * the rest of the admin container actions.
+ */
+export async function queueImageUpdate(
+  userId: string,
+  newImage: string,
+  description?: string,
+): Promise<ActionResult> {
+  return adminPost(
+    `/admin/users/${encodeURIComponent(userId)}/container/queue-image-update`,
+    {
+      new_image: newImage,
+      ...(description?.trim() ? { description: description.trim() } : {}),
+    },
+  );
+}
+
 // NOTE: see catalog.ts — "use server" files must export ONLY async functions.
 // Turbopack turns `export type { ActionResult }` into a runtime ReferenceError
 // at SSR chunk load. No consumer imports ActionResult today.

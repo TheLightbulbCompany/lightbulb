@@ -6,7 +6,10 @@ import { useRouter } from "next/navigation";
 import { ConfirmActionDialog } from "@/components/admin/ConfirmActionDialog";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
+  queueImageUpdate,
   reprovisionContainer,
   resizeContainer,
   startContainer,
@@ -31,6 +34,9 @@ export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
   const router = useRouter();
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [imageUrl, setImageUrl] = React.useState("");
+  const [imageDescription, setImageDescription] = React.useState("");
+  const [queueing, setQueueing] = React.useState(false);
 
   function clearStatus() {
     setError(null);
@@ -71,6 +77,30 @@ export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
     clearStatus();
     const result = await resizeContainer(userId);
     applyResult("Re-apply standard sizing", result.ok, result.error);
+  }
+
+  async function handleQueueImageUpdate() {
+    clearStatus();
+    const trimmedUrl = imageUrl.trim();
+    if (!trimmedUrl) {
+      setError("Image URL is required.");
+      return;
+    }
+    setQueueing(true);
+    try {
+      const result = await queueImageUpdate(
+        userId,
+        trimmedUrl,
+        imageDescription.trim() || undefined,
+      );
+      applyResult("Queue image update", result.ok, result.error);
+      if (result.ok) {
+        setImageUrl("");
+        setImageDescription("");
+      }
+    } finally {
+      setQueueing(false);
+    }
   }
 
   return (
@@ -133,6 +163,50 @@ export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
             Re-apply sizing
           </Button>
         </ConfirmActionDialog>
+      </div>
+
+      {/* Track 2 image update (banner + user-driven apply). Non-destructive
+          alternative to Reprovision — container keeps running on the old image
+          until the owner clicks "Update now" in their chat banner. */}
+      <div className="space-y-2 rounded-md border border-white/5 bg-white/[0.01] p-3">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          Queue image update
+        </h3>
+        <p className="text-xs text-zinc-400">
+          Creates a pending Track 2 image update for this owner. They&apos;ll see a
+          banner in chat and choose when to apply (Update now / Tonight / Remind
+          later). The container keeps running on the current image until they
+          accept. For the current dev image URL, see{" "}
+          <code className="font-mono text-zinc-300">openclaw-version.json</code>{" "}
+          on main.
+        </p>
+        <Input
+          type="text"
+          placeholder="877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:2026.5.12-570e197"
+          value={imageUrl}
+          onChange={(e) => setImageUrl(e.target.value)}
+          disabled={queueing}
+          aria-label="New image URL"
+          className="font-mono text-xs"
+        />
+        <Textarea
+          placeholder="(optional) Short description shown in the owner's update banner"
+          value={imageDescription}
+          onChange={(e) => setImageDescription(e.target.value)}
+          disabled={queueing}
+          aria-label="Update description"
+          rows={2}
+          className="text-xs"
+        />
+        <Button
+          type="button"
+          variant="default"
+          size="sm"
+          onClick={handleQueueImageUpdate}
+          disabled={queueing || imageUrl.trim().length === 0}
+        >
+          {queueing ? "Queueing…" : "Queue image update"}
+        </Button>
       </div>
     </div>
   );

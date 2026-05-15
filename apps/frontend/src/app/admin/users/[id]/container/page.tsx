@@ -2,7 +2,12 @@ import { auth } from "@clerk/nextjs/server";
 
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
-import { getOverview, type AdminOrgContext } from "@/app/admin/_lib/api";
+import {
+  getOverview,
+  listAvailableImages,
+  type AdminOrgContext,
+  type AvailableImage,
+} from "@/app/admin/_lib/api";
 
 import { ContainerActionsPanel } from "./ContainerActionsPanel";
 
@@ -103,7 +108,12 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
 
   const { getToken } = await auth();
   const token = await getToken();
-  const overview = token ? await getOverview(token, id) : null;
+  const [overview, availableImages] = token
+    ? await Promise.all([
+        getOverview(token, id),
+        listAvailableImages(token).then((r) => r.images),
+      ])
+    : [null, [] as AvailableImage[]];
 
   if (!overview) {
     return (
@@ -178,7 +188,7 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
       </section>
 
       {/* Actions */}
-      <ContainerActionsPanel userId={id} />
+      <ContainerActionsPanel userId={id} availableImages={availableImages} />
     </div>
   );
 }

@@ -338,3 +338,30 @@ export async function getCloudwatchUrl(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Container — available images (queue-image-update dropdown)
+// ---------------------------------------------------------------------------
+
+export interface AvailableImage {
+  image_uri: string;
+  tag: string;
+  digest?: string | null;
+  pushed_at?: string | null;
+}
+
+export interface AvailableImagesResponse {
+  images: AvailableImage[];
+}
+
+export async function listAvailableImages(
+  token: string,
+  limit?: number,
+): Promise<AvailableImagesResponse> {
+  const result = await adminFetch<AvailableImagesResponse>(
+    token,
+    "/admin/container/available-images",
+    { query: { limit } },
+  );
+  return result ?? { images: [] };
+}
+

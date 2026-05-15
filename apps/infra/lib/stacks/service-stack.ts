@@ -165,7 +165,7 @@ export class ServiceStack extends cdk.Stack {
       description: `Isol8 ${env} Fargate task role`,
     });
 
-    // ECR pull
+    // ECR pull + DescribeImages (admin dropdown of available openclaw-extended tags)
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "EcrAccess",
@@ -174,6 +174,7 @@ export class ServiceStack extends cdk.Stack {
           "ecr:BatchCheckLayerAvailability",
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage",
+          "ecr:DescribeImages",
         ],
         resources: ["*"],
       }),

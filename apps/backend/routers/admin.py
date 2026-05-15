@@ -283,6 +283,22 @@ async def admin_container_resize(
     return await ecs.reapply_standard_sizing(owner_id)
 
 
+@router.get(
+    "/container/available-images",
+    description=(
+        "List recently-pushed openclaw-extended ECR tags (newest first). "
+        "Powers the admin queue-image-update dropdown. Degrades to an empty "
+        "list on ECR errors so the UI can fall back to free-text entry."
+    ),
+)
+async def admin_container_available_images(
+    limit: int = Query(25, ge=1, le=100),
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    images = await admin_service.list_extended_image_tags(limit=limit)
+    return {"images": images}
+
+
 @router.post(
     "/users/{user_id}/container/queue-image-update",
     description=(

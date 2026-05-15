@@ -489,3 +489,62 @@ async def get_actions_audit(
     if admin_user_id:
         return await admin_actions_repo.query_by_admin(admin_user_id, limit=limit, cursor=cursor)
     raise ValueError("get_actions_audit requires target_user_id or admin_user_id")
+
+
+# ---------------------------------------------------------------------------
+# ECR image listing (powers the admin queue-image-update dropdown)
+# ---------------------------------------------------------------------------
+
+_OPENCLAW_EXTENDED_REPO = "isol8/openclaw-extended"
+_OPENCLAW_EXTENDED_REGISTRY = "877352799272"
+
+
+async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
+    """Return recently-pushed tags from the openclaw-extended ECR repo.
+
+    Sorted newest-first by imagePushedAt. Each row carries the full ECR URI
+    plus the bare tag, so the frontend can drop a fully-qualified value into
+    the queue-image-update form without string-concat.
+
+    Failures degrade to an empty list so the admin UI falls back to free
+    text rather than blocking on an ECR outage.
+    """
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    from core.config import settings
+
+    client = boto3.client("ecr", region_name=settings.AWS_REGION)
+    try:
+        resp = await asyncio.to_thread(
+            client.describe_images,
+            repositoryName=_OPENCLAW_EXTENDED_REPO,
+            maxResults=min(max(limit, 1), 100),
+            filter={"tagStatus": "TAGGED"},
+        )
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("list_extended_image_tags: ECR call failed: %s", exc)
+        return []
+
+    images = resp.get("imageDetails", []) or []
+    images.sort(key=lambda d: d.get("imagePushedAt") or 0, reverse=True)
+
+    rows: list[dict[str, Any]] = []
+    seen_tags: set[str] = set()
+    for img in images:
+        digest = img.get("imageDigest")
+        pushed = img.get("imagePushedAt")
+        pushed_iso = pushed.isoformat() if hasattr(pushed, "isoformat") else None
+        for tag in img.get("imageTags", []) or []:
+            if tag in seen_tags:
+                continue
+            seen_tags.add(tag)
+            rows.append(
+                {
+                    "image_uri": f"{_OPENCLAW_EXTENDED_REGISTRY}.dkr.ecr.{settings.AWS_REGION}.amazonaws.com/{_OPENCLAW_EXTENDED_REPO}:{tag}",
+                    "tag": tag,
+                    "digest": digest,
+                    "pushed_at": pushed_iso,
+                }
+            )
+    return rows

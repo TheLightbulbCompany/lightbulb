@@ -286,10 +286,17 @@ Kept + modified:
 - New: `apps/desktop/src-tauri/src/subprocess.rs` — supervisor with JWT rotation, crash respawn, identity bootstrap (~200 LOC)
 
 Vendor:
-- `apps/desktop/src-tauri/scripts/vendor-sidecars.sh` already at openclaw 2026.5.12 + Node 22.16.0 (PR #664). No further changes needed beyond removing now-unused launcher shim path; subprocess invocation becomes `openclaw node run --host ws-dev.isol8.co --port 443 --tls`.
+- `apps/desktop/src-tauri/scripts/vendor-sidecars.sh` already at openclaw 2026.5.12 + Node 22.16.0 (PR #664). No further changes needed beyond simplifying the launcher shim.
 
 Launcher shim simplification:
-- Current shim is a bash script that spawns `node openclaw.mjs node run --host 127.0.0.1 --port 18789`. The hardcoded host/port were the bug we hit; replace with reading env vars Tauri provides (`ISOL8_GATEWAY_HOST`, `ISOL8_GATEWAY_PORT`).
+- Subprocess invocation targets **Tauri's loopback WSS proxy**, NOT the public API Gateway endpoint directly. The CLI's `--host`/`--port` flags point at `127.0.0.1` plus a per-launch random port that Tauri's proxy bound to. Tauri's proxy is the one that opens `wss://ws-dev.isol8.co/?token=<jwt>` and handles Clerk-JWT injection (see "JWT injection" section).
+- Tauri provides the proxy port via env vars at spawn (e.g. `ISOL8_PROXY_PORT=<random>`); the shim invokes:
+  ```sh
+  exec "$ASSETS/node-${TRIPLE}" \
+      "$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \
+      node run --host 127.0.0.1 --port "$ISOL8_PROXY_PORT" "$@"
+  ```
+  No `--tls` (loopback proxy is plain WS), no public-host references. `OPENCLAW_GATEWAY_TOKEN` env var supplies the container `gateway_token` for openclaw's in-frame auth at handshake time.
 
 ### Bundle size
 

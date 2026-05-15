@@ -73,21 +73,32 @@ The unmodified `openclaw node run` CLI constructs its WSS URL as `${scheme}://${
 Resolution: Tauri runs a small loopback WSS proxy. Subprocess connects to it (no auth needed locally); Tauri opens the real upstream connection with JWT in URL and forwards frames in both directions.
 
 ```rust
-// apps/desktop/src-tauri/src/proxy.rs — new file, ~80 lines
+// apps/desktop/src-tauri/src/proxy.rs — new file, ~100 lines
 // 1. Bind ws://127.0.0.1:0 on app launch (random port)
-// 2. On accept: Tauri opens wss://ws-dev.isol8.co/?token=<current_jwt>
-// 3. Bidirectional frame forwarding (subprocess ↔ proxy ↔ API Gateway)
-// 4. On JWT rotation: close upstream half, reopen with new token; subprocess
+// 2. On accept (subprocess connects): Tauri opens
+//    wss://ws-dev.isol8.co/?token=<current_jwt>&clientId=node-host
+// 3. IMMEDIATELY send an initial `connect` frame upstream (client-first dodge
+//    for the API Gateway Management-API GoneException race — same shape as
+//    today's node_client.rs initial frame). Subprocess hasn't sent anything
+//    yet, but that's fine because the wake-up `connect` doesn't carry a
+//    signed nonce; backend recognizes the proxy-initiated pattern via
+//    clientId, opens upstream to container, and forwards container's real
+//    challenge back down.
+// 4. Bidirectional frame forwarding from here on (subprocess ↔ proxy ↔ API GW).
+//    The real signed `connect` from the subprocess flows up after it sees
+//    the container's challenge.
+// 5. On JWT rotation: close upstream half, reopen with new token; subprocess
 //    sees a transient disconnect + reconnect, no restart needed
-// 5. On proxy shutdown: close subprocess connection cleanly
+// 6. On proxy shutdown: close subprocess connection cleanly
 ```
 
 Why this works:
-- Subprocess sees a normal WS server; speaks openclaw protocol unmodified.
+- Subprocess sees a normal WS server; speaks openclaw protocol unmodified (server-first locally to the proxy).
 - API Gateway sees the normal Clerk JWT in URL query at $connect; Lambda authorizer validates as today.
+- Backend sees a client-first connect (same as today's Tauri Rust path), bypassing the GoneException race using the same mechanism that already works in production.
 - Tauri owns JWT lifecycle (rotation is transparent to subprocess).
 - Single API Gateway ingress — no new infra.
-- The proxy is pure transport-layer plumbing (~80 lines), not a re-implementation of the openclaw protocol. The subprocess is genuinely unmodified upstream code.
+- The proxy is transport-layer plumbing plus one initial wake-up frame (~100 lines), not a re-implementation of the openclaw protocol. The subprocess is genuinely unmodified upstream code.
 
 ### Session binding (two-node-aware)
 
@@ -137,21 +148,27 @@ Result for routing:
 
 ### Connection path / handshake bridge
 
-Native `openclaw node run` is server-first: the client opens WSS, waits for `connect.challenge` from the server, signs the nonce, then sends `connect`. Our existing API Gateway WSS path is client-first because of API Gateway's Management-API GoneException race (~37ms post-`$connect` window where pushes silently fail) — Tauri Rust sends `connect` first, backend opens upstream to container, signs the container's challenge using the per-member EFS-stored device key, returns `hello-ok`.
+Native `openclaw node run` is server-first (client opens WSS, waits for `connect.challenge`, signs nonce, sends `connect`). Our API Gateway WSS path has a known constraint: Management API pushes during a ~37ms post-`$connect` window land in a transient `GoneException` and get silently dropped (`apps/desktop/src-tauri/src/node_client.rs:309-326` comment). Server-first push from backend → fresh client races that window.
 
-If we removed the backend bridge entirely, the subprocess would connect, wait for a challenge that API Gateway can't reliably push during the GoneException window, and time out.
+**The current Tauri Rust client dodges this with client-first sequencing** (sends `connect` first; backend's synchronous `$default` handler opens upstream to the container, signs container's challenge with the EFS device key, returns `hello-ok` — by the time backend pushes `hello-ok` back via Management API, ~150–200ms has elapsed, well past the race). This pattern works in production today.
 
-**The bridge stays — but its role changes.** Backend no longer signs upstream challenges itself (it doesn't have the subprocess's private key). Instead:
+**The migration preserves the client-first dodge — the Tauri proxy does it on behalf of the unmodified subprocess.** The subprocess speaks native server-first locally to the proxy; the proxy speaks client-first to API Gateway, exactly mimicking today's `node_client.rs` initial frame. End-to-end:
 
-1. Subprocess connects to Tauri's loopback WSS proxy (`ws://127.0.0.1:<random_port>/`). Tauri's proxy opens upstream to `wss://ws-dev.isol8.co/?token=<jwt>` (API Gateway, Lambda authorizer validates). Tauri-mac process connects directly to the same upstream URL with the same JWT.
-2. Backend's `handle_node_connect` opens upstream WS to the user's container with `role: "node"`.
-3. Container sends `connect.challenge` upstream with a fresh nonce.
-4. Backend forwards the challenge to the subprocess via Management API push, with a ~150ms post-`$connect` delay to avoid the GoneException window.
-5. Subprocess signs the nonce with its locally-held private key. The signature payload **includes the container's `gateway.auth.token`** in `connect.params.auth.token` (openclaw's v2 signature payload binds the token, so it has to be present at signing time — see `core/gateway/node_connection.py:255-263`).
-6. Subprocess sends signed `connect` back via `$default` route.
-7. Backend forwards the signed `connect` upstream to the container.
-8. Container validates: outer `auth.token` matches its `gateway.auth.token`, AND signature against pre-paired pubkey covers nonce + token + identity claims. Returns `hello-ok` upstream.
-9. Backend proxies `hello-ok` to the subprocess.
+1. Subprocess connects to Tauri's loopback WSS proxy (`ws://127.0.0.1:<random_port>/`) and waits for `connect.challenge` (server-first, unmodified upstream behavior).
+2. Tauri proxy opens upstream to `wss://ws-dev.isol8.co/?token=<jwt>&clientId=node-host`. Tauri-mac process connects directly with `?token=<jwt>&clientId=openclaw-macos`.
+3. Proxy immediately sends an initial `connect` frame to backend (client-first dodge — same shape as today's `node_client.rs`: `role:"node"`, `client:{id:"node-host", ...}`, no signed nonce yet because the subprocess hasn't seen the real challenge). This is just a wake-up frame to flush the GoneException race.
+4. Backend's `$default` handler reads the frame. Reads `clientId` from query params: **for `clientId=node-host` or `clientId=openclaw-macos`, backend skips the `_send_connect_challenge` background task** (today fires unconditionally for the control-UI SPA — would deliver a synthetic nonce that races the real one).
+5. Backend's `handle_node_connect` opens upstream WS to the user's container with `role:"node"`.
+6. Container sends `connect.challenge` upstream with a fresh nonce.
+7. Backend pushes that challenge DOWN via Management API. **By this point ~150–200ms has elapsed since the subprocess's $connect** — same timing as today's working `hello-ok` push — the race window is past, the push lands.
+8. Proxy forwards the challenge to the subprocess.
+9. Subprocess signs the nonce with its locally-held private key. The signature payload includes the container's `gateway.auth.token` in `connect.params.auth.token` (openclaw's v2 signature binds the token; see `core/gateway/node_connection.py:255-263`).
+10. Subprocess sends signed `connect` back up through the proxy via `$default`.
+11. Backend forwards the signed `connect` upstream to the container.
+12. Container validates: outer `auth.token` matches its `gateway.auth.token`, AND signature against pre-paired pubkey covers nonce + token + identity claims. Returns `hello-ok` upstream.
+13. Backend forwards `hello-ok` down via Management API → proxy → subprocess.
+
+**This is not a timing mitigation — it's the same client-first pattern that's been working in production since the WebSocket cutover.** The proxy is doing what `node_client.rs` does today; the subprocess is doing what an unmodified openclaw node-host does in its native local-gateway setup. The backend's relay is the same shape as today, minus the signing step.
 
 **Container `gateway_token` ships to the desktop at pair time.** Today the backend holds the container's `gateway_token` privately and mutates `connect_params["auth"]` to inject it before signing — that no longer works once the CLI signs locally. Fix: `/api/v1/desktop/pair` response includes `gatewayToken` alongside `gatewayUrl` and `deviceIds`. Tauri persists it in Keychain (entry `co.isol8.desktop.container.gateway_token`) and passes it to the subprocess via the upstream-supported `OPENCLAW_GATEWAY_TOKEN` env var (per `docs/nodes/index.md`: "Env vars are preferred: `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD`"). Subprocess's openclaw config picks it up, includes it in `auth.token` before signing.
 
@@ -160,12 +177,9 @@ Security note on `gateway_token` distribution:
 - Token alone is insufficient to act as any specific member — the device-signature layer still requires the right private key.
 - Token rotates when the container is reprovisioned; backend would re-ship via `/api/v1/desktop/pair` (idempotent endpoint, called on every JWT refresh anyway).
 
-The bridge becomes a pure protocol relay — no key material on backend, just frame-forwarding with a small delay to defeat the API Gateway timing race. If the 150ms delay turns out fragile in practice, fallback options:
-
-- Subprocess wrapper sends an empty `ping` frame first, triggering backend's relay path before challenge arrives. (Requires modifying spawn behavior.)
-- Move subprocess to a dedicated WSS endpoint that bypasses API Gateway Management API entirely (ALB host-routed to user's container). (Larger infra change.)
-
-Both deferred to implementation if needed; v1 takes the simple delay approach.
+Required backend changes for this section:
+- `ws_connect`: read `clientId` from query params; skip `_send_connect_challenge` when `clientId in {"node-host", "openclaw-macos"}` (~5 lines).
+- `handle_node_connect`: receive client-first connect from proxy, open upstream relay to container (mostly unchanged from today). Difference: no longer calls `_build_device_identity` — forwards container's challenge down to client, expects signed reply back from client, forwards signed payload upstream. Most of the existing scaffolding stays.
 
 ### Process supervision
 
@@ -256,7 +270,7 @@ Modified:
   - `_user_nodes[user_id]` becomes `{cli, mac}` keyed by `clientId`; `get_user_cli_node()` / `get_user_mac_node()` accessors. Connect handler reads the connecting process's `clientId` from the handshake to slot the deviceId into the right bucket.
   - Keep WSS relay to container.
   - Add `force_close_device(device_id)` for revocation kick.
-- `core/gateway/node_connection.py`: simplify the v2 signature path — backend no longer constructs `_build_device_identity` (subprocess and Tauri Rust both sign locally). The bridge becomes a pure protocol relay: it receives `connect.challenge` from upstream, pushes to client via Management API with a ~150ms post-`$connect` delay, forwards the client's signed reply upstream. Most code deletes, but the relay scaffolding stays.
+- `core/gateway/node_connection.py`: simplify the v2 signature path — backend no longer constructs `_build_device_identity` (subprocess and Tauri Rust both sign locally). The bridge becomes a pure protocol relay: receives the proxy's client-first `connect`, opens upstream to container, receives container's `connect.challenge`, pushes it down to the client via Management API (lands well past the GoneException race because the inbound `connect` already flowed), forwards the client's signed reply upstream. The handshake-sequencing scaffolding (the same machinery that makes today's Tauri Rust flow work) stays; only the signing step deletes.
 - `core/containers/config.py`:
   - `ensure_node_paired_entry`: accept public key directly instead of deriving from server-stored private key.
   - `write_openclaw_config`: when `owner_type == "org"`, extend the existing `nodes.browser.mode = "manual"` pattern to `nodes.fileTransfer.mode` and `nodes.screen.mode`. Personal owners keep `auto`.

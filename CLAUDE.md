@@ -447,7 +447,7 @@ DynamoDB-backed data access. One repo per table.
 
 | File | Purpose |
 |------|---------|
-| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw protocol 3.0 handshake, RPC proxy, event forwarding, idle scale-to-zero reaper, usage callback. |
+| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw protocol v4 handshake, RPC proxy, event forwarding, idle scale-to-zero reaper, usage callback. |
 | `node_connection.py` | Per-user node-host connection for desktop browser-proxy / exec-approval flows. |
 
 ### Services (`core/services/`)

@@ -282,8 +282,8 @@ class NodeUpstreamConnection:
             "id": req_id,
             "method": "connect",
             "params": {
-                "minProtocol": 3,
-                "maxProtocol": 3,
+                "minProtocol": 4,
+                "maxProtocol": 4,
                 **self.node_connect_params,
                 "device": device,
             },

@@ -269,9 +269,6 @@ def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> Aut
     list / Clerk's @isol8.co email).
     """
     email = (auth.email or "").lower()
-    if (
-        not email.endswith(_PLATFORM_ADMIN_EMAIL_DOMAIN)
-        and email not in _PLATFORM_ADMIN_EXTRA_EMAILS
-    ):
+    if not email.endswith(_PLATFORM_ADMIN_EMAIL_DOMAIN) and email not in _PLATFORM_ADMIN_EXTRA_EMAILS:
         raise HTTPException(status_code=403, detail="Platform admin access required")
     return auth

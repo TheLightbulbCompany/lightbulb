@@ -47,7 +47,7 @@ def mock_pool():
 def mock_upstream():
     with patch("core.services.node_proxy.NodeUpstreamConnection") as cls:
         upstream = AsyncMock()
-        upstream.connect = AsyncMock(return_value={"ok": True, "payload": {"protocol": 3}})
+        upstream.connect = AsyncMock(return_value={"ok": True, "payload": {"protocol": 4}})
         upstream.start_reader = AsyncMock()
         upstream.close = AsyncMock()
         upstream.device_id = "abc123def456"

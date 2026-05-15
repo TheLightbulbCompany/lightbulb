@@ -288,8 +288,8 @@ class TestGatewayConnectionHandshake:
         # Connect request envelope
         assert sent["method"] == "connect"
         assert params["role"] == "operator"
-        assert params["minProtocol"] == 3
-        assert params["maxProtocol"] == 3
+        assert params["minProtocol"] == 4
+        assert params["maxProtocol"] == 4
         # Backend needs admin for skills.install, agents.create/update/delete,
         # etc. — read/write alone was too restrictive. Admin short-circuits
         # per-method checks on the server (method-scopes.ts:232).

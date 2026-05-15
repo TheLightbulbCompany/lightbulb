@@ -121,8 +121,8 @@ async def _call_gateway_rpc(
                     "id": req_id,
                     "method": "connect",
                     "params": {
-                        "minProtocol": 3,
-                        "maxProtocol": 3,
+                        "minProtocol": 4,
+                        "maxProtocol": 4,
                         "client": {
                             "id": BACKEND_CLIENT_ID,
                             "version": "1.0.0",

@@ -388,7 +388,7 @@ async def ws_message(
                     "type": "res",
                     "id": req_id,
                     "ok": True,
-                    "payload": {"protocol": 3},
+                    "payload": {"protocol": 4},
                 },
             )
             return Response(status_code=200)

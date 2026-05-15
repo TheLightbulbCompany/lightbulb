@@ -59,8 +59,8 @@ async def _openclaw_handshake(ws, token: str) -> None:
         "id": str(uuid.uuid4()),
         "method": "connect",
         "params": {
-            "minProtocol": 3,
-            "maxProtocol": 3,
+            "minProtocol": 4,
+            "maxProtocol": 4,
             "client": {
                 "id": "cli",
                 "version": "1.0.0",

@@ -65,6 +65,72 @@ Two processes run on each Mac inside the Tauri `.app` bundle:
 
 Both processes appear in `node.list` as distinct entries with distinct nodeIds. Routing is by command — disjoint command sets mean every invoke has exactly one target node.
 
+### Session binding (two-node-aware)
+
+The existing backend pins each chat session to a specific exec target via `sessions.patch { execNode: ... }` in `apps/backend/routers/websocket_chat.py`. Today's logic looks up `_user_nodes[user_id]` which assumes one node per user — with two nodes (Tauri-mac + CLI subprocess), whichever connects last wins, so `host=node` exec could land on the Tauri-mac node that doesn't advertise `system.run`.
+
+`tools.exec.host` stays at upstream's default `"auto"` (which resolves to `gateway` when no sandbox is active). Agent explicitly opts into `host=node` per-call when it needs the user's Mac. We do **not** globally pin `tools.exec.node` in the container's `openclaw.json`, because in an org context the container is shared by multiple members — pinning to one member's deviceId would force everyone's exec to that one Mac.
+
+Instead, we reuse upstream's per-session `execNode` mechanism (the existing `sessions.patch { execNode: <deviceId> }` call), but extend our backend's user→device mapping to know about both kinds. The `clientId` field on the `PairedDevice` schema (set by each process during its connect handshake — `"isol8-node"` for the CLI, `"isol8-mac"` for Tauri Rust) is how we slot a paired device into the right bucket:
+
+```python
+# core/services/node_proxy.py
+# Before: _user_nodes[user_id] = { nodeId, connection_id, owner_id }
+# After:  _user_nodes[user_id] = {
+#           "cli": { nodeId, connection_id, owner_id, clientId: "isol8-node" },
+#           "mac": { nodeId, connection_id, owner_id, clientId: "isol8-mac" },
+#         }
+
+def get_user_cli_node(user_id: str) -> dict | None: ...
+def get_user_mac_node(user_id: str) -> dict | None: ...
+
+# core/routers/websocket_chat.py session binding:
+# When user X opens a chat session, call openclaw's native:
+#   sessions.patch { sessionKey: ..., execNode: _user_nodes[X]["cli"].deviceId }
+# Always pins to the CLI device, never overwritten by the Tauri-mac connection.
+```
+
+Division of labor between upstream and Isol8 layers:
+
+| Concern                                | Owner            | How                                                                 |
+|----------------------------------------|------------------|---------------------------------------------------------------------|
+| Per-session exec pinning               | upstream-native  | `sessions.patch { execNode: <deviceId> }` — openclaw's gateway routes |
+| Distinguishing the two devices on one Mac | upstream-native  | `clientId` field in `PairedDevice` (`"isol8-mac"` vs `"isol8-node"`) |
+| User → deviceId lookup (multi-tenant) | Isol8 backend    | `_user_nodes[user_id][kind]` in-memory map (built from connect handshakes) |
+
+Openclaw itself is single-user — there's no native concept of "which device is whose." That's the part our backend layers on top, because the container is shared across an org's members.
+
+For plugin-routed commands (`browser.proxy`, `system.notify`, `device.*`, `screen.snapshot`, `file.*`), no pinning needed: openclaw's gateway routes by command name, and our disjoint-by-design command sets mean exactly one node owns each.
+
+Result for routing:
+- Personal owner: their session pins to their CLI node; exec on node = their Mac.
+- Org member Alice: her session pins to her CLI node; exec on node = her Mac. Bob's session pins to his.
+- Channel-triggered run (no member): execNode unset; agent must specify `node=<id>` per-call or stay on gateway.
+
+### Connection path / handshake bridge
+
+Native `openclaw node run` is server-first: the client opens WSS, waits for `connect.challenge` from the server, signs the nonce, then sends `connect`. Our existing API Gateway WSS path is client-first because of API Gateway's Management-API GoneException race (~37ms post-`$connect` window where pushes silently fail) — Tauri Rust sends `connect` first, backend opens upstream to container, signs the container's challenge using the per-member EFS-stored device key, returns `hello-ok`.
+
+If we removed the backend bridge entirely, the subprocess would connect, wait for a challenge that API Gateway can't reliably push during the GoneException window, and time out.
+
+**The bridge stays — but its role changes.** Backend no longer signs upstream challenges itself (it doesn't have the subprocess's private key). Instead:
+
+1. Subprocess connects to `wss://ws-dev.isol8.co/` with Clerk JWT (API Gateway, Lambda authorizer validates).
+2. Backend's `handle_node_connect` opens upstream WS to the user's container with `role: "node"`.
+3. Container sends `connect.challenge` upstream with a fresh nonce.
+4. Backend forwards the challenge to the subprocess via Management API push, with a ~150ms post-`$connect` delay to avoid the GoneException window.
+5. Subprocess signs the nonce with its locally-held private key, sends signed `connect` back via `$default` route.
+6. Backend forwards the signed `connect` upstream to the container.
+7. Container validates the signature against the pre-paired pubkey, returns `hello-ok` upstream.
+8. Backend proxies `hello-ok` to the subprocess.
+
+The bridge becomes a pure protocol relay — no key material on backend, just frame-forwarding with a small delay to defeat the API Gateway timing race. If the 150ms delay turns out fragile in practice, fallback options:
+
+- Subprocess wrapper sends an empty `ping` frame first, triggering backend's relay path before challenge arrives. (Requires modifying spawn behavior.)
+- Move subprocess to a dedicated WSS endpoint that bypasses API Gateway Management API entirely (ALB host-routed to user's container). (Larger infra change.)
+
+Both deferred to implementation if needed; v1 takes the simple delay approach.
+
 ### Process supervision
 
 - Tauri spawns subprocess on first Clerk JWT receipt (after webview sign-in).

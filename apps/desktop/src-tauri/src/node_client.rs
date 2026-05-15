@@ -332,8 +332,8 @@ where
         "id": connect_id,
         "method": "connect",
         "params": {
-            "minProtocol": 3,
-            "maxProtocol": 3,
+            "minProtocol": 4,
+            "maxProtocol": 4,
             "client": {
                 "id": "node-host",
                 "displayName": display_name,

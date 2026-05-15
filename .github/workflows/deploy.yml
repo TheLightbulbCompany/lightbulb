@@ -1242,6 +1242,13 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to admin.dev.isol8.co
+        run: vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} admin.dev.isol8.co
+          --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
   prod-isol8-prod-auth-Deploy:
     name: Deploy prodisol8prodauthA33C6000
     permissions:
@@ -1760,6 +1767,13 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       - name: Alias to isol8.co
         run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} isol8.co
+          --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to admin.isol8.co
+        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} admin.isol8.co
           --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}

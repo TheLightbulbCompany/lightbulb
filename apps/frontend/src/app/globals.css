@@ -866,6 +866,125 @@ button:focus-visible { border-radius: 999px; }
   .faq-q { font-size: 16px; }
 }
 
+/* ── GOOSETOWN TRANSITION ── */
+.gt-warp {
+  position: relative; background: #000813; overflow: hidden;
+  border-top: 4px solid #00ff41; border-bottom: 4px solid #00ff41;
+}
+.gt-warp-body {
+  position: relative; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 72px 24px 96px; gap: 22px; text-align: center;
+}
+.gt-stars-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.gt-stars-layer::before, .gt-stars-layer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; width: 200%;
+  background-image:
+    radial-gradient(1.5px 1.5px at 4% 18%, #00ff41 0%, transparent 100%),
+    radial-gradient(1px 1px at 9% 65%, rgba(255,255,255,.85) 0%, transparent 100%),
+    radial-gradient(2px 2px at 14% 38%, rgba(255,255,255,.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 21% 78%, rgba(255,255,255,.8) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 27% 14%, #00ff41 0%, transparent 100%),
+    radial-gradient(1px 1px at 33% 52%, rgba(255,255,255,.6) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 39% 30%, #ffdd00 0%, transparent 100%),
+    radial-gradient(1px 1px at 45% 72%, rgba(255,255,255,.9) 0%, transparent 100%),
+    radial-gradient(2px 2px at 51% 10%, rgba(255,255,255,.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 57% 58%, #00bfff 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 63% 44%, rgba(255,255,255,.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 69% 82%, rgba(255,255,255,.65) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 75% 25%, #00ff41 0%, transparent 100%),
+    radial-gradient(1px 1px at 81% 62%, rgba(255,255,255,.9) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 87% 33%, #ffdd00 0%, transparent 100%),
+    radial-gradient(1px 1px at 93% 48%, rgba(255,255,255,.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 97% 17%, rgba(255,255,255,.8) 0%, transparent 100%);
+  animation: gt-scroll-stars 14s linear infinite;
+}
+.gt-stars-layer::after { animation-delay: -7s; }
+@keyframes gt-scroll-stars { from{transform:translateX(0)} to{transform:translateX(-50%)} }
+.gt-road-wrap { position: absolute; bottom: 0; left: 0; right: 0; height: 44px; background: #0d0d0d; border-top: 3px solid #1a1a1a; overflow: hidden; }
+.gt-road-wrap::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 100%; background: repeating-linear-gradient(90deg, #111 0, #111 3px, transparent 3px, transparent 8px); }
+.gt-road-wrap::after { content: ''; position: absolute; top: 50%; left: 0; right: 0; height: 4px; transform: translateY(-50%); background-image: repeating-linear-gradient(90deg, #ffdd00 0, #ffdd00 40px, transparent 40px, transparent 80px); animation: gt-road-anim 0.35s linear infinite; }
+@keyframes gt-road-anim { from{background-position:0 0} to{background-position:-80px 0} }
+.gt-warp-pre { font-family: var(--font-press); font-size: 10px; color: #00ff41; letter-spacing: 4px; text-shadow: 0 0 12px rgba(0,255,65,.7); }
+.gt-warp-title { font-family: var(--font-press); font-size: clamp(20px, 3.8vw, 38px); color: #fff; letter-spacing: 4px; line-height: 1.5; text-shadow: 4px 4px 0 #004400, 0 0 40px rgba(0,255,65,.3); }
+.gt-warp-sub { font-family: var(--font-press); font-size: 8px; color: rgba(0,255,65,.5); letter-spacing: 2px; }
+.gt-warp-blink { font-family: var(--font-press); font-size: 9px; color: #ffdd00; letter-spacing: 2px; animation: gt-flash 1s step-end infinite; text-shadow: 0 0 10px rgba(255,221,0,.5); }
+@keyframes gt-flash { 0%,100%{opacity:1} 50%{opacity:0} }
+.gt-warp-scanlines { position: absolute; inset: 0; pointer-events: none; z-index: 5; background: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,.1) 3px, rgba(0,0,0,.1) 4px); }
+
+/* ── GOOSETOWN SECTION ── */
+.landing-goosetown { background: #070b10; padding: 96px 48px; position: relative; overflow: hidden; }
+.landing-goosetown::before { content: ''; position: absolute; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(0,255,65,.022) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,65,.022) 1px, transparent 1px); background-size: 32px 32px; }
+.gt-inner { max-width: 1152px; margin: 0 auto; position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 1.25fr; gap: 64px; align-items: center; }
+.gt-eyebrow { font-family: var(--font-press); font-size: 8px; color: #00ff41; letter-spacing: 2px; text-shadow: 0 0 10px rgba(0,255,65,.5); margin-bottom: 24px; }
+.gt-h2 { font-family: var(--font-lora); font-size: clamp(30px, 2.8vw, 44px); font-weight: 400; line-height: 1.1; color: white; margin-bottom: 20px; letter-spacing: -.02em; }
+.gt-h2 em { font-style: italic; color: #4ade80; }
+.gt-desc { font-size: 15px; color: rgba(255,255,255,.5); line-height: 1.8; margin-bottom: 32px; max-width: 380px; }
+.gt-feats { display: flex; flex-direction: column; gap: 12px; margin-bottom: 40px; }
+.gt-feat { display: flex; align-items: center; gap: 12px; }
+.gt-feat-dot { font-family: var(--font-press); font-size: 8px; color: #00ff41; flex-shrink: 0; line-height: 1; text-shadow: 0 0 6px rgba(0,255,65,.6); }
+.gt-feat-text { font-size: 13px; color: rgba(255,255,255,.6); }
+.gt-feat-pill { font-family: var(--font-press); font-size: 5px; color: #ffdd00; background: rgba(255,221,0,.08); border: 1px solid rgba(255,221,0,.3); padding: 3px 8px; margin-left: 8px; letter-spacing: 1px; border-radius: 2px; }
+.gt-form-label { font-family: var(--font-press); font-size: 7px; color: rgba(255,255,255,.3); letter-spacing: 2px; margin-bottom: 12px; }
+.gt-form { display: flex; gap: 8px; margin-bottom: 10px; }
+.gt-input { flex: 1; background: rgba(0,255,65,.04); border: 1px solid rgba(0,255,65,.18); border-radius: 2px; padding: 12px 16px; font-size: 14px; color: white; font-family: var(--font-dm); outline: none; transition: border-color .15s, background .15s; }
+.gt-input::placeholder { color: rgba(255,255,255,.25); }
+.gt-input:focus { border-color: rgba(0,255,65,.45); background: rgba(0,255,65,.07); }
+.gt-submit { background: #00ff41; color: #000; border: none; border-radius: 2px; padding: 12px 18px; font-family: var(--font-press); font-size: 7px; cursor: pointer; white-space: nowrap; letter-spacing: 1px; transition: background .15s, box-shadow .15s; position: relative; overflow: hidden; }
+.gt-submit:hover { background: #00e63b; box-shadow: 0 0 14px rgba(0,255,65,.4); }
+.gt-submit::after { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at center, rgba(255,255,255,.4) 0%, transparent 70%); opacity: 0; transform: scale(0); transition: transform .4s, opacity .4s; }
+.gt-submit.success { pointer-events: none; }
+.gt-submit.success::after { opacity: 1; transform: scale(2.5); }
+.gt-fine { font-size: 11px; color: rgba(255,255,255,.2); }
+
+/* ── GT Game Window ── */
+.gt-game-wrap { border: 3px solid #183018; border-radius: 6px; overflow: hidden; box-shadow: 0 0 0 1px #00ff41, 0 0 60px rgba(0,255,65,.12), inset 0 0 40px rgba(0,0,0,.5); position: relative; }
+.gt-game-wrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 30; background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,.07) 2px, rgba(0,0,0,.07) 4px); }
+.gt-topbar { background: #0c1824; border-bottom: 2px solid #182a3a; padding: 7px 12px; display: flex; align-items: center; gap: 10px; position: relative; z-index: 1; }
+.gt-topbar-logo { font-family: var(--font-press); font-size: 7px; color: #00ff41; letter-spacing: 1px; text-shadow: 0 0 6px rgba(0,255,65,.5); flex-shrink: 0; }
+.gt-topbar-tabs { display: flex; gap: 2px; flex: 1; }
+.gt-toptab { font-family: var(--font-press); font-size: 6px; padding: 5px 10px; color: rgba(255,255,255,.4); letter-spacing: .5px; cursor: pointer; border: 1px solid transparent; border-radius: 2px; transition: background .15s, color .15s; }
+.gt-toptab.active { background: #1e3a2a; color: #fff; border-color: rgba(0,255,65,.25); }
+.gt-topbar-right { display: flex; align-items: center; gap: 8px; }
+.gt-music-btn { background: #1a2d42; border: 1px solid #243c54; border-radius: 2px; padding: 4px 8px; font-family: var(--font-press); font-size: 5.5px; color: rgba(255,255,255,.6); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.gt-topbar-user { font-family: var(--font-press); font-size: 6px; color: rgba(255,255,255,.3); }
+.gt-game-body { display: flex; background: #0a0e14; position: relative; z-index: 1; }
+.gt-sidebar { width: 172px; flex-shrink: 0; background: #0c1520; border-right: 2px solid #18283a; padding: 10px 8px; }
+.gt-sb-hd { font-family: var(--font-press); font-size: 5.5px; color: rgba(255,255,255,.35); letter-spacing: .8px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #18283a; display: flex; justify-content: space-between; align-items: center; }
+.gt-add-btn { background: #18381c; border: 1px solid rgba(0,255,65,.2); border-radius: 2px; padding: 3px 7px; font-family: var(--font-press); font-size: 5px; color: #00ff41; cursor: pointer; }
+.gt-agent-card { background: #101e2e; border: 1px solid #1e3848; border-radius: 3px; padding: 9px 8px; }
+.gt-card-top { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 8px; }
+.gt-card-icon { width: 26px; height: 26px; background: #1a2a3a; border: 1px solid #253c50; border-radius: 2px; display: flex; align-items: center; justify-content: center; font-family: var(--font-press); font-size: 9px; color: rgba(255,255,255,.4); flex-shrink: 0; }
+.gt-card-name-wrap { flex: 1; min-width: 0; }
+.gt-card-name { font-family: var(--font-press); font-size: 6.5px; color: white; letter-spacing: .5px; margin-bottom: 4px; display: block; }
+.gt-card-sub { font-family: var(--font-press); font-size: 5px; color: rgba(255,255,255,.3); display: block; }
+.gt-card-status { display: flex; align-items: center; gap: 5px; margin-bottom: 7px; }
+.gt-status-dot { width: 6px; height: 6px; background: #ffdd00; border-radius: 0; flex-shrink: 0; animation: gt-blink 1.5s step-end infinite; }
+@keyframes gt-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.gt-status-text { font-family: var(--font-press); font-size: 5.5px; color: #ffdd00; }
+.gt-card-row { font-family: var(--font-press); font-size: 5px; color: rgba(255,255,255,.35); margin-bottom: 5px; line-height: 1.6; }
+.gt-energy-wrap { display: flex; align-items: center; gap: 4px; margin-bottom: 9px; }
+.gt-energy-lbl { font-family: var(--font-press); font-size: 4.5px; color: rgba(255,255,255,.4); flex-shrink: 0; }
+.gt-energy-track { flex: 1; height: 7px; background: #0d200d; border: 1px solid #1a481a; overflow: hidden; }
+.gt-energy-bar { height: 100%; width: 96%; background: #00ff41; box-shadow: 0 0 4px rgba(0,255,65,.7); }
+.gt-energy-val { font-family: var(--font-press); font-size: 4.5px; color: #00ff41; flex-shrink: 0; }
+.gt-view-link { font-family: var(--font-press); font-size: 5px; color: #00bfff; letter-spacing: .5px; cursor: pointer; display: block; text-decoration: none; }
+.gt-view-link:hover { text-decoration: underline; }
+
+/* ── Pixel Art Scene ── */
+.gt-viewport { flex: 1; position: relative; overflow: hidden; min-height: 285px; }
+.gt-town-screenshot { width: 100%; height: 100%; object-fit: cover; object-position: center top; display: block; }
+.gt-peeps-sprite { position: absolute; height: 55px; width: auto; bottom: 42%; left: 35%; image-rendering: pixelated; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.25)); z-index: 2; }
+@media (max-width: 768px) {
+  .landing-goosetown { padding: 64px 20px; }
+  .gt-inner { grid-template-columns: 1fr; gap: 40px; }
+  .gt-game-wrap { max-width: 100%; overflow-x: hidden; }
+  .gt-game-body { flex-direction: column; }
+  .gt-sidebar { width: 100%; border-right: none; border-bottom: 2px solid #18283a; }
+  .gt-viewport { min-height: 200px; }
+  .gt-warp-title { font-size: 18px; letter-spacing: 2px; }
+}
+
 /* ── SCROLL PROGRESS ── */
 .scroll-progress { position: fixed; top: 0; left: 0; height: 2px; z-index: 100; background: linear-gradient(90deg, #06402B, #4a9e74); width: 0%; transition: width .05s linear; box-shadow: 0 0 8px rgba(74,158,116,.4); }
 

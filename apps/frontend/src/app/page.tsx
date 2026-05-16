@@ -7,6 +7,7 @@ import { Team } from "@/components/landing/Team";
 import { MarketplaceSection } from "@/components/landing/MarketplaceSection";
 import { Pricing } from "@/components/landing/Pricing";
 import { FAQ } from "@/components/landing/FAQ";
+import { GooseTownTransition, GooseTown } from "@/components/landing/GooseTown";
 import { Footer } from "@/components/landing/Footer";
 
 export default function LandingPage() {
@@ -21,6 +22,8 @@ export default function LandingPage() {
         <MarketplaceSection />
         <Pricing />
         <FAQ />
+        <GooseTownTransition />
+        <GooseTown />
         <Footer />
       </main>
     </SmoothScroll>

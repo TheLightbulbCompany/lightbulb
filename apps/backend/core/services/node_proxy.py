@@ -275,7 +275,19 @@ async def handle_node_disconnect(
     # Safe because _node_upstreams.pop is atomic.
     if upstream is None:
         return
-    await upstream.close()
+    # Best-effort close: if the upstream errors here (e.g. broken pipe
+    # mid-shutdown) we still need to fall through to per-user state
+    # teardown so chat stops binding to the dead nodeId. Without this
+    # guard the exception would unwind past the _user_nodes cleanup
+    # below and leak state.
+    try:
+        await upstream.close()
+    except Exception:
+        logger.warning(
+            "Error closing upstream for %s; continuing with cleanup",
+            connection_id,
+            exc_info=True,
+        )
 
     # Only clear per-user state when the stored mapping still points at THIS
     # connection. If the user reconnected first, _user_nodes[user_id] now holds
@@ -385,26 +397,58 @@ def submit_signed_connect(connection_id: str, signed_payload: dict) -> bool:
 async def force_close_device(device_id: str) -> bool:
     """Force-close the live upstream WS for a given deviceId.
 
-    Iterates the connection registry, finds all NodeUpstreamConnections with
-    the matching device_id, closes them, removes from the registry. Returns
-    True if at least one connection was closed; False otherwise.
+    Routes through handle_node_disconnect so cleanup of per-user state
+    (_node_upstreams, _user_nodes bucket, _patched_sessions, _node_count,
+    node_status broadcast) happens in exactly one place. A direct
+    _node_upstreams.pop here would race the reader's on_upstream_closed
+    callback: pop wins, callback re-enters handle_node_disconnect, sees
+    upstream is None, returns early — leaving _user_nodes / _node_count
+    populated and chat still binding sessions to the dead execNode until
+    process restart.
 
-    Best-effort: errors during close are logged but don't propagate — the
-    revocation flow shouldn't fail because of a transient socket error.
-    Used by the desktop-device revoke endpoint to kick live sessions after
+    handle_node_disconnect is idempotent (it does the atomic
+    _node_upstreams.pop check at the top) so it's safe whether the
+    reader callback or this revoke path runs first.
+
+    Best-effort: errors during cleanup are swallowed; the revocation
+    flow shouldn't fail because of a transient socket error. Used by
+    the desktop-device revoke endpoint to kick live sessions after
     paired.json removal (security review HIGH finding F).
+
+    Returns True if a paired device with this ID was found and the
+    cleanup ran; False otherwise.
     """
-    closed_any = False
-    for connection_id, upstream in list(_node_upstreams.items()):
-        if getattr(upstream, "device_id", None) == device_id:
+    # Find the user+bucket that owns this device_id. _user_nodes is keyed
+    # user_id -> {"cli": {...}, "mac": {...}}; legacy flat shape is also
+    # tolerated for backward compat with stale entries on a hot path.
+    for user_id, slots in list(_user_nodes.items()):
+        if not isinstance(slots, dict):
+            continue
+        # Bucketed shape (post-Task 11): walk cli/mac slots.
+        bucketed = "cli" in slots or "mac" in slots
+        candidate_slots = [slots.get("cli"), slots.get("mac")] if bucketed else [slots]
+        for slot in candidate_slots:
+            if not isinstance(slot, dict):
+                continue
+            if slot.get("deviceId") != device_id:
+                continue
+            connection_id = slot.get("connection_id")
+            owner_id = slot.get("owner_id")
+            if not connection_id or not owner_id:
+                continue
             try:
-                await upstream.close()
+                await handle_node_disconnect(
+                    connection_id=connection_id,
+                    owner_id=owner_id,
+                    user_id=user_id,
+                )
             except Exception:
                 logger.warning(
-                    "force_close: error closing upstream for %s",
+                    "force_close: error tearing down user=%s conn=%s for device=%s",
+                    user_id,
                     connection_id,
+                    device_id,
                     exc_info=True,
                 )
-            _node_upstreams.pop(connection_id, None)
-            closed_any = True
-    return closed_any
+            return True
+    return False

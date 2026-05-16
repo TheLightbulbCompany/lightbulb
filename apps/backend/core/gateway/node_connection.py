@@ -150,17 +150,26 @@ class NodeUpstreamConnection:
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError(f"Expected connect.challenge, got {challenge}")
 
-        # Step 2: forward the challenge DOWN to the client. The push happens
+        # Step 2: allocate the signed-connect future BEFORE pushing the
+        # challenge. The push can wake a fast local client whose signed
+        # reply traverses submit_signed_connect synchronously inside the
+        # push callback (or on the very next event-loop tick) — if the
+        # future doesn't exist yet, submit_signed_connect logs "no
+        # pending future" and drops the response, and connect() then
+        # hangs the full _SIGNED_CONNECT_TIMEOUT. Allocating first
+        # closes that race deterministically. Use get_running_loop()
+        # (not the deprecated get_event_loop()) so we attach to the
+        # loop actually driving this coroutine.
+        self._signed_connect_future = asyncio.get_running_loop().create_future()
+
+        # Step 3: forward the challenge DOWN to the client. The push happens
         # well past the ~37ms GoneException race window because the inbound
         # wake-up `connect` frame already flowed through Management API
         # (~150-200ms elapsed since $connect).
         await self._client_push_callback(challenge)
 
-        # Step 3: allocate the future and wait for the client's signed reply
-        # to land via submit_signed_connect. Use get_running_loop() (not the
-        # deprecated get_event_loop()) so we attach to the loop actually
-        # driving this coroutine.
-        self._signed_connect_future = asyncio.get_running_loop().create_future()
+        # Step 4: wait for the client's signed reply to land via
+        # submit_signed_connect.
         try:
             signed = await asyncio.wait_for(self._signed_connect_future, timeout=_SIGNED_CONNECT_TIMEOUT)
         except asyncio.TimeoutError as exc:

@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
@@ -26,6 +27,34 @@ from cryptography.hazmat.primitives import serialization
 
 
 logger = logging.getLogger(__name__)
+
+
+# In-process per-owner serialization for paired.json mutators. POSIX
+# ``fcntl`` locks are process-scoped, NOT thread-scoped: two
+# ``asyncio.to_thread`` mutators on the same paired.json in the same
+# backend worker can both "acquire" the fcntl lock and race the
+# read-modify-write, dropping each other's writes. The per-owner
+# ``threading.Lock`` here serializes those in-process callers before
+# they ever reach the file lock. The fcntl lock STILL matters — it
+# guards against cross-process writers (the in-container node
+# self-registering during first connect runs in a different OS process).
+_paired_locks: dict[str, threading.Lock] = {}
+_paired_locks_guard = threading.Lock()
+
+
+def _get_paired_lock(owner_id: str) -> threading.Lock:
+    """Return (and lazily create) the per-owner write lock.
+
+    The guard mutex is contended only on first-time lookup; steady-state
+    callers acquire the inner per-owner lock directly.
+    """
+    with _paired_locks_guard:
+        lock = _paired_locks.get(owner_id)
+        if lock is None:
+            lock = threading.Lock()
+            _paired_locks[owner_id] = lock
+        return lock
+
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "system.notify",
@@ -296,6 +325,11 @@ class EfsWorkspaceAdapter:
         default ``/mnt/efs/users`` doesn't exist).
         """
         devices_dir, paired_path, lock_path, _ = self._paths()
+        # Outermost: per-owner threading.Lock guards in-process callers.
+        # Innermost (acquired inside _do_rmw): fcntl.lockf guards
+        # cross-process callers (in-container node self-registration).
+        # See _paired_locks docstring at the top of this module.
+        in_process_lock = _get_paired_lock(self.owner_id)
 
         def _do_rmw():
             current: dict = {}
@@ -367,7 +401,16 @@ class EfsWorkspaceAdapter:
                     fcntl.lockf(lock_fd, fcntl.LOCK_UN)
                     lock_fd.close()
 
-        await asyncio.to_thread(_do_rmw)
+        def _do_rmw_locked():
+            # Acquire the per-owner threading lock first; this is the
+            # in-process gate. Inside, _do_rmw takes the cross-process
+            # fcntl lock. Two layers because POSIX fcntl is process-
+            # scoped — without this gate, threads in the same backend
+            # worker would race the read-modify-write.
+            with in_process_lock:
+                _do_rmw()
+
+        await asyncio.to_thread(_do_rmw_locked)
 
     def _open_lock_fd(self, devices_dir: str, lock_path: str):
         """Open the dedicated ``.lock`` file in r+ mode, creating it if missing.

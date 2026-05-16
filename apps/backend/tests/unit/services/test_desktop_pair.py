@@ -500,6 +500,97 @@ async def test_efs_workspace_adapter_raises_when_container_missing():
         await adapter.get_gateway_token()
 
 
+async def test_efs_workspace_adapter_serializes_concurrent_mutators_in_process(
+    tmp_path,
+):
+    """In-process concurrency regression: POSIX fcntl locks are
+    process-scoped, not thread-scoped. Two ``mutate_paired_json`` calls
+    running inside ``asyncio.to_thread`` on the same worker can both
+    "acquire" the fcntl lock, both load the same on-disk state, and the
+    last ``os.rename`` drops the other's edits.
+
+    Defense: a per-owner ``threading.Lock`` wraps the read-modify-write
+    so threads in the same process serialize before they ever reach the
+    fcntl lock. This test fires N mutators concurrently; each adds its
+    own unique key; with the fix, all N keys survive.
+    """
+    workspace = Workspace(mount_path=str(tmp_path))
+    mock_container_repo = MagicMock()
+    adapter = EfsWorkspaceAdapter(
+        owner_id="race_owner",
+        workspace=workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+
+    n = 20
+
+    def _make_mutator(idx: int):
+        def _mutator(paired: dict) -> bool:
+            # Force a context-switch window to broaden the race: read
+            # the file, do a small sleep, then write back. Without
+            # threading.Lock multiple threads will collide here.
+            import time as _time
+
+            _time.sleep(0.01)
+            paired[f"dev_{idx}"] = {"role": "node", "publicKey": f"pk_{idx}"}
+            return True
+
+        return _mutator
+
+    import asyncio as _asyncio
+
+    await _asyncio.gather(*[adapter.mutate_paired_json(_make_mutator(i)) for i in range(n)])
+
+    data = json.loads((tmp_path / "race_owner" / "devices" / "paired.json").read_text())
+    # Without the threading.Lock fix, some keys will be missing because
+    # concurrent writers overwrote each other. With the fix, all N
+    # survive.
+    assert len(data) == n, f"lost writes from concurrent mutators: {sorted(data.keys())}"
+    for i in range(n):
+        assert f"dev_{i}" in data
+
+
+async def test_efs_workspace_adapter_per_owner_lock_independent(tmp_path):
+    """Per-owner locks must NOT serialize across owners — Alice's pair
+    flow shouldn't block Bob's. Otherwise we'd serialize the entire
+    paired.json writer fleet behind a single mutex.
+    """
+    workspace = Workspace(mount_path=str(tmp_path))
+    mock_container_repo = MagicMock()
+    adapter_a = EfsWorkspaceAdapter(
+        owner_id="owner_a",
+        workspace=workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+    adapter_b = EfsWorkspaceAdapter(
+        owner_id="owner_b",
+        workspace=workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+
+    def _add(key: str):
+        def _mutator(paired: dict) -> bool:
+            paired[key] = {"role": "node"}
+            return True
+
+        return _mutator
+
+    import asyncio as _asyncio
+
+    await _asyncio.gather(
+        adapter_a.mutate_paired_json(_add("dev_a")),
+        adapter_b.mutate_paired_json(_add("dev_b")),
+    )
+
+    data_a = json.loads((tmp_path / "owner_a" / "devices" / "paired.json").read_text())
+    data_b = json.loads((tmp_path / "owner_b" / "devices" / "paired.json").read_text())
+    assert "dev_a" in data_a
+    assert "dev_b" in data_b
+
+
 async def test_efs_workspace_adapter_pair_then_revoke_round_trip(tmp_path):
     """End-to-end against the real Workspace + a real tmp EFS root: pair
     writes the two entries flat under devices/paired.json, then revoke

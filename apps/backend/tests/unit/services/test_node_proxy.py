@@ -295,39 +295,127 @@ async def test_upstream_closed_callback_cleans_up_user_state(mock_ecs, mock_pool
 
 
 @pytest.mark.asyncio
-async def test_force_close_device_closes_matching_upstream():
-    """force_close_device closes any upstreams whose device_id matches and removes them."""
+async def test_force_close_device_closes_matching_upstream(mock_ecs, mock_pool, mock_config_patcher):
+    """force_close_device routes through handle_node_disconnect so per-user
+    state (upstream registry, _user_nodes bucket, _node_count) is torn down
+    in one place. Without that, a revoke on a live device leaves the agent
+    binding chat sessions to the dead execNode until process restart.
+    """
     fake_upstream = MagicMock()
     fake_upstream.device_id = "dev_target"
     fake_upstream.close = AsyncMock()
     _node_upstreams["conn_1"] = fake_upstream
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_target",
+            "clientId": "node-host",
+            "connection_id": "conn_1",
+            "owner_id": "org_42",
+        },
+    }
+    _node_count["org_42"] = 1
 
     closed = await force_close_device("dev_target")
     assert closed is True
     fake_upstream.close.assert_awaited_once()
-    # Connection should be removed from the registry after close
+    # Connection should be removed from the registry after close.
     assert "conn_1" not in _node_upstreams
+    # And — the bug that motivated this test — per-user state must be
+    # fully cleared so chat stops binding sessions to the dead device.
+    assert "user_alice" not in _user_nodes
+    assert _node_count.get("org_42", 0) == 0
 
 
 @pytest.mark.asyncio
 async def test_force_close_device_no_match_returns_false():
-    """If no upstream has the given device_id, returns False and touches nothing."""
+    """If no _user_nodes bucket matches the given device_id, return False."""
     closed = await force_close_device("dev_missing")
     assert closed is False
 
 
 @pytest.mark.asyncio
-async def test_force_close_device_handles_close_exception():
-    """If upstream.close() raises, log + continue + still mark removed."""
+async def test_force_close_device_handles_close_exception(mock_ecs, mock_pool, mock_config_patcher):
+    """If upstream.close() raises, the cleanup path still completes and
+    the registry / per-user state is cleared (best-effort revocation).
+    """
     fake_upstream = MagicMock()
     fake_upstream.device_id = "dev_target"
     fake_upstream.close = AsyncMock(side_effect=RuntimeError("broken pipe"))
     _node_upstreams["conn_1"] = fake_upstream
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_target",
+            "clientId": "node-host",
+            "connection_id": "conn_1",
+            "owner_id": "org_42",
+        },
+    }
+    _node_count["org_42"] = 1
 
-    # Should NOT propagate the exception; revocation is best-effort
+    # Should NOT propagate the exception; revocation is best-effort.
     closed = await force_close_device("dev_target")
     assert closed is True
     assert "conn_1" not in _node_upstreams
+    # State teardown still happened.
+    assert "user_alice" not in _user_nodes
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_finds_device_in_mac_bucket(mock_ecs, mock_pool, mock_config_patcher):
+    """Devices in the Mac bucket can also be force-closed; the per-user
+    state lookup must traverse both cli and mac slots.
+    """
+    fake_upstream = MagicMock()
+    fake_upstream.device_id = "dev_mac"
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["conn_mac"] = fake_upstream
+    _user_nodes["user_alice"] = {
+        "mac": {
+            "deviceId": "dev_mac",
+            "clientId": "openclaw-macos",
+            "connection_id": "conn_mac",
+            "owner_id": "org_42",
+        },
+    }
+    _node_count["org_42"] = 1
+
+    closed = await force_close_device("dev_mac")
+    assert closed is True
+    assert "conn_mac" not in _node_upstreams
+    assert "user_alice" not in _user_nodes
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_clears_patched_sessions_for_cli_revoke(mock_ecs, mock_pool, mock_config_patcher):
+    """Revoking a CLI device must clear that user's patched sessions —
+    otherwise chat keeps trying to route exec through the dead nodeId.
+    This is the actual regression Codex flagged: a direct _node_upstreams
+    pop bypassed clear_patched_sessions_for_user.
+    """
+    from core.services.node_proxy import _patched_sessions, set_patched_session
+
+    set_patched_session("agent:a1:user_alice", "dev_cli")
+    fake_upstream = MagicMock()
+    fake_upstream.device_id = "dev_cli"
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["conn_cli"] = fake_upstream
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_cli",
+            "clientId": "node-host",
+            "connection_id": "conn_cli",
+            "owner_id": "org_42",
+        },
+    }
+    _node_count["org_42"] = 1
+    # send_rpc is best-effort inside handle_node_disconnect; stub it so the
+    # ECS resolve path is never invoked.
+    mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("container down"))
+
+    closed = await force_close_device("dev_cli")
+    assert closed is True
+    # Patched session pin was cleared as part of the cleanup.
+    assert _patched_sessions.get("agent:a1:user_alice") is None
 
 
 # ---------------------------------------------------------------------------

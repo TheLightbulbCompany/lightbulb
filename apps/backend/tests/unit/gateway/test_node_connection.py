@@ -206,6 +206,76 @@ async def test_submit_signed_connect_no_future_is_safe():
     conn.submit_signed_connect({"a": 1})
 
 
+async def test_signed_connect_future_allocated_before_challenge_push(monkeypatch, mock_ws):
+    """Race regression: a fast client that signs synchronously inside the
+    push-callback must not have its signed-connect dropped as "no pending
+    future". connect() must allocate ``_signed_connect_future`` BEFORE
+    delivering the challenge to the client.
+
+    Without the fix, the push callback runs submit_signed_connect before
+    the future exists, the call is dropped, and connect() hangs the full
+    10s _SIGNED_CONNECT_TIMEOUT.
+    """
+    from core.gateway import node_connection
+
+    mock_ws.recv = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "type": "event",
+                    "event": "connect.challenge",
+                    "payload": {"nonce": "n0nce"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "res",
+                    "id": "req_signed",
+                    "ok": True,
+                    "payload": {"hello": "ok", "protocol": 4},
+                }
+            ),
+        ]
+    )
+
+    async def fake_connect(url, **kwargs):
+        return mock_ws
+
+    monkeypatch.setattr(node_connection, "ws_connect", fake_connect)
+
+    conn = node_connection.NodeUpstreamConnection(
+        user_id="u",
+        owner_id="o",
+        container_ip="10.0.0.1",
+        node_connect_params={"client": {"id": "node-host"}, "role": "node"},
+        gateway_token="t",
+    )
+
+    # The push callback simulates the synchronous "fast client" case: it
+    # runs submit_signed_connect inline as soon as the challenge is pushed
+    # downstream. If the future hasn't been allocated yet, the signed
+    # frame is dropped and the test below would time out the loop.
+    async def push_callback_signing_immediately(frame):
+        if frame.get("event") == "connect.challenge":
+            conn.submit_signed_connect(
+                {
+                    "type": "req",
+                    "id": "req_signed",
+                    "method": "connect",
+                    "params": {"device": {"id": "dev_hash_fast"}},
+                }
+            )
+
+    conn.set_client_push_callback(push_callback_signing_immediately)
+
+    # Guard against the bug's symptom (10s hang). The fix should resolve
+    # the future immediately, so a 2s budget is plenty of headroom for
+    # the rest of the handshake.
+    hello = await asyncio.wait_for(conn.connect(), timeout=2.0)
+    assert hello.get("ok") is True
+    assert conn.device_id == "dev_hash_fast"
+
+
 async def test_reader_forwards_upstream_frames_to_client(monkeypatch, mock_ws):
     """After connect, start_reader forwards upstream frames to the push callback."""
     from core.gateway import node_connection

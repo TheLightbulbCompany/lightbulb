@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod browser_sidecar;
 mod exec_approvals;
 pub mod file_access;
@@ -15,12 +16,37 @@ use tauri::{Emitter, Manager, State, Url};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
 
+use crate::bootstrap::{bootstrap_desktop_node_host, jwt_provider_from_arc, DesktopNodeHostHandles};
+
+/// Keychain service name for the desktop process. Matches the bundle ID so
+/// macOS surfaces Keychain entries as belonging to this app.
+const KEYCHAIN_SERVICE: &str = "co.isol8.desktop";
+
+/// HTTPS API base for the backend. Overridden at build time when a non-dev
+/// build is produced.
+const ISOL8_API_BASE: &str = match option_env!("ISOL8_API_BASE") {
+    Some(v) => v,
+    None => "https://api-dev.isol8.co",
+};
+
 /// Shared auth token state
 pub struct AuthState {
     pub token: Mutex<Option<String>>,
     /// Shared handle to the running node client's gateway URL. Updated whenever
     /// a fresh JWT arrives so the next reconnect uses current auth.
     pub gateway_url: Mutex<Option<Arc<RwLock<String>>>>,
+    /// Current Clerk JWT, read by the proxy's JwtProvider closure on every
+    /// upstream-connect. Updated in-place on rotation so the subprocess never
+    /// has to restart.
+    pub current_jwt: Arc<RwLock<String>>,
+    /// Loopback WSS proxy supervising the openclaw subprocess connection.
+    /// `None` until the first `send_auth_token` triggers bootstrap.
+    pub proxy_handle: Mutex<Option<crate::proxy::ProxyHandle>>,
+    /// Bundled `openclaw node run` subprocess. Same lifetime as `proxy_handle`.
+    pub subprocess_handle: Mutex<Option<crate::subprocess::SubprocessHandle>>,
+    /// `/desktop/pair` response — retained so we can later call
+    /// `/desktop/devices/{device_id}` (revoke) on logout.
+    pub pair_response: Mutex<Option<crate::pair_client::PairResponse>>,
 }
 
 /// Node connection status
@@ -51,6 +77,29 @@ fn send_auth_token(
     let is_first = t.is_none();
     *t = Some(token.clone());
     log(&format!("[auth] Received JWT ({} chars) for user {} ({})", token.len(), display_name, user_id));
+
+    // Update the shared JWT cell FIRST so the proxy's JwtProvider closure
+    // picks up the fresh token on the next upstream-connect. Rotation is a
+    // no-op past the first call — the proxy + subprocess keep running.
+    if let Ok(mut current) = state.current_jwt.write() {
+        *current = token.clone();
+    }
+
+    // On the first JWT, kick off the new desktop-node-host bootstrap:
+    // Keychain identities --> /desktop/pair --> proxy --> subprocess. We
+    // spawn a tokio task so the Tauri command returns immediately; results
+    // are written back to `AuthState` once the chain completes.
+    if is_first {
+        let app_for_bootstrap = app.clone();
+        let jwt_arc = state.current_jwt.clone();
+        let display_name_for_log = display_name.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = run_bootstrap(&app_for_bootstrap, jwt_arc, &display_name_for_log).await
+            {
+                log(&format!("[bootstrap] desktop node-host bootstrap failed: {}", e));
+            }
+        });
+    }
 
     let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
     // Use an explicit "/" path before the query. tokio-tungstenite builds
@@ -90,6 +139,91 @@ fn send_auth_token(
             update_node_status(&app_handle, "error");
         }
     });
+
+    Ok(())
+}
+
+/// Resolve Tauri-derived paths, run the bootstrap chain, and stash the
+/// returned handles on `AuthState`.
+///
+/// Split out so the call site in `send_auth_token` stays readable and so
+/// the AppHandle-bound work is isolated from the pure bootstrap logic
+/// (which lives in `bootstrap::bootstrap_desktop_node_host` and has its
+/// own unit tests).
+async fn run_bootstrap(
+    app: &tauri::AppHandle,
+    jwt_arc: Arc<RwLock<String>>,
+    display_name: &str,
+) -> Result<(), String> {
+    let _ = display_name; // reserved for telemetry hooks
+
+    let jwt_snapshot = jwt_arc
+        .read()
+        .map(|g| g.clone())
+        .map_err(|e| format!("jwt read: {e}"))?;
+    if jwt_snapshot.is_empty() {
+        return Err("bootstrap called with empty JWT".into());
+    }
+
+    // The Tauri path resolver lives behind `Manager::path()` in Tauri 2.
+    // `app_data_dir` is the per-app data dir (macOS:
+    // ~/Library/Application Support/co.isol8.desktop); `resource_dir` is
+    // the bundle's Resources/ directory in release builds.
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {e}"))?;
+    let state_dir = app_data.join("openclaw-state");
+
+    let resources = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("resource_dir: {e}"))?;
+    // The launcher shim is bundled alongside the other sidecars under
+    // `Resources/bin/` (`isol8-browser-service`, per-arch `node`, etc.). We
+    // run the openclaw-host shim — Task 20 made it read `ISOL8_PROXY_PORT`
+    // and dial loopback plaintext WS, which is what `spawn_subprocess` is
+    // designed to talk to.
+    let binary = resources.join("bin").join("openclaw-host");
+
+    log(&format!(
+        "[bootstrap] api_base={} state_dir={:?} binary={:?}",
+        ISOL8_API_BASE, state_dir, binary
+    ));
+
+    let provider = jwt_provider_from_arc(jwt_arc);
+    let handles: DesktopNodeHostHandles = bootstrap_desktop_node_host(
+        ISOL8_API_BASE,
+        &jwt_snapshot,
+        KEYCHAIN_SERVICE,
+        "node-host".to_string(),
+        state_dir,
+        binary,
+        provider,
+    )
+    .await?;
+
+    log(&format!(
+        "[bootstrap] paired device_id_mac={} device_id_cli={} proxy_port={}",
+        handles.pair_response.device_id_mac,
+        handles.pair_response.device_id_cli,
+        handles.proxy_handle.local_port()
+    ));
+
+    // Stash on state so the handles outlive the spawned task. We grab the
+    // state lazily here because there's no `State<'_, AuthState>` in this
+    // async context.
+    if let Some(state) = app.try_state::<AuthState>() {
+        if let Ok(mut g) = state.proxy_handle.lock() {
+            *g = Some(handles.proxy_handle);
+        }
+        if let Ok(mut g) = state.subprocess_handle.lock() {
+            *g = Some(handles.subprocess_handle);
+        }
+        if let Ok(mut g) = state.pair_response.lock() {
+            *g = Some(handles.pair_response);
+        }
+    }
 
     Ok(())
 }
@@ -434,6 +568,10 @@ end tell"#,
         .manage(AuthState {
             token: Mutex::new(None),
             gateway_url: Mutex::new(None),
+            current_jwt: Arc::new(RwLock::new(String::new())),
+            proxy_handle: Mutex::new(None),
+            subprocess_handle: Mutex::new(None),
+            pair_response: Mutex::new(None),
         })
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),

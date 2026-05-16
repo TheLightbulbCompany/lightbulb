@@ -6,6 +6,7 @@ pub mod keychain;
 mod node_client;
 mod node_invoke;
 pub mod pair_client;
+pub mod proxy;
 mod tray;
 
 use std::sync::{Arc, Mutex, RwLock};

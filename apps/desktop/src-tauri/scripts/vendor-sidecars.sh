@@ -106,6 +106,9 @@ elif [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
 else
     ASSETS="\$HERE"
 fi
+# Target Tauri's loopback WSS proxy. Tauri sets ISOL8_PROXY_PORT,
+# OPENCLAW_STATE_DIR, and OPENCLAW_GATEWAY_TOKEN before spawning.
+: "\${ISOL8_PROXY_PORT:?ISOL8_PROXY_PORT must be set by Tauri supervisor}"
 # Isolate the bundled openclaw's config dir from the user's
 # personal ~/.openclaw/. Without OPENCLAW_HOME, both the CLI install
 # and our bundled copy read the same ~/.openclaw/openclaw.json — so
@@ -118,7 +121,7 @@ export OPENCLAW_HOME="\${HOME}/Library/Application Support/co.isol8.desktop/open
 mkdir -p "\$OPENCLAW_HOME"
 exec "\$ASSETS/node-${TRIPLE}" \\
     "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
-    node run --host 127.0.0.1 --port 18789 "\$@"
+    node run --host 127.0.0.1 --port "\$ISOL8_PROXY_PORT" "\$@"
 LAUNCHER_EOF
     chmod +x "$LAUNCHER"
 }

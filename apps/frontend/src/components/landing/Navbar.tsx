@@ -29,9 +29,9 @@ export function Navbar() {
     const sections = [
       { id: "home", el: document.querySelector(".landing-hero") },
       { id: "features", el: document.getElementById("features") },
+      { id: "team", el: document.getElementById("team") },
       { id: "pricing", el: document.getElementById("pricing") },
       { id: "faq", el: document.getElementById("faq") },
-      { id: "goosetown", el: document.getElementById("goosetown") },
     ].filter((s) => s.el);
 
     const observer = new IntersectionObserver(
@@ -78,6 +78,9 @@ export function Navbar() {
         <Link href="#features" data-section="features">
           Features
         </Link>
+        <Link href="#team" data-section="team">
+          Team
+        </Link>
         <Link href="/marketplace">
           Marketplace
         </Link>
@@ -86,9 +89,6 @@ export function Navbar() {
         </Link>
         <Link href="#faq" data-section="faq">
           FAQ
-        </Link>
-        <Link href="#goosetown" data-section="goosetown">
-          GooseTown<span className="nav-alpha">alpha</span>
         </Link>
         {isLoaded && !isSignedIn && (
           <Link href="/sign-in" className="nav-mobile-login">

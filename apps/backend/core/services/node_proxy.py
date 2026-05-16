@@ -8,7 +8,14 @@ org, Alice's Mac and Bob's Mac are independent.
 
 State:
   _node_upstreams   connection_id -> NodeUpstreamConnection
-  _user_nodes       user_id -> {nodeId, connection_id, owner_id}
+  _user_nodes       user_id -> {
+                        "cli": {deviceId, clientId, connection_id, owner_id, ...},
+                        "mac": {deviceId, clientId, connection_id, owner_id, ...},
+                    }
+                    Each Mac has TWO openclaw nodes (the CLI subprocess +
+                    the Tauri-mac companion). The bucket is selected by
+                    the clientId from the connect handshake. See spec
+                    docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md.
   _node_count       owner_id -> int (active node connections)
   _patched_sessions session_key -> nodeId (in-memory cache)
 """
@@ -26,7 +33,13 @@ logger = logging.getLogger(__name__)
 # connection_id -> NodeUpstreamConnection
 _node_upstreams: dict[str, NodeUpstreamConnection] = {}
 
-# user_id -> {nodeId: str, connection_id: str, owner_id: str}
+# user_id -> {
+#   "cli": {"deviceId": str, "clientId": "node-host",      "connection_id": str, "owner_id": str},
+#   "mac": {"deviceId": str, "clientId": "openclaw-macos", "connection_id": str, "owner_id": str},
+# }
+# Per spec 2026-05-15-desktop-node-architecture-migration-design.md:
+# each Mac has TWO openclaw nodes (cli subprocess + Tauri-mac companion).
+# Slot by clientId from the connect handshake.
 _user_nodes: dict[str, dict] = {}
 
 # owner_id -> count of active node connections (for ref-counted config patching)
@@ -36,9 +49,46 @@ _node_count: dict[str, int] = {}
 _patched_sessions: dict[str, str] = {}
 
 
+def get_user_cli_node(user_id: str) -> dict | None:
+    """Return the CLI subprocess node info for user, or None if not connected.
+
+    Tolerates the legacy flat `{nodeId, connection_id, owner_id}` shape
+    until Task 12 finishes the migration in handle_node_connect: any flat
+    entry whose clientId is not `openclaw-macos` is treated as the CLI
+    bucket.
+    """
+    entry = _user_nodes.get(user_id)
+    if not entry:
+        return None
+    if "cli" in entry or "mac" in entry:
+        return entry.get("cli")
+    # Backward compat: legacy flat shape — treat as cli unless explicitly mac.
+    return entry if entry.get("clientId") != "openclaw-macos" else None
+
+
+def get_user_mac_node(user_id: str) -> dict | None:
+    """Return the Tauri-mac companion node info for user, or None if not connected.
+
+    Tolerates the legacy flat shape: an entry whose clientId is
+    `openclaw-macos` is treated as the mac bucket.
+    """
+    entry = _user_nodes.get(user_id)
+    if not entry:
+        return None
+    if "cli" in entry or "mac" in entry:
+        return entry.get("mac")
+    return entry if entry.get("clientId") == "openclaw-macos" else None
+
+
 def get_user_node(user_id: str) -> dict | None:
-    """Return the node info for a user, or None if not connected."""
-    return _user_nodes.get(user_id)
+    """Deprecated alias — prefers CLI node (exec-capable) when both kinds are present.
+
+    Use get_user_cli_node / get_user_mac_node when you specifically need
+    one or the other. Kept so legacy callers (session-binding,
+    handle_node_disconnect's owning-close check) keep working until they
+    migrate.
+    """
+    return get_user_cli_node(user_id) or get_user_mac_node(user_id)
 
 
 def get_patched_session(session_key: str) -> str | None:

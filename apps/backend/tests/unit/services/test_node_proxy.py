@@ -328,3 +328,49 @@ async def test_force_close_device_handles_close_exception():
     closed = await force_close_device("dev_target")
     assert closed is True
     assert "conn_1" not in _node_upstreams
+
+
+# ---------------------------------------------------------------------------
+# Task 11: per-user {cli, mac} accessors
+# ---------------------------------------------------------------------------
+
+
+def test_get_user_cli_node_returns_cli_entry():
+    from core.services.node_proxy import get_user_cli_node, get_user_mac_node
+
+    _user_nodes.clear()
+    _user_nodes["user_alice"] = {
+        "cli": {"deviceId": "dev_cli", "clientId": "node-host", "connection_id": "c1", "owner_id": "o"},
+        "mac": {"deviceId": "dev_mac", "clientId": "openclaw-macos", "connection_id": "c2", "owner_id": "o"},
+    }
+    cli = get_user_cli_node("user_alice")
+    assert cli is not None
+    assert cli["deviceId"] == "dev_cli"
+    assert cli["clientId"] == "node-host"
+    mac = get_user_mac_node("user_alice")
+    assert mac is not None
+    assert mac["deviceId"] == "dev_mac"
+    assert mac["clientId"] == "openclaw-macos"
+
+
+def test_get_user_cli_node_none_when_missing():
+    from core.services.node_proxy import get_user_cli_node, get_user_mac_node
+
+    _user_nodes.clear()
+    assert get_user_cli_node("user_unknown") is None
+    _user_nodes["user_alice"] = {"mac": {"deviceId": "dev_mac"}}  # only mac
+    assert get_user_cli_node("user_alice") is None
+    assert get_user_mac_node("user_alice")["deviceId"] == "dev_mac"
+
+
+def test_get_user_node_backward_compat_prefers_cli():
+    """Legacy get_user_node should still return something — prefer CLI when both exist."""
+    from core.services.node_proxy import get_user_node
+
+    _user_nodes.clear()
+    _user_nodes["u"] = {
+        "cli": {"deviceId": "dev_cli", "clientId": "node-host"},
+        "mac": {"deviceId": "dev_mac", "clientId": "openclaw-macos"},
+    }
+    legacy = get_user_node("u")
+    assert legacy["deviceId"] == "dev_cli"  # CLI preferred for backward compat

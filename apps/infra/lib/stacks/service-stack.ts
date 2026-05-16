@@ -78,6 +78,9 @@ export interface ServiceStackProps extends cdk.StackProps {
     openclawTaskDef: ecs.ITaskDefinition;
   };
   managementApiUrl: string;
+  /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
+   * know where to connect. Sourced from ApiStack.webSocketUrl. */
+  webSocketUrl: string;
   connectionsTableName: string;
   wsApiId: string;
   wsStage: string;
@@ -666,6 +669,7 @@ export class ServiceStack extends cdk.Stack {
         ENVIRONMENT: env,
         AWS_REGION: "us-east-1",
         WS_MANAGEMENT_API_URL: props.managementApiUrl,
+        WS_GATEWAY_URL: props.webSocketUrl,
         WS_CONNECTIONS_TABLE: props.connectionsTableName,
         WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
         CORS_ORIGINS:

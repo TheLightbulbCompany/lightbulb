@@ -7,6 +7,7 @@ from core.services.node_proxy import (
     handle_node_connect,
     handle_node_disconnect,
     get_user_node,
+    force_close_device,
     _user_nodes,
     _node_count,
     _node_upstreams,
@@ -291,3 +292,39 @@ async def test_upstream_closed_callback_cleans_up_user_state(mock_ecs, mock_pool
         "user_alice",
         {"type": "node_status", "status": "disconnected"},
     )
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_closes_matching_upstream():
+    """force_close_device closes any upstreams whose device_id matches and removes them."""
+    fake_upstream = MagicMock()
+    fake_upstream.device_id = "dev_target"
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["conn_1"] = fake_upstream
+
+    closed = await force_close_device("dev_target")
+    assert closed is True
+    fake_upstream.close.assert_awaited_once()
+    # Connection should be removed from the registry after close
+    assert "conn_1" not in _node_upstreams
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_no_match_returns_false():
+    """If no upstream has the given device_id, returns False and touches nothing."""
+    closed = await force_close_device("dev_missing")
+    assert closed is False
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_handles_close_exception():
+    """If upstream.close() raises, log + continue + still mark removed."""
+    fake_upstream = MagicMock()
+    fake_upstream.device_id = "dev_target"
+    fake_upstream.close = AsyncMock(side_effect=RuntimeError("broken pipe"))
+    _node_upstreams["conn_1"] = fake_upstream
+
+    # Should NOT propagate the exception; revocation is best-effort
+    closed = await force_close_device("dev_target")
+    assert closed is True
+    assert "conn_1" not in _node_upstreams

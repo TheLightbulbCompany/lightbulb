@@ -270,3 +270,31 @@ async def handle_node_disconnect(
 def is_node_connection(connection_id: str) -> bool:
     """Check if a connection ID has a registered node upstream."""
     return connection_id in _node_upstreams
+
+
+async def force_close_device(device_id: str) -> bool:
+    """Force-close the live upstream WS for a given deviceId.
+
+    Iterates the connection registry, finds all NodeUpstreamConnections with
+    the matching device_id, closes them, removes from the registry. Returns
+    True if at least one connection was closed; False otherwise.
+
+    Best-effort: errors during close are logged but don't propagate — the
+    revocation flow shouldn't fail because of a transient socket error.
+    Used by the desktop-device revoke endpoint to kick live sessions after
+    paired.json removal (security review HIGH finding F).
+    """
+    closed_any = False
+    for connection_id, upstream in list(_node_upstreams.items()):
+        if getattr(upstream, "device_id", None) == device_id:
+            try:
+                await upstream.close()
+            except Exception:
+                logger.warning(
+                    "force_close: error closing upstream for %s",
+                    connection_id,
+                    exc_info=True,
+                )
+            _node_upstreams.pop(connection_id, None)
+            closed_any = True
+    return closed_any

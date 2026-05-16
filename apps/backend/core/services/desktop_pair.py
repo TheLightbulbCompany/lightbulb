@@ -11,12 +11,15 @@ them on /desktop/pair.
 """
 
 import hashlib
+import json
 import secrets
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
 from cryptography.hazmat.primitives import serialization
+
+from core.containers.workspace import WorkspaceError
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "system.notify",
@@ -198,3 +201,50 @@ async def revoke_desktop_device(
     await workspace.write_paired_json(paired)
     await force_close_device(device_id)
     return True
+
+
+@dataclass
+class EfsWorkspaceAdapter:
+    """Concrete WorkspaceLike implementation against the real EFS workspace
+    + container repo.
+
+    - paired.json lives at ``<EFS>/users/{owner_id}/paired.json`` and is the
+      same file OpenClaw's gateway reads on container start. The owner_id IS
+      the per-user/per-org EFS root identifier (one container per owner).
+    - The gateway_token is the per-container token minted by ECS provisioning
+      and stored on the containers DDB row.
+
+    The underlying Workspace methods (``read_file`` / ``write_file``) are
+    synchronous; we wrap them in async methods to satisfy the WorkspaceLike
+    Protocol used by ``pair_desktop_devices`` / ``revoke_desktop_device``.
+    """
+
+    owner_id: str
+    workspace: object  # core.containers.workspace.Workspace
+    container_repo: object  # core.repositories.container_repo (module)
+    gateway_ws_url: str
+
+    @property
+    def gateway_url(self) -> str:
+        return self.gateway_ws_url
+
+    async def read_paired_json(self) -> dict | None:
+        try:
+            raw = self.workspace.read_file(self.owner_id, "paired.json")
+        except WorkspaceError:
+            return None
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+
+    async def write_paired_json(self, data: dict) -> None:
+        self.workspace.write_file(
+            self.owner_id, "paired.json", json.dumps(data, indent=2)
+        )
+
+    async def get_gateway_token(self) -> str:
+        container = await self.container_repo.get_by_owner_id(self.owner_id)
+        if not container or not container.get("gateway_token"):
+            raise RuntimeError(f"No gateway_token for owner {self.owner_id}")
+        return container["gateway_token"]

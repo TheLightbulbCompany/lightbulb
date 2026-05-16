@@ -1,12 +1,14 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from core.containers.workspace import WorkspaceError
 from core.services.desktop_pair import (
     DESKTOP_CLI_COMMANDS,
     DESKTOP_MAC_COMMANDS,
+    EfsWorkspaceAdapter,
     PairResult,
     assert_command_sets_disjoint,
     build_paired_entry,
@@ -220,3 +222,101 @@ async def test_revoke_desktop_device_no_op_on_missing():
     mock_workspace.write_paired_json.assert_not_awaited()
     # Still attempt force_close in case device is connected without a paired entry
     mock_force_close.assert_awaited_once_with("dev_none")
+
+
+# ---------------------------------------------------------------------------
+# EfsWorkspaceAdapter
+# ---------------------------------------------------------------------------
+# Concrete WorkspaceLike implementation backed by:
+#   - core.containers.workspace.Workspace (sync read_file / write_file)
+#   - core.repositories.container_repo (async get_by_owner_id module func)
+# Tests use MagicMock for the sync workspace and a MagicMock module-shim for
+# container_repo (its functions are awaitable, hence AsyncMock for get_by_owner_id).
+
+
+async def test_efs_workspace_adapter_reads_writes_paired_json():
+    mock_workspace = MagicMock()
+    mock_workspace.read_file = MagicMock(
+        return_value='{"pairedByDeviceId": {"d1": {}}}'
+    )
+    mock_workspace.write_file = MagicMock()
+    mock_container_repo = MagicMock()
+    mock_container_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "gateway_token": "tok_123",
+            "service_dns": "openclaw-abc.local",
+        }
+    )
+    adapter = EfsWorkspaceAdapter(
+        owner_id="owner_42",
+        workspace=mock_workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://ws-dev.isol8.co",
+    )
+    assert adapter.gateway_url == "wss://ws-dev.isol8.co"
+
+    data = await adapter.read_paired_json()
+    assert data == {"pairedByDeviceId": {"d1": {}}}
+    mock_workspace.read_file.assert_called_once_with("owner_42", "paired.json")
+
+    await adapter.write_paired_json({"pairedByDeviceId": {"d2": {}}})
+    mock_workspace.write_file.assert_called_once()
+    write_args = mock_workspace.write_file.call_args.args
+    assert write_args[0] == "owner_42"
+    assert write_args[1] == "paired.json"
+    # JSON-serialized payload round-trips
+    import json as _json
+
+    assert _json.loads(write_args[2]) == {"pairedByDeviceId": {"d2": {}}}
+
+    token = await adapter.get_gateway_token()
+    assert token == "tok_123"
+    mock_container_repo.get_by_owner_id.assert_awaited_once_with("owner_42")
+
+
+async def test_efs_workspace_adapter_returns_none_when_paired_json_missing():
+    """A fresh container has no paired.json yet — adapter should return None
+    instead of bubbling WorkspaceError, so pair_desktop_devices's
+    `(await read_paired_json()) or {...}` fallback kicks in.
+    """
+    mock_workspace = MagicMock()
+    mock_workspace.read_file = MagicMock(
+        side_effect=WorkspaceError("File not found", user_id="owner_42")
+    )
+    mock_container_repo = MagicMock()
+    adapter = EfsWorkspaceAdapter(
+        owner_id="owner_42",
+        workspace=mock_workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+    assert await adapter.read_paired_json() is None
+
+
+async def test_efs_workspace_adapter_raises_when_no_gateway_token():
+    mock_workspace = MagicMock()
+    mock_container_repo = MagicMock()
+    mock_container_repo.get_by_owner_id = AsyncMock(return_value={"gateway_token": ""})
+    adapter = EfsWorkspaceAdapter(
+        owner_id="o",
+        workspace=mock_workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+    with pytest.raises(RuntimeError, match="No gateway_token"):
+        await adapter.get_gateway_token()
+
+
+async def test_efs_workspace_adapter_raises_when_container_missing():
+    """No container row at all (e.g. pre-provision) — must also raise."""
+    mock_workspace = MagicMock()
+    mock_container_repo = MagicMock()
+    mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
+    adapter = EfsWorkspaceAdapter(
+        owner_id="o",
+        workspace=mock_workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+    with pytest.raises(RuntimeError, match="No gateway_token"):
+        await adapter.get_gateway_token()

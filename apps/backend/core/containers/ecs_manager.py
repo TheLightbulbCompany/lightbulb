@@ -1784,6 +1784,8 @@ class EcsManager:
             base_url=settings.PAPERCLIP_INTERNAL_URL,
             timeout=15.0,
         )
+        paperclip_api_key: str | None = None
+        paperclip_company_id: str | None = None
         try:
             repo = PaperclipRepo(table_name="paperclip-companies")
             admin_client = PaperclipAdminClient(http_client=http)
@@ -1792,6 +1794,34 @@ class EcsManager:
                 repo=repo,
                 admin_client=admin_client,
             )
+            # Mint (or read) Friday's Paperclip API key so the MCP server
+            # inside her container can call Paperclip's REST API as her
+            # rather than as the global admin service account.
+            # Self-healing: if the key isn't in api_keys yet, ensure_…
+            # mints + stores. If Paperclip is unreachable this run, returns
+            # None and write_openclaw_config simply omits the mcp.servers
+            # block — the next reprovision picks it up.
+            friday = next(
+                (a for a in paperclip_agents if a.get("role") == "ceo"),
+                None,
+            )
+            if friday and friday.get("id"):
+                from core.services.paperclip_api_key import (
+                    ensure_paperclip_api_key,
+                )
+                from core.services.paperclip_openclaw_pairing import (
+                    _resolve_company_id_for_owner,
+                )
+
+                paperclip_api_key = await ensure_paperclip_api_key(
+                    owner_id=owner_id,
+                    paperclip_agent_id=friday["id"],
+                    admin_client=admin_client,
+                )
+                paperclip_company_id = await _resolve_company_id_for_owner(
+                    owner_id=owner_id,
+                    repo=repo,
+                )
         finally:
             await http.aclose()
 
@@ -1805,6 +1835,9 @@ class EcsManager:
             paperclip_agents=paperclip_agents,
             hook_token=hook_token,
             owner_type=owner_type,
+            paperclip_api_key=paperclip_api_key,
+            paperclip_company_id=paperclip_company_id,
+            paperclip_api_url=settings.PAPERCLIP_INTERNAL_URL or None,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

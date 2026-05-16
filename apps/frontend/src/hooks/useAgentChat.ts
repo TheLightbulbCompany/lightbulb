@@ -302,7 +302,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // Approval queue snapshot — used to keep the busy gate armed while an
   // exec-approval card is still pending for this agent. Mirrored to a ref
   // so the once-registered onChatMessage handler reads the live value.
-  const { queue: approvalQueue } = useExecApprovalsContextOptional();
+  // We also subscribe to reason-tagged removal events: `dismissed`,
+  // `auto_pruned`, and `terminal_error` release the gate (no continuation
+  // is coming server-side), but `resolved` keeps it armed until the
+  // post-approval continuation's terminal event arrives — otherwise a
+  // follow-up typed in the window between queue-empty and the first
+  // continuation chunk would race with the resume (Codex P1 on PR #682).
+  const { queue: approvalQueue, onApprovalRemoved } =
+    useExecApprovalsContextOptional();
   const approvalQueueRef = useRef(approvalQueue);
   useEffect(() => {
     approvalQueueRef.current = approvalQueue;
@@ -754,29 +761,44 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   );
 
   // Approval-pause release. The `done` handler holds the busy gate while
-  // an approval card for this agent is still in the queue (see comment
-  // there for why). This effect releases the gate when the queue drains
-  // — whether via resolve (post-approval continuation will arrive on its
-  // own runId), dismiss (user gave up on a stuck card), or auto-prune
-  // (server-side TTL fired). Only releases if no live stream/tools are
-  // active server-side; if events are still arriving the regular `done`
-  // path will clean up.
-  const approvalsForAgent = useMemo(
-    () => approvalQueue.filter((a) => a.agentId === agentId).length,
-    [approvalQueue, agentId],
-  );
-  const prevApprovalsForAgentRef = useRef(approvalsForAgent);
+  // a pending approval for this agent is in the queue. This subscription
+  // releases the gate on the removal reasons that have no server-side
+  // continuation: `dismissed` (user gave up on a stuck card),
+  // `auto_pruned` (local expiry fired), `terminal_error` (server rejected
+  // the resolve with unknown/expired id). It deliberately does NOT
+  // release on `resolved` — OpenClaw's post-approval continuation starts
+  // on a fresh runId and may not have emitted its first event yet;
+  // releasing here would let a user follow-up race with that resume.
+  // The continuation's eventual `done` (or an error / cancelMessage)
+  // releases the gate the normal way.
   useEffect(() => {
-    const prev = prevApprovalsForAgentRef.current;
-    prevApprovalsForAgentRef.current = approvalsForAgent;
-    if (prev > 0 && approvalsForAgent === 0 && clientRunIdRef.current !== null) {
+    return onApprovalRemoved((removedId, reason) => {
+      if (reason === "resolved") return;
+      // Only act on removals for THIS agent's approvals. The handler
+      // sees removals for every agent; we shouldn't release another
+      // agent's gate. Look up the removed id's agentId in the previous
+      // queue snapshot held in the ref.
+      const wasForThisAgent = approvalQueueRef.current.some(
+        (a) => a.id === removedId && a.agentId === agentIdRef.current,
+      );
+      // approvalQueueRef may already have been updated by the time the
+      // subscriber fires (the setQueue runs synchronously inside the
+      // same removal call, but the effect that mirrors into
+      // approvalQueueRef fires on the next render). To be safe, fall
+      // back to releasing whenever the queue has no approvals left for
+      // this agent — which is exactly the condition we care about.
+      const stillHasPending = approvalQueueRef.current.some(
+        (a) => a.id !== removedId && a.agentId === agentIdRef.current,
+      );
+      if (!wasForThisAgent && stillHasPending) return;
+      if (clientRunIdRef.current === null) return;
       const hasLiveStream =
         chatStreamRef.current !== null || toolStreamByIdRef.current.size > 0;
       if (!hasLiveStream) {
         clientRunIdRef.current = null;
       }
-    }
-  }, [approvalsForAgent]);
+    });
+  }, [onApprovalRemoved]);
 
   // Drain queued messages one at a time on busy→idle transitions.
   // We track the previous value of clientRunIdRef in a ref so a simple

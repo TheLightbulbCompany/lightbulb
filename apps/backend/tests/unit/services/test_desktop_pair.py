@@ -1,10 +1,11 @@
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from core.containers.workspace import WorkspaceError
+from core.containers.workspace import Workspace
 from core.services.desktop_pair import (
     DESKTOP_CLI_COMMANDS,
     DESKTOP_MAC_COMMANDS,
@@ -89,22 +90,51 @@ def test_derive_device_id_matches_upstream_spki_strip():
     assert derive_device_id(_FIXTURE_PEM) == _FIXTURE_EXPECTED_DEVICE_ID
 
 
-async def test_pair_desktop_devices_writes_two_paired_entries():
-    mock_workspace = AsyncMock()
-    mock_workspace.read_paired_json = AsyncMock(return_value={"pairedByDeviceId": {}})
-    mock_workspace.write_paired_json = AsyncMock()
-    mock_workspace.get_gateway_token = AsyncMock(return_value="container-gw-token")
-    mock_workspace.gateway_url = "wss://ws-dev.isol8.co"
+# ---------------------------------------------------------------------------
+# WorkspaceLike helper: a tiny in-memory adapter that records calls and
+# exposes the final paired.json state. Used to verify service-layer shape
+# without coupling to fcntl / EFS in unit tests.
+# ---------------------------------------------------------------------------
 
-    # Use the same fixture PEM from earlier tests; for the cli side use a
-    # different pubkey to get a different deviceId.
+
+class _FakeWorkspace:
+    def __init__(self, initial: dict | None = None):
+        # ``None`` mirrors "no paired.json yet" from a fresh container.
+        self.state: dict | None = None if initial is None else dict(initial)
+        self.mutate_calls = 0
+        self.write_count = 0
+        self.gateway_url = "wss://ws-dev.isol8.co"
+
+    async def mutate_paired_json(self, mutator):
+        self.mutate_calls += 1
+        current = dict(self.state) if isinstance(self.state, dict) else {}
+        changed = mutator(current)
+        if changed:
+            self.state = current
+            self.write_count += 1
+
+    async def get_gateway_token(self) -> str:
+        return "container-gw-token"
+
+
+async def test_pair_desktop_devices_writes_two_paired_entries_flat():
+    """Persisted dict must be FLAT — keyed directly by deviceId, no
+    `pairedByDeviceId` wrapper. Upstream openclaw writes/reads the flat shape
+    on disk (device-pairing.ts:181,186); a wrapper makes our entries invisible
+    to the gateway's coercePairingStateRecord load path.
+    """
+    workspace = _FakeWorkspace(initial={})
+
     tauri_mac_pubkey = _FIXTURE_PEM
-    # Different key for cli: generate from another deterministic seed
     cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x01" * 32)
-    cli_pubkey = cli_priv.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
 
     result: PairResult = await pair_desktop_devices(
         user_id="user_alice",
@@ -112,7 +142,7 @@ async def test_pair_desktop_devices_writes_two_paired_entries():
         display_name_base="Alice Smith",
         tauri_mac_pubkey=tauri_mac_pubkey,
         cli_pubkey=cli_pubkey,
-        workspace=mock_workspace,
+        workspace=workspace,
     )
 
     assert result.gateway_url == "wss://ws-dev.isol8.co"
@@ -121,47 +151,98 @@ async def test_pair_desktop_devices_writes_two_paired_entries():
     assert result.commands_mac == DESKTOP_MAC_COMMANDS
     assert result.commands_cli == DESKTOP_CLI_COMMANDS
 
-    mock_workspace.write_paired_json.assert_awaited_once()
-    written = mock_workspace.write_paired_json.await_args.args[0]
-    assert len(written["pairedByDeviceId"]) == 2
+    assert workspace.write_count == 1
+    written = workspace.state
+    # REGRESSION GUARD: no wrapper, deviceIds are top-level keys.
+    assert "pairedByDeviceId" not in written, (
+        "paired.json must be a FLAT Record<deviceId, PairedDevice> — "
+        "wrapper would make entries invisible to openclaw's load path"
+    )
+    assert result.device_id_mac in written
+    assert result.device_id_cli in written
+    assert len(written) == 2
 
-    mac_entry = written["pairedByDeviceId"][result.device_id_mac]
+    mac_entry = written[result.device_id_mac]
     assert mac_entry["clientId"] == "openclaw-macos"
     assert mac_entry["displayName"] == "Alice Smith | Isol8 Mac"
     assert mac_entry["commands"] == list(DESKTOP_MAC_COMMANDS)
     assert mac_entry["tokens"]["node"]["token"]
 
-    cli_entry = written["pairedByDeviceId"][result.device_id_cli]
+    cli_entry = written[result.device_id_cli]
     assert cli_entry["clientId"] == "node-host"
     assert cli_entry["displayName"] == "Alice Smith | Isol8 Desktop (CLI)"
     assert cli_entry["commands"] == list(DESKTOP_CLI_COMMANDS)
 
 
+async def test_pair_desktop_devices_preserves_existing_operator_entry():
+    """ecs_manager / config.py writes the operator + in-container node entries
+    during provisioning — desktop pair must NOT clobber them. This is the
+    "don't nuke ecs_manager's writes" property the original wrapped-shape bug
+    silently violated.
+    """
+    existing_operator_id = "deadbeef" * 8  # 64-char hex
+    existing_operator_entry = {
+        "deviceId": existing_operator_id,
+        "publicKey": "-----BEGIN PUBLIC KEY-----\noperator-key\n-----END PUBLIC KEY-----\n",
+        "role": "operator",
+        "clientId": "isol8-operator",
+        "displayName": "Isol8 backend operator",
+        "commands": [],
+        "tokens": {"node": {"token": "operator-token", "createdAtMs": 1}},
+        "createdAtMs": 1,
+        "approvedAtMs": 1,
+    }
+    workspace = _FakeWorkspace(initial={existing_operator_id: existing_operator_entry})
+
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x04" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    await pair_desktop_devices(
+        user_id="u",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    # The existing operator entry is still there, untouched.
+    assert existing_operator_id in written
+    assert written[existing_operator_id] == existing_operator_entry
+    # AND the two new desktop entries got added.
+    assert len(written) == 3
+
+
 async def test_pair_desktop_devices_idempotent_on_existing_entries():
-    """Calling pair twice with same pubkeys must not duplicate or rewrite."""
+    """Calling pair twice with the same pubkeys must not duplicate or rewrite."""
     tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x02" * 32)
-    tauri_pub = tauri_priv.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    tauri_pub = (
+        tauri_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
     cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x03" * 32)
-    cli_pub = cli_priv.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    cli_pub = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
 
-    # In-memory state shared across two calls
-    state = {"pairedByDeviceId": {}}
-
-    mock_workspace = AsyncMock()
-    mock_workspace.read_paired_json = AsyncMock(side_effect=lambda: state)
-
-    async def _write(d):
-        state.update(d)
-
-    mock_workspace.write_paired_json = AsyncMock(side_effect=_write)
-    mock_workspace.get_gateway_token = AsyncMock(return_value="t")
-    mock_workspace.gateway_url = "wss://ws-dev.isol8.co"
+    workspace = _FakeWorkspace(initial={})
 
     first = await pair_desktop_devices(
         user_id="u",
@@ -169,7 +250,7 @@ async def test_pair_desktop_devices_idempotent_on_existing_entries():
         display_name_base="Alice",
         tauri_mac_pubkey=tauri_pub,
         cli_pubkey=cli_pub,
-        workspace=mock_workspace,
+        workspace=workspace,
     )
     second = await pair_desktop_devices(
         user_id="u",
@@ -177,120 +258,217 @@ async def test_pair_desktop_devices_idempotent_on_existing_entries():
         display_name_base="Alice",
         tauri_mac_pubkey=tauri_pub,
         cli_pubkey=cli_pub,
-        workspace=mock_workspace,
+        workspace=workspace,
     )
 
     assert first.device_id_mac == second.device_id_mac
     assert first.device_id_cli == second.device_id_cli
-    # Write should only be called ONCE (first call); second is idempotent no-op
-    assert mock_workspace.write_paired_json.await_count == 1
+    # mutate is called twice (we always probe), but the second call's mutator
+    # returns False so write_count stays at 1.
+    assert workspace.mutate_calls == 2
+    assert workspace.write_count == 1
 
 
 async def test_revoke_desktop_device_removes_paired_entry():
-    paired = {"pairedByDeviceId": {"dev_abc": {"role": "node"}, "dev_xyz": {"role": "node"}}}
-    mock_workspace = AsyncMock()
-    mock_workspace.read_paired_json = AsyncMock(return_value=paired)
-    mock_workspace.write_paired_json = AsyncMock()
+    """Revoke deletes a TOP-LEVEL deviceId key from the flat record."""
+    workspace = _FakeWorkspace(
+        initial={
+            "dev_abc": {"role": "node"},
+            "dev_xyz": {"role": "node"},
+        }
+    )
 
     mock_force_close = AsyncMock(return_value=True)
 
     removed = await revoke_desktop_device(
         device_id="dev_abc",
-        workspace=mock_workspace,
+        workspace=workspace,
         force_close_device=mock_force_close,
     )
     assert removed is True
-    mock_workspace.write_paired_json.assert_awaited_once()
-    written = mock_workspace.write_paired_json.await_args.args[0]
-    assert "dev_abc" not in written["pairedByDeviceId"]
-    assert "dev_xyz" in written["pairedByDeviceId"]
+    assert workspace.write_count == 1
+    written = workspace.state
+    assert "dev_abc" not in written
+    assert "dev_xyz" in written
+    # REGRESSION: no wrapper.
+    assert "pairedByDeviceId" not in written
     mock_force_close.assert_awaited_once_with("dev_abc")
 
 
 async def test_revoke_desktop_device_no_op_on_missing():
-    mock_workspace = AsyncMock()
-    mock_workspace.read_paired_json = AsyncMock(return_value={"pairedByDeviceId": {}})
-    mock_workspace.write_paired_json = AsyncMock()
+    workspace = _FakeWorkspace(initial={})
     mock_force_close = AsyncMock(return_value=False)
 
     removed = await revoke_desktop_device(
         device_id="dev_none",
-        workspace=mock_workspace,
+        workspace=workspace,
         force_close_device=mock_force_close,
     )
     assert removed is False
-    mock_workspace.write_paired_json.assert_not_awaited()
+    assert workspace.write_count == 0
     # Still attempt force_close in case device is connected without a paired entry
     mock_force_close.assert_awaited_once_with("dev_none")
 
 
 # ---------------------------------------------------------------------------
-# EfsWorkspaceAdapter
+# EfsWorkspaceAdapter — real-filesystem integration via tmp_path
 # ---------------------------------------------------------------------------
-# Concrete WorkspaceLike implementation backed by:
-#   - core.containers.workspace.Workspace (sync read_file / write_file)
-#   - core.repositories.container_repo (async get_by_owner_id module func)
-# Tests use MagicMock for the sync workspace and a MagicMock module-shim for
-# container_repo (its functions are awaitable, hence AsyncMock for get_by_owner_id).
+# Uses a real ``Workspace`` against a tmp directory so we exercise the full
+# locked RMW path (fcntl.lockf on devices/paired.json.lock, tempfile-rename,
+# chown-skip when not root). MagicMock-only tests can't catch path / lock
+# bugs because they don't touch the filesystem.
 
 
-async def test_efs_workspace_adapter_reads_writes_paired_json():
-    mock_workspace = MagicMock()
-    mock_workspace.read_file = MagicMock(
-        return_value='{"pairedByDeviceId": {"d1": {}}}'
-    )
-    mock_workspace.write_file = MagicMock()
+async def test_efs_workspace_adapter_writes_to_devices_paired_json(tmp_path):
+    """Path regression: paired.json must live at <owner>/devices/paired.json,
+    not <owner>/paired.json. Openclaw's resolvePairingPaths reads
+    <stateDir>/devices/paired.json (pairing-files.ts:6-13).
+    """
+    workspace = Workspace(mount_path=str(tmp_path))
     mock_container_repo = MagicMock()
-    mock_container_repo.get_by_owner_id = AsyncMock(
-        return_value={
-            "gateway_token": "tok_123",
-            "service_dns": "openclaw-abc.local",
-        }
-    )
+    mock_container_repo.get_by_owner_id = AsyncMock(return_value={"gateway_token": "tok_123"})
+
     adapter = EfsWorkspaceAdapter(
         owner_id="owner_42",
-        workspace=mock_workspace,
+        workspace=workspace,
         container_repo=mock_container_repo,
         gateway_ws_url="wss://ws-dev.isol8.co",
     )
-    assert adapter.gateway_url == "wss://ws-dev.isol8.co"
 
-    data = await adapter.read_paired_json()
-    assert data == {"pairedByDeviceId": {"d1": {}}}
-    mock_workspace.read_file.assert_called_once_with("owner_42", "paired.json")
+    def _add(paired: dict) -> bool:
+        paired["new_device_id"] = {"role": "node", "publicKey": "pk"}
+        return True
 
-    await adapter.write_paired_json({"pairedByDeviceId": {"d2": {}}})
-    mock_workspace.write_file.assert_called_once()
-    write_args = mock_workspace.write_file.call_args.args
-    assert write_args[0] == "owner_42"
-    assert write_args[1] == "paired.json"
-    # JSON-serialized payload round-trips
-    import json as _json
+    await adapter.mutate_paired_json(_add)
 
-    assert _json.loads(write_args[2]) == {"pairedByDeviceId": {"d2": {}}}
-
-    token = await adapter.get_gateway_token()
-    assert token == "tok_123"
-    mock_container_repo.get_by_owner_id.assert_awaited_once_with("owner_42")
-
-
-async def test_efs_workspace_adapter_returns_none_when_paired_json_missing():
-    """A fresh container has no paired.json yet — adapter should return None
-    instead of bubbling WorkspaceError, so pair_desktop_devices's
-    `(await read_paired_json()) or {...}` fallback kicks in.
-    """
-    mock_workspace = MagicMock()
-    mock_workspace.read_file = MagicMock(
-        side_effect=WorkspaceError("File not found", user_id="owner_42")
+    # File lands at <owner>/devices/paired.json, NOT <owner>/paired.json.
+    devices_path = tmp_path / "owner_42" / "devices" / "paired.json"
+    legacy_path = tmp_path / "owner_42" / "paired.json"
+    assert devices_path.exists(), f"paired.json should exist at {devices_path}"
+    assert not legacy_path.exists(), (
+        "paired.json must NOT live at the legacy <owner>/paired.json path; openclaw reads <owner>/devices/paired.json"
     )
+
+    # Shape is flat (single key, deviceId at top level).
+    data = json.loads(devices_path.read_text())
+    assert data == {"new_device_id": {"role": "node", "publicKey": "pk"}}
+
+
+async def test_efs_workspace_adapter_mutator_sees_existing_dict(tmp_path):
+    """Mutator receives the current flat-dict state — a previously written
+    operator entry should be visible so the desktop pair flow can preserve it.
+    """
+    workspace = Workspace(mount_path=str(tmp_path))
+    devices_dir = tmp_path / "owner_42" / "devices"
+    devices_dir.mkdir(parents=True)
+    initial = {
+        "operator_id": {
+            "deviceId": "operator_id",
+            "role": "operator",
+            "publicKey": "pk_op",
+        }
+    }
+    (devices_dir / "paired.json").write_text(json.dumps(initial))
+
     mock_container_repo = MagicMock()
     adapter = EfsWorkspaceAdapter(
         owner_id="owner_42",
-        workspace=mock_workspace,
+        workspace=workspace,
         container_repo=mock_container_repo,
         gateway_ws_url="wss://x",
     )
-    assert await adapter.read_paired_json() is None
+
+    seen = {}
+
+    def _inspect(paired: dict) -> bool:
+        seen.update(paired)
+        paired["new_id"] = {"role": "node", "publicKey": "pk_new"}
+        return True
+
+    await adapter.mutate_paired_json(_inspect)
+    assert seen == initial
+
+    data = json.loads((devices_dir / "paired.json").read_text())
+    assert "operator_id" in data
+    assert "new_id" in data
+    assert len(data) == 2
+
+
+async def test_efs_workspace_adapter_no_op_when_mutator_returns_false(tmp_path):
+    """If the mutator returns False, no write happens (idempotent path)."""
+    workspace = Workspace(mount_path=str(tmp_path))
+    devices_dir = tmp_path / "owner_42" / "devices"
+    devices_dir.mkdir(parents=True)
+    initial = {"k": {"role": "node"}}
+    paired_file = devices_dir / "paired.json"
+    paired_file.write_text(json.dumps(initial))
+    mtime_before = paired_file.stat().st_mtime_ns
+
+    mock_container_repo = MagicMock()
+    adapter = EfsWorkspaceAdapter(
+        owner_id="owner_42",
+        workspace=workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+
+    def _no_op(_paired: dict) -> bool:
+        return False
+
+    await adapter.mutate_paired_json(_no_op)
+    # File untouched.
+    assert json.loads(paired_file.read_text()) == initial
+    assert paired_file.stat().st_mtime_ns == mtime_before
+
+
+async def test_efs_workspace_adapter_creates_devices_dir_if_missing(tmp_path):
+    """Fresh container: <owner>/devices/ doesn't exist yet. Adapter must
+    create it on first write (otherwise the very first /desktop/pair call
+    would crash on FileNotFoundError).
+    """
+    workspace = Workspace(mount_path=str(tmp_path))
+    mock_container_repo = MagicMock()
+    adapter = EfsWorkspaceAdapter(
+        owner_id="brand_new_owner",
+        workspace=workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+
+    def _seed(paired: dict) -> bool:
+        paired["d1"] = {"role": "node"}
+        return True
+
+    # Pre-condition: nothing exists.
+    assert not (tmp_path / "brand_new_owner").exists()
+    await adapter.mutate_paired_json(_seed)
+    # Post-condition: devices/paired.json exists with the entry.
+    paired_file = tmp_path / "brand_new_owner" / "devices" / "paired.json"
+    assert paired_file.exists()
+    assert json.loads(paired_file.read_text()) == {"d1": {"role": "node"}}
+
+
+async def test_efs_workspace_adapter_handles_missing_paired_json_as_empty(tmp_path):
+    """A fresh container has no paired.json yet — mutator should see an
+    empty dict (not None), so callers can unconditionally `paired[k] = entry`.
+    """
+    workspace = Workspace(mount_path=str(tmp_path))
+    mock_container_repo = MagicMock()
+    adapter = EfsWorkspaceAdapter(
+        owner_id="o",
+        workspace=workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://x",
+    )
+
+    seen = {"value": None}
+
+    def _inspect(paired: dict) -> bool:
+        seen["value"] = dict(paired)
+        return False
+
+    await adapter.mutate_paired_json(_inspect)
+    assert seen["value"] == {}
 
 
 async def test_efs_workspace_adapter_raises_when_no_gateway_token():
@@ -320,3 +498,66 @@ async def test_efs_workspace_adapter_raises_when_container_missing():
     )
     with pytest.raises(RuntimeError, match="No gateway_token"):
         await adapter.get_gateway_token()
+
+
+async def test_efs_workspace_adapter_pair_then_revoke_round_trip(tmp_path):
+    """End-to-end against the real Workspace + a real tmp EFS root: pair
+    writes the two entries flat under devices/paired.json, then revoke
+    removes one. Catches any path / shape drift in a single integration test.
+    """
+    workspace = Workspace(mount_path=str(tmp_path))
+    mock_container_repo = MagicMock()
+    mock_container_repo.get_by_owner_id = AsyncMock(return_value={"gateway_token": "t"})
+    adapter = EfsWorkspaceAdapter(
+        owner_id="owner",
+        workspace=workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://ws-dev.isol8.co",
+    )
+
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x05" * 32)
+    tauri_pub = (
+        tauri_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x06" * 32)
+    cli_pub = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="u",
+        owner_id="owner",
+        display_name_base="Bob",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=adapter,
+    )
+
+    paired_file = tmp_path / "owner" / "devices" / "paired.json"
+    data = json.loads(paired_file.read_text())
+    assert "pairedByDeviceId" not in data
+    assert result.device_id_mac in data
+    assert result.device_id_cli in data
+    assert len(data) == 2
+
+    removed = await revoke_desktop_device(
+        device_id=result.device_id_mac,
+        workspace=adapter,
+        force_close_device=AsyncMock(return_value=True),
+    )
+    assert removed is True
+
+    data2 = json.loads(paired_file.read_text())
+    assert result.device_id_mac not in data2
+    assert result.device_id_cli in data2
+    assert len(data2) == 1

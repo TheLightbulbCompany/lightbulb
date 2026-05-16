@@ -10,16 +10,22 @@ command surface. Backend derives these sets here — clients do NOT submit
 them on /desktop/pair.
 """
 
+import asyncio
+import fcntl
 import hashlib
 import json
+import logging
+import os
 import secrets
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
 from cryptography.hazmat.primitives import serialization
 
-from core.containers.workspace import WorkspaceError
+
+logger = logging.getLogger(__name__)
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "system.notify",
@@ -106,11 +112,25 @@ def build_paired_entry(
     }
 
 
+# Mutator contract: receives the current paired.json state as a FLAT dict
+# (``Record<deviceId, PairedDevice>`` per upstream pairing-files.ts), mutates
+# it in place, and returns True iff a write is needed.
+PairedMutator = Callable[[dict], bool]
+
+
 class WorkspaceLike(Protocol):
+    """Minimal workspace surface the pair/revoke flow needs.
+
+    ``mutate_paired_json`` is the SINGLE serialized read-modify-write
+    primitive: it acquires the same advisory lock used by other writers
+    (e.g. ``core.containers.config.ensure_node_paired_entry``), reads the
+    current flat ``Record<deviceId, PairedDevice>`` (or {} if missing),
+    invokes the mutator in place, and writes only if it returned True.
+    """
+
     gateway_url: str
 
-    async def read_paired_json(self) -> dict | None: ...
-    async def write_paired_json(self, data: dict) -> None: ...
+    async def mutate_paired_json(self, mutator: PairedMutator) -> None: ...
     async def get_gateway_token(self) -> str: ...
 
 
@@ -151,21 +171,24 @@ async def pair_desktop_devices(
         commands=list(DESKTOP_CLI_COMMANDS),
     )
 
-    paired = (await workspace.read_paired_json()) or {"pairedByDeviceId": {}}
-    by_id = paired.setdefault("pairedByDeviceId", {})
+    def _mutate(paired: dict) -> bool:
+        # paired is a FLAT Record<deviceId, PairedDevice> per upstream's
+        # device-pairing.ts:181 (writeJson writes the inner record, not the
+        # `pairedByDeviceId` wrapper). Any prior operator / node / Mac entry
+        # from ecs_manager or a previous pair call lives at the top level —
+        # leave it alone unless its publicKey matches what we'd write.
+        changed = False
+        for entry in (mac_entry, cli_entry):
+            device_id = entry["deviceId"]
+            existing = paired.get(device_id)
+            if existing and existing.get("publicKey") == entry["publicKey"]:
+                # Idempotent: existing entry has the same key — keep its tokens.
+                continue
+            paired[device_id] = entry
+            changed = True
+        return changed
 
-    needs_write = False
-    for entry in (mac_entry, cli_entry):
-        device_id = entry["deviceId"]
-        existing = by_id.get(device_id)
-        if existing and existing.get("publicKey") == entry["publicKey"]:
-            # Idempotent: existing entry has the same key — keep its tokens.
-            continue
-        by_id[device_id] = entry
-        needs_write = True
-
-    if needs_write:
-        await workspace.write_paired_json(paired)
+    await workspace.mutate_paired_json(_mutate)
 
     return PairResult(
         gateway_url=workspace.gateway_url,
@@ -190,17 +213,26 @@ async def revoke_desktop_device(
     keyed by deviceId — this is the security-review HIGH fix for stolen-Mac
     scenarios where paired.json removal alone only blocks future reconnects.
     """
-    paired = await workspace.read_paired_json()
-    if not paired or device_id not in paired.get("pairedByDeviceId", {}):
-        # Still attempt force_close in case the device is connected without a
-        # paired entry (shouldn't happen, but defensive).
-        await force_close_device(device_id)
-        return False
+    removed = {"value": False}
 
-    del paired["pairedByDeviceId"][device_id]
-    await workspace.write_paired_json(paired)
+    def _mutate(paired: dict) -> bool:
+        # Flat record: deviceId is a top-level key.
+        if device_id not in paired:
+            return False
+        del paired[device_id]
+        removed["value"] = True
+        return True
+
+    await workspace.mutate_paired_json(_mutate)
+    # Always attempt force_close — defends against a connected device whose
+    # paired entry has already been wiped out-of-band.
     await force_close_device(device_id)
-    return True
+    return removed["value"]
+
+
+# ---------------------------------------------------------------------------
+# EFS adapter: file-locked RMW against <EFS>/users/{owner_id}/devices/paired.json
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -208,15 +240,32 @@ class EfsWorkspaceAdapter:
     """Concrete WorkspaceLike implementation against the real EFS workspace
     + container repo.
 
-    - paired.json lives at ``<EFS>/users/{owner_id}/paired.json`` and is the
-      same file OpenClaw's gateway reads on container start. The owner_id IS
-      the per-user/per-org EFS root identifier (one container per owner).
+    - paired.json lives at ``<EFS>/users/{owner_id}/devices/paired.json`` —
+      this is the path openclaw's ``resolvePairingPaths`` resolves
+      (``pairing-files.ts:6-13``) and the gateway reads on container start.
+      Storing at ``<owner>/paired.json`` would be invisible to the gateway.
+    - On disk the file is a FLAT ``Record<deviceId, PairedDevice>`` —
+      upstream's ``writeJson(pairedPath, state.pairedByDeviceId)`` persists
+      only the inner record (``device-pairing.ts:181,186``). The
+      ``pairedByDeviceId`` wrapper exists ONLY as an in-memory type and
+      MUST NOT be written.
     - The gateway_token is the per-container token minted by ECS provisioning
       and stored on the containers DDB row.
 
-    The underlying Workspace methods (``read_file`` / ``write_file``) are
-    synchronous; we wrap them in async methods to satisfy the WorkspaceLike
-    Protocol used by ``pair_desktop_devices`` / ``revoke_desktop_device``.
+    Concurrency: ``mutate_paired_json`` takes an exclusive ``fcntl.lockf``
+    on ``<owner>/devices/paired.json.lock`` for the FULL read-modify-write
+    window. Matches the canonical pattern in ``core/services/config_patcher.py``
+    (``_locked_rmw`` / ``append_cron_jobs``) so cross-process writers — the
+    in-container node re-registering itself during first connect, the
+    desktop pair flow, the admin update workers — serialize on the same lock
+    and never clobber each other's writes.
+
+    Why a separate ``.lock`` file (instead of locking ``paired.json``
+    directly): ``fcntl.lockf`` is keyed on the file inode, but our write
+    path swaps the inode out via ``os.rename(tmp, paired.json)``. A second
+    writer locking the (now-stale) original inode would race the rename.
+    A dedicated lock file is never renamed, so concurrent writers always
+    contend on the same inode.
     """
 
     owner_id: str
@@ -228,20 +277,128 @@ class EfsWorkspaceAdapter:
     def gateway_url(self) -> str:
         return self.gateway_ws_url
 
-    async def read_paired_json(self) -> dict | None:
-        try:
-            raw = self.workspace.read_file(self.owner_id, "paired.json")
-        except WorkspaceError:
-            return None
-        try:
-            return json.loads(raw)
-        except (ValueError, TypeError):
-            return None
+    def _paths(self) -> tuple[str, str, str, str]:
+        """Resolve ``(devices_dir, paired_path, lock_path, owner_dir)``."""
+        owner_dir = str(self.workspace.user_path(self.owner_id))
+        devices_dir = os.path.join(owner_dir, "devices")
+        paired_path = os.path.join(devices_dir, "paired.json")
+        lock_path = os.path.join(devices_dir, "paired.json.lock")
+        return devices_dir, paired_path, lock_path, owner_dir
 
-    async def write_paired_json(self, data: dict) -> None:
-        self.workspace.write_file(
-            self.owner_id, "paired.json", json.dumps(data, indent=2)
-        )
+    async def mutate_paired_json(self, mutator: PairedMutator) -> None:
+        """Locked read-modify-write of ``devices/paired.json``.
+
+        The mutator runs synchronously inside the lock — keep it cheap.
+        If it returns False, no write occurs (idempotent path) and no
+        directories are created. This is what makes "revoke against a
+        never-paired owner" safe to call on hosts where the EFS mount
+        path is read-only or absent (e.g. unit tests on macOS where the
+        default ``/mnt/efs/users`` doesn't exist).
+        """
+        devices_dir, paired_path, lock_path, _ = self._paths()
+
+        def _do_rmw():
+            current: dict = {}
+            paired_exists = os.path.exists(paired_path)
+
+            lock_fd = None
+            try:
+                if paired_exists:
+                    # Acquire the cross-process lock BEFORE reading so we
+                    # see a consistent view across concurrent writers
+                    # (in-container node self-registration, admin
+                    # workers, /desktop/pair).
+                    lock_fd = self._open_lock_fd(devices_dir, lock_path)
+                    fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+                    try:
+                        with open(paired_path, "r") as f:
+                            loaded = json.load(f)
+                        if isinstance(loaded, dict):
+                            current = loaded
+                        else:
+                            logger.warning(
+                                "paired.json for owner %s was not a dict (got %s); resetting",
+                                self.owner_id,
+                                type(loaded).__name__,
+                            )
+                    except (OSError, ValueError) as exc:
+                        logger.warning(
+                            "Failed to parse paired.json for owner %s (%s); resetting",
+                            self.owner_id,
+                            exc,
+                        )
+
+                changed = mutator(current)
+                if not changed:
+                    return
+
+                # Phase 2 — write. If paired.json didn't exist we haven't
+                # opened the lock yet; create devices/ first, then lock.
+                if lock_fd is None:
+                    os.makedirs(devices_dir, exist_ok=True)
+                    self._chown_uid_1000_best_effort(devices_dir)
+                    lock_fd = self._open_lock_fd(devices_dir, lock_path)
+                    fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+
+                # Validate serializability before touching disk.
+                serialized = json.dumps(current, indent=2)
+
+                fd, tmp_path = tempfile.mkstemp(dir=devices_dir, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        f.write(serialized)
+                    self._chown_uid_1000_best_effort(tmp_path)
+                    os.rename(tmp_path, paired_path)
+                except Exception:
+                    if os.path.exists(tmp_path):
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                    raise
+
+                logger.info(
+                    "Wrote paired.json for owner %s (%d entries)",
+                    self.owner_id,
+                    len(current),
+                )
+            finally:
+                if lock_fd is not None:
+                    fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+                    lock_fd.close()
+
+        await asyncio.to_thread(_do_rmw)
+
+    def _open_lock_fd(self, devices_dir: str, lock_path: str):
+        """Open the dedicated ``.lock`` file in r+ mode, creating it if missing.
+
+        A separate ``.lock`` file (not ``paired.json`` itself) is
+        required because the write path swaps paired.json's inode via
+        ``os.rename`` — a lock held on the old inode wouldn't protect
+        against a new writer racing the rename.
+        """
+        if not os.path.exists(lock_path):
+            os.makedirs(devices_dir, exist_ok=True)
+            self._chown_uid_1000_best_effort(devices_dir)
+            # ``open(..., "a")`` creates the file if missing without
+            # truncating concurrent locks.
+            with open(lock_path, "a"):
+                pass
+            self._chown_uid_1000_best_effort(lock_path)
+        return open(lock_path, "r+")
+
+    def _chown_uid_1000_best_effort(self, path: str) -> None:
+        """Match OpenClaw container ownership (node uid=1000 gid=1000).
+
+        Only chown if running as root (backend container runs as root;
+        tests run as the local user where chown(other) is denied). Mirrors
+        ``config_patcher._locked_rmw``.
+        """
+        try:
+            if os.getuid() == 0:
+                os.chown(path, 1000, 1000)
+        except OSError:
+            pass
 
     async def get_gateway_token(self) -> str:
         container = await self.container_repo.get_by_owner_id(self.owner_id)

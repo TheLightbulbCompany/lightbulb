@@ -155,12 +155,19 @@ async def ensure_node_paired_entry(
     desktop sends the pubkey directly to ``POST /desktop/pair`` and the
     backend just writes it into paired.json.
 
-    Concurrency: ``WorkspaceLike`` implementations are responsible for
-    serializing reads/writes against the underlying EFS paired.json. The
-    real adapter (``EfsWorkspaceAdapter``) uses the workspace's own
-    sync read/write primitives wrapped in async methods; the desktop-pair
-    flow writes via the same path and is the only mutator in the current
-    architecture.
+    On disk paired.json is a FLAT ``Record<deviceId, PairedDevice>`` —
+    upstream's ``writeJson(pairedPath, state.pairedByDeviceId)`` only
+    persists the inner record (``openclaw/src/infra/device-pairing.ts:181``).
+    The ``pairedByDeviceId`` wrapper is in-memory only and MUST NOT be
+    written.
+
+    Concurrency: serialization is delegated to the workspace's
+    ``mutate_paired_json`` primitive. The real adapter
+    (``EfsWorkspaceAdapter``) holds an exclusive ``fcntl.lockf`` on
+    ``<owner>/devices/paired.json.lock`` for the full read-modify-write
+    window — so the in-container node's first-connect self-registration,
+    the ``/desktop/pair`` flow, and admin-side writers all serialize on
+    the same lock and never clobber each other.
 
     Returns True if the entry was new/changed (write occurred), False if it
     was already present with the same pubkey (idempotent no-op).
@@ -177,28 +184,24 @@ async def ensure_node_paired_entry(
         commands=commands,
     )
 
-    paired = (await workspace.read_paired_json()) or {"pairedByDeviceId": {}}
-    if not isinstance(paired, dict):
-        logger.warning(
-            "paired.json for owner %s was not a dict (got %s); resetting",
+    wrote = {"value": False}
+
+    def _mutate(paired: dict) -> bool:
+        existing = paired.get(entry["deviceId"])
+        if existing and existing.get("publicKey") == public_key_pem:
+            return False  # Idempotent — preserve existing tokens / metadata.
+        paired[entry["deviceId"]] = entry
+        wrote["value"] = True
+        return True
+
+    await workspace.mutate_paired_json(_mutate)
+    if wrote["value"]:
+        logger.info(
+            "Registered node device_id %s in paired.json for owner %s",
+            entry["deviceId"][:16],
             owner_id,
-            type(paired).__name__,
         )
-        paired = {"pairedByDeviceId": {}}
-    by_id = paired.setdefault("pairedByDeviceId", {})
-
-    existing = by_id.get(entry["deviceId"])
-    if existing and existing.get("publicKey") == public_key_pem:
-        return False  # Idempotent — preserve existing tokens / metadata.
-
-    by_id[entry["deviceId"]] = entry
-    await workspace.write_paired_json(paired)
-    logger.info(
-        "Registered node device_id %s in paired.json for owner %s",
-        entry["deviceId"][:16],
-        owner_id,
-    )
-    return True
+    return wrote["value"]
 
 
 def build_device_paired_json(

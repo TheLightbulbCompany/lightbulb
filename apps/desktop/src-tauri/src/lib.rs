@@ -7,6 +7,7 @@ mod node_client;
 mod node_invoke;
 pub mod pair_client;
 pub mod proxy;
+pub mod subprocess;
 mod tray;
 
 use std::sync::{Arc, Mutex, RwLock};

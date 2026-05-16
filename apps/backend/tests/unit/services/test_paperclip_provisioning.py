@@ -117,9 +117,7 @@ async def test_provision_org_seeds_friday_and_atlas(monkeypatch):
 
     names = {call.kwargs["name"] for call in admin.create_agent.await_args_list}
     roles = {call.kwargs["role"] for call in admin.create_agent.await_args_list}
-    idempotency_keys = {
-        call.kwargs["idempotency_key"] for call in admin.create_agent.await_args_list
-    }
+    idempotency_keys = {call.kwargs["idempotency_key"] for call in admin.create_agent.await_args_list}
 
     assert names == {"Friday", "Atlas"}
     # Friday must remain role='ceo' for default-agent selection;

@@ -210,9 +210,7 @@ async def test_provision_org_happy_path(repo):
     # Friday seed; Atlas is exercised in the unit-level suite at
     # tests/unit/services/test_paperclip_provisioning.py.
     assert admin.create_agent.await_count == 2
-    by_name = {
-        call.kwargs["name"]: call.kwargs for call in admin.create_agent.await_args_list
-    }
+    by_name = {call.kwargs["name"]: call.kwargs for call in admin.create_agent.await_args_list}
     assert set(by_name) == {"Friday", "Atlas"}
 
     agent_kwargs = by_name["Friday"]

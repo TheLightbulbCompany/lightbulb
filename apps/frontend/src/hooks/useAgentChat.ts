@@ -820,6 +820,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (clientRunIdRef.current === null) return;
+      // Multiple approvals can be pending for a single run (parallel
+      // tools each requesting one). Removing ONE via dismiss/expiry/
+      // terminal-error must not release the gate while siblings are
+      // still queued — the agent is still effectively paused on them.
+      const siblingPending = approvalQueueRef.current.some(
+        (a) => a.id !== removedId && a.agentId === agentIdRef.current,
+      );
+      if (siblingPending) return;
       const hasLiveStream =
         chatStreamRef.current !== null || toolStreamByIdRef.current.size > 0;
       if (!hasLiveStream) {

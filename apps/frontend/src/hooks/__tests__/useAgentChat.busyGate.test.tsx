@@ -378,6 +378,50 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
+  it("keeps the gate armed when one approval is dismissed but siblings for this agent remain (Codex P2)", async () => {
+    // Multiple approvals can be pending on the same run (e.g. parallel
+    // tools). Dismissing/expiring one must NOT release the gate while
+    // siblings are still queued — the agent is still effectively
+    // paused on them, and a follow-up would race.
+    approvalQueue = [
+      fakeApproval("agent-X", "ap-a"),
+      fakeApproval("agent-X", "ap-b"),
+    ];
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result, rerender } = renderHook(() =>
+      useAgentChat("agent-X", "session-1"),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage("kick off");
+    });
+    const r1 = lastClientRunId();
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+    );
+
+    // Dismiss one of two siblings.
+    await act(async () => {
+      notifyRemoval("ap-a", "dismissed");
+      rerender();
+    });
+
+    // Gate must still be armed → follow-up queues.
+    await act(async () => {
+      await result.current.sendMessage("follow-up");
+    });
+    expect(sendChat).toHaveBeenCalledTimes(1);
+    expect(result.current.queuedMessages).toHaveLength(1);
+
+    // Now dismiss the remaining sibling — gate releases, queued flush.
+    await act(async () => {
+      notifyRemoval("ap-b", "dismissed");
+      rerender();
+    });
+    expect(sendChat).toHaveBeenCalledTimes(2);
+    expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");
+  });
+
   it("clears isStreaming when releasing the gate on dismiss (Codex P2)", async () => {
     // The interim `done` skipped setIsStreaming(false) because the gate
     // was held for the approval. When the user dismisses the stuck

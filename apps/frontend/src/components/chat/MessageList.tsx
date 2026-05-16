@@ -20,6 +20,7 @@ import {
 } from "@/hooks/internal/toolBlockExtract";
 import type {
   ChatRenderItem,
+  ContentBlock,
   RenderGroup,
   HistoryMessage,
 } from "@/hooks/internal/types";
@@ -359,7 +360,17 @@ function MessageBlocks({
   message: HistoryMessage;
   onOpenFile?: (path: string) => void;
 }) {
-  const blocks = Array.isArray(message.content) ? message.content : [];
+  // Some HistoryMessage payloads — older chat.history rows and cron
+  // run transcripts — carry their assistant text on the top-level
+  // `message.text` field instead of in `content[]`. Without a fallback
+  // those messages render as empty bubbles (UserMessageRow already has
+  // the analogous fallback). Synthesize a single text block from
+  // `message.text` when content is missing or empty.
+  const blocks: ContentBlock[] = Array.isArray(message.content) && message.content.length > 0
+    ? message.content
+    : typeof message.text === "string" && message.text.length > 0
+      ? [{ type: "text", text: message.text }]
+      : [];
   const pairs = pairToolBlocks(blocks);
   const renderedToolIds = new Set(pairs.map((p) => p.toolUseId));
   const rendered: React.ReactNode[] = [];

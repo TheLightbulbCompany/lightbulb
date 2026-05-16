@@ -20,6 +20,11 @@ name: Desktop App Build
 # tauri-apps/tauri#12160 closed as not-planned.
 on:
   push:
+    # main pushes run the cargo compile only — populates the Swatinem
+    # cache on the default branch so tag-triggered builds can read it
+    # via the only cross-ref fallback GitHub offers. Skips sign + DMG +
+    # notarize + release.
+    branches: [main]
     tags:
       - 'desktop-v*'
       - 'desktop-dev-v*'
@@ -158,6 +163,7 @@ jobs:
       # in the next step. tauri-action then uses the same keychain
       # for its own signing of the outer .app + DMG.
       - name: Set up signing keychain
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           KEYCHAIN_PATH="$RUNNER_TEMP/isol8-build.keychain-db"
@@ -209,6 +215,7 @@ jobs:
       # node — so they inherit node's JIT permission and don't
       # need the entitlement on their own signatures.
       - name: Pre-sign embedded native modules
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           export SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
@@ -283,6 +290,7 @@ jobs:
           rm -f "$MACHO_LIST"
 
       - name: Build desktop app (${{ matrix.rust-target }})
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: apps/desktop
@@ -312,3 +320,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ISOL8_CALLBACK_URL: ${{ steps.env.outputs.callback_url }}
+
+      # Main-push path: compile the Rust binary only — no Tauri bundle,
+      # no sign, no notarize, no release. Swatinem auto-saves target/
+      # at job end with the same key the tag path uses, so the next tag
+      # build reads this warm cache via the default-branch fallback.
+      # `cargo build --release` exercises the same dependency graph as
+      # `cargo tauri build` because the deps are driven by Cargo.toml.
+      - name: Compile to warm cache (main pushes only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: apps/desktop/src-tauri
+        run: cargo build --release --target ${{ matrix.rust-target }}

@@ -2,6 +2,7 @@ pub mod browser_sidecar;
 mod exec_approvals;
 pub mod file_access;
 pub mod file_transfer;
+pub mod keychain;
 mod node_client;
 mod node_invoke;
 mod tray;

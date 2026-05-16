@@ -1339,7 +1339,7 @@ jobs:
           projectPath: apps/desktop
           tagName: desktop-dev-v0.3.${{ github.run_number }}
           releaseName: Isol8 Desktop [DEV] v0.3.${{ github.run_number }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: true
           args: --target aarch64-apple-darwin
         env:
@@ -1350,6 +1350,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ISOL8_CALLBACK_URL: https://dev.isol8.co/auth/desktop-callback
+        if: steps.changes.outputs.desktop == 'true'
+      - name: Publish draft release
+        run: gh release edit "desktop-dev-v0.3.${{ github.run_number }}" --repo
+          Isol8AI/isol8 --draft=false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: steps.changes.outputs.desktop == 'true'
   dev-DeployVercelDev:
     name: DeployVercelDev
@@ -2046,7 +2052,7 @@ jobs:
           projectPath: apps/desktop
           tagName: desktop-v0.3.${{ github.run_number }}
           releaseName: Isol8 Desktop v0.3.${{ github.run_number }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           args: --target aarch64-apple-darwin
         env:
@@ -2057,6 +2063,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ISOL8_CALLBACK_URL: https://isol8.co/auth/desktop-callback
+        if: steps.changes.outputs.desktop == 'true'
+      - name: Publish draft release
+        run: gh release edit "desktop-v0.3.${{ github.run_number }}" --repo
+          Isol8AI/isol8 --draft=false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: steps.changes.outputs.desktop == 'true'
   prod-DeployVercelProd:
     name: DeployVercelProd
@@ -2134,3 +2146,6 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+permissions:
+  id-token: write
+  contents: write

@@ -205,8 +205,15 @@ async def test_provision_org_happy_path(repo):
     approve_kwargs = admin.approve_join_request.call_args.kwargs
     assert approve_kwargs["session_cookie"] == "admin-cookie-test"  # admin approves
 
-    admin.create_agent.assert_awaited_once()
-    agent_kwargs = admin.create_agent.call_args.kwargs
+    # provision_org seeds TWO agents in one step: Friday (ceo) and Atlas
+    # (recruiter). The existing kwargs assertions below describe the
+    # Friday seed; Atlas is exercised in the unit-level suite at
+    # tests/unit/services/test_paperclip_provisioning.py.
+    assert admin.create_agent.await_count == 2
+    by_name = {call.kwargs["name"]: call.kwargs for call in admin.create_agent.await_args_list}
+    assert set(by_name) == {"Friday", "Atlas"}
+
+    agent_kwargs = by_name["Friday"]
     assert agent_kwargs["company_id"] == "co_acme"
     # Canonical adapter_type is the underscore form ("openclaw_gateway")
     # — the previous hyphenated value ("openclaw-gateway") was rejected

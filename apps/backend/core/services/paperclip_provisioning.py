@@ -362,6 +362,37 @@ class PaperclipProvisioning:
                     e,
                 )
 
+            # 7b. Best-effort seed an "Atlas" agent (role=recruiter) alongside
+            #     Friday. Atlas is the in-house "agent recruiter" — Friday-as-
+            #     orchestrator delegates "hire a new agent" requests to Atlas,
+            #     so it must exist on day one. Wrapped in its own try/except
+            #     so an Atlas failure does NOT undo a successful Friday seed
+            #     (defense-in-depth — both seeds are best-effort).
+            #
+            #     ``role="recruiter"`` is deliberate: ``config.py:463`` selects
+            #     the agent with ``role=="ceo"`` as ``default: true``. Friday
+            #     must remain the default, so Atlas cannot share that role.
+            try:
+                await self._admin.create_agent(
+                    company_id=company_id,
+                    name="Atlas",
+                    role="recruiter",
+                    adapter_type=OPENCLAW_GATEWAY_TYPE,
+                    adapter_config=synthesize_openclaw_adapter(
+                        gateway_url=_ws_gateway_url(self._env_name),
+                        service_token=svc_token,
+                        user_id=owner_user_id,
+                    ),
+                    session_cookie=new_user_session_cookie,
+                    idempotency_key=f"{owner_user_id}:atlas-agent",
+                )
+            except PaperclipApiError as e:
+                logger.warning(
+                    "paperclip_provisioning.provision_org: seed Atlas agent failed for %s: %s",
+                    owner_user_id,
+                    e,
+                )
+
             # 8. Persist. The DDB column is still ``org_id`` — that's a
             #    Paperclip-side stored concept; we just feed it from the
             #    new ``owner_id`` kwarg.

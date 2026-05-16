@@ -3,6 +3,8 @@ heavier moto-backed suite in ``tests/test_paperclip_provisioning.py``.
 
 Currently exercises:
 * The auto-seeded Main Agent name + role (``"Friday"`` / ``"ceo"``).
+* The auto-seeded Atlas (recruiter) agent and its independence from
+  the Friday seed (defense-in-depth).
 * The service-token mint contract: containers are keyed by
   ``owner_id`` and the JWT ``sub`` claim MUST equal that value (NOT
   the human creator's ``user_id``) — see ``service_token.mint`` and
@@ -12,6 +14,8 @@ Currently exercises:
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from core.services.paperclip_admin_client import PaperclipApiError
 
 
 def _build_provision_org_doubles(monkeypatch):
@@ -89,8 +93,14 @@ def _build_provision_member_doubles(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_provision_org_seeds_agent_named_friday(monkeypatch):
-    """The auto-seeded CEO agent for a new org is named 'Friday'."""
+async def test_provision_org_seeds_friday_and_atlas(monkeypatch):
+    """provision_org seeds BOTH Friday (ceo) and Atlas (recruiter) in one step.
+
+    Atlas is the in-house agent-recruiter that Friday-as-orchestrator
+    delegates "hire a new agent" work to, so it must exist alongside
+    Friday at day-one provisioning. Friday must keep role='ceo' so
+    config.py:463's default-agent selection still lands on Friday.
+    """
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
     admin, repo = _build_provision_org_doubles(monkeypatch)
@@ -102,9 +112,67 @@ async def test_provision_org_seeds_agent_named_friday(monkeypatch):
         owner_email="owner@example.com",
     )
 
-    admin.create_agent.assert_awaited_once()
-    assert admin.create_agent.await_args.kwargs["name"] == "Friday"
-    assert admin.create_agent.await_args.kwargs["role"] == "ceo"
+    # Both Friday + Atlas are seeded in the same provision step.
+    assert admin.create_agent.await_count == 2
+
+    names = {call.kwargs["name"] for call in admin.create_agent.await_args_list}
+    roles = {call.kwargs["role"] for call in admin.create_agent.await_args_list}
+    idempotency_keys = {call.kwargs["idempotency_key"] for call in admin.create_agent.await_args_list}
+
+    assert names == {"Friday", "Atlas"}
+    # Friday must remain role='ceo' for default-agent selection;
+    # Atlas must be 'recruiter' (NOT 'ceo') so it doesn't steal default.
+    assert roles == {"ceo", "recruiter"}
+    # Idempotency keys are distinct so retries don't collide.
+    assert idempotency_keys == {
+        "user_owner:main-agent",
+        "user_owner:atlas-agent",
+    }
+
+    # Cross-check the pairing: Friday ↔ ceo ↔ :main-agent, Atlas ↔ recruiter ↔ :atlas-agent.
+    by_name = {call.kwargs["name"]: call.kwargs for call in admin.create_agent.await_args_list}
+    assert by_name["Friday"]["role"] == "ceo"
+    assert by_name["Friday"]["idempotency_key"] == "user_owner:main-agent"
+    assert by_name["Atlas"]["role"] == "recruiter"
+    assert by_name["Atlas"]["idempotency_key"] == "user_owner:atlas-agent"
+
+
+@pytest.mark.asyncio
+async def test_provision_org_atlas_failure_does_not_block_friday_seed(monkeypatch):
+    """Defense-in-depth: an Atlas seed failure must NOT undo a successful
+    Friday seed.
+
+    Both seeds are best-effort and wrapped in independent try/except
+    blocks so a 5xx from Paperclip on Atlas leaves the company usable
+    with Friday already created.
+    """
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+
+    # Friday succeeds; Atlas raises a 500 — mirrors a transient
+    # Paperclip outage on the second seed call.
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            None,
+            PaperclipApiError("atlas create failed", status_code=500, body="boom"),
+        ]
+    )
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    # No exception should propagate out — both seeds are best-effort.
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # We still attempted both seeds (the Friday try/except didn't
+    # short-circuit the Atlas attempt) ...
+    assert admin.create_agent.await_count == 2
+    # ... and the row was still persisted (provision_org completed).
+    repo.put.assert_awaited_once()
 
 
 @pytest.mark.asyncio

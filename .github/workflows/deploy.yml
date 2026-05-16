@@ -1204,25 +1204,39 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Check for desktop changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            desktop:
+              - 'apps/desktop/**'
+              - 'pnpm-lock.yaml'
+              - 'apps/infra/lib/app.ts'
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        if: steps.changes.outputs.desktop == 'true'
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
+        if: steps.changes.outputs.desktop == 'true'
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+        if: steps.changes.outputs.desktop == 'true'
       - name: Cache Rust target dir
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri -> target
           key: aarch64-apple-darwin
           shared-key: desktop
+        if: steps.changes.outputs.desktop == 'true'
       - name: Install dependencies
         run: pnpm install
+        if: steps.changes.outputs.desktop == 'true'
       - name: Patch tauri.conf.json for dev
         run: >-
           TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
@@ -1245,8 +1259,10 @@ jobs:
           .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity:
           .bundle.macOS.signingIdentity, updaterEndpoints:
           .plugins.updater.endpoints}' "$TAURI_CFG"
+        if: steps.changes.outputs.desktop == 'true'
       - name: Vendor browser sidecar (aarch64-apple-darwin)
         run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh aarch64-apple-darwin
+        if: steps.changes.outputs.desktop == 'true'
       - name: Set up signing keychain
         run: |-
           set -euo pipefail
@@ -1272,6 +1288,7 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        if: steps.changes.outputs.desktop == 'true'
       - name: Pre-sign embedded native modules
         run: |-
           set -euo pipefail
@@ -1315,6 +1332,7 @@ jobs:
 
           xargs -0 -P 8 -n 1 /tmp/sign-one.sh < "$MACHO_LIST"
           rm -f "$MACHO_LIST"
+        if: steps.changes.outputs.desktop == 'true'
       - name: Build desktop app (aarch64-apple-darwin)
         uses: tauri-apps/tauri-action@v0
         with:
@@ -1332,6 +1350,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ISOL8_CALLBACK_URL: https://dev.isol8.co/auth/desktop-callback
+        if: steps.changes.outputs.desktop == 'true'
   dev-DeployVercelDev:
     name: DeployVercelDev
     permissions:
@@ -1892,25 +1911,39 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Check for desktop changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            desktop:
+              - 'apps/desktop/**'
+              - 'pnpm-lock.yaml'
+              - 'apps/infra/lib/app.ts'
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        if: steps.changes.outputs.desktop == 'true'
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
+        if: steps.changes.outputs.desktop == 'true'
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+        if: steps.changes.outputs.desktop == 'true'
       - name: Cache Rust target dir
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri -> target
           key: aarch64-apple-darwin
           shared-key: desktop
+        if: steps.changes.outputs.desktop == 'true'
       - name: Install dependencies
         run: pnpm install
+        if: steps.changes.outputs.desktop == 'true'
       - name: Patch tauri.conf.json for prod
         run: >-
           TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
@@ -1933,8 +1966,10 @@ jobs:
           .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity:
           .bundle.macOS.signingIdentity, updaterEndpoints:
           .plugins.updater.endpoints}' "$TAURI_CFG"
+        if: steps.changes.outputs.desktop == 'true'
       - name: Vendor browser sidecar (aarch64-apple-darwin)
         run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh aarch64-apple-darwin
+        if: steps.changes.outputs.desktop == 'true'
       - name: Set up signing keychain
         run: |-
           set -euo pipefail
@@ -1960,6 +1995,7 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        if: steps.changes.outputs.desktop == 'true'
       - name: Pre-sign embedded native modules
         run: |-
           set -euo pipefail
@@ -2003,6 +2039,7 @@ jobs:
 
           xargs -0 -P 8 -n 1 /tmp/sign-one.sh < "$MACHO_LIST"
           rm -f "$MACHO_LIST"
+        if: steps.changes.outputs.desktop == 'true'
       - name: Build desktop app (aarch64-apple-darwin)
         uses: tauri-apps/tauri-action@v0
         with:
@@ -2020,6 +2057,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ISOL8_CALLBACK_URL: https://isol8.co/auth/desktop-callback
+        if: steps.changes.outputs.desktop == 'true'
   prod-DeployVercelProd:
     name: DeployVercelProd
     permissions:

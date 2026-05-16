@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -396,3 +397,131 @@ class TestDeepMerge:
 
     def test_non_dict_override(self):
         assert _deep_merge({"a": {"b": 1}}, {"a": "string"}) == {"a": "string"}
+
+
+# Deterministic Ed25519 public key in PEM form — same fixture used in
+# test_desktop_pair.py. The derived deviceId is stable across runs.
+_FIXTURE_PUBKEY_PEM = """\
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAO2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik=
+-----END PUBLIC KEY-----
+"""
+_FIXTURE_EXPECTED_DEVICE_ID = "139e3940e64b5491722088d9a0d741628fc826e09475d341a780acde3c4b8070"
+
+
+@pytest.mark.asyncio
+class TestEnsureNodePairedEntry:
+    """``ensure_node_paired_entry`` now takes a pubkey PEM directly — the
+    backend no longer holds device private keys. Keys are owned by the
+    client (macOS Keychain); backend just writes paired.json from a
+    caller-supplied pubkey.
+    """
+
+    async def test_writes_entry_from_pubkey(self):
+        from core.containers.config import ensure_node_paired_entry
+
+        mock_workspace = MagicMock()
+        mock_workspace.read_paired_json = AsyncMock(return_value=None)
+        mock_workspace.write_paired_json = AsyncMock()
+
+        added = await ensure_node_paired_entry(
+            owner_id="owner_42",
+            public_key_pem=_FIXTURE_PUBKEY_PEM,
+            client_id="node-host",
+            display_name="Alice | Isol8 Desktop (CLI)",
+            commands=["system.run", "browser.proxy"],
+            workspace=mock_workspace,
+        )
+
+        assert added is True
+        mock_workspace.write_paired_json.assert_awaited_once()
+        written = mock_workspace.write_paired_json.await_args.args[0]
+        assert "pairedByDeviceId" in written
+        entries = list(written["pairedByDeviceId"].values())
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["publicKey"] == _FIXTURE_PUBKEY_PEM
+        assert entry["clientId"] == "node-host"
+        assert entry["role"] == "node"
+        assert entry["commands"] == ["system.run", "browser.proxy"]
+        assert entry["displayName"] == "Alice | Isol8 Desktop (CLI)"
+        # deviceId derives from pubkey (sha256 of raw key bytes).
+        assert entry["deviceId"] == _FIXTURE_EXPECTED_DEVICE_ID
+        # tokens.node is load-bearing for the role-upgrade gate.
+        assert "tokens" in entry and "node" in entry["tokens"]
+        assert entry["tokens"]["node"]["token"]
+
+    async def test_idempotent_when_pubkey_matches(self):
+        """Calling twice with the same pubkey is a no-op on the second call."""
+        from core.containers.config import ensure_node_paired_entry
+
+        state: dict = {}
+
+        async def read():
+            return state.get("paired")
+
+        async def write(data):
+            state["paired"] = data
+
+        mock_workspace = MagicMock()
+        mock_workspace.read_paired_json = AsyncMock(side_effect=read)
+        mock_workspace.write_paired_json = AsyncMock(side_effect=write)
+
+        added1 = await ensure_node_paired_entry(
+            owner_id="o",
+            public_key_pem=_FIXTURE_PUBKEY_PEM,
+            client_id="node-host",
+            display_name="N",
+            commands=["system.run"],
+            workspace=mock_workspace,
+        )
+        added2 = await ensure_node_paired_entry(
+            owner_id="o",
+            public_key_pem=_FIXTURE_PUBKEY_PEM,
+            client_id="node-host",
+            display_name="N",
+            commands=["system.run"],
+            workspace=mock_workspace,
+        )
+
+        assert added1 is True
+        assert added2 is False
+        assert mock_workspace.write_paired_json.await_count == 1
+
+    async def test_preserves_other_paired_entries(self):
+        """Adding a new device doesn't clobber existing paired entries."""
+        from core.containers.config import ensure_node_paired_entry
+
+        existing = {
+            "pairedByDeviceId": {
+                "deadbeef": {
+                    "deviceId": "deadbeef",
+                    "publicKey": "other-pem",
+                    "role": "node",
+                    "clientId": "openclaw-macos",
+                    "displayName": "Bob | Isol8 Mac",
+                    "commands": ["system.notify"],
+                    "tokens": {"node": {"token": "keep-me", "createdAtMs": 1}},
+                    "createdAtMs": 1,
+                    "approvedAtMs": 1,
+                }
+            }
+        }
+        mock_workspace = MagicMock()
+        mock_workspace.read_paired_json = AsyncMock(return_value=existing)
+        mock_workspace.write_paired_json = AsyncMock()
+
+        await ensure_node_paired_entry(
+            owner_id="o",
+            public_key_pem=_FIXTURE_PUBKEY_PEM,
+            client_id="node-host",
+            display_name="Alice | CLI",
+            commands=["system.run"],
+            workspace=mock_workspace,
+        )
+
+        written = mock_workspace.write_paired_json.await_args.args[0]
+        by_id = written["pairedByDeviceId"]
+        assert "deadbeef" in by_id
+        assert by_id["deadbeef"]["tokens"]["node"]["token"] == "keep-me"
+        assert _FIXTURE_EXPECTED_DEVICE_ID in by_id

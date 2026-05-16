@@ -13,6 +13,8 @@ them on /desktop/pair.
 import hashlib
 import secrets
 import time
+from dataclasses import dataclass
+from typing import Protocol
 
 from cryptography.hazmat.primitives import serialization
 
@@ -99,3 +101,74 @@ def build_paired_entry(
         "createdAtMs": now_ms,
         "approvedAtMs": now_ms,
     }
+
+
+class WorkspaceLike(Protocol):
+    gateway_url: str
+
+    async def read_paired_json(self) -> dict | None: ...
+    async def write_paired_json(self, data: dict) -> None: ...
+    async def get_gateway_token(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class PairResult:
+    gateway_url: str
+    gateway_token: str
+    device_id_mac: str
+    device_id_cli: str
+    commands_mac: tuple[str, ...]
+    commands_cli: tuple[str, ...]
+
+
+async def pair_desktop_devices(
+    *,
+    user_id: str,
+    owner_id: str,
+    display_name_base: str,
+    tauri_mac_pubkey: str,
+    cli_pubkey: str,
+    workspace: WorkspaceLike,
+) -> PairResult:
+    """Idempotently register the user's two devices in the owner's container paired.json.
+
+    Returns connection material the desktop needs to spawn the openclaw subprocess
+    and connect both nodes to the gateway.
+    """
+    mac_entry = build_paired_entry(
+        pubkey_pem=tauri_mac_pubkey,
+        client_id="openclaw-macos",
+        display_name=f"{display_name_base} | Isol8 Mac",
+        commands=list(DESKTOP_MAC_COMMANDS),
+    )
+    cli_entry = build_paired_entry(
+        pubkey_pem=cli_pubkey,
+        client_id="node-host",
+        display_name=f"{display_name_base} | Isol8 Desktop (CLI)",
+        commands=list(DESKTOP_CLI_COMMANDS),
+    )
+
+    paired = (await workspace.read_paired_json()) or {"pairedByDeviceId": {}}
+    by_id = paired.setdefault("pairedByDeviceId", {})
+
+    needs_write = False
+    for entry in (mac_entry, cli_entry):
+        device_id = entry["deviceId"]
+        existing = by_id.get(device_id)
+        if existing and existing.get("publicKey") == entry["publicKey"]:
+            # Idempotent: existing entry has the same key — keep its tokens.
+            continue
+        by_id[device_id] = entry
+        needs_write = True
+
+    if needs_write:
+        await workspace.write_paired_json(paired)
+
+    return PairResult(
+        gateway_url=workspace.gateway_url,
+        gateway_token=await workspace.get_gateway_token(),
+        device_id_mac=mac_entry["deviceId"],
+        device_id_cli=cli_entry["deviceId"],
+        commands_mac=DESKTOP_MAC_COMMANDS,
+        commands_cli=DESKTOP_CLI_COMMANDS,
+    )

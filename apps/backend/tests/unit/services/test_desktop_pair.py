@@ -1,11 +1,17 @@
+from unittest.mock import AsyncMock
+
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.services.desktop_pair import (
     DESKTOP_CLI_COMMANDS,
     DESKTOP_MAC_COMMANDS,
+    PairResult,
     assert_command_sets_disjoint,
     build_paired_entry,
     derive_device_id,
+    pair_desktop_devices,
 )
 
 
@@ -78,3 +84,100 @@ _FIXTURE_EXPECTED_DEVICE_ID = "139e3940e64b5491722088d9a0d741628fc826e09475d341a
 
 def test_derive_device_id_matches_upstream_spki_strip():
     assert derive_device_id(_FIXTURE_PEM) == _FIXTURE_EXPECTED_DEVICE_ID
+
+
+async def test_pair_desktop_devices_writes_two_paired_entries():
+    mock_workspace = AsyncMock()
+    mock_workspace.read_paired_json = AsyncMock(return_value={"pairedByDeviceId": {}})
+    mock_workspace.write_paired_json = AsyncMock()
+    mock_workspace.get_gateway_token = AsyncMock(return_value="container-gw-token")
+    mock_workspace.gateway_url = "wss://ws-dev.isol8.co"
+
+    # Use the same fixture PEM from earlier tests; for the cli side use a
+    # different pubkey to get a different deviceId.
+    tauri_mac_pubkey = _FIXTURE_PEM
+    # Different key for cli: generate from another deterministic seed
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x01" * 32)
+    cli_pubkey = cli_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+    result: PairResult = await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="owner_org_42",
+        display_name_base="Alice Smith",
+        tauri_mac_pubkey=tauri_mac_pubkey,
+        cli_pubkey=cli_pubkey,
+        workspace=mock_workspace,
+    )
+
+    assert result.gateway_url == "wss://ws-dev.isol8.co"
+    assert result.gateway_token == "container-gw-token"
+    assert result.device_id_mac != result.device_id_cli
+    assert result.commands_mac == DESKTOP_MAC_COMMANDS
+    assert result.commands_cli == DESKTOP_CLI_COMMANDS
+
+    mock_workspace.write_paired_json.assert_awaited_once()
+    written = mock_workspace.write_paired_json.await_args.args[0]
+    assert len(written["pairedByDeviceId"]) == 2
+
+    mac_entry = written["pairedByDeviceId"][result.device_id_mac]
+    assert mac_entry["clientId"] == "openclaw-macos"
+    assert mac_entry["displayName"] == "Alice Smith | Isol8 Mac"
+    assert mac_entry["commands"] == list(DESKTOP_MAC_COMMANDS)
+    assert mac_entry["tokens"]["node"]["token"]
+
+    cli_entry = written["pairedByDeviceId"][result.device_id_cli]
+    assert cli_entry["clientId"] == "node-host"
+    assert cli_entry["displayName"] == "Alice Smith | Isol8 Desktop (CLI)"
+    assert cli_entry["commands"] == list(DESKTOP_CLI_COMMANDS)
+
+
+async def test_pair_desktop_devices_idempotent_on_existing_entries():
+    """Calling pair twice with same pubkeys must not duplicate or rewrite."""
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x02" * 32)
+    tauri_pub = tauri_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x03" * 32)
+    cli_pub = cli_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+    # In-memory state shared across two calls
+    state = {"pairedByDeviceId": {}}
+
+    mock_workspace = AsyncMock()
+    mock_workspace.read_paired_json = AsyncMock(side_effect=lambda: state)
+
+    async def _write(d):
+        state.update(d)
+
+    mock_workspace.write_paired_json = AsyncMock(side_effect=_write)
+    mock_workspace.get_gateway_token = AsyncMock(return_value="t")
+    mock_workspace.gateway_url = "wss://ws-dev.isol8.co"
+
+    first = await pair_desktop_devices(
+        user_id="u",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=mock_workspace,
+    )
+    second = await pair_desktop_devices(
+        user_id="u",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=mock_workspace,
+    )
+
+    assert first.device_id_mac == second.device_id_mac
+    assert first.device_id_cli == second.device_id_cli
+    # Write should only be called ONCE (first call); second is idempotent no-op
+    assert mock_workspace.write_paired_json.await_count == 1

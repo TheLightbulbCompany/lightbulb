@@ -35,6 +35,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
 
 
+# Client IDs that handle their own connect.challenge via the upstream-relay
+# path (handle_node_connect). For these clients we MUST NOT send a synthetic
+# nonce on $connect -- it would race the real challenge from the upstream
+# OpenClaw container and could cause the subprocess to sign the wrong nonce.
+NODE_HOST_CLIENT_IDS = frozenset({"node-host", "openclaw-macos"})
+
+
 # Singleton instances (created lazily with async lock for thread safety)
 _connection_service: Optional[ConnectionService] = None
 _management_api_client: Optional[ManagementApiClient] = None
@@ -107,6 +114,7 @@ async def ws_connect(
     x_connection_id: Optional[str] = Header(None, alias="x-connection-id"),
     x_user_id: Optional[str] = Header(None, alias="x-user-id"),
     x_org_id: Optional[str] = Header(None, alias="x-org-id"),
+    x_client_id: Optional[str] = Header(None, alias="x-client-id"),
 ) -> Response:
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
@@ -142,7 +150,15 @@ async def ws_connect(
 
     # Send OpenClaw connect.challenge so the control UI SPA can complete
     # its handshake.  The chat frontend silently ignores this message.
-    background_tasks.add_task(_send_connect_challenge, x_connection_id)
+    #
+    # Skip for node-host clients (Tauri proxy / openclaw subprocess): they
+    # do client-first sequencing to API Gateway and receive the REAL
+    # connect.challenge from the upstream container via
+    # handle_node_connect's relay path. Sending a synthetic nonce here
+    # would race that and could cause the subprocess to sign the wrong
+    # nonce.
+    if x_client_id not in NODE_HOST_CLIENT_IDS:
+        background_tasks.add_task(_send_connect_challenge, x_connection_id)
 
     return Response(status_code=200)
 

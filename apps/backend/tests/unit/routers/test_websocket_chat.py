@@ -126,6 +126,96 @@ class TestConnectEndpoint:
         assert "user-id" in response.json()["detail"].lower()
         mock_connection_service.store_connection.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_connect_skips_synthetic_challenge_for_node_host(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """Connect should skip the synthetic connect.challenge for node-host clients.
+
+        The Tauri proxy is doing client-first sequencing; the real
+        connect.challenge will come from the upstream container via
+        handle_node_connect's relay path. Sending a synthetic nonce here
+        would race that and could cause the subprocess to sign the wrong
+        nonce.
+        """
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-node",
+                    "x-user-id": "test-user-456",
+                    "x-client-id": "node-host",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_synthetic_challenge_for_openclaw_macos(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """Connect should skip the synthetic connect.challenge for openclaw-macos clients."""
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-mac",
+                    "x-user-id": "test-user-456",
+                    "x-client-id": "openclaw-macos",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_sends_synthetic_challenge_for_default_client(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """Connect should send synthetic connect.challenge when no clientId header set.
+
+        Browser chat/control UI clients don't set x-client-id; they
+        depend on the synthetic challenge to complete their handshake.
+        """
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-browser",
+                    "x-user-id": "test-user-456",
+                },
+            )
+
+        assert response.status_code == 200
+        # Synthetic challenge fires via BackgroundTask after the response
+        # is returned -- TestClient/ASGITransport awaits background tasks
+        # before the context exits, so by here send_message has been called.
+        mock_management_api.send_message.assert_called_once()
+        call_args = mock_management_api.send_message.call_args
+        assert call_args[0][0] == "test-conn-browser"
+        payload = call_args[0][1]
+        assert payload["event"] == "connect.challenge"
+        assert "nonce" in payload["payload"]
+
+    @pytest.mark.asyncio
+    async def test_connect_sends_synthetic_challenge_for_unknown_client_id(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """An unrecognized clientId should still get the synthetic challenge (default behavior)."""
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-other",
+                    "x-user-id": "test-user-456",
+                    "x-client-id": "some-other-client",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_called_once()
+
 
 class TestDisconnectEndpoint:
     """Tests for POST /ws/disconnect endpoint."""

@@ -437,16 +437,18 @@ function tauriActionWithBlock(args: {
 //   0 Checkout, 1 Setup pnpm, 2 Setup Node, 3 Rust toolchain,
 //   4 Cache, 5 Install deps, 6 Patch tauri.conf.json,
 //   7 Vendor sidecar, 8 Signing keychain, 9 Pre-sign Mach-Os,
-//   10 Build desktop app (tauri-action)
+//   10 Build desktop app (tauri-action), 11 Publish draft release
 // After inserting `Check for desktop changes` at index 1 (see
 // gateDesktopJobOnPaths() below), every subsequent step shifts down by
-// one, so the tauri-action step moves from index 10 → 11.
+// one, so the tauri-action step moves from index 10 → 11 and the
+// publish step moves from 11 → 12.
 const PATHS_FILTER_STEP_IDX = 1;
 const TAURI_BUILD_STEP_IDX = 11;
-// Steps 2..11 inclusive (everything after Checkout + the new filter
-// step) need an `if: steps.changes.outputs.desktop == 'true'` guard.
+// Steps 2..12 inclusive (everything after Checkout + the new filter
+// step, through the new Publish-draft step at the end) need an
+// `if: steps.changes.outputs.desktop == 'true'` guard.
 const FIRST_GATED_STEP_IDX = 2;
-const LAST_GATED_STEP_IDX = 11;
+const LAST_GATED_STEP_IDX = 12;
 
 // Backend-only / infra-only / frontend-only pushes to main shouldn't
 // burn ~10min of macos-15 runner time rebuilding the unchanged desktop

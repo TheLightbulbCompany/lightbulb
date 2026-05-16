@@ -1350,11 +1350,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ISOL8_CALLBACK_URL: https://dev.isol8.co/auth/desktop-callback
+        if: steps.changes.outputs.desktop == 'true'
       - name: Publish draft release
         run: gh release edit "desktop-dev-v0.3.${{ github.run_number }}" --repo
           Isol8AI/isol8 --draft=false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.changes.outputs.desktop == 'true'
   dev-DeployVercelDev:
     name: DeployVercelDev
     permissions:
@@ -2061,11 +2063,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ISOL8_CALLBACK_URL: https://isol8.co/auth/desktop-callback
+        if: steps.changes.outputs.desktop == 'true'
       - name: Publish draft release
         run: gh release edit "desktop-v0.3.${{ github.run_number }}" --repo
           Isol8AI/isol8 --draft=false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.changes.outputs.desktop == 'true'
   prod-DeployVercelProd:
     name: DeployVercelProd
     permissions:

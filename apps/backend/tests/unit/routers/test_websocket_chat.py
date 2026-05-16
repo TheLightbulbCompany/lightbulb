@@ -59,7 +59,7 @@ class TestConnectEndpoint:
 
     @pytest.mark.asyncio
     async def test_connect_stores_connection(self, test_app, mock_connection_service):
-        """Connect should store connection in DynamoDB."""
+        """Connect should store connection in DynamoDB with type=chat by default."""
         async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
             response = await client.post(
                 "/ws/connect",
@@ -74,6 +74,7 @@ class TestConnectEndpoint:
             connection_id="test-conn-123",
             user_id="test-user-456",
             org_id=None,
+            connection_type="chat",
         )
 
     @pytest.mark.asyncio
@@ -94,6 +95,37 @@ class TestConnectEndpoint:
             connection_id="test-conn-123",
             user_id="test-user-456",
             org_id="test-org-789",
+            connection_type="chat",
+        )
+
+    @pytest.mark.asyncio
+    async def test_connect_marks_node_host_clients_as_node_type(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """node-host clientIds should be stored with connection_type='node'.
+
+        Regression for the PR #667 round-3 P1 backend rework: ws_connect
+        now kicks off `_kick_off_node_connect` for node-host clients (the
+        proxy no longer injects a wake-up frame to do it), so the
+        connection MUST be flagged 'node' at $connect time, not later
+        when the first frame arrives.
+        """
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-node-1",
+                    "x-user-id": "test-user-xyz",
+                    "x-client-id": "node-host",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_connection_service.store_connection.assert_called_once_with(
+            connection_id="test-conn-node-1",
+            user_id="test-user-xyz",
+            org_id=None,
+            connection_type="node",
         )
 
     @pytest.mark.asyncio

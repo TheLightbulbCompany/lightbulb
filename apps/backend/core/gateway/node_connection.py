@@ -6,21 +6,25 @@ docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md)
 the backend no longer holds device private keys. Clients (Tauri Rust +
 the openclaw subprocess) sign locally using keys stored in macOS Keychain.
 
-The relay's role is now strictly protocol-level:
+The relay's role is strictly protocol-level. Post-PR #667 round-3 there
+is no proxy-injected wake-up frame; the backend starts the handshake
+itself on `$connect` for node-host clientIds (see `ws_connect`):
 
-  1. Client's wake-up `connect` frame arrives (captured by handle_node_connect
-     before this object is created -- it's the GoneException-dodging shape
-     from the legacy flow).
+  1. `handle_node_connect` constructs this object and calls `connect()`
+     immediately after `$connect` for any node-host WS.
   2. This class opens upstream WSS to the user's container with role:"node".
   3. Container sends `connect.challenge` (nonce).
   4. We forward the challenge DOWN to the client via the push callback
      (Management API into the client's WS connection).
   5. Client signs locally with its Keychain key, sends signed `connect` back
      up the WS. The relay's $default handler routes that frame here via
-     `submit_signed_connect`.
+     `submit_signed_connect`. We capture `signed_req_id` so the eventual
+     `hello-ok` can be returned to the client keyed to the client's own
+     pending request id (not some proxy-generated wake-up id, which used
+     to silently break JSON-RPC correlation in the subprocess).
   6. We forward the signed connect upstream.
   7. Container returns `hello-ok` upstream; we return it so handle_node_connect
-     can forward to the client (rewriting res.id).
+     can forward to the client (rewriting res.id to `signed_req_id`).
 
 After handshake, steady-state relay: upstream -> client via push callback
 (`start_reader`), client -> upstream via `relay_to_upstream`.
@@ -74,6 +78,13 @@ class NodeUpstreamConnection:
         # the client returns it. The backend no longer derives it from a
         # locally-held private key.
         self.device_id: str | None = None
+        # signed_req_id is the JSON-RPC `id` from the client's signed
+        # `connect` request. handle_node_connect uses this to key the
+        # `hello-ok` it forwards DOWN so the subprocess's pending-request
+        # map can match the response. Without this, hello-ok was being
+        # keyed to a proxy-injected wake-up id (now gone) and the
+        # subprocess silently timed out — Codex round-3 P1 on PR #667.
+        self.signed_req_id: str | None = None
         self._ws = None
         self._connected = False
         self._reader_task: asyncio.Task | None = None
@@ -174,6 +185,17 @@ class NodeUpstreamConnection:
             signed = await asyncio.wait_for(self._signed_connect_future, timeout=_SIGNED_CONNECT_TIMEOUT)
         except asyncio.TimeoutError as exc:
             raise RuntimeError(f"client did not return signed connect within {_SIGNED_CONNECT_TIMEOUT}s") from exc
+
+        # Capture the client's request id BEFORE forwarding upstream so
+        # handle_node_connect can rewrite the eventual hello-ok to match
+        # the subprocess's pending request. The upstream container
+        # generates its own ids for its own RPC bookkeeping; if we sent
+        # the container's response id down to the subprocess verbatim,
+        # the subprocess's `pending.get(parsed.id)` lookup would miss
+        # and the handshake would silently time out.
+        signed_id = signed.get("id")
+        if isinstance(signed_id, str) and signed_id:
+            self.signed_req_id = signed_id
 
         # Step 4: forward signed connect upstream verbatim. The container's
         # connect handler verifies device.id against paired.json and the

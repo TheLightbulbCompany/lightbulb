@@ -5,8 +5,13 @@
 //! port and verifies:
 //!   1. The proxy opens upstream with `?token=<jwt>&clientId=<id>` injected
 //!      into the URL.
-//!   2. The proxy sends a client-first `connect` frame upstream right after
-//!      open — the wake-up dance that dodges API Gateway's GoneException race.
+//!   2. The proxy does NOT inject any synthetic frames upstream — it's a
+//!      transparent relay. Codex PR #667 round-3 (P1) flagged a wake-up
+//!      `connect` frame the proxy used to inject; it caused the backend
+//!      to key `hello-ok` to the wake-up id, and the subprocess's own
+//!      pending request never matched, so the CLI handshake silently
+//!      timed out. The wake-up is gone; the backend now starts the
+//!      handshake itself on `$connect` for node-host clientIds.
 //!   3. Frames from the subprocess get forwarded upstream verbatim.
 
 use futures_util::{SinkExt, StreamExt};
@@ -100,7 +105,23 @@ async fn proxy_injects_jwt_and_clientid_into_upstream_url() {
 }
 
 #[tokio::test]
-async fn proxy_sends_wake_up_connect_frame_first() {
+async fn proxy_does_not_inject_frames_before_downstream_input() {
+    // Regression test for Codex PR #667 round-3 (P1): the proxy used to
+    // synthesize a `connect` wake-up frame upstream the moment the
+    // upstream WSS opened. That collided with the OpenClaw v3
+    // server-initiated handshake — the backend treated the wake-up as
+    // the unsigned start of the handshake, then misinterpreted the
+    // subprocess's real (signed) `connect` as the signed reply, and
+    // returned `hello-ok` keyed to the wake-up id instead of the
+    // subprocess's pending request. The subprocess's pending-request
+    // map never matched the response, so the CLI silently timed out.
+    //
+    // The fix is: no proxy-injected frames at all. The first frame on
+    // the upstream socket must come from the downstream (subprocess)
+    // side. The backend opens the upstream container WS itself in
+    // `handle_node_connect` (kicked off on `$connect` for node-host
+    // clientIds), which is what produces the real `connect.challenge`
+    // the subprocess waits for.
     let (upstream_port, _captured_uri, received) = spawn_mock_upstream().await;
     let upstream_url = format!("ws://127.0.0.1:{upstream_port}/");
 
@@ -117,30 +138,25 @@ async fn proxy_sends_wake_up_connect_frame_first() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Give the proxy plenty of time to dial upstream and to inject a
+    // wake-up if it were still doing so. The historical race window for
+    // wake-up emission was <50ms; 500ms is overkill but cheap.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let frames = received.lock().unwrap().clone();
     assert!(
-        !frames.is_empty(),
-        "no frames forwarded upstream — wake-up missing"
+        frames.is_empty(),
+        "proxy injected unsolicited frames upstream before downstream input: {frames:?}"
     );
-    let first: serde_json::Value =
-        serde_json::from_str(&frames[0]).expect("first upstream frame not JSON");
-    assert_eq!(
-        first.get("method").and_then(|m| m.as_str()),
-        Some("connect"),
-        "first frame is not a connect: {}",
-        frames[0]
-    );
-    assert_eq!(first["params"]["role"], "node");
-    assert_eq!(first["params"]["client"]["id"], "node-host");
 
     let _ = sub_ws.close(None).await;
     handle.shutdown().await;
 }
 
 #[tokio::test]
-async fn proxy_forwards_frames_bidirectionally_after_handshake() {
+async fn proxy_forwards_downstream_frames_upstream_verbatim() {
+    // After the wake-up was removed, the FIRST upstream frame must be
+    // exactly what the subprocess sent — no leading synthetic frame.
     let (upstream_port, _captured_uri, received) = spawn_mock_upstream().await;
     let upstream_url = format!("ws://127.0.0.1:{upstream_port}/");
 
@@ -157,8 +173,8 @@ async fn proxy_forwards_frames_bidirectionally_after_handshake() {
         .await
         .unwrap();
 
-    // Give the upstream connect + wake-up frame time to land before the sub
-    // sends anything, otherwise frame ordering is racy.
+    // Give the upstream connect time to complete so the relay is live
+    // before we send a frame.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     sub_ws
@@ -169,9 +185,10 @@ async fn proxy_forwards_frames_bidirectionally_after_handshake() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let frames = received.lock().unwrap().clone();
+    assert_eq!(frames.len(), 1, "expected exactly one upstream frame, got {frames:?}");
     assert!(
-        frames.iter().any(|f| f.contains("from sub")),
-        "subprocess frame not forwarded upstream: {frames:?}"
+        frames[0].contains("from sub"),
+        "subprocess frame not forwarded upstream verbatim: {frames:?}"
     );
 
     let _ = sub_ws.close(None).await;

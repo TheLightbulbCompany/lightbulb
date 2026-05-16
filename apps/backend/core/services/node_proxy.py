@@ -200,6 +200,27 @@ async def handle_node_connect(
         except Exception:
             pass
         raise
+
+    # Push hello-ok DOWN to the client, keyed to the subprocess's OWN
+    # signed-connect request id (captured during the handshake on the
+    # NodeUpstreamConnection). The upstream container emits its own id
+    # for its own bookkeeping; forwarding that verbatim would miss the
+    # subprocess's pending-request map and silently time out the
+    # handshake. See Codex round-3 P1 on PR #667.
+    if upstream.signed_req_id and hello:
+        try:
+            management_api.send_message(
+                connection_id,
+                {**hello, "id": upstream.signed_req_id},
+            )
+        except Exception:
+            logger.warning(
+                "Failed to deliver hello-ok to client for user=%s conn=%s",
+                user_id,
+                connection_id,
+                exc_info=True,
+            )
+
     await upstream.start_reader()
 
     # The nodeId in OpenClaw's NodeRegistry is the device.id (SHA-256 hex of

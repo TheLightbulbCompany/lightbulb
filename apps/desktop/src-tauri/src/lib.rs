@@ -32,11 +32,24 @@ pub struct AuthState {
     pub token: Mutex<Option<String>>,
     /// Shared handle to the running node client's gateway URL. Updated whenever
     /// a fresh JWT arrives so the next reconnect uses current auth.
+    ///
+    /// Doubles as the "bootstrap completed" sentinel — only populated AFTER
+    /// `run_bootstrap` returns Ok. If bootstrap fails on the first call (a
+    /// transient `/desktop/pair` 5xx, a Keychain permission prompt, or a
+    /// missing sidecar binary), this stays `None` so the next
+    /// `send_auth_token` retries bootstrap rather than dropping straight to
+    /// the URL-rotation branch. Codex round-3 P2 on PR #667.
     pub gateway_url: Mutex<Option<Arc<RwLock<String>>>>,
     /// Current Clerk JWT, read by the proxy's JwtProvider closure on every
     /// upstream-connect. Updated in-place on rotation so the subprocess never
     /// has to restart.
     pub current_jwt: Arc<RwLock<String>>,
+    /// True while a bootstrap is mid-flight. Set before spawning the
+    /// bootstrap task and cleared in both branches (Ok and Err) of the
+    /// spawned future. Prevents concurrent bootstrap attempts when a
+    /// Clerk JWT refresh fires multiple `send_auth_token` calls in quick
+    /// succession while the first attempt is still running.
+    pub bootstrap_in_flight: Mutex<bool>,
     /// Loopback WSS proxy supervising the openclaw subprocess connection.
     /// `None` until the first `send_auth_token` triggers bootstrap.
     pub proxy_handle: Mutex<Option<crate::proxy::ProxyHandle>>,
@@ -66,8 +79,98 @@ pub fn log(msg: &str) {
     println!("{}", msg);
 }
 
+/// Outcome of evaluating an incoming Clerk JWT against the current
+/// bootstrap state. Factored out so the decision logic is unit-testable
+/// without a Tauri AppHandle. See `decide_auth_action`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AuthAction {
+    /// Bootstrap has previously succeeded — just rotate the gateway URL.
+    Rotate,
+    /// Bootstrap is in flight on another thread — drop this call (the
+    /// running bootstrap will pick up the latest JWT via current_jwt).
+    WaitForBootstrap,
+    /// No prior successful bootstrap and no in-flight attempt — start
+    /// bootstrap from this call.
+    Bootstrap,
+}
+
+/// Pure decision function for `send_auth_token`. Inputs are the two
+/// bits of mutable state that matter (without locking them inside the
+/// function, so tests don't need to construct AuthState):
+///
+/// - `bootstrap_completed`: true if `gateway_url` is `Some(_)`
+/// - `bootstrap_in_flight`: current value of the in-flight guard
+///
+/// The (`true`, `true`) case (bootstrap finished AND another attempt is
+/// flagged in-flight) shouldn't happen in practice because the spawned
+/// task clears `in_flight` BEFORE publishing `gateway_url`, but we
+/// handle it conservatively by rotating — the most-recent bootstrap
+/// completed, so its URL handle is the source of truth.
+pub fn decide_auth_action(bootstrap_completed: bool, bootstrap_in_flight: bool) -> AuthAction {
+    if bootstrap_completed {
+        AuthAction::Rotate
+    } else if bootstrap_in_flight {
+        AuthAction::WaitForBootstrap
+    } else {
+        AuthAction::Bootstrap
+    }
+}
+
+#[cfg(test)]
+mod auth_action_tests {
+    use super::*;
+
+    #[test]
+    fn first_call_kicks_off_bootstrap() {
+        assert_eq!(decide_auth_action(false, false), AuthAction::Bootstrap);
+    }
+
+    #[test]
+    fn second_call_after_bootstrap_failure_retries() {
+        // Regression test for Codex round-3 P2 on PR #667: if
+        // bootstrap fails (transient /desktop/pair error, Keychain
+        // permission denial, missing sidecar binary), gateway_url MUST
+        // stay None so the next send_auth_token retries. Previously
+        // is_first was keyed off `token`, which was set BEFORE the
+        // spawned bootstrap task, so every retry silently dropped into
+        // the rotation branch without ever bringing the desktop node
+        // back up. Now `bootstrap_completed` is keyed off the URL
+        // handle that is only published after bootstrap succeeds.
+        assert_eq!(decide_auth_action(false, false), AuthAction::Bootstrap);
+    }
+
+    #[test]
+    fn call_during_in_flight_bootstrap_defers() {
+        assert_eq!(decide_auth_action(false, true), AuthAction::WaitForBootstrap);
+    }
+
+    #[test]
+    fn call_after_successful_bootstrap_rotates() {
+        assert_eq!(decide_auth_action(true, false), AuthAction::Rotate);
+    }
+
+    #[test]
+    fn rotate_wins_over_stale_in_flight_flag() {
+        // Defense-in-depth: if a stale `in_flight=true` somehow
+        // coexists with `bootstrap_completed=true`, prefer the
+        // rotation path — the URL handle exists, so the system is
+        // already up. We don't want to silently drop tokens.
+        assert_eq!(decide_auth_action(true, true), AuthAction::Rotate);
+    }
+}
+
 /// Called by the web app to send the Clerk JWT to the Rust backend.
 /// Starts the node-host connection directly to the gateway.
+///
+/// Idempotent in two stages:
+///
+///   1. Subsequent calls AFTER bootstrap has succeeded just rotate the
+///      shared `gateway_url` so the next reconnect picks up the fresh
+///      token. The proxy + subprocess keep running.
+///   2. Subsequent calls AFTER bootstrap has FAILED retry bootstrap —
+///      this used to silently fall through to the rotation branch
+///      because the `token` was already set, even though the
+///      proxy/subprocess never came up. Codex round-3 P2 on PR #667.
 #[tauri::command]
 fn send_auth_token(
     token: String,
@@ -76,14 +179,19 @@ fn send_auth_token(
     state: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut t = state.token.lock().map_err(|e| e.to_string())?;
-    let is_first = t.is_none();
-    *t = Some(token.clone());
+    {
+        // Cache the latest token for telemetry / diagnostic dumps. We do
+        // NOT use this as the "did bootstrap already happen" sentinel
+        // anymore — see the gateway_url check below.
+        let mut t = state.token.lock().map_err(|e| e.to_string())?;
+        *t = Some(token.clone());
+    }
     log(&format!("[auth] Received JWT ({} chars) for user {} ({})", token.len(), display_name, user_id));
 
     // Update the shared JWT cell FIRST so the proxy's JwtProvider closure
-    // picks up the fresh token on the next upstream-connect. Rotation is a
-    // no-op past the first call — the proxy + subprocess keep running.
+    // picks up the fresh token on the next upstream-connect. We do this
+    // unconditionally — even mid-bootstrap, a fresher token is better than
+    // the one we started bootstrap with.
     if let Ok(mut current) = state.current_jwt.write() {
         *current = token.clone();
     }
@@ -102,41 +210,80 @@ fn send_auth_token(
     // locally with the Mac-slot Keychain key in node_client::perform_handshake.
     let new_gateway_url = format!("{}/?token={}&clientId=openclaw-macos", ws_url, token);
 
-    // Rotate the running client's URL so the next reconnect uses the fresh
-    // token. Clerk refreshes JWTs well before expiry, so we want every update
-    // to propagate — not just the first one.
-    if !is_first {
-        if let Ok(handle_guard) = state.gateway_url.lock() {
-            if let Some(handle) = handle_guard.as_ref() {
+    // Decide what to do with this token. See `AuthAction` for the cases.
+    let existing_handle: Option<Arc<RwLock<String>>> = state
+        .gateway_url
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().cloned());
+    let in_flight_already = state
+        .bootstrap_in_flight
+        .lock()
+        .map(|g| *g)
+        .unwrap_or(false);
+    match decide_auth_action(existing_handle.is_some(), in_flight_already) {
+        AuthAction::Rotate => {
+            // Rotation path — bootstrap already succeeded once. Update the
+            // shared URL string in place; the node client will pick it up
+            // on its next reconnect.
+            if let Some(handle) = existing_handle {
                 if let Ok(mut url) = handle.write() {
                     *url = new_gateway_url;
                     log("[auth] Rotated node client URL with fresh token");
                 }
             }
+            return Ok(());
         }
-        return Ok(());
-    }
-
-    // First token — create the shared URL handle, stash it in state, and
-    // run bootstrap THEN start the node client. The node client needs the
-    // gateway_token (from /desktop/pair) to build a valid v3 signature in
-    // its handshake, so start_node_host has to wait for bootstrap to
-    // complete and publish the token into AuthState.gateway_token.
-    let shared_url = Arc::new(RwLock::new(new_gateway_url));
-    if let Ok(mut handle_guard) = state.gateway_url.lock() {
-        *handle_guard = Some(shared_url.clone());
+        AuthAction::WaitForBootstrap => {
+            log("[auth] bootstrap already in flight; deferring to existing attempt");
+            return Ok(());
+        }
+        AuthAction::Bootstrap => {
+            // Mark in-flight under the lock so a near-simultaneous second
+            // call sees the flag set and falls into WaitForBootstrap.
+            if let Ok(mut in_flight) = state.bootstrap_in_flight.lock() {
+                *in_flight = true;
+            }
+        }
     }
 
     let app_handle = app.clone();
     let jwt_arc = state.current_jwt.clone();
     let display_name_for_chain = display_name.clone();
     tauri::async_runtime::spawn(async move {
-        match run_bootstrap(&app_handle, jwt_arc, &display_name_for_chain).await {
+        let result = run_bootstrap(&app_handle, jwt_arc, &display_name_for_chain).await;
+
+        // Clear the in-flight flag regardless of outcome BEFORE deciding
+        // whether to publish gateway_url. If we clear it after publishing
+        // and a token arrives in the gap, we'd see both flags unset and
+        // could kick off a second bootstrap.
+        if let Some(state) = app_handle.try_state::<AuthState>() {
+            if let Ok(mut in_flight) = state.bootstrap_in_flight.lock() {
+                *in_flight = false;
+            }
+        }
+
+        match result {
             Err(e) => {
-                log(&format!("[bootstrap] desktop node-host bootstrap failed: {}", e));
+                log(&format!(
+                    "[bootstrap] desktop node-host bootstrap failed (will retry on next send_auth_token): {}",
+                    e
+                ));
                 update_node_status(&app_handle, "error");
+                // Intentionally do NOT set gateway_url here — the next
+                // send_auth_token call must re-enter the bootstrap path.
             }
             Ok(()) => {
+                // Bootstrap succeeded. Publish gateway_url AFTER pair +
+                // proxy + subprocess are all live, so the rotation
+                // branch above can only see a URL handle that's actually
+                // backed by a working proxy/subprocess pair.
+                let shared_url = Arc::new(RwLock::new(new_gateway_url));
+                if let Some(state) = app_handle.try_state::<AuthState>() {
+                    if let Ok(mut handle_guard) = state.gateway_url.lock() {
+                        *handle_guard = Some(shared_url.clone());
+                    }
+                }
                 if let Err(e) = start_node_host(&app_handle, shared_url, &display_name).await {
                     log(&format!("[node] Failed to start: {}", e));
                     update_node_status(&app_handle, "error");
@@ -613,6 +760,7 @@ end tell"#,
             token: Mutex::new(None),
             gateway_url: Mutex::new(None),
             current_jwt: Arc::new(RwLock::new(String::new())),
+            bootstrap_in_flight: Mutex::new(false),
             proxy_handle: Mutex::new(None),
             subprocess_handle: Mutex::new(None),
             pair_response: Mutex::new(None),

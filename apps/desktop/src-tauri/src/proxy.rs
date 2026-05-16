@@ -11,13 +11,23 @@
 //! 1. The subprocess shouldn't know about Clerk auth — JWT rotation
 //!    stays in the Tauri host (Task 21 plumbs a shared `RwLock<String>`
 //!    into the [`JwtProvider`] callback).
-//! 2. We need to perform the OpenClaw "client-first wake-up" handshake
-//!    on every upstream connect — the same dance `node_client.rs` already
-//!    does for the chat path — so that API Gateway's Management API
-//!    doesn't return `GoneException` on the first server-initiated push.
-//!    The subprocess upstream protocol layer would also send a connect
-//!    frame, but doing it from the proxy guarantees it lands before any
-//!    server-side bind logic runs, eliminating the race.
+//! 2. JWT rotation: the proxy reads the current token via [`JwtProvider`]
+//!    on every upstream-open so reconnects pick up fresh credentials
+//!    without bouncing the subprocess.
+//!
+//! Frame handling is a transparent bidirectional relay — the proxy does
+//! NOT inject any synthetic frames. The OpenClaw v3 protocol is
+//! server-initiated (server emits `connect.challenge`, client signs and
+//! responds with a single `connect` request), so a proxy-injected
+//! `connect` frame upstream would be misidentified by the backend as the
+//! handshake start, then the subprocess's real signed `connect` would be
+//! consumed as the "signed reply" — with the backend keying the eventual
+//! `hello-ok` to the proxy's wake-up id instead of the subprocess's
+//! request id. The subprocess would never see a response matching its
+//! own pending request and the handshake would silently time out.
+//! The backend now triggers `handle_node_connect` on `$connect` for any
+//! node-host clientId, so no wake-up frame is needed to kick the
+//! upstream container handshake into motion.
 
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -106,8 +116,12 @@ pub async fn start_proxy(
 ///  1. Accept the subprocess WS handshake on the loopback socket.
 ///  2. Fetch a fresh JWT via the provider callback.
 ///  3. Open the upstream WSS with `?token=…&clientId=…` injected.
-///  4. Send the client-first `connect` wake-up frame upstream.
-///  5. Spawn two halves of bidirectional frame forwarding.
+///  4. Spawn two halves of bidirectional frame forwarding.
+///
+/// No synthetic frames are injected. The first frame the backend sees on
+/// this connection is the subprocess's signed `connect` request (after
+/// the upstream container's `connect.challenge` arrives via Management
+/// API). See module docstring for the protocol-correctness rationale.
 async fn handle_connection(
     stream: TcpStream,
     upstream_url: String,
@@ -131,27 +145,6 @@ async fn handle_connection(
         Err(e) => return Err(format!("upstream connect: {e}")),
     };
     let (mut up_tx, mut up_rx) = upstream_ws.split();
-
-    // Client-first wake-up. Mirror node_client.rs's connect shape: the
-    // gateway routes the connection based on `params.role` + `params.client.id`,
-    // and our minimum protocol version is 4 (PR #660 — protocol v4 floor).
-    let wakeup = serde_json::json!({
-        "type": "req",
-        "id": uuid::Uuid::new_v4().to_string(),
-        "method": "connect",
-        "params": {
-            "minProtocol": 4,
-            "maxProtocol": 4,
-            "role": "node",
-            "client": {
-                "id": client_id,
-                "mode": "node",
-            },
-        },
-    });
-    if let Err(e) = up_tx.send(Message::Text(wakeup.to_string().into())).await {
-        return Err(format!("send wake-up: {e}"));
-    }
 
     // Bidirectional forwarding. Either side closing tears the bridge down.
     let sub_to_up = async {

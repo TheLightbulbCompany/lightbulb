@@ -130,17 +130,20 @@ async def ws_connect(
         x_org_id or x_user_id,
     )
 
+    is_node_host = x_client_id in NODE_HOST_CLIENT_IDS
+    # Route by owner_id: org_id for org members, user_id for personal.
+    owner_id = x_org_id or x_user_id
+
     connection_service = await get_connection_service()
     connection_service.store_connection(
         connection_id=x_connection_id,
         user_id=x_user_id,
         org_id=x_org_id,
+        connection_type="node" if is_node_host else "chat",
     )
 
     try:
         pool = get_gateway_pool()
-        # Route by owner_id: org_id for org members, user_id for personal
-        owner_id = x_org_id or x_user_id
         # Pass member_id so the pool can route streaming events to the
         # specific org member who initiated each chat, not broadcast to
         # all members. For personal users member_id == owner_id so it's
@@ -149,19 +152,79 @@ async def ws_connect(
     except Exception as e:
         logger.warning("Failed to register frontend connection with pool: %s", e)
 
-    # Send OpenClaw connect.challenge so the control UI SPA can complete
-    # its handshake.  The chat frontend silently ignores this message.
+    # Branch on client type:
     #
-    # Skip for node-host clients (Tauri proxy / openclaw subprocess): they
-    # do client-first sequencing to API Gateway and receive the REAL
-    # connect.challenge from the upstream container via
-    # handle_node_connect's relay path. Sending a synthetic nonce here
-    # would race that and could cause the subprocess to sign the wrong
-    # nonce.
-    if x_client_id not in NODE_HOST_CLIENT_IDS:
+    # - Browser / control UI: send a synthetic connect.challenge so the
+    #   SPA can complete its handshake. Chat frontend silently ignores it.
+    #
+    # - node-host clients (Tauri proxy / openclaw subprocess): start the
+    #   upstream-container handshake ourselves. The subprocess uses the
+    #   OpenClaw v3 server-initiated handshake (it waits for
+    #   `connect.challenge` from the server before sending anything), so
+    #   SOMETHING has to open the upstream container WS to surface that
+    #   challenge. Previously the Tauri proxy injected a wake-up `connect`
+    #   to trigger this — but that frame collided with the subprocess's
+    #   own signed `connect`, with the backend keying `hello-ok` to the
+    #   wake-up id instead of the subprocess's pending id, silently
+    #   timing out the handshake (Codex round-3 P1 on PR #667). The
+    #   proxy is now a transparent relay; we kick off
+    #   `handle_node_connect` here on `$connect` and the subprocess's
+    #   signed-connect frame is the FIRST and ONLY `connect` frame the
+    #   `$default` handler sees.
+    if is_node_host:
+        background_tasks.add_task(
+            _kick_off_node_connect,
+            connection_id=x_connection_id,
+            owner_id=owner_id,
+            user_id=x_user_id,
+            client_id=x_client_id or "node-host",
+        )
+    else:
         background_tasks.add_task(_send_connect_challenge, x_connection_id)
 
     return Response(status_code=200)
+
+
+async def _kick_off_node_connect(
+    *,
+    connection_id: str,
+    owner_id: str,
+    user_id: str,
+    client_id: str,
+) -> None:
+    """Start the per-user node-host upstream handshake on `$connect`.
+
+    Replaces the legacy "wake-up connect" trigger. See ws_connect comment
+    for the rationale.
+
+    Errors are swallowed (logged): a failed handshake should not bring
+    down the WS connection. The subprocess will reconnect via its own
+    retry loop, and the next `$connect` will retry this path.
+    """
+    try:
+        management_api = await get_management_api_client()
+        # The handler builds the connect_params shape itself from a minimal
+        # seed. `client.id` is the discriminator that slots the device into
+        # the cli/mac bucket in `_user_nodes` — feed the value we already
+        # have from the `$connect` header.
+        connect_params = {
+            "role": "node",
+            "client": {"id": client_id, "mode": "node"},
+        }
+        await handle_node_connect(
+            owner_id=owner_id,
+            user_id=user_id,
+            connection_id=connection_id,
+            connect_params=connect_params,
+            management_api=management_api,
+        )
+    except Exception as e:
+        logger.warning(
+            "node-host connect failed for user=%s conn=%s: %s",
+            user_id,
+            connection_id[:12],
+            e,
+        )
 
 
 @router.post(
@@ -361,79 +424,38 @@ async def ws_message(
             connect_params = params or {}
             role = connect_params.get("role", "operator")
 
-            # Node connection: post-migration pure-relay flow. There are two
-            # `connect` frames from the client during the handshake:
+            # Node connection: post-PR #667 round-3 pure-relay flow.
             #
-            #   (1) Wake-up: shape `{role:"node", client:{id:...}}` with no
-            #       params.device. Sent by the Tauri proxy immediately on
-            #       open to dodge the ~37ms Management API GoneException
-            #       race. We open the upstream WS, forward the container's
-            #       challenge DOWN to the client via Management API, then
-            #       await the signed reply.
+            # The subprocess only ever sends ONE `connect` frame: the signed
+            # reply to the upstream container's `connect.challenge` (the
+            # OpenClaw v3 handshake is server-initiated, see
+            # ~/Desktop/openclaw/src/gateway/client.ts:880). The backend
+            # started the upstream handshake itself on `$connect` via
+            # `_kick_off_node_connect`, so by the time this signed-connect
+            # frame arrives there's an awaiting NodeUpstreamConnection
+            # ready to consume it. Route it through `submit_signed_connect`
+            # and ACK synchronously — `handle_node_connect` is what
+            # eventually forwards `hello-ok` DOWN to the client (with the
+            # subprocess's own request id, captured during the handshake).
             #
-            #   (2) Signed: shape `{role:"node", device:{id,signature,...}}`.
-            #       The proxy's subprocess signed the challenge with its
-            #       Keychain key. We route this to submit_signed_connect on
-            #       the already-pending NodeUpstreamConnection, which
-            #       unblocks the awaiting handle_node_connect and lets it
-            #       forward upstream + receive hello-ok.
+            # The legacy "frame 1: wake-up" path that opened the upstream
+            # WS in response to a proxy-injected unsigned `connect` is
+            # gone — that frame collided with the subprocess's real
+            # signed connect and silently broke JSON-RPC id correlation
+            # (Codex round-3 P1 on PR #667).
             if role == "node":
-                # Frame (2): a signed connect for an already-known node
-                # connection. Route it to submit_signed_connect; the awaiting
-                # handle_node_connect coroutine will pick it up. We ACK
-                # synchronously without echoing back -- handle_node_connect
-                # is what eventually sends hello-ok to the client.
                 if is_node_connection(x_connection_id):
                     submit_node_signed_connect(x_connection_id, body)
                     return Response(status_code=200)
-
-                # Frame (1): the wake-up. Kick off handle_node_connect as a
-                # background task so $default returns immediately and the
-                # client's subsequent signed-connect frame can land on a
-                # different $default invocation.
-                conn_svc = await get_connection_service()
-                conn_svc.store_connection(x_connection_id, user_id, connection.get("org_id"), connection_type="node")
-                management_api = await get_management_api_client()
-
-                async def _do_node_connect(conn_id: str, owner: str, user: str, params: dict, req_id_local: str):
-                    try:
-                        hello = await handle_node_connect(
-                            owner_id=owner,
-                            user_id=user,
-                            connection_id=conn_id,
-                            connect_params=params,
-                            management_api=management_api,
-                        )
-                        if hello:
-                            # Rewrite res.id to match the desktop's wake-up
-                            # req.id. The upstream WS uses its own uuid for
-                            # the signed connect; forwarding the upstream
-                            # res verbatim would break JSON-RPC correlation
-                            # on the client, which expects res.id == req.id
-                            # for the wake-up frame it sent.
-                            management_api.send_message(conn_id, {**hello, "id": req_id_local})
-                    except Exception as e:
-                        logger.error("Node connect failed: %s", e)
-                        try:
-                            management_api.send_message(
-                                conn_id,
-                                {
-                                    "type": "res",
-                                    "id": req_id_local,
-                                    "ok": False,
-                                    "error": {"message": str(e)},
-                                },
-                            )
-                        except Exception:
-                            logger.warning("failed to push node-connect error to %s", conn_id[:12])
-
-                background_tasks.add_task(
-                    _do_node_connect,
-                    x_connection_id,
-                    owner_id,
-                    user_id,
-                    connect_params,
-                    req_id,
+                # No upstream pending — either `_kick_off_node_connect`
+                # hasn't run yet (very tight race window: the subprocess
+                # got past `connect.challenge` before $connect's
+                # BackgroundTask scheduled) or it errored out. Log and
+                # drop: the subprocess's reconnect loop will retry.
+                logger.warning(
+                    "Node-role connect frame for connection %s with no upstream — "
+                    "dropping (subprocess will retry on next reconnect)",
+                    x_connection_id[:12] if x_connection_id else "?",
                 )
                 return Response(status_code=200)
 

@@ -133,6 +133,7 @@ def build_paired_entry(
     client_id: str,
     display_name: str,
     commands: list[str],
+    user_id: str | None = None,
 ) -> dict:
     """Construct a paired.json entry per upstream PairedDevice schema.
 
@@ -152,7 +153,7 @@ def build_paired_entry(
     if client_id not in ALLOWED_CLIENT_IDS:
         raise ValueError(f"clientId must be one of {ALLOWED_CLIENT_IDS}; got {client_id!r}")
     now_ms = int(time.time() * 1000)
-    return {
+    entry: dict = {
         "deviceId": derive_device_id(pubkey_pem),
         "publicKey": _public_key_raw_base64url(pubkey_pem),
         "role": "node",
@@ -174,6 +175,14 @@ def build_paired_entry(
         "createdAtMs": now_ms,
         "approvedAtMs": now_ms,
     }
+    if user_id is not None:
+        # Custom Isol8 field. Upstream openclaw's `coercePairingStateRecord`
+        # (pairing-files.ts:16) does a permissive cast — unknown fields are
+        # preserved across read/write cycles. We use this on re-pair to
+        # distinguish "this user's prior stale entries" (safe to prune)
+        # from "another org member's still-valid entry" (must preserve).
+        entry["userId"] = user_id
+    return entry
 
 
 # Mutator contract: receives the current paired.json state as a FLAT dict
@@ -227,12 +236,14 @@ async def pair_desktop_devices(
         client_id="openclaw-macos",
         display_name=f"{display_name_base} | Isol8 Mac",
         commands=list(DESKTOP_MAC_COMMANDS),
+        user_id=user_id,
     )
     cli_entry = build_paired_entry(
         pubkey_pem=cli_pubkey,
         client_id="node-host",
         display_name=f"{display_name_base} | Isol8 Desktop (CLI)",
         commands=list(DESKTOP_CLI_COMMANDS),
+        user_id=user_id,
     )
 
     new_device_ids = {mac_entry["deviceId"], cli_entry["deviceId"]}
@@ -243,19 +254,27 @@ async def pair_desktop_devices(
         # `pairedByDeviceId` wrapper).
         #
         # Two responsibilities:
-        #   1. PRUNE stale desktop entries left by prior pair cycles. A
-        #      previous Tauri install with a different Keychain would have
-        #      registered its own (deviceId, pubkey) under the same clientId
-        #      we use today (openclaw-macos / node-host). Those entries are
-        #      now orphaned — their private keys are gone with the old
-        #      Keychain — and they show up as ghost nodes in Ray's node
-        #      enumeration. Prune any entry whose clientId is one of ours
-        #      but whose deviceId is NOT the device we're pairing now.
+        #   1. PRUNE this user's prior stale desktop entries. A previous
+        #      Tauri install with a different Keychain would have
+        #      registered (deviceId, pubkey) under the same clientId we
+        #      use today (openclaw-macos / node-host). Those entries are
+        #      orphaned — their private keys are gone with the old
+        #      Keychain — and they show up as ghost nodes in node
+        #      enumeration.
         #
-        #      We deliberately only touch entries we "own" by clientId:
-        #      the in-container `role=node` entry (ecs_manager writes
-        #      clientId="node") and any non-desktop operator/gateway-client
-        #      entries stay untouched.
+        #      In an ORG context the workspace is shared, so paired.json
+        #      can hold multiple members' desktop entries under the same
+        #      clientId. We MUST NOT delete a sibling member's still-valid
+        #      entry. The prune is gated on three conditions, all
+        #      required:
+        #        * clientId is one of ours (openclaw-macos / node-host)
+        #        * the entry's userId matches the caller's user_id
+        #        * the deviceId is NOT the one we're about to write
+        #
+        #      Entries without a userId (legacy, pre-this-PR) are
+        #      conservatively left in place — we can't safely attribute
+        #      them and erring on preserve is correct in the multi-tenant
+        #      shared-workspace case.
         #
         #   2. UPSERT the two current desktop entries. Idempotent on
         #      publicKey match — preserves the existing entry's tokens.
@@ -263,9 +282,14 @@ async def pair_desktop_devices(
         for did in list(paired.keys()):
             if did in new_device_ids:
                 continue
-            if paired[did].get("clientId") in ALLOWED_CLIENT_IDS:
-                del paired[did]
-                changed = True
+            entry = paired[did]
+            if entry.get("clientId") not in ALLOWED_CLIENT_IDS:
+                continue
+            if entry.get("userId") != user_id:
+                # Different user (org sibling) or no userId stamp at all.
+                continue
+            del paired[did]
+            changed = True
         for entry in (mac_entry, cli_entry):
             device_id = entry["deviceId"]
             existing = paired.get(device_id)

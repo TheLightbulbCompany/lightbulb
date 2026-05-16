@@ -47,6 +47,11 @@ pub struct AuthState {
     /// `/desktop/pair` response — retained so we can later call
     /// `/desktop/devices/{device_id}` (revoke) on logout.
     pub pair_response: Mutex<Option<crate::pair_client::PairResponse>>,
+    /// Per-device gateway token from `/desktop/pair`. The node client reads
+    /// this on every reconnect so the v3 signature payload binds to a
+    /// non-empty token (upstream's signature verifier rejects mismatches).
+    /// `None` until run_bootstrap completes.
+    pub gateway_token: crate::node_client::GatewayTokenCell,
 }
 
 /// Node connection status
@@ -85,22 +90,6 @@ fn send_auth_token(
         *current = token.clone();
     }
 
-    // On the first JWT, kick off the new desktop-node-host bootstrap:
-    // Keychain identities --> /desktop/pair --> proxy --> subprocess. We
-    // spawn a tokio task so the Tauri command returns immediately; results
-    // are written back to `AuthState` once the chain completes.
-    if is_first {
-        let app_for_bootstrap = app.clone();
-        let jwt_arc = state.current_jwt.clone();
-        let display_name_for_log = display_name.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = run_bootstrap(&app_for_bootstrap, jwt_arc, &display_name_for_log).await
-            {
-                log(&format!("[bootstrap] desktop node-host bootstrap failed: {}", e));
-            }
-        });
-    }
-
     let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
     // Use an explicit "/" path before the query. tokio-tungstenite builds
     // the HTTP upgrade request line from the URL's path+query; if the URL
@@ -111,8 +100,8 @@ fn send_auth_token(
     // clientId is surfaced to the $connect Lambda (Task 9) and on to the
     // backend's ws_connect (Tasks 10 + 14), which uses it to skip the
     // synthetic Ed25519 challenge for the Tauri-mac process. The real
-    // challenge is the upstream container's challenge, signed by the
-    // backend itself in handle_node_connect's relay path.
+    // challenge is the upstream container's challenge, signed by Tauri-mac
+    // locally with the Mac-slot Keychain key in node_client::perform_handshake.
     let new_gateway_url = format!("{}/?token={}&clientId=openclaw-macos", ws_url, token);
 
     // Rotate the running client's URL so the next reconnect uses the fresh
@@ -130,18 +119,31 @@ fn send_auth_token(
         return Ok(());
     }
 
-    // First token — create the shared URL handle, stash it in state, and spawn
-    // the node client.
+    // First token — create the shared URL handle, stash it in state, and
+    // run bootstrap THEN start the node client. The node client needs the
+    // gateway_token (from /desktop/pair) to build a valid v3 signature in
+    // its handshake, so start_node_host has to wait for bootstrap to
+    // complete and publish the token into AuthState.gateway_token.
     let shared_url = Arc::new(RwLock::new(new_gateway_url));
     if let Ok(mut handle_guard) = state.gateway_url.lock() {
         *handle_guard = Some(shared_url.clone());
     }
 
     let app_handle = app.clone();
+    let jwt_arc = state.current_jwt.clone();
+    let display_name_for_chain = display_name.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = start_node_host(&app_handle, shared_url, &display_name).await {
-            log(&format!("[node] Failed to start: {}", e));
-            update_node_status(&app_handle, "error");
+        match run_bootstrap(&app_handle, jwt_arc, &display_name_for_chain).await {
+            Err(e) => {
+                log(&format!("[bootstrap] desktop node-host bootstrap failed: {}", e));
+                update_node_status(&app_handle, "error");
+            }
+            Ok(()) => {
+                if let Err(e) = start_node_host(&app_handle, shared_url, &display_name).await {
+                    log(&format!("[node] Failed to start: {}", e));
+                    update_node_status(&app_handle, "error");
+                }
+            }
         }
     });
 
@@ -232,6 +234,12 @@ async fn run_bootstrap(
     // state lazily here because there's no `State<'_, AuthState>` in this
     // async context.
     if let Some(state) = app.try_state::<AuthState>() {
+        // Publish gateway_token BEFORE storing pair_response (we move it next).
+        // start_node_host snapshots gateway_token on each reconnect, so the
+        // first connect needs to see it already populated.
+        if let Ok(mut g) = state.gateway_token.write() {
+            *g = Some(handles.pair_response.gateway_token.clone());
+        }
         if let Ok(mut g) = state.proxy_handle.lock() {
             *g = Some(handles.proxy_handle);
         }
@@ -254,7 +262,28 @@ async fn start_node_host(
     update_node_status(app, "connecting");
     log("[node] Starting node client");
 
-    let mut client = node_client::NodeClient::with_shared_url(gateway_url, display_name);
+    // Load (or generate, if missing) the Mac-slot Ed25519 identity. The
+    // bootstrap chain above already created+persisted this key into the
+    // Keychain, so this call is effectively a load with the generate path
+    // as a defensive fallback if Keychain was wiped between bootstrap
+    // and start_node_host.
+    let identity = keychain::load_or_generate(keychain::KeychainSlot::Mac, KEYCHAIN_SERVICE)
+        .map_err(|e| format!("load Mac identity: {e}"))?;
+
+    // Snapshot the gateway-token cell from AuthState. The node client owns
+    // the Arc and re-reads it on each reconnect — that's how a future
+    // revoke+re-pair flow could rotate the token without restart.
+    let gateway_token = app
+        .try_state::<AuthState>()
+        .map(|s| s.gateway_token.clone())
+        .unwrap_or_else(|| Arc::new(RwLock::new(None)));
+
+    let mut client = node_client::NodeClient::with_shared_url(
+        gateway_url,
+        display_name,
+        identity,
+        gateway_token,
+    );
 
     // Flip the tray/renderer status ONLY when the node client emits a real
     // transition. Previously we said "connected" right after start() returned,
@@ -590,6 +619,7 @@ end tell"#,
             proxy_handle: Mutex::new(None),
             subprocess_handle: Mutex::new(None),
             pair_response: Mutex::new(None),
+            gateway_token: Arc::new(RwLock::new(None)),
         })
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),

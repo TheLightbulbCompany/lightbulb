@@ -97,20 +97,19 @@ pub async fn spawn(
         .map_err(|e| format!("chmod identity: {e}"))?;
     }
 
-    // 2. Spawn the subprocess
+    // 2. Spawn the subprocess. The bundled launcher shim
+    // (`apps/desktop/src-tauri/scripts/vendor-sidecars.sh::write_launcher`)
+    // is self-contained — its `exec` line already invokes
+    // `openclaw node run --host 127.0.0.1 --port "$ISOL8_PROXY_PORT"`,
+    // so we must NOT pass those args here. Passing them duplicates the
+    // subcommand and openclaw's commander parser bails with
+    // "option '--port <port>' argument missing" (the second `node`
+    // gets misread as the first `--port`'s value).
     let port_str = proxy_port.to_string();
     let mut cmd = Command::new(&binary);
     cmd.env("OPENCLAW_STATE_DIR", &state_dir)
         .env("OPENCLAW_GATEWAY_TOKEN", gateway_token)
         .env("ISOL8_PROXY_PORT", &port_str)
-        .args([
-            "node",
-            "run",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port_str,
-        ])
         .kill_on_drop(true);
 
     let child = cmd

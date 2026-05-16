@@ -49,8 +49,19 @@ vi.mock("@/hooks/useGateway", () => ({
 // Approval-queue stub controlled per-test. The hook calls
 // `useExecApprovalsContextOptional`, which falls back to the empty
 // default when no provider is mounted — we substitute that with a
-// mutable holder so tests can simulate pending/empty approval queues.
+// mutable holder so tests can simulate pending/empty approval queues
+// AND fire reason-tagged removal notifications.
 let approvalQueue: ExecApprovalRequest[] = [];
+const removalHandlers: Set<
+  (id: string, reason: "resolved" | "dismissed" | "auto_pruned" | "terminal_error") => void
+> = new Set();
+function notifyRemoval(
+  id: string,
+  reason: "resolved" | "dismissed" | "auto_pruned" | "terminal_error",
+) {
+  approvalQueue = approvalQueue.filter((a) => a.id !== id);
+  removalHandlers.forEach((h) => h(id, reason));
+}
 vi.mock("@/hooks/useExecApprovals", async () => {
   const actual = await vi.importActual<typeof import("@/hooks/useExecApprovals")>(
     "@/hooks/useExecApprovals",
@@ -61,6 +72,14 @@ vi.mock("@/hooks/useExecApprovals", async () => {
       queue: approvalQueue,
       resolve: vi.fn(),
       dismiss: vi.fn(),
+      onApprovalRemoved: (
+        h: (id: string, reason: "resolved" | "dismissed" | "auto_pruned" | "terminal_error") => void,
+      ) => {
+        removalHandlers.add(h);
+        return () => {
+          removalHandlers.delete(h);
+        };
+      },
       error: null,
     }),
   };
@@ -183,13 +202,14 @@ describe("useAgentChat — tombstoned terminals (Codex P1 a)", () => {
   });
 });
 
-describe("useAgentChat — approval-pause busy gate (Codex P1 b)", () => {
+describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
   beforeEach(() => {
     chatHandlers = [];
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     approvalQueue = [];
+    removalHandlers.clear();
     vi.resetModules();
   });
 
@@ -206,8 +226,6 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b)", () => {
   }
 
   it("a follow-up sent while an approval is pending stays queued (gate stays armed across the intermediate done)", async () => {
-    // Pre-seed the queue with an approval for our agent. The hook reads
-    // it via useExecApprovalsContextOptional on mount and the ref mirror.
     approvalQueue = [fakeApproval("agent-X")];
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
@@ -227,16 +245,15 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b)", () => {
       } as ChatIncomingMessage),
     );
 
-    // Gate must stay armed — user's follow-up should queue, not dispatch.
     await act(async () => {
       await result.current.sendMessage("follow-up");
     });
-    expect(sendChat).toHaveBeenCalledTimes(1); // only the original send
+    expect(sendChat).toHaveBeenCalledTimes(1);
     expect(result.current.queuedMessages).toHaveLength(1);
     expect(result.current.queuedMessages[0].text).toBe("follow-up");
   });
 
-  it("releases the gate (and flushes queued messages) when the approval queue empties via dismiss / resolve / auto-prune", async () => {
+  it("releases the gate when the approval is dismissed (queued messages flush)", async () => {
     approvalQueue = [fakeApproval("agent-X")];
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
@@ -248,31 +265,110 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b)", () => {
       await result.current.sendMessage("kick off");
     });
     const run1 = lastClientRunId();
-
     act(() =>
-      dispatch({
-        type: "done",
-        agent_id: "agent-X",
-        runId: run1,
-      } as ChatIncomingMessage),
+      dispatch({ type: "done", agent_id: "agent-X", runId: run1 } as ChatIncomingMessage),
     );
-
     await act(async () => {
       await result.current.sendMessage("follow-up");
     });
     expect(result.current.queuedMessages).toHaveLength(1);
 
-    // Simulate dismiss/resolve/auto-prune: approval queue drains.
-    approvalQueue = [];
+    // User dismisses the stuck card. In real usage the queue state lives
+    // in useExecApprovals — setQueue propagates through context and
+    // re-renders consumers. The mock just mutates a variable, so we
+    // rerender explicitly to mirror that propagation; the falling-edge
+    // flush effect runs on every render and picks up the gate release.
     await act(async () => {
+      notifyRemoval("approval-1", "dismissed");
       rerender();
     });
 
-    // The queue-drain effect should have released the gate, and the
-    // falling-edge flush effect should have dispatched the queued msg.
     expect(sendChat).toHaveBeenCalledTimes(2);
     expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");
     expect(result.current.queuedMessages).toHaveLength(0);
+  });
+
+  it("releases the gate on auto_pruned and terminal_error too", async () => {
+    approvalQueue = [fakeApproval("agent-X", "ap-prune")];
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("first");
+    });
+    const r1 = lastClientRunId();
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+    );
+
+    await act(async () => {
+      notifyRemoval("ap-prune", "auto_pruned");
+    });
+    await act(async () => {
+      await result.current.sendMessage("after-prune");
+    });
+    expect(sendChat).toHaveBeenCalledTimes(2);
+
+    // And terminal_error path.
+    approvalQueue = [fakeApproval("agent-X", "ap-bad")];
+    const r2 = lastClientRunId();
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r2 } as ChatIncomingMessage),
+    );
+    await act(async () => {
+      notifyRemoval("ap-bad", "terminal_error");
+    });
+    await act(async () => {
+      await result.current.sendMessage("after-error");
+    });
+    expect(sendChat).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps the gate armed on `resolved` so the post-approval continuation isn't raced (Codex P1 c)", async () => {
+    // After resolve, OpenClaw will emit a continuation on a fresh runId
+    // — but there's a window between exec.approval.resolved arriving and
+    // the first continuation event. If we released the gate on that
+    // window a user follow-up would race with the resume.
+    approvalQueue = [fakeApproval("agent-X", "ap-res")];
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("first");
+    });
+    const r1 = lastClientRunId();
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+    );
+
+    // Server-side resolve: queue drains with reason="resolved".
+    await act(async () => {
+      notifyRemoval("ap-res", "resolved");
+    });
+
+    // A follow-up typed in the continuation window must still queue.
+    await act(async () => {
+      await result.current.sendMessage("follow-up");
+    });
+    expect(sendChat).toHaveBeenCalledTimes(1);
+    expect(result.current.queuedMessages).toHaveLength(1);
+
+    // Continuation arrives, then its terminal done releases the gate.
+    act(() =>
+      dispatch({
+        type: "chunk",
+        agent_id: "agent-X",
+        runId: r1,
+        content: "continuation",
+      } as ChatIncomingMessage),
+    );
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+    );
+
+    // Now the follow-up flushes.
+    expect(sendChat).toHaveBeenCalledTimes(2);
+    expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");
   });
 
   it("does not gate on approvals for a different agent", async () => {
@@ -287,15 +383,9 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b)", () => {
     const run1 = lastClientRunId();
 
     act(() =>
-      dispatch({
-        type: "done",
-        agent_id: "agent-X",
-        runId: run1,
-      } as ChatIncomingMessage),
+      dispatch({ type: "done", agent_id: "agent-X", runId: run1 } as ChatIncomingMessage),
     );
 
-    // No approval for THIS agent, so the gate clears normally and a
-    // follow-up dispatches immediately rather than queuing.
     await act(async () => {
       await result.current.sendMessage("follow-up");
     });

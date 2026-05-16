@@ -34,6 +34,21 @@ import { useGateway } from "@/hooks/useGateway";
 
 export type ExecApprovalDecision = "allow-once" | "allow-always" | "deny";
 
+/** Why a particular approval was removed from the queue. Consumers care
+ *  about this distinction because the server-side run continues only
+ *  after `resolved` — for the other reasons there's no continuation, so
+ *  any busy-gate held across the pending approval can release. */
+export type ApprovalRemovalReason =
+  | "resolved"        // server accepted resolve OR exec.approval.resolved event
+  | "dismissed"       // user clicked Dismiss locally
+  | "auto_pruned"     // local expiry timer fired
+  | "terminal_error"; // server rejected with unknown/expired id
+
+export type ApprovalRemovedHandler = (
+  id: string,
+  reason: ApprovalRemovalReason,
+) => void;
+
 export interface ExecApprovalRequest {
   /** Approval ID issued by OpenClaw. Used as the key when posting exec.approval.resolve. */
   id: string;
@@ -70,6 +85,11 @@ export interface UseExecApprovalsReturn {
    *  Used as an escape hatch when the server has lost the id (container
    *  restart, post-expiry retry) and the user just wants the card gone. */
   dismiss: (id: string) => void;
+  /** Subscribe to removal events with a reason. Returns an unsubscribe fn.
+   *  useAgentChat uses this to release the approval-pause busy gate only
+   *  on dismiss/auto_pruned/terminal_error — `resolved` removals must keep
+   *  the gate armed so the post-approval continuation isn't raced. */
+  onApprovalRemoved: (handler: ApprovalRemovedHandler) => () => void;
   /** Last error encountered while resolving (cleared on the next resolve attempt). */
   error: string | null;
 }
@@ -177,14 +197,55 @@ export function useExecApprovals(): UseExecApprovalsReturn {
   // by the user, server-resolved, or expired locally).
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  const removeFromQueue = useCallback((id: string) => {
-    const timer = timersRef.current.get(id);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      timersRef.current.delete(id);
-    }
-    setQueue((prev) => prev.filter((entry) => entry.id !== id));
-  }, []);
+  // Subscribers notified on every removal, with the reason. useAgentChat
+  // uses this to decide whether to release the approval-pause busy gate
+  // (only on dismiss/auto_pruned/terminal_error — `resolved` keeps it
+  // armed across the continuation window).
+  const removalHandlersRef = useRef<Set<ApprovalRemovedHandler>>(new Set());
+
+  // Mirror of currently-enqueued ids, kept in sync with `queue` for the
+  // express purpose of giving removeFromQueue a synchronous "was this id
+  // present?" check. Avoids depending on setQueue's updater (which can
+  // run twice in strict mode) to detect actual removals.
+  const trackedIdsRef = useRef<Set<string>>(new Set());
+
+  const removeFromQueue = useCallback(
+    (id: string, reason: ApprovalRemovalReason) => {
+      const timer = timersRef.current.get(id);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timersRef.current.delete(id);
+      }
+      // Only notify on actual removal — re-entrant or duplicate calls
+      // (e.g. server `exec.approval.resolved` after our own resolve()
+      // already pruned) shouldn't double-fire. We dedupe via a separate
+      // ref of currently-tracked ids, set when we enqueue and cleared
+      // here, so the check is independent of React's batched setQueue
+      // (which can run the updater twice in strict mode).
+      const wasPresent = trackedIdsRef.current.delete(id);
+      setQueue((prev) => prev.filter((entry) => entry.id !== id));
+      if (wasPresent) {
+        for (const h of removalHandlersRef.current) {
+          try {
+            h(id, reason);
+          } catch {
+            // subscriber error, ignore
+          }
+        }
+      }
+    },
+    [],
+  );
+
+  const onApprovalRemoved = useCallback(
+    (handler: ApprovalRemovedHandler) => {
+      removalHandlersRef.current.add(handler);
+      return () => {
+        removalHandlersRef.current.delete(handler);
+      };
+    },
+    [],
+  );
 
   // Subscribe to exec.approval.requested — enqueue new approvals.
   useEffect(() => {
@@ -196,17 +257,19 @@ export function useExecApprovals(): UseExecApprovalsReturn {
       // See isApprovalForCurrentUser for the why and the routing context.
       if (!isApprovalForCurrentUser(req, userIdRef.current)) return;
 
-      setQueue((prev) => {
-        // Idempotent: a retry/reconnect can redeliver the same approval.
-        if (prev.some((entry) => entry.id === req.id)) return prev;
-        return [...prev, req];
-      });
+      // Idempotent: a retry/reconnect can redeliver the same approval.
+      if (trackedIdsRef.current.has(req.id)) return;
+      trackedIdsRef.current.add(req.id);
+      setQueue((prev) => [...prev, req]);
 
       // Schedule auto-prune at expiry. Matches OpenClaw's pattern at
       // ui/src/ui/app-gateway.ts:140 — without this, a never-resolved
       // approval sits in the queue indefinitely.
       const delay = Math.max(0, req.expiresAtMs - Date.now() + 500);
-      const timer = setTimeout(() => removeFromQueue(req.id), delay);
+      const timer = setTimeout(
+        () => removeFromQueue(req.id, "auto_pruned"),
+        delay,
+      );
       timersRef.current.set(req.id, timer);
     });
     return unsub;
@@ -220,7 +283,7 @@ export function useExecApprovals(): UseExecApprovalsReturn {
       if (eventName !== "exec.approval.resolved") return;
       const p = data as ResolvedPayload;
       if (!p?.id) return;
-      removeFromQueue(p.id);
+      removeFromQueue(p.id, "resolved");
     });
     return unsub;
   }, [onEvent, removeFromQueue]);
@@ -241,7 +304,7 @@ export function useExecApprovals(): UseExecApprovalsReturn {
         await sendReq("exec.approval.resolve", { id, decision });
         // Optimistically remove. The server will also emit
         // exec.approval.resolved which is a no-op since we already removed.
-        removeFromQueue(id);
+        removeFromQueue(id, "resolved");
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Failed to send decision";
         // OpenClaw's approval registry is in-memory in the per-user container.
@@ -253,7 +316,7 @@ export function useExecApprovals(): UseExecApprovalsReturn {
         // forever. Drop it locally and return without surfacing the error
         // so the stale card disappears instead of wedging the queue.
         if (/unknown.*approval|expired.*approval/i.test(msg)) {
-          removeFromQueue(id);
+          removeFromQueue(id, "terminal_error");
           return;
         }
         setError(msg);
@@ -265,12 +328,12 @@ export function useExecApprovals(): UseExecApprovalsReturn {
 
   const dismiss = useCallback(
     (id: string) => {
-      removeFromQueue(id);
+      removeFromQueue(id, "dismissed");
     },
     [removeFromQueue],
   );
 
-  return { queue, resolve, dismiss, error };
+  return { queue, resolve, dismiss, onApprovalRemoved, error };
 }
 
 // =============================================================================
@@ -304,6 +367,7 @@ const EMPTY_APPROVALS_CONTEXT: UseExecApprovalsReturn = {
   queue: [],
   resolve: async () => {},
   dismiss: () => {},
+  onApprovalRemoved: () => () => {},
   error: null,
 };
 

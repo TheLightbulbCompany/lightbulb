@@ -1,4 +1,6 @@
+import base64
 import json
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -73,6 +75,88 @@ def test_build_paired_entry_rejects_unknown_client_id():
             display_name="X",
             commands=[],
         )
+
+
+def test_build_paired_entry_public_key_is_base64url_raw():
+    """REGRESSION: paired.json's ``publicKey`` field must be the
+    base64url-no-pad raw 32 bytes — upstream's gateway does strict string
+    equality of paired.json against the wire-format pubkey in the signed
+    connect frame (message-handler.ts:1151-1153
+    ``paired?.publicKey === devicePublicKey``). Writing PEM here always
+    mismatches and the gateway treats every paired device as NOT_PAIRED.
+    """
+    # Generate a fresh keypair so the test is self-contained.
+    priv = Ed25519PrivateKey.from_private_bytes(b"\x07" * 32)
+    pubkey_pem = (
+        priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    entry = build_paired_entry(
+        pubkey_pem=pubkey_pem,
+        client_id="openclaw-macos",
+        display_name="X",
+        commands=[],
+    )
+
+    pubkey = entry["publicKey"]
+    # 32 bytes encoded as base64url-no-pad is exactly 43 chars.
+    assert len(pubkey) == 43, f"expected 43 chars, got {len(pubkey)}: {pubkey!r}"
+    # base64url alphabet only — no '+' / '/' / '=' / newlines.
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", pubkey), f"non-base64url chars: {pubkey!r}"
+    # Decodes to exactly 32 raw bytes (Ed25519 public-key length).
+    assert "-----BEGIN" not in pubkey
+    raw = base64.urlsafe_b64decode(pubkey + "==")
+    assert len(raw) == 32
+
+    # And the bytes match what the cryptography lib produces directly.
+    expected_raw = priv.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    assert raw == expected_raw
+
+
+def test_build_paired_entry_canonical_fields():
+    """Pin the canonical PairedDevice shape we write — clientMode, roles,
+    scopes, approvedScopes at the top level plus role/scopes inside
+    tokens.node. This mirrors what ``_build_node_paired_entry`` in
+    core/containers/config.py already writes for the in-container node
+    entry; downstream role / scope resolution (listEffectivePairedDeviceRoles,
+    listActiveTokenRoles) depends on these fields being present.
+    """
+    priv = Ed25519PrivateKey.from_private_bytes(b"\x08" * 32)
+    pubkey_pem = (
+        priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    entry = build_paired_entry(
+        pubkey_pem=pubkey_pem,
+        client_id="node-host",
+        display_name="X | CLI",
+        commands=["system.run"],
+    )
+
+    assert entry["clientMode"] == "node"
+    assert entry["role"] == "node"
+    assert entry["roles"] == ["node"]
+    assert entry["scopes"] == []
+    assert entry["approvedScopes"] == []
+
+    token_entry = entry["tokens"]["node"]
+    assert token_entry["role"] == "node"
+    assert token_entry["scopes"] == []
+    assert token_entry["token"]
+    assert token_entry["createdAtMs"] > 0
 
 
 # Fixture: deterministic Ed25519 public key (from all-zero private bytes).

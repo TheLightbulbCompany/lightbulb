@@ -188,7 +188,12 @@ async def ensure_node_paired_entry(
 
     def _mutate(paired: dict) -> bool:
         existing = paired.get(entry["deviceId"])
-        if existing and existing.get("publicKey") == public_key_pem:
+        # The stored ``publicKey`` is the base64url-no-pad raw 32 bytes
+        # (see ``build_paired_entry`` — must match upstream's
+        # ``publicKeyRawBase64UrlFromPem`` wire format). Compare against
+        # the freshly-built entry's pubkey, NOT the raw PEM input, or
+        # idempotency always fails and we clobber the existing tokens.
+        if existing and existing.get("publicKey") == entry["publicKey"]:
             return False  # Idempotent — preserve existing tokens / metadata.
         paired[entry["deviceId"]] = entry
         wrote["value"] = True

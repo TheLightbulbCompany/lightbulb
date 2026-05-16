@@ -11,6 +11,7 @@ them on /desktop/pair.
 """
 
 import asyncio
+import base64
 import fcntl
 import hashlib
 import json
@@ -91,19 +92,39 @@ def assert_command_sets_disjoint(
 assert_command_sets_disjoint(DESKTOP_MAC_COMMANDS, DESKTOP_CLI_COMMANDS)
 
 
-def derive_device_id(pubkey_pem: str) -> str:
-    """Mirror openclaw's deriveDeviceIdFromPublicKey.
+def _public_key_raw_bytes(pubkey_pem: str) -> bytes:
+    """Parse PEM-encoded Ed25519 SPKI and return the 32 raw key bytes.
 
-    Upstream strips the 12-byte ED25519 SPKI prefix and SHA-256s the 32 raw
-    key bytes. We use cryptography.serialization to parse the PEM into the
-    raw form natively — avoids manual prefix-stripping fragility.
+    Upstream strips the 12-byte ED25519 SPKI prefix; cryptography's
+    ``serialization`` parses the PEM into the raw form natively, avoiding
+    manual prefix-stripping fragility.
     """
     pubkey = serialization.load_pem_public_key(pubkey_pem.encode())
-    raw = pubkey.public_bytes(
+    return pubkey.public_bytes(
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
     )
-    return hashlib.sha256(raw).hexdigest()
+
+
+def _public_key_raw_base64url(pubkey_pem: str) -> str:
+    """Return the Ed25519 raw 32-byte key encoded as base64url-no-pad.
+
+    Mirrors upstream's ``publicKeyRawBase64UrlFromPem`` (openclaw
+    src/infra/device-identity.ts). This is the EXACT wire format the
+    gateway sees in the signed connect frame and the EXACT shape it
+    string-compares against paired.json (message-handler.ts:1151-1153
+    `paired?.publicKey === devicePublicKey`). Writing PEM here breaks the
+    equality and gets every device flagged NOT_PAIRED.
+    """
+    return base64.urlsafe_b64encode(_public_key_raw_bytes(pubkey_pem)).decode().rstrip("=")
+
+
+def derive_device_id(pubkey_pem: str) -> str:
+    """Mirror openclaw's deriveDeviceIdFromPublicKey.
+
+    Upstream SHA-256s the 32 raw key bytes (post-SPKI-strip).
+    """
+    return hashlib.sha256(_public_key_raw_bytes(pubkey_pem)).hexdigest()
 
 
 def build_paired_entry(
@@ -115,24 +136,38 @@ def build_paired_entry(
 ) -> dict:
     """Construct a paired.json entry per upstream PairedDevice schema.
 
+    The ``publicKey`` field is the base64url-no-pad 32-byte raw key, NOT
+    the PEM. Upstream's gateway does strict string equality of paired.json's
+    ``publicKey`` against the wire-format pubkey in the signed connect
+    frame (message-handler.ts:1151-1153); the wire format is
+    base64url-no-pad raw 32 bytes (server.auth.shared.ts:194
+    `publicKeyRawBase64UrlFromPem`). PEM here would always mismatch.
+
     tokens.node is load-bearing — listEffectivePairedDeviceRoles returns []
     for tokenless paired records, leaving the device connected but stripped
-    of effective commands like system.run.
+    of effective commands like system.run. The ``role``/``scopes`` inside
+    tokens.node mirror the canonical shape ensure_node_paired_entry's
+    in-container counterpart writes (core/containers/config.py).
     """
     if client_id not in ALLOWED_CLIENT_IDS:
         raise ValueError(f"clientId must be one of {ALLOWED_CLIENT_IDS}; got {client_id!r}")
     now_ms = int(time.time() * 1000)
     return {
         "deviceId": derive_device_id(pubkey_pem),
-        "publicKey": pubkey_pem,
+        "publicKey": _public_key_raw_base64url(pubkey_pem),
         "role": "node",
+        "roles": ["node"],
         "clientId": client_id,
         "clientMode": "node",
         "displayName": display_name,
         "commands": commands,
+        "scopes": [],
+        "approvedScopes": [],
         "tokens": {
             "node": {
                 "token": secrets.token_urlsafe(32),
+                "role": "node",
+                "scopes": [],
                 "createdAtMs": now_ms,
             },
         },

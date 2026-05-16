@@ -1,13 +1,11 @@
 pub mod bootstrap;
-pub mod browser_sidecar;
-mod exec_approvals;
 pub mod file_access;
-pub mod file_transfer;
 pub mod keychain;
 mod node_client;
 mod node_invoke;
 pub mod pair_client;
 pub mod proxy;
+pub mod screen;
 pub mod subprocess;
 mod tray;
 
@@ -188,8 +186,7 @@ async fn run_bootstrap(
     // the triple, and places the file in the `.app` at
     // `Contents/MacOS/isol8-browser-service` — alongside the main Tauri
     // executable. Dev builds replicate the layout next to
-    // `target/debug/<exe>`. So we resolve via current_exe().parent(),
-    // mirroring `browser_sidecar::BrowserSidecar::for_app`.
+    // `target/debug/<exe>`. So we resolve via current_exe().parent().
     //
     // Task 20 made `isol8-browser-service` read `ISOL8_PROXY_PORT` and
     // dial loopback plaintext WS, which is what `spawn_subprocess` is
@@ -624,9 +621,6 @@ end tell"#,
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),
         })
-        .manage::<browser_sidecar::BrowserSidecarHandle>(
-            std::sync::Arc::new(tokio::sync::RwLock::new(None)),
-        )
         .invoke_handler(tauri::generate_handler![
             send_auth_token,
             is_desktop,

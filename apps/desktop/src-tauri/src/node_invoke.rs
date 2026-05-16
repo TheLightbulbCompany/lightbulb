@@ -7,9 +7,8 @@
 //! What remains here is the macOS-platform surface that the subprocess
 //! can't (or shouldn't) re-implement: native notifications, device
 //! probes, and screen snapshot. `screen.snapshot`'s implementation
-//! still lives in `file_transfer.rs` for now — Task 24 will either
-//! relocate it here or fold it into a dedicated module before deleting
-//! `file_transfer.rs`.
+//! lives in `crate::screen` (relocated from the now-deleted
+//! `file_transfer.rs` in Task 24).
 //!
 //! Original upstream references (kept for context until the subprocess
 //! has full parity): openclaw/src/node-host/invoke.ts (dispatch) +
@@ -70,10 +69,10 @@ pub async fn handle_invoke(
         "device.health" => handle_device_health(&request).await,
         "device.permissions" => handle_device_permissions(&request).await,
         "screen.snapshot" => {
-            let params = parse_ft_params(&request.params_json);
-            wrap_ft_payload(
+            let params = parse_screen_params(&request.params_json);
+            wrap_screen_payload(
                 &request,
-                crate::file_transfer::handle_screen_snapshot(&params).await,
+                crate::screen::handle_screen_snapshot(&params).await,
             )
         }
         cmd if NOT_IMPLEMENTED_COMMANDS.contains(&cmd) => Ok(NodeInvokeResult {
@@ -136,23 +135,22 @@ fn parse_params<T: serde::de::DeserializeOwned>(
 }
 
 /// Decode the inbound params_json into a serde_json::Value, defaulting
-/// to Null when missing or malformed. The file-transfer handlers each
-/// re-validate the shape themselves, so a Null here just propagates as
-/// "missing required field" through their normal error paths.
-fn parse_ft_params(params_json: &Option<String>) -> serde_json::Value {
+/// to Null when missing or malformed. The `screen.snapshot` handler
+/// re-validates the shape itself, so a Null here just propagates as
+/// "missing required field" through its normal error paths.
+fn parse_screen_params(params_json: &Option<String>) -> serde_json::Value {
     match params_json {
         Some(s) => serde_json::from_str(s).unwrap_or(serde_json::Value::Null),
         None => serde_json::Value::Null,
     }
 }
 
-/// Wrap a file_transfer handler's `{ok, code?, message?, ...}` payload
+/// Wrap a `screen.snapshot` handler's `{ok, code?, message?, ...}` payload
 /// in the dispatch loop's NodeInvokeResult shape. The payload becomes
 /// `payload_json`; on `ok:false` we ALSO mirror code/message into the
 /// outer `error` field so the gateway's upstream sees the same status
-/// it would for any other handler-returned error. Kept here for the
-/// `screen.snapshot` arm until Task 24 relocates the screen handler.
-fn wrap_ft_payload(
+/// it would for any other handler-returned error.
+fn wrap_screen_payload(
     request: &NodeInvokeRequest,
     payload: serde_json::Value,
 ) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -174,7 +172,7 @@ fn wrap_ft_payload(
                 message: payload
                     .get("message")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("file-transfer handler error")
+                    .unwrap_or("screen.snapshot handler error")
                     .to_string(),
             })
         },

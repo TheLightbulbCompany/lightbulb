@@ -19,7 +19,7 @@ export async function MarketplaceSection() {
         <div className="marketplace-intro">
           <p className="section-eyebrow reveal">The Marketplace</p>
           <h2 className="section-h2 reveal">
-            Hire an agent. <em>Keep your job.</em>
+            Hire an agent.
           </h2>
           <p className="marketplace-lede">
             A growing storefront of production-grade agents you can deploy into

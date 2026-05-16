@@ -50,6 +50,59 @@ export function Features() {
             </p>
           </div>
         </div>
+
+        <div className="skills-strip">
+          <div className="skills-strip-lede">
+            <h3>
+              Upgrade them <em>endlessly.</em>
+            </h3>
+            <p>
+              Install new skills from a curated library. Your agents learn to
+              use them automatically.
+            </p>
+            <a href="#" className="skills-strip-cta">
+              Browse the skill store →
+            </a>
+          </div>
+          <div className="skills-rail">
+            <span className="skill-chip">
+              <span className="skill-chip-dot" />
+              <span>Memory</span>
+              <span className="skill-chip-mono">installed</span>
+            </span>
+            <span className="skill-chip">
+              <span className="skill-chip-dot" />
+              <span>Developer</span>
+              <span className="skill-chip-mono">installed</span>
+            </span>
+            <span className="skill-chip">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logos/gmail.png" width={14} height={14} alt="" style={{ borderRadius: 3 }} />
+              <span>Gmail</span>
+            </span>
+            <span className="skill-chip">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logos/gcal.png" width={14} height={14} alt="" style={{ borderRadius: 3 }} />
+              <span>Calendar</span>
+            </span>
+            <span className="skill-chip">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logos/salesforce.png" width={14} height={14} alt="" />
+              <span>Salesforce</span>
+            </span>
+            <span className="skill-chip">
+              <span className="skill-chip-dot" style={{ background: "#888" }} />
+              <span>Perplexity</span>
+            </span>
+            <span className="skill-chip">
+              <span className="skill-chip-dot" style={{ background: "#888" }} />
+              <span>Notion</span>
+            </span>
+            <span className="skill-chip" style={{ borderStyle: "dashed", color: "#999" }}>
+              <span>+ 28 more</span>
+            </span>
+          </div>
+        </div>
       </div>
     </section>
   );

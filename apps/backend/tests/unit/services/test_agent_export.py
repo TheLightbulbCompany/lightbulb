@@ -109,6 +109,56 @@ def test_export_skips_junk_dirs(fake_efs):
     assert not any(".git" in n for n in names)
 
 
+def test_export_skips_openclaw_runtime_state_dirs(fake_efs):
+    """Regression: OpenClaw writes per-agent runtime state under ``sessions/``
+    (chat transcripts + trajectory.jsonl files, multi-MB) and ``agent/``
+    (``auth-profiles.json`` carrying OAuth refresh tokens for ChatGPT-OAuth
+    sellers, per memory ``feedback_openclaw_chatgpt_auth_two_files``). Both
+    must be excluded from the marketplace tarball:
+
+    1. Shipping ``sessions/*.jsonl`` leaks the seller's full chat history
+       (PII, tool outputs) to every buyer — and blows the admin preview's
+       10 MB unpacked cap (a single trajectory file routinely exceeds it).
+    2. Shipping ``agent/auth-profiles.json`` hands the seller's live OAuth
+       token to every buyer. Upstream OpenClaw warns about exactly this in
+       ``src/config/agent-dirs.ts``: "If you want to share credentials,
+       copy auth-profiles.json instead of sharing the entire agentDir."
+
+    Filter parity with ``_SKIP_DIR_NAMES``: applies anywhere in the tree
+    so a seller can't sneak it through by nesting (the seller can't actually
+    put OpenClaw runtime state under ``skills/sessions/``, but defense in
+    depth here is free).
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    # Plant the runtime state OpenClaw writes on every container start.
+    (agent_dir / "sessions").mkdir()
+    (agent_dir / "sessions" / "sessions.json").write_text('{"sessions": []}', encoding="utf-8")
+    (agent_dir / "sessions" / "abc-123.jsonl").write_text(
+        '{"role":"user","content":"my home address is 1 Main St"}\n',
+        encoding="utf-8",
+    )
+    (agent_dir / "sessions" / "abc-123.trajectory.jsonl").write_bytes(b"x" * 4096)
+    (agent_dir / "sessions" / "abc-123.jsonl.bak-1-1234567890").write_text("backup", encoding="utf-8")
+    (agent_dir / "sessions" / "abc-123.jsonl.reset.2026-05-12T04-15-17.346Z").write_text(
+        "reset archive", encoding="utf-8"
+    )
+    (agent_dir / "agent").mkdir()
+    (agent_dir / "agent" / "auth-profiles.json").write_text(
+        '{"version":1,"profiles":{"chatgpt":{"refresh_token":"rotr-LEAK-ME"}}}',
+        encoding="utf-8",
+    )
+    (agent_dir / "agent" / "auth-state.json").write_text("{}", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+
+    assert not any(n.startswith("./sessions/") or "/sessions/" in n for n in names), names
+    assert not any(n.startswith("./agent/") or "/agent/" in n for n in names), names
+    # Seller content still ships.
+    assert any("openclaw.json" in n for n in names)
+    assert any("README.md" in n for n in names)
+
+
 def test_export_skips_dotfiles_anywhere_in_tree(fake_efs, tmp_path):
     """Regression: hidden files / hidden dirs at any depth must NOT ship in
     the marketplace artifact. Sellers commonly have .env, .ssh/*, .aws/

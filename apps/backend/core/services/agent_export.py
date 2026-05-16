@@ -67,6 +67,27 @@ _SKIP_DIR_NAMES = frozenset(
 )
 
 
+# OpenClaw writes per-agent runtime state under two top-level dirs inside
+# every agent dir. Both must be filtered out of marketplace tarballs:
+#
+#   sessions/  — chat transcripts (*.jsonl), trajectory logs
+#                (*.trajectory.jsonl, regularly multi-MB and routinely >10MB),
+#                and their .bak-* / .reset.* archives. Shipping these leaks
+#                the seller's full chat history (PII, tool outputs) to every
+#                buyer and blows the admin preview's 10 MB unpacked cap.
+#   agent/     — auth-profiles.json holds OAuth refresh tokens for sellers on
+#                the ChatGPT-OAuth provider path (see ecs_manager.py
+#                _pre_stage_oauth_for_user). Upstream OpenClaw warns about
+#                exactly this in src/config/agent-dirs.ts:
+#                  "If you want to share credentials, copy auth-profiles.json
+#                   instead of sharing the entire agentDir."
+#
+# Match only the top level: a seller could theoretically name a skill
+# "sessions" or "agent" under skills/; OpenClaw's runtime layout is only at
+# the agent-dir root, so we don't need to filter deeper.
+_OPENCLAW_RUNTIME_STATE_DIRS = frozenset({"sessions", "agent"})
+
+
 class AgentNotFoundError(Exception):
     """Seller has no agent at agents/{agent_id} on EFS."""
 
@@ -125,6 +146,13 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             # Skip junk dirs anywhere in the tree.
             parts = tarinfo.name.split("/")
             if any(p in _SKIP_DIR_NAMES for p in parts):
+                return None
+            # Skip OpenClaw runtime-state dirs (sessions/, agent/) — see
+            # _OPENCLAW_RUNTIME_STATE_DIRS docstring for the why. Tar arcname="."
+            # prefixes every path with "./"; the runtime dirs sit at the agent
+            # dir root, so we check parts[1] (the segment after ".").
+            top_level = parts[1] if len(parts) >= 2 and parts[0] == "." else None
+            if top_level in _OPENCLAW_RUNTIME_STATE_DIRS:
                 return None
             # Skip hidden files / hidden dirs anywhere in the tree. The
             # leading "." in tarinfo.name is the arcname root (we pass

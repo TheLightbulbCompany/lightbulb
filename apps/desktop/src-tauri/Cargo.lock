@@ -2099,6 +2099,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "futures-util",
+ "hex",
  "lazy_static",
  "libc",
  "open",

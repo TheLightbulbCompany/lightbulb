@@ -10,6 +10,9 @@
 //! keypair passed in, and chmod'd to 0o600 so other users on the host
 //! can't read the private key.
 
+use ed25519_dalek::pkcs8::DecodePublicKey;
+use ed25519_dalek::VerifyingKey;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::{Child, Command};
@@ -53,8 +56,27 @@ pub async fn spawn(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
+
+    // Upstream openclaw's `normalizeStoredIdentity`
+    // (src/infra/device-identity.ts:128-161) requires
+    // {version, deviceId, publicKeyPem, privateKeyPem}. A missing deviceId
+    // makes the entry `recognized-invalid` → openclaw regenerates a fresh
+    // keypair and overwrites this file, discarding the Keychain-derived
+    // identity that the backend just paired.
+    //
+    // deviceId = sha256(raw_ed25519_pubkey_32_bytes).hex — same SPKI-stripped
+    // hash the backend's `core/services/desktop_pair.derive_device_id` uses,
+    // so the value here matches the device-pairing record on the server.
+    let pubkey = VerifyingKey::from_public_key_pem(public_key_pem)
+        .map_err(|e| format!("parse public key pem: {e}"))?;
+    let raw_pub_bytes = pubkey.to_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(raw_pub_bytes);
+    let device_id = hex::encode(hasher.finalize());
+
     let identity = serde_json::json!({
         "version": 1,
+        "deviceId": device_id,
         "publicKeyPem": public_key_pem,
         "privateKeyPem": private_key_pem,
         "createdAtMs": now_ms,

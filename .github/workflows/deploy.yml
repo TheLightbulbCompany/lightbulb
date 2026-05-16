@@ -1184,6 +1184,154 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-BuildDesktopDev:
+    name: BuildDesktopDev
+    permissions:
+      contents: write
+    runs-on: macos-15
+    needs:
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - Build-Synth
+    env: {}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Cache Rust target dir
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          key: aarch64-apple-darwin
+          shared-key: desktop
+      - name: Install dependencies
+        run: pnpm install
+      - name: Patch tauri.conf.json for dev
+        run: >-
+          TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
+
+          jq --arg url "https://dev.isol8.co/chat" \
+             --arg updateUrl "https://dev.isol8.co/api/desktop/update/{{target}}/{{current_version}}?x-vercel-protection-bypass=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}&x-vercel-set-bypass-cookie=true" \
+             --arg version "0.3.${{ github.run_number }}" '
+            .version = $version |
+            .build.devUrl = $url |
+            .build.frontendDist = $url |
+            .app.windows[0].url = $url |
+            .plugins.updater.endpoints = [$updateUrl]
+          ' "$TAURI_CFG" > "$TAURI_CFG.new"
+
+          mv "$TAURI_CFG.new" "$TAURI_CFG"
+
+          echo "Patched tauri.conf.json:"
+
+          jq '{version, devUrl: .build.devUrl, frontendDist:
+          .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity:
+          .bundle.macOS.signingIdentity, updaterEndpoints:
+          .plugins.updater.endpoints}' "$TAURI_CFG"
+      - name: Vendor browser sidecar (aarch64-apple-darwin)
+        run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh aarch64-apple-darwin
+      - name: Set up signing keychain
+        run: |-
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/isol8-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychain -d user | tr -d '" \t')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          rm -f "$CERT_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "Identity in keychain:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      - name: Pre-sign embedded native modules
+        run: |-
+          set -euo pipefail
+          export SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+          export NODE_ENTITLEMENTS="$PWD/apps/desktop/src-tauri/entitlements-node.plist"
+          BIN_ROOT="apps/desktop/src-tauri/bin"
+
+          CANDIDATES=$(mktemp)
+          MACHO_LIST=$(mktemp)
+          find "$BIN_ROOT" \( \
+            -name '*.node' -o \
+            -name '*.dylib' -o \
+            -name '*.so' -o \
+            -name 'spawn-helper' -o \
+            -name 'node-*-apple-darwin' \
+          \) -type f -print0 > "$CANDIDATES"
+          while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q "Mach-O"; then
+              printf '%s\0' "$f" >> "$MACHO_LIST"
+            fi
+          done < "$CANDIDATES"
+          rm -f "$CANDIDATES"
+          MACHO_COUNT=$(tr -dc '\0' < "$MACHO_LIST" | wc -c | tr -d ' ')
+          echo "Found $MACHO_COUNT Mach-O binaries to sign under $BIN_ROOT."
+
+          cat > /tmp/sign-one.sh <<'WORKER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          f="$1"
+          ENT_ARGS=()
+          case "$(basename "$f")" in
+            node-*-apple-darwin)
+              ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
+              ;;
+          esac
+          codesign --force --options runtime --timestamp \
+            ${ENT_ARGS[@]+"${ENT_ARGS[@]}"} \
+            --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
+          WORKER
+          chmod +x /tmp/sign-one.sh
+
+          xargs -0 -P 8 -n 1 /tmp/sign-one.sh < "$MACHO_LIST"
+          rm -f "$MACHO_LIST"
+      - name: Build desktop app (aarch64-apple-darwin)
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: apps/desktop
+          tagName: desktop-dev-v0.3.${{ github.run_number }}
+          releaseName: Isol8 Desktop [DEV] v0.3.${{ github.run_number }}
+          releaseDraft: false
+          prerelease: true
+          args: --target aarch64-apple-darwin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          ISOL8_CALLBACK_URL: https://dev.isol8.co/auth/desktop-callback
   dev-DeployVercelDev:
     name: DeployVercelDev
     permissions:
@@ -1269,6 +1417,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1316,6 +1465,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1365,6 +1515,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1420,6 +1571,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1470,6 +1622,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1519,6 +1672,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1570,6 +1724,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1623,6 +1778,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1675,6 +1831,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1704,6 +1861,165 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-BuildDesktopProd:
+    name: BuildDesktopProd
+    permissions:
+      contents: write
+    runs-on: macos-15
+    needs:
+      - prod-isol8-prod-auth-Deploy
+      - prod-isol8-prod-dns-Deploy
+      - prod-isol8-prod-network-Deploy
+      - prod-isol8-prod-api-Deploy
+      - prod-isol8-prod-container-Deploy
+      - prod-isol8-prod-database-Deploy
+      - prod-isol8-prod-paperclip-Deploy
+      - prod-isol8-prod-service-Deploy
+      - prod-isol8-prod-observability-Deploy
+      - Build-Synth
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-BuildDesktopDev
+    env: {}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Cache Rust target dir
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          key: aarch64-apple-darwin
+          shared-key: desktop
+      - name: Install dependencies
+        run: pnpm install
+      - name: Patch tauri.conf.json for prod
+        run: >-
+          TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
+
+          jq --arg url "https://isol8.co/chat" \
+             --arg updateUrl "https://isol8.co/api/desktop/update/{{target}}/{{current_version}}" \
+             --arg version "0.3.${{ github.run_number }}" '
+            .version = $version |
+            .build.devUrl = $url |
+            .build.frontendDist = $url |
+            .app.windows[0].url = $url |
+            .plugins.updater.endpoints = [$updateUrl]
+          ' "$TAURI_CFG" > "$TAURI_CFG.new"
+
+          mv "$TAURI_CFG.new" "$TAURI_CFG"
+
+          echo "Patched tauri.conf.json:"
+
+          jq '{version, devUrl: .build.devUrl, frontendDist:
+          .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity:
+          .bundle.macOS.signingIdentity, updaterEndpoints:
+          .plugins.updater.endpoints}' "$TAURI_CFG"
+      - name: Vendor browser sidecar (aarch64-apple-darwin)
+        run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh aarch64-apple-darwin
+      - name: Set up signing keychain
+        run: |-
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/isol8-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychain -d user | tr -d '" \t')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          rm -f "$CERT_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "Identity in keychain:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      - name: Pre-sign embedded native modules
+        run: |-
+          set -euo pipefail
+          export SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+          export NODE_ENTITLEMENTS="$PWD/apps/desktop/src-tauri/entitlements-node.plist"
+          BIN_ROOT="apps/desktop/src-tauri/bin"
+
+          CANDIDATES=$(mktemp)
+          MACHO_LIST=$(mktemp)
+          find "$BIN_ROOT" \( \
+            -name '*.node' -o \
+            -name '*.dylib' -o \
+            -name '*.so' -o \
+            -name 'spawn-helper' -o \
+            -name 'node-*-apple-darwin' \
+          \) -type f -print0 > "$CANDIDATES"
+          while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q "Mach-O"; then
+              printf '%s\0' "$f" >> "$MACHO_LIST"
+            fi
+          done < "$CANDIDATES"
+          rm -f "$CANDIDATES"
+          MACHO_COUNT=$(tr -dc '\0' < "$MACHO_LIST" | wc -c | tr -d ' ')
+          echo "Found $MACHO_COUNT Mach-O binaries to sign under $BIN_ROOT."
+
+          cat > /tmp/sign-one.sh <<'WORKER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          f="$1"
+          ENT_ARGS=()
+          case "$(basename "$f")" in
+            node-*-apple-darwin)
+              ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
+              ;;
+          esac
+          codesign --force --options runtime --timestamp \
+            ${ENT_ARGS[@]+"${ENT_ARGS[@]}"} \
+            --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
+          WORKER
+          chmod +x /tmp/sign-one.sh
+
+          xargs -0 -P 8 -n 1 /tmp/sign-one.sh < "$MACHO_LIST"
+          rm -f "$MACHO_LIST"
+      - name: Build desktop app (aarch64-apple-darwin)
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: apps/desktop
+          tagName: desktop-v0.3.${{ github.run_number }}
+          releaseName: Isol8 Desktop v0.3.${{ github.run_number }}
+          releaseDraft: false
+          prerelease: false
+          args: --target aarch64-apple-darwin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          ISOL8_CALLBACK_URL: https://isol8.co/auth/desktop-callback
   prod-DeployVercelProd:
     name: DeployVercelProd
     permissions:
@@ -1730,6 +2046,7 @@ jobs:
       - dev-isol8-dev-service-Deploy
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
+      - dev-BuildDesktopDev
     env: {}
     steps:
       - name: Checkout

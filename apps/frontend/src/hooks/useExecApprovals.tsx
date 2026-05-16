@@ -296,3 +296,22 @@ export function useExecApprovalsContext(): UseExecApprovalsReturn {
   }
   return ctx;
 }
+
+/** Stable empty default for `useExecApprovalsContextOptional` — keeps
+ *  referential identity across renders so dependent effects don't refire
+ *  on every parent render when the provider is absent. */
+const EMPTY_APPROVALS_CONTEXT: UseExecApprovalsReturn = {
+  queue: [],
+  resolve: async () => {},
+  dismiss: () => {},
+  error: null,
+};
+
+/** Like `useExecApprovalsContext` but returns an empty queue + no-op
+ *  handlers when called outside the provider. For consumers like
+ *  `useAgentChat` that depend on the approval queue but must still work
+ *  in test contexts (or any future surface) where the provider isn't
+ *  mounted. */
+export function useExecApprovalsContextOptional(): UseExecApprovalsReturn {
+  return React.useContext(ExecApprovalsContext) ?? EMPTY_APPROVALS_CONTEXT;
+}

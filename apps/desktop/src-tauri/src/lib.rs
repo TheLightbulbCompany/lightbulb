@@ -517,84 +517,223 @@ fn file_access_default_path() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Result of an updater check, serialized for the webview.
+/// Identity tuple the webview needs to construct the manifest URL:
+/// `(target, current_version)` matching the path pattern in
+/// `apps/frontend/src/app/api/desktop/update/[target]/[current_version]/route.ts`.
 ///
-/// `UpToDate` means the running version matches the latest published.
-/// `Available` carries the new version + release notes so the UI can
-/// surface a friendly prompt before the user opts in to install.
+/// We compute these in Rust rather than asking the webview to derive
+/// them because:
+///   - `target` is environment-specific (`darwin-aarch64` vs
+///     `darwin-x86_64`); Tauri exposes it via `updater::target()` at
+///     build time and the webview has no clean way to read it.
+///   - `current_version` lives in `tauri.conf.json` and is bumped by
+///     the release workflow; the most reliable way to read it is
+///     `app.package_info().version`.
 #[derive(serde::Serialize)]
-#[serde(rename_all = "snake_case", tag = "status")]
-enum UpdateCheckResult {
-    UpToDate,
-    Available {
-        version: String,
-        notes: Option<String>,
-    },
+struct UpdaterIdentity {
+    target: String,
+    current_version: String,
 }
 
-/// Ask the updater endpoint if a newer signed build exists.
-///
-/// The endpoint URL is in tauri.conf.json (plugins.updater.endpoints) and
-/// served by apps/frontend/src/app/api/desktop/update/[target]/[current_version]/route.ts.
-/// Returns up_to_date or available — never errors on "no update", only on
-/// network / verification failures.
 #[tauri::command]
-async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
-    log("[updater] check requested");
-    let updater = app.updater().map_err(|e| {
-        log(&format!("[updater] failed to acquire updater: {}", e));
-        e.to_string()
-    })?;
-    match updater.check().await {
-        Ok(Some(update)) => {
-            log(&format!(
-                "[updater] update available: {} -> {}",
-                update.current_version, update.version
-            ));
-            Ok(UpdateCheckResult::Available {
-                version: update.version.clone(),
-                notes: update.body.clone(),
-            })
-        }
-        Ok(None) => {
-            log("[updater] up to date");
-            Ok(UpdateCheckResult::UpToDate)
-        }
-        Err(e) => {
-            log(&format!("[updater] check failed: {}", e));
-            Err(e.to_string())
-        }
+fn updater_identity(app: tauri::AppHandle) -> UpdaterIdentity {
+    // Build target as "<os>-<arch>" to match the path pattern. Tauri's
+    // `updater::target()` helper produces the canonical string the
+    // plugin uses for endpoint substitution (`darwin-aarch64`,
+    // `darwin-x86_64`, `linux-x86_64`, etc.).
+    let target = tauri_plugin_updater::target().unwrap_or_else(|| "unknown".to_string());
+    let current_version = app.package_info().version.to_string();
+    UpdaterIdentity {
+        target,
+        current_version,
     }
 }
 
-/// Download + install the available update, then restart the app.
+/// Updater manifest payload passed in from the webview.
 ///
-/// Tauri's updater verifies the bundle's minisign signature against
-/// the pubkey in tauri.conf.json before installing — a wrong-key bundle
-/// is rejected. After install completes the app is restarted into the
-/// new version.
+/// This is the same shape that `apps/frontend/src/app/api/desktop/update/...`
+/// returns — and identically the shape that `tauri-plugin-updater` parses
+/// as a `Dynamic` `RemoteRelease`. The webview fetches the manifest
+/// (carrying its Vercel SSO cookie) and hands it to us so the Rust side
+/// never has to fight Vercel's deployment protection with its own
+/// cookie-less reqwest client.
+///
+/// `url` is a github.com release-asset URL (PUBLIC, no auth needed), so
+/// the actual bundle download from Rust is unauthenticated.
+///
+/// `signature` is a base64 minisign signature, verified against the
+/// pubkey baked into tauri.conf.json by `Update::download` before any
+/// bytes hit disk.
+#[derive(Debug, serde::Deserialize)]
+struct UpdateManifest {
+    version: String,
+    url: String,
+    signature: String,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    pub_date: Option<String>,
+}
+
+/// Apply an update manifest fetched from the webview.
+///
+/// Flow:
+///   1. Spawn an ephemeral loopback HTTP server that serves the manifest
+///      as the plugin's `Dynamic` `RemoteRelease` JSON.
+///   2. Build a per-call `Updater` pointed at the loopback endpoint via
+///      `UpdaterBuilder::endpoints`. This is the only way to feed a
+///      hand-built manifest through the plugin's public API — the
+///      `Update` struct has crate-private fields and can't be
+///      constructed directly.
+///   3. `updater.check().await` parses the manifest, fetches it through
+///      the plugin's own version comparator, and returns the same
+///      `Update` object you'd get from the upstream endpoint.
+///   4. `download_and_install` fetches the github.com bundle (no auth
+///      needed — public release asset), verifies its minisign signature
+///      against the pubkey from tauri.conf.json, swaps the .app, and
+///      we call `app.restart()`.
+///
+/// The signature verification path is unchanged from the previous
+/// design — Tauri's `verify_signature` still runs. We've only moved
+/// the metadata-fetch step out of reqwest and into the webview, which
+/// IS Vercel-authenticated.
 #[tauri::command]
-async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    log("[updater] install requested");
-    let updater = app.updater().map_err(|e| e.to_string())?;
+async fn apply_update_manifest(
+    app: tauri::AppHandle,
+    manifest: UpdateManifest,
+) -> Result<(), String> {
+    log(&format!(
+        "[updater] applying webview manifest: version={} url={}",
+        manifest.version, manifest.url
+    ));
+
+    // The plugin parses `Dynamic` RemoteRelease as:
+    //   { "version": "...", "notes": "...", "pub_date": "...",
+    //     "url": "...", "signature": "..." }
+    // — which is exactly what our Next.js route returns. Serialize
+    // back to JSON to feed the loopback server.
+    let manifest_json = serde_json::json!({
+        "version": manifest.version,
+        "notes": manifest.notes,
+        "pub_date": manifest.pub_date,
+        "url": manifest.url,
+        "signature": manifest.signature,
+    })
+    .to_string();
+
+    let endpoint = serve_manifest_once(manifest_json)
+        .await
+        .map_err(|e| format!("loopback manifest server: {e}"))?;
+    log(&format!("[updater] loopback manifest endpoint: {}", endpoint));
+
+    let endpoint_url = Url::parse(&endpoint)
+        .map_err(|e| format!("loopback url parse: {e}"))?;
+
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint_url])
+        .map_err(|e| format!("set endpoints: {e}"))?
+        // The plugin's default comparator does `release.version > current_version`.
+        // Our backend route already gated on `isNewer(latestVersion, currentVersion)`
+        // (returning 204 otherwise), so by the time we get here the webview has
+        // already confirmed there IS a newer version. Force-accept the comparison
+        // so any tag-format mismatch can't drop us into a silent no-op.
+        .version_comparator(|_current, _release| true)
+        .build()
+        .map_err(|e| format!("build updater: {e}"))?;
+
     let update = updater
         .check()
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no update available".to_string())?;
+        .map_err(|e| format!("updater check: {e}"))?
+        .ok_or_else(|| "updater returned no update for webview-supplied manifest".to_string())?;
+
     log(&format!(
         "[updater] installing {} -> {}",
         update.current_version, update.version
     ));
+
     update
-        .download_and_install(|_chunk, _total| {}, || log("[updater] download finished, installing"))
+        .download_and_install(
+            |_chunk, _total| {},
+            || log("[updater] download finished, installing"),
+        )
         .await
         .map_err(|e| {
             log(&format!("[updater] install failed: {}", e));
-            e.to_string()
+            format!("install: {e}")
         })?;
+
     log("[updater] install complete, restarting");
     app.restart();
+}
+
+/// Spawn a one-shot loopback HTTP server that serves `body` as JSON on
+/// the first GET it sees, then shuts down. Returns the `http://127.0.0.1:<port>`
+/// URL the caller can hand to `UpdaterBuilder::endpoints`.
+///
+/// Bind to port 0 so the OS picks a free port — never collide with
+/// anything else on the user's box.
+///
+/// We don't bother with HTTP parsing — the updater client just needs a
+/// well-formed JSON response back. Read until the request headers end
+/// (CRLFCRLF) then write the response and close.
+async fn serve_manifest_once(body: String) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("bind: {e}"))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("local_addr: {e}"))?;
+    let url = format!("http://{}/manifest.json", addr);
+
+    tokio::spawn(async move {
+        // Accept exactly one connection — the updater's `check()` makes a
+        // single GET. After we've served it, drop the listener.
+        let (mut stream, _peer) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                log(&format!("[updater] loopback accept: {}", e));
+                return;
+            }
+        };
+
+        // Drain request headers. We don't parse them — we just need to wait
+        // until the client has finished sending its request line before we
+        // reply, otherwise some HTTP clients see ECONNRESET on the send half.
+        let mut buf = [0u8; 1024];
+        let mut total = Vec::new();
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    total.extend_from_slice(&buf[..n]);
+                    if total.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if total.len() > 8192 {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        if let Err(e) = stream.write_all(response.as_bytes()).await {
+            log(&format!("[updater] loopback write: {}", e));
+        }
+        let _ = stream.shutdown().await;
+    });
+
+    Ok(url)
 }
 
 /// OAuth domains that must open in the system browser. Clerk's OAuth flow
@@ -773,8 +912,8 @@ end tell"#,
             send_auth_token,
             is_desktop,
             get_node_status,
-            check_for_updates,
-            install_update,
+            updater_identity,
+            apply_update_manifest,
             file_access_list_paths,
             file_access_add_path,
             file_access_remove_path,

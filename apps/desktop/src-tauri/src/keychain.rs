@@ -63,8 +63,7 @@ pub struct DeviceIdentity {
 ///       }
 ///     }
 ///   }
-fn signing_key_to_pkcs8_v1_pem(signing: &SigningKey) -> String {
-    let raw = signing.to_bytes();
+fn raw_ed25519_priv_to_pkcs8_v1_pem(raw: &[u8; 32]) -> String {
     let mut der = Vec::with_capacity(48);
     der.extend_from_slice(&[
         0x30, 0x2e,                          // SEQUENCE, len 46
@@ -74,7 +73,7 @@ fn signing_key_to_pkcs8_v1_pem(signing: &SigningKey) -> String {
         0x04, 0x22,                          // OCTET STRING, len 34
         0x04, 0x20,                          //   OCTET STRING, len 32
     ]);
-    der.extend_from_slice(&raw);
+    der.extend_from_slice(raw);
     debug_assert_eq!(der.len(), 48);
     let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
     let body = b64
@@ -84,6 +83,67 @@ fn signing_key_to_pkcs8_v1_pem(signing: &SigningKey) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!("-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n", body)
+}
+
+fn signing_key_to_pkcs8_v1_pem(signing: &SigningKey) -> String {
+    raw_ed25519_priv_to_pkcs8_v1_pem(&signing.to_bytes())
+}
+
+/// Decode a PKCS#8 PEM private key for Ed25519 and return the raw 32 bytes.
+///
+/// Accepts both PKCS#8 v1 (RFC 5208, 48-byte DER) and v2 (RFC 5958
+/// OneAsymmetricKey, 81-byte DER with embedded public key). Returns `None`
+/// if the PEM doesn't look like either form — the caller should leave the
+/// stored entry alone in that case.
+fn extract_raw_ed25519_priv_from_pkcs8_pem(pem: &str) -> Option<[u8; 32]> {
+    let body: String = pem
+        .lines()
+        .filter(|l| !l.starts_with("-----") && !l.trim().is_empty())
+        .collect();
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .ok()?;
+    // Both v1 and v2 place the raw 32-byte private key at the same offset:
+    //   bytes 0..2:   SEQUENCE header
+    //   bytes 2..5:   version INTEGER (0x02, 0x01, version_byte)
+    //   bytes 5..12:  AlgorithmIdentifier SEQUENCE + Ed25519 OID
+    //   bytes 12..14: OCTET STRING outer (0x04 0x22)
+    //   bytes 14..16: OCTET STRING inner (0x04 0x20)
+    //   bytes 16..48: raw 32-byte private key
+    // For v2 the bytes after offset 48 hold the embedded public key; we
+    // don't need them — we'll re-derive it from the private key bytes
+    // before re-emitting as v1.
+    if der.len() < 48 {
+        return None;
+    }
+    if &der[7..12] != [0x06, 0x03, 0x2b, 0x65, 0x70] {
+        return None;
+    }
+    if der[12] != 0x04 || der[13] != 0x22 || der[14] != 0x04 || der[15] != 0x20 {
+        return None;
+    }
+    let mut raw = [0u8; 32];
+    raw.copy_from_slice(&der[16..48]);
+    Some(raw)
+}
+
+/// Returns `true` iff `pem` is a PKCS#8 v2 (OneAsymmetricKey) Ed25519
+/// private key — the format ed25519-dalek used to emit before PR #677.
+/// Node's OpenSSL DECODER rejects v2, so when openclaw's
+/// `loadOrCreateDeviceIdentity` calls `crypto.createPrivateKey` on a v2
+/// PEM it marks the identity recognized-invalid and silently regenerates
+/// a fresh in-memory key. Detecting v2 lets us migrate the stored entry
+/// in place without changing the underlying keypair (deviceId stays
+/// stable, no re-pair needed).
+fn is_pkcs8_v2(pem: &str) -> bool {
+    let body: String = pem
+        .lines()
+        .filter(|l| !l.starts_with("-----") && !l.trim().is_empty())
+        .collect();
+    let Ok(der) = base64::engine::general_purpose::STANDARD.decode(body.trim()) else {
+        return false;
+    };
+    der.len() >= 5 && der[4] == 0x01
 }
 
 pub fn generate_keypair() -> DeviceIdentity {
@@ -99,7 +159,30 @@ pub fn generate_keypair() -> DeviceIdentity {
 pub fn load_or_generate(slot: KeychainSlot, service: &str) -> Result<DeviceIdentity, String> {
     let account = slot.account_suffix();
     match get_generic_password(service, account) {
-        Ok(bytes) => parse_stored(&bytes),
+        Ok(bytes) => {
+            let id = parse_stored(&bytes)?;
+            // Migrate any v2 PKCS#8 PEM left by pre-PR-#677 builds to v1,
+            // rewriting the Keychain entry in place. The raw 32-byte
+            // private key is unchanged, so the public key + deviceId
+            // remain stable — the backend's paired.json entry still
+            // matches and we don't need to re-pair.
+            if is_pkcs8_v2(&id.private_key_pem) {
+                let raw = extract_raw_ed25519_priv_from_pkcs8_pem(&id.private_key_pem)
+                    .ok_or("v2 PEM detected but raw key extraction failed")?;
+                let migrated = DeviceIdentity {
+                    private_key_pem: raw_ed25519_priv_to_pkcs8_v1_pem(&raw),
+                    public_key_pem: id.public_key_pem,
+                };
+                let stored = format!(
+                    "{}{}{}",
+                    migrated.private_key_pem, PUBLIC_SEPARATOR, migrated.public_key_pem
+                );
+                set_generic_password(service, account, stored.as_bytes())
+                    .map_err(|e| format!("keychain set (migration): {e}"))?;
+                return Ok(migrated);
+            }
+            Ok(id)
+        }
         Err(_) => {
             let id = generate_keypair();
             let stored = format!(
@@ -153,6 +236,44 @@ mod tests {
     fn parse_stored_rejects_no_separator() {
         let r = parse_stored(b"no separator here");
         assert!(r.is_err());
+    }
+
+    /// Build a real PKCS#8 v2 (OneAsymmetricKey) Ed25519 PEM via
+    /// ed25519-dalek's own emitter — same bytes pre-PR-#677 builds wrote
+    /// into Keychain. Avoids hand-rolling DER and keeps the fixture
+    /// honest against the same library version we depend on.
+    fn make_v2_pem(signing: &SigningKey) -> String {
+        use ed25519_dalek::pkcs8::EncodePrivateKey;
+        signing
+            .to_pkcs8_pem(LineEnding::LF)
+            .expect("emit v2 pem")
+            .to_string()
+    }
+
+    #[test]
+    fn is_pkcs8_v2_detects_v2_and_rejects_v1() {
+        let id = generate_keypair();
+        assert!(!is_pkcs8_v2(&id.private_key_pem));
+
+        let signing = SigningKey::generate(&mut OsRng);
+        let v2 = make_v2_pem(&signing);
+        assert!(is_pkcs8_v2(&v2));
+    }
+
+    #[test]
+    fn migration_preserves_raw_private_key() {
+        let signing = SigningKey::generate(&mut OsRng);
+        let raw_original = signing.to_bytes();
+        let v2 = make_v2_pem(&signing);
+        let recovered = extract_raw_ed25519_priv_from_pkcs8_pem(&v2)
+            .expect("v2 raw extract");
+        assert_eq!(recovered, raw_original, "v2 → raw must round-trip");
+
+        let v1 = raw_ed25519_priv_to_pkcs8_v1_pem(&recovered);
+        let from_v1 = extract_raw_ed25519_priv_from_pkcs8_pem(&v1)
+            .expect("v1 raw extract");
+        assert_eq!(from_v1, raw_original, "v2 → v1 must preserve the keypair");
+        assert!(!is_pkcs8_v2(&v1), "migrated PEM must be v1");
     }
 
     /// Lock in PKCS#8 v1 (48-byte DER) — Node's `crypto.createPrivateKey`

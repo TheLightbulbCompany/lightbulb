@@ -315,6 +315,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     approvalQueueRef.current = approvalQueue;
   }, [approvalQueue]);
 
+  // After a `resolved` approval removal, the OpenClaw continuation
+  // arrives on a FRESH runId (the original run truly ended at the
+  // intermediate chat.final). The next chunk/thinking/tool_start we
+  // see is therefore the resume — transfer the busy gate to that fresh
+  // runId so its eventual terminal `done` releases the gate the normal
+  // way. Without this, `done.runId !== clientRunIdRef.current` and the
+  // gate stays armed forever (Codex P1 on PR #682).
+  const resumeExpectedRef = useRef(false);
+
   // Queue (preserved from #621).
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
@@ -489,6 +498,25 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       ) {
         cancelledRunIdsRef.current.delete(msg.runId);
         return;
+      }
+
+      // Approval-resume gate transfer: after a `resolved` removal,
+      // OpenClaw's continuation starts on a fresh runId. Catch the
+      // first event of that fresh run and reassign clientRunIdRef so
+      // the eventual terminal `done` (which carries the fresh runId)
+      // releases the busy gate. Without this transfer the gate sticks
+      // armed forever and queued follow-ups never flush (Codex P1 c,
+      // PR #682).
+      if (
+        resumeExpectedRef.current &&
+        (msg.type === "chunk" ||
+          msg.type === "thinking" ||
+          msg.type === "tool_start") &&
+        msg.runId &&
+        msg.runId !== clientRunIdRef.current
+      ) {
+        clientRunIdRef.current = msg.runId;
+        resumeExpectedRef.current = false;
       }
 
       if (msg.type === "chunk") {
@@ -760,45 +788,54 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     [sendChat, isConnected, setIsStreaming],
   );
 
-  // Approval-pause release. The `done` handler holds the busy gate while
-  // a pending approval for this agent is in the queue. This subscription
-  // releases the gate on the removal reasons that have no server-side
-  // continuation: `dismissed` (user gave up on a stuck card),
-  // `auto_pruned` (local expiry fired), `terminal_error` (server rejected
-  // the resolve with unknown/expired id). It deliberately does NOT
-  // release on `resolved` — OpenClaw's post-approval continuation starts
-  // on a fresh runId and may not have emitted its first event yet;
-  // releasing here would let a user follow-up race with that resume.
-  // The continuation's eventual `done` (or an error / cancelMessage)
-  // releases the gate the normal way.
+  // Approval-pause release / resume signaling.
+  //
+  // `resolved`: a continuation is coming on a fresh runId — arm the
+  //   resumeExpectedRef flag so the chunk/thinking/tool_start at the top
+  //   of onChatMessage transfers the busy gate. Don't touch the gate
+  //   here; releasing it before the continuation arrives would let a
+  //   user follow-up race with the resume.
+  //
+  // `dismissed` / `auto_pruned` / `terminal_error`: no server-side
+  //   continuation is coming. Release the gate AND drop isStreaming —
+  //   the interim `done` handler skipped setIsStreaming(false) because
+  //   the gate was held for the approval, so the chat would otherwise
+  //   show the stop button indefinitely (Codex P2 on PR #682).
   useEffect(() => {
     return onApprovalRemoved((removedId, reason) => {
-      if (reason === "resolved") return;
-      // Only act on removals for THIS agent's approvals. The handler
-      // sees removals for every agent; we shouldn't release another
-      // agent's gate. Look up the removed id's agentId in the previous
-      // queue snapshot held in the ref.
+      // Subscribers fire synchronously inside removeFromQueue before
+      // React commits the setQueue update, so approvalQueueRef.current
+      // still holds the pre-removal queue and we can look up the
+      // removed id's agentId here.
       const wasForThisAgent = approvalQueueRef.current.some(
         (a) => a.id === removedId && a.agentId === agentIdRef.current,
       );
-      // approvalQueueRef may already have been updated by the time the
-      // subscriber fires (the setQueue runs synchronously inside the
-      // same removal call, but the effect that mirrors into
-      // approvalQueueRef fires on the next render). To be safe, fall
-      // back to releasing whenever the queue has no approvals left for
-      // this agent — which is exactly the condition we care about.
-      const stillHasPending = approvalQueueRef.current.some(
-        (a) => a.id !== removedId && a.agentId === agentIdRef.current,
-      );
-      if (!wasForThisAgent && stillHasPending) return;
+      if (!wasForThisAgent) return;
+
+      if (reason === "resolved") {
+        if (clientRunIdRef.current !== null) {
+          resumeExpectedRef.current = true;
+        }
+        return;
+      }
+
       if (clientRunIdRef.current === null) return;
       const hasLiveStream =
         chatStreamRef.current !== null || toolStreamByIdRef.current.size > 0;
       if (!hasLiveStream) {
         clientRunIdRef.current = null;
+        resumeExpectedRef.current = false;
+        if (isStreamingRef.current) {
+          setIsStreaming(false);
+        }
+        // Drop any half-set turn analytics state — the turn ended
+        // abruptly (no chat_completed emission), so we just clear the
+        // refs so the NEXT user turn measures from its own start.
+        turnStartedAtRef.current = null;
+        turnAssistantLenRef.current = 0;
       }
     });
-  }, [onApprovalRemoved]);
+  }, [onApprovalRemoved, setIsStreaming]);
 
   // Drain queued messages one at a time on busy→idle transitions.
   // We track the previous value of clientRunIdRef in a ref so a simple

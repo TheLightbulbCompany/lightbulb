@@ -7,6 +7,7 @@ from core.services.node_proxy import (
     handle_node_connect,
     handle_node_disconnect,
     get_user_node,
+    force_close_device,
     _user_nodes,
     _node_count,
     _node_upstreams,
@@ -63,7 +64,7 @@ def mock_config_patcher():
 
 @pytest.mark.asyncio
 async def test_connect_stores_user_node(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
-    """handle_node_connect stores the user_id -> nodeId mapping."""
+    """handle_node_connect stores the user_id -> nodeId mapping (under cli bucket for node-host)."""
     mgmt = MagicMock()
 
     await handle_node_connect(
@@ -75,7 +76,7 @@ async def test_connect_stores_user_node(mock_ecs, mock_pool, mock_upstream, mock
     )
 
     assert "user_alice" in _user_nodes
-    assert _user_nodes["user_alice"]["connection_id"] == "conn_1"
+    assert _user_nodes["user_alice"]["cli"]["connection_id"] == "conn_1"
 
 
 @pytest.mark.asyncio
@@ -291,3 +292,382 @@ async def test_upstream_closed_callback_cleans_up_user_state(mock_ecs, mock_pool
         "user_alice",
         {"type": "node_status", "status": "disconnected"},
     )
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_closes_matching_upstream(mock_ecs, mock_pool, mock_config_patcher):
+    """force_close_device routes through handle_node_disconnect so per-user
+    state (upstream registry, _user_nodes bucket, _node_count) is torn down
+    in one place. Without that, a revoke on a live device leaves the agent
+    binding chat sessions to the dead execNode until process restart.
+    """
+    fake_upstream = MagicMock()
+    fake_upstream.device_id = "dev_target"
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["conn_1"] = fake_upstream
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_target",
+            "clientId": "node-host",
+            "connection_id": "conn_1",
+            "owner_id": "org_42",
+        },
+    }
+    _node_count["org_42"] = 1
+
+    closed = await force_close_device("dev_target")
+    assert closed is True
+    fake_upstream.close.assert_awaited_once()
+    # Connection should be removed from the registry after close.
+    assert "conn_1" not in _node_upstreams
+    # And — the bug that motivated this test — per-user state must be
+    # fully cleared so chat stops binding sessions to the dead device.
+    assert "user_alice" not in _user_nodes
+    assert _node_count.get("org_42", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_no_match_returns_false():
+    """If no _user_nodes bucket matches the given device_id, return False."""
+    closed = await force_close_device("dev_missing")
+    assert closed is False
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_handles_close_exception(mock_ecs, mock_pool, mock_config_patcher):
+    """If upstream.close() raises, the cleanup path still completes and
+    the registry / per-user state is cleared (best-effort revocation).
+    """
+    fake_upstream = MagicMock()
+    fake_upstream.device_id = "dev_target"
+    fake_upstream.close = AsyncMock(side_effect=RuntimeError("broken pipe"))
+    _node_upstreams["conn_1"] = fake_upstream
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_target",
+            "clientId": "node-host",
+            "connection_id": "conn_1",
+            "owner_id": "org_42",
+        },
+    }
+    _node_count["org_42"] = 1
+
+    # Should NOT propagate the exception; revocation is best-effort.
+    closed = await force_close_device("dev_target")
+    assert closed is True
+    assert "conn_1" not in _node_upstreams
+    # State teardown still happened.
+    assert "user_alice" not in _user_nodes
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_finds_device_in_mac_bucket(mock_ecs, mock_pool, mock_config_patcher):
+    """Devices in the Mac bucket can also be force-closed; the per-user
+    state lookup must traverse both cli and mac slots.
+    """
+    fake_upstream = MagicMock()
+    fake_upstream.device_id = "dev_mac"
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["conn_mac"] = fake_upstream
+    _user_nodes["user_alice"] = {
+        "mac": {
+            "deviceId": "dev_mac",
+            "clientId": "openclaw-macos",
+            "connection_id": "conn_mac",
+            "owner_id": "org_42",
+        },
+    }
+    _node_count["org_42"] = 1
+
+    closed = await force_close_device("dev_mac")
+    assert closed is True
+    assert "conn_mac" not in _node_upstreams
+    assert "user_alice" not in _user_nodes
+
+
+@pytest.mark.asyncio
+async def test_force_close_device_clears_patched_sessions_for_cli_revoke(mock_ecs, mock_pool, mock_config_patcher):
+    """Revoking a CLI device must clear that user's patched sessions —
+    otherwise chat keeps trying to route exec through the dead nodeId.
+    This is the actual regression Codex flagged: a direct _node_upstreams
+    pop bypassed clear_patched_sessions_for_user.
+    """
+    from core.services.node_proxy import _patched_sessions, set_patched_session
+
+    set_patched_session("agent:a1:user_alice", "dev_cli")
+    fake_upstream = MagicMock()
+    fake_upstream.device_id = "dev_cli"
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["conn_cli"] = fake_upstream
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_cli",
+            "clientId": "node-host",
+            "connection_id": "conn_cli",
+            "owner_id": "org_42",
+        },
+    }
+    _node_count["org_42"] = 1
+    # send_rpc is best-effort inside handle_node_disconnect; stub it so the
+    # ECS resolve path is never invoked.
+    mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("container down"))
+
+    closed = await force_close_device("dev_cli")
+    assert closed is True
+    # Patched session pin was cleared as part of the cleanup.
+    assert _patched_sessions.get("agent:a1:user_alice") is None
+
+
+# ---------------------------------------------------------------------------
+# Task 11: per-user {cli, mac} accessors
+# ---------------------------------------------------------------------------
+
+
+def test_get_user_cli_node_returns_cli_entry():
+    from core.services.node_proxy import get_user_cli_node, get_user_mac_node
+
+    _user_nodes.clear()
+    _user_nodes["user_alice"] = {
+        "cli": {"deviceId": "dev_cli", "clientId": "node-host", "connection_id": "c1", "owner_id": "o"},
+        "mac": {"deviceId": "dev_mac", "clientId": "openclaw-macos", "connection_id": "c2", "owner_id": "o"},
+    }
+    cli = get_user_cli_node("user_alice")
+    assert cli is not None
+    assert cli["deviceId"] == "dev_cli"
+    assert cli["clientId"] == "node-host"
+    mac = get_user_mac_node("user_alice")
+    assert mac is not None
+    assert mac["deviceId"] == "dev_mac"
+    assert mac["clientId"] == "openclaw-macos"
+
+
+def test_get_user_cli_node_none_when_missing():
+    from core.services.node_proxy import get_user_cli_node, get_user_mac_node
+
+    _user_nodes.clear()
+    assert get_user_cli_node("user_unknown") is None
+    _user_nodes["user_alice"] = {"mac": {"deviceId": "dev_mac"}}  # only mac
+    assert get_user_cli_node("user_alice") is None
+    assert get_user_mac_node("user_alice")["deviceId"] == "dev_mac"
+
+
+def test_get_user_node_backward_compat_prefers_cli():
+    """Legacy get_user_node should still return something — prefer CLI when both exist."""
+    from core.services.node_proxy import get_user_node
+
+    _user_nodes.clear()
+    _user_nodes["u"] = {
+        "cli": {"deviceId": "dev_cli", "clientId": "node-host"},
+        "mac": {"deviceId": "dev_mac", "clientId": "openclaw-macos"},
+    }
+    legacy = get_user_node("u")
+    assert legacy["deviceId"] == "dev_cli"  # CLI preferred for backward compat
+
+
+# ---------------------------------------------------------------------------
+# Task 12: handle_node_connect slots by clientId + handle_node_disconnect
+#          owning-close check traverses both buckets
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_node_connect_slots_cli_into_cli_bucket(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """node-host client -> _user_nodes[user_id]["cli"]"""
+    mock_upstream.device_id = "dev_cli_hash"
+    mgmt = MagicMock()
+
+    await handle_node_connect(
+        owner_id="owner_42",
+        user_id="user_alice",
+        connection_id="conn_cli",
+        connect_params={
+            "role": "node",
+            "client": {"id": "node-host", "displayName": "Alice | CLI"},
+        },
+        management_api=mgmt,
+    )
+    entry = _user_nodes["user_alice"]
+    assert "cli" in entry
+    assert entry["cli"]["deviceId"] == "dev_cli_hash"
+    assert entry["cli"]["clientId"] == "node-host"
+    assert entry["cli"]["connection_id"] == "conn_cli"
+    assert entry["cli"]["owner_id"] == "owner_42"
+    assert "mac" not in entry
+
+
+async def test_handle_node_connect_slots_mac_into_mac_bucket(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """openclaw-macos client -> _user_nodes[user_id]["mac"]"""
+    mock_upstream.device_id = "dev_mac_hash"
+    mgmt = MagicMock()
+
+    await handle_node_connect(
+        owner_id="owner_42",
+        user_id="user_alice",
+        connection_id="conn_mac",
+        connect_params={
+            "role": "node",
+            "client": {"id": "openclaw-macos", "displayName": "Alice | Mac"},
+        },
+        management_api=mgmt,
+    )
+    entry = _user_nodes["user_alice"]
+    assert "mac" in entry
+    assert entry["mac"]["deviceId"] == "dev_mac_hash"
+    assert entry["mac"]["clientId"] == "openclaw-macos"
+    assert "cli" not in entry
+
+
+async def test_handle_node_connect_unknown_client_id_defaults_to_cli(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """Unknown/missing clientId defaults to cli bucket (safe fallback)."""
+    mock_upstream.device_id = "dev_unknown"
+    mgmt = MagicMock()
+
+    await handle_node_connect(
+        owner_id="o",
+        user_id="u",
+        connection_id="c",
+        connect_params={"role": "node", "client": {}},  # no id
+        management_api=mgmt,
+    )
+    entry = _user_nodes["u"]
+    assert "cli" in entry
+    assert entry["cli"]["deviceId"] == "dev_unknown"
+
+
+async def test_handle_node_disconnect_owning_close_finds_in_cli_bucket(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """Disconnect with connection_id that matches the CLI bucket triggers cleanup."""
+    # Pre-populate with both buckets (manual state — bypasses handle_node_connect)
+    _user_nodes["u"] = {
+        "cli": {"deviceId": "dev_cli", "clientId": "node-host", "connection_id": "c_cli", "owner_id": "o"},
+        "mac": {"deviceId": "dev_mac", "clientId": "openclaw-macos", "connection_id": "c_mac", "owner_id": "o"},
+    }
+    fake_upstream = MagicMock()
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["c_cli"] = fake_upstream
+    _node_count["o"] = 1
+
+    await handle_node_disconnect(connection_id="c_cli", owner_id="o", user_id="u")
+
+    # CLI bucket cleared, mac stays
+    assert "cli" not in _user_nodes["u"]
+    assert "mac" in _user_nodes["u"]
+
+
+async def test_handle_node_disconnect_removes_user_entry_when_last_bucket_closes(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """When the last bucket closes, the user_id entry itself is removed."""
+    _user_nodes["u"] = {
+        "cli": {"deviceId": "dev_cli", "clientId": "node-host", "connection_id": "c_cli", "owner_id": "o"},
+    }
+    fake_upstream = MagicMock()
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["c_cli"] = fake_upstream
+    _node_count["o"] = 1
+
+    await handle_node_disconnect(connection_id="c_cli", owner_id="o", user_id="u")
+
+    assert "u" not in _user_nodes
+
+
+# ---------------------------------------------------------------------------
+# Task 13: bucket entries drop the transient `nodeId` alias;
+#          patched-session clearing scoped to CLI-bucket disconnects only
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_node_connect_bucket_entry_has_no_nodeid_alias(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """Task 13 removes the transient `nodeId` legacy alias the bucket
+    used to carry for websocket_chat session-binding. Callers must read
+    `deviceId` directly now."""
+    mock_upstream.device_id = "dev_only"
+    mgmt = MagicMock()
+
+    await handle_node_connect(
+        owner_id="o",
+        user_id="u",
+        connection_id="c",
+        connect_params={"role": "node", "client": {"id": "node-host"}},
+        management_api=mgmt,
+    )
+    entry = _user_nodes["u"]["cli"]
+    assert entry["deviceId"] == "dev_only"
+    assert "nodeId" not in entry, (
+        "Task 13 must drop the transient `nodeId` alias from bucket entries; callers should read `deviceId`."
+    )
+
+
+async def test_mac_only_disconnect_does_not_clear_patched_sessions(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """Patched sessions reference the CLI device for exec routing. A
+    Mac-only disconnect must NOT clobber the user's exec session pin —
+    otherwise the next chat send would re-issue the bind RPC needlessly
+    AND a user who has only the Mac connected (no CLI yet) would have
+    their CLI-pinned sessions wiped when the Mac drops."""
+    from core.services.node_proxy import _patched_sessions, set_patched_session
+
+    # Pin a session against a (future) CLI device.
+    set_patched_session("agent:a1:user_alice", "dev_cli")
+
+    # Both buckets connected; CLI bucket holds c_cli, Mac bucket holds c_mac.
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_cli",
+            "clientId": "node-host",
+            "connection_id": "c_cli",
+            "owner_id": "org_42",
+        },
+        "mac": {
+            "deviceId": "dev_mac",
+            "clientId": "openclaw-macos",
+            "connection_id": "c_mac",
+            "owner_id": "org_42",
+        },
+    }
+    fake = MagicMock()
+    fake.close = AsyncMock()
+    _node_upstreams["c_mac"] = fake
+    _node_count["org_42"] = 2
+
+    await handle_node_disconnect(connection_id="c_mac", owner_id="org_42", user_id="user_alice")
+
+    # CLI bucket survives; patched-session pin survives.
+    assert "cli" in _user_nodes["user_alice"]
+    assert _patched_sessions.get("agent:a1:user_alice") == "dev_cli"
+
+
+async def test_cli_disconnect_clears_patched_sessions(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """The CLI-bucket close path must still clear patched sessions —
+    exec is bound to CLI, so when the CLI socket drops the bound
+    execNode is dead and we need to re-patch on next chat."""
+    from core.services.node_proxy import _patched_sessions, set_patched_session
+
+    set_patched_session("agent:a1:user_alice", "dev_cli")
+
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_cli",
+            "clientId": "node-host",
+            "connection_id": "c_cli",
+            "owner_id": "org_42",
+        },
+    }
+    fake = MagicMock()
+    fake.close = AsyncMock()
+    _node_upstreams["c_cli"] = fake
+    _node_count["org_42"] = 1
+
+    # gateway-pool.send_rpc is invoked while clearing — mock_pool already
+    # has it stubbed via AsyncMock attribute lookup; ensure it doesn't blow up.
+    mock_pool.send_rpc = AsyncMock()
+
+    await handle_node_disconnect(connection_id="c_cli", owner_id="org_42", user_id="user_alice")
+
+    # CLI gone, patched-session pin gone.
+    assert _patched_sessions.get("agent:a1:user_alice") is None

@@ -27,12 +27,20 @@ from core.services.node_proxy import (
     handle_node_message,
     handle_node_disconnect,
     is_node_connection,
+    submit_signed_connect as submit_node_signed_connect,
 )
 from core.services.paperclip_openclaw_pairing import pair_with_openclaw
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["websocket"])
+
+
+# Client IDs that handle their own connect.challenge via the upstream-relay
+# path (handle_node_connect). For these clients we MUST NOT send a synthetic
+# nonce on $connect -- it would race the real challenge from the upstream
+# OpenClaw container and could cause the subprocess to sign the wrong nonce.
+NODE_HOST_CLIENT_IDS = frozenset({"node-host", "openclaw-macos"})
 
 
 # Singleton instances (created lazily with async lock for thread safety)
@@ -107,6 +115,7 @@ async def ws_connect(
     x_connection_id: Optional[str] = Header(None, alias="x-connection-id"),
     x_user_id: Optional[str] = Header(None, alias="x-user-id"),
     x_org_id: Optional[str] = Header(None, alias="x-org-id"),
+    x_client_id: Optional[str] = Header(None, alias="x-client-id"),
 ) -> Response:
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
@@ -121,17 +130,20 @@ async def ws_connect(
         x_org_id or x_user_id,
     )
 
+    is_node_host = x_client_id in NODE_HOST_CLIENT_IDS
+    # Route by owner_id: org_id for org members, user_id for personal.
+    owner_id = x_org_id or x_user_id
+
     connection_service = await get_connection_service()
     connection_service.store_connection(
         connection_id=x_connection_id,
         user_id=x_user_id,
         org_id=x_org_id,
+        connection_type="node" if is_node_host else "chat",
     )
 
     try:
         pool = get_gateway_pool()
-        # Route by owner_id: org_id for org members, user_id for personal
-        owner_id = x_org_id or x_user_id
         # Pass member_id so the pool can route streaming events to the
         # specific org member who initiated each chat, not broadcast to
         # all members. For personal users member_id == owner_id so it's
@@ -140,11 +152,79 @@ async def ws_connect(
     except Exception as e:
         logger.warning("Failed to register frontend connection with pool: %s", e)
 
-    # Send OpenClaw connect.challenge so the control UI SPA can complete
-    # its handshake.  The chat frontend silently ignores this message.
-    background_tasks.add_task(_send_connect_challenge, x_connection_id)
+    # Branch on client type:
+    #
+    # - Browser / control UI: send a synthetic connect.challenge so the
+    #   SPA can complete its handshake. Chat frontend silently ignores it.
+    #
+    # - node-host clients (Tauri proxy / openclaw subprocess): start the
+    #   upstream-container handshake ourselves. The subprocess uses the
+    #   OpenClaw v3 server-initiated handshake (it waits for
+    #   `connect.challenge` from the server before sending anything), so
+    #   SOMETHING has to open the upstream container WS to surface that
+    #   challenge. Previously the Tauri proxy injected a wake-up `connect`
+    #   to trigger this — but that frame collided with the subprocess's
+    #   own signed `connect`, with the backend keying `hello-ok` to the
+    #   wake-up id instead of the subprocess's pending id, silently
+    #   timing out the handshake (Codex round-3 P1 on PR #667). The
+    #   proxy is now a transparent relay; we kick off
+    #   `handle_node_connect` here on `$connect` and the subprocess's
+    #   signed-connect frame is the FIRST and ONLY `connect` frame the
+    #   `$default` handler sees.
+    if is_node_host:
+        background_tasks.add_task(
+            _kick_off_node_connect,
+            connection_id=x_connection_id,
+            owner_id=owner_id,
+            user_id=x_user_id,
+            client_id=x_client_id or "node-host",
+        )
+    else:
+        background_tasks.add_task(_send_connect_challenge, x_connection_id)
 
     return Response(status_code=200)
+
+
+async def _kick_off_node_connect(
+    *,
+    connection_id: str,
+    owner_id: str,
+    user_id: str,
+    client_id: str,
+) -> None:
+    """Start the per-user node-host upstream handshake on `$connect`.
+
+    Replaces the legacy "wake-up connect" trigger. See ws_connect comment
+    for the rationale.
+
+    Errors are swallowed (logged): a failed handshake should not bring
+    down the WS connection. The subprocess will reconnect via its own
+    retry loop, and the next `$connect` will retry this path.
+    """
+    try:
+        management_api = await get_management_api_client()
+        # The handler builds the connect_params shape itself from a minimal
+        # seed. `client.id` is the discriminator that slots the device into
+        # the cli/mac bucket in `_user_nodes` — feed the value we already
+        # have from the `$connect` header.
+        connect_params = {
+            "role": "node",
+            "client": {"id": client_id, "mode": "node"},
+        }
+        await handle_node_connect(
+            owner_id=owner_id,
+            user_id=user_id,
+            connection_id=connection_id,
+            connect_params=connect_params,
+            management_api=management_api,
+        )
+    except Exception as e:
+        logger.warning(
+            "node-host connect failed for user=%s conn=%s: %s",
+            user_id,
+            connection_id[:12],
+            e,
+        )
 
 
 @router.post(
@@ -344,39 +424,39 @@ async def ws_message(
             connect_params = params or {}
             role = connect_params.get("role", "operator")
 
-            # Node connection: open dedicated upstream with role:"node"
+            # Node connection: post-PR #667 round-3 pure-relay flow.
+            #
+            # The subprocess only ever sends ONE `connect` frame: the signed
+            # reply to the upstream container's `connect.challenge` (the
+            # OpenClaw v3 handshake is server-initiated, see
+            # ~/Desktop/openclaw/src/gateway/client.ts:880). The backend
+            # started the upstream handshake itself on `$connect` via
+            # `_kick_off_node_connect`, so by the time this signed-connect
+            # frame arrives there's an awaiting NodeUpstreamConnection
+            # ready to consume it. Route it through `submit_signed_connect`
+            # and ACK synchronously — `handle_node_connect` is what
+            # eventually forwards `hello-ok` DOWN to the client (with the
+            # subprocess's own request id, captured during the handshake).
+            #
+            # The legacy "frame 1: wake-up" path that opened the upstream
+            # WS in response to a proxy-injected unsigned `connect` is
+            # gone — that frame collided with the subprocess's real
+            # signed connect and silently broke JSON-RPC id correlation
+            # (Codex round-3 P1 on PR #667).
             if role == "node":
-                conn_svc = await get_connection_service()
-                conn_svc.store_connection(x_connection_id, user_id, connection.get("org_id"), connection_type="node")
-                management_api = await get_management_api_client()
-                try:
-                    hello = await handle_node_connect(
-                        owner_id=owner_id,
-                        user_id=user_id,
-                        connection_id=x_connection_id,
-                        connect_params=connect_params,
-                        management_api=management_api,
-                    )
-                    if hello:
-                        # Rewrite the upstream's res.id to match the desktop's
-                        # req.id. handle_node_connect opens a SEPARATE upstream
-                        # WS to the container with its own uuid and gets back
-                        # a hello res keyed on that upstream id — forwarding
-                        # verbatim would break JSON-RPC correlation on the
-                        # desktop, which expects res.id == req.id for the
-                        # handshake.
-                        management_api.send_message(x_connection_id, {**hello, "id": req_id})
-                except Exception as e:
-                    logger.error("Node connect failed: %s", e)
-                    management_api.send_message(
-                        x_connection_id,
-                        {
-                            "type": "res",
-                            "id": req_id,
-                            "ok": False,
-                            "error": {"message": str(e)},
-                        },
-                    )
+                if is_node_connection(x_connection_id):
+                    submit_node_signed_connect(x_connection_id, body)
+                    return Response(status_code=200)
+                # No upstream pending — either `_kick_off_node_connect`
+                # hasn't run yet (very tight race window: the subprocess
+                # got past `connect.challenge` before $connect's
+                # BackgroundTask scheduled) or it errored out. Log and
+                # drop: the subprocess's reconnect loop will retry.
+                logger.warning(
+                    "Node-role connect frame for connection %s with no upstream — "
+                    "dropping (subprocess will retry on next reconnect)",
+                    x_connection_id[:12] if x_connection_id else "?",
+                )
                 return Response(status_code=200)
 
             # Operator connect — respond with hello-ok locally.
@@ -1006,12 +1086,19 @@ async def _process_agent_chat_background(
             ip,
         )
 
-        # --- Node binding: pin this session to the user's Mac if connected ---
-        from core.services.node_proxy import get_user_node, get_patched_session, set_patched_session
+        # --- Node binding: pin this session to the user's CLI device if connected ---
+        # Task 13: exec is bound to the CLI bucket specifically. The Mac
+        # companion (clientId=openclaw-macos) is a sibling node for
+        # passkey/UI affordances, but execNode must point at the CLI.
+        from core.services.node_proxy import (
+            get_user_cli_node,
+            get_patched_session,
+            set_patched_session,
+        )
 
-        node_info = get_user_node(user_id)
+        node_info = get_user_cli_node(user_id)
         if node_info:
-            node_id = node_info["nodeId"]
+            node_id = node_info["deviceId"]
             cached = get_patched_session(session_key)
             if cached != node_id:
                 # Patch the session so the agent KNOWS which node to use

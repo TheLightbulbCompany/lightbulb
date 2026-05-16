@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")  # Set by Terraform
+    # Public WSS endpoint returned by POST /api/v1/desktop/pair so desktop
+    # clients know which gateway to connect to. Wired by CDK service-stack from
+    # api-stack's WebSocket stage URL.
+    WS_GATEWAY_URL: str = os.getenv("WS_GATEWAY_URL", "wss://ws-dev.isol8.co")
 
     # Credit ledger + OAuth tables (set by CDK)
     CREDITS_TABLE: str = ""

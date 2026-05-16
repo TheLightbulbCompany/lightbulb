@@ -505,7 +505,7 @@ _OPENCLAW_EXTENDED_REGISTRY = "877352799272"
 # locked to the pinned values, mirroring the OPENCLAW_UPSTREAM_VERSION
 # pattern in core/containers/config.py.
 CURRENT_DEV_TAG = "2026.5.12-570e197"
-CURRENT_PROD_TAG = "2026.5.7-0d10b38"
+CURRENT_PROD_TAG = "2026.5.12-570e197"
 
 
 async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:

@@ -59,7 +59,7 @@ class TestConnectEndpoint:
 
     @pytest.mark.asyncio
     async def test_connect_stores_connection(self, test_app, mock_connection_service):
-        """Connect should store connection in DynamoDB."""
+        """Connect should store connection in DynamoDB with type=chat by default."""
         async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
             response = await client.post(
                 "/ws/connect",
@@ -74,6 +74,7 @@ class TestConnectEndpoint:
             connection_id="test-conn-123",
             user_id="test-user-456",
             org_id=None,
+            connection_type="chat",
         )
 
     @pytest.mark.asyncio
@@ -94,6 +95,37 @@ class TestConnectEndpoint:
             connection_id="test-conn-123",
             user_id="test-user-456",
             org_id="test-org-789",
+            connection_type="chat",
+        )
+
+    @pytest.mark.asyncio
+    async def test_connect_marks_node_host_clients_as_node_type(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """node-host clientIds should be stored with connection_type='node'.
+
+        Regression for the PR #667 round-3 P1 backend rework: ws_connect
+        now kicks off `_kick_off_node_connect` for node-host clients (the
+        proxy no longer injects a wake-up frame to do it), so the
+        connection MUST be flagged 'node' at $connect time, not later
+        when the first frame arrives.
+        """
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-node-1",
+                    "x-user-id": "test-user-xyz",
+                    "x-client-id": "node-host",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_connection_service.store_connection.assert_called_once_with(
+            connection_id="test-conn-node-1",
+            user_id="test-user-xyz",
+            org_id=None,
+            connection_type="node",
         )
 
     @pytest.mark.asyncio
@@ -125,6 +157,96 @@ class TestConnectEndpoint:
         assert response.status_code == 401
         assert "user-id" in response.json()["detail"].lower()
         mock_connection_service.store_connection.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_synthetic_challenge_for_node_host(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """Connect should skip the synthetic connect.challenge for node-host clients.
+
+        The Tauri proxy is doing client-first sequencing; the real
+        connect.challenge will come from the upstream container via
+        handle_node_connect's relay path. Sending a synthetic nonce here
+        would race that and could cause the subprocess to sign the wrong
+        nonce.
+        """
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-node",
+                    "x-user-id": "test-user-456",
+                    "x-client-id": "node-host",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_synthetic_challenge_for_openclaw_macos(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """Connect should skip the synthetic connect.challenge for openclaw-macos clients."""
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-mac",
+                    "x-user-id": "test-user-456",
+                    "x-client-id": "openclaw-macos",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_sends_synthetic_challenge_for_default_client(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """Connect should send synthetic connect.challenge when no clientId header set.
+
+        Browser chat/control UI clients don't set x-client-id; they
+        depend on the synthetic challenge to complete their handshake.
+        """
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-browser",
+                    "x-user-id": "test-user-456",
+                },
+            )
+
+        assert response.status_code == 200
+        # Synthetic challenge fires via BackgroundTask after the response
+        # is returned -- TestClient/ASGITransport awaits background tasks
+        # before the context exits, so by here send_message has been called.
+        mock_management_api.send_message.assert_called_once()
+        call_args = mock_management_api.send_message.call_args
+        assert call_args[0][0] == "test-conn-browser"
+        payload = call_args[0][1]
+        assert payload["event"] == "connect.challenge"
+        assert "nonce" in payload["payload"]
+
+    @pytest.mark.asyncio
+    async def test_connect_sends_synthetic_challenge_for_unknown_client_id(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """An unrecognized clientId should still get the synthetic challenge (default behavior)."""
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-other",
+                    "x-user-id": "test-user-456",
+                    "x-client-id": "some-other-client",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_called_once()
 
 
 class TestDisconnectEndpoint:
@@ -488,3 +610,70 @@ class TestUserActiveLegacy:
 
         assert response.status_code == 200
         mock_management_api.send_message.assert_not_called()
+
+
+class TestSessionBindsToCliDevice:
+    """Task 13: agent_chat session-binding must pick the CLI device
+    specifically (not whichever happened to be set last). The exec router
+    only knows how to invoke against the CLI bucket; pinning execNode to
+    the Mac-companion's deviceId would silently break exec.
+
+    These are contract tests rather than full handler tests — the
+    message-handler is too tangled with provision_gate, billing, and
+    container resolution to exercise cleanly here. We validate the two
+    contract pieces directly:
+      1. `get_user_cli_node(user_id)["deviceId"]` is what session.patch
+         must send as `execNode`, even when a Mac bucket also exists.
+      2. The session-binding callsite imports `get_user_cli_node` (not
+         the deprecated `get_user_node`) from node_proxy.
+    """
+
+    def test_get_user_cli_node_returns_cli_deviceid_when_both_buckets_present(self):
+        """Mac connected LATER (chronologically); cli still wins for exec."""
+        from core.services import node_proxy
+        from core.services.node_proxy import get_user_cli_node
+
+        node_proxy._user_nodes.clear()
+        try:
+            node_proxy._user_nodes["user_alice"] = {
+                "cli": {
+                    "deviceId": "dev_cli_target",
+                    "clientId": "node-host",
+                    "connection_id": "c_cli",
+                    "owner_id": "o",
+                },
+                "mac": {
+                    "deviceId": "dev_mac_other",
+                    "clientId": "openclaw-macos",
+                    "connection_id": "c_mac",
+                    "owner_id": "o",
+                },
+            }
+
+            cli = get_user_cli_node("user_alice")
+            assert cli is not None
+            # This is the value the session-binding callsite will pass as
+            # execNode. Asserting it directly is the contract we care about.
+            assert cli["deviceId"] == "dev_cli_target"
+            # And the field is `deviceId`, NOT the transient `nodeId` alias.
+            assert "nodeId" not in cli or cli.get("nodeId") is None
+        finally:
+            node_proxy._user_nodes.clear()
+
+    def test_websocket_chat_imports_get_user_cli_node(self):
+        """Callsite must import get_user_cli_node (the post-Task-13 name),
+        not the deprecated get_user_node."""
+        import inspect
+
+        from routers import websocket_chat
+
+        src = inspect.getsource(websocket_chat)
+        # The session-binding block reads the CLI device specifically.
+        assert "get_user_cli_node" in src, (
+            "websocket_chat.py must call get_user_cli_node for session-binding "
+            "(Task 13); it currently still calls the deprecated get_user_node."
+        )
+        # And it reads deviceId, not the transient nodeId alias.
+        assert 'node_info["deviceId"]' in src or "node_info['deviceId']" in src, (
+            "session-binding must read deviceId from the cli-node entry, not the transient nodeId alias (Task 13)."
+        )

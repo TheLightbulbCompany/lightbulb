@@ -8,7 +8,14 @@ org, Alice's Mac and Bob's Mac are independent.
 
 State:
   _node_upstreams   connection_id -> NodeUpstreamConnection
-  _user_nodes       user_id -> {nodeId, connection_id, owner_id}
+  _user_nodes       user_id -> {
+                        "cli": {deviceId, clientId, connection_id, owner_id, ...},
+                        "mac": {deviceId, clientId, connection_id, owner_id, ...},
+                    }
+                    Each Mac has TWO openclaw nodes (the CLI subprocess +
+                    the Tauri-mac companion). The bucket is selected by
+                    the clientId from the connect handshake. See spec
+                    docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md.
   _node_count       owner_id -> int (active node connections)
   _patched_sessions session_key -> nodeId (in-memory cache)
 """
@@ -18,7 +25,6 @@ from uuid import uuid4
 
 from core.gateway.node_connection import NodeUpstreamConnection
 from core.containers import get_ecs_manager, get_gateway_pool
-from core.config import settings
 from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
@@ -26,7 +32,13 @@ logger = logging.getLogger(__name__)
 # connection_id -> NodeUpstreamConnection
 _node_upstreams: dict[str, NodeUpstreamConnection] = {}
 
-# user_id -> {nodeId: str, connection_id: str, owner_id: str}
+# user_id -> {
+#   "cli": {"deviceId": str, "clientId": "node-host",      "connection_id": str, "owner_id": str},
+#   "mac": {"deviceId": str, "clientId": "openclaw-macos", "connection_id": str, "owner_id": str},
+# }
+# Per spec 2026-05-15-desktop-node-architecture-migration-design.md:
+# each Mac has TWO openclaw nodes (cli subprocess + Tauri-mac companion).
+# Slot by clientId from the connect handshake.
 _user_nodes: dict[str, dict] = {}
 
 # owner_id -> count of active node connections (for ref-counted config patching)
@@ -36,9 +48,46 @@ _node_count: dict[str, int] = {}
 _patched_sessions: dict[str, str] = {}
 
 
+def get_user_cli_node(user_id: str) -> dict | None:
+    """Return the CLI subprocess node info for user, or None if not connected.
+
+    Tolerates the legacy flat `{nodeId, connection_id, owner_id}` shape
+    until Task 12 finishes the migration in handle_node_connect: any flat
+    entry whose clientId is not `openclaw-macos` is treated as the CLI
+    bucket.
+    """
+    entry = _user_nodes.get(user_id)
+    if not entry:
+        return None
+    if "cli" in entry or "mac" in entry:
+        return entry.get("cli")
+    # Backward compat: legacy flat shape — treat as cli unless explicitly mac.
+    return entry if entry.get("clientId") != "openclaw-macos" else None
+
+
+def get_user_mac_node(user_id: str) -> dict | None:
+    """Return the Tauri-mac companion node info for user, or None if not connected.
+
+    Tolerates the legacy flat shape: an entry whose clientId is
+    `openclaw-macos` is treated as the mac bucket.
+    """
+    entry = _user_nodes.get(user_id)
+    if not entry:
+        return None
+    if "cli" in entry or "mac" in entry:
+        return entry.get("mac")
+    return entry if entry.get("clientId") == "openclaw-macos" else None
+
+
 def get_user_node(user_id: str) -> dict | None:
-    """Return the node info for a user, or None if not connected."""
-    return _user_nodes.get(user_id)
+    """Deprecated alias — prefers CLI node (exec-capable) when both kinds are present.
+
+    Use get_user_cli_node / get_user_mac_node when you specifically need
+    one or the other. Kept so legacy callers (session-binding,
+    handle_node_disconnect's owning-close check) keep working until they
+    migrate.
+    """
+    return get_user_cli_node(user_id) or get_user_mac_node(user_id)
 
 
 def get_patched_session(session_key: str) -> str | None:
@@ -94,23 +143,26 @@ async def handle_node_connect(
     client_params["displayName"] = f"{incoming} | Isol8 Desktop"
     connect_params["client"] = client_params
 
-    # user_id (member) vs owner_id (org/container) — scope the device
+    # user_id (member) vs owner_id (org/container) -- scope the device
     # identity by user_id so org members each get a distinct nodeId. The
-    # upstream connect registers the per-member device in paired.json
-    # on first use so the gateway's pairing gate accepts it.
+    # client (not the backend) signs the connect.challenge using a Keychain-
+    # stored Ed25519 key; paired.json registration happens at pairing time
+    # via the /desktop/pair endpoint (Task 7), not here.
     upstream = NodeUpstreamConnection(
         user_id=user_id,
         owner_id=owner_id,
         container_ip=ip,
         node_connect_params=connect_params,
-        efs_mount_path=settings.EFS_MOUNT_PATH,
         gateway_token=container["gateway_token"],
     )
 
     async def on_upstream_message(data: dict):
         management_api.send_message(connection_id, data)
 
-    upstream.set_message_callback(on_upstream_message)
+    # Push callback delivers upstream frames DOWN to the client via the
+    # Management API: container's connect.challenge during the handshake,
+    # then node.invoke.request etc. once the handshake completes.
+    upstream.set_client_push_callback(on_upstream_message)
 
     # If the upstream WS dies while the desktop side is still connected
     # (container restart, transient network drop, gateway close), tear
@@ -127,19 +179,67 @@ async def handle_node_connect(
 
     upstream.set_on_upstream_closed(on_upstream_closed)
 
-    hello = await upstream.connect()
-    await upstream.start_reader()
-
+    # Register the upstream BEFORE awaiting connect(). connect() blocks on a
+    # future that the relay's $default handler resolves via
+    # submit_signed_connect when the client's signed connect frame arrives --
+    # which requires _node_upstreams[connection_id] to be populated so the
+    # routing can find this object. Pre-registering means submit_signed_connect
+    # works during the handshake. handle_node_disconnect (idempotent) cleans
+    # up on failure.
     _node_upstreams[connection_id] = upstream
+
+    try:
+        hello = await upstream.connect()
+    except Exception:
+        # Roll back the pre-registration so a failed handshake doesn't leave
+        # a stale upstream in the registry. Use pop with default to stay
+        # idempotent with the disconnect cleanup path.
+        _node_upstreams.pop(connection_id, None)
+        try:
+            await upstream.close()
+        except Exception:
+            pass
+        raise
+
+    # Push hello-ok DOWN to the client, keyed to the subprocess's OWN
+    # signed-connect request id (captured during the handshake on the
+    # NodeUpstreamConnection). The upstream container emits its own id
+    # for its own bookkeeping; forwarding that verbatim would miss the
+    # subprocess's pending-request map and silently time out the
+    # handshake. See Codex round-3 P1 on PR #667.
+    if upstream.signed_req_id and hello:
+        try:
+            management_api.send_message(
+                connection_id,
+                {**hello, "id": upstream.signed_req_id},
+            )
+        except Exception:
+            logger.warning(
+                "Failed to deliver hello-ok to client for user=%s conn=%s",
+                user_id,
+                connection_id,
+                exc_info=True,
+            )
+
+    await upstream.start_reader()
 
     # The nodeId in OpenClaw's NodeRegistry is the device.id (SHA-256 hex of
     # the Ed25519 public key), set during the connect handshake inside
     # NodeUpstreamConnection.connect(). Read it back from the upstream.
     node_id = upstream.device_id or connection_id
 
-    # Store per-user mapping
-    _user_nodes[user_id] = {
-        "nodeId": node_id,
+    # Slot the device into the cli/mac bucket based on the connecting
+    # client's advertised clientId. Anything other than "openclaw-macos"
+    # goes into the cli bucket (catches "node-host" plus any
+    # legacy/unknown clients — safe fallback). See spec
+    # docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md.
+    client_id_raw = (connect_params.get("client") or {}).get("id") or "node-host"
+    bucket = "mac" if client_id_raw == "openclaw-macos" else "cli"
+
+    user_entry = _user_nodes.setdefault(user_id, {})
+    user_entry[bucket] = {
+        "deviceId": node_id,
+        "clientId": client_id_raw,
         "connection_id": connection_id,
         "owner_id": owner_id,
     }
@@ -196,20 +296,48 @@ async def handle_node_disconnect(
     # Safe because _node_upstreams.pop is atomic.
     if upstream is None:
         return
-    await upstream.close()
+    # Best-effort close: if the upstream errors here (e.g. broken pipe
+    # mid-shutdown) we still need to fall through to per-user state
+    # teardown so chat stops binding to the dead nodeId. Without this
+    # guard the exception would unwind past the _user_nodes cleanup
+    # below and leak state.
+    try:
+        await upstream.close()
+    except Exception:
+        logger.warning(
+            "Error closing upstream for %s; continuing with cleanup",
+            connection_id,
+            exc_info=True,
+        )
 
     # Only clear per-user state when the stored mapping still points at THIS
     # connection. If the user reconnected first, _user_nodes[user_id] now holds
     # the new connection_id — the old socket's close event must not clobber it,
     # clear its patched sessions, or emit a false "disconnected" to the UI.
-    stored = _user_nodes.get(user_id)
-    is_owning_close = stored is not None and stored.get("connection_id") == connection_id
+    # Traverse both cli/mac buckets to find the bucket whose connection_id
+    # matches; only that bucket gets cleared.
+    user_entry = _user_nodes.get(user_id) or {}
+    matching_bucket = None
+    for bkey, binfo in user_entry.items():
+        if isinstance(binfo, dict) and binfo.get("connection_id") == connection_id:
+            matching_bucket = bkey
+            break
+    is_owning_close = matching_bucket is not None
 
     if is_owning_close:
-        _user_nodes.pop(user_id, None)
+        user_entry.pop(matching_bucket, None)
+        if not user_entry:
+            _user_nodes.pop(user_id, None)
 
-        # Clear patched sessions for this user and tell the container to drop execNode.
-        cleared_sessions = clear_patched_sessions_for_user(user_id)
+        # Patched sessions reference the CLI device for exec routing
+        # (websocket_chat.py session-binding pins execNode to the CLI
+        # bucket — see Task 13). A Mac-only disconnect must NOT clear
+        # the pin: the CLI device is still alive and the exec target
+        # is still valid.
+        if matching_bucket == "cli":
+            cleared_sessions = clear_patched_sessions_for_user(user_id)
+        else:
+            cleared_sessions = []
         if cleared_sessions:
             pool = get_gateway_pool()
             # Best-effort: clear execNode on sessions. If container is down, skip.
@@ -270,3 +398,78 @@ async def handle_node_disconnect(
 def is_node_connection(connection_id: str) -> bool:
     """Check if a connection ID has a registered node upstream."""
     return connection_id in _node_upstreams
+
+
+def submit_signed_connect(connection_id: str, signed_payload: dict) -> bool:
+    """Route a client's signed-connect frame to the pending upstream handshake.
+
+    Called from the relay's $default handler when a method=="connect" frame
+    arrives on an already-known node connection (the wake-up first connect
+    pre-registered the upstream). Returns True if routed, False if no
+    upstream exists for this connection.
+    """
+    upstream = _node_upstreams.get(connection_id)
+    if upstream is None:
+        return False
+    upstream.submit_signed_connect(signed_payload)
+    return True
+
+
+async def force_close_device(device_id: str) -> bool:
+    """Force-close the live upstream WS for a given deviceId.
+
+    Routes through handle_node_disconnect so cleanup of per-user state
+    (_node_upstreams, _user_nodes bucket, _patched_sessions, _node_count,
+    node_status broadcast) happens in exactly one place. A direct
+    _node_upstreams.pop here would race the reader's on_upstream_closed
+    callback: pop wins, callback re-enters handle_node_disconnect, sees
+    upstream is None, returns early — leaving _user_nodes / _node_count
+    populated and chat still binding sessions to the dead execNode until
+    process restart.
+
+    handle_node_disconnect is idempotent (it does the atomic
+    _node_upstreams.pop check at the top) so it's safe whether the
+    reader callback or this revoke path runs first.
+
+    Best-effort: errors during cleanup are swallowed; the revocation
+    flow shouldn't fail because of a transient socket error. Used by
+    the desktop-device revoke endpoint to kick live sessions after
+    paired.json removal (security review HIGH finding F).
+
+    Returns True if a paired device with this ID was found and the
+    cleanup ran; False otherwise.
+    """
+    # Find the user+bucket that owns this device_id. _user_nodes is keyed
+    # user_id -> {"cli": {...}, "mac": {...}}; legacy flat shape is also
+    # tolerated for backward compat with stale entries on a hot path.
+    for user_id, slots in list(_user_nodes.items()):
+        if not isinstance(slots, dict):
+            continue
+        # Bucketed shape (post-Task 11): walk cli/mac slots.
+        bucketed = "cli" in slots or "mac" in slots
+        candidate_slots = [slots.get("cli"), slots.get("mac")] if bucketed else [slots]
+        for slot in candidate_slots:
+            if not isinstance(slot, dict):
+                continue
+            if slot.get("deviceId") != device_id:
+                continue
+            connection_id = slot.get("connection_id")
+            owner_id = slot.get("owner_id")
+            if not connection_id or not owner_id:
+                continue
+            try:
+                await handle_node_disconnect(
+                    connection_id=connection_id,
+                    owner_id=owner_id,
+                    user_id=user_id,
+                )
+            except Exception:
+                logger.warning(
+                    "force_close: error tearing down user=%s conn=%s for device=%s",
+                    user_id,
+                    connection_id,
+                    device_id,
+                    exc_info=True,
+                )
+            return True
+    return False

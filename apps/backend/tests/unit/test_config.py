@@ -35,3 +35,21 @@ def test_marketplace_artifacts_bucket_env_var_loaded():
 def test_stripe_connect_refresh_url_loaded():
     settings = Settings()
     assert settings.STRIPE_CONNECT_REFRESH_URL == "https://example.com/refresh"
+
+
+def test_ws_gateway_url_default_is_wss():
+    """WS_GATEWAY_URL must default to a wss:// endpoint so desktop pair flow
+    returns a usable URL even when the env var is unset."""
+    # Ensure env is clean for this assertion — fresh Settings() reads from env.
+    env = {k: v for k, v in os.environ.items() if k != "WS_GATEWAY_URL"}
+    with patch.dict(os.environ, env, clear=True):
+        settings = Settings()
+        assert settings.WS_GATEWAY_URL.startswith("wss://")
+
+
+@patch.dict(os.environ, {"WS_GATEWAY_URL": "wss://override.example.com"})
+def test_ws_gateway_url_overrides_via_env():
+    """WS_GATEWAY_URL is consumed by POST /api/v1/desktop/pair to tell desktop
+    clients which gateway endpoint to connect to; must be overridable via env."""
+    settings = Settings()
+    assert settings.WS_GATEWAY_URL == "wss://override.example.com"

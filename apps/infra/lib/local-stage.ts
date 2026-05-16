@@ -123,6 +123,7 @@ export class LocalStage extends cdk.Stage {
         openclawTaskDef: container.openclawTaskDef,
       },
       managementApiUrl: api.managementApiUrl,
+      webSocketUrl: api.webSocketUrl,
       connectionsTableName: api.connectionsTableName,
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,

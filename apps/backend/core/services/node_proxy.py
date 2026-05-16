@@ -25,7 +25,6 @@ from uuid import uuid4
 
 from core.gateway.node_connection import NodeUpstreamConnection
 from core.containers import get_ecs_manager, get_gateway_pool
-from core.config import settings
 from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
@@ -144,23 +143,26 @@ async def handle_node_connect(
     client_params["displayName"] = f"{incoming} | Isol8 Desktop"
     connect_params["client"] = client_params
 
-    # user_id (member) vs owner_id (org/container) — scope the device
+    # user_id (member) vs owner_id (org/container) -- scope the device
     # identity by user_id so org members each get a distinct nodeId. The
-    # upstream connect registers the per-member device in paired.json
-    # on first use so the gateway's pairing gate accepts it.
+    # client (not the backend) signs the connect.challenge using a Keychain-
+    # stored Ed25519 key; paired.json registration happens at pairing time
+    # via the /desktop/pair endpoint (Task 7), not here.
     upstream = NodeUpstreamConnection(
         user_id=user_id,
         owner_id=owner_id,
         container_ip=ip,
         node_connect_params=connect_params,
-        efs_mount_path=settings.EFS_MOUNT_PATH,
         gateway_token=container["gateway_token"],
     )
 
     async def on_upstream_message(data: dict):
         management_api.send_message(connection_id, data)
 
-    upstream.set_message_callback(on_upstream_message)
+    # Push callback delivers upstream frames DOWN to the client via the
+    # Management API: container's connect.challenge during the handshake,
+    # then node.invoke.request etc. once the handshake completes.
+    upstream.set_client_push_callback(on_upstream_message)
 
     # If the upstream WS dies while the desktop side is still connected
     # (container restart, transient network drop, gateway close), tear
@@ -177,10 +179,28 @@ async def handle_node_connect(
 
     upstream.set_on_upstream_closed(on_upstream_closed)
 
-    hello = await upstream.connect()
-    await upstream.start_reader()
-
+    # Register the upstream BEFORE awaiting connect(). connect() blocks on a
+    # future that the relay's $default handler resolves via
+    # submit_signed_connect when the client's signed connect frame arrives --
+    # which requires _node_upstreams[connection_id] to be populated so the
+    # routing can find this object. Pre-registering means submit_signed_connect
+    # works during the handshake. handle_node_disconnect (idempotent) cleans
+    # up on failure.
     _node_upstreams[connection_id] = upstream
+
+    try:
+        hello = await upstream.connect()
+    except Exception:
+        # Roll back the pre-registration so a failed handshake doesn't leave
+        # a stale upstream in the registry. Use pop with default to stay
+        # idempotent with the disconnect cleanup path.
+        _node_upstreams.pop(connection_id, None)
+        try:
+            await upstream.close()
+        except Exception:
+            pass
+        raise
+    await upstream.start_reader()
 
     # The nodeId in OpenClaw's NodeRegistry is the device.id (SHA-256 hex of
     # the Ed25519 public key), set during the connect handshake inside
@@ -345,6 +365,21 @@ async def handle_node_disconnect(
 def is_node_connection(connection_id: str) -> bool:
     """Check if a connection ID has a registered node upstream."""
     return connection_id in _node_upstreams
+
+
+def submit_signed_connect(connection_id: str, signed_payload: dict) -> bool:
+    """Route a client's signed-connect frame to the pending upstream handshake.
+
+    Called from the relay's $default handler when a method=="connect" frame
+    arrives on an already-known node connection (the wake-up first connect
+    pre-registered the upstream). Returns True if routed, False if no
+    upstream exists for this connection.
+    """
+    upstream = _node_upstreams.get(connection_id)
+    if upstream is None:
+        return False
+    upstream.submit_signed_connect(signed_payload)
+    return True
 
 
 async def force_close_device(device_id: str) -> bool:

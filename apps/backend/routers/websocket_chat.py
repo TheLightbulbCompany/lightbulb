@@ -27,6 +27,7 @@ from core.services.node_proxy import (
     handle_node_message,
     handle_node_disconnect,
     is_node_connection,
+    submit_signed_connect as submit_node_signed_connect,
 )
 from core.services.paperclip_openclaw_pairing import pair_with_openclaw
 
@@ -360,39 +361,80 @@ async def ws_message(
             connect_params = params or {}
             role = connect_params.get("role", "operator")
 
-            # Node connection: open dedicated upstream with role:"node"
+            # Node connection: post-migration pure-relay flow. There are two
+            # `connect` frames from the client during the handshake:
+            #
+            #   (1) Wake-up: shape `{role:"node", client:{id:...}}` with no
+            #       params.device. Sent by the Tauri proxy immediately on
+            #       open to dodge the ~37ms Management API GoneException
+            #       race. We open the upstream WS, forward the container's
+            #       challenge DOWN to the client via Management API, then
+            #       await the signed reply.
+            #
+            #   (2) Signed: shape `{role:"node", device:{id,signature,...}}`.
+            #       The proxy's subprocess signed the challenge with its
+            #       Keychain key. We route this to submit_signed_connect on
+            #       the already-pending NodeUpstreamConnection, which
+            #       unblocks the awaiting handle_node_connect and lets it
+            #       forward upstream + receive hello-ok.
             if role == "node":
+                # Frame (2): a signed connect for an already-known node
+                # connection. Route it to submit_signed_connect; the awaiting
+                # handle_node_connect coroutine will pick it up. We ACK
+                # synchronously without echoing back -- handle_node_connect
+                # is what eventually sends hello-ok to the client.
+                if is_node_connection(x_connection_id):
+                    submit_node_signed_connect(x_connection_id, body)
+                    return Response(status_code=200)
+
+                # Frame (1): the wake-up. Kick off handle_node_connect as a
+                # background task so $default returns immediately and the
+                # client's subsequent signed-connect frame can land on a
+                # different $default invocation.
                 conn_svc = await get_connection_service()
                 conn_svc.store_connection(x_connection_id, user_id, connection.get("org_id"), connection_type="node")
                 management_api = await get_management_api_client()
-                try:
-                    hello = await handle_node_connect(
-                        owner_id=owner_id,
-                        user_id=user_id,
-                        connection_id=x_connection_id,
-                        connect_params=connect_params,
-                        management_api=management_api,
-                    )
-                    if hello:
-                        # Rewrite the upstream's res.id to match the desktop's
-                        # req.id. handle_node_connect opens a SEPARATE upstream
-                        # WS to the container with its own uuid and gets back
-                        # a hello res keyed on that upstream id — forwarding
-                        # verbatim would break JSON-RPC correlation on the
-                        # desktop, which expects res.id == req.id for the
-                        # handshake.
-                        management_api.send_message(x_connection_id, {**hello, "id": req_id})
-                except Exception as e:
-                    logger.error("Node connect failed: %s", e)
-                    management_api.send_message(
-                        x_connection_id,
-                        {
-                            "type": "res",
-                            "id": req_id,
-                            "ok": False,
-                            "error": {"message": str(e)},
-                        },
-                    )
+
+                async def _do_node_connect(conn_id: str, owner: str, user: str, params: dict, req_id_local: str):
+                    try:
+                        hello = await handle_node_connect(
+                            owner_id=owner,
+                            user_id=user,
+                            connection_id=conn_id,
+                            connect_params=params,
+                            management_api=management_api,
+                        )
+                        if hello:
+                            # Rewrite res.id to match the desktop's wake-up
+                            # req.id. The upstream WS uses its own uuid for
+                            # the signed connect; forwarding the upstream
+                            # res verbatim would break JSON-RPC correlation
+                            # on the client, which expects res.id == req.id
+                            # for the wake-up frame it sent.
+                            management_api.send_message(conn_id, {**hello, "id": req_id_local})
+                    except Exception as e:
+                        logger.error("Node connect failed: %s", e)
+                        try:
+                            management_api.send_message(
+                                conn_id,
+                                {
+                                    "type": "res",
+                                    "id": req_id_local,
+                                    "ok": False,
+                                    "error": {"message": str(e)},
+                                },
+                            )
+                        except Exception:
+                            logger.warning("failed to push node-connect error to %s", conn_id[:12])
+
+                background_tasks.add_task(
+                    _do_node_connect,
+                    x_connection_id,
+                    owner_id,
+                    user_id,
+                    connect_params,
+                    req_id,
+                )
                 return Response(status_code=200)
 
             # Operator connect — respond with hello-ok locally.

@@ -1812,13 +1812,15 @@ class EcsManager:
                 from core.services.paperclip_openclaw_pairing import (
                     _resolve_company_id_for_owner,
                 )
+
                 paperclip_api_key = await ensure_paperclip_api_key(
                     owner_id=owner_id,
                     paperclip_agent_id=friday["id"],
                     admin_client=admin_client,
                 )
                 paperclip_company_id = await _resolve_company_id_for_owner(
-                    owner_id=owner_id, repo=repo,
+                    owner_id=owner_id,
+                    repo=repo,
                 )
         finally:
             await http.aclose()

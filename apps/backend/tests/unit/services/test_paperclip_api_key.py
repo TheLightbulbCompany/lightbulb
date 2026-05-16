@@ -8,7 +8,7 @@ Paperclip outage never blocks container provision.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -71,8 +71,7 @@ async def test_mints_and_stores_when_no_existing_key(admin_client, encryption, m
     admin_client.create_agent_api_key.assert_awaited_once()
     # Idempotency key includes both owner_id and agent_id so retries
     # collapse to the same Paperclip record.
-    assert admin_client.create_agent_api_key.await_args.kwargs["idempotency_key"] == \
-        "user_x:mcp-key:friday-uuid"
+    assert admin_client.create_agent_api_key.await_args.kwargs["idempotency_key"] == "user_x:mcp-key:friday-uuid"
     # Encrypted plaintext stored under the namespaced tool_id.
     fake_repo.set_key.assert_awaited_once()
     set_kwargs = fake_repo.set_key.await_args.kwargs
@@ -141,9 +140,7 @@ async def test_returns_none_when_paperclip_5xxs(admin_client, encryption, monkey
     fake_repo.get_key = AsyncMock(return_value=None)
     fake_repo.set_key = AsyncMock()
     monkeypatch.setattr(paperclip_api_key, "api_key_repo", fake_repo)
-    admin_client.create_agent_api_key = AsyncMock(
-        side_effect=PaperclipApiError("upstream down", 503, None)
-    )
+    admin_client.create_agent_api_key = AsyncMock(side_effect=PaperclipApiError("upstream down", 503, None))
 
     result = await paperclip_api_key.ensure_paperclip_api_key(
         owner_id="user_x",
@@ -161,9 +158,7 @@ async def test_returns_none_when_transport_fails(admin_client, encryption, monke
     fake_repo.get_key = AsyncMock(return_value=None)
     fake_repo.set_key = AsyncMock()
     monkeypatch.setattr(paperclip_api_key, "api_key_repo", fake_repo)
-    admin_client.create_agent_api_key = AsyncMock(
-        side_effect=httpx.ConnectError("upstream down")
-    )
+    admin_client.create_agent_api_key = AsyncMock(side_effect=httpx.ConnectError("upstream down"))
 
     result = await paperclip_api_key.ensure_paperclip_api_key(
         owner_id="user_x",
@@ -201,9 +196,7 @@ async def test_corrupt_stored_key_falls_through_to_remint(admin_client, encrypti
     NOT delete the row on the read path — if Fernet has been rotated and
     just needs a re-init, the next read might succeed."""
     fake_repo = MagicMock()
-    fake_repo.get_key = AsyncMock(
-        return_value={"encrypted_key": "not-prefixed-with-enc:"}
-    )
+    fake_repo.get_key = AsyncMock(return_value={"encrypted_key": "not-prefixed-with-enc:"})
     fake_repo.set_key = AsyncMock()
     monkeypatch.setattr(paperclip_api_key, "api_key_repo", fake_repo)
 

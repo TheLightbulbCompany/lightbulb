@@ -96,7 +96,8 @@ async def _read_existing(
     except Exception:
         logger.exception(
             "paperclip_api_key: api_key_repo.get_key failed owner=%s agent=%s",
-            owner_id, paperclip_agent_id,
+            owner_id,
+            paperclip_agent_id,
         )
         put_metric("paperclip_api_key.read.error")
         return None
@@ -113,7 +114,8 @@ async def _read_existing(
     except Exception:
         logger.exception(
             "paperclip_api_key: decrypt failed for owner=%s agent=%s — will re-mint",
-            owner_id, paperclip_agent_id,
+            owner_id,
+            paperclip_agent_id,
         )
         put_metric("paperclip_api_key.decrypt.error")
         return None
@@ -135,7 +137,8 @@ async def _mint_and_store(
     except RuntimeError as exc:
         logger.warning(
             "paperclip_api_key: admin session unavailable owner=%s: %s",
-            owner_id, exc,
+            owner_id,
+            exc,
         )
         put_metric("paperclip_api_key.admin_session.error")
         return None
@@ -150,7 +153,9 @@ async def _mint_and_store(
     except (PaperclipApiError, httpx.HTTPError) as exc:
         logger.warning(
             "paperclip_api_key: create_agent_api_key failed owner=%s agent=%s: %s",
-            owner_id, paperclip_agent_id, exc,
+            owner_id,
+            paperclip_agent_id,
+            exc,
         )
         put_metric("paperclip_api_key.mint.error")
         return None
@@ -159,7 +164,8 @@ async def _mint_and_store(
     if not isinstance(plaintext, str) or not plaintext:
         logger.warning(
             "paperclip_api_key: paperclip response missing token owner=%s agent=%s response_keys=%s",
-            owner_id, paperclip_agent_id,
+            owner_id,
+            paperclip_agent_id,
             list(result.keys()) if isinstance(result, dict) else type(result).__name__,
         )
         put_metric("paperclip_api_key.mint.missing_token")
@@ -176,7 +182,8 @@ async def _mint_and_store(
         logger.exception(
             "paperclip_api_key: failed to persist key owner=%s agent=%s — Paperclip "
             "still has the key but we lost it; next provision will mint a new one",
-            owner_id, paperclip_agent_id,
+            owner_id,
+            paperclip_agent_id,
         )
         put_metric("paperclip_api_key.store.error")
         # The key exists in Paperclip but we can't read it from DDB. Returning
@@ -187,6 +194,7 @@ async def _mint_and_store(
     put_metric("paperclip_api_key.mint.success")
     logger.info(
         "paperclip_api_key: minted + stored owner=%s agent=%s",
-        owner_id, paperclip_agent_id,
+        owner_id,
+        paperclip_agent_id,
     )
     return plaintext

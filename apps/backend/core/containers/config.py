@@ -993,12 +993,7 @@ def build_openclaw_config_dict(
     # If the key isn't available (Paperclip outage during provision, key
     # not yet minted, etc.), we simply omit the block. The next reprovision
     # self-heals via ensure_paperclip_api_key.
-    if (
-        paperclip_api_key
-        and paperclip_company_id
-        and paperclip_api_url
-        and paperclip_agents
-    ):
+    if paperclip_api_key and paperclip_company_id and paperclip_api_url and paperclip_agents:
         friday = next(
             (a for a in paperclip_agents if a.get("role") == "ceo"),
             None,

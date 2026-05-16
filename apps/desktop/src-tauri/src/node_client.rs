@@ -335,7 +335,13 @@ where
             "minProtocol": 4,
             "maxProtocol": 4,
             "client": {
-                "id": "node-host",
+                // clientId: "openclaw-macos" — this is the Tauri-mac process,
+                // the Mac-native companion to the openclaw CLI subprocess
+                // (clientId: "node-host") running on the same Mac. Backend's
+                // ws_connect (Task 14) skips synthetic challenges for
+                // {openclaw-macos, node-host} and node.list uses this to
+                // distinguish the two processes.
+                "id": "openclaw-macos",
                 "displayName": display_name,
                 "version": "1.0.0",
                 "platform": std::env::consts::OS,
@@ -345,33 +351,17 @@ where
             "role": "node",
             "scopes": [],
             "caps": ["system"],
-            // Commands we IMPLEMENT. Advertising only the ones we handle
-            // avoids surfacing false capabilities to OpenClaw's node catalog.
-            // Heavy capabilities (camera/photos/screen/location/notifications)
-            // are still in node_invoke's dispatch as NOT_IMPLEMENTED stubs
-            // so invokes surface a clean error instead of timing out, but
-            // we don't claim to support them here.
+            // Mac-native commands only — mirror of DESKTOP_MAC_COMMANDS in
+            // apps/backend/core/services/desktop_pair.py. system.run* and
+            // file/dir/browser/exec-approvals belong to the openclaw CLI
+            // node-host subprocess, not this Tauri-mac process.
             "commands": [
-                "system.run.prepare",
-                "system.run",
-                "system.which",
-                "system.execApprovals.get",
-                "system.execApprovals.set",
                 "system.notify",
+                "screen.snapshot",
                 "device.info",
                 "device.status",
                 "device.health",
                 "device.permissions",
-                "browser.proxy",
-                // file-transfer + screen capture commands (handlers in
-                // src/file_transfer.rs). Path-policy enforcement happens
-                // client-side via file_access::ensure_inside_allowlist;
-                // gateway's allowedPaths is defense-in-depth only.
-                "file.fetch",
-                "file.write",
-                "dir.list",
-                "dir.fetch",
-                "screen.snapshot",
             ],
             "pathEnv": std::env::var("PATH").unwrap_or_default(),
             "auth": {},

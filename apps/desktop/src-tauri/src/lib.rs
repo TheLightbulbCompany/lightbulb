@@ -108,7 +108,12 @@ fn send_auth_token(
     // malformed and AWS ELB rejects with HTTP 400 before API Gateway ever
     // sees it. Browsers normalize this implicitly — native WS clients do
     // not.
-    let new_gateway_url = format!("{}/?token={}", ws_url, token);
+    // clientId is surfaced to the $connect Lambda (Task 9) and on to the
+    // backend's ws_connect (Tasks 10 + 14), which uses it to skip the
+    // synthetic Ed25519 challenge for the Tauri-mac process. The real
+    // challenge is the upstream container's challenge, signed by the
+    // backend itself in handle_node_connect's relay path.
+    let new_gateway_url = format!("{}/?token={}&clientId=openclaw-macos", ws_url, token);
 
     // Rotate the running client's URL so the next reconnect uses the fresh
     // token. Clerk refreshes JWTs well before expiry, so we want every update

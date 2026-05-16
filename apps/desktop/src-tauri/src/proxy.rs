@@ -147,11 +147,26 @@ async fn handle_connection(
 
     let jwt = jwt_provider();
     log(&format!("[proxy] jwt_provider returned {} chars", jwt.len()));
-    // urlencoding::encode is overkill here — Clerk JWTs are base64url and
-    // clientId comes from us, but using `?` vs `&` correctly matters in
-    // case the caller already embedded a query string in upstream_url.
-    let separator = if upstream_url.contains('?') { '&' } else { '?' };
-    let upstream_full = format!("{upstream_url}{separator}token={jwt}&clientId={client_id}");
+    // Build the full upstream URL with token + clientId appended.
+    //
+    // Three cases to handle:
+    //   1. upstream_url already has a `?` → append with `&`
+    //   2. upstream_url ends with `/` (path present) → append with `?`
+    //   3. upstream_url is host-only (e.g. "wss://ws-dev.isol8.co") →
+    //      insert `/?` to provide a path before the query string. AWS
+    //      API Gateway WebSocket endpoints reject `wss://host?query`
+    //      with HTTP 400 — they require `wss://host/?query`.
+    //
+    // The Mac-side direct WS connection always uses `wss://host/` (with
+    // trailing slash) and works. The backend's gateway_url comes through
+    // as host-only via WS_GATEWAY_URL, so we have to add the path here.
+    let upstream_full = if upstream_url.contains('?') {
+        format!("{upstream_url}&token={jwt}&clientId={client_id}")
+    } else if upstream_url.ends_with('/') {
+        format!("{upstream_url}?token={jwt}&clientId={client_id}")
+    } else {
+        format!("{upstream_url}/?token={jwt}&clientId={client_id}")
+    };
 
     // For logging, strip ANY existing query string from upstream_url and
     // emit only scheme+host+path plus the redacted token/clientId we

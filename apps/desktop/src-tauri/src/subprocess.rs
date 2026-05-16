@@ -28,8 +28,11 @@ pub struct SubprocessHandle {
 /// Write the identity file and spawn the openclaw subprocess.
 ///
 /// Args:
-/// - `binary`: path to the launcher shim (typically the bundled
-///   `openclaw-host` binary inside the Tauri app bundle).
+/// - `binary`: path to the launcher shim (the bundled
+///   `isol8-browser-service` externalBin inside the Tauri app bundle —
+///   resolved at runtime alongside the main executable, see
+///   `lib.rs::run_bootstrap`). The shim then locates the underlying
+///   per-arch `openclaw-host` npm install on disk.
 /// - `proxy_port`: localhost port of the loopback WSS proxy (Task 18).
 /// - `state_dir`: `OPENCLAW_STATE_DIR` — where openclaw stores its on-disk
 ///   state. The identity file is written under here.

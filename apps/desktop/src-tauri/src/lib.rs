@@ -175,16 +175,29 @@ async fn run_bootstrap(
         .map_err(|e| format!("app_data_dir: {e}"))?;
     let state_dir = app_data.join("openclaw-state");
 
-    let resources = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("resource_dir: {e}"))?;
-    // The launcher shim is bundled alongside the other sidecars under
-    // `Resources/bin/` (`isol8-browser-service`, per-arch `node`, etc.). We
-    // run the openclaw-host shim — Task 20 made it read `ISOL8_PROXY_PORT`
-    // and dial loopback plaintext WS, which is what `spawn_subprocess` is
+    // The launcher shim is registered as `bin/isol8-browser-service` in
+    // `tauri.conf.json` (externalBin). Tauri's bundler finds
+    // `bin/isol8-browser-service-<target-triple>` at build time, strips
+    // the triple, and places the file in the `.app` at
+    // `Contents/MacOS/isol8-browser-service` — alongside the main Tauri
+    // executable. Dev builds replicate the layout next to
+    // `target/debug/<exe>`. So we resolve via current_exe().parent(),
+    // mirroring `browser_sidecar::BrowserSidecar::for_app`.
+    //
+    // Task 20 made `isol8-browser-service` read `ISOL8_PROXY_PORT` and
+    // dial loopback plaintext WS, which is what `spawn_subprocess` is
     // designed to talk to.
-    let binary = resources.join("bin").join("openclaw-host");
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let parent = exe
+        .parent()
+        .ok_or_else(|| "current_exe has no parent".to_string())?;
+    let binary = parent.join("isol8-browser-service");
+    if !binary.exists() {
+        return Err(format!(
+            "isol8-browser-service shim not found at {}",
+            binary.display()
+        ));
+    }
 
     log(&format!(
         "[bootstrap] api_base={} state_dir={:?} binary={:?}",

@@ -1,10 +1,12 @@
 import Link from "next/link";
 
+import { Logo } from "@/components/Logo";
+
 export function Footer() {
   return (
     <footer className="landing-footer">
       <div className="footer-inner">
-        <span className="footer-logo">isol8</span>
+        <Logo tone="cream" size="sm" href={null} />
         <div className="footer-links">
           <Link href="/privacy">Privacy Policy</Link>
           <Link href="/terms">Terms of Service</Link>

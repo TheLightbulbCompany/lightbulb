@@ -1,6 +1,8 @@
 import { SignUp } from "@clerk/nextjs";
 import Link from "next/link";
 
+import { Logo } from "@/components/Logo";
+
 export default function Page() {
   return (
     <>
@@ -48,15 +50,6 @@ export default function Page() {
         }
 
         .auth-brand-top { position: relative; z-index: 1; }
-        .auth-brand-logo {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          min-width: 44px;
-          min-height: 44px;
-          transition: opacity 200ms ease-out;
-        }
-        .auth-brand-logo:hover { opacity: .8; }
 
         .auth-brand-middle {
           position: relative;
@@ -234,12 +227,7 @@ export default function Page() {
         {/* LEFT: BRAND PANEL */}
         <div className="auth-brand" aria-hidden="true">
           <div className="auth-brand-top">
-            <Link href="/" className="auth-brand-logo" aria-label="isol8 home">
-              <svg width="40" height="40" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <rect width="100" height="100" rx="22" fill="white" fillOpacity=".12" />
-                <text x="50" y="68" textAnchor="middle" fontFamily="'Lora', serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-              </svg>
-            </Link>
+            <Logo tone="cream" size="lg" />
           </div>
 
           <div className="auth-brand-middle">
@@ -296,12 +284,9 @@ export default function Page() {
         <div className="auth-form-panel">
           <div className="auth-card">
             {/* Mobile-only logo */}
-            <Link href="/" className="auth-mobile-logo" aria-label="isol8 home">
-              <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <rect width="100" height="100" rx="22" fill="#06402B" />
-                <text x="50" y="68" textAnchor="middle" fontFamily="'Lora', serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-              </svg>
-            </Link>
+            <div className="auth-mobile-logo">
+              <Logo size="md" />
+            </div>
 
             <SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />
 

@@ -22,6 +22,7 @@ import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics"
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
+import { Logo } from "@/components/Logo";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
 // "channels-sidecars", and "agent" steps all map to the same backend
@@ -534,10 +535,7 @@ export function ProvisioningStepper({
         <div className="provision-wrapper">
           <div className="provision-card">
             <div className="provision-logo">
-              <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="100" height="100" rx="22" fill="#06402B" />
-                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-              </svg>
+              <Logo size="lg" href={null} />
             </div>
 
             <div className="provision-stage" aria-hidden="true">
@@ -769,10 +767,7 @@ export function ProvisioningStepper({
         <div className="provision-wrapper">
           <div className="provision-card">
             <div className="provision-logo">
-              <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="100" height="100" rx="22" fill="#06402B" />
-                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-              </svg>
+              <Logo size="lg" href={null} />
             </div>
 
             {/* Animation stage — key icon (no spin), echoing the cold-start
@@ -1139,10 +1134,7 @@ export function ProvisioningStepper({
       <div className="provision-wrapper">
         <div className="provision-card">
           <div className="provision-logo">
-            <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect width="100" height="100" rx="22" fill="#06402B" />
-              <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-            </svg>
+            <Logo size="lg" href={null} />
           </div>
 
           {/* Animation stage */}

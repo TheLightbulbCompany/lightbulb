@@ -22,6 +22,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { FileViewer } from "@/components/chat/FileViewer";
+import { Logo } from "@/components/Logo";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/components/chat/AgentDialogs";
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
@@ -264,7 +265,7 @@ export function ChatLayout({
           {/* Header */}
           <div className="sidebar-header">
             <div className="sidebar-logo">
-              <span className="sidebar-logo-word">ISOL8</span>
+              <Logo size="sm" href={null} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <Link

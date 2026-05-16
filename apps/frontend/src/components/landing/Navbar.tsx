@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAuth, UserButton } from "@clerk/nextjs";
 
+import { Logo } from "@/components/Logo";
+
 export function Navbar() {
   const linksRef = useRef<HTMLDivElement>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -68,9 +70,7 @@ export function Navbar() {
 
   return (
     <nav className="landing-nav" aria-label="Main navigation">
-      <Link href="/" className="nav-logo">
-        isol8
-      </Link>
+      <Logo size="md" />
       <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`} ref={linksRef}>
         <Link href="/" data-section="home" className="active">
           Home

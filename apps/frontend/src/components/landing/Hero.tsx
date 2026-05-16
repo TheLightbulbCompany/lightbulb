@@ -211,7 +211,7 @@ export function Hero() {
           </Link>
         </div>
         <p className="hero-fine">
-          Free to start · No credit card required ·{" "}
+          No credit card required ·{" "}
           <a
             href={`/api/download/desktop?arch=${arch}`}
             className="hero-download-link"

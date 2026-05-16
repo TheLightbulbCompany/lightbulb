@@ -42,7 +42,7 @@ export async function MarketplaceSection() {
                 <div className="marketplace-card-head">
                   <span className="marketplace-card-name">{listing.name}</span>
                   <span className="marketplace-card-tier">
-                    {listing.price_cents === 0 ? "Free" : "Premium"}
+                    {listing.price_cents === 0 ? "$0" : "Premium"}
                   </span>
                 </div>
                 <p className="marketplace-card-desc">

@@ -17,7 +17,7 @@ const CARDS: Card[] = [
     id: "chatgpt_oauth",
     title: "Sign in with ChatGPT",
     subtitle: "$50 / month + your ChatGPT subscription",
-    trialNote: "14-day free trial",
+    trialNote: "14-day trial",
     bullets: [
       "GPT-5.5 included via your ChatGPT account",
       "All channels (Telegram, Discord, WhatsApp)",
@@ -30,7 +30,7 @@ const CARDS: Card[] = [
     id: "byo_key",
     title: "Bring your own API key",
     subtitle: "$50 / month + your provider bill",
-    trialNote: "14-day free trial",
+    trialNote: "14-day trial",
     bullets: [
       "OpenAI or Anthropic — your key, your billing",
       "All channels",

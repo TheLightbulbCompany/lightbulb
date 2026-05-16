@@ -407,6 +407,10 @@ MCowBQYDK2VwAyEAO2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik=
 -----END PUBLIC KEY-----
 """
 _FIXTURE_EXPECTED_DEVICE_ID = "139e3940e64b5491722088d9a0d741628fc826e09475d341a780acde3c4b8070"
+# The 32-byte raw Ed25519 key from the PEM above, encoded as
+# base64url-no-pad — what upstream's gateway compares paired.json against
+# (publicKeyRawBase64UrlFromPem in openclaw/src/infra/device-identity.ts).
+_FIXTURE_EXPECTED_PUBLIC_KEY_B64URL = "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik"
 
 
 @pytest.mark.asyncio
@@ -452,7 +456,12 @@ class TestEnsureNodePairedEntry:
         assert "pairedByDeviceId" not in written
         assert _FIXTURE_EXPECTED_DEVICE_ID in written
         entry = written[_FIXTURE_EXPECTED_DEVICE_ID]
-        assert entry["publicKey"] == _FIXTURE_PUBKEY_PEM
+        # Stored publicKey must be the base64url-no-pad raw key (the wire
+        # format), NOT the PEM. Upstream's gateway does strict string
+        # equality of paired.json's publicKey against the wire-format
+        # pubkey in the signed connect frame (message-handler.ts:
+        # 1151-1153).
+        assert entry["publicKey"] == _FIXTURE_EXPECTED_PUBLIC_KEY_B64URL
         assert entry["clientId"] == "node-host"
         assert entry["role"] == "node"
         assert entry["commands"] == ["system.run", "browser.proxy"]

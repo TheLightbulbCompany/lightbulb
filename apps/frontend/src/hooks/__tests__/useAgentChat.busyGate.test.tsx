@@ -324,11 +324,13 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(sendChat).toHaveBeenCalledTimes(3);
   });
 
-  it("keeps the gate armed on `resolved` so the post-approval continuation isn't raced (Codex P1 c)", async () => {
-    // After resolve, OpenClaw will emit a continuation on a fresh runId
-    // — but there's a window between exec.approval.resolved arriving and
-    // the first continuation event. If we released the gate on that
-    // window a user follow-up would race with the resume.
+  it("keeps the gate armed on `resolved` AND transfers it to the fresh continuation runId (Codex P1 c)", async () => {
+    // After resolve, OpenClaw's continuation runs as a FRESH server-side
+    // run with its own runId — the original run truly ended at the
+    // intermediate chat.final. The gate must (a) stay armed across the
+    // queue-drain → first-chunk window AND (b) transfer to the fresh
+    // runId so the continuation's terminal `done` releases it. Without
+    // the transfer the gate would stay armed forever (runId mismatch).
     approvalQueue = [fakeApproval("agent-X", "ap-res")];
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
@@ -341,34 +343,69 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
       dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
 
-    // Server-side resolve: queue drains with reason="resolved".
+    // Server-side resolve: queue drains with reason="resolved". The
+    // subscriber arms resumeExpectedRef without releasing the gate.
     await act(async () => {
       notifyRemoval("ap-res", "resolved");
     });
 
-    // A follow-up typed in the continuation window must still queue.
+    // A follow-up typed in the continuation window stays queued.
     await act(async () => {
       await result.current.sendMessage("follow-up");
     });
     expect(sendChat).toHaveBeenCalledTimes(1);
     expect(result.current.queuedMessages).toHaveLength(1);
 
-    // Continuation arrives, then its terminal done releases the gate.
+    // Continuation arrives on a FRESH runId — the gate must transfer.
+    const r2 = "server-resume-run-id-fresh";
+    expect(r2).not.toBe(r1);
     act(() =>
       dispatch({
         type: "chunk",
         agent_id: "agent-X",
-        runId: r1,
+        runId: r2,
         content: "continuation",
       } as ChatIncomingMessage),
     );
+    // Terminal done arrives on the fresh runId — gate releases, queued
+    // follow-up flushes.
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r2 } as ChatIncomingMessage),
+    );
+
+    expect(sendChat).toHaveBeenCalledTimes(2);
+    expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
+
+  it("clears isStreaming when releasing the gate on dismiss (Codex P2)", async () => {
+    // The interim `done` skipped setIsStreaming(false) because the gate
+    // was held for the approval. When the user dismisses the stuck
+    // card, the gate-release path must also clear isStreaming —
+    // otherwise the chat shows the stop button indefinitely with no
+    // live run.
+    approvalQueue = [fakeApproval("agent-X", "ap-stuck")];
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result, rerender } = renderHook(() =>
+      useAgentChat("agent-X", "session-1"),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage("first");
+    });
+    const r1 = lastClientRunId();
     act(() =>
       dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
+    // Sanity: the approval-pause held the gate so isStreaming stayed on.
+    expect(result.current.isStreaming).toBe(true);
 
-    // Now the follow-up flushes.
-    expect(sendChat).toHaveBeenCalledTimes(2);
-    expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");
+    await act(async () => {
+      notifyRemoval("ap-stuck", "dismissed");
+      rerender();
+    });
+
+    expect(result.current.isStreaming).toBe(false);
   });
 
   it("does not gate on approvals for a different agent", async () => {

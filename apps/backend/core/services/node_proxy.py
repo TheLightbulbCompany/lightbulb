@@ -187,9 +187,23 @@ async def handle_node_connect(
     # NodeUpstreamConnection.connect(). Read it back from the upstream.
     node_id = upstream.device_id or connection_id
 
-    # Store per-user mapping
-    _user_nodes[user_id] = {
+    # Slot the device into the cli/mac bucket based on the connecting
+    # client's advertised clientId. Anything other than "openclaw-macos"
+    # goes into the cli bucket (catches "node-host" plus any
+    # legacy/unknown clients — safe fallback). See spec
+    # docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md.
+    client_id_raw = (connect_params.get("client") or {}).get("id") or "node-host"
+    bucket = "mac" if client_id_raw == "openclaw-macos" else "cli"
+
+    user_entry = _user_nodes.setdefault(user_id, {})
+    user_entry[bucket] = {
+        "deviceId": node_id,
+        # Legacy alias for callers (routers/websocket_chat.py session binding)
+        # that still read node_info["nodeId"]. Task 13 will migrate them to
+        # use deviceId + get_user_cli_node directly, at which point this key
+        # can be dropped.
         "nodeId": node_id,
+        "clientId": client_id_raw,
         "connection_id": connection_id,
         "owner_id": owner_id,
     }
@@ -252,11 +266,20 @@ async def handle_node_disconnect(
     # connection. If the user reconnected first, _user_nodes[user_id] now holds
     # the new connection_id — the old socket's close event must not clobber it,
     # clear its patched sessions, or emit a false "disconnected" to the UI.
-    stored = _user_nodes.get(user_id)
-    is_owning_close = stored is not None and stored.get("connection_id") == connection_id
+    # Traverse both cli/mac buckets to find the bucket whose connection_id
+    # matches; only that bucket gets cleared.
+    user_entry = _user_nodes.get(user_id) or {}
+    matching_bucket = None
+    for bkey, binfo in user_entry.items():
+        if isinstance(binfo, dict) and binfo.get("connection_id") == connection_id:
+            matching_bucket = bkey
+            break
+    is_owning_close = matching_bucket is not None
 
     if is_owning_close:
-        _user_nodes.pop(user_id, None)
+        user_entry.pop(matching_bucket, None)
+        if not user_entry:
+            _user_nodes.pop(user_id, None)
 
         # Clear patched sessions for this user and tell the container to drop execNode.
         cleared_sessions = clear_patched_sessions_for_user(user_id)

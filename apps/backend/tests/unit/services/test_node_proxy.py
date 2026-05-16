@@ -64,7 +64,7 @@ def mock_config_patcher():
 
 @pytest.mark.asyncio
 async def test_connect_stores_user_node(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
-    """handle_node_connect stores the user_id -> nodeId mapping."""
+    """handle_node_connect stores the user_id -> nodeId mapping (under cli bucket for node-host)."""
     mgmt = MagicMock()
 
     await handle_node_connect(
@@ -76,7 +76,7 @@ async def test_connect_stores_user_node(mock_ecs, mock_pool, mock_upstream, mock
     )
 
     assert "user_alice" in _user_nodes
-    assert _user_nodes["user_alice"]["connection_id"] == "conn_1"
+    assert _user_nodes["user_alice"]["cli"]["connection_id"] == "conn_1"
 
 
 @pytest.mark.asyncio
@@ -374,3 +374,112 @@ def test_get_user_node_backward_compat_prefers_cli():
     }
     legacy = get_user_node("u")
     assert legacy["deviceId"] == "dev_cli"  # CLI preferred for backward compat
+
+
+# ---------------------------------------------------------------------------
+# Task 12: handle_node_connect slots by clientId + handle_node_disconnect
+#          owning-close check traverses both buckets
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_node_connect_slots_cli_into_cli_bucket(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """node-host client -> _user_nodes[user_id]["cli"]"""
+    mock_upstream.device_id = "dev_cli_hash"
+    mgmt = MagicMock()
+
+    await handle_node_connect(
+        owner_id="owner_42",
+        user_id="user_alice",
+        connection_id="conn_cli",
+        connect_params={
+            "role": "node",
+            "client": {"id": "node-host", "displayName": "Alice | CLI"},
+        },
+        management_api=mgmt,
+    )
+    entry = _user_nodes["user_alice"]
+    assert "cli" in entry
+    assert entry["cli"]["deviceId"] == "dev_cli_hash"
+    assert entry["cli"]["clientId"] == "node-host"
+    assert entry["cli"]["connection_id"] == "conn_cli"
+    assert entry["cli"]["owner_id"] == "owner_42"
+    assert "mac" not in entry
+
+
+async def test_handle_node_connect_slots_mac_into_mac_bucket(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """openclaw-macos client -> _user_nodes[user_id]["mac"]"""
+    mock_upstream.device_id = "dev_mac_hash"
+    mgmt = MagicMock()
+
+    await handle_node_connect(
+        owner_id="owner_42",
+        user_id="user_alice",
+        connection_id="conn_mac",
+        connect_params={
+            "role": "node",
+            "client": {"id": "openclaw-macos", "displayName": "Alice | Mac"},
+        },
+        management_api=mgmt,
+    )
+    entry = _user_nodes["user_alice"]
+    assert "mac" in entry
+    assert entry["mac"]["deviceId"] == "dev_mac_hash"
+    assert entry["mac"]["clientId"] == "openclaw-macos"
+    assert "cli" not in entry
+
+
+async def test_handle_node_connect_unknown_client_id_defaults_to_cli(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """Unknown/missing clientId defaults to cli bucket (safe fallback)."""
+    mock_upstream.device_id = "dev_unknown"
+    mgmt = MagicMock()
+
+    await handle_node_connect(
+        owner_id="o",
+        user_id="u",
+        connection_id="c",
+        connect_params={"role": "node", "client": {}},  # no id
+        management_api=mgmt,
+    )
+    entry = _user_nodes["u"]
+    assert "cli" in entry
+    assert entry["cli"]["deviceId"] == "dev_unknown"
+
+
+async def test_handle_node_disconnect_owning_close_finds_in_cli_bucket(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """Disconnect with connection_id that matches the CLI bucket triggers cleanup."""
+    # Pre-populate with both buckets (manual state — bypasses handle_node_connect)
+    _user_nodes["u"] = {
+        "cli": {"deviceId": "dev_cli", "clientId": "node-host", "connection_id": "c_cli", "owner_id": "o"},
+        "mac": {"deviceId": "dev_mac", "clientId": "openclaw-macos", "connection_id": "c_mac", "owner_id": "o"},
+    }
+    fake_upstream = MagicMock()
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["c_cli"] = fake_upstream
+    _node_count["o"] = 1
+
+    await handle_node_disconnect(connection_id="c_cli", owner_id="o", user_id="u")
+
+    # CLI bucket cleared, mac stays
+    assert "cli" not in _user_nodes["u"]
+    assert "mac" in _user_nodes["u"]
+
+
+async def test_handle_node_disconnect_removes_user_entry_when_last_bucket_closes(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """When the last bucket closes, the user_id entry itself is removed."""
+    _user_nodes["u"] = {
+        "cli": {"deviceId": "dev_cli", "clientId": "node-host", "connection_id": "c_cli", "owner_id": "o"},
+    }
+    fake_upstream = MagicMock()
+    fake_upstream.close = AsyncMock()
+    _node_upstreams["c_cli"] = fake_upstream
+    _node_count["o"] = 1
+
+    await handle_node_disconnect(connection_id="c_cli", owner_id="o", user_id="u")
+
+    assert "u" not in _user_nodes

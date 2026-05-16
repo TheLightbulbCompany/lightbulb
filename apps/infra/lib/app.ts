@@ -415,17 +415,64 @@ function tauriActionWithBlock(args: {
   };
 }
 
-// Step index for the tauri-action build step inside the jobSteps array
-// produced by buildDesktopJobSteps(). Order is:
+// Step indices for the desktop build jobs AFTER the paths-filter
+// gate step is inserted at index 1. Pre-insertion order produced by
+// buildDesktopJobSteps() was:
 //   0 Checkout, 1 Setup pnpm, 2 Setup Node, 3 Rust toolchain,
 //   4 Cache, 5 Install deps, 6 Patch tauri.conf.json,
 //   7 Vendor sidecar, 8 Signing keychain, 9 Pre-sign Mach-Os,
-//   10 Build desktop app (tauri-action) ← THIS ONE
-const TAURI_BUILD_STEP_IDX = 10;
+//   10 Build desktop app (tauri-action)
+// After inserting `Check for desktop changes` at index 1 (see
+// gateDesktopJobOnPaths() below), every subsequent step shifts down by
+// one, so the tauri-action step moves from index 10 → 11.
+const PATHS_FILTER_STEP_IDX = 1;
+const TAURI_BUILD_STEP_IDX = 11;
+// Steps 2..11 inclusive (everything after Checkout + the new filter
+// step) need an `if: steps.changes.outputs.desktop == 'true'` guard.
+const FIRST_GATED_STEP_IDX = 2;
+const LAST_GATED_STEP_IDX = 11;
+
+// Backend-only / infra-only / frontend-only pushes to main shouldn't
+// burn ~10min of macos-15 runner time rebuilding the unchanged desktop
+// app. cdk-pipelines-github doesn't expose per-job `paths:` filtering or
+// per-step `if:` conditions natively, so we patch the generated YAML
+// directly: insert dorny/paths-filter as step 1, then gate every
+// subsequent step on its `desktop` output. When nothing under
+// apps/desktop/**, pnpm-lock.yaml, or this pipeline file changed, all
+// real work skips and the job finishes in ~30s of runner spin-up + the
+// paths check rather than a full Tauri build.
+function gateDesktopJobOnPaths(jobId: string): JsonPatch[] {
+  const patches: JsonPatch[] = [
+    JsonPatch.add(`/jobs/${jobId}/steps/${PATHS_FILTER_STEP_IDX}`, {
+      name: "Check for desktop changes",
+      id: "changes",
+      uses: "dorny/paths-filter@v3",
+      with: {
+        // Including this pipeline file in the filter means changes to
+        // the desktop build steps themselves still re-validate; and
+        // pnpm-lock.yaml because dep shifts can affect the Tauri JS
+        // portion of the build.
+        filters:
+          "desktop:\n  - 'apps/desktop/**'\n  - 'pnpm-lock.yaml'\n  - 'apps/infra/lib/app.ts'\n",
+      },
+    }),
+  ];
+  for (let i = FIRST_GATED_STEP_IDX; i <= LAST_GATED_STEP_IDX; i++) {
+    patches.push(
+      JsonPatch.add(
+        `/jobs/${jobId}/steps/${i}/if`,
+        "steps.changes.outputs.desktop == 'true'",
+      ),
+    );
+  }
+  return patches;
+}
 
 pipeline.workflowFile.patch(
   JsonPatch.replace("/jobs/dev-BuildDesktopDev/runs-on", "macos-15"),
   JsonPatch.replace("/jobs/prod-BuildDesktopProd/runs-on", "macos-15"),
+  ...gateDesktopJobOnPaths("dev-BuildDesktopDev"),
+  ...gateDesktopJobOnPaths("prod-BuildDesktopProd"),
   JsonPatch.replace(
     `/jobs/dev-BuildDesktopDev/steps/${TAURI_BUILD_STEP_IDX}/with`,
     tauriActionWithBlock({

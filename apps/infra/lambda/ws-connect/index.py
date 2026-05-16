@@ -26,16 +26,27 @@ def handler(event, context):
         "connectedAt": str(event["requestContext"].get("connectedAt", "")),
     })
 
+    # Forward clientId from query for FastAPI ws_connect to recognize node-host
+    # vs operator/control-ui connections. Only known values (node-host,
+    # openclaw-macos) trigger the synthetic-challenge skip downstream; unknown
+    # values are forwarded verbatim and ignored.
+    qs = event.get("queryStringParameters") or {}
+    client_id = qs.get("clientId")
+
+    headers = {
+        "x-connection-id": connection_id,
+        "x-user-id": user_id,
+        "x-org-id": org_id or "",
+        "Content-Type": "application/json",
+    }
+    if client_id:
+        headers["x-client-id"] = client_id
+
     try:
         req = urllib.request.Request(
             f"http://{os.environ['ALB_DNS_NAME']}/api/v1/ws/connect",
             method="POST",
-            headers={
-                "x-connection-id": connection_id,
-                "x-user-id": user_id,
-                "x-org-id": org_id or "",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             data=b"{}",
         )
         urllib.request.urlopen(req, timeout=5)

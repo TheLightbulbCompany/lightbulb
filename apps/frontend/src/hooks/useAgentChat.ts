@@ -24,6 +24,7 @@ import {
   useGateway,
   type ChatIncomingMessage,
 } from "@/hooks/useGateway";
+import { useExecApprovalsContextOptional } from "@/hooks/useExecApprovals";
 import { capture } from "@/lib/analytics";
 import type {
   HistoryMessage,
@@ -289,8 +290,23 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
 
-  // Busy gate — preserved from PR #621. NO approval-pause guard from #628.
+  // Busy gate (preserved from PR #621). The approval-pause guard from
+  // #628 is reinstated below via the approvalQueueRef + queue-drain
+  // effect — OpenClaw emits chat.final mid-turn while awaiting an exec
+  // approval and only starts the real continuation after the user
+  // resolves it (upstream #70953). Releasing the gate on that
+  // intermediate `done` would reopen ChatInput and let a user-typed
+  // follow-up race with the post-approval resume (Codex P1, PR #682).
   const clientRunIdRef = useRef<string | null>(null);
+
+  // Approval queue snapshot — used to keep the busy gate armed while an
+  // exec-approval card is still pending for this agent. Mirrored to a ref
+  // so the once-registered onChatMessage handler reads the live value.
+  const { queue: approvalQueue } = useExecApprovalsContextOptional();
+  const approvalQueueRef = useRef(approvalQueue);
+  useEffect(() => {
+    approvalQueueRef.current = approvalQueue;
+  }, [approvalQueue]);
 
   // Queue (preserved from #621).
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
@@ -440,8 +456,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // Drop late stream/tool events for a runId the user already aborted
       // or cleared. Without this, an event landing after cancelMessage()
       // (e.g. a chunk that was in flight when the user hit Stop) would
-      // reanimate live state and flip isStreaming back on. `done`/`error`
-      // are allowed through so they can clean up the cancelled-runIds set.
+      // reanimate live state and flip isStreaming back on.
       if (
         (msg.type === "chunk" ||
           msg.type === "thinking" ||
@@ -450,6 +465,22 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           msg.type === "tool_error") &&
         cancelledRunIdsRef.current.has(msg.runId)
       ) {
+        return;
+      }
+
+      // Tombstoned terminals: a late `done` or `error` for a runId the
+      // user already aborted/cleared must clean up its tombstone marker
+      // without mutating the current live turn's state. Without this, a
+      // late chat.aborted-as-error for runA would append a stale "Error:"
+      // bubble AND wipe runB's in-flight stream/tools; a late `done` for
+      // runA would fold runB's live segments+tools into a HistoryMessage
+      // tagged with runA's runId. (Codex P1, PR #682.)
+      if (
+        (msg.type === "done" || msg.type === "error") &&
+        msg.runId &&
+        cancelledRunIdsRef.current.has(msg.runId)
+      ) {
+        cancelledRunIdsRef.current.delete(msg.runId);
         return;
       }
 
@@ -588,10 +619,22 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         toolStreamByIdRef.current.clear();
         toolStreamOrderRef.current = [];
         setChatToolMessages([]);
-        if (runId) cancelledRunIdsRef.current.delete(runId);
+        // Tombstone cleanup happens in the short-circuit at the top of
+        // this handler; by here, msg.runId is never in the set.
 
-        // Busy-gate clear (no approval-pause guard).
-        if (runId === clientRunIdRef.current) {
+        // Busy-gate clear, with approval-pause guard. OpenClaw emits
+        // chat.final mid-turn when an exec tool needs approval and only
+        // starts the real continuation after the user resolves the card.
+        // If a pending approval for this agent is still in the queue,
+        // keep the gate armed so ChatInput stays disabled — releasing
+        // here would let a user-typed follow-up race with the
+        // post-approval resume. The queue-drain effect below releases
+        // the gate when the queue empties via resolve/dismiss/auto-prune.
+        const hasPendingApprovalForThisAgent =
+          approvalQueueRef.current.some(
+            (a) => a.agentId === agentIdRef.current,
+          );
+        if (runId === clientRunIdRef.current && !hasPendingApprovalForThisAgent) {
           clientRunIdRef.current = null;
         }
 
@@ -646,7 +689,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         if (!msg.runId || msg.runId === clientRunIdRef.current) {
           clientRunIdRef.current = null;
         }
-        if (msg.runId) cancelledRunIdsRef.current.delete(msg.runId);
+        // Tombstone cleanup happens in the short-circuit at the top of
+        // this handler; by here, msg.runId is never in the set.
         if (clientRunIdRef.current === null) {
           setIsStreaming(false);
         }
@@ -708,6 +752,31 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     },
     [sendChat, isConnected, setIsStreaming],
   );
+
+  // Approval-pause release. The `done` handler holds the busy gate while
+  // an approval card for this agent is still in the queue (see comment
+  // there for why). This effect releases the gate when the queue drains
+  // — whether via resolve (post-approval continuation will arrive on its
+  // own runId), dismiss (user gave up on a stuck card), or auto-prune
+  // (server-side TTL fired). Only releases if no live stream/tools are
+  // active server-side; if events are still arriving the regular `done`
+  // path will clean up.
+  const approvalsForAgent = useMemo(
+    () => approvalQueue.filter((a) => a.agentId === agentId).length,
+    [approvalQueue, agentId],
+  );
+  const prevApprovalsForAgentRef = useRef(approvalsForAgent);
+  useEffect(() => {
+    const prev = prevApprovalsForAgentRef.current;
+    prevApprovalsForAgentRef.current = approvalsForAgent;
+    if (prev > 0 && approvalsForAgent === 0 && clientRunIdRef.current !== null) {
+      const hasLiveStream =
+        chatStreamRef.current !== null || toolStreamByIdRef.current.size > 0;
+      if (!hasLiveStream) {
+        clientRunIdRef.current = null;
+      }
+    }
+  }, [approvalsForAgent]);
 
   // Drain queued messages one at a time on busy→idle transitions.
   // We track the previous value of clientRunIdRef in a ref so a simple

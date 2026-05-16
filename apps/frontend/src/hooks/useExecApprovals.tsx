@@ -66,6 +66,10 @@ export interface UseExecApprovalsReturn {
   queue: ExecApprovalRequest[];
   /** Submit a decision for an approval id. Removes it from the queue on success. */
   resolve: (id: string, decision: ExecApprovalDecision) => Promise<void>;
+  /** Locally drop an approval from the queue without contacting the server.
+   *  Used as an escape hatch when the server has lost the id (container
+   *  restart, post-expiry retry) and the user just wants the card gone. */
+  dismiss: (id: string) => void;
   /** Last error encountered while resolving (cleared on the next resolve attempt). */
   error: string | null;
 }
@@ -240,6 +244,18 @@ export function useExecApprovals(): UseExecApprovalsReturn {
         removeFromQueue(id);
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Failed to send decision";
+        // OpenClaw's approval registry is in-memory in the per-user container.
+        // After a container restart — or after the server-side TTL fires
+        // before our local `expiresAtMs` timer (clock drift, late-delivered
+        // event) — the id is no longer registered and the server returns
+        // INVALID_REQUEST with "unknown or expired approval id". The
+        // approval is dead; retrying it just produces the same error
+        // forever. Drop it locally and return without surfacing the error
+        // so the stale card disappears instead of wedging the queue.
+        if (/unknown.*approval|expired.*approval/i.test(msg)) {
+          removeFromQueue(id);
+          return;
+        }
         setError(msg);
         throw e;
       }
@@ -247,7 +263,14 @@ export function useExecApprovals(): UseExecApprovalsReturn {
     [sendReq, removeFromQueue],
   );
 
-  return { queue, resolve, error };
+  const dismiss = useCallback(
+    (id: string) => {
+      removeFromQueue(id);
+    },
+    [removeFromQueue],
+  );
+
+  return { queue, resolve, dismiss, error };
 }
 
 // =============================================================================

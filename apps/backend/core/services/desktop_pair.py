@@ -235,18 +235,41 @@ async def pair_desktop_devices(
         commands=list(DESKTOP_CLI_COMMANDS),
     )
 
+    new_device_ids = {mac_entry["deviceId"], cli_entry["deviceId"]}
+
     def _mutate(paired: dict) -> bool:
         # paired is a FLAT Record<deviceId, PairedDevice> per upstream's
         # device-pairing.ts:181 (writeJson writes the inner record, not the
-        # `pairedByDeviceId` wrapper). Any prior operator / node / Mac entry
-        # from ecs_manager or a previous pair call lives at the top level —
-        # leave it alone unless its publicKey matches what we'd write.
+        # `pairedByDeviceId` wrapper).
+        #
+        # Two responsibilities:
+        #   1. PRUNE stale desktop entries left by prior pair cycles. A
+        #      previous Tauri install with a different Keychain would have
+        #      registered its own (deviceId, pubkey) under the same clientId
+        #      we use today (openclaw-macos / node-host). Those entries are
+        #      now orphaned — their private keys are gone with the old
+        #      Keychain — and they show up as ghost nodes in Ray's node
+        #      enumeration. Prune any entry whose clientId is one of ours
+        #      but whose deviceId is NOT the device we're pairing now.
+        #
+        #      We deliberately only touch entries we "own" by clientId:
+        #      the in-container `role=node` entry (ecs_manager writes
+        #      clientId="node") and any non-desktop operator/gateway-client
+        #      entries stay untouched.
+        #
+        #   2. UPSERT the two current desktop entries. Idempotent on
+        #      publicKey match — preserves the existing entry's tokens.
         changed = False
+        for did in list(paired.keys()):
+            if did in new_device_ids:
+                continue
+            if paired[did].get("clientId") in ALLOWED_CLIENT_IDS:
+                del paired[did]
+                changed = True
         for entry in (mac_entry, cli_entry):
             device_id = entry["deviceId"]
             existing = paired.get(device_id)
             if existing and existing.get("publicKey") == entry["publicKey"]:
-                # Idempotent: existing entry has the same key — keep its tokens.
                 continue
             paired[device_id] = entry
             changed = True

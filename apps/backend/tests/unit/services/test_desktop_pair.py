@@ -353,6 +353,132 @@ async def test_pair_desktop_devices_idempotent_on_existing_entries():
     assert workspace.write_count == 1
 
 
+async def test_pair_desktop_devices_prunes_stale_desktop_entries():
+    """When a previous Tauri install paired a different keypair under the same
+    clientId, the old entry is orphaned (its private key is gone with the
+    old Keychain). Pair must prune those ghosts on re-pair, otherwise Ray's
+    node enumeration shows duplicates and openclaw's gateway can round-robin
+    invokes to a dead conn.
+
+    Only entries with one of our desktop clientIds (openclaw-macos /
+    node-host) get pruned — anything else (gateway-client, in-container
+    role=node, ad-hoc operator) stays untouched.
+    """
+    stale_mac_id = "a" * 64
+    stale_cli_id = "b" * 64
+    in_container_node_id = "c" * 64
+    legacy_operator_id = "d" * 64
+    workspace = _FakeWorkspace(
+        initial={
+            stale_mac_id: {
+                "deviceId": stale_mac_id,
+                "clientId": "openclaw-macos",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nstale-mac\n-----END PUBLIC KEY-----\n",
+                "displayName": "Old Mac (orphan)",
+            },
+            stale_cli_id: {
+                "deviceId": stale_cli_id,
+                "clientId": "node-host",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nstale-cli\n-----END PUBLIC KEY-----\n",
+                "displayName": "Old CLI (orphan)",
+            },
+            in_container_node_id: {
+                "deviceId": in_container_node_id,
+                "clientId": "node",
+                "role": "node",
+                "displayName": "in-container node",
+            },
+            legacy_operator_id: {
+                "deviceId": legacy_operator_id,
+                "clientId": "gateway-client",
+                "role": "operator",
+                "displayName": "legacy operator",
+            },
+        }
+    )
+
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x07" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="u",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    # Stale desktop entries pruned.
+    assert stale_mac_id not in written, "stale openclaw-macos entry must be pruned"
+    assert stale_cli_id not in written, "stale node-host entry must be pruned"
+    # Non-desktop entries preserved.
+    assert in_container_node_id in written, "in-container node must NOT be pruned"
+    assert legacy_operator_id in written, "non-desktop operator must NOT be pruned"
+    # Current entries written.
+    assert result.device_id_mac in written
+    assert result.device_id_cli in written
+    # Total: 2 preserved + 2 new = 4. The 2 stale ones are gone.
+    assert len(written) == 4
+
+
+async def test_pair_desktop_devices_idempotent_does_not_trigger_prune():
+    """When the entries already match the keys we're about to write, the
+    mutator must NOT mark itself changed — pruning of "stale" entries
+    matching our own current clientIds must respect the new_device_ids
+    skip list."""
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x08" * 32)
+    tauri_pub = (
+        tauri_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x09" * 32)
+    cli_pub = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    workspace = _FakeWorkspace(initial={})
+    await pair_desktop_devices(
+        user_id="u",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=workspace,
+    )
+    assert workspace.write_count == 1
+
+    # Second call with identical pubkeys: the existing entries match
+    # new_device_ids and pass the publicKey-equality idempotent check.
+    # write_count must stay at 1.
+    await pair_desktop_devices(
+        user_id="u",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=workspace,
+    )
+    assert workspace.write_count == 1
+
+
 async def test_revoke_desktop_device_removes_paired_entry():
     """Revoke deletes a TOP-LEVEL deviceId key from the flat record."""
     workspace = _FakeWorkspace(

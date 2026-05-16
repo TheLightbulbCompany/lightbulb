@@ -14,7 +14,7 @@ import hashlib
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Awaitable, Callable, Protocol
 
 from cryptography.hazmat.primitives import serialization
 
@@ -172,3 +172,29 @@ async def pair_desktop_devices(
         commands_mac=DESKTOP_MAC_COMMANDS,
         commands_cli=DESKTOP_CLI_COMMANDS,
     )
+
+
+async def revoke_desktop_device(
+    *,
+    device_id: str,
+    workspace: WorkspaceLike,
+    force_close_device: Callable[[str], Awaitable[bool]],
+) -> bool:
+    """Remove the device from paired.json AND force-close any live WS session.
+
+    Returns True if the device existed (was removed); False if it wasn't paired.
+    The force_close_device callback terminates the live API Gateway WS connection
+    keyed by deviceId — this is the security-review HIGH fix for stolen-Mac
+    scenarios where paired.json removal alone only blocks future reconnects.
+    """
+    paired = await workspace.read_paired_json()
+    if not paired or device_id not in paired.get("pairedByDeviceId", {}):
+        # Still attempt force_close in case the device is connected without a
+        # paired entry (shouldn't happen, but defensive).
+        await force_close_device(device_id)
+        return False
+
+    del paired["pairedByDeviceId"][device_id]
+    await workspace.write_paired_json(paired)
+    await force_close_device(device_id)
+    return True

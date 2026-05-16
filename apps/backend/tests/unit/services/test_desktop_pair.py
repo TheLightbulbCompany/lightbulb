@@ -12,6 +12,7 @@ from core.services.desktop_pair import (
     build_paired_entry,
     derive_device_id,
     pair_desktop_devices,
+    revoke_desktop_device,
 )
 
 
@@ -181,3 +182,41 @@ async def test_pair_desktop_devices_idempotent_on_existing_entries():
     assert first.device_id_cli == second.device_id_cli
     # Write should only be called ONCE (first call); second is idempotent no-op
     assert mock_workspace.write_paired_json.await_count == 1
+
+
+async def test_revoke_desktop_device_removes_paired_entry():
+    paired = {"pairedByDeviceId": {"dev_abc": {"role": "node"}, "dev_xyz": {"role": "node"}}}
+    mock_workspace = AsyncMock()
+    mock_workspace.read_paired_json = AsyncMock(return_value=paired)
+    mock_workspace.write_paired_json = AsyncMock()
+
+    mock_force_close = AsyncMock(return_value=True)
+
+    removed = await revoke_desktop_device(
+        device_id="dev_abc",
+        workspace=mock_workspace,
+        force_close_device=mock_force_close,
+    )
+    assert removed is True
+    mock_workspace.write_paired_json.assert_awaited_once()
+    written = mock_workspace.write_paired_json.await_args.args[0]
+    assert "dev_abc" not in written["pairedByDeviceId"]
+    assert "dev_xyz" in written["pairedByDeviceId"]
+    mock_force_close.assert_awaited_once_with("dev_abc")
+
+
+async def test_revoke_desktop_device_no_op_on_missing():
+    mock_workspace = AsyncMock()
+    mock_workspace.read_paired_json = AsyncMock(return_value={"pairedByDeviceId": {}})
+    mock_workspace.write_paired_json = AsyncMock()
+    mock_force_close = AsyncMock(return_value=False)
+
+    removed = await revoke_desktop_device(
+        device_id="dev_none",
+        workspace=mock_workspace,
+        force_close_device=mock_force_close,
+    )
+    assert removed is False
+    mock_workspace.write_paired_json.assert_not_awaited()
+    # Still attempt force_close in case device is connected without a paired entry
+    mock_force_close.assert_awaited_once_with("dev_none")

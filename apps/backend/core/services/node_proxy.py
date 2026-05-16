@@ -198,11 +198,6 @@ async def handle_node_connect(
     user_entry = _user_nodes.setdefault(user_id, {})
     user_entry[bucket] = {
         "deviceId": node_id,
-        # Legacy alias for callers (routers/websocket_chat.py session binding)
-        # that still read node_info["nodeId"]. Task 13 will migrate them to
-        # use deviceId + get_user_cli_node directly, at which point this key
-        # can be dropped.
-        "nodeId": node_id,
         "clientId": client_id_raw,
         "connection_id": connection_id,
         "owner_id": owner_id,
@@ -281,8 +276,15 @@ async def handle_node_disconnect(
         if not user_entry:
             _user_nodes.pop(user_id, None)
 
-        # Clear patched sessions for this user and tell the container to drop execNode.
-        cleared_sessions = clear_patched_sessions_for_user(user_id)
+        # Patched sessions reference the CLI device for exec routing
+        # (websocket_chat.py session-binding pins execNode to the CLI
+        # bucket — see Task 13). A Mac-only disconnect must NOT clear
+        # the pin: the CLI device is still alive and the exec target
+        # is still valid.
+        if matching_bucket == "cli":
+            cleared_sessions = clear_patched_sessions_for_user(user_id)
+        else:
+            cleared_sessions = []
         if cleared_sessions:
             pool = get_gateway_pool()
             # Best-effort: clear execNode on sessions. If container is down, skip.

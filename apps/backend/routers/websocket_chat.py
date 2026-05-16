@@ -1022,12 +1022,19 @@ async def _process_agent_chat_background(
             ip,
         )
 
-        # --- Node binding: pin this session to the user's Mac if connected ---
-        from core.services.node_proxy import get_user_node, get_patched_session, set_patched_session
+        # --- Node binding: pin this session to the user's CLI device if connected ---
+        # Task 13: exec is bound to the CLI bucket specifically. The Mac
+        # companion (clientId=openclaw-macos) is a sibling node for
+        # passkey/UI affordances, but execNode must point at the CLI.
+        from core.services.node_proxy import (
+            get_user_cli_node,
+            get_patched_session,
+            set_patched_session,
+        )
 
-        node_info = get_user_node(user_id)
+        node_info = get_user_cli_node(user_id)
         if node_info:
-            node_id = node_info["nodeId"]
+            node_id = node_info["deviceId"]
             cached = get_patched_session(session_key)
             if cached != node_id:
                 # Patch the session so the agent KNOWS which node to use

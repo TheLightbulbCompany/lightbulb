@@ -578,3 +578,70 @@ class TestUserActiveLegacy:
 
         assert response.status_code == 200
         mock_management_api.send_message.assert_not_called()
+
+
+class TestSessionBindsToCliDevice:
+    """Task 13: agent_chat session-binding must pick the CLI device
+    specifically (not whichever happened to be set last). The exec router
+    only knows how to invoke against the CLI bucket; pinning execNode to
+    the Mac-companion's deviceId would silently break exec.
+
+    These are contract tests rather than full handler tests — the
+    message-handler is too tangled with provision_gate, billing, and
+    container resolution to exercise cleanly here. We validate the two
+    contract pieces directly:
+      1. `get_user_cli_node(user_id)["deviceId"]` is what session.patch
+         must send as `execNode`, even when a Mac bucket also exists.
+      2. The session-binding callsite imports `get_user_cli_node` (not
+         the deprecated `get_user_node`) from node_proxy.
+    """
+
+    def test_get_user_cli_node_returns_cli_deviceid_when_both_buckets_present(self):
+        """Mac connected LATER (chronologically); cli still wins for exec."""
+        from core.services import node_proxy
+        from core.services.node_proxy import get_user_cli_node
+
+        node_proxy._user_nodes.clear()
+        try:
+            node_proxy._user_nodes["user_alice"] = {
+                "cli": {
+                    "deviceId": "dev_cli_target",
+                    "clientId": "node-host",
+                    "connection_id": "c_cli",
+                    "owner_id": "o",
+                },
+                "mac": {
+                    "deviceId": "dev_mac_other",
+                    "clientId": "openclaw-macos",
+                    "connection_id": "c_mac",
+                    "owner_id": "o",
+                },
+            }
+
+            cli = get_user_cli_node("user_alice")
+            assert cli is not None
+            # This is the value the session-binding callsite will pass as
+            # execNode. Asserting it directly is the contract we care about.
+            assert cli["deviceId"] == "dev_cli_target"
+            # And the field is `deviceId`, NOT the transient `nodeId` alias.
+            assert "nodeId" not in cli or cli.get("nodeId") is None
+        finally:
+            node_proxy._user_nodes.clear()
+
+    def test_websocket_chat_imports_get_user_cli_node(self):
+        """Callsite must import get_user_cli_node (the post-Task-13 name),
+        not the deprecated get_user_node."""
+        import inspect
+
+        from routers import websocket_chat
+
+        src = inspect.getsource(websocket_chat)
+        # The session-binding block reads the CLI device specifically.
+        assert "get_user_cli_node" in src, (
+            "websocket_chat.py must call get_user_cli_node for session-binding "
+            "(Task 13); it currently still calls the deprecated get_user_node."
+        )
+        # And it reads deviceId, not the transient nodeId alias.
+        assert 'node_info["deviceId"]' in src or "node_info['deviceId']" in src, (
+            "session-binding must read deviceId from the cli-node entry, not the transient nodeId alias (Task 13)."
+        )

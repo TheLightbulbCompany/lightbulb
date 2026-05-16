@@ -483,3 +483,103 @@ async def test_handle_node_disconnect_removes_user_entry_when_last_bucket_closes
     await handle_node_disconnect(connection_id="c_cli", owner_id="o", user_id="u")
 
     assert "u" not in _user_nodes
+
+
+# ---------------------------------------------------------------------------
+# Task 13: bucket entries drop the transient `nodeId` alias;
+#          patched-session clearing scoped to CLI-bucket disconnects only
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_node_connect_bucket_entry_has_no_nodeid_alias(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """Task 13 removes the transient `nodeId` legacy alias the bucket
+    used to carry for websocket_chat session-binding. Callers must read
+    `deviceId` directly now."""
+    mock_upstream.device_id = "dev_only"
+    mgmt = MagicMock()
+
+    await handle_node_connect(
+        owner_id="o",
+        user_id="u",
+        connection_id="c",
+        connect_params={"role": "node", "client": {"id": "node-host"}},
+        management_api=mgmt,
+    )
+    entry = _user_nodes["u"]["cli"]
+    assert entry["deviceId"] == "dev_only"
+    assert "nodeId" not in entry, (
+        "Task 13 must drop the transient `nodeId` alias from bucket entries; callers should read `deviceId`."
+    )
+
+
+async def test_mac_only_disconnect_does_not_clear_patched_sessions(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """Patched sessions reference the CLI device for exec routing. A
+    Mac-only disconnect must NOT clobber the user's exec session pin —
+    otherwise the next chat send would re-issue the bind RPC needlessly
+    AND a user who has only the Mac connected (no CLI yet) would have
+    their CLI-pinned sessions wiped when the Mac drops."""
+    from core.services.node_proxy import _patched_sessions, set_patched_session
+
+    # Pin a session against a (future) CLI device.
+    set_patched_session("agent:a1:user_alice", "dev_cli")
+
+    # Both buckets connected; CLI bucket holds c_cli, Mac bucket holds c_mac.
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_cli",
+            "clientId": "node-host",
+            "connection_id": "c_cli",
+            "owner_id": "org_42",
+        },
+        "mac": {
+            "deviceId": "dev_mac",
+            "clientId": "openclaw-macos",
+            "connection_id": "c_mac",
+            "owner_id": "org_42",
+        },
+    }
+    fake = MagicMock()
+    fake.close = AsyncMock()
+    _node_upstreams["c_mac"] = fake
+    _node_count["org_42"] = 2
+
+    await handle_node_disconnect(connection_id="c_mac", owner_id="org_42", user_id="user_alice")
+
+    # CLI bucket survives; patched-session pin survives.
+    assert "cli" in _user_nodes["user_alice"]
+    assert _patched_sessions.get("agent:a1:user_alice") == "dev_cli"
+
+
+async def test_cli_disconnect_clears_patched_sessions(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """The CLI-bucket close path must still clear patched sessions —
+    exec is bound to CLI, so when the CLI socket drops the bound
+    execNode is dead and we need to re-patch on next chat."""
+    from core.services.node_proxy import _patched_sessions, set_patched_session
+
+    set_patched_session("agent:a1:user_alice", "dev_cli")
+
+    _user_nodes["user_alice"] = {
+        "cli": {
+            "deviceId": "dev_cli",
+            "clientId": "node-host",
+            "connection_id": "c_cli",
+            "owner_id": "org_42",
+        },
+    }
+    fake = MagicMock()
+    fake.close = AsyncMock()
+    _node_upstreams["c_cli"] = fake
+    _node_count["org_42"] = 1
+
+    # gateway-pool.send_rpc is invoked while clearing — mock_pool already
+    # has it stubbed via AsyncMock attribute lookup; ensure it doesn't blow up.
+    mock_pool.send_rpc = AsyncMock()
+
+    await handle_node_disconnect(connection_id="c_cli", owner_id="org_42", user_id="user_alice")
+
+    # CLI gone, patched-session pin gone.
+    assert _patched_sessions.get("agent:a1:user_alice") is None

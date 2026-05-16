@@ -153,11 +153,16 @@ async fn handle_connection(
     let separator = if upstream_url.contains('?') { '&' } else { '?' };
     let upstream_full = format!("{upstream_url}{separator}token={jwt}&clientId={client_id}");
 
-    // Redact JWT value for logging. clientId stays in clear so we can
-    // correlate with backend logs.
-    let upstream_redacted =
-        format!("{upstream_url}{separator}token=***&clientId={client_id}");
-    log(&format!("[proxy] upstream connect: {upstream_redacted}"));
+    // For logging, strip ANY existing query string from upstream_url and
+    // emit only scheme+host+path plus the redacted token/clientId we
+    // append. If the backend ever returns a pre-signed gateway_url (or
+    // any URL with credential-bearing query params), naive token-only
+    // redaction would leak those verbatim. /tmp/isol8-desktop.log is
+    // world-readable, so we only emit the parts WE control here.
+    let upstream_base = upstream_url.split('?').next().unwrap_or(&upstream_url);
+    log(&format!(
+        "[proxy] upstream connect: {upstream_base}?token=***&clientId={client_id}"
+    ));
 
     let upstream_ws = match tokio_tungstenite::connect_async(&upstream_full).await {
         Ok((ws, _resp)) => {

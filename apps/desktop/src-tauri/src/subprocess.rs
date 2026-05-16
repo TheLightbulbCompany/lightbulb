@@ -14,9 +14,13 @@ use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+
+use crate::log;
 
 /// Handle to a running openclaw subprocess. Drop kills the child via
 /// `kill_on_drop(true)` set at spawn time, but call `shutdown()` for an
@@ -110,11 +114,37 @@ pub async fn spawn(
     cmd.env("OPENCLAW_STATE_DIR", &state_dir)
         .env("OPENCLAW_GATEWAY_TOKEN", gateway_token)
         .env("ISOL8_PROXY_PORT", &port_str)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("spawn subprocess: {e}"))?;
+
+    // Forward child stdio line-by-line to /tmp/isol8-desktop.log so
+    // openclaw's `node host gateway connect failed: ...` panic/error
+    // traces are visible. Without this, child stderr disappears into
+    // the void (Tauri GUI apps have no terminal attached on macOS).
+    //
+    // The forwarding tasks naturally exit when the child closes its
+    // stdio handles (EOF on read_line). No explicit shutdown needed.
+    if let Some(stdout) = child.stdout.take() {
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                log(&format!("[cli-subprocess-stdout] {line}"));
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                log(&format!("[cli-subprocess] {line}"));
+            }
+        });
+    }
 
     Ok(SubprocessHandle {
         child: Arc::new(Mutex::new(Some(child))),

@@ -35,6 +35,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::log;
+
 /// Callback the proxy invokes whenever it opens a new upstream connection
 /// so it can fetch the current Clerk JWT. Task 21 wires this to the shared
 /// `Arc<RwLock<String>>` that already backs the chat WS in `lib.rs`.
@@ -90,15 +92,19 @@ pub async fn start_proxy(
                     break;
                 }
                 accepted = listener.accept() => {
-                    let (stream, _peer) = match accepted {
+                    let (stream, peer) = match accepted {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(e) => {
+                            log(&format!("[proxy] listener.accept failed: {e}"));
+                            continue;
+                        }
                     };
+                    log(&format!("[proxy] TCP accepted from {peer}"));
                     let upstream_url = upstream_url.clone();
                     let client_id = client_id.clone();
                     let jwt_provider = jwt_provider.clone();
                     tokio::spawn(async move {
-                        let _ = handle_connection(stream, upstream_url, client_id, jwt_provider).await;
+                        let _ = handle_connection(stream, peer.to_string(), upstream_url, client_id, jwt_provider).await;
                     });
                 }
             }
@@ -124,25 +130,44 @@ pub async fn start_proxy(
 /// API). See module docstring for the protocol-correctness rationale.
 async fn handle_connection(
     stream: TcpStream,
+    peer: String,
     upstream_url: String,
     client_id: String,
     jwt_provider: JwtProvider,
 ) -> Result<(), String> {
-    let sub_ws = tokio_tungstenite::accept_async(stream)
-        .await
-        .map_err(|e| format!("sub-side accept: {e}"))?;
+    let sub_ws = match tokio_tungstenite::accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            log(&format!("[proxy] downstream accept_async failed from {peer}: {e}"));
+            return Err(format!("sub-side accept: {e}"));
+        }
+    };
+    log(&format!("[proxy] downstream WS accepted from {peer}"));
     let (mut sub_tx, mut sub_rx) = sub_ws.split();
 
     let jwt = jwt_provider();
+    log(&format!("[proxy] jwt_provider returned {} chars", jwt.len()));
     // urlencoding::encode is overkill here — Clerk JWTs are base64url and
     // clientId comes from us, but using `?` vs `&` correctly matters in
     // case the caller already embedded a query string in upstream_url.
     let separator = if upstream_url.contains('?') { '&' } else { '?' };
     let upstream_full = format!("{upstream_url}{separator}token={jwt}&clientId={client_id}");
 
+    // Redact JWT value for logging. clientId stays in clear so we can
+    // correlate with backend logs.
+    let upstream_redacted =
+        format!("{upstream_url}{separator}token=***&clientId={client_id}");
+    log(&format!("[proxy] upstream connect: {upstream_redacted}"));
+
     let upstream_ws = match tokio_tungstenite::connect_async(&upstream_full).await {
-        Ok((ws, _resp)) => ws,
-        Err(e) => return Err(format!("upstream connect: {e}")),
+        Ok((ws, _resp)) => {
+            log("[proxy] upstream WS open");
+            ws
+        }
+        Err(e) => {
+            log(&format!("[proxy] upstream connect_async failed: {e}"));
+            return Err(format!("upstream connect: {e}"));
+        }
     };
     let (mut up_tx, mut up_rx) = upstream_ws.split();
 
@@ -151,31 +176,43 @@ async fn handle_connection(
         while let Some(msg) = sub_rx.next().await {
             let msg = match msg {
                 Ok(m) => m,
-                Err(_) => break,
+                Err(e) => {
+                    log(&format!("[proxy] sub_to_up read error: {e}"));
+                    break;
+                }
             };
             if matches!(msg, Message::Close(_)) {
+                log("[proxy] sub_to_up: downstream sent Close, forwarding upstream");
                 let _ = up_tx.send(msg).await;
                 break;
             }
             if up_tx.send(msg).await.is_err() {
+                log("[proxy] up_tx send failed");
                 break;
             }
         }
+        log("[proxy] sub_to_up loop exited");
     };
     let up_to_sub = async {
         while let Some(msg) = up_rx.next().await {
             let msg = match msg {
                 Ok(m) => m,
-                Err(_) => break,
+                Err(e) => {
+                    log(&format!("[proxy] up_to_sub read error: {e}"));
+                    break;
+                }
             };
             if matches!(msg, Message::Close(_)) {
+                log("[proxy] up_to_sub: upstream sent Close, forwarding downstream");
                 let _ = sub_tx.send(msg).await;
                 break;
             }
             if sub_tx.send(msg).await.is_err() {
+                log("[proxy] sub_tx send failed");
                 break;
             }
         }
+        log("[proxy] up_to_sub loop exited");
     };
 
     tokio::select! {

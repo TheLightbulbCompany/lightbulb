@@ -10,6 +10,12 @@ command surface. Backend derives these sets here — clients do NOT submit
 them on /desktop/pair.
 """
 
+import hashlib
+import secrets
+import time
+
+from cryptography.hazmat.primitives import serialization
+
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "system.notify",
     "screen.snapshot",
@@ -30,8 +36,13 @@ DESKTOP_CLI_COMMANDS: tuple[str, ...] = (
     "dir.fetch",
 )
 
+ALLOWED_CLIENT_IDS = {"openclaw-macos", "node-host"}
 
-def assert_command_sets_disjoint(mac: list[str] | tuple[str, ...], cli: list[str] | tuple[str, ...]) -> None:
+
+def assert_command_sets_disjoint(
+    mac: list[str] | tuple[str, ...],
+    cli: list[str] | tuple[str, ...],
+) -> None:
     overlap = set(mac) & set(cli)
     assert not overlap, f"Mac and CLI command sets must be disjoint; overlap: {overlap}"
 
@@ -40,25 +51,18 @@ def assert_command_sets_disjoint(mac: list[str] | tuple[str, ...], cli: list[str
 assert_command_sets_disjoint(DESKTOP_MAC_COMMANDS, DESKTOP_CLI_COMMANDS)
 
 
-import base64
-import hashlib
-import secrets
-import time
-
-ALLOWED_CLIENT_IDS = {"openclaw-macos", "node-host"}
-
-
 def derive_device_id(pubkey_pem: str) -> str:
-    """Mirror openclaw's deriveDeviceIdFromPublicKey: SHA-256 of the raw key bytes.
+    """Mirror openclaw's deriveDeviceIdFromPublicKey.
 
-    The pem is text but the SHA is computed over the canonical bytes; we strip
-    PEM headers and base64-decode to match upstream's `Buffer.from(pubKeyRaw)`.
+    Upstream strips the 12-byte ED25519 SPKI prefix and SHA-256s the 32 raw
+    key bytes. We use cryptography.serialization to parse the PEM into the
+    raw form natively — avoids manual prefix-stripping fragility.
     """
-    body = "".join(
-        line for line in pubkey_pem.strip().splitlines()
-        if not line.startswith("-----")
+    pubkey = serialization.load_pem_public_key(pubkey_pem.encode())
+    raw = pubkey.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
     )
-    raw = base64.b64decode(body)
     return hashlib.sha256(raw).hexdigest()
 
 

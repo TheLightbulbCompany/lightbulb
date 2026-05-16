@@ -115,11 +115,24 @@ export async function GET(
     );
   }
   const releases: GhRelease[] = await ghRes.json();
+  // Pick by VERSION (highest semver-ish), not publish time. With auto-publish
+  // on every main push, two CI runs can overlap and an older tag's release
+  // can publish *after* a newer tag's, which would otherwise downgrade
+  // clients sitting on the newer build. The tag (`desktop-(dev-)?v<ver>`) is
+  // the source of truth for ordering; `published_at` is a race condition.
   const candidate = releases
-    .filter((r) => !r.draft && r.tag_name.startsWith(prefix))
-    .sort((a, b) =>
-      (b.published_at ?? "").localeCompare(a.published_at ?? ""),
-    )[0];
+    .filter((r) => {
+      if (r.draft) return false;
+      if (!r.tag_name.startsWith(prefix)) return false;
+      return versionFromTag(r.tag_name) !== null;
+    })
+    .sort((a, b) => {
+      const va = versionFromTag(a.tag_name)!;
+      const vb = versionFromTag(b.tag_name)!;
+      if (isNewer(vb, va)) return 1;
+      if (isNewer(va, vb)) return -1;
+      return 0;
+    })[0];
   if (!candidate) {
     // No published release for this env → behave like "up to date" rather
     // than 500'ing the client. Avoids loops where a misconfigured env

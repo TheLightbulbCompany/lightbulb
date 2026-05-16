@@ -3,14 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-function Logo() {
-  return (
-    <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <rect width="40" height="40" rx="10" fill="#06402B" />
-      <text x="50%" y="54%" dominantBaseline="central" textAnchor="middle" fill="#ffffff" fontFamily="var(--font-lora-serif), 'Lora', serif" fontStyle="italic" fontSize="24" fontWeight="700">8</text>
-    </svg>
-  );
-}
+import { Logo } from "@/components/Logo";
 
 export default function SupportPage() {
   const router = useRouter();
@@ -18,9 +11,7 @@ export default function SupportPage() {
   return (
     <div className="legal-page">
       <header className="legal-topbar">
-        <Link href="/" className="legal-logo-link" aria-label="isol8 home">
-          <Logo />
-        </Link>
+        <Logo size="md" />
         <button onClick={() => router.back()} className="legal-btn-back" type="button">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M10 12L6 8L10 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />

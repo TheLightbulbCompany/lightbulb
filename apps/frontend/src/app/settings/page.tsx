@@ -12,6 +12,7 @@ import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
 import { cn } from "@/lib/utils";
+import { Logo } from "@/components/Logo";
 
 // =============================================================================
 // Types & Navigation
@@ -311,12 +312,7 @@ function SettingsPageInner() {
       {/* Top bar */}
       <header className="settings-topbar" style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
         <div className="settings-topbar-left">
-          <Link href="/" className="settings-topbar-logo" aria-label="isol8 home">
-            <svg width="32" height="32" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <rect width="100" height="100" rx="22" fill="#06402B" />
-              <text x="50" y="68" textAnchor="middle" fontFamily="'Lora', serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-            </svg>
-          </Link>
+          <Logo size="md" />
           <nav className="settings-topbar-breadcrumb" aria-label="Breadcrumb">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <polyline points="9 18 15 12 9 6" />

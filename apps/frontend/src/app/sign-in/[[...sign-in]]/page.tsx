@@ -4,6 +4,8 @@ import { SignIn } from "@clerk/nextjs";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { Logo } from "@/components/Logo";
+
 const TASKS = [
   "your report",
   "meeting notes",
@@ -13,38 +15,6 @@ const TASKS = [
 ];
 
 const ROTATE_INTERVAL = 2800;
-
-function LogoSvg({ dark }: { dark?: boolean }) {
-  return (
-    <svg
-      width="40"
-      height="40"
-      viewBox="0 0 100 100"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      <rect
-        width="100"
-        height="100"
-        rx="22"
-        fill={dark ? "#06402B" : "white"}
-        fillOpacity={0.12}
-      />
-      <text
-        x="50"
-        y="68"
-        textAnchor="middle"
-        fontFamily="var(--font-lora-serif), serif"
-        fontStyle="italic"
-        fontSize="52"
-        fill={dark ? "#06402B" : "white"}
-      >
-        8
-      </text>
-    </svg>
-  );
-}
 
 export default function Page() {
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -120,32 +90,6 @@ export default function Page() {
           position: relative;
           z-index: 1;
         }
-        .auth-brand-logo {
-          display: inline-flex;
-          align-items: center;
-          gap: 10px;
-          font-family: var(--font-lora-serif), serif;
-          font-style: italic;
-          font-weight: 400;
-          font-size: 32px;
-          color: white;
-          letter-spacing: 0;
-          cursor: pointer;
-          border-radius: 12px;
-          padding: 4px;
-          margin: -4px;
-          transition: opacity 200ms ease-out;
-          text-decoration: none;
-        }
-        .auth-brand-logo:hover {
-          opacity: 0.85;
-        }
-        .auth-brand-logo:focus-visible {
-          outline: 2px solid rgba(168, 230, 198, 0.7);
-          outline-offset: 4px;
-          border-radius: 12px;
-        }
-
         .auth-brand-middle {
           position: relative;
           z-index: 1;
@@ -285,12 +229,6 @@ export default function Page() {
           display: none;
           margin-bottom: 32px;
         }
-        .auth-mobile-logo .auth-brand-logo {
-          color: #06402B;
-        }
-        .auth-mobile-logo .auth-brand-logo:focus-visible {
-          outline-color: #06402B;
-        }
 
         /* ── MOBILE ── */
         @media (max-width: 768px) {
@@ -331,9 +269,7 @@ export default function Page() {
         {/* LEFT: BRAND PANEL */}
         <div className="auth-brand" aria-hidden="true">
           <div className="auth-brand-top">
-            <Link href="/" className="auth-brand-logo" aria-label="isol8 home">
-              <LogoSvg />
-            </Link>
+            <Logo tone="cream" size="lg" />
           </div>
 
           <div className="auth-brand-middle">
@@ -367,13 +303,7 @@ export default function Page() {
             <div className="auth-header">
               {/* Mobile-only logo */}
               <div className="auth-mobile-logo">
-                <Link
-                  href="/"
-                  className="auth-brand-logo"
-                  aria-label="isol8 home"
-                >
-                  <LogoSvg dark />
-                </Link>
+                <Logo size="md" />
               </div>
               <h2 className="auth-title">Welcome back</h2>
               <p className="auth-subtitle">

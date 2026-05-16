@@ -15,12 +15,6 @@
   align-items: center;
   gap: 20px;
 }
-.settings-topbar-logo {
-  display: inline-flex;
-  border-radius: 8px;
-  transition: opacity 200ms ease-out;
-}
-.settings-topbar-logo:hover { opacity: .8; }
 .settings-topbar-breadcrumb {
   display: flex;
   align-items: center;

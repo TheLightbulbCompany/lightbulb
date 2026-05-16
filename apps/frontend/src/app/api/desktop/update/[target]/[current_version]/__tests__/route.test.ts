@@ -136,7 +136,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
     expect(res.status).toBe(400);
   });
 
-  it("picks the most recently published release", async () => {
+  it("picks the highest-version release", async () => {
     const older: GhReleaseFixture = {
       ...fullDevRelease,
       tag_name: "desktop-dev-v0.2.0",
@@ -168,5 +168,48 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.version).toBe("0.3.0");
+  });
+
+  it("picks the highest-version release even when an older tag publishes later (race)", async () => {
+    // Auto-publish on overlapping CI runs can flip `published_at` ordering:
+    // run-A starts first with v0.3.0, run-B starts later with v0.3.1, but
+    // run-B finishes faster (warm cache), publishing v0.3.1 BEFORE run-A
+    // publishes v0.3.0. If we sorted by published_at we'd offer v0.3.0
+    // to clients on v0.3.1 — a downgrade. Sorting by version-from-tag
+    // closes that race.
+    const newerVersionPublishedFirst: GhReleaseFixture = {
+      ...fullDevRelease,
+      tag_name: "desktop-dev-v0.3.1",
+      published_at: "2026-05-15T00:00:00Z",
+      assets: [
+        {
+          name: "Isol8_0.3.1_aarch64.app.tar.gz",
+          browser_download_url:
+            "https://example/v0.3.1/Isol8_0.3.1_aarch64.app.tar.gz",
+        },
+        {
+          name: "Isol8_0.3.1_aarch64.app.tar.gz.sig",
+          browser_download_url: "https://example/v0.3.1/sig",
+        },
+      ],
+    };
+    const olderVersionPublishedLater: GhReleaseFixture = {
+      ...fullDevRelease,
+      tag_name: "desktop-dev-v0.3.0",
+      published_at: "2026-05-16T00:00:00Z",
+    };
+    stubGitHub([
+      newerVersionPublishedFirst,
+      olderVersionPublishedLater,
+    ]);
+    const res = await GET(reqFor("dev.isol8.co"), {
+      params: Promise.resolve({
+        target: "darwin-aarch64",
+        current_version: "0.2.5",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.version).toBe("0.3.1");
   });
 });

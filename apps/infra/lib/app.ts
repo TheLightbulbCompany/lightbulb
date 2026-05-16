@@ -175,7 +175,12 @@ function buildDesktopJobSteps(args: {
         projectPath: "apps/desktop",
         tagName: args.tagName,
         releaseName: args.releaseName,
-        releaseDraft: false,
+        // Create as DRAFT first. Drafts were proven to work yesterday
+        // with the org's read-only default_workflow_permissions. The
+        // separate "Publish draft release" step below flips the draft
+        // bit via a second API call — splitting create-and-publish
+        // isolates whatever scope problem auto-publish hit.
+        releaseDraft: true,
         prerelease: args.prerelease,
         args: "--target aarch64-apple-darwin",
       },
@@ -188,6 +193,17 @@ function buildDesktopJobSteps(args: {
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
           "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
         ISOL8_CALLBACK_URL: args.callbackUrl,
+      },
+    },
+    // Flip the draft bit so the release becomes visible. Done as a
+    // separate `gh release edit` API call rather than relying on
+    // tauri-action's auto-publish, which 403s under the org's
+    // enforced default_workflow_permissions=read posture.
+    {
+      name: "Publish draft release",
+      run: `gh release edit "${args.tagName}" --repo Isol8AI/isol8 --draft=false`,
+      env: {
+        GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
       },
     },
   ];
@@ -469,6 +485,19 @@ function gateDesktopJobOnPaths(jobId: string): JsonPatch[] {
 }
 
 pipeline.workflowFile.patch(
+  // Grant write-scope to GITHUB_TOKEN at the WORKFLOW level. The org
+  // enforces default_workflow_permissions=read (gh api returns 409 on
+  // attempts to flip the repo default), and `JobSettings` in
+  // cdk-pipelines-github only exposes `if`, not `permissions`. Setting
+  // permissions at the workflow level here covers every job (synth,
+  // asset publish, deploy, desktop builds, Vercel deploys) in one
+  // place — equivalent to writing `permissions:` at the top of a
+  // hand-authored workflow YAML. `id-token: write` is preserved for
+  // the OIDC role assumption used by AwsCredentials.fromOpenIdConnect.
+  JsonPatch.add("/permissions", {
+    "id-token": "write",
+    contents: "write",
+  }),
   JsonPatch.replace("/jobs/dev-BuildDesktopDev/runs-on", "macos-15"),
   JsonPatch.replace("/jobs/prod-BuildDesktopProd/runs-on", "macos-15"),
   ...gateDesktopJobOnPaths("dev-BuildDesktopDev"),
@@ -478,7 +507,7 @@ pipeline.workflowFile.patch(
     tauriActionWithBlock({
       tagName: `desktop-dev-v${DESKTOP_VERSION}`,
       releaseName: `Isol8 Desktop [DEV] v${DESKTOP_VERSION}`,
-      releaseDraft: false,
+      releaseDraft: true,
       prerelease: true,
     }),
   ),
@@ -487,7 +516,7 @@ pipeline.workflowFile.patch(
     tauriActionWithBlock({
       tagName: `desktop-v${DESKTOP_VERSION}`,
       releaseName: `Isol8 Desktop v${DESKTOP_VERSION}`,
-      releaseDraft: false,
+      releaseDraft: true,
       prerelease: false,
     }),
   ),

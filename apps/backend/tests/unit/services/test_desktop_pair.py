@@ -698,8 +698,7 @@ async def test_pair_desktop_devices_preserves_legacy_unstamped_entries_in_org_wo
 
     written = workspace.state
     assert legacy_mac_id in written, (
-        "userId-less legacy entry in an org workspace must be preserved "
-        "(could belong to a teammate)"
+        "userId-less legacy entry in an org workspace must be preserved (could belong to a teammate)"
     )
     assert len(written) == 3  # 1 legacy + 2 new
 

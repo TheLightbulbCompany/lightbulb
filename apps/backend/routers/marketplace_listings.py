@@ -622,6 +622,8 @@ async def upload_artifact_from_agent(
             openclaw_slice=package.openclaw_slice,
             agent_id=payload.agent_id,
             version=version,
+            bundle_mcps=selected_mcps,
+            bundle_skills=selected_skills,
         )
     except marketplace_service.InvalidStateError as e:
         raise HTTPException(status_code=409, detail=str(e))

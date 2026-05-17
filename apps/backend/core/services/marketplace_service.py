@@ -205,6 +205,8 @@ async def replace_artifact(
     openclaw_slice: dict | None = None,
     agent_id: str | None = None,
     version: int = 1,
+    bundle_mcps: list[str] | None = None,
+    bundle_skills: list[str] | None = None,
 ) -> dict:
     """Replace the artifact for a draft listing.
 
@@ -273,6 +275,18 @@ async def replace_artifact(
     if agent_id is not None:
         set_clause += ", agent_id = :aid"
         values[":aid"] = agent_id
+    # Persist the bundle selection so edit mode can prefill the BundleStep
+    # checkboxes instead of falsely defaulting to "ship nothing" — without
+    # this, a seller revising metadata silently strips integrations buyers
+    # would have received. Stored as `bundle_mcps` / `bundle_skills` to
+    # match the request-body shape; surfaced through marketplace_search's
+    # raw-row response so the frontend has them on hand.
+    if bundle_mcps is not None:
+        set_clause += ", bundle_mcps = :bmcps"
+        values[":bmcps"] = bundle_mcps
+    if bundle_skills is not None:
+        set_clause += ", bundle_skills = :bskills"
+        values[":bskills"] = bundle_skills
     table.update_item(
         Key={"listing_id": listing_id, "version": version},
         UpdateExpression=set_clause,

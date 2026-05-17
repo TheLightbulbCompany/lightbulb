@@ -360,6 +360,35 @@ async def test_update_draft_rejects_non_draft_or_wrong_seller(mock_listings):
     "core.services.marketplace_service._upload_artifact_to_s3",
     new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
 )
+async def test_replace_artifact_persists_bundle_selection(mock_listings):
+    """Regression for Codex P2 on PR #692 (commit dd9da001): the bundle
+    selection lives in the artifact tarball but isn't recoverable from the
+    listing row alone. Without persisted columns, edit-mode would prefill
+    bundleMcps=[]/bundleSkills=[] and silently re-export the artifact
+    without the integrations buyers previously received."""
+    mock_listings.return_value.get_item = MagicMock(return_value={"Item": {"seller_id": "user_abc", "status": "draft"}})
+    mock_listings.return_value.update_item = MagicMock()
+    await marketplace_service.replace_artifact(
+        listing_id="l1",
+        seller_id="user_abc",
+        artifact_bytes=b"x",
+        manifest={"name": "x"},
+        bundle_mcps=["jira-mcp", "slack-mcp"],
+        bundle_skills=["search", "jira"],
+    )
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    assert "bundle_mcps = :bmcps" in kwargs["UpdateExpression"]
+    assert "bundle_skills = :bskills" in kwargs["UpdateExpression"]
+    assert kwargs["ExpressionAttributeValues"][":bmcps"] == ["jira-mcp", "slack-mcp"]
+    assert kwargs["ExpressionAttributeValues"][":bskills"] == ["search", "jira"]
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+@patch(
+    "core.services.marketplace_service._upload_artifact_to_s3",
+    new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
+)
 async def test_replace_artifact_persists_agent_id_when_provided(mock_listings):
     """Edit mode reads agent_id off the listing row to lock the wizard's
     PickAgent step. Persist it as a top-level column on replace_artifact

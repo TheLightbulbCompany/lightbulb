@@ -84,8 +84,13 @@ function formFromListing(listing: Listing): PublishForm {
     tags: listing.tags ?? [],
     priceTier: (listing.price_cents ?? 0) > 0 ? "paid" : "free",
     priceDollars: (listing.price_cents ?? 0) > 0 ? Math.round((listing.price_cents ?? 0) / 100) : 10,
-    bundleMcps: [],
-    bundleSkills: [],
+    // Prefill the BundleStep from the row's persisted selection. Empty
+    // arrays here mean "we genuinely shipped nothing" (e.g. the previous
+    // upload was a pure-workspace listing); null/undefined means the
+    // listing predates the column and falls through to []. Either way,
+    // the seller can re-check what they want before resubmitting.
+    bundleMcps: listing.bundle_mcps ?? [],
+    bundleSkills: listing.bundle_skills ?? [],
   };
 }
 

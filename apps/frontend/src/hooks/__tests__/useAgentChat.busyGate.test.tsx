@@ -378,6 +378,71 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
+  it("transfers the gate when the first fresh-run event is a tool_end (approved exec's result)", async () => {
+    // When the approved command was the only thing left, OpenClaw's
+    // continuation may emit the tool_end / tool_error result directly
+    // (backend transforms it via connection_pool.py) before any chunk.
+    // The transfer must handle that path or the gate sticks armed
+    // forever — the terminal done's runId never matches the pre-
+    // approval clientRunIdRef. (Codex P1 on PR #690.)
+    approvalQueue = [fakeApproval("agent-X", "ap-tool")];
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result, rerender } = renderHook(() =>
+      useAgentChat("agent-X", "session-1"),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage("kick off");
+    });
+    const r1 = lastClientRunId();
+    // Tool started on r1, then chat.final fires waiting for approval.
+    act(() =>
+      dispatch({
+        type: "tool_start",
+        agent_id: "agent-X",
+        runId: r1,
+        tool: "exec",
+        toolCallId: "tc-1",
+      } as ChatIncomingMessage),
+    );
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+    );
+    // Resolve the approval. In real usage useExecApprovals' setQueue
+    // re-renders the hook, syncing approvalQueueRef. The mock just
+    // mutates a variable, so we rerender to mirror that propagation —
+    // without this, the next done would see the stale approval in
+    // approvalQueueRef.current and refuse to release the gate.
+    await act(async () => {
+      notifyRemoval("ap-tool", "resolved");
+      rerender();
+    });
+
+    // First fresh-run event is the tool's result, NOT a chunk.
+    const r2 = "fresh-resume-runid";
+    act(() =>
+      dispatch({
+        type: "tool_end",
+        agent_id: "agent-X",
+        runId: r2,
+        tool: "exec",
+        toolCallId: "tc-1",
+        result: [{ type: "text", text: "ok" }],
+      } as ChatIncomingMessage),
+    );
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r2 } as ChatIncomingMessage),
+    );
+
+    // Gate released via the transfer + matching done.
+    await act(async () => {
+      await result.current.sendMessage("after-resume");
+    });
+    expect(sendChat).toHaveBeenCalledTimes(2);
+    expect(sendChat.mock.calls[1]?.[1]).toBe("after-resume");
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
+
   it("keeps the gate armed when one approval is dismissed but siblings for this agent remain (Codex P2)", async () => {
     // Multiple approvals can be pending on the same run (e.g. parallel
     // tools). Dismissing/expiring one must NOT release the gate while

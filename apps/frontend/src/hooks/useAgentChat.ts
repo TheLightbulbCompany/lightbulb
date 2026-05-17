@@ -505,13 +505,19 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // first event of that fresh run and reassign clientRunIdRef so
       // the eventual terminal `done` (which carries the fresh runId)
       // releases the busy gate. Without this transfer the gate sticks
-      // armed forever and queued follow-ups never flush (Codex P1 c,
-      // PR #682).
+      // armed forever and queued follow-ups never flush (Codex P1 c).
+      //
+      // The first fresh-run event is whichever the agent produces next
+      // — usually chunk/thinking, but for an approved exec it can be
+      // tool_end/tool_error (the command's result forwarded by the
+      // backend's tool-result transform in connection_pool.py). It can
+      // also be a bare done/error if the approved tool was the only
+      // thing left in the turn. So transfer on any non-heartbeat event
+      // carrying a runId.
       if (
         resumeExpectedRef.current &&
-        (msg.type === "chunk" ||
-          msg.type === "thinking" ||
-          msg.type === "tool_start") &&
+        msg.type !== "heartbeat" &&
+        msg.type !== "update_available" &&
         msg.runId &&
         msg.runId !== clientRunIdRef.current
       ) {

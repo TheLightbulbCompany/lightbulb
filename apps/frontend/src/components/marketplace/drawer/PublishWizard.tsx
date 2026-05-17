@@ -141,7 +141,14 @@ export function PublishWizard() {
 
   function canContinue() {
     if (step === 1) return !!form.agentId;
-    if (step === 2) return form.name.trim().length > 0;
+    if (step === 2) {
+      // Name is always required. submit() sends `description || tagline`
+      // as description_md, and the backend's ListingCreate/ListingUpdate
+      // schemas require min_length=1 on that field — so one of the two
+      // must have content to avoid a 422 at submit time.
+      if (form.name.trim().length === 0) return false;
+      return form.tagline.trim().length > 0 || form.description.trim().length > 0;
+    }
     if (step === 3) return true; // Bundle step: any selection (including empty) is valid
     if (step === 4) return form.priceTier === "free" || form.priceDollars >= 1;
     if (step === 5) return true;

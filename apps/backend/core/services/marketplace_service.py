@@ -203,6 +203,7 @@ async def replace_artifact(
     artifact_bytes: bytes,
     manifest: dict,
     openclaw_slice: dict | None = None,
+    agent_id: str | None = None,
 ) -> dict:
     """Replace the v1 artifact for a draft listing.
 
@@ -247,26 +248,33 @@ async def replace_artifact(
     )
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+    # agent_id is persisted as a top-level column so the publish-wizard's
+    # edit mode can lock the agent picker without parsing manifest_json.
+    set_clause = (
+        "SET manifest_sha256 = :sha, manifest_json = :mj,"
+        "    s3_prefix = :prefix, artifact_uploaded = :uploaded,"
+        "    updated_at = :now"
+    )
+    values: dict = {
+        ":sha": sha,
+        ":mj": manifest,
+        ":prefix": s3_prefix,
+        ":uploaded": True,
+        ":sid": seller_id,
+        ":draft": "draft",
+        ":now": now_iso,
+    }
+    if agent_id is not None:
+        set_clause += ", agent_id = :aid"
+        values[":aid"] = agent_id
     table.update_item(
         Key={"listing_id": listing_id, "version": 1},
-        UpdateExpression=(
-            "SET manifest_sha256 = :sha, manifest_json = :mj,"
-            "    s3_prefix = :prefix, artifact_uploaded = :uploaded,"
-            "    updated_at = :now"
-        ),
+        UpdateExpression=set_clause,
         # Defense-in-depth: re-check seller match + draft state via condition
         # in case state changed between the get and update.
         ConditionExpression="seller_id = :sid AND #s = :draft",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":sha": sha,
-            ":mj": manifest,
-            ":prefix": s3_prefix,
-            ":uploaded": True,
-            ":sid": seller_id,
-            ":draft": "draft",
-            ":now": now_iso,
-        },
+        ExpressionAttributeValues=values,
     )
 
     return {
@@ -276,6 +284,76 @@ async def replace_artifact(
         "file_count": len(manifest.get("contents", [])) or manifest.get("file_count", 0),
         "bytes": len(artifact_bytes),
     }
+
+
+async def update_draft(
+    *,
+    listing_id: str,
+    seller_id: str,
+    name: str | None = None,
+    description_md: str | None = None,
+    price_cents: int | None = None,
+    tags: list[str] | None = None,
+    category: str | None = None,
+) -> dict:
+    """Patch metadata on a draft listing. Slug / format / agent stay locked.
+
+    All keyword args are optional; only those passed are written. Guarded
+    on (seller_id matches) AND (status='draft') so a rejected listing can
+    be revised (rejection flips status back to 'draft') but a published or
+    in-review listing cannot. Returns the updated item.
+
+    Raises:
+        InvalidStateError: caller is not the seller, listing isn't in
+        draft state, or no fields were provided.
+    """
+    updates: dict[str, object] = {}
+    if name is not None:
+        updates["name"] = name
+    if description_md is not None:
+        updates["description_md"] = description_md
+    if price_cents is not None:
+        updates["price_cents"] = price_cents
+    if tags is not None:
+        updates["tags"] = tags
+    if category is not None:
+        updates["category"] = category
+    if not updates:
+        raise InvalidStateError("no fields to update")
+
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # name is a DDB reserved word; route every column through #-aliases so
+    # the SET clause is uniform and immune to future reserved-word additions.
+    set_clauses: list[str] = []
+    expr_names: dict[str, str] = {"#s": "status"}
+    expr_values: dict[str, object] = {
+        ":sid": seller_id,
+        ":draft": "draft",
+        ":now": now_iso,
+    }
+    for i, (col, val) in enumerate(updates.items()):
+        name_placeholder = f"#c{i}"
+        value_placeholder = f":c{i}"
+        expr_names[name_placeholder] = col
+        expr_values[value_placeholder] = val
+        set_clauses.append(f"{name_placeholder} = {value_placeholder}")
+    set_clauses.append("updated_at = :now")
+
+    table = _listings_table()
+    try:
+        resp = table.update_item(
+            Key={"listing_id": listing_id, "version": 1},
+            UpdateExpression="SET " + ", ".join(set_clauses),
+            ConditionExpression="seller_id = :sid AND #s = :draft",
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values,
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise InvalidStateError("listing is not in 'draft' state or you are not the seller")
+        raise
+    return resp.get("Attributes", {})
 
 
 async def submit_for_review(*, listing_id: str, seller_id: str) -> dict:
@@ -370,7 +448,9 @@ async def reject(*, listing_id: str, version: int, notes: str, rejected_by: str)
     try:
         table.update_item(
             Key={"listing_id": listing_id, "version": version},
-            UpdateExpression=("SET #s = :draft, rejection_notes = :notes, rejected_by = :by, updated_at = :now"),
+            UpdateExpression=(
+                "SET #s = :draft, rejection_notes = :notes, rejected_by = :by,    rejected_at = :now, updated_at = :now"
+            ),
             ConditionExpression="#s = :review",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
@@ -385,7 +465,7 @@ async def reject(*, listing_id: str, version: int, notes: str, rejected_by: str)
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise InvalidStateError(f"listing v{version} is not in 'review' state")
         raise
-    return {"status": "draft", "rejection_notes": notes}
+    return {"status": "draft", "rejection_notes": notes, "rejected_at": now_iso}
 
 
 async def publish_v2(

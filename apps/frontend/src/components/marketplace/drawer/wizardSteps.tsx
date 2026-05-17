@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 
+import { useApi } from "@/lib/api";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import {
   artifactPreview,
@@ -11,6 +12,41 @@ import {
   type SafetyFlag,
 } from "@/lib/marketplace/api";
 import type { PublishForm } from "./PublishWizard";
+
+/**
+ * Whether the seller has a Stripe Connect payout account on file.
+ *
+ * Wired to GET /marketplace/payouts/dashboard — that endpoint returns
+ * `{ dashboard_url: null }` when no account exists and the seller-hosted
+ * login URL otherwise. We treat any non-null URL as "onboarded", matching
+ * MyListingsView's own gate.
+ */
+function usePayoutsOnboarded(): {
+  onboarded: boolean | null;
+  refresh: () => void;
+} {
+  const api = useApi();
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = (await api.get("/marketplace/payouts/dashboard")) as {
+          dashboard_url?: string | null;
+        };
+        if (alive) setOnboarded(!!r.dashboard_url);
+      } catch {
+        if (alive) setOnboarded(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonce]);
+  return { onboarded, refresh: () => setNonce((n) => n + 1) };
+}
 
 
 /**
@@ -411,6 +447,22 @@ export function PricingStep({
   const stripe = +(v * 0.029 + 0.3).toFixed(2);
   const platform = +(v * 0.15).toFixed(2);
   const take = +(v - stripe - platform).toFixed(2);
+  const api = useApi();
+  const { onboarded } = usePayoutsOnboarded();
+  const needsPayoutSetup = form.priceTier === "paid" && onboarded === false;
+  const [payoutBusy, setPayoutBusy] = useState(false);
+
+  async function startPayoutOnboarding() {
+    setPayoutBusy(true);
+    try {
+      const r = (await api.post("/marketplace/payouts/onboard", {})) as {
+        onboarding_url: string;
+      };
+      window.location.href = r.onboarding_url;
+    } finally {
+      setPayoutBusy(false);
+    }
+  }
 
   return (
     <div>
@@ -443,6 +495,29 @@ export function PricingStep({
           Premium tier
         </button>
       </div>
+
+      {needsPayoutSetup && (
+        <div
+          role="alert"
+          data-testid="payout-setup-gate"
+          className="mb-4 rounded-xl border border-[#e8d49a] bg-[#fff4d6] px-3.5 py-3 text-[13px] text-[#7d5f1a] leading-snug"
+        >
+          <strong className="block text-[#1a1a1a] mb-0.5">
+            Set up payouts first.
+          </strong>
+          We can&apos;t charge buyers without a Stripe Connect account on file.
+          You can finish the rest of the listing first, but submitting at a
+          premium tier requires payouts.
+          <button
+            type="button"
+            onClick={startPayoutOnboarding}
+            disabled={payoutBusy}
+            className="block mt-2 bg-[#06402b] hover:bg-[#0a5a3d] disabled:opacity-60 text-white px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold"
+          >
+            {payoutBusy ? "Opening Stripe…" : "Set up payouts →"}
+          </button>
+        </div>
+      )}
 
       {form.priceTier === "free" ? (
         <div className="bg-white border border-[#e0dbd0] rounded-xl p-4 text-[#5b5b5b] text-[13.5px] leading-snug">
@@ -601,11 +676,19 @@ export function ReviewStep({ form }: { form: PublishForm }) {
   );
 }
 
-export function SuccessStep({ onViewMine }: { onViewMine: () => void }) {
+export function SuccessStep({
+  onViewMine,
+  mode = "submit",
+}: {
+  onViewMine: () => void;
+  mode?: "submit" | "resubmit";
+}) {
   return (
     <div className="text-center py-8">
       <div className="text-3xl mb-3">✓</div>
-      <h3 className="font-editorial-serif text-2xl mb-2">Submitted for review.</h3>
+      <h3 className="font-editorial-serif text-2xl mb-2">
+        {mode === "resubmit" ? "Resubmitted for review." : "Submitted for review."}
+      </h3>
       <p className="text-[14px] text-[#5b5b5b] mb-4">
         You&apos;ll get a notification when it&apos;s live — usually within 24 hours.
       </p>

@@ -936,3 +936,77 @@ def test_my_agents_summary_handles_array_shape_skills(mock_workspace_factory, au
     # Missing fields
     assert by_id["agent_min"]["skill_count"] == 0
     assert by_id["agent_min"]["channel_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# PATCH /listings/{listing_id} (seller edit)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_listing_requires_auth(unauth_client):
+    resp = unauth_client.patch(
+        "/api/v1/marketplace/listings/lst_42",
+        json={"name": "New Name"},
+    )
+    assert resp.status_code in (401, 403)
+
+
+@patch("routers.marketplace_listings.marketplace_service.update_draft", new_callable=AsyncMock)
+def test_patch_listing_forwards_only_provided_fields(mock_update, authed_client_factory):
+    """Wizard's edit mode sends a sparse patch — the route must thread only
+    the supplied keys into the service so unspecified fields aren't clobbered."""
+    mock_update.return_value = {"listing_id": "lst_42", "name": "New Name"}
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.patch(
+        "/api/v1/marketplace/listings/lst_42",
+        json={"name": "New Name", "price_cents": 500},
+    )
+    assert resp.status_code == 200, resp.text
+    call_kwargs = mock_update.call_args.kwargs
+    assert call_kwargs["seller_id"] == "u_seller"
+    assert call_kwargs["name"] == "New Name"
+    assert call_kwargs["price_cents"] == 500
+    # Fields the wizard didn't touch are passed as None — the service's
+    # update_draft skips them, leaving the row's existing values intact.
+    assert call_kwargs["description_md"] is None
+    assert call_kwargs["tags"] is None
+    assert call_kwargs["category"] is None
+
+
+@patch("routers.marketplace_listings.marketplace_service.update_draft", new_callable=AsyncMock)
+def test_patch_listing_translates_invalid_state_to_409(mock_update, authed_client_factory):
+    """Published / in-review listings reject the patch — surface as 409 so
+    the wizard can show a coherent error instead of a 500."""
+    from core.services.marketplace_service import InvalidStateError
+
+    mock_update.side_effect = InvalidStateError("listing is not in 'draft' state")
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.patch(
+        "/api/v1/marketplace/listings/lst_42",
+        json={"name": "New Name"},
+    )
+    assert resp.status_code == 409
+
+
+def test_patch_listing_rejects_slug_field(authed_client_factory):
+    """Slug is immutable post-create (reserved via a sentinel row). The
+    ListingUpdate schema doesn't include `slug`, so FastAPI silently drops
+    it — but the test pins that behavior so a future refactor can't
+    accidentally surface it.
+    """
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    # Patch payloads carrying an unknown `slug` field must still validate
+    # (Pydantic's default is to ignore extras), and the slug must NOT be
+    # forwarded to the service. Test by mocking the service and asserting
+    # `slug` isn't in the call.
+    with patch(
+        "routers.marketplace_listings.marketplace_service.update_draft",
+        new_callable=AsyncMock,
+    ) as mock_update:
+        mock_update.return_value = {"listing_id": "lst_42"}
+        resp = tc.patch(
+            "/api/v1/marketplace/listings/lst_42",
+            json={"name": "Renamed", "slug": "new-slug"},
+        )
+        assert resp.status_code == 200
+        assert "slug" not in mock_update.call_args.kwargs

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-import { BundleStep, ReviewStep } from "../wizardSteps";
+import { BundleStep, PricingStep, ReviewStep } from "../wizardSteps";
 import type { PublishForm } from "../PublishWizard";
 import type { ArtifactPreview } from "@/lib/marketplace/api";
 
@@ -9,6 +9,20 @@ vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
+  }),
+}));
+
+// PricingStep calls useApi().get("/marketplace/payouts/dashboard") to gate
+// the free→paid switch. The mock factory returns a fresh vi.fn() each render
+// so individual tests can swap responses via mockResolvedValueOnce.
+const mockApiGet = vi.fn();
+const mockApiPost = vi.fn();
+vi.mock("@/lib/api", () => ({
+  useApi: () => ({
+    get: mockApiGet,
+    post: mockApiPost,
+    put: vi.fn(),
+    del: vi.fn(),
   }),
 }));
 
@@ -234,5 +248,65 @@ describe("ReviewStep", () => {
     render(<ReviewStep form={baseForm()} />);
     await screen.findByTestId("review-bundle-summary");
     expect(screen.queryByTestId("review-safety-flags")).not.toBeInTheDocument();
+  });
+});
+
+describe("PricingStep payout gate", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset();
+    mockApiPost.mockReset();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows the payout setup gate when paid is selected but no Connect account exists", async () => {
+    mockApiGet.mockResolvedValue({ dashboard_url: null });
+    render(<PricingStep form={baseForm({ priceTier: "paid" })} onChange={vi.fn()} />);
+    const gate = await screen.findByTestId("payout-setup-gate");
+    expect(gate).toBeInTheDocument();
+    expect(gate).toHaveTextContent(/Set up payouts first/);
+  });
+
+  it("hides the gate when the seller is already onboarded", async () => {
+    mockApiGet.mockResolvedValue({ dashboard_url: "https://stripe.com/login/abc" });
+    render(<PricingStep form={baseForm({ priceTier: "paid" })} onChange={vi.fn()} />);
+    await waitFor(() => expect(mockApiGet).toHaveBeenCalled());
+    expect(screen.queryByTestId("payout-setup-gate")).not.toBeInTheDocument();
+  });
+
+  it("hides the gate while priceTier is free", async () => {
+    // No dashboard fetch is necessary — the gate is bound to paid mode.
+    mockApiGet.mockResolvedValue({ dashboard_url: null });
+    render(<PricingStep form={baseForm({ priceTier: "free" })} onChange={vi.fn()} />);
+    // The hook still fires once on mount, but the gate UI doesn't render.
+    await waitFor(() => expect(mockApiGet).toHaveBeenCalled());
+    expect(screen.queryByTestId("payout-setup-gate")).not.toBeInTheDocument();
+  });
+
+  it("the gate's CTA kicks off the Stripe onboarding flow", async () => {
+    mockApiGet.mockResolvedValue({ dashboard_url: null });
+    mockApiPost.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/abc" });
+    // jsdom's window.location is readonly — replace with a writable mock so
+    // we can assert the redirect target without the browser navigating.
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, href: "" },
+    });
+    try {
+      render(<PricingStep form={baseForm({ priceTier: "paid" })} onChange={vi.fn()} />);
+      const cta = await screen.findByText("Set up payouts →");
+      fireEvent.click(cta);
+      await waitFor(() => expect(mockApiPost).toHaveBeenCalledWith("/marketplace/payouts/onboard", {}));
+      expect(window.location.href).toBe("https://connect.stripe.com/setup/abc");
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: originalLocation,
+      });
+    }
   });
 });

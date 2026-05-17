@@ -430,6 +430,35 @@ async def create_listing(
     return listing
 
 
+@router.patch("/listings/{listing_id}")
+async def update_listing(
+    listing_id: str,
+    payload: schemas.ListingUpdate,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+):
+    """Patch metadata on a draft listing the caller owns.
+
+    Slug and format are immutable post-creation — drop them from the
+    payload schema rather than silently ignoring. Listings in 'review',
+    'published', 'retired', or 'taken_down' state reject the call with
+    409 (caller must wait for the moderation decision, or open a new
+    version via republish).
+    """
+    try:
+        result = await marketplace_service.update_draft(
+            listing_id=listing_id,
+            seller_id=auth.user_id,
+            name=payload.name,
+            description_md=payload.description_md,
+            price_cents=payload.price_cents,
+            tags=payload.tags,
+            category=payload.category,
+        )
+    except marketplace_service.InvalidStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return result
+
+
 @router.post("/listings/{listing_id}/submit")
 async def submit(
     listing_id: str,
@@ -579,6 +608,7 @@ async def upload_artifact_from_agent(
             artifact_bytes=package.tarball_bytes,
             manifest=package.manifest,
             openclaw_slice=package.openclaw_slice,
+            agent_id=payload.agent_id,
         )
     except marketplace_service.InvalidStateError as e:
         raise HTTPException(status_code=409, detail=str(e))

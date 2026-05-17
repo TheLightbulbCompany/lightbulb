@@ -17,11 +17,23 @@ export interface Listing {
   format: ListingFormat;
   price_cents: number;
   tags: string[];
+  category?: string | null;
   seller_id: string;
   status: ListingStatus;
   version: number;
   published_at: string | null;
   created_at: string;
+  /** EFS agent id from the last artifact-from-agent call. Used by the
+   * publish-wizard edit mode to lock the PickAgent step. Missing on
+   * listings created before the column was added — fall back to
+   * `manifest_json.agent_id`. */
+  agent_id?: string | null;
+  manifest_json?: { agent_id?: string } & Record<string, unknown>;
+  /** Admin moderation feedback. Present iff the listing was rejected and
+   * has not yet been resubmitted (reject flips status back to draft and
+   * sets these). */
+  rejection_notes?: string | null;
+  rejected_at?: string | null;
 }
 
 export interface Purchase {

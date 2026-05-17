@@ -243,3 +243,90 @@ async def test_publish_v2_atomically_retires_prev_and_publishes_new(mock_client)
     )
     assert retire_item["Update"]["ExpressionAttributeValues"][":retired"]["S"] == "retired"
     assert publish_item["Update"]["ExpressionAttributeValues"][":pub"]["S"] == "published"
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_reject_writes_rejected_at_timestamp(mock_listings):
+    """Seller UI surfaces 'Rejected · MM-DD' on the listing row; without
+    rejected_at we'd have to fall back to updated_at, which mutates on
+    every patch and stops reflecting the rejection moment."""
+    mock_listings.return_value.update_item = MagicMock()
+    result = await marketplace_service.reject(
+        listing_id="l1", version=1, notes="needs more docs", rejected_by="admin_xyz"
+    )
+    assert "rejected_at" in result
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    assert "rejected_at = :now" in kwargs["UpdateExpression"]
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_update_draft_writes_only_provided_fields(mock_listings):
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"name": "New Name"}})
+    result = await marketplace_service.update_draft(
+        listing_id="l1",
+        seller_id="user_abc",
+        name="New Name",
+        price_cents=500,
+    )
+    assert result["name"] == "New Name"
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    # Only the two fields we passed should appear in the SET clause
+    # (besides the always-written updated_at).
+    expr = kwargs["UpdateExpression"]
+    assert expr.count("=") == 3  # name, price_cents, updated_at
+    values = kwargs["ExpressionAttributeValues"]
+    # Field values are bound via :c0/:c1 placeholders to defeat reserved-word
+    # collisions ("name" is reserved in DDB).
+    bound_values = {v for k, v in values.items() if k.startswith(":c")}
+    assert bound_values == {"New Name", 500}
+
+
+@pytest.mark.asyncio
+async def test_update_draft_rejects_empty_patch():
+    """No fields = no-op write would still bump updated_at and look like
+    a real edit. Forbid it so callers can't waste a write."""
+    with pytest.raises(marketplace_service.InvalidStateError):
+        await marketplace_service.update_draft(listing_id="l1", seller_id="user_abc")
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_update_draft_rejects_non_draft_or_wrong_seller(mock_listings):
+    """ConditionExpression check failure surfaces as InvalidStateError so
+    the route translates to 409 — same shape as submit_for_review."""
+    from botocore.exceptions import ClientError
+
+    mock_listings.return_value.update_item = MagicMock(
+        side_effect=ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
+            "UpdateItem",
+        )
+    )
+    with pytest.raises(marketplace_service.InvalidStateError):
+        await marketplace_service.update_draft(listing_id="l1", seller_id="user_abc", name="x")
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+@patch(
+    "core.services.marketplace_service._upload_artifact_to_s3",
+    new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
+)
+async def test_replace_artifact_persists_agent_id_when_provided(mock_listings):
+    """Edit mode reads agent_id off the listing row to lock the wizard's
+    PickAgent step. Persist it as a top-level column on replace_artifact
+    so the frontend doesn't have to parse manifest_json."""
+    mock_listings.return_value.get_item = MagicMock(return_value={"Item": {"seller_id": "user_abc", "status": "draft"}})
+    mock_listings.return_value.update_item = MagicMock()
+    await marketplace_service.replace_artifact(
+        listing_id="l1",
+        seller_id="user_abc",
+        artifact_bytes=b"x",
+        manifest={"name": "x"},
+        agent_id="agent_ray",
+    )
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    assert "agent_id = :aid" in kwargs["UpdateExpression"]
+    assert kwargs["ExpressionAttributeValues"][":aid"] == "agent_ray"

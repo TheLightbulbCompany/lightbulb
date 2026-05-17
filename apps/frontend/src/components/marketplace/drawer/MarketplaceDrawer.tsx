@@ -110,6 +110,7 @@ function DefaultHeader() {
 function PublishHeader() {
   const { state, setView } = useMarketplaceDrawer();
   const previous = state.prevView ?? "browse";
+  const isEditing = !!state.editListing;
   return (
     <div className="flex items-center gap-3.5 min-w-0">
       <button
@@ -121,7 +122,7 @@ function PublishHeader() {
         Marketplace
       </button>
       <span className="font-editorial-serif italic text-[14px] text-[#5b5b5b]">
-        Publish an agent
+        {isEditing ? `Edit "${state.editListing?.name}"` : "Publish an agent"}
       </span>
     </div>
   );

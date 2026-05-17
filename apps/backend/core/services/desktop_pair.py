@@ -295,17 +295,23 @@ async def pair_desktop_devices(
             existing = paired.get(device_id)
             if existing and existing.get("publicKey") == entry["publicKey"]:
                 # Idempotent: existing entry has the same key — keep its
-                # tokens. But if the existing entry is missing our userId
-                # stamp (pre-this-PR write) or has a different one,
-                # backfill it: the matching publicKey is proof the caller
-                # currently owns this entry, so the attribution is safe.
-                # Without this, a legacy entry stays unstamped and a
-                # later re-pair (new keys → new deviceId) can't recognize
-                # it as the same user's stale ghost, so the prune skips
-                # it indefinitely (Codex P2 on PR #683).
-                if existing.get("userId") != entry.get("userId"):
-                    existing["userId"] = entry.get("userId")
-                    changed = True
+                # tokens.
+                #
+                # We deliberately do NOT stamp/overwrite userId here, even
+                # though the matching publicKey LOOKS like proof of
+                # ownership. `POST /desktop/pair` accepts a PEM pubkey
+                # without verifying possession of the corresponding
+                # private key (that proof happens later in the WS
+                # handshake). If Alice submitted Bob's pubkey, this
+                # branch would relabel Bob's stamped entry as Alice's,
+                # and Alice's next re-pair would satisfy the prune check
+                # and delete Bob's still-valid device (Codex P2 on
+                # commit 8bc3c157). Refusing to stamp here means legacy
+                # pre-this-PR entries stay unstamped forever and aren't
+                # pruned by the userId-scoped prune above — purely
+                # cosmetic ghosts. The alternative is a real
+                # cross-member privilege escalation in shared org
+                # workspaces. Worth the trade.
                 continue
             paired[device_id] = entry
             changed = True

@@ -494,16 +494,19 @@ async def test_pair_desktop_devices_preserves_other_org_members_entries():
     assert len(written) == 4
 
 
-async def test_pair_desktop_devices_backfills_userid_on_idempotent_legacy_match():
-    """Codex P2 on PR #683: if a legacy paired entry already matches the
-    caller's deviceId + publicKey, the idempotent branch keeps it. Without
-    backfilling, that entry stays unstamped forever, and a later re-pair
-    with new keys can't recognize the stale (now-orphaned) entry as the
-    same user's ghost — the prune `entry.userId != user_id` check skips
-    `None != user_id`.
+async def test_pair_desktop_devices_does_not_stamp_userid_on_idempotent_match():
+    """SECURITY (Codex round-2 P2 on commit 8bc3c157): the idempotent
+    branch must NOT stamp / overwrite userId based on a publicKey match.
+    `POST /desktop/pair` accepts the pubkey unsigned — it does not
+    verify possession of the matching private key. If we stamped here,
+    Alice could submit Bob's pubkey, relabel Bob's entry as Alice's,
+    and then trigger her own re-pair to prune Bob's device on the very
+    next call.
 
-    Matching publicKey is proof the caller owns the entry right now, so
-    stamping userId is safe and unlocks pruning on the *next* re-pair.
+    Behavior we DO accept: legacy entries without a userId stamp stay
+    unstamped forever, so the userId-scoped prune above won't remove
+    them. That's a cosmetic-only ghost — clearly preferable to a real
+    cross-member privilege escalation in shared org workspaces.
     """
     # Build the keypair first so we can compute its deviceId for the
     # legacy fixture (same deviceId the new pair call will produce).
@@ -569,14 +572,91 @@ async def test_pair_desktop_devices_backfills_userid_on_idempotent_legacy_match(
     )
 
     written = workspace.state
-    # userId is backfilled on both entries.
-    assert written[mac_device_id]["userId"] == "user_alice"
-    assert written[cli_device_id]["userId"] == "user_alice"
+    # userId stays absent — we refuse to stamp without proof of
+    # possession (this is the security-critical invariant).
+    assert "userId" not in written[mac_device_id]
+    assert "userId" not in written[cli_device_id]
     # Tokens are preserved (idempotent didn't clobber them).
     assert written[mac_device_id]["tokens"]["node"]["token"] == "preserve-me"
     assert written[cli_device_id]["tokens"]["node"]["token"] == "preserve-me-too"
-    # The write happened (we needed to persist the new userId stamp).
-    assert workspace.write_count == 1
+    # Idempotent — nothing changed, no write needed.
+    assert workspace.write_count == 0
+
+
+async def test_pair_desktop_devices_does_not_overwrite_other_users_stamp_on_pubkey_match():
+    """SECURITY (Codex round-2 P2): if a different user's stamped entry
+    happens to match the caller's submitted pubkey, we MUST NOT relabel
+    it as the caller's. The dev path: Alice steals/observes Bob's pubkey
+    from a shared workspace and submits it via POST /desktop/pair.
+    Without this guard, Bob's entry gets userId=user_alice, and Alice's
+    next re-pair (with her own keys) would satisfy the prune and delete
+    Bob's device.
+
+    Defense: refuse to touch userId in the idempotent branch entirely.
+    """
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x0e" * 32)
+    tauri_pub = (
+        tauri_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x0f" * 32)
+    cli_pub = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    from core.services.desktop_pair import (
+        _public_key_raw_base64url,
+        derive_device_id,
+    )
+
+    mac_device_id = derive_device_id(tauri_pub)
+    cli_device_id = derive_device_id(cli_pub)
+
+    # Bob already paired these keypairs (stamped with his userId).
+    workspace = _FakeWorkspace(
+        initial={
+            mac_device_id: {
+                "deviceId": mac_device_id,
+                "publicKey": _public_key_raw_base64url(tauri_pub),
+                "clientId": "openclaw-macos",
+                "userId": "user_bob",
+                "displayName": "Bob | Isol8 Mac",
+            },
+            cli_device_id: {
+                "deviceId": cli_device_id,
+                "publicKey": _public_key_raw_base64url(cli_pub),
+                "clientId": "node-host",
+                "userId": "user_bob",
+                "displayName": "Bob | Isol8 Desktop (CLI)",
+            },
+        }
+    )
+
+    # Alice submits Bob's pubkeys (the attack).
+    await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="org_42",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    # Bob's userId is preserved — Alice cannot relabel by re-submitting his pubkey.
+    assert written[mac_device_id]["userId"] == "user_bob"
+    assert written[cli_device_id]["userId"] == "user_bob"
+    # No new entries written (the deviceIds collide with Bob's existing entries).
+    assert len(written) == 2
 
 
 async def test_pair_desktop_devices_preserves_legacy_unstamped_entries():

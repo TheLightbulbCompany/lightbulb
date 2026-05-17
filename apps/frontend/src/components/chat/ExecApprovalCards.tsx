@@ -26,7 +26,7 @@ const HOST_LABEL: Record<ExecApprovalRequest["host"], string> = {
 };
 
 export function ExecApprovalCards() {
-  const { queue, resolve, dismiss, error } = useExecApprovalsContext();
+  const { queue, resolve, error } = useExecApprovalsContext();
   if (queue.length === 0) return null;
   return (
     <div className="px-4 pt-2 pb-1 flex flex-col gap-2 max-h-[40vh] overflow-y-auto">
@@ -35,7 +35,6 @@ export function ExecApprovalCards() {
           key={req.id}
           pending={req}
           onDecide={(decision) => resolve(req.id, decision)}
-          onDismiss={() => dismiss(req.id)}
           globalError={error}
         />
       ))}
@@ -46,11 +45,10 @@ export function ExecApprovalCards() {
 interface ExecApprovalCardProps {
   pending: ExecApprovalRequest;
   onDecide: (decision: ExecApprovalDecision) => Promise<void>;
-  onDismiss: () => void;
   globalError: string | null;
 }
 
-function ExecApprovalCard({ pending, onDecide, onDismiss, globalError }: ExecApprovalCardProps) {
+function ExecApprovalCard({ pending, onDecide, globalError }: ExecApprovalCardProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [pendingDecision, setPendingDecision] = useState<ExecApprovalDecision | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -137,14 +135,6 @@ function ExecApprovalCard({ pending, onDecide, onDismiss, globalError }: ExecApp
               Retry
             </button>
           )}
-          <button
-            type="button"
-            className="underline"
-            onClick={onDismiss}
-            disabled={pendingDecision !== null}
-          >
-            Dismiss
-          </button>
         </div>
       )}
 

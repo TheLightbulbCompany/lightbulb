@@ -82,8 +82,15 @@ export interface UseExecApprovalsReturn {
   /** Submit a decision for an approval id. Removes it from the queue on success. */
   resolve: (id: string, decision: ExecApprovalDecision) => Promise<void>;
   /** Locally drop an approval from the queue without contacting the server.
-   *  Used as an escape hatch when the server has lost the id (container
-   *  restart, post-expiry retry) and the user just wants the card gone. */
+   *
+   *  Intentionally NOT wired to a UI button: a user-facing Dismiss on a
+   *  still-valid approval creates a race — the server-side approval keeps
+   *  the agent paused, but useAgentChat treats `dismissed` as "no
+   *  continuation coming" and releases the busy gate, so a follow-up can
+   *  race with the eventual resume. Reserved for internal callers that
+   *  have already confirmed the approval is dead server-side (e.g. the
+   *  auto-prune timer at expiresAtMs). User-driven "I want this gone"
+   *  should go through `resolve(id, "deny")` so the server is informed. */
   dismiss: (id: string) => void;
   /** Subscribe to removal events with a reason. Returns an unsubscribe fn.
    *  useAgentChat uses this to release the approval-pause busy gate only

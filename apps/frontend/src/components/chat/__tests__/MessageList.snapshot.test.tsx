@@ -1,6 +1,6 @@
 // apps/frontend/src/components/chat/__tests__/MessageList.snapshot.test.tsx
 import { describe, it, expect } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { MessageList } from "../MessageList";
 import type { RenderGroup } from "@/hooks/internal/types";
 
@@ -86,5 +86,26 @@ describe("MessageList rendering snapshots", () => {
       <MessageList renderGroups={groups} isStreaming={true} isTyping={true} />,
     );
     expect(container.firstChild).toMatchSnapshot();
+  });
+
+  it("renders assistant text from the legacy top-level `message.text` field (Codex P2 on PR #682)", () => {
+    // chat.history rows and cron run transcripts can carry assistant
+    // text on the top-level `text` field instead of `content[]`. Before
+    // the fix, MessageBlocks emitted an empty bubble for these.
+    const groups: RenderGroup[] = [
+      {
+        side: "assistant",
+        key: "g",
+        items: [
+          {
+            kind: "message",
+            key: "a-legacy",
+            message: { role: "assistant", text: "legacy assistant reply" },
+          },
+        ],
+      },
+    ];
+    render(<MessageList renderGroups={groups} isStreaming={false} isTyping={false} />);
+    expect(screen.getByText("legacy assistant reply")).toBeInTheDocument();
   });
 });

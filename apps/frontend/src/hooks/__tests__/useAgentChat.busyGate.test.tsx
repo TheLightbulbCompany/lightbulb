@@ -378,6 +378,79 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
+  it("doesn't adopt a fresh continuation runId after the user cancels mid-resume (Codex P2 on PR #690)", async () => {
+    // Scenario: user resolves approval → resumeExpectedRef is armed →
+    // user hits Stop before the continuation emits → cancelMessage
+    // clears clientRunIdRef. A late continuation chunk on a fresh
+    // runId must NOT be adopted (the user no longer wants this run),
+    // and must not reanimate the busy gate so a fresh sendMessage's
+    // runId can't be stolen by it either.
+    approvalQueue = [fakeApproval("agent-X", "ap-cancel")];
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result, rerender } = renderHook(() =>
+      useAgentChat("agent-X", "session-1"),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage("first");
+    });
+    const r1 = lastClientRunId();
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+    );
+    await act(async () => {
+      notifyRemoval("ap-cancel", "resolved");
+      rerender();
+    });
+
+    // User hits Stop before the continuation arrives.
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+
+    // Late continuation chunk on fresh runId — must be rejected.
+    const rContinuation = "fresh-continuation-runid";
+    act(() =>
+      dispatch({
+        type: "chunk",
+        agent_id: "agent-X",
+        runId: rContinuation,
+        content: "should not adopt",
+      } as ChatIncomingMessage),
+    );
+
+    // User sends a new turn — its runId must be the active gate, NOT
+    // overridden by any further late event from the abandoned
+    // continuation.
+    await act(async () => {
+      await result.current.sendMessage("second");
+    });
+    const r2 = lastClientRunId();
+    expect(r2).not.toBe(rContinuation);
+
+    // Stray late continuation tool_end arrives — must not transfer
+    // the gate away from r2.
+    act(() =>
+      dispatch({
+        type: "tool_end",
+        agent_id: "agent-X",
+        runId: rContinuation,
+        tool: "exec",
+        toolCallId: "tc-orphan",
+      } as ChatIncomingMessage),
+    );
+    // r2's terminal done should release the gate, regardless of the
+    // stray rContinuation events.
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r2 } as ChatIncomingMessage),
+    );
+    await act(async () => {
+      await result.current.sendMessage("third");
+    });
+    expect(sendChat).toHaveBeenCalledTimes(3);
+    expect(sendChat.mock.calls[2]?.[1]).toBe("third");
+  });
+
   it("transfers the gate when the first fresh-run event is a tool_end (approved exec's result)", async () => {
     // When the approved command was the only thing left, OpenClaw's
     // continuation may emit the tool_end / tool_error result directly

@@ -514,8 +514,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // also be a bare done/error if the approved tool was the only
       // thing left in the turn. So transfer on any non-heartbeat event
       // carrying a runId.
+      //
+      // Require an active clientRunIdRef so we don't adopt a fresh
+      // runId after the user has already cancelled/cleared. Belt and
+      // suspenders: cancelMessage / clearMessages also reset
+      // resumeExpectedRef so a subsequent sendMessage's new runId can
+      // never be stolen by a late continuation.
       if (
         resumeExpectedRef.current &&
+        clientRunIdRef.current !== null &&
         msg.type !== "heartbeat" &&
         msg.type !== "update_available" &&
         msg.runId &&
@@ -969,6 +976,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     toolStreamOrderRef.current = [];
     setChatToolMessages([]);
     clientRunIdRef.current = null;
+    // Clear any pending approval-resume flag — the user cancelled, so a
+    // post-approval continuation (if one arrives) must not be adopted
+    // as the new active run.
+    resumeExpectedRef.current = false;
   }, [
     isStreaming,
     sendReq,
@@ -1002,6 +1013,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setError(null);
     setIsStreaming(false);
     clientRunIdRef.current = null;
+    // Same reasoning as cancelMessage — a post-approval continuation
+    // must not be adopted as the new active run after a clear.
+    resumeExpectedRef.current = false;
   }, [
     sessionName,
     setIsStreaming,

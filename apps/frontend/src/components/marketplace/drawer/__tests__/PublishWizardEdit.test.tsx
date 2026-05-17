@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 
@@ -55,15 +55,18 @@ function listing(overrides: Partial<Listing> = {}): Listing {
 /** Mirrors the real drawer: call startEditListing on mount, then only
  * render PublishWizard once editListing is set. That ordering matters
  * because the wizard reads editListing in its useState initializer; if
- * it mounts before the state flip, the form is initialized empty. */
+ * it mounts before the state flip, the form is initialized empty.
+ *
+ * The effect updates the drawer's state via startEditListing (an external
+ * store) and lets the next render's `state.editListing` gate the wizard
+ * mount — no local setState here, so we don't trip the
+ * react-hooks/set-state-in-effect lint rule. */
 function EditingHarness({ l }: { l: Listing }) {
   const { state, startEditListing } = useMarketplaceDrawer();
-  const [armed, setArmed] = useState(false);
   useEffect(() => {
     startEditListing(l);
-    setArmed(true);
   }, [l, startEditListing]);
-  if (!armed || !state.editListing) return null;
+  if (!state.editListing) return null;
   return <PublishWizard />;
 }
 
@@ -107,5 +110,23 @@ describe("PublishWizard edit mode", () => {
     // Cheaper: pin the create-mode behaviour by not editing, then pin edit
     // mode separately. Here we just assert the continue button still works.
     await screen.findByText("Continue →");
+  });
+
+  it("falls back to step 1 (PickAgent unlocked) when the draft has no recoverable agent_id", async () => {
+    // Regression for Codex P2 on PR #692 (commit a2d75dbc): a draft can
+    // exist without agent_id if the seller's previous submit chain failed
+    // before artifact-from-agent landed. Locking PickAgent for those
+    // drafts would render an undefined-agent BundleStep and post
+    // `agent_id: undefined` to artifact-from-agent on resubmit (422).
+    renderEditing(
+      listing({
+        agent_id: null,
+        manifest_json: undefined,
+      }),
+    );
+    // Step 1 copy IS rendered — agent picker is reachable.
+    await screen.findByText(/Pick which agent in your workspace/);
+    // Step counter shows 5 (not 4) — full publish flow.
+    expect(screen.getByText(/Step 1 of 5/)).toBeInTheDocument();
   });
 });

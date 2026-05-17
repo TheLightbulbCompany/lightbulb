@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 
 import { useApi } from "@/lib/api";
@@ -96,11 +96,23 @@ export function PublishWizard() {
   const editingListing = state.editListing ?? null;
   const isEditing = !!editingListing;
 
+  // Drafts can exist without a recoverable agent_id — e.g. the seller's
+  // first wizard run created the draft via POST /listings but the
+  // artifact-from-agent step failed before agent_id was persisted. For
+  // those, fall back to step 1 (PickAgent unlocked) so the seller can
+  // bind an agent before continuing. With a known agent_id, step 1 is
+  // locked and we jump to Details.
+  const recoveredAgentId = editingListing
+    ? editingListing.agent_id ?? editingListing.manifest_json?.agent_id ?? null
+    : null;
+  const agentLocked = isEditing && !!recoveredAgentId;
+  const stepFloor: Step = agentLocked ? 2 : 1;
+
   // Pre-flight a listing already in flight (the seller hit Submit, then a
   // step failed mid-chain). `draftListingId` carries the create_draft's
   // listing_id forward so re-clicking Submit doesn't try to recreate the
   // same slug. In edit mode it's pinned to the listing we're revising.
-  const [step, setStep] = useState<Step>(isEditing ? 2 : 1);
+  const [step, setStep] = useState<Step>(stepFloor);
   const [form, setForm] = useState<PublishForm>(() =>
     editingListing
       ? formFromListing(editingListing)
@@ -144,7 +156,7 @@ export function PublishWizard() {
   }
 
   function back() {
-    if (step <= (isEditing ? 2 : 1)) return;
+    if (step <= stepFloor) return;
     setStep((s) => (s - 1) as Step);
   }
 
@@ -246,11 +258,13 @@ export function PublishWizard() {
     }
   }
 
-  // Progress-pip rendering: in edit mode step 1 is locked, so we render
-  // four pips (2–5). In create mode we render five (1–5).
+  // Progress-pip rendering: when step 1 is locked (agent_id recovered) we
+  // render four pips (2–5). When the seller has to (re-)pick an agent —
+  // either a fresh listing or an orphaned draft without agent_id — we
+  // render the full five.
   const pips = useMemo<number[]>(
-    () => (isEditing ? [2, 3, 4, 5] : [1, 2, 3, 4, 5]),
-    [isEditing],
+    () => (agentLocked ? [2, 3, 4, 5] : [1, 2, 3, 4, 5]),
+    [agentLocked],
   );
 
   return (
@@ -280,7 +294,7 @@ export function PublishWizard() {
             ? isEditing
               ? "Resubmitted"
               : "Submitted"
-            : `Step ${isEditing ? step - 1 : step} of ${isEditing ? 4 : 5}`}
+            : `Step ${agentLocked ? step - 1 : step} of ${agentLocked ? 4 : 5}`}
         </span>
       </div>
 
@@ -303,7 +317,7 @@ export function PublishWizard() {
           <button
             type="button"
             onClick={back}
-            disabled={step <= (isEditing ? 2 : 1) || submitting}
+            disabled={step <= stepFloor || submitting}
             className="text-[#5b5b5b] hover:bg-[#f3eee5] px-4 py-2 rounded-full text-[14px] disabled:opacity-30"
           >
             Back

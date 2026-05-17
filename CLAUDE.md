@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Isol8 is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, api-keys, usage counters, pending updates, channel links, admin actions, plus the Teams BFF tables), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for billing, EFS for per-user agent workspaces, and a per-tenant Paperclip BFF for the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory.
+Isol8 is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, api-keys, usage counters, pending updates, channel links, admin actions, marketplace listings/purchases/payouts/takedowns, plus the Teams BFF tables), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for billing (subscription + marketplace purchases), EFS for per-user agent workspaces, and a per-tenant Paperclip BFF for the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory.
+
+Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Isol8 marketplace** for other users to deploy — see the "Marketplace" section.
 
 The OpenClaw container image Isol8 runs is an **extended image** built from `alpine/openclaw:<upstream>` with additional Linux skill binaries. Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned upstream + per-env extended tags are tracked in `openclaw-version.json` at the repo root.
 
@@ -457,15 +459,17 @@ The services directory has grown past per-file annotation. Run `ls apps/backend/
 - **Billing / usage**: `billing_service.py` (Stripe customers, checkout, portal, subscription lifecycle), `usage_service.py` (per-owner + per-member atomic counters → Stripe Meters), `credit_ledger.py`.
 - **Container lifecycle**: `update_service.py` (Track 1 silent config patches + Track 2 queued updates; `run_scheduled_worker`), `config_patcher.py` (EFS-safe JSON deep-merge under NFS-compatible `fcntl.lockf`), `config_policy.py` / `config_reconciler.py` (tier-based config protection), `provision_gate.py` (subscription / credits / OAuth gate evaluation).
 - **Gateway / WebSocket**: `connection_service.py` (DDB connectionId↔user_id state), `management_api_client.py`, `node_proxy.py` (per-user node-host tracking — relocated from routers/ in May 2026).
-- **Catalog**: `catalog_service.py` plus `catalog_s3_client.py` / `catalog_slice.py` / `catalog_package.py` helpers.
+- **Catalog**: `catalog_service.py` plus `catalog_s3_client.py` / `catalog_slice.py` / `catalog_package.py` helpers. `catalog_service.deploy_from_artifact` is the consumption-side entry point for marketplace deploys.
+- **Marketplace**: `marketplace_service.py` (DDB rows + S3 artifact uploads + status state machine: draft → review → published; published-version transitions are atomic via TransactWriteItems), `marketplace_search.py` (60s in-process cache of published listings, Python-side tokenized scoring), `marketplace_safety.py` (scan tarballs for credential/PII patterns), `agent_export.py` (seller-agent → tarball snapshotter; explicitly filters `sessions/`, `agent/`, dotfiles, junk dirs — see `_OPENCLAW_RUNTIME_STATE_DIRS` docstring for why).
+- **Provisioning**: `user_provision.py` (`ensure_user_ready` — the SINGLE canonical readiness entry point, called only from `GET /container/status`; owner path seeds Paperclip synchronously then dispatches container provision as background task), `container_provision.py` (`background_provision`), `friday_identity.py` (IDENTITY/SOUL/USER seeding for Friday + Atlas roster prompt copy).
 - **Admin surface**: `admin_service.py`, `admin_audit.py`, `admin_redact.py`, `clerk_admin.py` (Clerk REST wrapper — every Clerk API call should go through here), `cloudwatch_logs.py` / `cloudwatch_url.py`, `posthog_admin.py`.
-- **Teams BFF (Paperclip)**: many `paperclip_*` services (`paperclip_admin_client.py`, `paperclip_admin_session.py`, `paperclip_user_session.py`, `paperclip_event_client.py`, `paperclip_provisioning.py`, `paperclip_autoprovision.py`, `paperclip_owner_email.py`, `paperclip_event_router.py`, `teams_event_broker_singleton.py`, etc.) coordinating with the per-tenant Paperclip BFF.
+- **Teams BFF (Paperclip)**: many `paperclip_*` services (`paperclip_admin_client.py`, `paperclip_admin_session.py`, `paperclip_user_session.py`, `paperclip_event_client.py`, `paperclip_provisioning.py` — owns `provision_org` which seeds Friday + Atlas, `paperclip_autoprovision.py`, `paperclip_owner_email.py`, `paperclip_event_router.py`, `teams_event_broker_singleton.py`, etc.) coordinating with the per-tenant Paperclip BFF.
 - **Auth / identity**: `oauth_service.py` (ChatGPT OAuth flow), `key_service.py` (BYOK API key encryption via Fernet), `service_token.py` (JWT minting for cross-service calls).
 - **Cross-cutting**: `idempotency.py` (DDB conditional-write keyed store), `webhook_dedup.py`, `system_health.py`.
 
 ### Routers (`routers/`) — all mounted under `/api/v1`
 
-Run `ls apps/backend/routers/` and `ls apps/backend/routers/teams/` for the current set. The flat-`routers/` files cover users, webhooks (Clerk + Stripe), websocket_chat, billing, container lifecycle (`container.py`, `container_rpc.py`, `container_recover.py`), `control_ui_proxy.py`, `channels.py`, `settings_keys.py`, `integrations.py` (MCP servers), `updates.py`, `catalog.py`, `config.py`, `workspace_files.py`, `desktop_auth.py`, `paperclip_proxy.py` (per-tenant Paperclip proxy with route-filter security model — see `docs/audit-2026-05-02-paperclip-routes.md`), `oauth.py` (ChatGPT OAuth), `admin.py`, `admin_catalog.py`, and `debug.py` (403 in prod).
+Run `ls apps/backend/routers/` and `ls apps/backend/routers/teams/` for the current set. The flat-`routers/` files cover users, webhooks (Clerk + Stripe), websocket_chat, billing, container lifecycle (`container.py`, `container_rpc.py`, `container_recover.py`), `control_ui_proxy.py`, `channels.py`, `settings_keys.py`, `integrations.py` (MCP servers), `updates.py`, `catalog.py`, `config.py`, `workspace_files.py`, `desktop_auth.py`, `paperclip_proxy.py` (per-tenant Paperclip proxy with route-filter security model — see `docs/audit-2026-05-02-paperclip-routes.md`), `oauth.py` (ChatGPT OAuth), `admin.py`, `admin_catalog.py`, marketplace surfaces (`marketplace_listings.py` for seller create/submit + buyer search/deploy, `marketplace_admin.py` for admin approve/reject + retire, `marketplace_purchases.py` for the Stripe checkout/webhook for paid listings, `marketplace_payouts.py` for seller payout accounts), and `debug.py` (403 in prod).
 
 The `routers/teams/` subpackage is the Teams Inbox BFF surface — agents, threads, messages, channels, members, attachments, search, etc. It composes the `paperclip_*` services and is what the `/teams/*` UI calls.
 
@@ -629,6 +633,50 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 
 ---
 
+## Provisioning Flow
+
+A first-time user moves from "just signed up" to "ready to chat" through one canonical path. Understanding it matters because **Paperclip wiring is only set up at provision time** — there is no PATCH that retrofits it onto a pre-existing container.
+
+```
+Clerk sign-up
+   └─ frontend polls GET /container/status every ~3s
+        └─ routers/container.py dispatches ensure_user_ready(auth)
+             └─ core/services/user_provision.py
+                  1. evaluate_provision_gate — subscription/credits/OAuth pre-checks
+                  2. _ensure_paperclip_for_owner (SYNC, ~2-3s)
+                       └─ paperclip_provisioning.provision_org
+                            ├─ sign up Paperclip user (Better Auth)
+                            ├─ create Paperclip company; bootstrap-admin invite/accept/approve
+                            ├─ write PaperclipCompany DDB row (status="active")
+                            ├─ seed Friday (CEO) with adapter_type="openclaw_gateway"
+                            │     adapter_config.url = wss://ws-<env>.isol8.co
+                            └─ seed Atlas (recruiter) — best-effort; Atlas failure does NOT undo Friday
+                  3. asyncio.create_task(background_provision(owner_id))
+                       └─ ecs_manager.provision_user_container
+                            ├─ per-user EFS access point + ECS service
+                            └─ write_user_configs → write_openclaw_config(paperclip_agents=[…])
+                                  └─ openclaw.json on EFS lists Friday/Atlas agent_ids in agents.list[]
+```
+
+Key invariants:
+
+- **`GET /container/status` is the only caller of `ensure_user_ready`** (see `user_provision.py` module docstring). Clerk webhooks are pure record-keeping; they do not trigger provisioning.
+- **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
+- **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success (see `_ensure_paperclip_for_owner` line 141-156).
+
+### Legacy containers (pre-Paperclip provisioning)
+
+Owners whose container was provisioned **before** Paperclip integration shipped have a container row but no `PaperclipCompany` row, and an `openclaw.json` that lists no agents. They get 409s from `/teams` and have no Friday/Atlas to chat with.
+
+Two fixes:
+
+1. **Full reprovision** — `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision`. The new poll cycle invokes `ensure_user_ready` against an empty slate.
+2. **Backfill script** — `apps/backend/scripts/backfill_paperclip_for_legacy_users.py` paginates the `containers` table, finds owners with no Paperclip row, and calls `provision_org` for each. Idempotent. Defaults to dry-run; pass `--apply` to actually run. Required when the container itself should be preserved (e.g. existing EFS workspace state).
+
+**`PATCH /debug/provision` cannot wire Paperclip.** It only deep-merges `openclaw.json`. It cannot create a Paperclip company, cannot sign up a Paperclip user, cannot seed Friday/Atlas. The `config_patcher` is for config drift, not for provisioning gaps.
+
+---
+
 ## Billing System
 
 ### Plan model
@@ -663,6 +711,70 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 
 ---
 
+## Marketplace
+
+Sellers publish custom OpenClaw agents; buyers discover them and deploy a copy into their own container. Publishing and provisioning are **decoupled** — artifacts in S3 are immutable + versioned, so an old container deploying an old listing is safe.
+
+### Status state machine
+
+`draft → review → published → retired | taken_down`
+
+- **draft** — seller's working row, artifact may or may not be uploaded yet.
+- **review** — seller has submitted; awaits admin approval.
+- **published** — buyer-visible. Publishing a new version atomically retires the previous published version (`marketplace_service.publish_v2` via `TransactWriteItems`).
+- **retired / taken_down** — no longer searchable; previously bought entitlements still resolve.
+
+### Seller publish pipeline
+
+```
+POST /api/v1/marketplace/listings                       (create draft row in DDB)
+POST /listings/{id}/artifact-from-agent                 (snapshot EFS agent → S3)
+   └─ agent_export.export_agent_from_efs
+        ├─ _build_tarball   — filters .git, __pycache__, node_modules, .DS_Store, dotfiles
+        │                     AND _OPENCLAW_RUNTIME_STATE_DIRS (sessions/, agent/)
+        │                     — see agent_export.py:70-88 for why; PR #687.
+        ├─ marketplace_safety.scan_tarball  — credential / PII pattern scan
+        ├─ extract_agent_slice              — agent + plugins + selected MCPs/skills + cron jobs,
+        │                                     scrubbed of secrets
+        └─ marketplace_service._upload_artifact_to_s3
+              s3://$MARKETPLACE_ARTIFACTS_BUCKET/listings/{id}/v{n}/
+                ├─ workspace.tar.gz    (deterministic; mtimes zeroed)
+                ├─ manifest.json       (file count, safety flags, agent_id)
+                └─ openclaw-slice.json (slice to be deep-merged into buyer's openclaw.json)
+POST /listings/{id}/submit                              (draft → review)
+```
+
+**Friday is unpublishable** — `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py:49` blocks the export at the router boundary. Publishing Friday would leak owner-keyed seeding content and hand a buyer a clone of someone else's CEO.
+
+### Admin approval
+
+```
+GET  /api/v1/admin/marketplace/listings        (list review-state rows)
+POST /admin/marketplace/listings/{id}/approve  (review → published, with version transition)
+POST /admin/marketplace/listings/{id}/reject
+```
+
+### Buyer flow
+
+```
+GET  /api/v1/marketplace/listings/search?q=…   (60s in-process cache, tokenized scoring)
+GET  /marketplace/listings/{slug}              (DDB row + manifest)
+POST /marketplace/listings/{slug}/deploy
+   ├─ entitlement check (free listing or owns purchase row)
+   ├─ fetch workspace.tar.gz + openclaw-slice.json from S3
+   └─ catalog_service.deploy_from_artifact
+        ├─ generate new agent_id (agent_<uuid>)
+        ├─ untar into EFS at workspaces/{new_agent_id}/
+        ├─ deep-merge slice into buyer's openclaw.json
+        └─ remap cron job IDs + agent references
+```
+
+### Paid listings
+
+`marketplace_purchases.py` handles Stripe Checkout for paid listings + the `/webhooks/stripe-marketplace` webhook that flips the purchase row to `entitled=true`. `marketplace_payouts.py` manages seller payout accounts.
+
+---
+
 ## Environment Variables
 
 ### Backend (.env)
@@ -694,6 +806,11 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 | `CORS_ORIGINS` | Comma-separated origins | `http://localhost:3000` |
 | `STRIPE_FLAT_PRICE_ID` | Stripe fixed price for the single $50/mo flat tier | Required for billing |
 | `STRIPE_METERED_PRICE_ID` | Stripe metered price for overage | Required for billing |
+| `MARKETPLACE_LISTINGS_TABLE` | DDB listings table (draft / review / published / retired / taken_down rows) | Set by CDK; empty disables marketplace |
+| `MARKETPLACE_PURCHASES_TABLE` | DDB purchases table (buyer entitlements + Stripe payment refs) | Set by CDK |
+| `MARKETPLACE_PAYOUT_ACCOUNTS_TABLE` | DDB seller payout-account table | Set by CDK |
+| `MARKETPLACE_TAKEDOWNS_TABLE` | DDB takedown / abuse-report table | Set by CDK |
+| `MARKETPLACE_ARTIFACTS_BUCKET` | S3 bucket for `listings/{id}/v{n}/workspace.tar.gz` + `manifest.json` + `openclaw-slice.json` | Set by CDK |
 
 ### Frontend (.env.local)
 
@@ -719,7 +836,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 |-------|---------|
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, NLB (for WebSocket VPC Link V1), security groups |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
-| `database-stack.ts` | All DynamoDB tables (users, containers, billing-accounts, api-keys, usage-counters, pending-updates, channel-links, admin-actions, ws-connections, plus Teams BFF tables) |
+| `database-stack.ts` | All DynamoDB tables (users, containers, billing-accounts, api-keys, usage-counters, pending-updates, channel-links, admin-actions, ws-connections, marketplace-listings + marketplace-purchases + marketplace-payout-accounts + marketplace-takedowns, plus Teams BFF tables) and the marketplace artifacts S3 bucket |
 | `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace/service, container task-definition scaffolding |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, autoscaling, target-group wiring, DynamoDB/secrets IAM |
 | `api-stack.ts` | WebSocket API Gateway, Lambda authorizer (Clerk JWT), VPC Link V1 wiring |

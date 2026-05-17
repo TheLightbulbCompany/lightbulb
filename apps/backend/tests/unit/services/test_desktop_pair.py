@@ -494,6 +494,91 @@ async def test_pair_desktop_devices_preserves_other_org_members_entries():
     assert len(written) == 4
 
 
+async def test_pair_desktop_devices_backfills_userid_on_idempotent_legacy_match():
+    """Codex P2 on PR #683: if a legacy paired entry already matches the
+    caller's deviceId + publicKey, the idempotent branch keeps it. Without
+    backfilling, that entry stays unstamped forever, and a later re-pair
+    with new keys can't recognize the stale (now-orphaned) entry as the
+    same user's ghost — the prune `entry.userId != user_id` check skips
+    `None != user_id`.
+
+    Matching publicKey is proof the caller owns the entry right now, so
+    stamping userId is safe and unlocks pruning on the *next* re-pair.
+    """
+    # Build the keypair first so we can compute its deviceId for the
+    # legacy fixture (same deviceId the new pair call will produce).
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x0c" * 32)
+    tauri_pub = (
+        tauri_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x0d" * 32)
+    cli_pub = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    # Compute the deviceIds + raw pubkeys the way build_paired_entry does,
+    # so the fixture matches what _mutate's idempotent check compares.
+    from core.services.desktop_pair import (
+        _public_key_raw_base64url,
+        derive_device_id,
+    )
+
+    mac_device_id = derive_device_id(tauri_pub)
+    cli_device_id = derive_device_id(cli_pub)
+    mac_raw_pub = _public_key_raw_base64url(tauri_pub)
+    cli_raw_pub = _public_key_raw_base64url(cli_pub)
+
+    workspace = _FakeWorkspace(
+        initial={
+            # Pre-existing entries with matching deviceId + publicKey,
+            # but no userId stamp (legacy / pre-this-PR write).
+            mac_device_id: {
+                "deviceId": mac_device_id,
+                "publicKey": mac_raw_pub,
+                "clientId": "openclaw-macos",
+                "displayName": "Legacy Mac",
+                "tokens": {"node": {"token": "preserve-me", "createdAtMs": 1}},
+            },
+            cli_device_id: {
+                "deviceId": cli_device_id,
+                "publicKey": cli_raw_pub,
+                "clientId": "node-host",
+                "displayName": "Legacy CLI",
+                "tokens": {"node": {"token": "preserve-me-too", "createdAtMs": 1}},
+            },
+        }
+    )
+
+    await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    # userId is backfilled on both entries.
+    assert written[mac_device_id]["userId"] == "user_alice"
+    assert written[cli_device_id]["userId"] == "user_alice"
+    # Tokens are preserved (idempotent didn't clobber them).
+    assert written[mac_device_id]["tokens"]["node"]["token"] == "preserve-me"
+    assert written[cli_device_id]["tokens"]["node"]["token"] == "preserve-me-too"
+    # The write happened (we needed to persist the new userId stamp).
+    assert workspace.write_count == 1
+
+
 async def test_pair_desktop_devices_preserves_legacy_unstamped_entries():
     """Entries written before this PR don't have a userId field. We can't
     safely attribute them to a specific user in an org context, so the

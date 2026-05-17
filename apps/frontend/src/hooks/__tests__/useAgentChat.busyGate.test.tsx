@@ -378,6 +378,72 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
+  it("preserves the approved tool's result by appending tool_result to the synthesized history message (Codex P2 on PR #690)", async () => {
+    // Pre-approval flow folds the tool_use into a HistoryMessage at
+    // the interim chat.final and clears toolStreamByIdRef. When the
+    // continuation's tool_end arrives, the live-state lookup returns
+    // undefined — without the history fallback, the approved command's
+    // output would be silently dropped.
+    approvalQueue = [fakeApproval("agent-X", "ap-output")];
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result, rerender } = renderHook(() =>
+      useAgentChat("agent-X", "session-1"),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage("run a thing");
+    });
+    const r1 = lastClientRunId();
+    act(() =>
+      dispatch({
+        type: "tool_start",
+        agent_id: "agent-X",
+        runId: r1,
+        tool: "exec",
+        toolCallId: "tc-output",
+      } as ChatIncomingMessage),
+    );
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+    );
+    await act(async () => {
+      notifyRemoval("ap-output", "resolved");
+      rerender();
+    });
+
+    const r2 = "fresh-runid-with-result";
+    act(() =>
+      dispatch({
+        type: "tool_end",
+        agent_id: "agent-X",
+        runId: r2,
+        tool: "exec",
+        toolCallId: "tc-output",
+        result: [{ type: "text", text: "command output here" }],
+      } as ChatIncomingMessage),
+    );
+
+    // The synthesized assistant message should now carry a
+    // tool_result block matching the tool_use id.
+    const assistantMsg = result.current.renderItems
+      .filter((i) => i.kind === "message" && i.message.role === "assistant")
+      .map((i) => (i.kind === "message" ? i.message : null))
+      .find(
+        (m) =>
+          m && Array.isArray(m.content) &&
+          m.content.some((b) => b.type === "tool_use" && b.id === "tc-output"),
+      );
+    expect(assistantMsg).toBeTruthy();
+    const result_block = assistantMsg!.content!.find(
+      (b) => b.type === "tool_result" && b.tool_use_id === "tc-output",
+    );
+    expect(result_block).toBeTruthy();
+    expect(result_block).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "tc-output",
+    });
+  });
+
   it("doesn't adopt a fresh continuation runId after the user cancels mid-resume (Codex P2 on PR #690)", async () => {
     // Scenario: user resolves approval → resumeExpectedRef is armed →
     // user hits Stop before the continuation emits → cancelMessage

@@ -618,12 +618,45 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         const toolCallId = msg.toolCallId;
         if (!toolCallId) return;
         const entry = toolStreamByIdRef.current.get(toolCallId);
-        if (!entry) return;
-        entry.output = msg.result;
-        entry.status = msg.type === "tool_error" ? "error" : "done";
-        entry.updatedAt = Date.now();
-        toolStreamByIdRef.current.set(toolCallId, entry);
-        syncToolStreamMessages();
+        if (entry) {
+          entry.output = msg.result;
+          entry.status = msg.type === "tool_error" ? "error" : "done";
+          entry.updatedAt = Date.now();
+          toolStreamByIdRef.current.set(toolCallId, entry);
+          syncToolStreamMessages();
+          return;
+        }
+        // No live entry — likely the post-approval continuation for a
+        // tool whose tool_use was already folded into a synthesized
+        // HistoryMessage at the interim chat.final (live state was
+        // cleared there). Append the tool_result block to that message
+        // so the approved command's output reaches history and the UI,
+        // instead of being silently dropped (Codex P2 on PR #690).
+        setChatMessages((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const m = prev[i];
+            if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+            const hasMatch = m.content.some(
+              (b) => b.type === "tool_use" && b.id === toolCallId,
+            );
+            if (!hasMatch) continue;
+            const alreadyHasResult = m.content.some(
+              (b) =>
+                b.type === "tool_result" && b.tool_use_id === toolCallId,
+            );
+            if (alreadyHasResult) return prev;
+            const resultBlock: ContentBlock = {
+              type: "tool_result",
+              tool_use_id: toolCallId,
+              content: msg.result ?? "",
+              ...(msg.type === "tool_error" ? { isError: true } : {}),
+            };
+            const next = [...prev];
+            next[i] = { ...m, content: [...m.content, resultBlock] };
+            return next;
+          }
+          return prev;
+        });
         return;
       }
 

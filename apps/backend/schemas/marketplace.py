@@ -52,6 +52,29 @@ class Listing(BaseModel):
     artifact_format_version: str = "v1"
 
 
+class ListingUpdate(BaseModel):
+    """Seller-facing patch for an existing draft listing.
+
+    All fields optional — only provided keys are written. Slug and format
+    are intentionally absent: slug is reserved at create time (a separate
+    sentinel row enforces uniqueness atomically) and format is determined
+    by the artifact, not by metadata.
+    """
+
+    name: str | None = Field(default=None, min_length=2, max_length=80)
+    description_md: str | None = Field(default=None, min_length=1, max_length=4096)
+    price_cents: int | None = Field(default=None, ge=0, le=2000)
+    tags: list[str] | None = Field(default=None, max_length=5)
+    category: str | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def _tags_lowercase(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        return [t.lower().strip() for t in v if t.strip()]
+
+
 class CheckoutRequest(BaseModel):
     listing_slug: str
     success_url: str

@@ -2,6 +2,8 @@
 
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 
+import type { Listing } from "@/lib/marketplace/types";
+
 export type DrawerView = "browse" | "mine" | "publish";
 
 export interface DrawerState {
@@ -9,6 +11,10 @@ export interface DrawerState {
   view: DrawerView;
   prevView?: DrawerView;
   publishAgentId?: string;
+  /** Set by MyListingsView when the seller clicks "Edit" on a draft. The
+   * publish wizard reads it on mount, pre-fills its form, locks the agent
+   * picker, and switches its submit path to PATCH → artifact → submit. */
+  editListing?: Listing | null;
   freshlyInstalledAgentId: string | null;
   toast: { agentName: string; agentId: string } | null;
 }
@@ -16,6 +22,7 @@ export interface DrawerState {
 export interface OpenOptions {
   view: DrawerView;
   agentId?: string;
+  editListing?: Listing;
 }
 
 interface DrawerContextValue {
@@ -23,6 +30,7 @@ interface DrawerContextValue {
   open: (opts: OpenOptions) => void;
   close: () => void;
   setView: (view: DrawerView) => void;
+  startEditListing: (listing: Listing) => void;
   showInstallToast: (toast: { agentName: string; agentId: string }) => void;
   dismissToast: () => void;
   setFreshlyInstalled: (agentId: string | null) => void;
@@ -46,6 +54,7 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       isOpen: true,
       view: opts.view,
       publishAgentId: opts.agentId,
+      editListing: opts.editListing ?? null,
       prevView: opts.view === "publish" ? prev.view : prev.prevView,
     }));
   }, []);
@@ -55,6 +64,7 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       ...prev,
       isOpen: false,
       publishAgentId: undefined,
+      editListing: null,
       // toast persists across drawer close — it has its own dismiss timer
     }));
   }, []);
@@ -65,6 +75,19 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       view,
       prevView: view === "publish" ? prev.view : prev.prevView,
       publishAgentId: view === "publish" ? prev.publishAgentId : undefined,
+      // Leaving the publish view also clears the editListing — re-entering
+      // publish with the "+ New listing" button must start fresh.
+      editListing: view === "publish" ? prev.editListing : null,
+    }));
+  }, []);
+
+  const startEditListing = useCallback((listing: Listing) => {
+    setState((prev) => ({
+      ...prev,
+      view: "publish",
+      prevView: prev.view,
+      editListing: listing,
+      publishAgentId: listing.agent_id ?? listing.manifest_json?.agent_id,
     }));
   }, []);
 
@@ -81,8 +104,17 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
   }, []);
 
   const value = useMemo<DrawerContextValue>(
-    () => ({ state, open, close, setView, showInstallToast, dismissToast, setFreshlyInstalled }),
-    [state, open, close, setView, showInstallToast, dismissToast, setFreshlyInstalled],
+    () => ({
+      state,
+      open,
+      close,
+      setView,
+      startEditListing,
+      showInstallToast,
+      dismissToast,
+      setFreshlyInstalled,
+    }),
+    [state, open, close, setView, startEditListing, showInstallToast, dismissToast, setFreshlyInstalled],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

@@ -93,6 +93,48 @@ export async function searchListings(
   return (await resp.json()) as { items: Listing[] };
 }
 
+export interface ListingUpdate {
+  name?: string;
+  description_md?: string;
+  price_cents?: number;
+  tags?: string[];
+  category?: string | null;
+}
+
+/** Patch metadata on a draft listing. Backend rejects non-draft state
+ * with 409 — the wizard surfaces that as a banner.
+ *
+ * ``version`` is optional and defaults to 1 server-side. Pass the
+ * listing's own ``version`` in edit mode so a rejected v_new row (future
+ * republish flow) is patched in place instead of clobbering v=1. */
+export async function updateListing(opts: {
+  listingId: string;
+  jwt: string;
+  patch: ListingUpdate;
+  version?: number;
+}): Promise<Listing> {
+  const qs = opts.version && opts.version !== 1 ? `?version=${opts.version}` : "";
+  const resp = await fetch(
+    `${API}/marketplace/listings/${encodeURIComponent(opts.listingId)}${qs}`,
+    {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${opts.jwt}`,
+      },
+      body: JSON.stringify(opts.patch),
+    },
+  );
+  if (!resp.ok) {
+    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
+    throw Object.assign(new Error(body.detail || `updateListing failed: ${resp.status}`), {
+      status: resp.status,
+      detail: body.detail,
+    });
+  }
+  return (await resp.json()) as Listing;
+}
+
 export async function myListings(opts: {
   sellerId: string;
   jwt: string;

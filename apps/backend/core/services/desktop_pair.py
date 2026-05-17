@@ -247,6 +247,14 @@ async def pair_desktop_devices(
     )
 
     new_device_ids = {mac_entry["deviceId"], cli_entry["deviceId"]}
+    # Personal workspaces have owner_id == user_id (only one human owns
+    # the container); org workspaces have a distinct owner_id. In the
+    # personal case there's no other user who could own a legacy
+    # unstamped entry, so we can safely attribute it to the caller for
+    # pruning. In the org case we preserve unstamped entries (the
+    # attribution is ambiguous and stamping by pubkey alone is unsafe
+    # — POST /desktop/pair doesn't verify possession).
+    is_personal_workspace = owner_id == user_id
 
     def _mutate(paired: dict) -> bool:
         # paired is a FLAT Record<deviceId, PairedDevice> per upstream's
@@ -285,8 +293,17 @@ async def pair_desktop_devices(
             entry = paired[did]
             if entry.get("clientId") not in ALLOWED_CLIENT_IDS:
                 continue
-            if entry.get("userId") != user_id:
-                # Different user (org sibling) or no userId stamp at all.
+            entry_user_id = entry.get("userId")
+            if entry_user_id == user_id:
+                # Same user, stamped match — safe to prune.
+                pass
+            elif entry_user_id is None and is_personal_workspace:
+                # Legacy unstamped entry in a personal workspace. No
+                # other user can own it (owner_id == user_id), so the
+                # attribution is unambiguous. Prune. In an org context
+                # we'd preserve it (ambiguous and possibly a teammate's).
+                pass
+            else:
                 continue
             del paired[did]
             changed = True

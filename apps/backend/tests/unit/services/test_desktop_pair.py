@@ -659,12 +659,10 @@ async def test_pair_desktop_devices_does_not_overwrite_other_users_stamp_on_pubk
     assert len(written) == 2
 
 
-async def test_pair_desktop_devices_preserves_legacy_unstamped_entries():
-    """Entries written before this PR don't have a userId field. We can't
-    safely attribute them to a specific user in an org context, so the
-    conservative thing is to leave them in place. The next re-pair after
-    this code ships will stamp the new ones; legacy ghosts remain (rare,
-    bounded, and acceptable trade-off vs accidental deletion).
+async def test_pair_desktop_devices_preserves_legacy_unstamped_entries_in_org_workspace():
+    """In an org workspace (owner_id != user_id), entries written before
+    this PR don't have a userId field. We can't safely attribute them
+    to a specific user (could be a teammate's). Preserve them.
     """
     legacy_mac_id = "9" * 64
     workspace = _FakeWorkspace(
@@ -691,7 +689,7 @@ async def test_pair_desktop_devices_preserves_legacy_unstamped_entries():
 
     await pair_desktop_devices(
         user_id="user_alice",
-        owner_id="o",
+        owner_id="org_42",  # ORG context: owner_id != user_id
         display_name_base="Alice",
         tauri_mac_pubkey=_FIXTURE_PEM,
         cli_pubkey=cli_pubkey,
@@ -699,8 +697,66 @@ async def test_pair_desktop_devices_preserves_legacy_unstamped_entries():
     )
 
     written = workspace.state
-    assert legacy_mac_id in written, "userId-less legacy entry must be preserved"
+    assert legacy_mac_id in written, (
+        "userId-less legacy entry in an org workspace must be preserved "
+        "(could belong to a teammate)"
+    )
     assert len(written) == 3  # 1 legacy + 2 new
+
+
+async def test_pair_desktop_devices_prunes_legacy_unstamped_entries_in_personal_workspace():
+    """Codex round-3 P2 on PR #683: in a personal workspace
+    (owner_id == user_id), there's no other user who could own a
+    legacy unstamped entry. The attack vector that drove the org-side
+    preserve doesn't exist here. Safely prune so personal users who
+    upgrade from pre-this-PR builds get clean enumeration.
+    """
+    legacy_mac_id = "9" * 64
+    legacy_cli_id = "8" * 64
+    workspace = _FakeWorkspace(
+        initial={
+            legacy_mac_id: {
+                "deviceId": legacy_mac_id,
+                "clientId": "openclaw-macos",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nlegacy-mac\n-----END PUBLIC KEY-----\n",
+                "displayName": "Pre-fix Mac",
+                # No userId.
+            },
+            legacy_cli_id: {
+                "deviceId": legacy_cli_id,
+                "clientId": "node-host",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nlegacy-cli\n-----END PUBLIC KEY-----\n",
+                "displayName": "Pre-fix CLI",
+                # No userId.
+            },
+        }
+    )
+
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x10" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="user_alice",  # PERSONAL context: owner_id == user_id
+        display_name_base="Alice",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    assert legacy_mac_id not in written, "legacy unstamped mac must be pruned in personal workspace"
+    assert legacy_cli_id not in written, "legacy unstamped cli must be pruned in personal workspace"
+    assert result.device_id_mac in written
+    assert result.device_id_cli in written
+    assert len(written) == 2  # legacy pruned, 2 new written
 
 
 async def test_pair_desktop_devices_idempotent_does_not_trigger_prune():

@@ -204,13 +204,19 @@ async def replace_artifact(
     manifest: dict,
     openclaw_slice: dict | None = None,
     agent_id: str | None = None,
+    version: int = 1,
 ) -> dict:
-    """Replace the v1 artifact for a draft listing.
+    """Replace the artifact for a draft listing.
 
     Conditional on (seller_id matches the listing's seller) AND
     (status='draft'). Re-uploads to the same S3 prefix so the existing
     version is overwritten — artifacts are mutable until the listing
     first transitions out of draft.
+
+    ``version`` defaults to 1 to match the create flow (newly-created
+    listings only ever have v=1). Edit-mode callers pass the rejected
+    row's version so a future republish flow that yields a rejected
+    v_new=2 row can still be revised in place.
 
     ``openclaw_slice`` is the seller's agent slice synthesized at export
     time (see ``agent_export.export_agent_from_efs``). Persisted to S3 at
@@ -230,7 +236,7 @@ async def replace_artifact(
     # Read first to verify ownership + state. We can't use a conditional
     # update for the upload because the S3 write happens before the DDB
     # update; verifying ownership upfront keeps the failure mode tight.
-    resp = table.get_item(Key={"listing_id": listing_id, "version": 1})
+    resp = table.get_item(Key={"listing_id": listing_id, "version": version})
     item = resp.get("Item")
     if not item:
         raise InvalidStateError("listing not found")
@@ -241,7 +247,7 @@ async def replace_artifact(
 
     s3_prefix, sha = await _upload_artifact_to_s3(
         listing_id=listing_id,
-        version=1,
+        version=version,
         artifact_bytes=artifact_bytes,
         manifest=manifest,
         openclaw_slice=openclaw_slice,
@@ -268,7 +274,7 @@ async def replace_artifact(
         set_clause += ", agent_id = :aid"
         values[":aid"] = agent_id
     table.update_item(
-        Key={"listing_id": listing_id, "version": 1},
+        Key={"listing_id": listing_id, "version": version},
         UpdateExpression=set_clause,
         # Defense-in-depth: re-check seller match + draft state via condition
         # in case state changed between the get and update.
@@ -279,7 +285,7 @@ async def replace_artifact(
 
     return {
         "listing_id": listing_id,
-        "version": 1,
+        "version": version,
         "manifest_sha256": sha,
         "file_count": len(manifest.get("contents", [])) or manifest.get("file_count", 0),
         "bytes": len(artifact_bytes),
@@ -295,6 +301,7 @@ async def update_draft(
     price_cents: int | None = None,
     tags: list[str] | None = None,
     category: str | None = None,
+    version: int = 1,
 ) -> dict:
     """Patch metadata on a draft listing. Slug / format / agent stay locked.
 
@@ -342,7 +349,7 @@ async def update_draft(
     table = _listings_table()
     try:
         resp = table.update_item(
-            Key={"listing_id": listing_id, "version": 1},
+            Key={"listing_id": listing_id, "version": version},
             UpdateExpression="SET " + ", ".join(set_clauses),
             ConditionExpression="seller_id = :sid AND #s = :draft",
             ExpressionAttributeNames=expr_names,
@@ -356,8 +363,12 @@ async def update_draft(
     return resp.get("Attributes", {})
 
 
-async def submit_for_review(*, listing_id: str, seller_id: str) -> dict:
+async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1) -> dict:
     """Transition draft -> review. Idempotent: re-submitting from review is rejected.
+
+    ``version`` defaults to 1 to match the create flow. Edit-mode callers
+    pass the rejected row's version so re-submitting a v_new=2 row (a
+    future republish path) targets the same row instead of v=1.
 
     Precondition: artifact_uploaded must be True. Listings created via
     create_draft start with artifact_uploaded=False; the seller must
@@ -371,7 +382,7 @@ async def submit_for_review(*, listing_id: str, seller_id: str) -> dict:
     # Pre-check artifact_uploaded so we can return a specific error.
     # Listings created before this field existed default to True (legacy
     # safety) — the field is only stored for newly-created drafts.
-    pre = table.get_item(Key={"listing_id": listing_id, "version": 1})
+    pre = table.get_item(Key={"listing_id": listing_id, "version": version})
     pre_item = pre.get("Item") or {}
     if pre_item.get("artifact_uploaded") is False:
         raise ArtifactNotUploadedError("upload artifact before submitting for review")
@@ -393,7 +404,7 @@ async def submit_for_review(*, listing_id: str, seller_id: str) -> dict:
         # buyers). The audit trail of who rejected what lives in the
         # admin_actions table, not on the listing row.
         resp = table.update_item(
-            Key={"listing_id": listing_id, "version": 1},
+            Key={"listing_id": listing_id, "version": version},
             UpdateExpression=(
                 "SET #s = :review, updated_at = :now, published_at = :now "
                 "REMOVE rejection_notes, rejected_at, rejected_by"

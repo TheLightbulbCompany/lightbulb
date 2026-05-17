@@ -313,6 +313,32 @@ async def test_update_draft_rejects_empty_patch():
 
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
+async def test_update_draft_targets_specified_version(mock_listings):
+    """Regression for Codex P2 on PR #692 (commit 6a56a509): hardcoding
+    version=1 means a rejected v_new=2 row (future republish flow) gets
+    409'd or mutates the wrong row. The version arg threads through.
+    """
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"name": "X"}})
+    await marketplace_service.update_draft(listing_id="l1", seller_id="user_abc", name="X", version=2)
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"listing_id": "l1", "version": 2}
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_for_review_targets_specified_version(mock_listings):
+    """Same regression as update_draft: a v_new=2 resubmit must target v=2."""
+    mock_listings.return_value.get_item = MagicMock(return_value={"Item": {"artifact_uploaded": True}})
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
+    await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc", version=2)
+    update_kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    assert update_kwargs["Key"] == {"listing_id": "l1", "version": 2}
+    get_kwargs = mock_listings.return_value.get_item.call_args.kwargs
+    assert get_kwargs["Key"] == {"listing_id": "l1", "version": 2}
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
 async def test_update_draft_rejects_non_draft_or_wrong_seller(mock_listings):
     """ConditionExpression check failure surfaces as InvalidStateError so
     the route translates to 409 — same shape as submit_for_review."""

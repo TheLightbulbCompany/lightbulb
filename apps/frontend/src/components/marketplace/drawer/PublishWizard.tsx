@@ -205,12 +205,18 @@ export function PublishWizard() {
       const priceCents = form.priceTier === "free" ? 0 : Math.round(form.priceDollars * 100);
 
       let listingId = draftListingId;
+      // Edit mode targets the rejected row's actual version. Today every
+      // listing is v=1 (create_draft hardcodes that), but threading the
+      // value through closes the future republish hole: when a v_new=2
+      // row gets rejected, this code will revise that row instead of v=1.
+      const editVersion = editingListing?.version ?? 1;
       if (isEditing && listingId) {
         const jwt = await getToken();
         if (!jwt) throw new Error("Not signed in");
         await updateListing({
           listingId,
           jwt,
+          version: editVersion,
           patch: {
             name: form.name.trim(),
             description_md: form.description || form.tagline,
@@ -235,11 +241,15 @@ export function PublishWizard() {
         listingId = draft.listing_id;
         setDraftListingId(listingId);
       }
-      await api.post(`/marketplace/listings/${listingId}/artifact-from-agent`, {
-        agent_id: form.agentId,
-        bundle: { mcps: form.bundleMcps, skills: form.bundleSkills },
-      });
-      await api.post(`/marketplace/listings/${listingId}/submit`, {});
+      const versionQs = isEditing && editVersion !== 1 ? `?version=${editVersion}` : "";
+      await api.post(
+        `/marketplace/listings/${listingId}/artifact-from-agent${versionQs}`,
+        {
+          agent_id: form.agentId,
+          bundle: { mcps: form.bundleMcps, skills: form.bundleSkills },
+        },
+      );
+      await api.post(`/marketplace/listings/${listingId}/submit${versionQs}`, {});
       setStep(6);
     } catch (err) {
       // useApi's ApiError doesn't expose `.detail` directly; the body's

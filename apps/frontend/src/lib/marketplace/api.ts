@@ -102,14 +102,20 @@ export interface ListingUpdate {
 }
 
 /** Patch metadata on a draft listing. Backend rejects non-draft state
- * with 409 — the wizard surfaces that as a banner. */
+ * with 409 — the wizard surfaces that as a banner.
+ *
+ * ``version`` is optional and defaults to 1 server-side. Pass the
+ * listing's own ``version`` in edit mode so a rejected v_new row (future
+ * republish flow) is patched in place instead of clobbering v=1. */
 export async function updateListing(opts: {
   listingId: string;
   jwt: string;
   patch: ListingUpdate;
+  version?: number;
 }): Promise<Listing> {
+  const qs = opts.version && opts.version !== 1 ? `?version=${opts.version}` : "";
   const resp = await fetch(
-    `${API}/marketplace/listings/${encodeURIComponent(opts.listingId)}`,
+    `${API}/marketplace/listings/${encodeURIComponent(opts.listingId)}${qs}`,
     {
       method: "PATCH",
       headers: {

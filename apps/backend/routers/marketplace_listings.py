@@ -435,6 +435,7 @@ async def update_listing(
     listing_id: str,
     payload: schemas.ListingUpdate,
     auth: Annotated[AuthContext, Depends(get_current_user)],
+    version: int = Query(default=1, ge=1),
 ):
     """Patch metadata on a draft listing the caller owns.
 
@@ -443,6 +444,11 @@ async def update_listing(
     'published', 'retired', or 'taken_down' state reject the call with
     409 (caller must wait for the moderation decision, or open a new
     version via republish).
+
+    ``version`` defaults to 1 (today the only version that exists on the
+    listings table) but accepts the listing's actual version so a future
+    republish flow that produces a rejected v_new=2 row can be revised in
+    place.
     """
     try:
         result = await marketplace_service.update_draft(
@@ -453,6 +459,7 @@ async def update_listing(
             price_cents=payload.price_cents,
             tags=payload.tags,
             category=payload.category,
+            version=version,
         )
     except marketplace_service.InvalidStateError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -463,10 +470,14 @@ async def update_listing(
 async def submit(
     listing_id: str,
     auth: Annotated[AuthContext, Depends(get_current_user)],
+    version: int = Query(default=1, ge=1),
 ):
-    """Transition draft -> review."""
+    """Transition draft -> review. ``version`` lets edit-mode resubmit a
+    rejected v_new row instead of always targeting v=1."""
     try:
-        result = await marketplace_service.submit_for_review(listing_id=listing_id, seller_id=auth.user_id)
+        result = await marketplace_service.submit_for_review(
+            listing_id=listing_id, seller_id=auth.user_id, version=version
+        )
     except marketplace_service.ArtifactNotUploadedError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except marketplace_service.InvalidStateError as e:
@@ -552,6 +563,7 @@ async def upload_artifact_from_agent(
     listing_id: str,
     payload: schemas.ArtifactFromAgentRequest,
     auth: Annotated[AuthContext, Depends(get_current_user)],
+    version: int = Query(default=1, ge=1),
 ):
     """Snapshot one of the seller's existing OpenClaw agents.
 
@@ -609,6 +621,7 @@ async def upload_artifact_from_agent(
             manifest=package.manifest,
             openclaw_slice=package.openclaw_slice,
             agent_id=payload.agent_id,
+            version=version,
         )
     except marketplace_service.InvalidStateError as e:
         raise HTTPException(status_code=409, detail=str(e))

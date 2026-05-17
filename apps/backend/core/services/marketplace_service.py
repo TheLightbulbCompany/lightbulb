@@ -386,16 +386,17 @@ async def submit_for_review(*, listing_id: str, seller_id: str) -> dict:
         # the actual publish transition, so the field still tells you when
         # the listing went live (or when it last entered the review pipeline,
         # if rejected).
-        # REMOVE the prior moderation feedback so a resubmitted listing
-        # doesn't carry "rejected because X" into review (and from there,
-        # if approved, into the public storefront — search.py returns raw
-        # rows, so a stale rejection_notes would leak to buyers).
-        # rejected_by stays on the row deliberately — it's an audit trail
-        # of the LAST admin action and the seller can't see it.
+        # REMOVE every moderation field so a resubmitted listing doesn't
+        # carry "rejected because X (by admin_xyz)" into review (and from
+        # there, if approved, onto the public storefront — marketplace_search
+        # returns raw listing rows, so anything left on the item leaks to
+        # buyers). The audit trail of who rejected what lives in the
+        # admin_actions table, not on the listing row.
         resp = table.update_item(
             Key={"listing_id": listing_id, "version": 1},
             UpdateExpression=(
-                "SET #s = :review, updated_at = :now, published_at = :now REMOVE rejection_notes, rejected_at"
+                "SET #s = :review, updated_at = :now, published_at = :now "
+                "REMOVE rejection_notes, rejected_at, rejected_by"
             ),
             ConditionExpression="seller_id = :sid AND #s = :draft",
             ExpressionAttributeNames={"#s": "status"},

@@ -247,6 +247,24 @@ async def test_publish_v2_atomically_retires_prev_and_publishes_new(mock_client)
 
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
+async def test_submit_for_review_clears_prior_rejection_fields(mock_listings):
+    """Regression for Codex P2 on PR #692 (commit 21e0b010): once a seller
+    resubmits a rejected draft, the prior admin feedback must come off the
+    row. marketplace_search returns raw listing dicts, so a stale
+    rejection_notes attached to a now-published listing would leak admin
+    moderation context to buyers."""
+    mock_listings.return_value.get_item = MagicMock(return_value={"Item": {"artifact_uploaded": True}})
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
+    await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    expr = kwargs["UpdateExpression"]
+    assert "REMOVE" in expr
+    assert "rejection_notes" in expr
+    assert "rejected_at" in expr
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
 async def test_reject_writes_rejected_at_timestamp(mock_listings):
     """Seller UI surfaces 'Rejected · MM-DD' on the listing row; without
     rejected_at we'd have to fall back to updated_at, which mutates on

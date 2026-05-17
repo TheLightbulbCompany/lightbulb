@@ -353,6 +353,460 @@ async def test_pair_desktop_devices_idempotent_on_existing_entries():
     assert workspace.write_count == 1
 
 
+async def test_pair_desktop_devices_prunes_stale_desktop_entries_for_same_user():
+    """When a previous Tauri install paired a different keypair under the same
+    clientId AND the same userId, the old entry is orphaned (its private key
+    is gone with the old Keychain). Pair must prune those ghosts on re-pair,
+    otherwise node enumeration shows duplicates and openclaw's gateway can
+    round-robin invokes to a dead conn.
+
+    Only entries that are (a) one of our desktop clientIds, (b) stamped with
+    the calling user_id, and (c) NOT the device we're about to write get
+    pruned. Everything else stays untouched.
+    """
+    stale_mac_id = "a" * 64
+    stale_cli_id = "b" * 64
+    in_container_node_id = "c" * 64
+    legacy_operator_id = "d" * 64
+    workspace = _FakeWorkspace(
+        initial={
+            stale_mac_id: {
+                "deviceId": stale_mac_id,
+                "clientId": "openclaw-macos",
+                "userId": "user_alice",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nstale-mac\n-----END PUBLIC KEY-----\n",
+                "displayName": "Old Mac (orphan)",
+            },
+            stale_cli_id: {
+                "deviceId": stale_cli_id,
+                "clientId": "node-host",
+                "userId": "user_alice",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nstale-cli\n-----END PUBLIC KEY-----\n",
+                "displayName": "Old CLI (orphan)",
+            },
+            in_container_node_id: {
+                "deviceId": in_container_node_id,
+                "clientId": "node",
+                "role": "node",
+                "displayName": "in-container node",
+            },
+            legacy_operator_id: {
+                "deviceId": legacy_operator_id,
+                "clientId": "gateway-client",
+                "role": "operator",
+                "displayName": "legacy operator",
+            },
+        }
+    )
+
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x07" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    # Stale desktop entries pruned.
+    assert stale_mac_id not in written, "stale openclaw-macos entry must be pruned"
+    assert stale_cli_id not in written, "stale node-host entry must be pruned"
+    # Non-desktop entries preserved.
+    assert in_container_node_id in written, "in-container node must NOT be pruned"
+    assert legacy_operator_id in written, "non-desktop operator must NOT be pruned"
+    # Current entries written, and stamped with the caller's userId.
+    assert result.device_id_mac in written
+    assert result.device_id_cli in written
+    assert written[result.device_id_mac]["userId"] == "user_alice"
+    assert written[result.device_id_cli]["userId"] == "user_alice"
+    # Total: 2 preserved + 2 new = 4. The 2 stale ones are gone.
+    assert len(written) == 4
+
+
+async def test_pair_desktop_devices_preserves_other_org_members_entries():
+    """SHARED-WORKSPACE GUARD (P1 from Codex on PR #683): in an org context
+    paired.json lives on the org's workspace, so multiple members'
+    desktop entries coexist under the same clientId. When Alice re-pairs,
+    we MUST NOT delete Bob's still-valid entries.
+    """
+    bob_mac_id = "1" * 64
+    bob_cli_id = "2" * 64
+    workspace = _FakeWorkspace(
+        initial={
+            bob_mac_id: {
+                "deviceId": bob_mac_id,
+                "clientId": "openclaw-macos",
+                "userId": "user_bob",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nbob-mac\n-----END PUBLIC KEY-----\n",
+                "displayName": "Bob | Isol8 Mac",
+            },
+            bob_cli_id: {
+                "deviceId": bob_cli_id,
+                "clientId": "node-host",
+                "userId": "user_bob",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nbob-cli\n-----END PUBLIC KEY-----\n",
+                "displayName": "Bob | Isol8 Desktop (CLI)",
+            },
+        }
+    )
+
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x0a" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="org_42",
+        display_name_base="Alice",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    # Bob's entries survive verbatim.
+    assert bob_mac_id in written
+    assert bob_cli_id in written
+    assert written[bob_mac_id]["userId"] == "user_bob"
+    assert written[bob_cli_id]["userId"] == "user_bob"
+    # Alice's new entries land alongside.
+    assert result.device_id_mac in written
+    assert result.device_id_cli in written
+    assert written[result.device_id_mac]["userId"] == "user_alice"
+    assert written[result.device_id_cli]["userId"] == "user_alice"
+    assert len(written) == 4
+
+
+async def test_pair_desktop_devices_does_not_stamp_userid_on_idempotent_match():
+    """SECURITY (Codex round-2 P2 on commit 8bc3c157): the idempotent
+    branch must NOT stamp / overwrite userId based on a publicKey match.
+    `POST /desktop/pair` accepts the pubkey unsigned — it does not
+    verify possession of the matching private key. If we stamped here,
+    Alice could submit Bob's pubkey, relabel Bob's entry as Alice's,
+    and then trigger her own re-pair to prune Bob's device on the very
+    next call.
+
+    Behavior we DO accept: legacy entries without a userId stamp stay
+    unstamped forever, so the userId-scoped prune above won't remove
+    them. That's a cosmetic-only ghost — clearly preferable to a real
+    cross-member privilege escalation in shared org workspaces.
+    """
+    # Build the keypair first so we can compute its deviceId for the
+    # legacy fixture (same deviceId the new pair call will produce).
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x0c" * 32)
+    tauri_pub = (
+        tauri_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x0d" * 32)
+    cli_pub = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    # Compute the deviceIds + raw pubkeys the way build_paired_entry does,
+    # so the fixture matches what _mutate's idempotent check compares.
+    from core.services.desktop_pair import (
+        _public_key_raw_base64url,
+        derive_device_id,
+    )
+
+    mac_device_id = derive_device_id(tauri_pub)
+    cli_device_id = derive_device_id(cli_pub)
+    mac_raw_pub = _public_key_raw_base64url(tauri_pub)
+    cli_raw_pub = _public_key_raw_base64url(cli_pub)
+
+    workspace = _FakeWorkspace(
+        initial={
+            # Pre-existing entries with matching deviceId + publicKey,
+            # but no userId stamp (legacy / pre-this-PR write).
+            mac_device_id: {
+                "deviceId": mac_device_id,
+                "publicKey": mac_raw_pub,
+                "clientId": "openclaw-macos",
+                "displayName": "Legacy Mac",
+                "tokens": {"node": {"token": "preserve-me", "createdAtMs": 1}},
+            },
+            cli_device_id: {
+                "deviceId": cli_device_id,
+                "publicKey": cli_raw_pub,
+                "clientId": "node-host",
+                "displayName": "Legacy CLI",
+                "tokens": {"node": {"token": "preserve-me-too", "createdAtMs": 1}},
+            },
+        }
+    )
+
+    await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    # userId stays absent — we refuse to stamp without proof of
+    # possession (this is the security-critical invariant).
+    assert "userId" not in written[mac_device_id]
+    assert "userId" not in written[cli_device_id]
+    # Tokens are preserved (idempotent didn't clobber them).
+    assert written[mac_device_id]["tokens"]["node"]["token"] == "preserve-me"
+    assert written[cli_device_id]["tokens"]["node"]["token"] == "preserve-me-too"
+    # Idempotent — nothing changed, no write needed.
+    assert workspace.write_count == 0
+
+
+async def test_pair_desktop_devices_does_not_overwrite_other_users_stamp_on_pubkey_match():
+    """SECURITY (Codex round-2 P2): if a different user's stamped entry
+    happens to match the caller's submitted pubkey, we MUST NOT relabel
+    it as the caller's. The dev path: Alice steals/observes Bob's pubkey
+    from a shared workspace and submits it via POST /desktop/pair.
+    Without this guard, Bob's entry gets userId=user_alice, and Alice's
+    next re-pair (with her own keys) would satisfy the prune and delete
+    Bob's device.
+
+    Defense: refuse to touch userId in the idempotent branch entirely.
+    """
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x0e" * 32)
+    tauri_pub = (
+        tauri_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x0f" * 32)
+    cli_pub = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    from core.services.desktop_pair import (
+        _public_key_raw_base64url,
+        derive_device_id,
+    )
+
+    mac_device_id = derive_device_id(tauri_pub)
+    cli_device_id = derive_device_id(cli_pub)
+
+    # Bob already paired these keypairs (stamped with his userId).
+    workspace = _FakeWorkspace(
+        initial={
+            mac_device_id: {
+                "deviceId": mac_device_id,
+                "publicKey": _public_key_raw_base64url(tauri_pub),
+                "clientId": "openclaw-macos",
+                "userId": "user_bob",
+                "displayName": "Bob | Isol8 Mac",
+            },
+            cli_device_id: {
+                "deviceId": cli_device_id,
+                "publicKey": _public_key_raw_base64url(cli_pub),
+                "clientId": "node-host",
+                "userId": "user_bob",
+                "displayName": "Bob | Isol8 Desktop (CLI)",
+            },
+        }
+    )
+
+    # Alice submits Bob's pubkeys (the attack).
+    await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="org_42",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    # Bob's userId is preserved — Alice cannot relabel by re-submitting his pubkey.
+    assert written[mac_device_id]["userId"] == "user_bob"
+    assert written[cli_device_id]["userId"] == "user_bob"
+    # No new entries written (the deviceIds collide with Bob's existing entries).
+    assert len(written) == 2
+
+
+async def test_pair_desktop_devices_preserves_legacy_unstamped_entries_in_org_workspace():
+    """In an org workspace (owner_id != user_id), entries written before
+    this PR don't have a userId field. We can't safely attribute them
+    to a specific user (could be a teammate's). Preserve them.
+    """
+    legacy_mac_id = "9" * 64
+    workspace = _FakeWorkspace(
+        initial={
+            legacy_mac_id: {
+                "deviceId": legacy_mac_id,
+                "clientId": "openclaw-macos",
+                # No userId — pre-this-PR entry.
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nlegacy\n-----END PUBLIC KEY-----\n",
+                "displayName": "Pre-fix Mac",
+            },
+        }
+    )
+
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x0b" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="org_42",  # ORG context: owner_id != user_id
+        display_name_base="Alice",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    assert legacy_mac_id in written, (
+        "userId-less legacy entry in an org workspace must be preserved (could belong to a teammate)"
+    )
+    assert len(written) == 3  # 1 legacy + 2 new
+
+
+async def test_pair_desktop_devices_prunes_legacy_unstamped_entries_in_personal_workspace():
+    """Codex round-3 P2 on PR #683: in a personal workspace
+    (owner_id == user_id), there's no other user who could own a
+    legacy unstamped entry. The attack vector that drove the org-side
+    preserve doesn't exist here. Safely prune so personal users who
+    upgrade from pre-this-PR builds get clean enumeration.
+    """
+    legacy_mac_id = "9" * 64
+    legacy_cli_id = "8" * 64
+    workspace = _FakeWorkspace(
+        initial={
+            legacy_mac_id: {
+                "deviceId": legacy_mac_id,
+                "clientId": "openclaw-macos",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nlegacy-mac\n-----END PUBLIC KEY-----\n",
+                "displayName": "Pre-fix Mac",
+                # No userId.
+            },
+            legacy_cli_id: {
+                "deviceId": legacy_cli_id,
+                "clientId": "node-host",
+                "publicKey": "-----BEGIN PUBLIC KEY-----\nlegacy-cli\n-----END PUBLIC KEY-----\n",
+                "displayName": "Pre-fix CLI",
+                # No userId.
+            },
+        }
+    )
+
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x10" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="user_alice",  # PERSONAL context: owner_id == user_id
+        display_name_base="Alice",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        workspace=workspace,
+    )
+
+    written = workspace.state
+    assert legacy_mac_id not in written, "legacy unstamped mac must be pruned in personal workspace"
+    assert legacy_cli_id not in written, "legacy unstamped cli must be pruned in personal workspace"
+    assert result.device_id_mac in written
+    assert result.device_id_cli in written
+    assert len(written) == 2  # legacy pruned, 2 new written
+
+
+async def test_pair_desktop_devices_idempotent_does_not_trigger_prune():
+    """When the entries already match the keys we're about to write, the
+    mutator must NOT mark itself changed — pruning of "stale" entries
+    matching our own current clientIds must respect the new_device_ids
+    skip list."""
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x08" * 32)
+    tauri_pub = (
+        tauri_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x09" * 32)
+    cli_pub = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    workspace = _FakeWorkspace(initial={})
+    await pair_desktop_devices(
+        user_id="u",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=workspace,
+    )
+    assert workspace.write_count == 1
+
+    # Second call with identical pubkeys: the existing entries match
+    # new_device_ids and pass the publicKey-equality idempotent check.
+    # write_count must stay at 1.
+    await pair_desktop_devices(
+        user_id="u",
+        owner_id="o",
+        display_name_base="Alice",
+        tauri_mac_pubkey=tauri_pub,
+        cli_pubkey=cli_pub,
+        workspace=workspace,
+    )
+    assert workspace.write_count == 1
+
+
 async def test_revoke_desktop_device_removes_paired_entry():
     """Revoke deletes a TOP-LEVEL deviceId key from the flat record."""
     workspace = _FakeWorkspace(

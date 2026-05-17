@@ -133,6 +133,7 @@ def build_paired_entry(
     client_id: str,
     display_name: str,
     commands: list[str],
+    user_id: str | None = None,
 ) -> dict:
     """Construct a paired.json entry per upstream PairedDevice schema.
 
@@ -152,7 +153,7 @@ def build_paired_entry(
     if client_id not in ALLOWED_CLIENT_IDS:
         raise ValueError(f"clientId must be one of {ALLOWED_CLIENT_IDS}; got {client_id!r}")
     now_ms = int(time.time() * 1000)
-    return {
+    entry: dict = {
         "deviceId": derive_device_id(pubkey_pem),
         "publicKey": _public_key_raw_base64url(pubkey_pem),
         "role": "node",
@@ -174,6 +175,14 @@ def build_paired_entry(
         "createdAtMs": now_ms,
         "approvedAtMs": now_ms,
     }
+    if user_id is not None:
+        # Custom Isol8 field. Upstream openclaw's `coercePairingStateRecord`
+        # (pairing-files.ts:16) does a permissive cast — unknown fields are
+        # preserved across read/write cycles. We use this on re-pair to
+        # distinguish "this user's prior stale entries" (safe to prune)
+        # from "another org member's still-valid entry" (must preserve).
+        entry["userId"] = user_id
+    return entry
 
 
 # Mutator contract: receives the current paired.json state as a FLAT dict
@@ -227,26 +236,99 @@ async def pair_desktop_devices(
         client_id="openclaw-macos",
         display_name=f"{display_name_base} | Isol8 Mac",
         commands=list(DESKTOP_MAC_COMMANDS),
+        user_id=user_id,
     )
     cli_entry = build_paired_entry(
         pubkey_pem=cli_pubkey,
         client_id="node-host",
         display_name=f"{display_name_base} | Isol8 Desktop (CLI)",
         commands=list(DESKTOP_CLI_COMMANDS),
+        user_id=user_id,
     )
+
+    new_device_ids = {mac_entry["deviceId"], cli_entry["deviceId"]}
+    # Personal workspaces have owner_id == user_id (only one human owns
+    # the container); org workspaces have a distinct owner_id. In the
+    # personal case there's no other user who could own a legacy
+    # unstamped entry, so we can safely attribute it to the caller for
+    # pruning. In the org case we preserve unstamped entries (the
+    # attribution is ambiguous and stamping by pubkey alone is unsafe
+    # — POST /desktop/pair doesn't verify possession).
+    is_personal_workspace = owner_id == user_id
 
     def _mutate(paired: dict) -> bool:
         # paired is a FLAT Record<deviceId, PairedDevice> per upstream's
         # device-pairing.ts:181 (writeJson writes the inner record, not the
-        # `pairedByDeviceId` wrapper). Any prior operator / node / Mac entry
-        # from ecs_manager or a previous pair call lives at the top level —
-        # leave it alone unless its publicKey matches what we'd write.
+        # `pairedByDeviceId` wrapper).
+        #
+        # Two responsibilities:
+        #   1. PRUNE this user's prior stale desktop entries. A previous
+        #      Tauri install with a different Keychain would have
+        #      registered (deviceId, pubkey) under the same clientId we
+        #      use today (openclaw-macos / node-host). Those entries are
+        #      orphaned — their private keys are gone with the old
+        #      Keychain — and they show up as ghost nodes in node
+        #      enumeration.
+        #
+        #      In an ORG context the workspace is shared, so paired.json
+        #      can hold multiple members' desktop entries under the same
+        #      clientId. We MUST NOT delete a sibling member's still-valid
+        #      entry. The prune is gated on three conditions, all
+        #      required:
+        #        * clientId is one of ours (openclaw-macos / node-host)
+        #        * the entry's userId matches the caller's user_id
+        #        * the deviceId is NOT the one we're about to write
+        #
+        #      Entries without a userId (legacy, pre-this-PR) are
+        #      conservatively left in place — we can't safely attribute
+        #      them and erring on preserve is correct in the multi-tenant
+        #      shared-workspace case.
+        #
+        #   2. UPSERT the two current desktop entries. Idempotent on
+        #      publicKey match — preserves the existing entry's tokens.
         changed = False
+        for did in list(paired.keys()):
+            if did in new_device_ids:
+                continue
+            entry = paired[did]
+            if entry.get("clientId") not in ALLOWED_CLIENT_IDS:
+                continue
+            entry_user_id = entry.get("userId")
+            if entry_user_id == user_id:
+                # Same user, stamped match — safe to prune.
+                pass
+            elif entry_user_id is None and is_personal_workspace:
+                # Legacy unstamped entry in a personal workspace. No
+                # other user can own it (owner_id == user_id), so the
+                # attribution is unambiguous. Prune. In an org context
+                # we'd preserve it (ambiguous and possibly a teammate's).
+                pass
+            else:
+                continue
+            del paired[did]
+            changed = True
         for entry in (mac_entry, cli_entry):
             device_id = entry["deviceId"]
             existing = paired.get(device_id)
             if existing and existing.get("publicKey") == entry["publicKey"]:
-                # Idempotent: existing entry has the same key — keep its tokens.
+                # Idempotent: existing entry has the same key — keep its
+                # tokens.
+                #
+                # We deliberately do NOT stamp/overwrite userId here, even
+                # though the matching publicKey LOOKS like proof of
+                # ownership. `POST /desktop/pair` accepts a PEM pubkey
+                # without verifying possession of the corresponding
+                # private key (that proof happens later in the WS
+                # handshake). If Alice submitted Bob's pubkey, this
+                # branch would relabel Bob's stamped entry as Alice's,
+                # and Alice's next re-pair would satisfy the prune check
+                # and delete Bob's still-valid device (Codex P2 on
+                # commit 8bc3c157). Refusing to stamp here means legacy
+                # pre-this-PR entries stay unstamped forever and aren't
+                # pruned by the userId-scoped prune above — purely
+                # cosmetic ghosts. The alternative is a real
+                # cross-member privilege escalation in shared org
+                # workspaces. Worth the trade.
                 continue
             paired[device_id] = entry
             changed = True

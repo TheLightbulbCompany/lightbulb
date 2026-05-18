@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from unittest.mock import MagicMock, patch  # noqa: E402
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -669,3 +669,61 @@ def test_webhook_rolls_back_dedup_on_handler_failure(mock_construct, mock_dedup,
     )
     assert resp.status_code == 500
     mock_delete.assert_called_once_with(event_id="evt_1")
+
+
+# ---------------------------------------------------------------------------
+# require_org_admin gate on checkout + refund
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def org_member_client():
+    """TestClient authed as a non-admin org member.
+
+    Buying or refunding spends from the shared org Stripe customer, so a
+    non-admin member cannot initiate either action.
+    """
+    from main import app
+    from core.auth import AuthContext, get_current_user
+
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_test",
+        org_id="org_test",
+        org_role="org:basic_member",
+    )
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@patch("routers.marketplace_purchases.stripe.checkout.Session.create")
+def test_checkout_non_admin_org_member_403(mock_stripe_create, org_member_client):
+    """Non-admin org members can't create a Stripe Checkout session against
+    the shared org account. Gate fires before any Stripe call.
+    """
+    with patch("core.services.marketplace_service.get_by_slug", new_callable=AsyncMock) as mock_get:
+        resp = org_member_client.post(
+            "/api/v1/marketplace/checkout",
+            json={
+                "listing_slug": "demo-agent",
+                "success_url": "https://example.com/ok",
+                "cancel_url": "https://example.com/no",
+            },
+        )
+    assert resp.status_code == 403
+    mock_stripe_create.assert_not_called()
+    mock_get.assert_not_called()
+
+
+@patch("routers.marketplace_purchases.payout_service.refund_purchase")
+@patch("routers.marketplace_purchases._purchases_table")
+def test_refund_non_admin_org_member_403(mock_table, mock_refund, org_member_client):
+    """Non-admin org members can't initiate refunds. Gate fires before any
+    DDB lookup or payout-service call.
+    """
+    resp = org_member_client.post("/api/v1/marketplace/refund?purchase_id=p_x")
+    assert resp.status_code == 403
+    mock_table.assert_not_called()
+    mock_refund.assert_not_called()

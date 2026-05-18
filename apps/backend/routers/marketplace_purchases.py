@@ -13,7 +13,7 @@ import stripe
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, require_org_admin
 from core.config import settings
 from core.services import license_service, payout_service
 from core.services import webhook_dedup
@@ -38,6 +38,7 @@ async def checkout(
     auth: Annotated[AuthContext, Depends(get_current_user)],
 ):
     """Create a Stripe Checkout session against the platform account."""
+    require_org_admin(auth)
     from core.services import marketplace_service
 
     listing = await marketplace_service.get_by_slug(slug=payload.listing_slug)
@@ -440,6 +441,7 @@ async def refund(
     auth: Annotated[AuthContext, Depends(get_current_user)],
 ):
     """7-day refund window for buyers."""
+    require_org_admin(auth)
     table = _purchases_table()
     resp = table.get_item(Key={"buyer_id": auth.user_id, "purchase_id": purchase_id})
     purchase = resp.get("Item")

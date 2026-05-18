@@ -1337,3 +1337,98 @@ def test_patch_listing_rejects_slug_field(authed_client_factory):
         )
         assert resp.status_code == 200
         assert "slug" not in mock_update.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# require_org_admin gate on writes + hire
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def org_member_client():
+    """TestClient authed as a non-admin org member.
+
+    Pins org_role to ``org:basic_member`` so ``require_org_admin`` raises
+    403 — verifying the marketplace write endpoints reject shadow-publish /
+    shadow-hire attempts from non-admin members of an org.
+    """
+    from main import app
+    from core.auth import get_current_user
+
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_test",
+        org_id="org_test",
+        org_role="org:basic_member",
+    )
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@patch("routers.marketplace_listings.marketplace_service.create_draft", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.seller_profile.get_profile", new_callable=AsyncMock)
+def test_create_listing_non_admin_org_member_403(mock_profile, mock_create, org_member_client):
+    """A non-admin org member cannot create draft listings — the gate fires
+    before profile or create-draft logic runs.
+    """
+    resp = org_member_client.post(
+        "/api/v1/marketplace/listings",
+        json={
+            "slug": "test-slug",
+            "name": "Test Listing",
+            "description_md": "x",
+            "format": "openclaw",
+            "price_cents": 0,
+            "tags": [],
+        },
+    )
+    assert resp.status_code == 403
+    mock_profile.assert_not_called()
+    mock_create.assert_not_called()
+
+
+@patch("routers.marketplace_listings.marketplace_service.update_draft", new_callable=AsyncMock)
+def test_patch_listing_non_admin_org_member_403(mock_update, org_member_client):
+    resp = org_member_client.patch(
+        "/api/v1/marketplace/listings/lst_42",
+        json={"name": "New Name"},
+    )
+    assert resp.status_code == 403
+    mock_update.assert_not_called()
+
+
+@patch("routers.marketplace_listings.marketplace_service.submit_for_review", new_callable=AsyncMock)
+def test_submit_listing_non_admin_org_member_403(mock_submit, org_member_client):
+    resp = org_member_client.post("/api/v1/marketplace/listings/lst_42/submit")
+    assert resp.status_code == 403
+    mock_submit.assert_not_called()
+
+
+@patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+def test_artifact_from_agent_non_admin_org_member_403(mock_is_friday, mock_export, mock_replace, org_member_client):
+    resp = org_member_client.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={"agent_id": "agent_x"},
+    )
+    assert resp.status_code == 403
+    # Gate fires before the Friday check + export — none of the underlying
+    # service calls should have run.
+    mock_is_friday.assert_not_called()
+    mock_export.assert_not_called()
+    mock_replace.assert_not_called()
+
+
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_deploy_listing_non_admin_org_member_403(mock_get_by_slug, mock_get_catalog, org_member_client):
+    """Non-admin org members cannot hire (deploy) listings into the shared
+    org container. Gate fires before slug lookup or catalog service is hit.
+    """
+    resp = org_member_client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+    assert resp.status_code == 403
+    mock_get_by_slug.assert_not_called()
+    mock_get_catalog.assert_not_called()

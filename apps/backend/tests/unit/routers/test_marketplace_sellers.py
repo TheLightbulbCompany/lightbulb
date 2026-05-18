@@ -197,3 +197,39 @@ def test_public_lookup_404(mock_query, unauth_client):
     mock_query.return_value = None
     resp = unauth_client.get("/api/v1/marketplace/seller/handle/aden")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# require_org_admin gate on seller-handle upsert
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def org_member_client():
+    """TestClient authed as a non-admin org member.
+
+    The seller handle is org-shared (one org → one marketplace identity),
+    so a non-admin org member cannot claim it.
+    """
+    from main import app
+
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_test",
+        org_id="org_test",
+        org_role="org:basic_member",
+    )
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@patch("routers.marketplace_sellers.seller_profile.upsert_profile", new_callable=AsyncMock)
+def test_put_me_non_admin_org_member_403(mock_upsert, org_member_client):
+    resp = org_member_client.put(
+        "/api/v1/marketplace/seller/me",
+        json={"handle": "aden"},
+    )
+    assert resp.status_code == 403
+    mock_upsert.assert_not_called()

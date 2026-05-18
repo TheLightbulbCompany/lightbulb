@@ -115,54 +115,113 @@ def test_export_skips_junk_dirs(fake_efs):
     assert not any(".git" in n for n in names)
 
 
-def test_export_skips_openclaw_runtime_state_dirs(fake_efs):
-    """Regression: OpenClaw writes per-agent runtime state under ``sessions/``
-    (chat transcripts + trajectory.jsonl files, multi-MB) and ``agent/``
-    (``auth-profiles.json`` carrying OAuth refresh tokens for ChatGPT-OAuth
-    sellers, per memory ``feedback_openclaw_chatgpt_auth_two_files``). Both
-    must be excluded from the marketplace tarball:
-
-    1. Shipping ``sessions/*.jsonl`` leaks the seller's full chat history
-       (PII, tool outputs) to every buyer — and blows the admin preview's
-       10 MB unpacked cap (a single trajectory file routinely exceeds it).
-    2. Shipping ``agent/auth-profiles.json`` hands the seller's live OAuth
-       token to every buyer. Upstream OpenClaw warns about exactly this in
-       ``src/config/agent-dirs.ts``: "If you want to share credentials,
-       copy auth-profiles.json instead of sharing the entire agentDir."
-
-    Filter parity with ``_SKIP_DIR_NAMES``: applies anywhere in the tree
-    so a seller can't sneak it through by nesting (the seller can't actually
-    put OpenClaw runtime state under ``skills/sessions/``, but defense in
-    depth here is free).
+def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
+    """Regression for Codex P2 on PR #710 (commit 1f30aa3c): the previous
+    implementation stripped any top-level ``sessions/`` or ``agent/`` dir
+    from the tarball as a belt-and-suspenders guard against OpenClaw
+    runtime-state leaks. That guard is dead now that exports come from
+    ``workspaces/{id}/`` (runtime state lives in the sibling ``agents/{id}/``
+    tree we don't touch) and worse, it would silently drop legitimate
+    seller content in workspaces named ``sessions/`` (e.g. user-recorded
+    data) or ``agent/`` (e.g. project files describing the agent).
     """
     seller_id, agent_id, agent_dir = fake_efs
-    # Plant the runtime state OpenClaw writes on every container start.
+    # Plant content under top-level "sessions/" and "agent/" subdirs of
+    # the workspace. These names happen to collide with OpenClaw's
+    # internal-state dirs, but they sit inside the WORKSPACE root — the
+    # export must ship them.
     (agent_dir / "sessions").mkdir()
-    (agent_dir / "sessions" / "sessions.json").write_text('{"sessions": []}', encoding="utf-8")
-    (agent_dir / "sessions" / "abc-123.jsonl").write_text(
-        '{"role":"user","content":"my home address is 1 Main St"}\n',
-        encoding="utf-8",
-    )
-    (agent_dir / "sessions" / "abc-123.trajectory.jsonl").write_bytes(b"x" * 4096)
-    (agent_dir / "sessions" / "abc-123.jsonl.bak-1-1234567890").write_text("backup", encoding="utf-8")
-    (agent_dir / "sessions" / "abc-123.jsonl.reset.2026-05-12T04-15-17.346Z").write_text(
-        "reset archive", encoding="utf-8"
-    )
+    (agent_dir / "sessions" / "interview-notes.md").write_text("# Interview notes\nKey themes...", encoding="utf-8")
     (agent_dir / "agent").mkdir()
-    (agent_dir / "agent" / "auth-profiles.json").write_text(
-        '{"version":1,"profiles":{"chatgpt":{"refresh_token":"rotr-LEAK-ME"}}}',
-        encoding="utf-8",
-    )
-    (agent_dir / "agent" / "auth-state.json").write_text("{}", encoding="utf-8")
+    (agent_dir / "agent" / "ARCHITECTURE.md").write_text("# How this agent works", encoding="utf-8")
 
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
 
-    assert not any(n.startswith("./sessions/") or "/sessions/" in n for n in names), names
-    assert not any(n.startswith("./agent/") or "/agent/" in n for n in names), names
-    # Seller content still ships.
-    assert any("openclaw.json" in n for n in names)
-    assert any("README.md" in n for n in names)
+    assert any("sessions/interview-notes.md" in n for n in names), names
+    assert any("agent/ARCHITECTURE.md" in n for n in names), names
+
+
+def test_credential_filter_blocks_txt_pasted_secrets(fake_efs):
+    """Regression for Codex P1 on PR #711 (commit eb8dae83): sellers
+    commonly paste credentials into a .txt file (``secret.txt``,
+    ``credentials.txt``, ``private-key.txt``). The content scan only
+    inspects persona/.md/openclaw.json, so these slip through if .txt
+    isn't a config-shape extension. Add .txt to the gate.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "secret.txt").write_text("aws_secret_key=hunter2\n", encoding="utf-8")
+    (agent_dir / "credentials.txt").write_text("API_KEY=...", encoding="utf-8")
+    (agent_dir / "private-key.txt").write_text("-----BEGIN-----", encoding="utf-8")
+    # Non-credential .txt file still ships.
+    (agent_dir / "notes.txt").write_text("# brainstorm", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+
+    for forbidden in ("secret.txt", "credentials.txt", "private-key.txt"):
+        assert not any(forbidden in n for n in names), f"{forbidden!r} leaked through the credential filter: {names}"
+    assert any("notes.txt" in n for n in names), names
+
+
+def test_credential_filter_blocks_extensionless_aws_credentials(fake_efs):
+    """Regression for Codex P1 on PR #711 (commit 43c49a31): the
+    AWS-style ``credentials`` file (extensionless, e.g. copied from
+    ``~/.aws/credentials``) must be blocked. The original substring-
+    based filter caught it; the tighter word-boundary filter
+    accidentally let it through because the early-return on
+    extensionless files bypassed the token check.
+
+    Also pins that an extensionless ``credentials-helper`` script does
+    NOT get blocked — only the EXACT canonical credential filenames hit
+    the extensionless branch.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    # AWS-style: literal `credentials` filename, no extension, contents
+    # look like AWS credentials file.
+    (agent_dir / "credentials").write_text(
+        "[default]\naws_access_key_id=AKIAEXAMPLE\naws_secret_access_key=hunter2\n",
+        encoding="utf-8",
+    )
+    (agent_dir / "secrets").write_text("BIG_SECRET=hunter2\n", encoding="utf-8")
+    # Same shape, but a script. Should ship — the seller might have a
+    # ``credentials-helper`` CLI shim that's just code.
+    (agent_dir / "credentials-helper").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+
+    # Extensionless credential filenames are blocked.
+    assert not any(n.endswith("/credentials") or n == "./credentials" for n in names), names
+    assert not any(n.endswith("/secrets") or n == "./secrets" for n in names), names
+    # Extensionless helper script still ships.
+    assert any("credentials-helper" in n for n in names), names
+
+
+def test_credential_filter_word_boundary_does_not_strip_skills(fake_efs):
+    """Regression for Codex P2 on PR #710 (commit 1f30aa3c): the credential
+    filename filter used to substring-match the basename, so a skill named
+    ``secretary.md`` or ``secret-santa.md`` or a helper file
+    ``credentials-helper.ts`` would be silently dropped — yet
+    ``_enumerate_workspace_skill_names`` would still classify the skill as
+    WORKSPACE bucket, leaving the buyer with a config slice referencing a
+    file that wasn't actually shipped.
+
+    Whole-token + extension-shape match keeps these legit files in.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    skills_dir = agent_dir / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "secretary.md").write_text("# Secretary skill", encoding="utf-8")
+    (skills_dir / "secret-santa.md").write_text("# Secret Santa skill", encoding="utf-8")
+    (skills_dir / "credentials-helper.ts").write_text("export const x = 1;", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+
+    assert any("skills/secretary.md" in n for n in names), names
+    assert any("skills/secret-santa.md" in n for n in names), names
+    assert any("skills/credentials-helper.ts" in n for n in names), names
 
 
 def test_export_skips_dotfiles_anywhere_in_tree(fake_efs, tmp_path):

@@ -2,8 +2,10 @@ import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 
 import { CodeBlock } from "@/components/admin/CodeBlock";
+import { DefRow } from "@/components/admin/DefRow";
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { asArray, asRecord, asString } from "@/app/admin/_lib/narrow";
 import { getAgentDetail } from "@/app/admin/_lib/api";
 
 import { AgentActionsFooter } from "./AgentActionsFooter";
@@ -39,20 +41,6 @@ interface SessionRow {
   timestamp: string;
   status: string;
   excerpt: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
 }
 
 function toAgentMeta(raw: unknown): AgentMeta {
@@ -301,23 +289,3 @@ function Header({
   );
 }
 
-function DefRow({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline gap-3">
-      <dt className="w-28 shrink-0 text-xs uppercase tracking-wide text-zinc-500">
-        {label}
-      </dt>
-      <dd className={mono ? "truncate font-mono text-zinc-200" : "truncate text-zinc-200"} title={value}>
-        {value}
-      </dd>
-    </div>
-  );
-}

@@ -1,6 +1,8 @@
 import { auth } from "@clerk/nextjs/server";
 
+import { DefRow } from "@/components/admin/DefRow";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { asNumber, asRecord, asString } from "@/app/admin/_lib/narrow";
 import { getOverview } from "@/app/admin/_lib/api";
 
 import { BillingActionsPanel } from "./BillingActionsPanel";
@@ -33,20 +35,6 @@ interface BillingSlice {
 interface IdentitySlice {
   email_addresses?: Array<{ email_address?: string }>;
   primary_email_address_id?: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function pickBilling(raw: unknown): BillingSlice {
@@ -196,45 +184,3 @@ function Header() {
   return <h1 className="text-xl font-semibold text-zinc-100">Billing</h1>;
 }
 
-function DefRow({
-  label,
-  value,
-  mono,
-  href,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  href?: string;
-}) {
-  const content = (
-    <span
-      className={mono ? "truncate font-mono text-zinc-200" : "truncate text-zinc-200"}
-      title={value}
-    >
-      {value}
-    </span>
-  );
-  return (
-    <div className="flex items-baseline gap-3">
-      <dt className="w-36 shrink-0 text-xs uppercase tracking-wide text-zinc-500">
-        {label}
-      </dt>
-      <dd className="min-w-0 flex-1">
-        {href ? (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block truncate text-sky-300 hover:underline"
-            title={value}
-          >
-            {content}
-          </a>
-        ) : (
-          content
-        )}
-      </dd>
-    </div>
-  );
-}

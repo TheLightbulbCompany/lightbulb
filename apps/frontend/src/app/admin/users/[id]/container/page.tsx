@@ -1,11 +1,13 @@
 import { auth } from "@clerk/nextjs/server";
 
+import { DefRow } from "@/components/admin/DefRow";
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { OrgBanner } from "@/components/admin/OrgBanner";
+import { asRecord, asString } from "@/app/admin/_lib/narrow";
 import {
   getOverview,
   listAvailableImages,
-  type AdminOrgContext,
   type AvailableImage,
 } from "@/app/admin/_lib/api";
 
@@ -29,16 +31,6 @@ interface ContainerSlice {
   updated_at?: string;
   error?: string;
   source?: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function pickContainer(raw: unknown): { container: ContainerSlice | null; raw: Record<string, unknown> } {
@@ -124,7 +116,12 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
     );
   }
 
-  const orgBanner = overview.org ? <OrgBanner org={overview.org} /> : null;
+  const orgBanner = overview.org ? (
+    <OrgBanner
+      org={overview.org}
+      description="this container is the org’s shared resource."
+    />
+  ) : null;
 
   const { container } = pickContainer(overview.container);
 
@@ -204,66 +201,3 @@ function Header() {
   return <h1 className="text-xl font-semibold text-zinc-100">Container</h1>;
 }
 
-/**
- * Indigo banner rendered when the target user belongs to a Clerk org.
- * Mirrors the overview page so admins know this container is the org's
- * shared resource (owner_id == org_id), not the individual user's.
- */
-function OrgBanner({ org }: { org: AdminOrgContext }) {
-  const role = org.role ? org.role.replace("org:", "") : "member";
-  const displayName = org.name || org.slug || org.id;
-  return (
-    <div className="rounded-md border border-indigo-800 bg-indigo-950/30 px-4 py-3 text-sm">
-      <div className="text-xs uppercase tracking-wide text-indigo-400">
-        Org member
-      </div>
-      <div className="mt-1 text-indigo-200">
-        {displayName}
-        {org.slug ? (
-          <span className="text-indigo-500"> ({org.slug})</span>
-        ) : null}
-      </div>
-      <div className="mt-1 text-xs text-indigo-400">
-        Role: {role} &mdash; this container is the org&apos;s shared resource.
-      </div>
-    </div>
-  );
-}
-
-function DefRow({
-  label,
-  value,
-  mono,
-  href,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  href?: string;
-}) {
-  const cls = mono ? "truncate font-mono text-zinc-200" : "truncate text-zinc-200";
-  return (
-    <div className="flex items-baseline gap-3">
-      <dt className="w-32 shrink-0 text-xs uppercase tracking-wide text-zinc-500">
-        {label}
-      </dt>
-      <dd className="min-w-0 flex-1">
-        {href ? (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`block ${cls} text-sky-300 hover:underline`}
-            title={value}
-          >
-            {value}
-          </a>
-        ) : (
-          <span className={cls} title={value}>
-            {value}
-          </span>
-        )}
-      </dd>
-    </div>
-  );
-}

@@ -251,6 +251,37 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
   workflowPath: "../../.github/workflows/deploy.yml",
 });
 
+// Desktop build steps for dev + prod. Held as variables so the post-synth
+// JsonPatch logic below can look up the tauri-action step by NAME instead
+// of by hardcoded index — see findStepIndexInPatchedJob() / TAURI_BUILD_STEP_NAME.
+const devDesktopSteps = buildDesktopJobSteps({
+  targetEnv: "dev",
+  frontendUrl: "https://dev.isol8.co/chat",
+  // dev.isol8.co is gated by Vercel deployment protection. Append
+  // Vercel's documented bypass query params so Tauri's updater (a
+  // plain HTTPS client that can't do the interactive auth dance) walks
+  // past protection. Token leakage from `strings` on the DMG is
+  // acceptable here — the endpoint only returns public GitHub Release
+  // manifest data.
+  updateUrl:
+    "https://dev.isol8.co/api/desktop/update/{{target}}/{{current_version}}?x-vercel-protection-bypass=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}&x-vercel-set-bypass-cookie=true",
+  callbackUrl: "https://dev.isol8.co/auth/desktop-callback",
+  releaseName: `Isol8 Desktop [DEV] v${DESKTOP_VERSION}`,
+  tagName: `desktop-dev-v${DESKTOP_VERSION}`,
+  prerelease: true,
+});
+const prodDesktopSteps = buildDesktopJobSteps({
+  targetEnv: "prod",
+  frontendUrl: "https://isol8.co/chat",
+  // isol8.co has no Vercel deployment protection — no bypass needed.
+  updateUrl:
+    "https://isol8.co/api/desktop/update/{{target}}/{{current_version}}",
+  callbackUrl: "https://isol8.co/auth/desktop-callback",
+  releaseName: `Isol8 Desktop v${DESKTOP_VERSION}`,
+  tagName: `desktop-v${DESKTOP_VERSION}`,
+  prerelease: false,
+});
+
 // ---------------------------------------------------------------------------
 // Dev stage — auto-deploy infra + frontend on merge to main
 // ---------------------------------------------------------------------------
@@ -309,22 +340,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
     // permissions for GitHubActionStep are { contents: write }, which is
     // exactly what tauri-action needs to create + upload the release.
     new GitHubActionStep("BuildDesktopDev", {
-      jobSteps: buildDesktopJobSteps({
-        targetEnv: "dev",
-        frontendUrl: "https://dev.isol8.co/chat",
-        // dev.isol8.co is gated by Vercel deployment protection.
-        // Append Vercel's documented bypass query params so Tauri's
-        // updater (a plain HTTPS client that can't do the interactive
-        // auth dance) walks past protection. Token leakage from
-        // `strings` on the DMG is acceptable here — the endpoint only
-        // returns public GitHub Release manifest data.
-        updateUrl:
-          "https://dev.isol8.co/api/desktop/update/{{target}}/{{current_version}}?x-vercel-protection-bypass=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}&x-vercel-set-bypass-cookie=true",
-        callbackUrl: "https://dev.isol8.co/auth/desktop-callback",
-        releaseName: `Isol8 Desktop [DEV] v${DESKTOP_VERSION}`,
-        tagName: `desktop-dev-v${DESKTOP_VERSION}`,
-        prerelease: true,
-      }),
+      jobSteps: devDesktopSteps,
     }),
   ],
 });
@@ -383,17 +399,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
     // inherits the populated cargo cache from the same run (same key +
     // shared-key).
     new GitHubActionStep("BuildDesktopProd", {
-      jobSteps: buildDesktopJobSteps({
-        targetEnv: "prod",
-        frontendUrl: "https://isol8.co/chat",
-        // isol8.co has no Vercel deployment protection — no bypass needed.
-        updateUrl:
-          "https://isol8.co/api/desktop/update/{{target}}/{{current_version}}",
-        callbackUrl: "https://isol8.co/auth/desktop-callback",
-        releaseName: `Isol8 Desktop v${DESKTOP_VERSION}`,
-        tagName: `desktop-v${DESKTOP_VERSION}`,
-        prerelease: false,
-      }),
+      jobSteps: prodDesktopSteps,
     }),
   ],
 });
@@ -412,9 +418,9 @@ pipeline.addStageWithGitHubOptions(prodStage, {
 //    inputs call `core.getInput('tagName')` which only finds the env var
 //    that GitHub Actions sets from a camelCase `with:` key. Re-replace
 //    the `with:` blocks here back to the camelCase shape the action
-//    expects. Index 8 is the tauri-action step (counting from 0:
-//    checkout=0, pnpm=1, node=2, rust=3, cache=4, install=5, patch=6,
-//    vendor=7, keychain=8 — actually let me find it by name below).
+//    expects. The step is located by NAME via `tauriBuildStepIdx(...)`
+//    below, not by a fragile hardcoded index — if anyone inserts a step
+//    into buildDesktopJobSteps() the lookup tracks the move automatically.
 function tauriActionWithBlock(args: {
   tagName: string;
   releaseName: string;
@@ -431,24 +437,30 @@ function tauriActionWithBlock(args: {
   };
 }
 
-// Step indices for the desktop build jobs AFTER the paths-filter
-// gate step is inserted at index 1. Pre-insertion order produced by
-// buildDesktopJobSteps() was:
-//   0 Checkout, 1 Setup pnpm, 2 Setup Node, 3 Rust toolchain,
-//   4 Cache, 5 Install deps, 6 Patch tauri.conf.json,
-//   7 Vendor sidecar, 8 Signing keychain, 9 Pre-sign Mach-Os,
-//   10 Build desktop app (tauri-action), 11 Publish draft release
-// After inserting `Check for desktop changes` at index 1 (see
-// gateDesktopJobOnPaths() below), every subsequent step shifts down by
-// one, so the tauri-action step moves from index 10 → 11 and the
-// publish step moves from 11 → 12.
+// The paths-filter step is inserted by gateDesktopJobOnPaths() at this
+// fixed index (right after Checkout). Every subsequent step shifts down
+// by one in the post-patch YAML — `findStepIndexInPatchedJob()` accounts
+// for that shift.
 const PATHS_FILTER_STEP_IDX = 1;
-const TAURI_BUILD_STEP_IDX = 11;
-// Steps 2..12 inclusive (everything after Checkout + the new filter
-// step, through the new Publish-draft step at the end) need an
-// `if: steps.changes.outputs.desktop == 'true'` guard.
-const FIRST_GATED_STEP_IDX = 2;
-const LAST_GATED_STEP_IDX = 12;
+const TAURI_BUILD_STEP_NAME = "Build desktop app (aarch64-apple-darwin)";
+
+/**
+ * Find the post-patch index of a step in the synthesized YAML, given the
+ * pre-patch jobSteps array. The +1 accounts for the paths-filter step
+ * inserted at PATHS_FILTER_STEP_IDX, which shifts every later step down
+ * by one. Fails synth loudly if the named step isn't found — better than
+ * silently patching the wrong step.
+ */
+function findStepIndexInPatchedJob(steps: { name?: string }[], stepName: string): number {
+  const idx = steps.findIndex((s) => s.name === stepName);
+  if (idx < 0) {
+    throw new Error(
+      `Desktop build pipeline: step "${stepName}" not found in jobSteps — ` +
+        `did you rename it in buildDesktopJobSteps()? Patch paths need updating.`,
+    );
+  }
+  return idx >= PATHS_FILTER_STEP_IDX ? idx + 1 : idx;
+}
 
 // Backend-only / infra-only / frontend-only pushes to main shouldn't
 // burn ~10min of macos-15 runner time rebuilding the unchanged desktop
@@ -459,7 +471,14 @@ const LAST_GATED_STEP_IDX = 12;
 // apps/desktop/**, pnpm-lock.yaml, or this pipeline file changed, all
 // real work skips and the job finishes in ~30s of runner spin-up + the
 // paths check rather than a full Tauri build.
-function gateDesktopJobOnPaths(jobId: string): JsonPatch[] {
+function gateDesktopJobOnPaths(jobId: string, steps: { name?: string }[]): JsonPatch[] {
+  // Steps after the paths-filter (all of them, since the filter goes at
+  // index 1 and every later step needs the gate) get the
+  // `if: steps.changes.outputs.desktop == 'true'` condition. Range is
+  // `[PATHS_FILTER_STEP_IDX + 1, steps.length]` (post-insertion the
+  // last index = original length).
+  const firstGated = PATHS_FILTER_STEP_IDX + 1;
+  const lastGated = steps.length;
   const patches: JsonPatch[] = [
     JsonPatch.add(`/jobs/${jobId}/steps/${PATHS_FILTER_STEP_IDX}`, {
       name: "Check for desktop changes",
@@ -475,7 +494,7 @@ function gateDesktopJobOnPaths(jobId: string): JsonPatch[] {
       },
     }),
   ];
-  for (let i = FIRST_GATED_STEP_IDX; i <= LAST_GATED_STEP_IDX; i++) {
+  for (let i = firstGated; i <= lastGated; i++) {
     patches.push(
       JsonPatch.add(
         `/jobs/${jobId}/steps/${i}/if`,
@@ -502,10 +521,10 @@ pipeline.workflowFile.patch(
   }),
   JsonPatch.replace("/jobs/dev-BuildDesktopDev/runs-on", "macos-15"),
   JsonPatch.replace("/jobs/prod-BuildDesktopProd/runs-on", "macos-15"),
-  ...gateDesktopJobOnPaths("dev-BuildDesktopDev"),
-  ...gateDesktopJobOnPaths("prod-BuildDesktopProd"),
+  ...gateDesktopJobOnPaths("dev-BuildDesktopDev", devDesktopSteps),
+  ...gateDesktopJobOnPaths("prod-BuildDesktopProd", prodDesktopSteps),
   JsonPatch.replace(
-    `/jobs/dev-BuildDesktopDev/steps/${TAURI_BUILD_STEP_IDX}/with`,
+    `/jobs/dev-BuildDesktopDev/steps/${findStepIndexInPatchedJob(devDesktopSteps, TAURI_BUILD_STEP_NAME)}/with`,
     tauriActionWithBlock({
       tagName: `desktop-dev-v${DESKTOP_VERSION}`,
       releaseName: `Isol8 Desktop [DEV] v${DESKTOP_VERSION}`,
@@ -514,7 +533,7 @@ pipeline.workflowFile.patch(
     }),
   ),
   JsonPatch.replace(
-    `/jobs/prod-BuildDesktopProd/steps/${TAURI_BUILD_STEP_IDX}/with`,
+    `/jobs/prod-BuildDesktopProd/steps/${findStepIndexInPatchedJob(prodDesktopSteps, TAURI_BUILD_STEP_NAME)}/with`,
     tauriActionWithBlock({
       tagName: `desktop-v${DESKTOP_VERSION}`,
       releaseName: `Isol8 Desktop v${DESKTOP_VERSION}`,

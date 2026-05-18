@@ -98,9 +98,7 @@ async def resolve_owner_account(subscription_event_data: dict) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-async def handle_subscription_state(
-    event: dict[str, Any], billing_service: BillingService
-) -> Response | None:
+async def handle_subscription_state(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`customer.subscription.created` + `customer.subscription.updated`.
 
     Single source of truth for subscription-state sync. Fires on trial
@@ -169,9 +167,7 @@ async def handle_subscription_state(
     return None
 
 
-async def handle_trial_will_end(
-    event: dict[str, Any], billing_service: BillingService
-) -> Response | None:
+async def handle_trial_will_end(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`customer.subscription.trial_will_end`.
 
     Plan 3 §7.2 + §8.2: Stripe fires this 3 days before trial_end. We
@@ -191,9 +187,7 @@ async def handle_trial_will_end(
     return None
 
 
-async def handle_subscription_deleted(
-    event: dict[str, Any], billing_service: BillingService
-) -> Response | None:
+async def handle_subscription_deleted(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`customer.subscription.deleted`."""
     event_data = event["data"]["object"]
     put_metric("stripe.subscription", dimensions={"event": "deleted"})
@@ -246,26 +240,20 @@ async def handle_subscription_deleted(
     return None
 
 
-async def handle_invoice_payment_failed(
-    event: dict[str, Any], billing_service: BillingService
-) -> Response | None:
+async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     event_data = event["data"]["object"]
     put_metric("stripe.subscription", dimensions={"event": "payment_failed"})
     logger.warning("Payment failed for customer %s", event_data.get("customer"))
     return None
 
 
-async def handle_invoice_paid(
-    event: dict[str, Any], billing_service: BillingService
-) -> Response | None:
+async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     event_data = event["data"]["object"]
     logger.info("Payment succeeded for customer %s", event_data.get("customer"))
     return None
 
 
-async def handle_checkout_session(
-    event: dict[str, Any], billing_service: BillingService
-) -> Response | None:
+async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`checkout.session.completed` + `checkout.session.async_payment_succeeded`.
 
     We piggyback on the same webhook for two distinct flows; only

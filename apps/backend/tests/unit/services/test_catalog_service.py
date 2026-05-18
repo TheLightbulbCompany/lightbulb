@@ -169,11 +169,12 @@ async def test_deploy_pair_failure_skips_aux_and_rolls_back_workspace():
 
 
 @pytest.mark.asyncio
-async def test_deploy_aux_failure_still_rolls_back_workspace():
+async def test_deploy_aux_failure_cleans_workspace_but_agent_stays_paired():
     """If the aux merge fails AFTER a successful pair, the workspace dir is
-    still cleaned up. The agent stays registered in the container's
-    in-memory state (no inverse ``agents.delete`` RPC wired today — see
-    docstring).
+    cleaned up but the agent REMAINS registered in the container's
+    in-memory state — no inverse ``agents.delete`` RPC is wired today
+    (see ``deploy_from_artifact`` docstring "Rollback posture"). On-call
+    incident keyword: phantom agent after failed marketplace deploy.
     """
     svc, ws, apply_aux, _pair, _gw = _make_service()
     apply_aux.side_effect = RuntimeError("aux boom")

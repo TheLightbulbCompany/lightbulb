@@ -1,20 +1,19 @@
 "use client";
-import { useAuth } from "@clerk/nextjs";
 import { useState } from "react";
 import useSWR from "swr";
+import { useApi } from "@/lib/api";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+interface DashboardResponse {
+  balance_held_cents?: number;
+  lifetime_earned_cents?: number;
+  dashboard_url?: string;
+}
 
 export default function Dashboard() {
-  const { getToken } = useAuth();
-  const { data, error } = useSWR(
-    `${API}/marketplace/payouts/dashboard`,
-    async (url) => {
-      const jwt = await getToken();
-      const resp = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
-      if (!resp.ok) throw new Error(`payouts/dashboard failed (${resp.status})`);
-      return resp.json();
-    }
+  const api = useApi();
+  const { data, error } = useSWR<DashboardResponse>(
+    "/marketplace/payouts/dashboard",
+    (path: string) => api.get(path) as Promise<DashboardResponse>,
   );
   const [onboardLoading, setOnboardLoading] = useState(false);
   const [onboardError, setOnboardError] = useState<string | null>(null);
@@ -23,19 +22,9 @@ export default function Dashboard() {
     setOnboardError(null);
     setOnboardLoading(true);
     try {
-      const jwt = await getToken();
-      const resp = await fetch(`${API}/marketplace/payouts/onboard`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${jwt}`,
-          "Content-Type": "application/json",
-        },
-      });
-      if (!resp.ok) {
-        setOnboardError(`onboard failed (${resp.status})`);
-        return;
-      }
-      const body = (await resp.json()) as { onboarding_url?: string };
+      const body = (await api.post("/marketplace/payouts/onboard", {})) as {
+        onboarding_url?: string;
+      };
       if (body.onboarding_url) {
         window.location.href = body.onboarding_url;
       } else {

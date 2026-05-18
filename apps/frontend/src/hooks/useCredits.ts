@@ -22,7 +22,7 @@ export type TopUpResult = {
 export function useCredits() {
   const api = useApi();
 
-  const { data, error, mutate } = useSWR<CreditsBalance>(
+  const { data, error, isLoading, mutate } = useSWR<CreditsBalance>(
     "/billing/credits/balance",
     (path: string) => api.get(path) as Promise<CreditsBalance>,
     {
@@ -45,7 +45,10 @@ export function useCredits() {
 
   return {
     balance: data,
-    isLoading: !data && !error,
+    // SWR v2 exposes a native `isLoading` flag that correctly reports
+    // "no data yet, currently fetching" without the stale-while-revalidate
+    // false-negative the legacy `!data && !error` idiom produces.
+    isLoading,
     error,
     refresh: mutate,
     startTopUp,

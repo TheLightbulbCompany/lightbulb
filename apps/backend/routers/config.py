@@ -8,7 +8,6 @@ on writes, and tier-gates channel-related patches behind Starter+.
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 
 from core.auth import (
     AuthContext,
@@ -23,13 +22,10 @@ from core.services.config_patcher import (
     patch_openclaw_config,
 )
 from core.services.provision_gate import is_subscription_active
+from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-class ConfigPatchBody(BaseModel):
-    patch: dict
 
 
 def _patch_touches_channels(patch: dict) -> bool:
@@ -137,7 +133,7 @@ async def get_config(
     ),
 )
 async def patch_config(
-    body: ConfigPatchBody,
+    body: ConfigPatchRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
     # Org admin check (personal context passes through)

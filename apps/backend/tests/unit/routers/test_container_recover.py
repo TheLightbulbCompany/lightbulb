@@ -32,8 +32,13 @@ class TestContainerRecover:
         """Recovery reads provider_choice from billing_repo (keyed on
         owner_id) before reprovisioning. Workstream B (2026-05-03) moved
         the lookup off user_repo onto billing_accounts. Mock the lookup
-        so tests don't hit DDB."""
-        with patch("routers.container_recover.billing_repo") as mock_repo:
+        so tests don't hit DDB.
+
+        Patches the lookup at its source — `resolve_provider_choice` now
+        lives in `core.services.container_provision` (the local copy in
+        `routers/container_recover` was deleted), so this is where
+        `billing_repo` is actually resolved."""
+        with patch("core.services.container_provision.billing_repo") as mock_repo:
             # No row / no choice persisted -> falls through to bedrock_claude default.
             mock_repo.get_by_owner_id = AsyncMock(return_value=None)
             yield mock_repo

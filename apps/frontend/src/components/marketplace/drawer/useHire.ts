@@ -40,7 +40,14 @@ export function useHire() {
     async (listing: Listing) => {
       setIsHiring(true);
       try {
-        if (listing.price_cents === 0) {
+        // Sellers can install their own listing without paying. The
+        // backend has a matching seller-self-deploy bypass (see
+        // routers/marketplace_listings.py:deploy_listing), so we skip
+        // Stripe checkout and call /deploy directly — same path as a
+        // free listing — to avoid charging the seller for their own
+        // product.
+        const isSeller = !!user?.id && listing.seller_id === user.id;
+        if (listing.price_cents === 0 || isSeller) {
           const result = await deploy(listing.slug);
           // Refresh the chat sidebar's agents.list cache BEFORE marking
           // freshly-installed, so the slide-in animation has a row to attach to.

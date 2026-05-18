@@ -419,6 +419,50 @@ def test_deploy_paid_listing_without_purchase_403(
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_deploy_paid_listing_seller_bypass_succeeds(
+    mock_get_by_slug, mock_get_catalog, mock_boto, mock_purchases, client
+):
+    """Regression for PR #712 follow-up: a seller deploying their own paid
+    listing must bypass the entitlement check. Without the bypass, sellers
+    are 403'd by their own listings — surfaced as an indefinite "Setting up
+    the workspace…" spinner. Discovered when the user hit Hire on Ray the
+    Resy Bot ($10) on their own account.
+    """
+    listing = _published_listing(price_cents=1000)
+    # ``client`` fixture authenticates as user_test_123 — match seller_id
+    # to that so the bypass fires.
+    listing["seller_id"] = "user_test_123"
+    mock_get_by_slug.return_value = listing
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Demo Agent"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={
+            "slug": "demo-agent",
+            "version": 1,
+            "agent_id": "agent_self_deployed",
+            "name": "Demo Agent",
+            "skills_added": [],
+            "plugins_enabled": [],
+            "cron_jobs_added": 0,
+            "config_registered": True,
+        }
+    )
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["agent_uuid"] == "agent_self_deployed"
+    # Entitlement helper was never called — bypass kicked in BEFORE the
+    # purchases-table lookup, so even sellers with no purchase row deploy.
+    mock_purchases.return_value.query.assert_not_called()
+
+
+@patch("routers.marketplace_listings._purchases_table")
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_deploy_paid_listing_with_revoked_license_403(
     mock_get_by_slug, mock_get_catalog, mock_boto, mock_purchases, client
 ):

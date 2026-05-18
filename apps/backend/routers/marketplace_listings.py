@@ -309,9 +309,21 @@ async def deploy_listing(
         raise HTTPException(status_code=404, detail="listing not found")
 
     price_cents = int(listing.get("price_cents", 0) or 0)
-    if price_cents > 0 and not _has_valid_entitlement(
-        buyer_id=auth.user_id,
-        listing_id=listing["listing_id"],
+    # Seller-self-deploy bypass: sellers don't buy their own listings, so
+    # they have no marketplace-purchases row pointing at their own
+    # listing_id. Without this bypass a seller paying for a $10 listing
+    # gets 403'd when they hit "Hire" on their own product — surfaced as
+    # an indefinite "Setting up the workspace…" spinner in the storefront
+    # (PR #712 follow-up). Free listings already skip the check; paid
+    # listings need the explicit identity bypass.
+    is_seller = listing.get("seller_id") == auth.user_id
+    if (
+        price_cents > 0
+        and not is_seller
+        and not _has_valid_entitlement(
+            buyer_id=auth.user_id,
+            listing_id=listing["listing_id"],
+        )
     ):
         raise HTTPException(
             status_code=403,

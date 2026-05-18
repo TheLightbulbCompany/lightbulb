@@ -214,19 +214,43 @@ export default async function ListingDetail({
             ))}
           </div>
         </div>
-        <ModerationActions
-          listingId={preview.listing_id}
-          listingName={preview.name}
-          slug={preview.slug}
-          version={preview.version ?? 1}
-          prefilledRejectionNotes={flagsToRejectionPrefill(preview.safety_flags)}
-          approveDisabled={preview.scan_incomplete ?? false}
-          approveDisabledReason={
-            preview.scan_incomplete
-              ? "Scan incomplete — approve blocked. Reject or ask the seller to slim the artifact."
-              : undefined
-          }
-        />
+        {/* Approve / Reject only make sense while the listing is in the
+            review queue. Backend gates both on status='review', so
+            showing them on published / retired / taken_down / draft rows
+            (the admin can land on this page from search or a direct URL)
+            just produces confusing 409s. Hide instead. Takedown is its
+            own section below and stays available for non-review states. */}
+        {preview.status === "review" ? (
+          <ModerationActions
+            listingId={preview.listing_id}
+            listingName={preview.name}
+            slug={preview.slug}
+            version={preview.version ?? 1}
+            prefilledRejectionNotes={flagsToRejectionPrefill(preview.safety_flags)}
+            approveDisabled={preview.scan_incomplete ?? false}
+            approveDisabledReason={
+              preview.scan_incomplete
+                ? "Scan incomplete — approve blocked. Reject or ask the seller to slim the artifact."
+                : undefined
+            }
+          />
+        ) : (
+          <div className="flex shrink-0 flex-col items-end gap-1 text-right">
+            <span className="text-xs text-zinc-500" data-testid="moderation-actions-hidden">
+              No moderation actions —{" "}
+              <code className="font-mono text-zinc-400">{preview.status}</code>
+            </span>
+            <span className="text-[11px] text-zinc-600 max-w-[18rem]">
+              {preview.status === "published"
+                ? "Already live. Use Take down below to remove."
+                : preview.status === "taken_down"
+                  ? "Removed from the marketplace."
+                  : preview.status === "retired"
+                    ? "Superseded by a newer version."
+                    : "Seller hasn't submitted for review yet."}
+            </span>
+          </div>
+        )}
       </section>
 
       {/* Takedown — destructive action for already-published listings.

@@ -151,8 +151,7 @@ class TestGetCurrentUser:
 
             assert isinstance(result, AuthContext)
             assert result.user_id == "user_123"
-            # jwt.decode is called twice: once for unverified claims (debug), once for actual decode
-            assert mock_decode.call_count == 2
+            assert mock_decode.call_count == 1
 
     @pytest.mark.asyncio
     async def test_expired_token_raises_401(self, mock_credentials, valid_jwks):

@@ -16,8 +16,14 @@ from core.services import agent_export  # noqa: E402
 
 @pytest.fixture
 def fake_efs(tmp_path: Path):
-    """Builds /tmp/<root>/users/<seller>/agents/<agent-id>/ with sample files
-    and patches get_workspace() to return a Workspace anchored at <root>.
+    """Builds /tmp/<root>/users/<seller>/workspaces/<agent-id>/ with sample
+    files and patches get_workspace() to return a Workspace anchored at
+    <root>.
+
+    Layout mirrors the real OpenClaw EFS convention:
+      agents/{id}/      → OpenClaw internal state (sessions/, agent/auth)
+      workspaces/{id}/  → seller-facing content (persona files, skills,
+                          per-agent openclaw.json) — what gets exported.
 
     Also writes the seller's per-user openclaw.json with an agents.list[]
     entry for ``agent_id`` so ``export_agent_from_efs`` can synthesize a
@@ -27,7 +33,7 @@ def fake_efs(tmp_path: Path):
     agent_id = "my-agent-001"
 
     user_root = tmp_path / "users" / seller_id
-    agent_dir = user_root / "agents" / agent_id
+    agent_dir = user_root / "workspaces" / agent_id
     agent_dir.mkdir(parents=True)
 
     # Per-user openclaw.json — what the slice extraction reads.
@@ -217,6 +223,76 @@ def test_export_invalid_seller_id_rejected(tmp_path):
         agent_export.export_agent_from_efs(seller_id="../bad", agent_id="x")
 
 
+def test_export_reads_from_workspaces_dir_not_agents_dir(tmp_path: Path):
+    """Regression for the agents/-vs-workspaces/ mix-up (Ray empty tarball,
+    PR #710): the OpenClaw EFS layout puts INTERNAL runtime state under
+    ``agents/{id}/`` and the actual seller workspace content under
+    ``workspaces/{id}/``. The export must tar the workspace dir; the agents
+    dir holds only sessions/ logs and OAuth tokens.
+
+    Plant identical filenames in both dirs and confirm only the workspaces/
+    copy makes it into the tarball.
+    """
+    seller_id = "user_seller_xyz"
+    agent_id = "test-agent-001"
+    user_root = tmp_path / "users" / seller_id
+    user_root.mkdir(parents=True)
+    (user_root / "openclaw.json").write_text(
+        json.dumps({"agents": {"list": [{"id": agent_id, "name": "T", "skills": []}]}}),
+        encoding="utf-8",
+    )
+    # Plant a marker in the AGENTS dir — this should be ignored.
+    agents_dir = user_root / "agents" / agent_id
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "MARKER.md").write_text("agents-dir-marker (must NOT ship)", encoding="utf-8")
+    # And a different marker in the WORKSPACES dir — this is what ships.
+    workspaces_dir = user_root / "workspaces" / agent_id
+    workspaces_dir.mkdir(parents=True)
+    (workspaces_dir / "IDENTITY.md").write_text("workspace content (must ship)", encoding="utf-8")
+
+    from core.containers import workspace as workspace_module
+
+    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
+    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
+        pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+    assert any("IDENTITY.md" in n for n in names), names
+    assert not any("MARKER.md" in n for n in names), f"agents/-dir content leaked into the tarball: {names}"
+
+
+def test_export_skips_credential_shaped_filenames(fake_efs):
+    """Defense in depth on top of marketplace_safety's content scan: files
+    whose names look like credentials (``resy-credentials.json``,
+    ``aws.credentials.json``, ``*.secret.json``, ``id_rsa``, etc.) are
+    skipped at tar time so the seller's account doesn't ship to every
+    buyer if the scan ever misses the content pattern.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    # Plant credential-shaped filenames the seller might have left in
+    # their workspace.
+    (agent_dir / "resy-credentials.json").write_text(
+        '{"email":"seller@example.com","password":"hunter2"}',
+        encoding="utf-8",
+    )
+    (agent_dir / "aws.credentials.json").write_text("{}", encoding="utf-8")
+    (agent_dir / "openai.secret.json").write_text("{}", encoding="utf-8")
+    (agent_dir / "id_rsa").write_text("-----BEGIN PRIVATE KEY-----", encoding="utf-8")
+    (agent_dir / "service-account-secrets.yaml").write_text("token: x", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+    for forbidden in (
+        "resy-credentials.json",
+        "aws.credentials.json",
+        "openai.secret.json",
+        "id_rsa",
+        "service-account-secrets.yaml",
+    ):
+        assert not any(forbidden in n for n in names), (
+            f"credential-shaped file {forbidden!r} leaked into the tarball: {names}"
+        )
+
+
 def test_export_synthesizes_slice_from_seller_config(fake_efs):
     """The CatalogPackage's openclaw_slice carries the seller's agent entry
     with user-specific fields stripped (model, channels, workspace, id) and
@@ -311,7 +387,7 @@ def test_export_agent_not_in_config_raises(fake_efs, tmp_path):
     """
     seller_id, _, _ = fake_efs
     # Plant a workspace dir for an agent that isn't in the user-level config.
-    orphan_dir = tmp_path / "users" / seller_id / "agents" / "orphan-agent-99"
+    orphan_dir = tmp_path / "users" / seller_id / "workspaces" / "orphan-agent-99"
     orphan_dir.mkdir()
     (orphan_dir / "README.md").write_text("orphan", encoding="utf-8")
     with pytest.raises(agent_export.AgentNotInConfigError, match="not registered"):

@@ -67,29 +67,53 @@ _SKIP_DIR_NAMES = frozenset(
 )
 
 
-# OpenClaw writes per-agent runtime state under two top-level dirs inside
-# every agent dir. Both must be filtered out of marketplace tarballs:
+# OpenClaw's per-agent runtime state lives under ``agents/{id}/`` — a
+# SIBLING of the workspace dir we now tar from. ``sessions/`` and ``agent/``
+# don't appear under ``workspaces/{id}/`` in the canonical layout, so this
+# set is dead today. Kept as belt-and-suspenders in case a seller happens
+# to name a top-level workspace subdir ``sessions`` or ``agent`` — the
+# filter strips them by name only when they sit directly at the workspace
+# root, so a legitimate ``skills/sessions/foo`` would still ship.
 #
+# Background on the two upstream runtime dirs:
 #   sessions/  — chat transcripts (*.jsonl), trajectory logs
 #                (*.trajectory.jsonl, regularly multi-MB and routinely >10MB),
-#                and their .bak-* / .reset.* archives. Shipping these leaks
-#                the seller's full chat history (PII, tool outputs) to every
-#                buyer and blows the admin preview's 10 MB unpacked cap.
-#   agent/     — auth-profiles.json holds OAuth refresh tokens for sellers on
-#                the ChatGPT-OAuth provider path (see ecs_manager.py
+#                and their .bak-* / .reset.* archives. Shipping leaks the
+#                seller's full chat history (PII, tool outputs).
+#   agent/     — auth-profiles.json holds OAuth refresh tokens for sellers
+#                on the ChatGPT-OAuth provider path (see ecs_manager.py
 #                _pre_stage_oauth_for_user). Upstream OpenClaw warns about
 #                exactly this in src/config/agent-dirs.ts:
 #                  "If you want to share credentials, copy auth-profiles.json
 #                   instead of sharing the entire agentDir."
-#
-# Match only the top level: a seller could theoretically name a skill
-# "sessions" or "agent" under skills/; OpenClaw's runtime layout is only at
-# the agent-dir root, so we don't need to filter deeper.
 _OPENCLAW_RUNTIME_STATE_DIRS = frozenset({"sessions", "agent"})
 
 
+# Credential-shaped filenames that we never want in a published artifact,
+# regardless of whether the safety scan catches their content. The seller
+# might have `resy-credentials.json`, `aws.credentials.json`, `.secret.json`
+# etc. sitting in their workspace; shipping any of those exposes their own
+# accounts to every buyer. Pattern is applied case-insensitively to the
+# bare filename, anywhere in the tree.
+_CREDENTIAL_FILENAME_PATTERNS = (
+    "credentials",  # *credentials*.json|.yaml|.env
+    "secret",  # *secret*.json|.env
+    "secrets",
+    "private-key",
+    "id_rsa",
+    "id_ed25519",
+)
+
+
+def _looks_like_credential_file(name: str) -> bool:
+    """Filename-based credential-leak guard. Cheap defense in depth on top
+    of marketplace_safety's content scan."""
+    lower = name.lower()
+    return any(tok in lower for tok in _CREDENTIAL_FILENAME_PATTERNS)
+
+
 class AgentNotFoundError(Exception):
-    """Seller has no agent at agents/{agent_id} on EFS."""
+    """Seller has no agent workspace at workspaces/{agent_id} on EFS."""
 
 
 class InvalidAgentIdError(Exception):
@@ -103,8 +127,24 @@ class AgentNotInConfigError(Exception):
 
 
 def _resolve_agent_dir(seller_id: str, agent_id: str) -> Path:
-    """Validate agent_id format, resolve the EFS path, and assert it stays
-    within the seller's agents directory.
+    """Resolve the seller's agent WORKSPACE directory on EFS.
+
+    The OpenClaw EFS layout splits each agent across two sibling roots
+    under the seller's user dir:
+
+      agents/{id}/      — OpenClaw runtime state (sessions/ logs,
+                          agent/ auth tokens). Internal; not seller content.
+      workspaces/{id}/  — the seller's actual workspace: persona files
+                          (IDENTITY.md / SOUL.md / USER.md / HEARTBEAT.md /
+                          TOOLS.md), bundled skills (skills/), MCP server
+                          code, memory, etc. This is what buyers need.
+
+    The export tars the WORKSPACE dir. The earlier implementation pointed
+    at agents/{id}/, which contained only OpenClaw's internal state — so
+    the resulting tarball was either runtime junk (pre-PR #687) or empty
+    (post-#687 filter). Buyers got nothing useful. Fix is to point at
+    workspaces/{id}/; the existing filter list strips node_modules, .git,
+    dotfiles, etc. so the published artifact stays clean.
 
     Emits ``marketplace.path_traversal_attempt`` and raises
     InvalidAgentIdError on any traversal attempt.
@@ -118,14 +158,14 @@ def _resolve_agent_dir(seller_id: str, agent_id: str) -> Path:
     except WorkspaceError as exc:
         raise InvalidAgentIdError(str(exc)) from exc
 
-    agents_root = seller_root / "agents"
-    candidate = (agents_root / agent_id).resolve()
+    workspaces_root = seller_root / "workspaces"
+    candidate = (workspaces_root / agent_id).resolve()
 
     try:
-        candidate.relative_to(agents_root.resolve())
+        candidate.relative_to(workspaces_root.resolve())
     except ValueError:
         put_metric("marketplace.path_traversal_attempt")
-        raise InvalidAgentIdError(f"agent_id resolves outside seller's agents directory: {agent_id!r}")
+        raise InvalidAgentIdError(f"agent_id resolves outside seller's workspaces directory: {agent_id!r}")
 
     return candidate
 
@@ -165,6 +205,16 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
                     continue
                 if p.startswith("."):
                     return None
+            # Filename-based credential-leak guard. The seller may have
+            # plopped a credentials JSON (resy-credentials.json,
+            # aws.credentials.json, *.secret.json, id_rsa, etc.) into their
+            # workspace. marketplace_safety.scan also greps content for
+            # credential patterns, but a filename-level skip is cheap
+            # defense in depth — if the file matches a credential shape,
+            # we never tar it in the first place.
+            basename = parts[-1]
+            if _looks_like_credential_file(basename):
+                return None
             # Reject symlinks defensively (catalog_package.untar already does
             # the receiving-side check, but rejecting here keeps the artifact
             # auditable).

@@ -1,8 +1,6 @@
 "use client";
-import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+import { useApi } from "@/lib/api";
 
 interface Purchase {
   purchase_id: string;
@@ -14,20 +12,19 @@ interface Purchase {
   created_at: string;
 }
 
+interface PurchasesResponse {
+  items?: Purchase[];
+}
+
 export default function Buyer() {
-  const { getToken } = useAuth();
-  const { data, error } = useSWR(
-    `${API}/marketplace/my-purchases`,
-    async (url) => {
-      const jwt = await getToken();
-      const resp = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
-      if (!resp.ok) throw new Error(`my-purchases failed (${resp.status})`);
-      return resp.json();
-    }
+  const api = useApi();
+  const { data, error } = useSWR<PurchasesResponse>(
+    "/marketplace/my-purchases",
+    (path: string) => api.get(path) as Promise<PurchasesResponse>,
   );
   if (error) return <p className="p-8 text-[var(--danger)]">Couldn&apos;t load purchases: {error.message}</p>;
   if (!data) return <p className="p-8">Loading…</p>;
-  const items: Purchase[] = data.items ?? [];
+  const items: Purchase[] = data?.items ?? [];
   return (
     <main className="max-w-3xl mx-auto px-6 py-12">
       <h1 className="font-editorial-serif text-4xl mb-8">Your purchases</h1>

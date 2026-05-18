@@ -62,9 +62,7 @@ def test_search_endpoint_passes_through_to_service(mock_search, unauth_client):
     # seller_display_name is attached by routers/marketplace_listings.py via
     # seller_display.attach_seller_names — items without a seller_id resolve
     # to the FALLBACK_NAME so the storefront never renders raw Clerk ids.
-    assert body == {
-        "items": [{"slug": "foo", "name": "Foo", "seller_display_name": "Community member"}]
-    }
+    assert body == {"items": [{"slug": "foo", "name": "Foo", "seller_display_name": "Community member"}]}
     mock_search.assert_called_once_with(
         query="foo",
         format="openclaw",

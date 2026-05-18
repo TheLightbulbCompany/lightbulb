@@ -129,4 +129,24 @@ describe("PublishWizard edit mode", () => {
     // Step counter shows 5 (not 4) — full publish flow.
     expect(screen.getByText(/Step 1 of 5/)).toBeInTheDocument();
   });
+
+  it("shows the review-pullback banner when editing an in-review listing", async () => {
+    // Editing a review-state listing auto-demotes it to draft on save
+    // (backend update_draft handles the transition). Surface that side
+    // effect up front via a yellow banner so the seller isn't surprised
+    // when the listing disappears from the moderation queue.
+    renderEditing(
+      listing({
+        status: "review",
+        // Strip the rejection_notes from the default so we don't trip the
+        // rejection banner test path — this case is "in review, never
+        // rejected".
+        rejection_notes: null,
+        rejected_at: null,
+      }),
+    );
+    const banner = await screen.findByTestId("wizard-review-pullback-banner");
+    expect(banner).toHaveTextContent(/currently in review/i);
+    expect(banner).toHaveTextContent(/back to draft/i);
+  });
 });

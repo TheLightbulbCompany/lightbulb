@@ -123,6 +123,18 @@ describe("MyListingsView", () => {
     expect(screen.queryByTestId("edit-listing")).not.toBeInTheDocument();
   });
 
+  it("shows edit affordance for in-review listings (auto-demote on save)", async () => {
+    mockMyListings.mockResolvedValue({
+      items: [listing({ status: "review", name: "Ray the Resy Bot" })],
+    });
+    renderInDrawer();
+    await screen.findByText("Ray the Resy Bot");
+    // The Edit button is reachable; the wizard's pullback banner (tested
+    // separately) explains the demote-to-draft consequence.
+    const editBtn = await screen.findByTestId("edit-listing");
+    expect(editBtn).toHaveTextContent(/Edit/);
+  });
+
   it("clicking Edit triggers the drawer's startEditListing flow", async () => {
     mockMyListings.mockResolvedValue({ items: [listing()] });
     renderInDrawer();

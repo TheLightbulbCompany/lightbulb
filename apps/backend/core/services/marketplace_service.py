@@ -317,16 +317,22 @@ async def update_draft(
     category: str | None = None,
     version: int = 1,
 ) -> dict:
-    """Patch metadata on a draft listing. Slug / format / agent stay locked.
+    """Patch metadata on a seller's listing. Slug / format / agent stay locked.
 
-    All keyword args are optional; only those passed are written. Guarded
-    on (seller_id matches) AND (status='draft') so a rejected listing can
-    be revised (rejection flips status back to 'draft') but a published or
-    in-review listing cannot. Returns the updated item.
+    Allowed source states:
+    - ``draft`` (fresh or rejected): patches in place, status stays draft.
+    - ``review``: patches AND auto-demotes status back to draft. The
+      seller must resubmit before the listing re-enters the moderation
+      queue. Pulling out of review keeps the queue invariant clean —
+      moderators never see a row whose metadata is mid-mutation, which
+      avoids approving a stale snapshot.
+
+    All keyword args are optional; only those passed are written.
 
     Raises:
-        InvalidStateError: caller is not the seller, listing isn't in
-        draft state, or no fields were provided.
+        InvalidStateError: caller is not the seller, listing is in
+        published / retired / taken_down state, or no fields were
+        provided.
     """
     updates: dict[str, object] = {}
     if name is not None:
@@ -350,6 +356,7 @@ async def update_draft(
     expr_values: dict[str, object] = {
         ":sid": seller_id,
         ":draft": "draft",
+        ":review": "review",
         ":now": now_iso,
     }
     for i, (col, val) in enumerate(updates.items()):
@@ -358,6 +365,9 @@ async def update_draft(
         expr_names[name_placeholder] = col
         expr_values[value_placeholder] = val
         set_clauses.append(f"{name_placeholder} = {value_placeholder}")
+    # Always SET status=draft. No-op on a draft row; demotes a review row
+    # out of the moderation queue.
+    set_clauses.append("#s = :draft")
     set_clauses.append("updated_at = :now")
 
     table = _listings_table()
@@ -365,14 +375,16 @@ async def update_draft(
         resp = table.update_item(
             Key={"listing_id": listing_id, "version": version},
             UpdateExpression="SET " + ", ".join(set_clauses),
-            ConditionExpression="seller_id = :sid AND #s = :draft",
+            # IN-list keeps the gate tight: published / retired /
+            # taken_down rows can't be mutated via this path.
+            ConditionExpression="seller_id = :sid AND #s IN (:draft, :review)",
             ExpressionAttributeNames=expr_names,
             ExpressionAttributeValues=expr_values,
             ReturnValues="ALL_NEW",
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            raise InvalidStateError("listing is not in 'draft' state or you are not the seller")
+            raise InvalidStateError("listing is not in 'draft' or 'review' state, or you are not the seller")
         raise
     return resp.get("Attributes", {})
 

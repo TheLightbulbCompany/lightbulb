@@ -18,6 +18,7 @@ from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
 from core.services.update_service import apply_update, queue_fleet_image_update
+from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -140,10 +141,6 @@ async def admin_create_update(
 # ---------------------------------------------------------------------------
 # Direct config patching (admin — no notification, immediate apply)
 # ---------------------------------------------------------------------------
-
-
-class ConfigPatchRequest(BaseModel):
-    patch: dict = Field(..., description="Config patch to deep-merge into openclaw.json")
 
 
 @router.patch(

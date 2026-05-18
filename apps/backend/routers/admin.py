@@ -32,6 +32,7 @@ from core.services.admin_audit import audit_admin_action
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
+from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +51,6 @@ class IssueCreditRequest(BaseModel):
 
 class MarkInvoiceResolvedRequest(BaseModel):
     invoice_id: str = Field(..., description="Stripe invoice id")
-
-
-class ConfigPatchRequest(BaseModel):
-    patch: dict = Field(..., description="Config patch to deep-merge into openclaw.json")
 
 
 class QueueImageUpdateRequest(BaseModel):

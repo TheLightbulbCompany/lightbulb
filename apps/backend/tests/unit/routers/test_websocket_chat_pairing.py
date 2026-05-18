@@ -29,7 +29,7 @@ async def test_chat_agents_create_calls_paperclip_first_then_pairs(monkeypatch):
     pair_mock = AsyncMock()
 
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_create_for_chat",
+        "routers.websocket_chat.create_paperclip_for_chat",
         pc_create_mock,
     )
     monkeypatch.setattr(
@@ -95,8 +95,11 @@ async def test_chat_paperclip_create_mints_service_token_with_owner_id(monkeypat
     sessionKey (the adapter's user_id field) is still the member id —
     that's the per-creator manual-wake fallback session, not auth."""
 
-    # Drive _paperclip_create_for_chat directly so we can inspect the
+    # Drive create_paperclip_for_chat directly so we can inspect the
     # service_token.mint call args without needing a full ECS / WS stack.
+    # Patches target paperclip_agent_lifecycle directly — that's where the
+    # symbols are looked up after the lifecycle service was split out, so
+    # `from ... import` reference cache doesn't bypass the mock.
     mint_mock = MagicMock(return_value="svc.tok.minted")
     monkeypatch.setattr(
         "core.services.service_token.mint",
@@ -106,20 +109,20 @@ async def test_chat_paperclip_create_mints_service_token_with_owner_id(monkeypat
     # Intercept synthesize_openclaw_adapter to capture the user_id arg too.
     synth_mock = MagicMock(return_value={"type": "openclaw_gateway"})
     monkeypatch.setattr(
-        "core.services.paperclip_adapter_config.synthesize_openclaw_adapter",
+        "core.services.paperclip_agent_lifecycle.synthesize_openclaw_adapter",
         synth_mock,
     )
 
     # Stub Paperclip lookup so we never touch DDB / HTTP.
     monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing._resolve_company_id_for_owner",
+        "core.services.paperclip_agent_lifecycle._resolve_company_id_for_owner",
         AsyncMock(return_value="co_xyz"),
     )
 
     # Stub the admin session cookie + admin client so the real httpx client
     # never opens.
     monkeypatch.setattr(
-        "core.services.paperclip_admin_session.get_admin_session_cookie",
+        "core.services.paperclip_agent_lifecycle.get_admin_session_cookie",
         AsyncMock(return_value="cookie"),
     )
 
@@ -128,7 +131,7 @@ async def test_chat_paperclip_create_mints_service_token_with_owner_id(monkeypat
         return_value={"id": "pc-uuid", "name": "X"},
     )
     monkeypatch.setattr(
-        "core.services.paperclip_admin_client.PaperclipAdminClient",
+        "core.services.paperclip_agent_lifecycle.PaperclipAdminClient",
         lambda http_client: fake_admin,
     )
 
@@ -142,9 +145,9 @@ async def test_chat_paperclip_create_mints_service_token_with_owner_id(monkeypat
         lambda **kwargs: fake_http,
     )
 
-    from routers.websocket_chat import _paperclip_create_for_chat
+    from core.services.paperclip_agent_lifecycle import create_paperclip_for_chat
 
-    await _paperclip_create_for_chat(
+    await create_paperclip_for_chat(
         creator_user_id="user_member_b",
         owner_id="org_xyz",
         name="Code Reviewer",
@@ -169,7 +172,7 @@ async def test_chat_agents_create_with_no_name_falls_through_to_gateway(monkeypa
     pair_mock = AsyncMock()
     pc_create_mock = AsyncMock()
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_create_for_chat",
+        "routers.websocket_chat.create_paperclip_for_chat",
         pc_create_mock,
     )
     monkeypatch.setattr(
@@ -207,7 +210,7 @@ async def test_chat_agents_create_with_no_name_falls_through_to_gateway(monkeypa
 
 @pytest.mark.asyncio
 async def test_chat_agents_create_paperclip_failure_responds_ok_false(monkeypatch):
-    """If _paperclip_create_for_chat raises, the dispatcher's safety
+    """If create_paperclip_for_chat raises, the dispatcher's safety
     try/except must:
     1. Send an ok:false response frame back to the WS client (so the
        frontend isn't left hanging).
@@ -223,7 +226,7 @@ async def test_chat_agents_create_paperclip_failure_responds_ok_false(monkeypatc
     pool_mock.send_rpc = AsyncMock()
 
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_create_for_chat",
+        "routers.websocket_chat.create_paperclip_for_chat",
         pc_create_mock,
     )
     monkeypatch.setattr(
@@ -297,7 +300,7 @@ async def test_chat_agents_create_pair_failure_responds_ok_false(monkeypatch):
     pool_mock.send_rpc = AsyncMock()
 
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_create_for_chat",
+        "routers.websocket_chat.create_paperclip_for_chat",
         pc_create_mock,
     )
     monkeypatch.setattr(
@@ -385,7 +388,7 @@ async def test_chat_create_redacts_paperclip_agent_before_ws_send(monkeypatch):
     pair_mock = AsyncMock()
 
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_create_for_chat",
+        "routers.websocket_chat.create_paperclip_for_chat",
         pc_create_mock,
     )
     monkeypatch.setattr(
@@ -450,7 +453,7 @@ async def test_chat_delete_cascades_to_paperclip(monkeypatch):
     """
     paperclip_delete_mock = AsyncMock()
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_delete_for_chat",
+        "routers.websocket_chat.delete_paperclip_for_chat",
         paperclip_delete_mock,
     )
 
@@ -517,7 +520,7 @@ async def test_chat_delete_paperclip_failure_is_non_fatal(monkeypatch):
         side_effect=RuntimeError("paperclip transient outage"),
     )
     monkeypatch.setattr(
-        "routers.websocket_chat._paperclip_delete_for_chat",
+        "routers.websocket_chat.delete_paperclip_for_chat",
         paperclip_delete_mock,
     )
 

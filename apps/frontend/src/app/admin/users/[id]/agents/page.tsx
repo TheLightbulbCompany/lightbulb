@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { OrgBanner } from "@/components/admin/OrgBanner";
 import {
   listAgents,
   type AdminOrgContext,
@@ -205,30 +206,3 @@ function Header() {
   return <h1 className="text-xl font-semibold text-zinc-100">Agents</h1>;
 }
 
-/**
- * Indigo banner rendered when the target user belongs to a Clerk org.
- * Mirrors the overview page so admins get the same provenance hint
- * regardless of which tab they land on. Container/agents below are the
- * org's resources (owner_id == org_id).
- */
-function OrgBanner({ org }: { org: AdminOrgContext }) {
-  const role = org.role ? org.role.replace("org:", "") : "member";
-  const displayName = org.name || org.slug || org.id;
-  return (
-    <div className="rounded-md border border-indigo-800 bg-indigo-950/30 px-4 py-3 text-sm">
-      <div className="text-xs uppercase tracking-wide text-indigo-400">
-        Org member
-      </div>
-      <div className="mt-1 text-indigo-200">
-        {displayName}
-        {org.slug ? (
-          <span className="text-indigo-500"> ({org.slug})</span>
-        ) : null}
-      </div>
-      <div className="mt-1 text-xs text-indigo-400">
-        Role: {role} &mdash; container, billing, and agents below are the
-        org&apos;s resources.
-      </div>
-    </div>
-  );
-}

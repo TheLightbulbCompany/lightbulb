@@ -1,6 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
 
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { OrgBanner } from "@/components/admin/OrgBanner";
 import { getOverview } from "@/app/admin/_lib/api";
 
 export const metadata = { title: "Overview \u00b7 Admin" };
@@ -128,39 +129,6 @@ export default async function UserOverviewPage({ params }: UserOverviewPageProps
         <BillingCard billing={overview.billing} />
         <ContainerCard container={overview.container} />
         <UsageCard usage={overview.usage} />
-      </div>
-    </div>
-  );
-}
-
-/**
- * Indigo banner rendered at the top of the user-detail views when the target
- * user is a member of a Clerk org. Container / billing / agents / usage rows
- * in DDB are keyed by owner_id == org_id in that case, so the banner makes it
- * explicit to the admin that the cards below are the org's resources — not
- * the individual user's personal account.
- */
-function OrgBanner({
-  org,
-}: {
-  org: { id: string; slug: string; name: string; role: string };
-}) {
-  const role = org.role ? org.role.replace("org:", "") : "member";
-  const displayName = org.name || org.slug || org.id;
-  return (
-    <div className="rounded-md border border-indigo-800 bg-indigo-950/30 px-4 py-3 text-sm">
-      <div className="text-xs uppercase tracking-wide text-indigo-400">
-        Org member
-      </div>
-      <div className="mt-1 text-indigo-200">
-        {displayName}
-        {org.slug ? (
-          <span className="text-indigo-500"> ({org.slug})</span>
-        ) : null}
-      </div>
-      <div className="mt-1 text-xs text-indigo-400">
-        Role: {role} &mdash; container, billing, and agents below are the
-        org&apos;s resources.
       </div>
     </div>
   );

@@ -456,9 +456,7 @@ async def deploy_listing(
             new_agent_id,
         )
         try:
-            await delete_paperclip_for_marketplace(
-                owner_id=owner_id, agent_id=new_agent_id
-            )
+            await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
         except Exception:
             # Roll-back is best-effort; the original exception is what
             # the caller needs to see.

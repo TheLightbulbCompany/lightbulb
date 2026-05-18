@@ -45,10 +45,7 @@ def _substitute_agent_dir_sentinel(mcp_patch: dict | None, new_agent_id: str) ->
             continue
         args = entry.get("args")
         if isinstance(args, list):
-            entry["args"] = [
-                a.replace(_AGENT_DIR_SENTINEL, new_agent_id) if isinstance(a, str) else a
-                for a in args
-            ]
+            entry["args"] = [a.replace(_AGENT_DIR_SENTINEL, new_agent_id) if isinstance(a, str) else a for a in args]
     return mcp_patch
 
 

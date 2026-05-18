@@ -175,8 +175,7 @@ async def create_paperclip_for_marketplace(
     company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         raise RuntimeError(
-            f"owner {owner_id} has no Paperclip company — marketplace deploy blocked. "
-            "Re-run org provisioning."
+            f"owner {owner_id} has no Paperclip company — marketplace deploy blocked. Re-run org provisioning."
         )
 
     http = httpx.AsyncClient(

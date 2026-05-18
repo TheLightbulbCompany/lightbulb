@@ -4,7 +4,6 @@ import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-import pytest  # noqa: E402
 
 from core.services import catalog_slice  # noqa: E402
 

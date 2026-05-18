@@ -416,13 +416,9 @@ def test_export_replaces_seller_agent_id_in_mcp_args_with_sentinel(fake_efs, tmp
     args = pkg.openclaw_slice["mcp"]["servers"]["resy"]["args"]
     # Seller's agent_id MUST NOT appear in the slice — it's
     # buyer-non-portable.
-    assert agent_id not in args[0], (
-        f"seller agent_id leaked into slice mcp args: {args}"
-    )
+    assert agent_id not in args[0], f"seller agent_id leaked into slice mcp args: {args}"
     # Sentinel must be substituted in.
-    assert "__AGENT_DIR__" in args[0], (
-        f"__AGENT_DIR__ sentinel missing from slice mcp args: {args}"
-    )
+    assert "__AGENT_DIR__" in args[0], f"__AGENT_DIR__ sentinel missing from slice mcp args: {args}"
     # Rest of the path (mcp-resy/index.js) preserved.
     assert args[0].endswith("/mcp-resy/index.js"), args[0]
 

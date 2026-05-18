@@ -49,6 +49,7 @@ def _strip_provider_plugins(plugins: dict[str, Any]) -> dict[str, Any]:
         out["entries"] = {k: v for k, v in entries.items() if k not in _PROVIDER_PLUGIN_NAMES}
     return out
 
+
 # Secret-shaped field names scrubbed from slice copies of mcp.servers[*] /
 # skills.entries[*]. Values are replaced with empty strings (key names
 # preserved so the buyer sees what to fill in on their side). Mirrors

@@ -73,9 +73,7 @@ async def test_deploy_from_artifact_substitutes_agent_dir_sentinel_in_mcp_args()
             "servers": {
                 "resy": {
                     "command": "node",
-                    "args": [
-                        "/home/node/.openclaw/workspaces/__AGENT_DIR__/mcp-resy/index.js"
-                    ],
+                    "args": ["/home/node/.openclaw/workspaces/__AGENT_DIR__/mcp-resy/index.js"],
                     "env": {"RESY_EMAIL": ""},
                 }
             }

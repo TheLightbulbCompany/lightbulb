@@ -510,3 +510,40 @@ def test_approve_refuses_when_unpacked_exceeds_cap(client):
     assert resp.status_code == 409, resp.text
     assert "unpacks to" in resp.json()["detail"]
     mock_approve.assert_not_awaited()
+
+
+def test_approve_fails_closed_when_artifact_download_fails(client):
+    """Regression for Codex P2 on PR #693 (commit 805655bb): once
+    head_object confirms an artifact exists, any subsequent S3 failure
+    (AccessDenied, NoSuchKey race, timeout) must block approval. A broad
+    catch that fell through to the publish path would ship an unscanned
+    listing — exactly the case the scan cap is meant to prevent.
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    fake_table = MagicMock()
+    fake_table.get_item.return_value = {
+        "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/"}
+    }
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+    s3_client = MagicMock()
+    # head_object succeeds — artifact is present and under the compressed cap.
+    s3_client.head_object.return_value = {"ContentLength": 1024}
+    # get_object fails — simulate S3 transient error or AccessDenied.
+    s3_client.get_object.side_effect = RuntimeError("S3 AccessDenied")
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+        patch("routers.marketplace_admin.marketplace_service.approve", new=AsyncMock()) as mock_approve,
+    ):
+        resp = client.post("/api/v1/admin/marketplace/listings/l1/approve")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 409, resp.text
+    assert "scan failed" in resp.json()["detail"]
+    mock_approve.assert_not_awaited()

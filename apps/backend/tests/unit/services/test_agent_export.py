@@ -131,13 +131,9 @@ def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
     # internal-state dirs, but they sit inside the WORKSPACE root — the
     # export must ship them.
     (agent_dir / "sessions").mkdir()
-    (agent_dir / "sessions" / "interview-notes.md").write_text(
-        "# Interview notes\nKey themes...", encoding="utf-8"
-    )
+    (agent_dir / "sessions" / "interview-notes.md").write_text("# Interview notes\nKey themes...", encoding="utf-8")
     (agent_dir / "agent").mkdir()
-    (agent_dir / "agent" / "ARCHITECTURE.md").write_text(
-        "# How this agent works", encoding="utf-8"
-    )
+    (agent_dir / "agent" / "ARCHITECTURE.md").write_text("# How this agent works", encoding="utf-8")
 
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)

@@ -103,9 +103,7 @@ _CREDENTIAL_TOKEN_RE = re.compile(
     r"(?:^|[._\-])(credentials?|secrets?|private[._\-]?keys?|api[._\-]?keys?)(?:[._\-]|$)",
     re.IGNORECASE,
 )
-_CREDENTIAL_CONFIG_EXTENSIONS = frozenset(
-    {".json", ".yaml", ".yml", ".env", ".toml", ".ini", ".cfg", ".conf"}
-)
+_CREDENTIAL_CONFIG_EXTENSIONS = frozenset({".json", ".yaml", ".yml", ".env", ".toml", ".ini", ".cfg", ".conf"})
 
 
 def _looks_like_credential_file(name: str) -> bool:

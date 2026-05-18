@@ -181,7 +181,7 @@ class TestGetPricing:
 
 class TestStripeWebhook:
     @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
+    @patch("core.services.stripe_webhook_handlers.billing_repo")
     @patch("routers.billing.stripe")
     async def test_subscription_deleted_webhook(self, mock_stripe, mock_repo, async_client, dedup_table_and_settings):
         """customer.subscription.deleted: cancel + tear down container."""
@@ -217,8 +217,8 @@ class TestStripeWebhook:
         mock_billing_svc.cancel_subscription.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("routers.billing.put_metric")
-    @patch("routers.billing.billing_repo")
+    @patch("core.services.stripe_webhook_handlers.put_metric")
+    @patch("core.services.stripe_webhook_handlers.billing_repo")
     @patch("routers.billing.stripe")
     async def test_trial_will_end_emits_metric(
         self, mock_stripe, mock_repo, mock_put_metric, async_client, dedup_table_and_settings
@@ -249,7 +249,7 @@ class TestStripeWebhook:
         assert "trial.will_end_3day" in metric_names
 
     @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
+    @patch("core.services.stripe_webhook_handlers.billing_repo")
     @patch("routers.billing.stripe")
     async def test_subscription_updated_persists_status_and_trial_end(
         self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
@@ -293,7 +293,7 @@ class TestStripeWebhook:
         assert kwargs.get("trial_end") == 1700000000
 
     @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
+    @patch("core.services.stripe_webhook_handlers.billing_repo")
     @patch("routers.billing.stripe")
     async def test_subscription_created_persists_status_and_provider_choice(
         self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
@@ -379,7 +379,7 @@ class TestStripeWebhook:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
+    @patch("core.services.stripe_webhook_handlers.billing_repo")
     @patch("routers.billing.stripe")
     async def test_subscription_updated_resolves_owner_via_metadata(
         self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
@@ -422,7 +422,7 @@ class TestStripeWebhook:
         assert mock_repo.set_subscription.await_args.kwargs["owner_id"] == "org_xyz"
 
     @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
+    @patch("core.services.stripe_webhook_handlers.billing_repo")
     @patch("routers.billing.stripe")
     async def test_subscription_updated_disambiguates_shared_customer_by_sub_id(
         self, mock_stripe, mock_repo, async_client, dedup_table_and_settings

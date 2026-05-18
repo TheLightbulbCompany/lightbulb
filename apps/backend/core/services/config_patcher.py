@@ -384,31 +384,6 @@ async def apply_deploy_aux_mutations(
     )
 
 
-async def apply_deploy_mutation(
-    owner_id: str,
-    agent_entry: dict,  # noqa: ARG001 — intentionally unused; see docstring.
-    plugins_patch: dict,
-    *,
-    mcp_patch: dict | None = None,
-    skills_patch: dict | None = None,
-) -> None:
-    """DEPRECATED — kept temporarily so the prior catalog_service.py
-    compiles. Task 3 reroutes catalog_service to call
-    ``apply_deploy_aux_mutations`` directly + send ``agent_entry`` through
-    ``pair_with_openclaw``. DELETE this shim in that commit.
-
-    The ``agent_entry`` argument is intentionally discarded: writing the
-    agent into ``openclaw.json["agents"]["list"]`` is exactly the chokidar
-    reload race this refactor is removing.
-    """
-    await apply_deploy_aux_mutations(
-        owner_id,
-        plugins_patch=plugins_patch,
-        mcp_patch=mcp_patch,
-        skills_patch=skills_patch,
-    )
-
-
 async def delete_openclaw_config_path(
     owner_id: str,
     path: list[str],

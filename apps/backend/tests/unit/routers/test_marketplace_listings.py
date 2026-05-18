@@ -287,6 +287,17 @@ def _published_listing(*, price_cents: int = 0, listing_id: str = "lst_1") -> di
     }
 
 
+def _stub_ecs_manager(*, ip: str | None = "10.0.0.1", token: str = "gw-tok"):
+    """Build a get_ecs_manager() stub whose ``resolve_running_container``
+    returns (container_dict, ip). Pass ``ip=None`` to simulate the
+    container-unreachable path (the router 503s + rolls back).
+    """
+    mgr = MagicMock()
+    container = {"gateway_token": token} if ip is not None else None
+    mgr.resolve_running_container = AsyncMock(return_value=(container, ip))
+    return mgr
+
+
 def _stub_s3_get_object(
     _tar_bytes: bytes = b"fake-tar",
     _slice: dict | None = None,
@@ -323,13 +334,17 @@ def _stub_s3_get_object(
     return s3
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
-def test_deploy_free_listing_succeeds(mock_get_by_slug, mock_get_catalog, mock_boto, mock_create_pc, client):
+def test_deploy_free_listing_succeeds(
+    mock_get_by_slug, mock_get_catalog, mock_boto, mock_create_pc, mock_get_ecs, client
+):
     mock_get_by_slug.return_value = _published_listing(price_cents=0)
     mock_create_pc.return_value = {"id": "agent_abc123", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
     real_slice = {
         "agent": {"name": "Demo Agent", "skills": ["search"]},
         "plugins": {"entries": {"memory": {"enabled": True}}},
@@ -365,14 +380,19 @@ def test_deploy_free_listing_succeeds(mock_get_by_slug, mock_get_catalog, mock_b
     # Slice fetched from S3 and forwarded so the buyer's openclaw.json gets
     # patched (i.e. the agent auto-registers).
     assert kwargs["slice_"] == real_slice
+    # Container ip + token resolved from ecs_manager and threaded to the
+    # catalog so it can drive ``agents.create`` / ``agents.update`` RPCs.
+    assert kwargs["container_ip"] == "10.0.0.1"
+    assert kwargs["container_token"] == "gw-tok"
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_deploy_legacy_listing_without_slice_falls_back(
-    mock_get_by_slug, mock_get_catalog, mock_boto, mock_create_pc, client
+    mock_get_by_slug, mock_get_catalog, mock_boto, mock_create_pc, mock_get_ecs, client
 ):
     """Listings published before slice-synthesis shipped have no
     openclaw-slice.json key. The deploy must tolerate NoSuchKey on the
@@ -381,6 +401,7 @@ def test_deploy_legacy_listing_without_slice_falls_back(
     """
     mock_get_by_slug.return_value = _published_listing(price_cents=0)
     mock_create_pc.return_value = {"id": "agent_legacy_1", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
     mock_boto.return_value = _stub_s3_get_object(_slice_missing=True)
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(
@@ -421,13 +442,14 @@ def test_deploy_paid_listing_without_purchase_403(
     mock_get_catalog.assert_not_called()
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_deploy_paid_listing_seller_bypass_succeeds(
-    mock_get_by_slug, mock_get_catalog, mock_boto, mock_purchases, mock_create_pc, client
+    mock_get_by_slug, mock_get_catalog, mock_boto, mock_purchases, mock_create_pc, mock_get_ecs, client
 ):
     """Regression for PR #712 follow-up: a seller deploying their own paid
     listing must bypass the entitlement check. Without the bypass, sellers
@@ -441,6 +463,7 @@ def test_deploy_paid_listing_seller_bypass_succeeds(
     listing["seller_id"] = "user_test_123"
     mock_get_by_slug.return_value = listing
     mock_create_pc.return_value = {"id": "agent_self_deployed", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
     mock_boto.return_value = _stub_s3_get_object(
         _slice={"agent": {"name": "Demo Agent"}, "plugins": {}, "tools": {}, "cron_jobs": []}
     )
@@ -492,16 +515,18 @@ def test_deploy_paid_listing_with_revoked_license_403(
     mock_get_catalog.assert_not_called()
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_deploy_paid_listing_with_valid_purchase_succeeds(
-    mock_get_by_slug, mock_get_catalog, mock_boto, mock_purchases, mock_create_pc, client
+    mock_get_by_slug, mock_get_catalog, mock_boto, mock_purchases, mock_create_pc, mock_get_ecs, client
 ):
     mock_get_by_slug.return_value = _published_listing(price_cents=2000)
     mock_create_pc.return_value = {"id": "agent_xyz789", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
     mock_purchases.return_value.query.return_value = {
         "Items": [
             {
@@ -535,6 +560,7 @@ def test_deploy_paid_listing_with_valid_purchase_succeeds(
     assert resp.json()["agent_uuid"] == "agent_xyz789"
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
@@ -546,6 +572,7 @@ def test_deploy_mints_paperclip_agent_first_and_threads_uuid_to_catalog(
     mock_boto,
     mock_create_pc,
     mock_delete_pc,
+    mock_get_ecs,
     client,
 ):
     """Spec change #4: marketplace deploy must call Paperclip's
@@ -554,6 +581,7 @@ def test_deploy_mints_paperclip_agent_first_and_threads_uuid_to_catalog(
     """
     mock_get_by_slug.return_value = _published_listing(price_cents=0)
     mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
     real_slice = {
         "agent": {"name": "Demo", "role": "general"},
         "plugins": {},
@@ -594,6 +622,7 @@ def test_deploy_mints_paperclip_agent_first_and_threads_uuid_to_catalog(
     mock_delete_pc.assert_not_awaited()
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
@@ -605,19 +634,21 @@ def test_deploy_rolls_back_paperclip_on_catalog_failure(
     mock_boto,
     mock_create_pc,
     mock_delete_pc,
+    mock_get_ecs,
     client,
 ):
-    """If Paperclip create succeeds but catalog deploy fails (e.g.
-    apply_deploy_mutation raises mid-merge), delete the orphan Paperclip
-    agent so a retry doesn't leave a phantom Paperclip record.
+    """If Paperclip create succeeds but catalog deploy fails (e.g. the
+    gateway RPC raises or the aux merge errors), delete the orphan
+    Paperclip agent so a retry doesn't leave a phantom Paperclip record.
     """
     mock_get_by_slug.return_value = _published_listing(price_cents=0)
     mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
     mock_boto.return_value = _stub_s3_get_object(
         _slice={"agent": {"name": "Demo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
     )
     catalog = MagicMock()
-    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("apply_deploy boom"))
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("catalog boom"))
     mock_get_catalog.return_value = catalog
 
     resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
@@ -655,6 +686,45 @@ def test_deploy_503s_when_paperclip_unavailable(
     assert resp.status_code == 503, resp.text
     # Catalog never invoked.
     catalog.deploy_from_artifact.assert_not_called()
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_deploy_503s_when_container_not_reachable_and_rolls_back_paperclip(
+    mock_get_by_slug,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """If the buyer's OpenClaw container isn't reachable, the deploy can't
+    drive ``agents.create`` over the gateway. The router must 503 and
+    roll back the orphan Paperclip agent it just minted — otherwise a
+    retry accumulates phantom Paperclip records.
+    """
+    mock_get_by_slug.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-9999", "name": "Demo"}
+    mock_get_ecs.return_value = _stub_ecs_manager(ip=None)
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Demo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock()
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+    assert resp.status_code == 503, resp.text
+    # Catalog deploy never invoked — we short-circuited at container resolution.
+    catalog.deploy_from_artifact.assert_not_awaited()
+    # Orphan Paperclip agent rolled back.
+    mock_delete_pc.assert_awaited_once()
+    assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-9999"
 
 
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from core.auth import AuthContext, get_current_user, get_optional_user, resolve_owner_id
 from core.config import settings
-from core.containers import get_workspace
+from core.containers import get_ecs_manager, get_workspace
 from core.services import (
     agent_export,
     curator,
@@ -436,6 +436,33 @@ async def deploy_listing(
 
     new_agent_id = paperclip_agent["id"]
 
+    # Resolve the buyer's OpenClaw container so we can drive ``agents.create``
+    # + ``agents.update`` over the gateway during deploy (the agent entry no
+    # longer goes through the file-merge path — chokidar reload on EFS lags
+    # too much to be reliable). A missing or unreachable container is NOT
+    # a supported deploy state: roll back the orphan Paperclip agent and
+    # surface 503 so the caller can retry once the container is healthy.
+    ecs = get_ecs_manager()
+    container, container_ip = await ecs.resolve_running_container(owner_id)
+    if container is None or container_ip is None:
+        logger.info(
+            "Marketplace deploy: container not reachable for owner=%s — rolling back paperclip agent %s",
+            owner_id,
+            new_agent_id,
+        )
+        try:
+            await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+        except Exception:
+            logger.exception(
+                "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                new_agent_id,
+            )
+        raise HTTPException(
+            status_code=503,
+            detail="container starting — retry in a moment",
+        )
+    container_token = container["gateway_token"]
+
     try:
         result = await catalog.deploy_from_artifact(
             owner_id=owner_id,
@@ -444,6 +471,8 @@ async def deploy_listing(
             slice_=slice_,
             tar_bytes=tar_bytes,
             new_agent_id=new_agent_id,
+            container_ip=container_ip,
+            container_token=container_token,
         )
     except Exception as exc:
         # Catalog failed after Paperclip create succeeded — roll back

@@ -4,15 +4,30 @@ Publish + unpublish moved to the marketplace flow (see
 ``routers.marketplace_listings`` + ``core.services.marketplace_service``).
 What's left here:
   - ``deploy_from_artifact``: extracts a tarball into the buyer's EFS
-    workspace and deep-merges the openclaw-slice into their openclaw.json.
-    Called by /marketplace/listings/{slug}/deploy.
+    workspace, registers the agent in the container's in-memory state
+    via the OpenClaw gateway's ``agents.create`` / ``agents.update`` RPCs,
+    and deep-merges the rest of the openclaw-slice (plugins / mcp /
+    skills) into ``openclaw.json``. Called by
+    /marketplace/listings/{slug}/deploy.
   - ``list_deployed_for_user``: scans the buyer's EFS for ``.template``
     sidecars to drive the chat sidebar's already-deployed filter. Called
     by /marketplace/me/installed-templates.
 
+Why the agent entry goes through RPC and not the file-merge path: chokidar
+on EFS polls slowly (1-30s), so writing the agent into ``openclaw.json``
+and waiting for the container to pick it up was racy — buyers could hit
+a freshly-deployed agent before the runtime knew about it. The gateway
+RPC updates the container's in-memory state synchronously.
+
 Depends on injected collaborators so unit tests can mock them:
   - workspace: Workspace (from core.containers.workspace)
-  - apply_deploy_mutation: async callable (from core.services.config_patcher)
+  - apply_deploy_aux_mutations: async callable
+    (from core.services.config_patcher)
+  - pair_fn: async callable
+    (from core.services.paperclip_openclaw_pairing.pair_with_openclaw)
+  - gateway_pool_factory: callable returning the gateway pool singleton;
+    lazy-imported by default so import-time test bootstrap doesn't drag
+    in the whole containers module.
 """
 
 from __future__ import annotations
@@ -115,10 +130,21 @@ class CatalogService:
         self,
         *,
         workspace,
-        apply_deploy_mutation: Callable[[str, dict, dict], Awaitable[None]],
+        apply_deploy_aux_mutations: Callable[..., Awaitable[None]],
+        pair_fn: Callable[..., Awaitable[None]],
+        gateway_pool_factory: Callable[[], Any] | None = None,
     ):
         self._workspace = workspace
-        self._apply_deploy = apply_deploy_mutation
+        self._apply_aux = apply_deploy_aux_mutations
+        self._pair_fn = pair_fn
+        self._gateway_pool_factory = gateway_pool_factory
+
+    def _get_gateway_pool(self):
+        if self._gateway_pool_factory is not None:
+            return self._gateway_pool_factory()
+        from core.containers import get_gateway_pool
+
+        return get_gateway_pool()
 
     async def deploy_from_artifact(
         self,
@@ -128,26 +154,45 @@ class CatalogService:
         manifest: dict,
         slice_: dict,
         tar_bytes: bytes,
+        container_ip: str,
+        container_token: str,
         new_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Deploy a pre-fetched artifact (tarball + slice + manifest) into the
-        owner's container — extracts files into EFS at
-        ``workspaces/{new_agent_id}/`` and (when slice_.agent is present)
-        deep-merges the slice into the owner's openclaw.json so the agent
-        auto-registers.
+        owner's container.
 
-        If ``slice_`` is falsy / lacks an ``agent`` block, we extract the
-        workspace files but skip the openclaw.json mutation. Used by legacy
-        marketplace listings published before slice-synthesis shipped — the
-        owner's config doesn't auto-register and they have to add the
-        agent entry by hand.
+        Steps:
+          1. Extract ``tar_bytes`` into EFS at ``workspaces/{new_agent_id}/``.
+          2. If the slice carries an agent, register it LIVE via
+             ``pair_with_openclaw`` over the gateway — bypassing the
+             chokidar reload lag that plagued the file-merge path. The
+             slice's agent dict (minus ``id`` / ``workspace``) rides
+             along on the ``agents.update`` RPC as ``extra_update_fields``.
+          3. Deep-merge plugins/mcp/skills into the owner's openclaw.json
+             via ``apply_deploy_aux_mutations`` (no agent_entry write —
+             the agent is already in memory from step 2).
+          4. Write the ``.template`` sidecar.
+          5. Append cron jobs.
 
         Args:
-            new_agent_id: When supplied, the buyer-side OpenClaw agent_id is
-                pinned to this value. Marketplace deploys pass Paperclip's
-                freshly-minted UUID so the two systems share the same id.
-                Defaults to a locally-generated ``agent_<hex>`` UUID for
-                backwards-compatible direct callers.
+            container_ip / container_token: resolved by the caller via
+                ``ecs_manager.resolve_running_container(owner_id)``. No
+                defaults — a deploy without a reachable container is
+                not a supported mode.
+            new_agent_id: pinned buyer-side OpenClaw agent_id. Marketplace
+                deploys pass Paperclip's freshly-minted UUID so the two
+                systems share the same id. Defaults to a locally-generated
+                ``agent_<hex>`` UUID for direct callers.
+
+        Rollback posture:
+            - Workspace dir cleanup is best-effort + idempotent (always
+              runs on failure).
+            - A successful pair followed by a failed aux merge / sidecar
+              write leaves the agent FUNCTIONAL in the container's
+              in-memory state. The buyer can chat. The only loss is the
+              installed-templates sidebar entry (sidecar missing) or
+              some plugins/mcps not registered. Accepted tradeoff for v0
+              — the inverse ``agents.delete`` RPC isn't wired today.
         """
         if new_agent_id is None:
             new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
@@ -164,16 +209,39 @@ class CatalogService:
 
         try:
             if slice_has_agent:
-                # Build agent entry with new id + workspace path.
-                # Deep-copy the slice's agent dict so we don't mutate the caller's state
-                # (matters if s3 returns a cached/shared dict).
+                # Build the agent entry locally so we know the new id + workspace
+                # path. Deep-copy the slice's agent dict so we don't mutate the
+                # caller's state (matters if s3 returns a cached/shared dict).
                 agent_entry = copy.deepcopy(slice_.get("agent") or {})
                 agent_entry["id"] = new_agent_id
                 agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
+                # Strip the helper-owned fields from the extras dict — ``id``
+                # and ``workspace`` are derived from the create RPC's
+                # ``name`` (the agent UUID) so they must not be forwarded as
+                # update fields. pair_with_openclaw also force-overrides
+                # ``agentId`` + ``name`` regardless of caller input, but
+                # being explicit here keeps the contract obvious.
+                extra_update_fields = {k: v for k, v in agent_entry.items() if k not in ("id", "workspace")}
 
-                # Apply the mutation atomically inside the config file lock so two
-                # concurrent deploys cannot drop each other's agent entries.
-                plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
+                # Synthesize the Paperclip-shaped dict the helper expects.
+                # The actual Paperclip agent was minted upstream in the
+                # marketplace router; we're reusing its UUID + name to drive
+                # the OpenClaw gateway RPC. No Paperclip API call here.
+                paperclip_agent: dict[str, Any] = {
+                    "id": new_agent_id,
+                    "name": agent_entry.get("name") or new_agent_id,
+                }
+                if agent_entry.get("model"):
+                    paperclip_agent["model"] = agent_entry["model"]
+
+                await self._pair_fn(
+                    owner_id=owner_id,
+                    paperclip_agent=paperclip_agent,
+                    gateway_pool=self._get_gateway_pool(),
+                    ip=container_ip,
+                    token=container_token,
+                    extra_update_fields=extra_update_fields,
+                )
 
                 # Selection-aware additions (marketplace publish flow): the
                 # seller picked specific MCP servers + skills in the publish
@@ -184,6 +252,7 @@ class CatalogService:
                 # patch keeps legacy listing behavior (no MCP / skills
                 # registration) — backwards compatible with pre-bundle
                 # listings already in the marketplace.
+                plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
                 mcp_patch = copy.deepcopy(slice_.get("mcp")) or None
                 # Substitute __AGENT_DIR__ → new_agent_id in any mcp args
                 # before applying. Pairs with agent_export's publish-time
@@ -192,10 +261,9 @@ class CatalogService:
                 mcp_patch = _substitute_agent_dir_sentinel(mcp_patch, new_agent_id)
                 skills_patch = copy.deepcopy(slice_.get("skills")) or None
 
-                await self._apply_deploy(
+                await self._apply_aux(
                     owner_id,
-                    agent_entry,
-                    plugins_patch,
+                    plugins_patch=plugins_patch,
                     mcp_patch=mcp_patch,
                     skills_patch=skills_patch,
                 )
@@ -225,8 +293,8 @@ class CatalogService:
 
             # Carry the publisher's cron jobs (filtered + stripped at publish
             # time) over to the deployer's cron/jobs.json with regenerated
-            # ids and the new agent_id wired in. Done AFTER the agent entry
-            # is in place so the runtime never sees a cron job pointing at a
+            # ids and the new agent_id wired in. Done AFTER the agent is
+            # registered so the runtime never sees a cron job pointing at a
             # nonexistent agent. Skipped when there's no slice agent — a
             # cron job pointing at an unregistered agent would just error at
             # delivery time.
@@ -246,39 +314,18 @@ class CatalogService:
             # Roll back the extracted workspace so a failed deploy doesn't
             # leave orphan files on EFS. cleanup_agent_dirs removes both
             # agents/{id}/ and workspaces/{id}/, and is best-effort +
-            # idempotent — safe to call even if the config patch never
+            # idempotent — safe to call even if the pair / aux merge never
             # ran or already succeeded.
+            #
+            # NOTE: a successful pair followed by a failed aux merge / sidecar
+            # write leaves the agent registered in the container's in-memory
+            # state (no inverse ``agents.delete`` RPC wired yet). The buyer
+            # can still chat with the agent; the only loss is the
+            # installed-templates sidecar entry and any unmerged
+            # plugins/mcp/skills. Accepted tradeoff for v0 — same posture
+            # as the rest of the codebase (channel binding deep-merges
+            # are likewise not reversible).
             self._workspace.cleanup_agent_dirs(owner_id, new_agent_id)
-            # Codex P2: ``apply_deploy_mutation`` may have already committed
-            # the agent entry to openclaw.json before a later step (sidecar
-            # write, cron append) failed. Without an inverse mutation, retries
-            # would accumulate dangling agent entries that openclaw_id never
-            # gets workspace files for. Best-effort remove from agents.list;
-            # swallow secondary failures so the original exception surfaces.
-            # Only attempt the rollback if we actually called _apply_deploy.
-            if slice_has_agent:
-                try:
-                    from core.services.config_patcher import (
-                        remove_from_openclaw_config_list,
-                    )
-
-                    await remove_from_openclaw_config_list(
-                        owner_id,
-                        ["agents", "list"],
-                        lambda a: isinstance(a, dict) and a.get("id") == new_agent_id,
-                    )
-                except Exception:
-                    pass
-            # Known limitation (Codex P2): the plugins deep-merge from
-            # apply_deploy_mutation isn't rolled back. Plugin code is
-            # bundled in the OpenClaw image, so leaving extra plugins
-            # enabled in config has no install side-effect — the merge
-            # is also idempotent on retry. Inverting a deep-merge
-            # cleanly requires a pre-mutation snapshot, which adds
-            # complexity that isn't matched by the equivalent
-            # ``patch_openclaw_config`` path (channel binding deep-merges
-            # are likewise not reversible). Accepted as the same risk
-            # posture as the rest of the codebase.
             raise
 
         return {
@@ -328,8 +375,8 @@ def get_catalog_service() -> CatalogService:
     """Returns the singleton CatalogService used by marketplace deploys.
 
     No longer reads from the admin-catalog S3 bucket — publish + unpublish
-    moved to the marketplace flow (#547 + this PR). The remaining surface
-    is ``deploy_from_artifact`` (called by /marketplace/listings/{slug}/deploy
+    moved to the marketplace flow (#547). The remaining surface is
+    ``deploy_from_artifact`` (called by /marketplace/listings/{slug}/deploy
     after fetching the tarball + slice from the marketplace artifacts
     bucket) and ``list_deployed_for_user`` (called by
     /marketplace/me/installed-templates to drive the sidebar's
@@ -340,10 +387,12 @@ def get_catalog_service() -> CatalogService:
         return _catalog_service
 
     from core.containers import get_workspace
-    from core.services.config_patcher import apply_deploy_mutation
+    from core.services.config_patcher import apply_deploy_aux_mutations
+    from core.services.paperclip_openclaw_pairing import pair_with_openclaw
 
     _catalog_service = CatalogService(
         workspace=get_workspace(),
-        apply_deploy_mutation=apply_deploy_mutation,
+        apply_deploy_aux_mutations=apply_deploy_aux_mutations,
+        pair_fn=pair_with_openclaw,
     )
     return _catalog_service

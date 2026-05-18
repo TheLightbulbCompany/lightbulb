@@ -45,6 +45,10 @@ class Listing(BaseModel):
     price_cents: int
     tags: list[str]
     seller_id: str
+    # Resolved by seller_display.attach_seller_name(s) on response paths.
+    # Optional so create/update flows that build a fresh dict don't fail
+    # validation before the resolver has run.
+    seller_display_name: str | None = None
     status: ListingStatusStr
     version: int
     created_at: datetime

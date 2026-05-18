@@ -1,13 +1,23 @@
 "use client";
 
+import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import type { Listing } from "@/lib/marketplace/types";
 import { useHire } from "./useHire";
 
+const FALLBACK_BYLINE = "Community member";
+
+function bylineFor(listing: Listing, currentUserId: string | null | undefined): string {
+  if (currentUserId && listing.seller_id === currentUserId) return "you";
+  return listing.seller_display_name || FALLBACK_BYLINE;
+}
+
 export function ListingCard({ listing, installed }: { listing: Listing; installed: boolean }) {
   const { hire, isHiring } = useHire();
+  const { userId } = useAuth();
   const tagline =
     listing.description_md.split(/\n{2,}/, 1)[0]?.replace(/[#*_`]/g, "").trim() || "";
+  const byline = bylineFor(listing, userId);
 
   return (
     <article
@@ -32,7 +42,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
       </Link>
       <p className="text-[13px] text-[#5b5b5b] leading-snug flex-1 line-clamp-2">{tagline}</p>
       <div className="flex items-center justify-between pt-2.5 border-t border-dashed border-[#e0dbd0]">
-        <span className="text-[11.5px] italic text-[#5b5b5b]">by {listing.seller_id}</span>
+        <span className="text-[11.5px] italic text-[#5b5b5b]">by {byline}</span>
         {installed ? (
           <button
             type="button"

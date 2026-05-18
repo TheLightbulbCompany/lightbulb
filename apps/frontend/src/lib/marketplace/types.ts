@@ -19,6 +19,13 @@ export interface Listing {
   tags: string[];
   category?: string | null;
   seller_id: string;
+  /**
+   * Human-readable name for the byline. Resolved server-side from the
+   * seller's Clerk profile (curator → "isol8", others → first+last or
+   * email local-part, else "Community member"). Optional because older
+   * cached responses may not have it yet.
+   */
+  seller_display_name?: string | null;
   status: ListingStatus;
   version: number;
   published_at: string | null;

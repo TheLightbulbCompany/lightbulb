@@ -144,3 +144,93 @@ async def delete_paperclip_for_chat(
         )
     finally:
         await http.aclose()
+
+
+async def create_paperclip_for_marketplace(
+    *,
+    buyer_user_id: str,
+    owner_id: str,
+    name: str,
+    role: str | None,
+) -> dict:
+    """Create a Paperclip agent for a marketplace install.
+
+    Mirror of ``create_paperclip_for_chat`` for the storefront
+    ``/marketplace/listings/{slug}/deploy`` flow. Returns the Paperclip
+    agent dict (caller threads ``["id"]`` into ``catalog_service.
+    deploy_from_artifact`` as ``new_agent_id`` so Paperclip and
+    OpenClaw share the same UUID).
+
+    ``buyer_user_id``: the authenticated buyer triggering Hire (used as
+        adapterConfig.sessionKey, the manual-wake fallback).
+    ``owner_id``: container owner (org_id for orgs, user_id for personal);
+        used to look up the shared Paperclip company AND mint the service
+        token. Same owner-vs-member split as the chat path.
+    ``name``: agent display name — taken from the slice's agent entry,
+        falls back to the listing's slug.
+    ``role``: Paperclip role string (e.g. "general"). Defaults to "general"
+        when None.
+    """
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    if company_id is None:
+        raise RuntimeError(
+            f"owner {owner_id} has no Paperclip company — marketplace deploy blocked. "
+            "Re-run org provisioning."
+        )
+
+    http = httpx.AsyncClient(
+        base_url=settings.PAPERCLIP_INTERNAL_URL,
+        timeout=15.0,
+    )
+    try:
+        admin_client = PaperclipAdminClient(http_client=http)
+        admin_cookie = await get_admin_session_cookie(http)
+        adapter_config = synthesize_openclaw_adapter(
+            gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
+            service_token=service_token.mint(owner_id),
+            user_id=buyer_user_id,
+        )
+        return await admin_client.create_agent(
+            company_id=company_id,
+            name=name,
+            role=role or "general",
+            adapter_type=OPENCLAW_GATEWAY_TYPE,
+            adapter_config=adapter_config,
+            session_cookie=admin_cookie,
+        )
+    finally:
+        await http.aclose()
+
+
+async def delete_paperclip_for_marketplace(
+    *,
+    owner_id: str,
+    agent_id: str,
+) -> None:
+    """Cleanup partner to ``create_paperclip_for_marketplace`` for the
+    case where Paperclip create succeeded but the catalog deploy failed
+    afterwards. Idempotent — Paperclip's delete_agent swallows 404, so
+    a missing or already-cleaned agent is a no-op.
+    """
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    if company_id is None:
+        logger.info(
+            "delete_paperclip_for_marketplace: owner %s has no Paperclip company — skip",
+            owner_id,
+        )
+        return
+    http = httpx.AsyncClient(
+        base_url=settings.PAPERCLIP_INTERNAL_URL,
+        timeout=15.0,
+    )
+    try:
+        admin_client = PaperclipAdminClient(http_client=http)
+        admin_cookie = await get_admin_session_cookie(http)
+        await admin_client.delete_agent(
+            session_cookie=admin_cookie,
+            agent_id=agent_id,
+        )
+    finally:
+        await http.aclose()

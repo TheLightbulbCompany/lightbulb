@@ -154,22 +154,6 @@ export async function myListings(opts: {
   return (await resp.json()) as { items: Listing[] };
 }
 
-export interface AgentSummary {
-  agent_id: string;
-  name: string;
-  skill_count: number;
-  channel_count: number;
-  cron_count: number;
-}
-
-export async function myAgentsSummary(opts: { jwt: string }): Promise<{ agents: AgentSummary[] }> {
-  const resp = await fetch(`${API}/marketplace/me/agents-summary`, {
-    headers: { Authorization: `Bearer ${opts.jwt}` },
-  });
-  if (!resp.ok) throw new Error(`myAgentsSummary failed: ${resp.status}`);
-  return (await resp.json()) as { agents: AgentSummary[] };
-}
-
 // ---------------------------------------------------------------------------
 // Publish wizard — artifact preview (Bundle step + Review safety_flags)
 // ---------------------------------------------------------------------------

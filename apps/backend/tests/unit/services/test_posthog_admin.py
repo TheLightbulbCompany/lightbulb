@@ -341,10 +341,3 @@ async def test_handles_network_error(monkeypatch):
     assert result["events"] == []
     assert result["error"] is not None
     assert "dns boom" in result["error"]
-
-
-def test_session_replay_url(monkeypatch):
-    monkeypatch.setattr("core.config.settings.POSTHOG_HOST", "https://app.posthog.com")
-    from core.services.posthog_admin import session_replay_url
-
-    assert session_replay_url("sess_abc") == "https://app.posthog.com/replay/sess_abc"

@@ -53,9 +53,3 @@ async def get_curator_user_id() -> str | None:
             return None
         _curator_user_id = user.get("id")
         return _curator_user_id
-
-
-def _reset_cache_for_tests() -> None:
-    """Test hook — reset the module-level cache so each test starts fresh."""
-    global _curator_user_id
-    _curator_user_id = None

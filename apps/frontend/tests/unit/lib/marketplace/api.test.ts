@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { searchListings, myListings, myAgentsSummary } from "@/lib/marketplace/api";
+import { searchListings, myListings } from "@/lib/marketplace/api";
 
 const fetchSpy = vi.fn();
 vi.stubGlobal("fetch", fetchSpy);
@@ -31,19 +31,5 @@ describe("marketplace api", () => {
     expect(url).toMatch(/status_in=draft%2Creview%2Cpublished%2Cretired%2Ctaken_down/);
     const headers = (fetchSpy.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
     expect(headers["Authorization"]).toBe("Bearer tok_abc");
-  });
-
-  it("myAgentsSummary returns the agents array", async () => {
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        agents: [
-          { agent_id: "a1", name: "main", skill_count: 2, channel_count: 1, cron_count: 0 },
-        ],
-      }),
-    });
-    const result = await myAgentsSummary({ jwt: "tok_abc" });
-    expect(result.agents).toHaveLength(1);
-    expect(result.agents[0].skill_count).toBe(2);
   });
 });

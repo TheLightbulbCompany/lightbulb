@@ -122,7 +122,12 @@ _CREDENTIAL_TOKEN_RE = re.compile(
     r"(?:^|[._\-])(credentials?|secrets?|private[._\-]?keys?|api[._\-]?keys?)(?:[._\-]|$)",
     re.IGNORECASE,
 )
-_CREDENTIAL_CONFIG_EXTENSIONS = frozenset({".json", ".yaml", ".yml", ".env", ".toml", ".ini", ".cfg", ".conf"})
+# Includes ``.txt`` because sellers commonly paste credentials into a
+# text file — ``secret.txt`` / ``credentials.txt`` / ``private-key.txt``
+# would slip through a config-only extension list, and the content scan
+# only inspects persona / markdown / openclaw.json (Codex P1 on PR #711,
+# commit eb8dae83).
+_CREDENTIAL_CONFIG_EXTENSIONS = frozenset({".json", ".yaml", ".yml", ".env", ".toml", ".ini", ".cfg", ".conf", ".txt"})
 
 
 def _looks_like_credential_file(name: str) -> bool:

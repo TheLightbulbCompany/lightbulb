@@ -142,6 +142,28 @@ def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
     assert any("agent/ARCHITECTURE.md" in n for n in names), names
 
 
+def test_credential_filter_blocks_txt_pasted_secrets(fake_efs):
+    """Regression for Codex P1 on PR #711 (commit eb8dae83): sellers
+    commonly paste credentials into a .txt file (``secret.txt``,
+    ``credentials.txt``, ``private-key.txt``). The content scan only
+    inspects persona/.md/openclaw.json, so these slip through if .txt
+    isn't a config-shape extension. Add .txt to the gate.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "secret.txt").write_text("aws_secret_key=hunter2\n", encoding="utf-8")
+    (agent_dir / "credentials.txt").write_text("API_KEY=...", encoding="utf-8")
+    (agent_dir / "private-key.txt").write_text("-----BEGIN-----", encoding="utf-8")
+    # Non-credential .txt file still ships.
+    (agent_dir / "notes.txt").write_text("# brainstorm", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+
+    for forbidden in ("secret.txt", "credentials.txt", "private-key.txt"):
+        assert not any(forbidden in n for n in names), f"{forbidden!r} leaked through the credential filter: {names}"
+    assert any("notes.txt" in n for n in names), names
+
+
 def test_credential_filter_blocks_extensionless_aws_credentials(fake_efs):
     """Regression for Codex P1 on PR #711 (commit 43c49a31): the
     AWS-style ``credentials`` file (extensionless, e.g. copied from

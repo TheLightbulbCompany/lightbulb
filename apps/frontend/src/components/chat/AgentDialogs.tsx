@@ -15,18 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/hooks/useAgents";
-
-/**
- * Normalize a display name to an agent ID. Mirrors OpenClaw's
- * `normalizeAgentId` (see openclaw `src/routing/session-key.ts`).
- */
-function normalizeToId(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-}
+import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
 
 // =============================================================================
 // Notes on dialog state and lifecycle
@@ -68,10 +57,9 @@ export function AgentCreateDialog({ open, existingIds, onCancel, onCreate }: Cre
   const submittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
-  const id = normalizeToId(name);
-  const duplicate = id !== "" && existingIds.includes(id);
-  const reserved = id === "main";
-  const canSubmit = name.trim() !== "" && !duplicate && !reserved && !submitting;
+  const id = normalizeAgentId(name);
+  const clientError = validateAgentName(name, existingIds);
+  const canSubmit = name.trim() !== "" && clientError === null && !submitting;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -87,12 +75,6 @@ export function AgentCreateDialog({ open, existingIds, onCancel, onCreate }: Cre
       setSubmitting(false);
     }
   };
-
-  const clientError = duplicate
-    ? "An agent with this name already exists"
-    : reserved
-      ? "This name is reserved"
-      : null;
 
   return (
     <AlertDialog open={open} onOpenChange={(next) => !next && !submittingRef.current && onCancel()}>

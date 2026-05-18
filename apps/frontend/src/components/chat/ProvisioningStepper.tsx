@@ -23,6 +23,7 @@ import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
 import { Logo } from "@/components/Logo";
+import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
 // "channels-sidecars", and "agent" steps all map to the same backend
@@ -1330,7 +1331,7 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handlePick = useCallback(async (id: "chatgpt_oauth" | "byo_key" | "bedrock_claude") => {
+  const handlePick = useCallback(async (id: ProviderChoiceId) => {
     setLoading(id);
     setError(null);
     try {
@@ -1353,58 +1354,9 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
       setError(err instanceof Error ? err.message : "Couldn't start checkout. Please try again.");
     }
   }, [api]);
-  type Card = {
-    id: "chatgpt_oauth" | "byo_key" | "bedrock_claude";
-    title: string;
-    subtitle: string;
-    trialNote: string;
-    bullets: string[];
-    cta: string;
-    highlighted?: boolean;
-  };
-  const cards: Card[] = [
-    {
-      id: "chatgpt_oauth",
-      title: "Sign in with ChatGPT",
-      subtitle: "$50 / month + your ChatGPT subscription",
-      trialNote: "14-day free trial",
-      bullets: [
-        "Inference via your ChatGPT account",
-        "All channels (Telegram, Discord, WhatsApp)",
-        "Always-on container",
-      ],
-      cta: "Start trial",
-    },
-    {
-      id: "byo_key",
-      title: "Bring your own API key",
-      subtitle: "$50 / month + your provider bill",
-      trialNote: "14-day free trial",
-      bullets: [
-        "OpenAI or Anthropic — your key, your billing",
-        "All channels",
-        "Always-on container",
-      ],
-      cta: "Start trial",
-    },
-    {
-      id: "bedrock_claude",
-      title: "Powered by Claude",
-      subtitle: "$50 / month + Claude credits",
-      trialNote: "Pay-as-you-go credits, 1.4× markup",
-      bullets: [
-        "Claude Sonnet 4.6 + Opus 4.7",
-        "All channels",
-        "Always-on container",
-      ],
-      cta: "Get started",
-      highlighted: true,
-    },
-  ];
-
   const visibleCards = isOrg
-    ? cards.filter((c) => c.id !== "chatgpt_oauth")
-    : cards;
+    ? PROVIDER_CARDS.filter((c) => c.id !== "chatgpt_oauth")
+    : PROVIDER_CARDS;
 
   return (
     <div className="flex-1 flex items-center justify-center p-8 bg-[#faf7f2]">

@@ -45,6 +45,12 @@ export interface ModerationActionsProps {
    * the original blank-textarea behavior used on the queue page.
    */
   prefilledRejectionNotes?: string;
+  /** When true, the Approve button is disabled — used when the preview
+   * couldn't fully scan the artifact. Reject + Takedown remain enabled
+   * because they're still safe to take on a partial preview. */
+  approveDisabled?: boolean;
+  /** Tooltip / aria copy shown when Approve is disabled. */
+  approveDisabledReason?: string;
 }
 
 /**
@@ -67,6 +73,8 @@ export function ModerationActions({
   version,
   prevVersion,
   prefilledRejectionNotes,
+  approveDisabled,
+  approveDisabledReason,
 }: ModerationActionsProps) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -118,19 +126,33 @@ export function ModerationActions({
   return (
     <div className="flex shrink-0 flex-col items-end gap-2">
       <div className="flex gap-2">
-        <ConfirmActionDialog
-          confirmText={`approve ${slug}`}
-          actionLabel={`Approve ${listingName}`}
-          onConfirm={handleApprove}
-        >
+        {approveDisabled ? (
           <Button
             type="button"
             size="sm"
-            className="bg-green-700/30 text-green-300 hover:bg-green-700/40"
+            disabled
+            title={approveDisabledReason}
+            aria-label={approveDisabledReason ?? "Approve disabled"}
+            data-testid="approve-disabled"
+            className="bg-zinc-700/20 text-zinc-500 cursor-not-allowed"
           >
             Approve
           </Button>
-        </ConfirmActionDialog>
+        ) : (
+          <ConfirmActionDialog
+            confirmText={`approve ${slug}`}
+            actionLabel={`Approve ${listingName}`}
+            onConfirm={handleApprove}
+          >
+            <Button
+              type="button"
+              size="sm"
+              className="bg-green-700/30 text-green-300 hover:bg-green-700/40"
+            >
+              Approve
+            </Button>
+          </ConfirmActionDialog>
+        )}
 
         <AlertDialog open={rejectOpen} onOpenChange={handleRejectOpenChange}>
           <AlertDialogTrigger asChild>

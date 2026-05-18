@@ -67,49 +67,71 @@ _SKIP_DIR_NAMES = frozenset(
 )
 
 
-# OpenClaw's per-agent runtime state lives under ``agents/{id}/`` — a
-# SIBLING of the workspace dir we now tar from. ``sessions/`` and ``agent/``
-# don't appear under ``workspaces/{id}/`` in the canonical layout, so this
-# set is dead today. Kept as belt-and-suspenders in case a seller happens
-# to name a top-level workspace subdir ``sessions`` or ``agent`` — the
-# filter strips them by name only when they sit directly at the workspace
-# root, so a legitimate ``skills/sessions/foo`` would still ship.
+# Filename-based credential-leak guard. Defense in depth on top of
+# marketplace_safety's content scan — if a file looks like credential
+# material by SHAPE, we skip it at tar time regardless of contents.
 #
-# Background on the two upstream runtime dirs:
-#   sessions/  — chat transcripts (*.jsonl), trajectory logs
-#                (*.trajectory.jsonl, regularly multi-MB and routinely >10MB),
-#                and their .bak-* / .reset.* archives. Shipping leaks the
-#                seller's full chat history (PII, tool outputs).
-#   agent/     — auth-profiles.json holds OAuth refresh tokens for sellers
-#                on the ChatGPT-OAuth provider path (see ecs_manager.py
-#                _pre_stage_oauth_for_user). Upstream OpenClaw warns about
-#                exactly this in src/config/agent-dirs.ts:
-#                  "If you want to share credentials, copy auth-profiles.json
-#                   instead of sharing the entire agentDir."
-_OPENCLAW_RUNTIME_STATE_DIRS = frozenset({"sessions", "agent"})
+# Three buckets, all checked against the basename only:
+#
+# 1. Exact-match SSH key files. These have no extension we can key on, so
+#    we hardcode the canonical names.
+_EXACT_CREDENTIAL_FILENAMES = frozenset(
+    {
+        "id_rsa",
+        "id_rsa.pub",
+        "id_dsa",
+        "id_dsa.pub",
+        "id_ecdsa",
+        "id_ecdsa.pub",
+        "id_ed25519",
+        "id_ed25519.pub",
+        "known_hosts",
+        "authorized_keys",
+    }
+)
 
+# 2. Extensions that are almost always private-key / cert material.
+_CREDENTIAL_EXTENSIONS = frozenset({".pem", ".key", ".p12", ".pfx"})
 
-# Credential-shaped filenames that we never want in a published artifact,
-# regardless of whether the safety scan catches their content. The seller
-# might have `resy-credentials.json`, `aws.credentials.json`, `.secret.json`
-# etc. sitting in their workspace; shipping any of those exposes their own
-# accounts to every buyer. Pattern is applied case-insensitively to the
-# bare filename, anywhere in the tree.
-_CREDENTIAL_FILENAME_PATTERNS = (
-    "credentials",  # *credentials*.json|.yaml|.env
-    "secret",  # *secret*.json|.env
-    "secrets",
-    "private-key",
-    "id_rsa",
-    "id_ed25519",
+# 3. Config-shape extensions where the STEM signals secret content. Match
+#    a credentials/secrets/api-key/private-key token at a word boundary
+#    (start, end, or surrounded by `.`/`-`/`_`). Earlier we substring-
+#    matched the basename which would drop legitimate workspace files like
+#    `skills/secretary.md`, `skills/secret-santa.md`, or
+#    `credentials-helper.ts` (Codex P2 on PR #710, commit 1f30aa3c).
+_CREDENTIAL_TOKEN_RE = re.compile(
+    r"(?:^|[._\-])(credentials?|secrets?|private[._\-]?keys?|api[._\-]?keys?)(?:[._\-]|$)",
+    re.IGNORECASE,
+)
+_CREDENTIAL_CONFIG_EXTENSIONS = frozenset(
+    {".json", ".yaml", ".yml", ".env", ".toml", ".ini", ".cfg", ".conf"}
 )
 
 
 def _looks_like_credential_file(name: str) -> bool:
-    """Filename-based credential-leak guard. Cheap defense in depth on top
-    of marketplace_safety's content scan."""
+    """Filename-shape check. Returns True for files we should never ship.
+
+    Catches: id_rsa, *.pem, *.key, *.p12, aws.credentials.json,
+    resy-credentials.json, openai.secret.json, service-account-secrets.yaml.
+
+    Does NOT catch: skills/secretary.md, skills/secret-santa.md,
+    credentials-helper.ts — the stem has to carry the credential token as
+    a WHOLE segment and the file has to use a config-shape extension.
+    """
     lower = name.lower()
-    return any(tok in lower for tok in _CREDENTIAL_FILENAME_PATTERNS)
+    if lower in _EXACT_CREDENTIAL_FILENAMES:
+        return True
+    # rpartition gives ("stem", ".", "ext") or ("", "", "name") for
+    # extensionless files. We only care about the extension half.
+    stem, dot, ext = lower.rpartition(".")
+    if not dot:
+        return False
+    ext_with_dot = f".{ext}"
+    if ext_with_dot in _CREDENTIAL_EXTENSIONS:
+        return True
+    if ext_with_dot in _CREDENTIAL_CONFIG_EXTENSIONS and _CREDENTIAL_TOKEN_RE.search(stem):
+        return True
+    return False
 
 
 class AgentNotFoundError(Exception):
@@ -186,13 +208,6 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             # Skip junk dirs anywhere in the tree.
             parts = tarinfo.name.split("/")
             if any(p in _SKIP_DIR_NAMES for p in parts):
-                return None
-            # Skip OpenClaw runtime-state dirs (sessions/, agent/) — see
-            # _OPENCLAW_RUNTIME_STATE_DIRS docstring for the why. Tar arcname="."
-            # prefixes every path with "./"; the runtime dirs sit at the agent
-            # dir root, so we check parts[1] (the segment after ".").
-            top_level = parts[1] if len(parts) >= 2 and parts[0] == "." else None
-            if top_level in _OPENCLAW_RUNTIME_STATE_DIRS:
                 return None
             # Skip hidden files / hidden dirs anywhere in the tree. The
             # leading "." in tarinfo.name is the arcname root (we pass

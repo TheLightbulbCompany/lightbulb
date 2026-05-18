@@ -46,6 +46,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplacePurchasesTable: dynamodb.Table;
   public readonly marketplacePayoutAccountsTable: dynamodb.Table;
   public readonly marketplaceTakedownsTable: dynamodb.Table;
+  public readonly marketplaceSellersTable: dynamodb.Table;
 
   // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
   // Per-owner event history for /hooks/{owner_id}/{path} requests proxied
@@ -372,6 +373,24 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: props.kmsKey,
+    });
+
+    // Marketplace seller profiles — per-seller chosen handle / display name.
+    // The seller_id is the Clerk user_id; the handle is the public marketplace
+    // identity surfaced on listing bylines and (future) star / credibility
+    // surfaces. `handle-index` enforces uniqueness via conditional writes.
+    this.marketplaceSellersTable = new dynamodb.Table(this, "MarketplaceSellersTable", {
+      tableName: `isol8-${env}-marketplace-sellers`,
+      partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+    this.marketplaceSellersTable.addGlobalSecondaryIndex({
+      indexName: "handle-index",
+      partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
     });
 
     // OpenClaw webhook ingress audit table — every /hooks/{owner_id}/{path}

@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 
 import { useApi } from "@/lib/api";
-import { updateListing } from "@/lib/marketplace/api";
+import { getMySellerProfile, updateListing, type SellerProfile } from "@/lib/marketplace/api";
+import { HandlePicker } from "@/components/marketplace/HandlePicker";
 
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import {
@@ -128,6 +129,37 @@ export function PublishWizard() {
   const [draftListingId, setDraftListingId] = useState<string | null>(
     editingListing?.listing_id ?? null,
   );
+
+  // Marketplace handle gate. The publish flow refuses POST /listings with
+  // 409 seller_profile_required if the seller has no handle yet — we
+  // pre-flight on mount to surface the picker before they hit Submit, and
+  // also fall back to it if Submit hits the 409.
+  const [sellerProfile, setSellerProfile] = useState<SellerProfile | null>(null);
+  const [profileChecked, setProfileChecked] = useState(false);
+  const [forceHandleGate, setForceHandleGate] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const jwt = await getToken();
+        if (!jwt) {
+          if (!cancelled) setProfileChecked(true);
+          return;
+        }
+        const profile = await getMySellerProfile({ jwt });
+        if (!cancelled) {
+          setSellerProfile(profile);
+          setProfileChecked(true);
+        }
+      } catch {
+        if (!cancelled) setProfileChecked(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getToken]);
 
   // Rejection banner — present iff the listing was rejected and not yet
   // resubmitted. Rendered on every wizard step in edit mode so the seller
@@ -272,6 +304,13 @@ export function PublishWizard() {
         setSubmitError("That slug is already taken — change the name and try again.");
         setDraftListingId(null);
         setStep(2);
+      } else if (e.status === 409 && /seller_profile_required/i.test(errMsg)) {
+        // Backend gated the publish on the seller having a marketplace
+        // handle. Surface the picker inline; on save we'll let the seller
+        // retry Submit. Don't auto-retry — the seller just spent time
+        // setting their public identity and should re-confirm Submit.
+        setForceHandleGate(true);
+        setSubmitError(null);
       } else {
         setSubmitError(errMsg || "Failed to submit listing");
       }
@@ -320,6 +359,38 @@ export function PublishWizard() {
         </span>
       </div>
 
+      {profileChecked && !sellerProfile && step !== 6 && (
+        <div
+          role="region"
+          aria-label="Marketplace handle required"
+          className="mb-4 rounded-2xl border border-[#d8b46a] bg-[#fbf3df] px-3.5 py-3"
+        >
+          <div className="text-[12.5px] font-semibold text-[#5b4a1c] mb-1">
+            Pick a marketplace handle before publishing
+          </div>
+          <p className="text-[12px] text-[#7a6432] mb-3 leading-snug">
+            Your handle appears on every listing byline and on (future) credibility
+            surfaces. You can change it later from Settings → Marketplace.
+          </p>
+          <HandlePicker
+            compact
+            saveLabel="Save handle"
+            onSaved={(profile) => {
+              setSellerProfile(profile);
+              setForceHandleGate(false);
+            }}
+          />
+        </div>
+      )}
+
+      {forceHandleGate && sellerProfile === null && (
+        // Defence-in-depth: if the 409 fired but the pre-flight banner is
+        // already rendered, this branch is a no-op. Kept here so the gate
+        // shows even on the (rare) path where the pre-flight succeeded
+        // and then the profile was deleted out-of-band before Submit.
+        <div className="hidden" />
+      )}
+
       <div className="flex-1">
         {step === 1 && <PickAgentStep selected={form.agentId} onSelect={setAgent} />}
         {step === 2 && <DetailsStep form={form} onChange={updateForm} />}
@@ -356,7 +427,14 @@ export function PublishWizard() {
             <button
               type="button"
               onClick={next}
-              disabled={!canContinue() || submitting}
+              disabled={
+                !canContinue() ||
+                submitting ||
+                // Block the final Submit step when the seller hasn't picked a
+                // marketplace handle yet. The pre-flight banner above the step
+                // content surfaces the picker.
+                (step === 5 && profileChecked && !sellerProfile)
+              }
               className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold disabled:opacity-50"
             >
               {step === 5

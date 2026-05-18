@@ -193,3 +193,86 @@ export async function artifactPreview(opts: {
   if (!resp.ok) throw new Error(`artifactPreview failed: ${resp.status}`);
   return (await resp.json()) as ArtifactPreview;
 }
+
+// ---------------------------------------------------------------------------
+// Seller profile (marketplace handle)
+//
+// Sellers pick a public handle that anchors their identity on listings and
+// (future) star / credibility surfaces. The publish flow gates on a profile
+// existing — a 409 `seller_profile_required` from POST /listings routes the
+// wizard to the handle picker before retrying.
+// ---------------------------------------------------------------------------
+
+export interface SellerProfile {
+  seller_id: string;
+  handle: string;
+  display_name?: string | null;
+  bio?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SellerProfileWrite {
+  handle: string;
+  display_name?: string | null;
+  bio?: string | null;
+}
+
+export type HandleUnavailableReason = "format" | "reserved" | "taken";
+
+export interface HandleAvailability {
+  available: boolean;
+  reason: HandleUnavailableReason | null;
+}
+
+/** Returns null on 404 (no profile yet). Throws on other non-OK. */
+export async function getMySellerProfile(opts: { jwt: string }): Promise<SellerProfile | null> {
+  const resp = await fetch(`${API}/marketplace/seller/me`, {
+    headers: { Authorization: `Bearer ${opts.jwt}` },
+  });
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(`getMySellerProfile failed: ${resp.status}`);
+  return (await resp.json()) as SellerProfile;
+}
+
+export type UpsertSellerProfileError = "handle_format" | "handle_reserved" | "handle_taken" | "unknown";
+
+export class SellerProfileWriteError extends Error {
+  constructor(public readonly reason: UpsertSellerProfileError, public readonly status: number) {
+    super(reason);
+  }
+}
+
+export async function upsertMySellerProfile(opts: {
+  jwt: string;
+  payload: SellerProfileWrite;
+}): Promise<SellerProfile> {
+  const resp = await fetch(`${API}/marketplace/seller/me`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${opts.jwt}`, "Content-Type": "application/json" },
+    body: JSON.stringify(opts.payload),
+  });
+  if (resp.status === 400 || resp.status === 409) {
+    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
+    const detail = body.detail ?? "unknown";
+    const reason: UpsertSellerProfileError =
+      detail === "handle_format" || detail === "handle_reserved" || detail === "handle_taken"
+        ? detail
+        : "unknown";
+    throw new SellerProfileWriteError(reason, resp.status);
+  }
+  if (!resp.ok) throw new Error(`upsertMySellerProfile failed: ${resp.status}`);
+  return (await resp.json()) as SellerProfile;
+}
+
+export async function checkHandleAvailability(opts: {
+  jwt: string;
+  handle: string;
+}): Promise<HandleAvailability> {
+  const params = new URLSearchParams({ h: opts.handle });
+  const resp = await fetch(`${API}/marketplace/seller/check-handle?${params}`, {
+    headers: { Authorization: `Bearer ${opts.jwt}` },
+  });
+  if (!resp.ok) throw new Error(`checkHandleAvailability failed: ${resp.status}`);
+  return (await resp.json()) as HandleAvailability;
+}

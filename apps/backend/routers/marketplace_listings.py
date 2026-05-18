@@ -17,7 +17,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from core.auth import AuthContext, get_current_user, get_optional_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_workspace
-from core.services import agent_export, curator, marketplace_search, marketplace_service
+from core.services import (
+    agent_export,
+    curator,
+    marketplace_search,
+    marketplace_service,
+    seller_display,
+    seller_profile,
+)
 from core.services.catalog_service import get_catalog_service
 from schemas import marketplace as schemas
 
@@ -141,6 +148,7 @@ async def search_listings(
         include_unpublished=include_unpublished,
         status_in=status_list,
     )
+    await seller_display.attach_seller_names(items)
     return {"items": items}
 
 
@@ -175,6 +183,7 @@ async def featured_listings(
     if not curator_id:
         return {"items": []}
     items = await marketplace_search.search(query=None, format=format, limit=limit, seller_id=curator_id)
+    await seller_display.attach_seller_names(items)
     return {"items": items}
 
 
@@ -245,6 +254,8 @@ async def get_listing(slug: str, response: Response):
     # status="published" instead — same gate /deploy and /checkout enforce.
     if not listing or listing.get("status") != "published":
         raise HTTPException(status_code=404, detail="listing not found")
+
+    await seller_display.attach_seller_name(listing)
 
     manifest: dict | None = None
     s3_prefix = listing.get("s3_prefix")
@@ -411,7 +422,15 @@ async def create_listing(
     payload: schemas.ListingCreate,
     auth: Annotated[AuthContext, Depends(get_current_user)],
 ):
-    """Create a draft listing (requires authenticated seller)."""
+    """Create a draft listing (requires authenticated seller).
+
+    The caller must have a marketplace seller profile (handle) set —
+    otherwise we return 409 ``seller_profile_required`` so the publish
+    wizard can route them to the handle picker before retrying.
+    """
+    profile = await seller_profile.get_profile(auth.user_id)
+    if not profile:
+        raise HTTPException(status_code=409, detail="seller_profile_required")
     try:
         listing = await marketplace_service.create_draft(
             seller_id=auth.user_id,
@@ -427,6 +446,7 @@ async def create_listing(
         )
     except marketplace_service.SlugCollisionError:
         raise HTTPException(status_code=409, detail="slug already taken")
+    await seller_display.attach_seller_name(listing)
     return listing
 
 
@@ -463,6 +483,7 @@ async def update_listing(
         )
     except marketplace_service.InvalidStateError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    await seller_display.attach_seller_name(result)
     return result
 
 
@@ -482,6 +503,7 @@ async def submit(
         raise HTTPException(status_code=409, detail=str(e))
     except marketplace_service.InvalidStateError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    await seller_display.attach_seller_name(result)
     return result
 
 

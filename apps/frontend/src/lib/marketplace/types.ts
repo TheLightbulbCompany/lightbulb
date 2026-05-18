@@ -19,6 +19,13 @@ export interface Listing {
   tags: string[];
   category?: string | null;
   seller_id: string;
+  /**
+   * Public byline resolved server-side. When the seller has a marketplace
+   * handle, this is `"@{handle}"`. Otherwise falls back to the Clerk-derived
+   * name, then to `"Community member"`. Optional because older cached
+   * responses may not include it yet.
+   */
+  seller_display_name?: string | null;
   status: ListingStatus;
   version: number;
   published_at: string | null;

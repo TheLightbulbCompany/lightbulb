@@ -45,6 +45,12 @@ class Listing(BaseModel):
     price_cents: int
     tags: list[str]
     seller_id: str
+    # Resolved server-side by seller_display.attach_seller_name(s) before
+    # the response goes out. Reads "@{handle}" when the seller has set a
+    # marketplace handle, falls back to the Clerk-derived name, then to
+    # "Community member". Optional so create flows that emit a fresh dict
+    # don't fail validation before the resolver has run.
+    seller_display_name: str | None = None
     status: ListingStatusStr
     version: int
     created_at: datetime
@@ -221,6 +227,50 @@ class ListingPreviewResponse(BaseModel):
     scan_failure_reason: str | None = None
     tarball_bytes: int = 0
     unpacked_bytes: int = 0
+
+
+# -- Seller profile (marketplace handle) --
+
+
+class SellerProfileWrite(BaseModel):
+    """Payload for PUT /seller/me.
+
+    Handle is required; display_name and bio are optional. Per-field
+    validation lives in core.services.seller_profile so the same rules
+    apply when called directly from tests or the publish flow.
+    """
+
+    handle: str = Field(..., min_length=3, max_length=32)
+    display_name: str | None = Field(default=None, max_length=64)
+    bio: str | None = Field(default=None, max_length=280)
+
+
+class SellerProfile(BaseModel):
+    """Public-facing seller profile row.
+
+    ``seller_id`` is the Clerk user_id and is only exposed on the
+    authenticated GET /seller/me. The public GET /seller/handle/{handle}
+    endpoint shapes its response to omit it.
+    """
+
+    seller_id: str
+    handle: str
+    display_name: str | None = None
+    bio: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class SellerProfilePublic(BaseModel):
+    handle: str
+    display_name: str | None = None
+    bio: str | None = None
+    created_at: str
+
+
+class HandleAvailability(BaseModel):
+    available: bool
+    reason: Literal["format", "reserved", "taken", None] = None
 
 
 class ArtifactPreviewResponse(BaseModel):

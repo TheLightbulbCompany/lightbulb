@@ -1,16 +1,18 @@
 "use client";
 
 import "./settings.css";
-import React, { Suspense, useState, useCallback } from "react";
+import React, { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
-import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
+import { useAuth, useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
+import { HandlePicker } from "@/components/marketplace/HandlePicker";
+import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/Logo";
 
@@ -18,7 +20,7 @@ import { Logo } from "@/components/Logo";
 // Types & Navigation
 // =============================================================================
 
-type Panel = "profile" | "billing" | "channels" | "webhooks" | "desktop";
+type Panel = "profile" | "billing" | "channels" | "webhooks" | "desktop" | "marketplace";
 
 const NAV_SECTIONS = [
   {
@@ -29,6 +31,7 @@ const NAV_SECTIONS = [
       { id: "channels" as Panel, name: "Channels", icon: "channels" },
       { id: "webhooks" as Panel, name: "Webhooks", icon: "webhooks" },
       { id: "desktop" as Panel, name: "Desktop", icon: "desktop" },
+      { id: "marketplace" as Panel, name: "Marketplace", icon: "marketplace" },
     ],
   },
 ];
@@ -77,6 +80,14 @@ function NavIcon({ icon }: { icon: string }) {
           <path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2" />
           <path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06" />
           <path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8" />
+        </svg>
+      );
+    case "marketplace":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 9l1-5h16l1 5" />
+          <path d="M3 9v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9" />
+          <path d="M8 13h8" />
         </svg>
       );
     default:
@@ -246,6 +257,68 @@ function ChannelsPanel() {
 }
 
 // =============================================================================
+// Marketplace Panel (seller handle + display name)
+// =============================================================================
+
+function MarketplacePanel() {
+  return (
+    <div className="settings-panel" id="panel-marketplace" role="tabpanel">
+      <h1 className="settings-page-title">Marketplace</h1>
+      <p className="settings-page-desc">
+        Your public identity on the marketplace. The handle appears as
+        <span className="font-mono">{" "}@you{" "}</span>
+        on every listing byline and on (future) star / credibility surfaces.
+      </p>
+      <MarketplaceProfileEditor />
+    </div>
+  );
+}
+
+function MarketplaceProfileEditor() {
+  const { getToken, isLoaded } = useAuth();
+  const [profile, setProfile] = useState<SellerProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const jwt = await getToken();
+        if (!jwt) return;
+        const fetched = await getMySellerProfile({ jwt });
+        if (!cancelled) setProfile(fetched);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, getToken]);
+
+  if (loading) {
+    return <div className="text-[13px] text-[#8a8478]">Loading your profile…</div>;
+  }
+
+  return (
+    <HandlePicker
+      initialProfile={profile}
+      saveLabel={profile ? "Update profile" : "Save profile"}
+      onSaved={(next) => {
+        setProfile(next);
+        setSavedAt(Date.now());
+      }}
+    />
+  );
+  // savedAt isn't rendered to keep the section minimal — the input border /
+  // availability indicator is feedback enough, and the persisted profile is
+  // visible in the form fields the moment the request resolves.
+  void savedAt;
+}
+
+// =============================================================================
 // Panel Registry
 // =============================================================================
 
@@ -255,6 +328,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   channels: ChannelsPanel,
   webhooks: WebhooksPanel,
   desktop: DesktopFileAccess,
+  marketplace: MarketplacePanel,
 };
 
 // =============================================================================
@@ -280,7 +354,13 @@ function SettingsPageInner() {
   const searchParams = useSearchParams();
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
-    initialPanelParam === "billing" || initialPanelParam === "channels" || initialPanelParam === "webhooks" || initialPanelParam === "desktop" ? initialPanelParam : "profile";
+    initialPanelParam === "billing" ||
+    initialPanelParam === "channels" ||
+    initialPanelParam === "webhooks" ||
+    initialPanelParam === "desktop" ||
+    initialPanelParam === "marketplace"
+      ? initialPanelParam
+      : "profile";
   const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 

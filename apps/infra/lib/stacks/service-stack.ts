@@ -60,6 +60,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     marketplacePurchasesTable: dynamodb.Table;
     marketplacePayoutAccountsTable: dynamodb.Table;
     marketplaceTakedownsTable: dynamodb.Table;
+    marketplaceSellersTable: dynamodb.Table;
     hookEventsTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
@@ -319,6 +320,7 @@ export class ServiceStack extends cdk.Stack {
     props.database.marketplacePurchasesTable.grantReadWriteData(this.taskRole);
     props.database.marketplacePayoutAccountsTable.grantReadWriteData(this.taskRole);
     props.database.marketplaceTakedownsTable.grantReadWriteData(this.taskRole);
+    props.database.marketplaceSellersTable.grantReadWriteData(this.taskRole);
 
     // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
     // T5 repo writes one row per delivery; T6 proxy + admin views read.
@@ -779,6 +781,8 @@ export class ServiceStack extends cdk.Stack {
           props.database.marketplacePayoutAccountsTable.tableName,
         MARKETPLACE_TAKEDOWNS_TABLE:
           props.database.marketplaceTakedownsTable.tableName,
+        MARKETPLACE_SELLERS_TABLE:
+          props.database.marketplaceSellersTable.tableName,
         MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
         // Stripe Connect onboarding redirects — environment-specific so
         // dev/prod hit the correct marketplace host. Stripe-hosted onboarding

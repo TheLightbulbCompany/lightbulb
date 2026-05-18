@@ -26,6 +26,10 @@ from core.services import (
     seller_profile,
 )
 from core.services.catalog_service import get_catalog_service
+from core.services.paperclip_agent_lifecycle import (
+    create_paperclip_for_marketplace,
+    delete_paperclip_for_marketplace,
+)
 from schemas import marketplace as schemas
 
 
@@ -404,6 +408,34 @@ async def deploy_listing(
 
     catalog = get_catalog_service()
     owner_id = resolve_owner_id(auth)
+
+    # Paperclip-first agent mint. Paperclip's create_agent returns an
+    # agent UUID that we thread through to catalog_service as
+    # new_agent_id, so OpenClaw and Paperclip share the same id. Mirror
+    # of the /chat agents.create interception in websocket_chat.py and
+    # the /teams create_agent route.
+    agent_name = (slice_.get("agent") or {}).get("name") or listing.get("name") or slug
+    agent_role = (slice_.get("agent") or {}).get("role") or "general"
+    try:
+        paperclip_agent = await create_paperclip_for_marketplace(
+            buyer_user_id=auth.user_id,
+            owner_id=owner_id,
+            name=agent_name,
+            role=agent_role,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Marketplace deploy: Paperclip create failed for owner=%s listing=%s",
+            owner_id,
+            listing.get("listing_id"),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="paperclip unavailable — retry the install in a moment",
+        ) from exc
+
+    new_agent_id = paperclip_agent["id"]
+
     try:
         result = await catalog.deploy_from_artifact(
             owner_id=owner_id,
@@ -411,16 +443,27 @@ async def deploy_listing(
             manifest=manifest,
             slice_=slice_,
             tar_bytes=tar_bytes,
+            new_agent_id=new_agent_id,
         )
     except Exception as exc:
-        # deploy_from_artifact can fail in many ways (EFS write, container
-        # config patch, malformed tar). Log the full traceback server-side
-        # but never echo raw exception text back to the client.
+        # Catalog failed after Paperclip create succeeded — roll back
+        # the orphan Paperclip agent. Idempotent + 404-tolerant on the
+        # Paperclip side, so a retry doesn't accumulate phantom records.
         logger.exception(
-            "Marketplace deploy: catalog.deploy_from_artifact failed for owner=%s slug=%s",
+            "Marketplace deploy: catalog.deploy_from_artifact failed for owner=%s slug=%s — rolling back paperclip agent %s",
             owner_id,
             slug,
+            new_agent_id,
         )
+        try:
+            await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+        except Exception:
+            # Roll-back is best-effort; the original exception is what
+            # the caller needs to see.
+            logger.exception(
+                "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                new_agent_id,
+            )
         raise HTTPException(
             status_code=500,
             detail="deploy failed",

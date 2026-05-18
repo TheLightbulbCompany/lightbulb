@@ -23,6 +23,32 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 
+# Mirrors agent_export._AGENT_DIR_SENTINEL. Duplicated rather than
+# imported because catalog_service is on the deploy side and shouldn't
+# need to depend on agent_export's symbol surface. If a third caller
+# emerges, move to a shared constants module.
+_AGENT_DIR_SENTINEL = "__AGENT_DIR__"
+
+
+def _substitute_agent_dir_sentinel(mcp_patch: dict | None, new_agent_id: str) -> dict | None:
+    """In-place substitute ``__AGENT_DIR__`` → ``new_agent_id`` in any
+    ``args`` entry of every mcp.servers.X dict. Returns the patch
+    unchanged if it's None or non-dict.
+    """
+    if not isinstance(mcp_patch, dict):
+        return mcp_patch
+    servers = mcp_patch.get("servers")
+    if not isinstance(servers, dict):
+        return mcp_patch
+    for entry in servers.values():
+        if not isinstance(entry, dict):
+            continue
+        args = entry.get("args")
+        if isinstance(args, list):
+            entry["args"] = [a.replace(_AGENT_DIR_SENTINEL, new_agent_id) if isinstance(a, str) else a for a in args]
+    return mcp_patch
+
+
 def _remap_cron_jobs_for_deploy(
     template_jobs: list[dict],
     *,
@@ -102,6 +128,7 @@ class CatalogService:
         manifest: dict,
         slice_: dict,
         tar_bytes: bytes,
+        new_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Deploy a pre-fetched artifact (tarball + slice + manifest) into the
         owner's container — extracts files into EFS at
@@ -114,8 +141,16 @@ class CatalogService:
         marketplace listings published before slice-synthesis shipped — the
         owner's config doesn't auto-register and they have to add the
         agent entry by hand.
+
+        Args:
+            new_agent_id: When supplied, the buyer-side OpenClaw agent_id is
+                pinned to this value. Marketplace deploys pass Paperclip's
+                freshly-minted UUID so the two systems share the same id.
+                Defaults to a locally-generated ``agent_<hex>`` UUID for
+                backwards-compatible direct callers.
         """
-        new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
+        if new_agent_id is None:
+            new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
 
         self._workspace.extract_tarball_to_workspace(
             user_id=owner_id,
@@ -150,6 +185,11 @@ class CatalogService:
                 # registration) — backwards compatible with pre-bundle
                 # listings already in the marketplace.
                 mcp_patch = copy.deepcopy(slice_.get("mcp")) or None
+                # Substitute __AGENT_DIR__ → new_agent_id in any mcp args
+                # before applying. Pairs with agent_export's publish-time
+                # rewrite that swaps the seller's agent_id out for the
+                # sentinel; here we put the buyer's id in.
+                mcp_patch = _substitute_agent_dir_sentinel(mcp_patch, new_agent_id)
                 skills_patch = copy.deepcopy(slice_.get("skills")) or None
 
                 await self._apply_deploy(

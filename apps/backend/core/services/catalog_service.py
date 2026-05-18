@@ -200,12 +200,25 @@ class CatalogService:
                     skills_patch=skills_patch,
                 )
 
+            # ``manifest["version"]`` is sourced from the listing row's
+            # ``manifest_json`` column (boto3 returns DDB Numbers as
+            # ``Decimal``), or from ``listing["version"]`` setdefaulted in
+            # the marketplace router. Either way it can be ``Decimal``,
+            # which the sidecar's ``json.dumps`` refuses to serialize and
+            # blows up the deploy with TypeError. Coerce to int at the
+            # write boundary — the field is always a small positive
+            # integer in practice (listing version starts at 1).
+            raw_version = manifest.get("version", 1)
+            try:
+                template_version = int(raw_version) if raw_version is not None else 1
+            except (TypeError, ValueError):
+                template_version = 1
             self._workspace.write_template_sidecar(
                 user_id=owner_id,
                 agent_id=new_agent_id,
                 content={
                     "template_slug": slug,
-                    "template_version": manifest.get("version", 1),
+                    "template_version": template_version,
                     "deployed_at": datetime.now(timezone.utc).isoformat(),
                 },
             )

@@ -129,13 +129,23 @@ async def pair_with_openclaw(
     gateway_pool: Any,
     ip: str,
     token: str,
+    extra_update_fields: dict[str, Any] | None = None,
 ) -> None:
     """Pair one Paperclip agent with the owner's OpenClaw container.
 
     Calls OpenClaw's ``agents.create`` RPC with ``name=<paperclip_uuid>``
     (so OpenClaw derives ``agentId`` from the UUID via
     ``normalizeAgentId``), then ``agents.update`` to set the human-
-    friendly display name.
+    friendly display name plus any caller-supplied extras.
+
+    ``extra_update_fields`` — optional dict folded into the
+    ``agents.update`` params. Used by marketplace deploys to thread the
+    full slice-derived agent entry (identity, skills, reasoningDefault,
+    workspace path, etc.) through the same RPC instead of file-merging
+    it into ``openclaw.json`` and waiting for chokidar to reload. The
+    helper always overrides ``agentId`` (to ``pc_uuid``) and ``name``
+    (to ``friendly_name``), so callers can include them in the dict and
+    they'll be ignored — the helper is the source of truth for both.
 
     Idempotent: an "agent already exists" error from agents.create is
     swallowed (the agent was paired by a previous run or by the
@@ -181,14 +191,19 @@ async def pair_with_openclaw(
             return
         raise
 
+    # Build update params: start from caller extras (if any), then
+    # overlay the helper-owned fields (agentId, name) so they always
+    # win. Caller cannot accidentally re-point the update at a
+    # different agent or rename it back to the UUID.
+    update_params: dict[str, Any] = dict(extra_update_fields) if extra_update_fields else {}
+    update_params["agentId"] = pc_uuid
+    update_params["name"] = friendly_name
+
     await gateway_pool.send_rpc(
         user_id=owner_id,  # gateway pool is keyed by owner_id
         req_id=f"pair-update-{secrets.token_hex(8)}",
         method="agents.update",
-        params={
-            "agentId": pc_uuid,
-            "name": friendly_name,
-        },
+        params=update_params,
         ip=ip,
         token=token,
     )

@@ -267,3 +267,66 @@ async def test_pair_skips_if_agent_already_exists():
 
     # Only the create attempt; update was skipped because create raised.
     assert pool.send_rpc.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_pair_with_extra_update_fields_none_preserves_existing_behavior():
+    """extra_update_fields=None (default) -> agents.update RPC params
+    contain only agentId + name, identical to today. Backwards
+    compatibility for the chat-side caller (_intercept_agents_create)
+    that doesn't supply extras."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+
+    await pair_with_openclaw(
+        owner_id="user_abc",
+        paperclip_agent={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"},
+        gateway_pool=pool,
+        ip="10.0.0.5",
+        token="gw_token",
+        # Note: NOT passing extra_update_fields — exercises default arg.
+    )
+
+    update_call = pool.send_rpc.await_args_list[1]
+    assert update_call.kwargs["params"] == {
+        "agentId": pc_uuid,
+        "name": "Code Reviewer",
+    }
+
+
+@pytest.mark.asyncio
+async def test_pair_with_extra_update_fields_threads_into_update_rpc():
+    """extra_update_fields is merged into the agents.update RPC params
+    so marketplace deploys can carry the full slice-derived agent entry
+    (identity, skills, reasoningDefault, etc.) through the same call."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+
+    await pair_with_openclaw(
+        owner_id="user_abc",
+        paperclip_agent={"id": pc_uuid, "name": "Ray", "role": "general"},
+        gateway_pool=pool,
+        ip="10.0.0.5",
+        token="gw_token",
+        extra_update_fields={
+            "identity": {"emoji": "🍃", "vibe": "calm"},
+            "skills": ["resy"],
+            "reasoningDefault": "balanced",
+            # These should be overridden by the helper:
+            "agentId": "ATTEMPTED_OVERRIDE",
+            "name": "ATTEMPTED_OVERRIDE",
+        },
+    )
+
+    update_call = pool.send_rpc.await_args_list[1]
+    params = update_call.kwargs["params"]
+    # Caller-supplied agentId/name are clobbered — the helper is the
+    # single source of truth for those.
+    assert params["agentId"] == pc_uuid
+    assert params["name"] == "Ray"
+    # extras are threaded through.
+    assert params["identity"] == {"emoji": "🍃", "vibe": "calm"}
+    assert params["skills"] == ["resy"]
+    assert params["reasoningDefault"] == "balanced"

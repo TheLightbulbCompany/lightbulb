@@ -5,6 +5,7 @@ import { Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 import { capture } from "@/lib/analytics";
+import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 
 interface AgentCreateFormProps {
@@ -13,25 +14,15 @@ interface AgentCreateFormProps {
   onCancel: () => void;
 }
 
-/** Normalize a display name to an agent ID (matches OpenClaw convention). */
-function normalizeToId(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
 export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreateFormProps) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const callRpc = useGatewayRpcMutation();
 
-  const normalizedId = normalizeToId(name);
-  const isDuplicate = normalizedId !== "" && existingIds.includes(normalizedId);
-  const isReserved = normalizedId === "main";
-  const canCreate = name.trim() !== "" && !isDuplicate && !isReserved && !creating;
+  const normalizedId = normalizeAgentId(name);
+  const clientError = validateAgentName(name, existingIds);
+  const canCreate = name.trim() !== "" && clientError === null && !creating;
 
   const handleCreate = useCallback(async () => {
     if (!canCreate) return;
@@ -59,12 +50,6 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
       setCreating(false);
     }
   }, [canCreate, callRpc, name, onCreated]);
-
-  const clientError = isDuplicate
-    ? "An agent with this name already exists"
-    : isReserved
-      ? "This name is reserved"
-      : null;
 
   return (
     <div className="rounded-lg border border-border bg-card/30 p-4 space-y-3">

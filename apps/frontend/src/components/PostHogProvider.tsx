@@ -24,31 +24,47 @@ const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 const POSTHOG_API_HOST = "/ingest";
 const POSTHOG_UI_HOST = "https://us.posthog.com";
 
-if (typeof window !== "undefined" && POSTHOG_KEY) {
-  initAnalytics(POSTHOG_KEY, {
-    api_host: POSTHOG_API_HOST,
-    ui_host: POSTHOG_UI_HOST,
-    person_profiles: "identified_only",
-    capture_pageview: false,
-    capture_pageleave: true,
-    // CEO observability: enable session replay. Record typed text by
-    // default so admins can actually see what users tried to do, but
-    // mask anything marked sensitive (password fields always; add
-    // `data-private` to any DOM node that must not be recorded).
-    // See https://posthog.com/docs/session-replay/configuration.
-    session_recording: {
-      maskAllInputs: false,
-      maskInputOptions: {
-        password: true,
-        email: false,
+/**
+ * Initialise PostHog on first client mount.
+ *
+ * Previously called at module-evaluation time, which ran during SSR
+ * import (no-op due to the `typeof window` guard) AND re-fired on every
+ * Fast Refresh hot reload during dev — wasted work and a hidden cost on
+ * first import even when PostHog is disabled at runtime. Routed through
+ * `useEffect` + an `initializedRef` so the init runs exactly once on the
+ * client.
+ */
+function PostHogInit() {
+  const initializedRef = useRef(false);
+  useEffect(() => {
+    if (initializedRef.current || !POSTHOG_KEY) return;
+    initializedRef.current = true;
+    initAnalytics(POSTHOG_KEY, {
+      api_host: POSTHOG_API_HOST,
+      ui_host: POSTHOG_UI_HOST,
+      person_profiles: "identified_only",
+      capture_pageview: false,
+      capture_pageleave: true,
+      // CEO observability: enable session replay. Record typed text by
+      // default so admins can actually see what users tried to do, but
+      // mask anything marked sensitive (password fields always; add
+      // `data-private` to any DOM node that must not be recorded).
+      // See https://posthog.com/docs/session-replay/configuration.
+      session_recording: {
+        maskAllInputs: false,
+        maskInputOptions: {
+          password: true,
+          email: false,
+        },
+        blockSelector: "[data-private]",
       },
-      blockSelector: "[data-private]",
-    },
-    // Explicit — PostHog's project-level dashboard has a master switch
-    // too, but being explicit here means local dev + preview branches
-    // behave the same as prod.
-    disable_session_recording: false,
-  });
+      // Explicit — PostHog's project-level dashboard has a master switch
+      // too, but being explicit here means local dev + preview branches
+      // behave the same as prod.
+      disable_session_recording: false,
+    });
+  }, []);
+  return null;
 }
 
 function PostHogPageview() {
@@ -125,6 +141,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AnalyticsProvider client={posthogClient}>
+      <PostHogInit />
       {/* Suspense required: PostHogPageview reads useSearchParams(), which
           forces the whole subtree out of static prerendering unless isolated
           in a Suspense boundary. Without this, pages like /_not-found fail

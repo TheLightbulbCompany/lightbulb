@@ -1,59 +1,7 @@
 "use client";
 import Link from "next/link";
 
-type Card = {
-  id: "chatgpt_oauth" | "byo_key" | "bedrock_claude";
-  title: string;
-  subtitle: string;
-  trialNote: string;
-  bullets: string[];
-  cta: string;
-  href: string;
-  highlighted?: boolean;
-};
-
-const CARDS: Card[] = [
-  {
-    id: "chatgpt_oauth",
-    title: "Sign in with ChatGPT",
-    subtitle: "$50 / month + your ChatGPT subscription",
-    trialNote: "14-day trial",
-    bullets: [
-      "GPT-5.5 included via your ChatGPT account",
-      "All channels (Telegram, Discord, WhatsApp)",
-      "Always-on container",
-    ],
-    cta: "Start trial",
-    href: "/sign-up?provider=chatgpt_oauth",
-  },
-  {
-    id: "byo_key",
-    title: "Bring your own API key",
-    subtitle: "$50 / month + your provider bill",
-    trialNote: "14-day trial",
-    bullets: [
-      "OpenAI or Anthropic — your key, your billing",
-      "All channels",
-      "Always-on container",
-    ],
-    cta: "Start trial",
-    href: "/sign-up?provider=byo_key",
-  },
-  {
-    id: "bedrock_claude",
-    title: "Powered by Claude",
-    subtitle: "$50 / month + Claude credits",
-    trialNote: "Pay-as-you-go credits, 1.4× markup",
-    bullets: [
-      "Claude Sonnet 4.6 + Opus 4.7",
-      "All channels",
-      "Always-on container",
-    ],
-    cta: "Get started",
-    href: "/sign-up?provider=bedrock_claude",
-    highlighted: true,
-  },
-];
+import { PROVIDER_CARDS } from "@/lib/providerCards";
 
 export function PricingThreeCard() {
   return (
@@ -69,7 +17,7 @@ export function PricingThreeCard() {
         Choose how you want to pay for inference.
       </p>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl mx-auto">
-        {CARDS.map((card) => (
+        {PROVIDER_CARDS.map((card) => (
           <div
             key={card.id}
             className={

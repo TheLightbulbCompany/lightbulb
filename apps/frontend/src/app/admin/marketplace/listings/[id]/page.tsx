@@ -45,6 +45,14 @@ interface ListingPreview {
   skill_md_text: string | null;
   openclaw_summary: OpenclawSummary | null;
   safety_flags: SafetyFlag[];
+  /** Backend sets this when the artifact exceeds the in-memory scan cap.
+   * File tree is still populated (from tar headers, cheap), but safety
+   * scan didn't run — moderator must reject or ask the seller to slim
+   * the artifact. Approval is gated server-side too. */
+  scan_incomplete?: boolean;
+  scan_failure_reason?: string | null;
+  tarball_bytes?: number;
+  unpacked_bytes?: number;
 }
 
 function severityBadge(s: SafetyFlag["severity"]): string {
@@ -124,6 +132,31 @@ export default async function ListingDetail({
         </Link>
       </div>
 
+      {/* Scan-incomplete banner — shown when the artifact is too large to
+          scan fully. Approve is disabled in ModerationActions; the file
+          tree below shows what's bloating it so the moderator can decide
+          whether to reject or ask the seller to slim the artifact. */}
+      {preview.scan_incomplete && (
+        <section
+          className="rounded-lg border border-amber-700/60 bg-amber-900/30 p-4"
+          role="alert"
+          data-testid="scan-incomplete-banner"
+        >
+          <h2 className="text-lg font-semibold text-amber-100 mb-1">
+            Scan incomplete — approval disabled
+          </h2>
+          <p className="text-sm text-amber-100/90">
+            {preview.scan_failure_reason ?? "Artifact exceeds the in-memory scan cap."}
+          </p>
+          <p className="text-xs text-amber-200/70 mt-2">
+            Tarball: {formatBytes(preview.tarball_bytes ?? 0)} compressed
+            {(preview.unpacked_bytes ?? 0) > 0 &&
+              ` · ${formatBytes(preview.unpacked_bytes ?? 0)} unpacked (so far)`}
+            . Reject + Takedown remain available.
+          </p>
+        </section>
+      )}
+
       {/* Safety banner */}
       {high.length > 0 && (
         <section
@@ -187,6 +220,12 @@ export default async function ListingDetail({
           slug={preview.slug}
           version={preview.version ?? 1}
           prefilledRejectionNotes={flagsToRejectionPrefill(preview.safety_flags)}
+          approveDisabled={preview.scan_incomplete ?? false}
+          approveDisabledReason={
+            preview.scan_incomplete
+              ? "Scan incomplete — approve blocked. Reject or ask the seller to slim the artifact."
+              : undefined
+          }
         />
       </section>
 

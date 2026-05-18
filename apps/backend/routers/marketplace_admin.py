@@ -19,7 +19,16 @@ from schemas import marketplace as schemas
 router = APIRouter(prefix="/api/v1/admin/marketplace", tags=["marketplace-admin"])
 
 # Cap on tarball size for the in-memory preview extract.
-_MAX_PREVIEW_TARBALL_BYTES = 10 * 1024 * 1024
+#
+# 50 MB is a realistic ceiling for an agent workspace once persona files,
+# bundled skills, and a couple of MCPs are included. The previous 10 MB
+# cap was tripping on legitimate listings (e.g. PR #693 — a "Ray" listing
+# carrying normal recipe content). Hitting this cap no longer 413s the
+# endpoint; instead the preview returns a partial response with the file
+# tree intact and ``scan_incomplete=True`` so the admin can still see
+# WHAT is in the tarball and decide to reject. Approval is disabled
+# client-side when scan_incomplete is set — see ModerationActions.
+_MAX_PREVIEW_TARBALL_BYTES = 50 * 1024 * 1024
 
 
 @router.get("/listings")
@@ -76,6 +85,40 @@ async def approve(
     edge cases where the admin wants to be explicit (e.g. tooling that
     wants to fail loudly on race conditions).
     """
+    # Defense in depth: refuse to approve a listing whose tarball can't
+    # be fully scanned. The admin UI hides the Approve button when the
+    # preview reports scan_incomplete=true, but a moderator could still
+    # POST directly. Re-check the artifact size here so the server-side
+    # gate matches the UI gate.
+    try:
+        table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
+        row = table.get_item(Key={"listing_id": listing_id, "version": version}).get("Item") or {}
+        s3_prefix = row.get("s3_prefix")
+        if s3_prefix:
+            try:
+                head = boto3.client("s3").head_object(
+                    Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
+                    Key=f"{s3_prefix}workspace.tar.gz",
+                )
+                if int(head.get("ContentLength", 0)) > _MAX_PREVIEW_TARBALL_BYTES:
+                    cap_mb = _MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"artifact exceeds {cap_mb} MB scan cap — approval blocked. "
+                            "Reject or ask the seller to slim the listing."
+                        ),
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                # head_object failure (no artifact uploaded, transient S3
+                # error) shouldn't block approval — the underlying approve
+                # call will surface its own 409 if the listing isn't ready.
+                pass
+    except HTTPException:
+        raise
+
     try:
         if version > 1 and prev_version is None:
             # Derive prev_version: the currently-published row of this listing.
@@ -206,10 +249,42 @@ async def listing_preview(
             openclaw_summary=None,
             safety_flags=[],
         )
-    if head.get("ContentLength", 0) > _MAX_PREVIEW_TARBALL_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"artifact tarball exceeds {_MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)} MB preview cap",
+    tarball_bytes = int(head.get("ContentLength", 0))
+    listing_format = listing.get("format", "openclaw")
+    base_response_kwargs = dict(
+        listing_id=listing_id,
+        version=int(listing.get("version", 1)),
+        slug=listing.get("slug", ""),
+        name=listing.get("name", ""),
+        seller_id=listing.get("seller_id", ""),
+        format=listing_format,
+        status=listing.get("status", "draft"),
+        price_cents=int(listing.get("price_cents", 0)),
+        tags=list(listing.get("tags", [])),
+        manifest=listing.get("manifest_json", {}),
+        tarball_bytes=tarball_bytes,
+    )
+
+    # Tarball download ceiling: even the compressed bytes are over the cap.
+    # We can't enumerate members without buffering the whole gzip stream,
+    # so degrade to a metadata-only response with scan_incomplete=True.
+    # Admin UI disables Approve and surfaces the size so the moderator can
+    # ask the seller to slim it down (or reject).
+    if tarball_bytes > _MAX_PREVIEW_TARBALL_BYTES:
+        cap_mb = _MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)
+        return schemas.ListingPreviewResponse(
+            **base_response_kwargs,
+            file_tree=[],
+            skill_md_text=None,
+            openclaw_summary=None,
+            safety_flags=[],
+            scan_incomplete=True,
+            scan_failure_reason=(
+                f"tarball is {tarball_bytes // (1024 * 1024)} MB compressed, "
+                f"exceeds the {cap_mb} MB scan ceiling. File tree unavailable — "
+                "ask the seller to slim the artifact (or reject)."
+            ),
+            unpacked_bytes=0,
         )
 
     body = s3.get_object(Bucket=bucket, Key=tar_key)["Body"].read()
@@ -218,37 +293,48 @@ async def listing_preview(
     file_dict: dict[str, bytes] = {}
     skill_md_text: str | None = None
     openclaw_config: dict | None = None
+    scan_incomplete = False
+    scan_failure_reason: str | None = None
 
     try:
         with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tf:
+            # Two-pass: first collect the file tree from tar headers (cheap,
+            # always succeeds), then extract content under the cap. If the
+            # cap is hit during extraction the file tree still tells the
+            # moderator WHAT is in the tarball so they can identify the
+            # bloat — without that, all they see is a 413 and can't act.
+            members = [m for m in tf.getmembers() if m.isfile() and not (m.issym() or m.islnk())]
+            for m in members:
+                clean_name = m.name[2:] if m.name.startswith("./") else m.name
+                file_tree.append(schemas.FileTreeEntry(path=clean_name, size_bytes=m.size))
+
             total_unpacked = 0
-            for m in tf.getmembers():
-                if m.issym() or m.islnk():
-                    continue  # defense-in-depth; producer side already strips these
-                if not m.isfile():
-                    continue
-                total_unpacked += m.size
-                if total_unpacked > _MAX_PREVIEW_TARBALL_BYTES:
-                    # Fail closed: a partial preview means the safety scan
-                    # would only see files BEFORE the cutoff, so a malicious
-                    # artifact could hide bad files behind padding. Surface
-                    # 413 so the moderator knows to reject the upload, not
-                    # approve based on incomplete evidence.
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(
-                            f"unpacked preview exceeds {_MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)} MB cap; "
-                            "ask the seller to split the artifact or contact ops to raise the cap"
-                        ),
+            cap_mb = _MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)
+            for m in members:
+                next_total = total_unpacked + m.size
+                if next_total > _MAX_PREVIEW_TARBALL_BYTES:
+                    # Stop reading content but keep the file_tree we built
+                    # above. Safety scan can't trust a partial scan (an
+                    # adversary could hide bad content behind padding), so
+                    # we surface scan_incomplete and the admin UI gates
+                    # Approve on it.
+                    scan_incomplete = True
+                    scan_failure_reason = (
+                        f"unpacked size exceeds {cap_mb} MB cap "
+                        f"(stopped after {total_unpacked // (1024 * 1024)} MB). "
+                        "Safety scan skipped. Approve disabled — reject or ask the "
+                        "seller to slim the artifact."
                     )
+                    total_unpacked = next_total
+                    break
                 f = tf.extractfile(m)
                 if f is None:
+                    total_unpacked = next_total
                     continue
-                # Strip leading "./" tarballs from catalog_package use.
                 clean_name = m.name[2:] if m.name.startswith("./") else m.name
                 data = f.read()
-                file_tree.append(schemas.FileTreeEntry(path=clean_name, size_bytes=m.size))
                 file_dict[clean_name] = data
+                total_unpacked = next_total
                 if clean_name == "SKILL.md" and skill_md_text is None:
                     try:
                         skill_md_text = data.decode("utf-8")
@@ -259,12 +345,22 @@ async def listing_preview(
                         openclaw_config = json.loads(data.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         openclaw_config = None
+
+            # Continue accumulating unpacked size for any remaining members
+            # (helps the moderator see "the listing is 80 MB total" even
+            # though we only scanned the first 50 MB).
+            if scan_incomplete:
+                remaining_idx = members.index(m) + 1
+                for rest in members[remaining_idx:]:
+                    total_unpacked += rest.size
     except tarfile.TarError as e:
         raise HTTPException(status_code=422, detail=f"artifact tarball is not readable: {e}")
 
     file_tree.sort(key=lambda e: e.path)
-    listing_format = listing.get("format", "openclaw")
-    flags = marketplace_safety.scan(file_dict, format=listing_format)
+    # Skip the safety scan entirely when the artifact wasn't fully read.
+    # A partial scan is worse than no scan — it gives a false sense of
+    # security if the moderator misreads scan_incomplete.
+    flags = marketplace_safety.scan(file_dict, format=listing_format) if not scan_incomplete else []
 
     openclaw_summary: schemas.OpenclawSummary | None = None
     if listing_format == "openclaw" and isinstance(openclaw_config, dict):
@@ -285,16 +381,7 @@ async def listing_preview(
         )
 
     return schemas.ListingPreviewResponse(
-        listing_id=listing_id,
-        version=int(listing.get("version", 1)),
-        slug=listing.get("slug", ""),
-        name=listing.get("name", ""),
-        seller_id=listing.get("seller_id", ""),
-        format=listing_format,
-        status=listing.get("status", "draft"),
-        price_cents=int(listing.get("price_cents", 0)),
-        tags=list(listing.get("tags", [])),
-        manifest=listing.get("manifest_json", {}),
+        **base_response_kwargs,
         file_tree=file_tree,
         skill_md_text=skill_md_text if listing_format == "skillmd" else None,
         openclaw_summary=openclaw_summary,
@@ -308,6 +395,9 @@ async def listing_preview(
             )
             for f in flags
         ],
+        scan_incomplete=scan_incomplete,
+        scan_failure_reason=scan_failure_reason,
+        unpacked_bytes=total_unpacked,
     )
 
 

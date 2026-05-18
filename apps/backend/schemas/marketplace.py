@@ -192,6 +192,13 @@ class ListingPreviewResponse(BaseModel):
     Backend reads the listing's S3 tarball, extracts in-memory, runs the
     safety scan, and surfaces enough context for an admin to make an
     informed approve/reject call.
+
+    When the unpacked size exceeds the scan cap, the response is partial:
+    ``file_tree`` is still populated from tar headers (cheap, header-only
+    walk), but ``safety_flags`` is empty and ``scan_incomplete=True``.
+    The admin UI MUST disable Approve in that case — an adversary could
+    hide bad content behind padding, so approving on a partial scan is
+    unsafe. Reject + Takedown remain valid actions.
     """
 
     listing_id: str
@@ -208,6 +215,12 @@ class ListingPreviewResponse(BaseModel):
     skill_md_text: str | None = None
     openclaw_summary: OpenclawSummary | None = None
     safety_flags: list[SafetyFlag]
+    # Partial-preview signaling. Defaults keep existing test fixtures
+    # working unmodified.
+    scan_incomplete: bool = False
+    scan_failure_reason: str | None = None
+    tarball_bytes: int = 0
+    unpacked_bytes: int = 0
 
 
 class ArtifactPreviewResponse(BaseModel):

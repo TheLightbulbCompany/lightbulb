@@ -292,3 +292,176 @@ def test_admin_takedowns_list_paginates_full_scan(client):
         "p1-old",
         "p2-older",
     ]
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/marketplace/listings/{id}/preview — partial-preview behavior
+# ---------------------------------------------------------------------------
+
+
+def _make_tarball(files: list[tuple[str, bytes]]) -> bytes:
+    """Build a minimal in-memory .tar.gz with the given file content."""
+    import io as _io
+    import tarfile as _tarfile
+
+    buf = _io.BytesIO()
+    with _tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for path, data in files:
+            info = _tarfile.TarInfo(name=path)
+            info.size = len(data)
+            tf.addfile(info, _io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _stub_preview_s3_and_ddb(tarball_bytes: bytes, listing_overrides: dict | None = None):
+    """Build (boto3.resource, boto3.client) stubs the preview endpoint expects.
+
+    Returns the patches as a tuple of context managers — caller composes them
+    in a `with` block.
+    """
+    listing = {
+        "listing_id": "lst_preview",
+        "version": 1,
+        "slug": "demo",
+        "name": "Demo",
+        "seller_id": "u_seller",
+        "format": "openclaw",
+        "status": "review",
+        "price_cents": 0,
+        "tags": [],
+        "s3_prefix": "listings/lst_preview/v1/",
+        "manifest_json": {},
+    }
+    listing.update(listing_overrides or {})
+
+    fake_table = MagicMock()
+    fake_table.query.return_value = {"Items": [listing]}
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+
+    body_stream = MagicMock()
+    body_stream.read.return_value = tarball_bytes
+    s3_client = MagicMock()
+    s3_client.head_object.return_value = {"ContentLength": len(tarball_bytes)}
+    s3_client.get_object.return_value = {"Body": body_stream}
+
+    return fake_resource, s3_client
+
+
+def test_preview_returns_partial_when_unpacked_exceeds_cap(client):
+    """Regression: a tarball whose unpacked size exceeds the scan cap used
+    to 413. Now it returns a partial preview — file_tree populated so the
+    admin sees WHAT is in the artifact (and can reject), but safety_flags
+    empty and scan_incomplete=True. The frontend disables Approve."""
+    from main import app
+
+    _admit_admin(app)
+
+    # Two files: a small openclaw.json (well under cap) + a huge bloat file
+    # whose size header alone trips the unpacked-cap check on the second
+    # iteration. The actual data we tar in can stay small for test perf —
+    # the cap check reads `m.size` from the header, not the buffer.
+    small = b'{"name":"demo"}'
+    cap = 50 * 1024 * 1024
+    huge = b"x" * (cap + 1)  # one byte past cap forces the check to fire
+
+    tar_bytes = _make_tarball([("openclaw.json", small), ("bloat.bin", huge)])
+    fake_resource, s3_client = _stub_preview_s3_and_ddb(tar_bytes)
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+    ):
+        resp = client.get("/api/v1/admin/marketplace/listings/lst_preview/preview")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["scan_incomplete"] is True
+    assert body["scan_failure_reason"]
+    # File tree shows BOTH files so the moderator can identify the bloat.
+    paths = sorted(e["path"] for e in body["file_tree"])
+    assert paths == ["bloat.bin", "openclaw.json"]
+    # Safety scan is skipped on partial preview — a partial scan is
+    # actively dangerous (adversary could hide content behind padding).
+    assert body["safety_flags"] == []
+
+
+def test_preview_returns_partial_when_compressed_exceeds_cap(client):
+    """When the compressed tarball itself exceeds the scan ceiling we can't
+    safely buffer it for header enumeration — return a metadata-only
+    response with scan_incomplete=True (file_tree=[]). The admin still
+    sees the tarball size so they can ask the seller to slim it."""
+    from main import app
+
+    _admit_admin(app)
+
+    fake_table = MagicMock()
+    fake_table.query.return_value = {
+        "Items": [
+            {
+                "listing_id": "lst_huge",
+                "version": 1,
+                "slug": "huge",
+                "status": "review",
+                "s3_prefix": "listings/lst_huge/v1/",
+                "format": "openclaw",
+                "seller_id": "u",
+                "manifest_json": {},
+                "price_cents": 0,
+                "tags": [],
+                "name": "Huge",
+            }
+        ]
+    }
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+    s3_client = MagicMock()
+    s3_client.head_object.return_value = {"ContentLength": 80 * 1024 * 1024}
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+    ):
+        resp = client.get("/api/v1/admin/marketplace/listings/lst_huge/preview")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["scan_incomplete"] is True
+    assert body["tarball_bytes"] == 80 * 1024 * 1024
+    assert body["file_tree"] == []
+    # get_object should NOT have been called — we never downloaded the bytes.
+    s3_client.get_object.assert_not_called()
+
+
+def test_approve_refuses_when_artifact_exceeds_cap(client):
+    """Defense in depth: a moderator who bypasses the UI gate and POSTs
+    approve directly must still be blocked when the artifact is too large
+    to scan completely."""
+    from main import app
+
+    _admit_admin(app)
+
+    fake_table = MagicMock()
+    fake_table.get_item.return_value = {"Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/"}}
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+    s3_client = MagicMock()
+    s3_client.head_object.return_value = {"ContentLength": 100 * 1024 * 1024}
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+        patch("routers.marketplace_admin.marketplace_service.approve", new=AsyncMock()) as mock_approve,
+    ):
+        resp = client.post("/api/v1/admin/marketplace/listings/l1/approve")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 409
+    assert "scan cap" in resp.json()["detail"]
+    # marketplace_service.approve should never have been called.
+    mock_approve.assert_not_awaited()

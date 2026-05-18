@@ -20,6 +20,35 @@ from typing import Any
 
 _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
 
+# Provider plugins are user-config (the buyer picked a provider at signup),
+# not agent-config. Shipping them in the slice would deep-merge over the
+# buyer's provider setup and silently switch them off the path they chose
+# (Bedrock / ChatGPT OAuth / BYOK Anthropic / BYOK OpenAI). Strip at slice
+# time so the deploy can never override the buyer's provider plugin.
+_PROVIDER_PLUGIN_NAMES = frozenset(
+    {
+        "amazon-bedrock",
+        "chatgpt",
+        "chatgpt-oauth",
+        "anthropic",
+        "openai",
+        "google",
+        "gemini",
+        "ollama",
+        "mistral",
+    }
+)
+
+
+def _strip_provider_plugins(plugins: dict[str, Any]) -> dict[str, Any]:
+    """Drop provider entries from a plugins block, leaving structural keys
+    (``slots``, anything non-``entries``) and non-provider entries intact."""
+    out = copy.deepcopy(plugins) if plugins else {}
+    entries = out.get("entries") if isinstance(out, dict) else None
+    if isinstance(entries, dict):
+        out["entries"] = {k: v for k, v in entries.items() if k not in _PROVIDER_PLUGIN_NAMES}
+    return out
+
 # Secret-shaped field names scrubbed from slice copies of mcp.servers[*] /
 # skills.entries[*]. Values are replaced with empty strings (key names
 # preserved so the buyer sees what to fill in on their side). Mirrors
@@ -257,7 +286,7 @@ def extract_agent_slice(
 
     slice_: dict[str, Any] = {
         "agent": strip_user_specific_fields(agent_entry),
-        "plugins": copy.deepcopy(openclaw_json.get("plugins") or {}),
+        "plugins": _strip_provider_plugins(openclaw_json.get("plugins") or {}),
         "tools": copy.deepcopy(openclaw_json.get("tools") or {}),
     }
 

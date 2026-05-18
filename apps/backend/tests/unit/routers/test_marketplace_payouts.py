@@ -47,7 +47,7 @@ def org_member_client():
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
         user_id="user_test",
         org_id="org_test",
-        org_role="org:basic_member",
+        org_role="org:member",
     )
     try:
         yield TestClient(app)

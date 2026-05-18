@@ -1348,7 +1348,7 @@ def test_patch_listing_rejects_slug_field(authed_client_factory):
 def org_member_client():
     """TestClient authed as a non-admin org member.
 
-    Pins org_role to ``org:basic_member`` so ``require_org_admin`` raises
+    Pins org_role to ``org:member`` so ``require_org_admin`` raises
     403 — verifying the marketplace write endpoints reject shadow-publish /
     shadow-hire attempts from non-admin members of an org.
     """
@@ -1359,7 +1359,7 @@ def org_member_client():
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
         user_id="user_test",
         org_id="org_test",
-        org_role="org:basic_member",
+        org_role="org:member",
     )
     try:
         yield TestClient(app)

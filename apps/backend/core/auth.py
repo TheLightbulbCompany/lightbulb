@@ -172,14 +172,6 @@ async def get_current_user(
     """Validate JWT and return AuthContext with user and org claims."""
     try:
         token = credentials.credentials
-        # Diagnostic: log unverified claims to trace auth failures (DEBUG only)
-        try:
-            unverified = jwt.decode(token, options={"verify_signature": False}, algorithms=["RS256"])
-            logger.debug(
-                "JWT claims: iss=%s sub=%s aud=%s", unverified.get("iss"), unverified.get("sub"), unverified.get("aud")
-            )
-        except Exception as parse_err:
-            logger.debug("Could not decode unverified JWT claims: %s", parse_err)
         payload = await _decode_token(token)
         org = _extract_org_claims(payload)
 

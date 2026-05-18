@@ -8,7 +8,7 @@ plaintext fallback.
 import base64
 import hashlib
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 
 from core.config import settings
 
@@ -61,5 +61,5 @@ def decrypt(ciphertext: str) -> str:
     try:
         token = base64.urlsafe_b64decode(ciphertext.encode())
         return f.decrypt(token).decode()
-    except (InvalidToken, Exception) as exc:
+    except Exception as exc:
         raise ValueError("Failed to decrypt value — key may have changed or data is corrupt") from exc

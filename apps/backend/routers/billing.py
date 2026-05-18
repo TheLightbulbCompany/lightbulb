@@ -235,14 +235,14 @@ async def get_my_usage(
     period = f"{now.year}-{now.month:02d}"
 
     member_key = f"member:{user_id}:{period}"
-    member_usage = await usage_repo.get_period_usage(owner_id, member_key)
+    m = await usage_repo.get_period_usage(owner_id, member_key) or {}
 
     return MyUsageResponse(
         period=period,
-        total_spend=(member_usage["total_spend_microdollars"] if member_usage else 0) / 1_000_000,
-        total_input_tokens=member_usage["total_input_tokens"] if member_usage else 0,
-        total_output_tokens=member_usage["total_output_tokens"] if member_usage else 0,
-        request_count=member_usage["request_count"] if member_usage else 0,
+        total_spend=m.get("total_spend_microdollars", 0) / 1_000_000,
+        total_input_tokens=m.get("total_input_tokens", 0),
+        total_output_tokens=m.get("total_output_tokens", 0),
+        request_count=m.get("request_count", 0),
     )
 
 

@@ -276,19 +276,3 @@ def build_paired_operator_entry(
             }
         },
     }
-
-
-def build_paired_devices_json(operator_entry: dict, *, node_entry: dict | None = None) -> str:
-    """Serialize one or more paired device entries as `devices/paired.json`.
-
-    The file is a JSON object keyed by deviceId. We usually write both the
-    operator entry (for backend->gateway connections) and the node entry
-    (for in-container agent->gateway loopback connections) in the same file
-    so a single write is enough to seed the container's trust store.
-    """
-    import json
-
-    entries = {operator_entry["deviceId"]: operator_entry}
-    if node_entry is not None:
-        entries[node_entry["deviceId"]] = node_entry
-    return json.dumps(entries, indent=2)

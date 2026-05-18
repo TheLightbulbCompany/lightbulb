@@ -736,19 +736,6 @@ async fn serve_manifest_once(body: String) -> Result<String, String> {
     Ok(url)
 }
 
-/// OAuth domains that must open in the system browser. Clerk's OAuth flow
-/// redirects through Clerk's own frontend API first (e.g.
-/// `up-moth-55.clerk.accounts.dev/v1/oauth_callback/...`), THEN to the
-/// actual identity provider. We catch the Clerk hop too — otherwise
-/// WKWebView tries to navigate cross-origin and the click appears to
-/// silently do nothing.
-const OAUTH_DOMAINS: &[&str] = &[
-    "accounts.google.com",
-    "appleid.apple.com",
-    "clerk.accounts.dev",
-    "clerk.com",
-];
-
 /// Desktop callback URL — the page creates a sign-in token and deep links back.
 /// Not middleware-protected, so it works whether or not the user is signed in yet.
 ///

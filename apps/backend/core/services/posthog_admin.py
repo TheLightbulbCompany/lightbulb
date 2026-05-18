@@ -60,8 +60,7 @@ async def get_person_events(*, distinct_id: str, limit: int = 100) -> dict:
       events=[].
     - Otherwise, events is a list of {timestamp, event, properties, session_id}.
 
-    Each event includes `session_id` (from the `$session_id` property) so the
-    UI can deep-link to the session replay via session_replay_url().
+    Each event includes `session_id` (from the `$session_id` property).
     """
     if not settings.POSTHOG_PROJECT_API_KEY or not settings.POSTHOG_PROJECT_ID:
         return {"events": [], "stubbed": True, "missing": False, "error": None}
@@ -120,8 +119,3 @@ async def get_person_events(*, distinct_id: str, limit: int = 100) -> dict:
             }
         )
     return {"events": events, "stubbed": False, "missing": False, "error": None}
-
-
-def session_replay_url(session_id: str) -> str:
-    """Deep link to PostHog's session-replay UI for a given session."""
-    return f"{settings.POSTHOG_HOST}/replay/{session_id}"

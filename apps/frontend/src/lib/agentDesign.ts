@@ -1,5 +1,4 @@
 import type { Listing } from "@/lib/marketplace/types";
-import type { CatalogAgent } from "@/hooks/useCatalog";
 import type { Agent as InstalledAgent } from "@/hooks/useAgents";
 import { agentDisplayName, getAgentModelString } from "@/hooks/useAgents";
 
@@ -87,33 +86,6 @@ export function fromListing(listing: Listing): EditorialListing {
     price,
     isFree,
     tags: listing.tags,
-  };
-}
-
-export function fromCatalogAgent(agent: CatalogAgent): EditorialIdentity & {
-  slug: string;
-  name: string;
-  role: string;
-  vibe: string;
-  skills: string[];
-  channels: string[];
-  suggested_model?: string;
-} {
-  const palette = paletteFor(agent.slug);
-  const monogram = initialsFor(agent.name);
-  const vibe = agent.vibe || agent.description || "Useful work, clearly done.";
-  const role = agent.vibe?.split(".")[0]?.trim() || "AI agent";
-  return {
-    slug: agent.slug,
-    name: agent.name,
-    role,
-    monogram,
-    accent: palette.accent,
-    tint: palette.tint,
-    vibe,
-    skills: agent.required_skills ?? [],
-    channels: agent.suggested_channels ?? [],
-    suggested_model: agent.suggested_model,
   };
 }
 

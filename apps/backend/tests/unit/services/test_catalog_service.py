@@ -113,3 +113,32 @@ async def test_deploy_from_artifact_generates_uuid_when_new_agent_id_omitted():
     )
     assert result["agent_id"].startswith("agent_")
     assert len(result["agent_id"]) > len("agent_")
+
+
+@pytest.mark.asyncio
+async def test_deploy_from_artifact_coerces_decimal_version_in_sidecar():
+    """Regression for the dev-tested marketplace deploy 500: boto3 returns
+    DDB Numbers as ``Decimal``, so the listing row's ``version`` (and any
+    ``manifest_json["version"]``) arrive as ``Decimal``. The sidecar
+    write goes through ``json.dumps`` which raises ``TypeError: Object
+    of type Decimal is not JSON serializable``. Coerce to int at the
+    write boundary.
+    """
+    from decimal import Decimal
+
+    svc, workspace, _apply_deploy = _make_service()
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": Decimal("1")},
+        slice_={"agent": {"name": "Demo"}, "plugins": {}, "tools": {}, "cron_jobs": []},
+        tar_bytes=b"fake-tar",
+        new_agent_id="agent_test",
+    )
+    # write_template_sidecar must receive a JSON-serializable int, not a
+    # Decimal. We don't assert exact content shape (sidecar carries
+    # other fields), only that template_version is an int.
+    workspace.write_template_sidecar.assert_called_once()
+    content = workspace.write_template_sidecar.call_args.kwargs["content"]
+    assert isinstance(content["template_version"], int)
+    assert content["template_version"] == 1

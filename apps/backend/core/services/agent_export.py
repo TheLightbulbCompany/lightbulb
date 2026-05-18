@@ -73,10 +73,17 @@ _SKIP_DIR_NAMES = frozenset(
 #
 # Three buckets, all checked against the basename only:
 #
-# 1. Exact-match SSH key files. These have no extension we can key on, so
-#    we hardcode the canonical names.
+# 1. Exact-match filenames that are credential material with no useful
+#    extension we can key on. SSH keys + the classic AWS-style
+#    extensionless `credentials` / `secrets` profile files. Listed
+#    explicitly so the extensionless-name branch in
+#    ``_looks_like_credential_file`` blocks them while still letting
+#    ``credentials-helper`` (an extensionless script, no AWS shape)
+#    through. The earlier substring-based filter caught these only by
+#    accident (Codex P1 on PR #711, commit 43c49a31).
 _EXACT_CREDENTIAL_FILENAMES = frozenset(
     {
+        # SSH-style private keys.
         "id_rsa",
         "id_rsa.pub",
         "id_dsa",
@@ -87,6 +94,18 @@ _EXACT_CREDENTIAL_FILENAMES = frozenset(
         "id_ed25519.pub",
         "known_hosts",
         "authorized_keys",
+        # AWS-style profile files (no extension by convention).
+        "credentials",
+        "credential",
+        "secrets",
+        "secret",
+        # Private key + API key conventions seen in the wild.
+        "private_key",
+        "private-key",
+        "privatekey",
+        "api_key",
+        "api-key",
+        "apikey",
     }
 )
 

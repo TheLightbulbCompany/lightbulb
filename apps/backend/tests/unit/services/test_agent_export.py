@@ -142,6 +142,40 @@ def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
     assert any("agent/ARCHITECTURE.md" in n for n in names), names
 
 
+def test_credential_filter_blocks_extensionless_aws_credentials(fake_efs):
+    """Regression for Codex P1 on PR #711 (commit 43c49a31): the
+    AWS-style ``credentials`` file (extensionless, e.g. copied from
+    ``~/.aws/credentials``) must be blocked. The original substring-
+    based filter caught it; the tighter word-boundary filter
+    accidentally let it through because the early-return on
+    extensionless files bypassed the token check.
+
+    Also pins that an extensionless ``credentials-helper`` script does
+    NOT get blocked — only the EXACT canonical credential filenames hit
+    the extensionless branch.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    # AWS-style: literal `credentials` filename, no extension, contents
+    # look like AWS credentials file.
+    (agent_dir / "credentials").write_text(
+        "[default]\naws_access_key_id=AKIAEXAMPLE\naws_secret_access_key=hunter2\n",
+        encoding="utf-8",
+    )
+    (agent_dir / "secrets").write_text("BIG_SECRET=hunter2\n", encoding="utf-8")
+    # Same shape, but a script. Should ship — the seller might have a
+    # ``credentials-helper`` CLI shim that's just code.
+    (agent_dir / "credentials-helper").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+
+    # Extensionless credential filenames are blocked.
+    assert not any(n.endswith("/credentials") or n == "./credentials" for n in names), names
+    assert not any(n.endswith("/secrets") or n == "./secrets" for n in names), names
+    # Extensionless helper script still ships.
+    assert any("credentials-helper" in n for n in names), names
+
+
 def test_credential_filter_word_boundary_does_not_strip_skills(fake_efs):
     """Regression for Codex P2 on PR #710 (commit 1f30aa3c): the credential
     filename filter used to substring-match the basename, so a skill named

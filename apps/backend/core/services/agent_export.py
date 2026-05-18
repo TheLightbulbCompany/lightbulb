@@ -52,6 +52,37 @@ FRIDAY_PUBLISH_ERROR_MSG = "cannot publish your default agent; only custom agent
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$")
 
 
+# Sentinel that replaces the seller's agent_id in MCP server args at
+# export time. ``catalog_service.deploy_from_artifact`` substitutes this
+# back to the buyer's freshly-minted agent_id before deep-merging the
+# slice into their openclaw.json. Without this rewrite, the slice's args
+# would still reference the seller's workspace path — which on the
+# buyer's container doesn't exist (different agent_id).
+_AGENT_DIR_SENTINEL = "__AGENT_DIR__"
+
+
+def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
+    """In-place: replace ``workspaces/{seller_agent_id}`` segments in MCP
+    server args with ``workspaces/{_AGENT_DIR_SENTINEL}``.
+
+    Only ``args`` is rewritten; ``command`` and ``env`` don't carry
+    workspace-relative paths in any seller config we've seen, but the
+    function is defensive — adding more fields is a one-line change.
+    """
+    servers = ((slice_.get("mcp") or {}).get("servers")) or {}
+    for entry in servers.values():
+        if not isinstance(entry, dict):
+            continue
+        args = entry.get("args")
+        if isinstance(args, list):
+            entry["args"] = [
+                a.replace(f"workspaces/{seller_agent_id}", f"workspaces/{_AGENT_DIR_SENTINEL}")
+                if isinstance(a, str)
+                else a
+                for a in args
+            ]
+
+
 # Top-level dirs we never want to ship — caches, transient state, VCS metadata.
 _SKIP_DIR_NAMES = frozenset(
     {
@@ -398,6 +429,7 @@ def export_agent_from_efs(
         raise AgentNotInConfigError(
             f"agent {agent_id!r} is not registered in seller's openclaw.json agents.list"
         ) from exc
+    _rewrite_mcp_args_paths(slice_, seller_agent_id=agent_id)
     slice_["cron_jobs"] = filter_cron_jobs_for_agent(workspace.read_cron_jobs(seller_id), agent_id)
 
     safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)

@@ -383,6 +383,50 @@ def test_export_synthesizes_slice_from_seller_config(fake_efs):
     assert slice_["cron_jobs"] == []
 
 
+def test_export_replaces_seller_agent_id_in_mcp_args_with_sentinel(fake_efs, tmp_path: Path):
+    """Regression for marketplace-deploy-symmetry (spec 2026-05-18): the
+    slice's mcp.servers.X.args paths reference the seller's workspace,
+    e.g. ``/home/node/.openclaw/workspaces/{seller_agent_id}/mcp-resy/index.js``.
+    On deploy that path doesn't exist in the buyer's container. Replace
+    the seller-keyed segment with __AGENT_DIR__ at export so deploy can
+    substitute the buyer's new agent_id cleanly.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    # Seller's openclaw.json already has an mcp servers entry — make it
+    # carry an args path that points at the seller's workspaces dir.
+    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["mcp"] = {
+        "servers": {
+            "resy": {
+                "command": "node",
+                "args": [f"/home/node/.openclaw/workspaces/{agent_id}/mcp-resy/index.js"],
+                "env": {"RESY_EMAIL": "", "RESY_PASSWORD": ""},
+            }
+        }
+    }
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(
+        seller_id=seller_id,
+        agent_id=agent_id,
+        selected_mcps=["resy"],
+    )
+
+    args = pkg.openclaw_slice["mcp"]["servers"]["resy"]["args"]
+    # Seller's agent_id MUST NOT appear in the slice — it's
+    # buyer-non-portable.
+    assert agent_id not in args[0], (
+        f"seller agent_id leaked into slice mcp args: {args}"
+    )
+    # Sentinel must be substituted in.
+    assert "__AGENT_DIR__" in args[0], (
+        f"__AGENT_DIR__ sentinel missing from slice mcp args: {args}"
+    )
+    # Rest of the path (mcp-resy/index.js) preserved.
+    assert args[0].endswith("/mcp-resy/index.js"), args[0]
+
+
 def test_export_carries_seller_cron_jobs_targeting_this_agent(fake_efs, tmp_path):
     """Cron jobs that target this agent get carried into the slice with
     runtime fields (id, sessionKey, state, createdAtMs, updatedAtMs)

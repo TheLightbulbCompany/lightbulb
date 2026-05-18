@@ -436,34 +436,23 @@ async def deploy_listing(
 
     new_agent_id = paperclip_agent["id"]
 
-    # Resolve the buyer's OpenClaw container so we can drive ``agents.create``
-    # + ``agents.update`` over the gateway during deploy (the agent entry no
-    # longer goes through the file-merge path — chokidar reload on EFS lags
-    # too much to be reliable). A missing or unreachable container is NOT
-    # a supported deploy state: roll back the orphan Paperclip agent and
-    # surface 503 so the caller can retry once the container is healthy.
-    ecs = get_ecs_manager()
-    container, container_ip = await ecs.resolve_running_container(owner_id)
-    if container is None or container_ip is None:
-        logger.info(
-            "Marketplace deploy: container not reachable for owner=%s — rolling back paperclip agent %s",
-            owner_id,
-            new_agent_id,
-        )
-        try:
-            await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
-        except Exception:
-            logger.exception(
-                "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
-                new_agent_id,
-            )
-        raise HTTPException(
-            status_code=503,
-            detail="container starting — retry in a moment",
-        )
-    container_token = container["gateway_token"]
-
+    # Everything after the Paperclip mint must be wrapped so any
+    # exception triggers the orphan-Paperclip rollback. That includes
+    # container resolution (DDB/ECS can throw transient errors), the
+    # 503-on-unreachable-container short-circuit, and the catalog deploy
+    # itself. Without this envelope a transient DDB outage on
+    # ``resolve_running_container`` leaves a phantom Paperclip agent on
+    # every failed deploy.
     try:
+        ecs = get_ecs_manager()
+        container, container_ip = await ecs.resolve_running_container(owner_id)
+        if container is None or container_ip is None:
+            raise HTTPException(
+                status_code=503,
+                detail="container starting — retry in a moment",
+            )
+        container_token = container["gateway_token"]
+
         result = await catalog.deploy_from_artifact(
             owner_id=owner_id,
             slug=slug,
@@ -475,11 +464,12 @@ async def deploy_listing(
             container_token=container_token,
         )
     except Exception as exc:
-        # Catalog failed after Paperclip create succeeded — roll back
-        # the orphan Paperclip agent. Idempotent + 404-tolerant on the
-        # Paperclip side, so a retry doesn't accumulate phantom records.
+        # Catalog or container-resolution failed after Paperclip create
+        # succeeded — roll back the orphan Paperclip agent. Idempotent
+        # + 404-tolerant on the Paperclip side, so a retry doesn't
+        # accumulate phantom records.
         logger.exception(
-            "Marketplace deploy: catalog.deploy_from_artifact failed for owner=%s slug=%s — rolling back paperclip agent %s",
+            "Marketplace deploy: post-Paperclip step failed for owner=%s slug=%s — rolling back paperclip agent %s",
             owner_id,
             slug,
             new_agent_id,
@@ -493,6 +483,11 @@ async def deploy_listing(
                 "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
                 new_agent_id,
             )
+        # Preserve the original HTTP status — the 503 short-circuit
+        # already carries the right code; only unexpected errors get
+        # mapped to 500.
+        if isinstance(exc, HTTPException):
+            raise
         raise HTTPException(
             status_code=500,
             detail="deploy failed",

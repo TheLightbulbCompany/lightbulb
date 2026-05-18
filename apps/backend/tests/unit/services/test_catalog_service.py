@@ -143,11 +143,12 @@ async def test_deploy_threads_agent_entry_through_pair_extra_update_fields():
 
 
 @pytest.mark.asyncio
-async def test_deploy_pair_failure_skips_aux_and_rolls_back_workspace():
+async def test_deploy_pair_failure_propagates_and_skips_aux():
     """If ``pair_with_openclaw`` raises, we MUST NOT proceed to the file
     merge — leaving plugins/mcp/skills for an agent the runtime doesn't
-    know about would silently corrupt the buyer's config. Workspace dir
-    cleanup must still run idempotently.
+    know about would silently corrupt the buyer's config. The exception
+    propagates; we do not roll back the extracted workspace (see
+    ``deploy_from_artifact`` docstring "Rollback posture (v0)").
     """
     svc, ws, apply_aux, pair_fn, _gw = _make_service()
     pair_fn.side_effect = RuntimeError("gateway boom")
@@ -165,16 +166,16 @@ async def test_deploy_pair_failure_skips_aux_and_rolls_back_workspace():
         )
 
     apply_aux.assert_not_awaited()
-    ws.cleanup_agent_dirs.assert_called_once_with("user_buyer", "agent_abc")
+    ws.cleanup_agent_dirs.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_deploy_aux_failure_cleans_workspace_but_agent_stays_paired():
-    """If the aux merge fails AFTER a successful pair, the workspace dir is
-    cleaned up but the agent REMAINS registered in the container's
-    in-memory state — no inverse ``agents.delete`` RPC is wired today
-    (see ``deploy_from_artifact`` docstring "Rollback posture"). On-call
-    incident keyword: phantom agent after failed marketplace deploy.
+async def test_deploy_aux_failure_leaves_workspace_intact_for_live_agent():
+    """If the aux merge fails AFTER a successful pair, the agent is live
+    in the container's in-memory state and its workspace files MUST stay
+    on EFS. Wiping them would phantom the agent. The exception propagates
+    so the caller can retry; partial state is functionally invisible
+    (no sidecar → not in installed-templates UI).
     """
     svc, ws, apply_aux, _pair, _gw = _make_service()
     apply_aux.side_effect = RuntimeError("aux boom")
@@ -191,7 +192,7 @@ async def test_deploy_aux_failure_cleans_workspace_but_agent_stays_paired():
             new_agent_id="agent_abc",
         )
 
-    ws.cleanup_agent_dirs.assert_called_once_with("user_buyer", "agent_abc")
+    ws.cleanup_agent_dirs.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -184,15 +184,15 @@ class CatalogService:
                 systems share the same id. Defaults to a locally-generated
                 ``agent_<hex>`` UUID for direct callers.
 
-        Rollback posture:
-            - Workspace dir cleanup is best-effort + idempotent (always
-              runs on failure).
-            - A successful pair followed by a failed aux merge / sidecar
-              write leaves the agent FUNCTIONAL in the container's
-              in-memory state. The buyer can chat. The only loss is the
-              installed-templates sidebar entry (sidecar missing) or
-              some plugins/mcps not registered. Accepted tradeoff for v0
-              — the inverse ``agents.delete`` RPC isn't wired today.
+        Rollback posture (v0): no rollback. A failed step lets the
+        exception propagate. Partial state on EFS is functionally
+        invisible — orphans without a sidecar don't show in the
+        installed-templates UI, and they share no openclaw.json or
+        cron/jobs.json identity with anything else. A successful pair
+        followed by a later failure leaves a live in-memory agent that
+        the buyer can chat with; wiping its workspace files would
+        phantom it. Same posture as channel-binding deep-merges and
+        plugin entries elsewhere in the codebase — none are reversible.
         """
         if new_agent_id is None:
             new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
@@ -207,126 +207,108 @@ class CatalogService:
         slice_has_agent = bool(slice_.get("agent"))
         agent_entry: dict[str, Any] = {}
 
-        try:
-            if slice_has_agent:
-                # Build the agent entry locally so we know the new id + workspace
-                # path. Deep-copy the slice's agent dict so we don't mutate the
-                # caller's state (matters if s3 returns a cached/shared dict).
-                agent_entry = copy.deepcopy(slice_.get("agent") or {})
-                agent_entry["id"] = new_agent_id
-                agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
-                # Strip the helper-owned fields from the extras dict — ``id``
-                # and ``workspace`` are derived from the create RPC's
-                # ``name`` (the agent UUID) so they must not be forwarded as
-                # update fields. pair_with_openclaw also force-overrides
-                # ``agentId`` + ``name`` regardless of caller input, but
-                # being explicit here keeps the contract obvious.
-                extra_update_fields = {k: v for k, v in agent_entry.items() if k not in ("id", "workspace")}
+        if slice_has_agent:
+            # Build the agent entry locally so we know the new id + workspace
+            # path. Deep-copy the slice's agent dict so we don't mutate the
+            # caller's state (matters if s3 returns a cached/shared dict).
+            agent_entry = copy.deepcopy(slice_.get("agent") or {})
+            agent_entry["id"] = new_agent_id
+            agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
+            # Strip the helper-owned fields from the extras dict — ``id``
+            # and ``workspace`` are derived from the create RPC's
+            # ``name`` (the agent UUID) so they must not be forwarded as
+            # update fields. pair_with_openclaw also force-overrides
+            # ``agentId`` + ``name`` regardless of caller input, but
+            # being explicit here keeps the contract obvious.
+            extra_update_fields = {k: v for k, v in agent_entry.items() if k not in ("id", "workspace")}
 
-                # Synthesize the Paperclip-shaped dict the helper expects.
-                # The actual Paperclip agent was minted upstream in the
-                # marketplace router; we're reusing its UUID + name to drive
-                # the OpenClaw gateway RPC. No Paperclip API call here.
-                paperclip_agent: dict[str, Any] = {
-                    "id": new_agent_id,
-                    "name": agent_entry.get("name") or new_agent_id,
-                }
-                if agent_entry.get("model"):
-                    paperclip_agent["model"] = agent_entry["model"]
+            # Synthesize the Paperclip-shaped dict the helper expects.
+            # The actual Paperclip agent was minted upstream in the
+            # marketplace router; we're reusing its UUID + name to drive
+            # the OpenClaw gateway RPC. No Paperclip API call here.
+            paperclip_agent: dict[str, Any] = {
+                "id": new_agent_id,
+                "name": agent_entry.get("name") or new_agent_id,
+            }
+            if agent_entry.get("model"):
+                paperclip_agent["model"] = agent_entry["model"]
 
-                await self._pair_fn(
-                    owner_id=owner_id,
-                    paperclip_agent=paperclip_agent,
-                    gateway_pool=self._get_gateway_pool(),
-                    ip=container_ip,
-                    token=container_token,
-                    extra_update_fields=extra_update_fields,
-                )
-
-                # Selection-aware additions (marketplace publish flow): the
-                # seller picked specific MCP servers + skills in the publish
-                # wizard; those land in the slice under ``mcp`` / ``skills``
-                # with secret fields already scrubbed to "" by
-                # ``catalog_slice``. The buyer fills in credentials before
-                # the integration becomes functional. ``None`` for either
-                # patch keeps legacy listing behavior (no MCP / skills
-                # registration) — backwards compatible with pre-bundle
-                # listings already in the marketplace.
-                plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
-                mcp_patch = copy.deepcopy(slice_.get("mcp")) or None
-                # Substitute __AGENT_DIR__ → new_agent_id in any mcp args
-                # before applying. Pairs with agent_export's publish-time
-                # rewrite that swaps the seller's agent_id out for the
-                # sentinel; here we put the buyer's id in.
-                mcp_patch = _substitute_agent_dir_sentinel(mcp_patch, new_agent_id)
-                skills_patch = copy.deepcopy(slice_.get("skills")) or None
-
-                await self._apply_aux(
-                    owner_id,
-                    plugins_patch=plugins_patch,
-                    mcp_patch=mcp_patch,
-                    skills_patch=skills_patch,
-                )
-
-            # ``manifest["version"]`` is sourced from the listing row's
-            # ``manifest_json`` column (boto3 returns DDB Numbers as
-            # ``Decimal``), or from ``listing["version"]`` setdefaulted in
-            # the marketplace router. Either way it can be ``Decimal``,
-            # which the sidecar's ``json.dumps`` refuses to serialize and
-            # blows up the deploy with TypeError. Coerce to int at the
-            # write boundary — the field is always a small positive
-            # integer in practice (listing version starts at 1).
-            raw_version = manifest.get("version", 1)
-            try:
-                template_version = int(raw_version) if raw_version is not None else 1
-            except (TypeError, ValueError):
-                template_version = 1
-            self._workspace.write_template_sidecar(
-                user_id=owner_id,
-                agent_id=new_agent_id,
-                content={
-                    "template_slug": slug,
-                    "template_version": template_version,
-                    "deployed_at": datetime.now(timezone.utc).isoformat(),
-                },
+            await self._pair_fn(
+                owner_id=owner_id,
+                paperclip_agent=paperclip_agent,
+                gateway_pool=self._get_gateway_pool(),
+                ip=container_ip,
+                token=container_token,
+                extra_update_fields=extra_update_fields,
             )
 
-            # Carry the publisher's cron jobs (filtered + stripped at publish
-            # time) over to the deployer's cron/jobs.json with regenerated
-            # ids and the new agent_id wired in. Done AFTER the agent is
-            # registered so the runtime never sees a cron job pointing at a
-            # nonexistent agent. Skipped when there's no slice agent — a
-            # cron job pointing at an unregistered agent would just error at
-            # delivery time.
-            template_cron_jobs = slice_.get("cron_jobs") or []
-            if template_cron_jobs and slice_has_agent:
-                from core.services.config_patcher import append_cron_jobs
+            # Selection-aware additions (marketplace publish flow): the
+            # seller picked specific MCP servers + skills in the publish
+            # wizard; those land in the slice under ``mcp`` / ``skills``
+            # with secret fields already scrubbed to "" by
+            # ``catalog_slice``. The buyer fills in credentials before
+            # the integration becomes functional. ``None`` for either
+            # patch keeps legacy listing behavior (no MCP / skills
+            # registration) — backwards compatible with pre-bundle
+            # listings already in the marketplace.
+            plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
+            mcp_patch = copy.deepcopy(slice_.get("mcp")) or None
+            # Substitute __AGENT_DIR__ → new_agent_id in any mcp args
+            # before applying. Pairs with agent_export's publish-time
+            # rewrite that swaps the seller's agent_id out for the
+            # sentinel; here we put the buyer's id in.
+            mcp_patch = _substitute_agent_dir_sentinel(mcp_patch, new_agent_id)
+            skills_patch = copy.deepcopy(slice_.get("skills")) or None
 
-                await append_cron_jobs(
-                    owner_id,
-                    _remap_cron_jobs_for_deploy(
-                        template_cron_jobs,
-                        new_agent_id=new_agent_id,
-                        owner_id=owner_id,
-                    ),
-                )
-        except Exception:
-            # Roll back the extracted workspace so a failed deploy doesn't
-            # leave orphan files on EFS. cleanup_agent_dirs removes both
-            # agents/{id}/ and workspaces/{id}/, and is best-effort +
-            # idempotent — safe to call even if the pair / aux merge never
-            # ran or already succeeded.
-            #
-            # NOTE: a successful pair followed by a failed aux merge / sidecar
-            # write leaves the agent registered in the container's in-memory
-            # state (no inverse ``agents.delete`` RPC wired yet). The buyer
-            # can still chat with the agent; the only loss is the
-            # installed-templates sidecar entry and any unmerged
-            # plugins/mcp/skills. Accepted tradeoff for v0 — same posture
-            # as the rest of the codebase (channel binding deep-merges
-            # are likewise not reversible).
-            self._workspace.cleanup_agent_dirs(owner_id, new_agent_id)
-            raise
+            await self._apply_aux(
+                owner_id,
+                plugins_patch=plugins_patch,
+                mcp_patch=mcp_patch,
+                skills_patch=skills_patch,
+            )
+
+        # ``manifest["version"]`` is sourced from the listing row's
+        # ``manifest_json`` column (boto3 returns DDB Numbers as
+        # ``Decimal``), or from ``listing["version"]`` setdefaulted in
+        # the marketplace router. Either way it can be ``Decimal``,
+        # which the sidecar's ``json.dumps`` refuses to serialize and
+        # blows up the deploy with TypeError. Coerce to int at the
+        # write boundary — the field is always a small positive
+        # integer in practice (listing version starts at 1).
+        raw_version = manifest.get("version", 1)
+        try:
+            template_version = int(raw_version) if raw_version is not None else 1
+        except (TypeError, ValueError):
+            template_version = 1
+        self._workspace.write_template_sidecar(
+            user_id=owner_id,
+            agent_id=new_agent_id,
+            content={
+                "template_slug": slug,
+                "template_version": template_version,
+                "deployed_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        # Carry the publisher's cron jobs (filtered + stripped at publish
+        # time) over to the deployer's cron/jobs.json with regenerated
+        # ids and the new agent_id wired in. Done AFTER the agent is
+        # registered so the runtime never sees a cron job pointing at a
+        # nonexistent agent. Skipped when there's no slice agent — a
+        # cron job pointing at an unregistered agent would just error at
+        # delivery time.
+        template_cron_jobs = slice_.get("cron_jobs") or []
+        if template_cron_jobs and slice_has_agent:
+            from core.services.config_patcher import append_cron_jobs
+
+            await append_cron_jobs(
+                owner_id,
+                _remap_cron_jobs_for_deploy(
+                    template_cron_jobs,
+                    new_agent_id=new_agent_id,
+                    owner_id=owner_id,
+                ),
+            )
 
         return {
             "slug": slug,

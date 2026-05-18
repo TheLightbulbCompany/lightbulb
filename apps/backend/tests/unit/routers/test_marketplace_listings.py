@@ -727,6 +727,46 @@ def test_deploy_503s_when_container_not_reachable_and_rolls_back_paperclip(
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-9999"
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_deploy_rolls_back_paperclip_when_resolve_running_container_raises(
+    mock_get_by_slug,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """``resolve_running_container`` can raise on transient DDB/ECS
+    failures, not just return (None, None). Without the post-mint
+    rollback envelope, that exception bubbled into a 500 response while
+    silently leaving an orphan Paperclip agent. Confirm the rollback
+    fires on ANY post-mint exception path.
+    """
+    mock_get_by_slug.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-9999", "name": "Demo"}
+    ecs_mock = MagicMock()
+    ecs_mock.resolve_running_container = AsyncMock(side_effect=RuntimeError("ddb throttled"))
+    mock_get_ecs.return_value = ecs_mock
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Demo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock()
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+    assert resp.status_code == 500, resp.text
+    catalog.deploy_from_artifact.assert_not_awaited()
+    mock_delete_pc.assert_awaited_once()
+    assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-9999"
+
+
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_deploy_taken_down_listing_404(mock_get_by_slug, client):
     listing = _published_listing()

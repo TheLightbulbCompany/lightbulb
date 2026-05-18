@@ -1,4 +1,4 @@
-"use server";
+import "server-only";
 
 import { randomUUID } from "crypto";
 
@@ -15,10 +15,13 @@ import { apiUrl } from "@/app/admin/_lib/url";
  * the request shape removes a drift surface — every action that adds a
  * header / changes the error envelope only needs to touch this file.
  *
- * `"use server"` files can only export async functions. `ActionResult` is
- * an interface (erased at compile time), so defining it here is safe; do
- * NOT add `export type { ActionResult }` re-exports from sibling files —
- * Turbopack turns those into runtime ReferenceErrors on SSR chunk load.
+ * **Not a `"use server"` module.** Codex flagged the original version: when
+ * `adminPost(path, body)` is itself a Server Action, a client that obtains
+ * its server-reference id can pass ANY path / body and have the frontend
+ * forward the caller's Clerk token to arbitrary backend endpoints. This
+ * file is `server-only` (enforced at build time by the `server-only`
+ * package) so it can be imported from the per-endpoint `"use server"`
+ * files but cannot itself be invoked from the client.
  */
 
 export interface ActionResult {

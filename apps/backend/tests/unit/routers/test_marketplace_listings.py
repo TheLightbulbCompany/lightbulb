@@ -53,13 +53,50 @@ def test_create_draft_requires_auth(unauth_client):
     assert resp.status_code in (401, 403)
 
 
+@patch("routers.marketplace_listings.marketplace_service.create_draft", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.seller_profile.get_profile", new_callable=AsyncMock)
+def test_create_draft_requires_seller_profile(mock_profile, mock_create):
+    """Authenticated callers without a marketplace profile get 409
+    seller_profile_required — the wizard uses this to route to the
+    handle picker before retrying."""
+    from main import app
+    from core.auth import AuthContext, get_current_user
+
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_caller")
+    try:
+        mock_profile.return_value = None
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/marketplace/listings",
+            json={
+                "slug": "test-slug",
+                "name": "Test Listing",
+                "description_md": "x",
+                "format": "openclaw",
+                "price_cents": 0,
+                "tags": [],
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "seller_profile_required"
+    mock_create.assert_not_called()
+
+
 @patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
 def test_search_endpoint_passes_through_to_service(mock_search, unauth_client):
     mock_search.return_value = [{"slug": "foo", "name": "Foo"}]
     resp = unauth_client.get("/api/v1/marketplace/listings/search?q=foo&format=openclaw&limit=10")
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"items": [{"slug": "foo", "name": "Foo"}]}
+    # seller_display.attach_seller_names sets the byline to FALLBACK_NAME
+    # ("Community member") on items without a seller_id, so the storefront
+    # never sees a missing byline.
+    assert body == {"items": [{"slug": "foo", "name": "Foo", "seller_display_name": "Community member"}]}
     mock_search.assert_called_once_with(
         query="foo",
         format="openclaw",
@@ -622,6 +659,10 @@ def test_search_seller_scoped_status_in_filters_results(mock_search, authed_clie
     assert call_kwargs["include_unpublished"] is True
 
 
+@patch(
+    "routers.marketplace_listings.seller_profile.get_profile",
+    new=AsyncMock(return_value={"seller_id": "u_seller", "handle": "atlas"}),
+)
 @patch("routers.marketplace_listings.marketplace_service.create_draft", new_callable=AsyncMock)
 def test_create_listing_persists_category(mock_create, authed_client_factory):
     """Wizard's category selection (Step 4 of the publish flow) must thread

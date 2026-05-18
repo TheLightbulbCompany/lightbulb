@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     MARKETPLACE_PURCHASES_TABLE: str = os.getenv("MARKETPLACE_PURCHASES_TABLE", "")
     MARKETPLACE_PAYOUT_ACCOUNTS_TABLE: str = os.getenv("MARKETPLACE_PAYOUT_ACCOUNTS_TABLE", "")
     MARKETPLACE_TAKEDOWNS_TABLE: str = os.getenv("MARKETPLACE_TAKEDOWNS_TABLE", "")
+    MARKETPLACE_SELLERS_TABLE: str = os.getenv("MARKETPLACE_SELLERS_TABLE", "")
     MARKETPLACE_ARTIFACTS_BUCKET: str = os.getenv("MARKETPLACE_ARTIFACTS_BUCKET", "")
 
     # Stripe Connect (seller payout onboarding) — environment-specific URLs

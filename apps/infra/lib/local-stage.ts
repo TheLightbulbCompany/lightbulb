@@ -99,6 +99,7 @@ export class LocalStage extends cdk.Stage {
         marketplacePurchasesTable: database.marketplacePurchasesTable,
         marketplacePayoutAccountsTable: database.marketplacePayoutAccountsTable,
         marketplaceTakedownsTable: database.marketplaceTakedownsTable,
+        marketplaceSellersTable: database.marketplaceSellersTable,
         hookEventsTable: database.hookEventsTable,
       },
       secretNames: {

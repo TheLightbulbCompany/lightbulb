@@ -647,6 +647,11 @@ from routers import marketplace_admin  # noqa: E402
 
 app.include_router(marketplace_admin.router)
 
+# Marketplace seller profiles — handle picker + public profile lookups.
+from routers import marketplace_sellers  # noqa: E402
+
+app.include_router(marketplace_sellers.router)
+
 
 @app.get(
     "/",

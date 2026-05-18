@@ -257,9 +257,7 @@ def test_export_reads_from_workspaces_dir_not_agents_dir(tmp_path: Path):
         pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     assert any("IDENTITY.md" in n for n in names), names
-    assert not any("MARKER.md" in n for n in names), (
-        f"agents/-dir content leaked into the tarball: {names}"
-    )
+    assert not any("MARKER.md" in n for n in names), f"agents/-dir content leaked into the tarball: {names}"
 
 
 def test_export_skips_credential_shaped_filenames(fake_efs):

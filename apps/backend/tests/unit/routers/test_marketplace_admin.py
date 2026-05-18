@@ -465,3 +465,48 @@ def test_approve_refuses_when_artifact_exceeds_cap(client):
     assert "scan cap" in resp.json()["detail"]
     # marketplace_service.approve should never have been called.
     mock_approve.assert_not_awaited()
+
+
+def test_approve_refuses_when_unpacked_exceeds_cap(client):
+    """Regression for Codex P1 on PR #693 (commit df4f8263): a gzip with a
+    high compression ratio can be small on disk but unpack into more than
+    the safety-scan budget. The compressed-size check alone would let such
+    a listing through. Walk tar headers and check the unpacked sum too.
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    # Build a tarball that's tiny compressed (the bloat is highly compressible)
+    # but unpacks to over 50 MB. `'x' * N` compresses to ~N/1000 because gzip
+    # finds the repeating pattern instantly.
+    cap = 50 * 1024 * 1024
+    bloat = b"x" * (cap + 1)
+    tar_bytes = _make_tarball([("bloat.bin", bloat)])
+    assert len(tar_bytes) < cap, (
+        f"test setup invariant violated: tarball should be small compressed (was {len(tar_bytes)})"
+    )
+
+    fake_table = MagicMock()
+    fake_table.get_item.return_value = {"Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/"}}
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+
+    body_stream = MagicMock()
+    body_stream.read.return_value = tar_bytes
+    s3_client = MagicMock()
+    s3_client.head_object.return_value = {"ContentLength": len(tar_bytes)}
+    s3_client.get_object.return_value = {"Body": body_stream}
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+        patch("routers.marketplace_admin.marketplace_service.approve", new=AsyncMock()) as mock_approve,
+    ):
+        resp = client.post("/api/v1/admin/marketplace/listings/l1/approve")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 409, resp.text
+    assert "unpacks to" in resp.json()["detail"]
+    mock_approve.assert_not_awaited()

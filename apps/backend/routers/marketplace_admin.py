@@ -88,29 +88,63 @@ async def approve(
     # Defense in depth: refuse to approve a listing whose tarball can't
     # be fully scanned. The admin UI hides the Approve button when the
     # preview reports scan_incomplete=true, but a moderator could still
-    # POST directly. Re-check the artifact size here so the server-side
-    # gate matches the UI gate.
+    # POST directly. We re-check BOTH the compressed size (ContentLength)
+    # AND the unpacked sum (sum of tar header sizes), because a gzip with
+    # a high compression ratio — or an outright gzip bomb — can be small
+    # on disk but trip the unpacked cap inside the preview. Without the
+    # unpacked check this gate would only catch the easier case.
     try:
         table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
         row = table.get_item(Key={"listing_id": listing_id, "version": version}).get("Item") or {}
         s3_prefix = row.get("s3_prefix")
         if s3_prefix:
+            cap_mb = _MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)
             try:
-                head = boto3.client("s3").head_object(
+                s3 = boto3.client("s3")
+                head = s3.head_object(
                     Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
                     Key=f"{s3_prefix}workspace.tar.gz",
                 )
-                if int(head.get("ContentLength", 0)) > _MAX_PREVIEW_TARBALL_BYTES:
-                    cap_mb = _MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)
+                tarball_bytes = int(head.get("ContentLength", 0))
+                if tarball_bytes > _MAX_PREVIEW_TARBALL_BYTES:
                     raise HTTPException(
                         status_code=409,
                         detail=(
-                            f"artifact exceeds {cap_mb} MB scan cap — approval blocked. "
+                            f"artifact is {tarball_bytes // (1024 * 1024)} MB compressed, "
+                            f"exceeds {cap_mb} MB scan cap — approval blocked. "
                             "Reject or ask the seller to slim the listing."
+                        ),
+                    )
+                # Unpacked-size gate. Reading the gzip into memory here costs
+                # one bounded download (≤50 MB by the compressed check above)
+                # per approve call, which is acceptable for an admin path.
+                # `tarfile.getmembers()` reads headers only — no file content
+                # is loaded — so we don't OOM on a 50 MB tarball with 500 MB
+                # of unpacked content.
+                body = s3.get_object(
+                    Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
+                    Key=f"{s3_prefix}workspace.tar.gz",
+                )["Body"].read()
+                with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tf:
+                    unpacked = sum(m.size for m in tf.getmembers() if m.isfile())
+                if unpacked > _MAX_PREVIEW_TARBALL_BYTES:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"artifact unpacks to {unpacked // (1024 * 1024)} MB, "
+                            f"exceeds {cap_mb} MB scan cap — approval blocked. "
+                            "The preview safety scan was incomplete. Reject or ask "
+                            "the seller to slim the listing."
                         ),
                     )
             except HTTPException:
                 raise
+            except tarfile.TarError:
+                # Malformed tarball can't be scanned — refuse to approve.
+                raise HTTPException(
+                    status_code=409,
+                    detail="artifact tarball is unreadable — approval blocked.",
+                )
             except Exception:
                 # head_object failure (no artifact uploaded, transient S3
                 # error) shouldn't block approval — the underlying approve

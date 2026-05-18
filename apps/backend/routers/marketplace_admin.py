@@ -96,72 +96,73 @@ async def approve(
     table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
     row = table.get_item(Key={"listing_id": listing_id, "version": version}).get("Item") or {}
     s3_prefix = row.get("s3_prefix")
-    if s3_prefix:
+    # ``artifact_uploaded`` is the canonical signal that an artifact is on
+    # S3. submit_for_review enforces this before flipping draft → review,
+    # so any listing reaching approve should have it True. Missing
+    # defaults to True for legacy rows written before the field existed
+    # (matches the convention in marketplace_service.submit_for_review).
+    artifact_uploaded = row.get("artifact_uploaded", True)
+    if s3_prefix and artifact_uploaded:
         cap_mb = _MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)
         s3 = boto3.client("s3")
         artifact_key = f"{s3_prefix}workspace.tar.gz"
 
-        # head_object: only the existence/size probe. A failure here means
-        # "no artifact uploaded yet" — let the inner approve call surface
-        # its own 409 (it will, because the listing isn't ready to ship).
+        # ANY failure on the scan path — head_object, get_object, or the
+        # tarfile parse — must block approval. The artifact is supposed to
+        # exist (artifact_uploaded=True above), so a missing or
+        # inaccessible artifact at moderation time means we cannot verify
+        # safety. Without a clean scan we can't tell whether the bytes are
+        # what the moderator inspected; fail closed.
         try:
-            head = s3.head_object(
-                Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET, Key=artifact_key
-            )
-            tarball_bytes = int(head.get("ContentLength", 0))
+            head = s3.head_object(Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET, Key=artifact_key)
         except Exception:
-            head = None
-            tarball_bytes = 0
-
-        if head is not None:
-            # Artifact confirmed present. From here, ANY failure (S3
-            # access denied, transient timeout, NoSuchKey race, malformed
-            # gzip) must block the approval. Without the scan we can't
-            # tell whether the artifact is safe — fail closed.
-            if tarball_bytes > _MAX_PREVIEW_TARBALL_BYTES:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"artifact is {tarball_bytes // (1024 * 1024)} MB compressed, "
-                        f"exceeds {cap_mb} MB scan cap — approval blocked. "
-                        "Reject or ask the seller to slim the listing."
-                    ),
-                )
-            # Unpacked-size gate. Reading the gzip into memory here costs
-            # one bounded download (≤50 MB by the compressed check above)
-            # per approve call, which is acceptable for an admin path.
-            # `tarfile.getmembers()` reads headers only — no file content
-            # is loaded — so we don't OOM on a 50 MB tarball with 500 MB
-            # of unpacked content.
-            try:
-                body = s3.get_object(
-                    Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET, Key=artifact_key
-                )["Body"].read()
-                with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tf:
-                    unpacked = sum(m.size for m in tf.getmembers() if m.isfile())
-            except tarfile.TarError:
-                raise HTTPException(
-                    status_code=409,
-                    detail="artifact tarball is unreadable — approval blocked.",
-                )
-            except Exception:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "artifact scan failed (could not download or parse the tarball) "
-                        "— approval blocked."
-                    ),
-                )
-            if unpacked > _MAX_PREVIEW_TARBALL_BYTES:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"artifact unpacks to {unpacked // (1024 * 1024)} MB, "
-                        f"exceeds {cap_mb} MB scan cap — approval blocked. "
-                        "The preview safety scan was incomplete. Reject or ask "
-                        "the seller to slim the listing."
-                    ),
-                )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "could not verify artifact size on S3 — approval blocked. "
+                    "Retry, or reject if the artifact is missing."
+                ),
+            )
+        tarball_bytes = int(head.get("ContentLength", 0))
+        if tarball_bytes > _MAX_PREVIEW_TARBALL_BYTES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"artifact is {tarball_bytes // (1024 * 1024)} MB compressed, "
+                    f"exceeds {cap_mb} MB scan cap — approval blocked. "
+                    "Reject or ask the seller to slim the listing."
+                ),
+            )
+        # Unpacked-size gate. Reading the gzip into memory here costs one
+        # bounded download (≤50 MB by the compressed check above) per
+        # approve call, which is acceptable for an admin path.
+        # ``tarfile.getmembers()`` reads headers only — no file content is
+        # loaded — so we don't OOM on a 50 MB tarball with 500 MB of
+        # unpacked content.
+        try:
+            body = s3.get_object(Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET, Key=artifact_key)["Body"].read()
+            with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tf:
+                unpacked = sum(m.size for m in tf.getmembers() if m.isfile())
+        except tarfile.TarError:
+            raise HTTPException(
+                status_code=409,
+                detail="artifact tarball is unreadable — approval blocked.",
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=409,
+                detail=("artifact scan failed (could not download or parse the tarball) — approval blocked."),
+            )
+        if unpacked > _MAX_PREVIEW_TARBALL_BYTES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"artifact unpacks to {unpacked // (1024 * 1024)} MB, "
+                    f"exceeds {cap_mb} MB scan cap — approval blocked. "
+                    "The preview safety scan was incomplete. Reject or ask "
+                    "the seller to slim the listing."
+                ),
+            )
 
     try:
         if version > 1 and prev_version is None:

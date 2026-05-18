@@ -161,6 +161,11 @@ def test_approve_v2_derives_prev_version_from_history(client):
             {"listing_id": "l1", "version": 1, "status": "published"},
         ]
     }
+    # The new approve-side scan gate calls get_item before reaching the
+    # publish_v2 derivation path. Returning a row without s3_prefix
+    # short-circuits the gate so this test only exercises the prev_version
+    # derivation logic it cares about.
+    fake_table.get_item.return_value = {"Item": {"listing_id": "l1", "version": 2, "status": "review"}}
     fake_resource = MagicMock()
     fake_resource.Table.return_value = fake_table
 
@@ -446,7 +451,9 @@ def test_approve_refuses_when_artifact_exceeds_cap(client):
     _admit_admin(app)
 
     fake_table = MagicMock()
-    fake_table.get_item.return_value = {"Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/"}}
+    fake_table.get_item.return_value = {
+        "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/", "artifact_uploaded": True}
+    }
     fake_resource = MagicMock()
     fake_resource.Table.return_value = fake_table
     s3_client = MagicMock()
@@ -488,7 +495,9 @@ def test_approve_refuses_when_unpacked_exceeds_cap(client):
     )
 
     fake_table = MagicMock()
-    fake_table.get_item.return_value = {"Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/"}}
+    fake_table.get_item.return_value = {
+        "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/", "artifact_uploaded": True}
+    }
     fake_resource = MagicMock()
     fake_resource.Table.return_value = fake_table
 
@@ -512,6 +521,39 @@ def test_approve_refuses_when_unpacked_exceeds_cap(client):
     mock_approve.assert_not_awaited()
 
 
+def test_approve_fails_closed_when_head_object_fails(client):
+    """Regression for Codex P2 on PR #693 (commit 42968c8f): a head_object
+    failure on a listing whose artifact_uploaded=True (i.e. it MUST exist
+    because submit_for_review enforced that invariant) means we can't
+    verify scan safety. Fail closed instead of falling through to publish.
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    fake_table = MagicMock()
+    fake_table.get_item.return_value = {
+        "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/", "artifact_uploaded": True}
+    }
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+    s3_client = MagicMock()
+    s3_client.head_object.side_effect = RuntimeError("S3 timeout")
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+        patch("routers.marketplace_admin.marketplace_service.approve", new=AsyncMock()) as mock_approve,
+    ):
+        resp = client.post("/api/v1/admin/marketplace/listings/l1/approve")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 409, resp.text
+    assert "could not verify" in resp.json()["detail"]
+    mock_approve.assert_not_awaited()
+
+
 def test_approve_fails_closed_when_artifact_download_fails(client):
     """Regression for Codex P2 on PR #693 (commit 805655bb): once
     head_object confirms an artifact exists, any subsequent S3 failure
@@ -525,7 +567,7 @@ def test_approve_fails_closed_when_artifact_download_fails(client):
 
     fake_table = MagicMock()
     fake_table.get_item.return_value = {
-        "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/"}
+        "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/", "artifact_uploaded": True}
     }
     fake_resource = MagicMock()
     fake_resource.Table.return_value = fake_table

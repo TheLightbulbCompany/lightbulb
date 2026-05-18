@@ -302,84 +302,57 @@ async def remove_from_openclaw_config_list(
     await _locked_rmw(owner_id, _mutate, f"remove path={path}")
 
 
-async def apply_deploy_mutation(
+async def apply_deploy_aux_mutations(
     owner_id: str,
-    agent_entry: dict,
-    plugins_patch: dict,
     *,
+    plugins_patch: dict,
     mcp_patch: dict | None = None,
     skills_patch: dict | None = None,
 ) -> None:
-    """Atomically apply a catalog-deploy mutation to openclaw.json.
+    """Atomically apply the auxiliary subtree mutations for a catalog
+    deploy (plugins, mcp, skills) to openclaw.json.
 
-    Performed inside a single exclusive lock so concurrent deploys cannot
-    race on the read-modify-write of the agents list:
-      1. Append `agent_entry` to `config["agents"]["list"]`.
-      2. Deep-merge `plugins_patch` into `config["plugins"]`.
-      3. (Optional) Deep-merge ``mcp_patch`` (e.g. ``{"servers": {…}}``)
-         into ``config["mcp"]``. Used by marketplace deploys to register
-         the selected MCP servers from the publisher's slice.
-      4. (Optional) Deep-merge ``skills_patch.entries`` and union
-         ``skills_patch.allowBundled`` into ``config["skills"]``. Used by
-         marketplace deploys to register config-keyed skills + image-baked
-         bundled skills the publisher selected.
+    The agent entry itself is NOT written here — it goes through the
+    OpenClaw gateway's ``agents.create`` + ``agents.update`` RPCs in
+    ``catalog_service.deploy_from_artifact`` so the container's in-memory
+    state updates immediately (instead of waiting for chokidar to pick
+    up the file write, which on EFS with poll-mode can lag 1-30s).
 
-    NOTE: top-level ``tools`` is intentionally left alone. The catalog code
-    used to write ``tools.allowed = []``, which is not a valid key in
-    OpenClaw's ``ToolsSchema`` (``.strict()`` at
-    openclaw/src/config/zod-schema.agent-runtime.ts:911) — that wrote a junk
-    field that caused chokidar's hot-reload to reject the entire config with
-    ``Unrecognized key: "allowed"``, leaving every deployed agent invisible
-    in the running container. Per-agent tool policy lives on the agent entry
-    itself (``AgentToolsSchema``), which is already carried through the
-    slice. Top-level tools are global to the container and shouldn't be
-    silently mutated by a deploy.
+    Performed inside a single exclusive lock so concurrent deploys
+    cannot race on the read-modify-write of the plugins / mcp / skills
+    subtrees:
+      1. Deep-merge ``plugins_patch`` into ``config["plugins"]``.
+      2. (Optional) Deep-merge ``mcp_patch`` (e.g. ``{"servers": {…}}``)
+         into ``config["mcp"]``.
+      3. (Optional) Deep-merge ``skills_patch.entries`` and union
+         ``skills_patch.allowBundled`` into ``config["skills"]``.
 
-    Self-heals: if a stale ``tools.allowed`` is present from before this fix,
-    drop it on the next mutation so the file becomes valid again.
+    NOTE: top-level ``tools`` is intentionally left alone. The catalog
+    code used to write ``tools.allowed = []``, which is not a valid key
+    in OpenClaw's ``ToolsSchema`` and caused chokidar's hot-reload to
+    reject the entire config. Self-heals: if a stale ``tools.allowed``
+    is present from before this fix, drop it on the next mutation so
+    the file becomes valid again.
     """
 
     def _mutate(current: dict) -> bool:
-        # 1. Append agent entry to agents.list (always mutates — each deploy
-        # gets a fresh id). OpenClaw schema: agents = {defaults, list}. See
-        # openclaw/src/config/zod-schema.agents.ts.
-        agents_obj = current.get("agents")
-        if isinstance(agents_obj, list):
-            # Legacy flat-list shape from pre-schema-fix deploys: migrate by
-            # promoting the list under `agents.list` so existing entries
-            # survive rather than getting silently clobbered.
-            agents_obj = {"list": list(agents_obj)}
-        elif not isinstance(agents_obj, dict):
-            agents_obj = {}
-        agents_list = agents_obj.get("list")
-        if not isinstance(agents_list, list):
-            agents_list = []
-        agents_list.append(copy.deepcopy(agent_entry))
-        agents_obj["list"] = agents_list
-        current["agents"] = agents_obj
-
-        # 2. Deep-merge plugins.
         if plugins_patch:
             existing_plugins = current.get("plugins")
             if not isinstance(existing_plugins, dict):
                 existing_plugins = {}
             current["plugins"] = _deep_merge(existing_plugins, plugins_patch)
 
-        # 3. Deep-merge mcp servers (marketplace bundle of selected MCPs).
         if mcp_patch:
             existing_mcp = current.get("mcp")
             if not isinstance(existing_mcp, dict):
                 existing_mcp = {}
             current["mcp"] = _deep_merge(existing_mcp, mcp_patch)
 
-        # 4. Merge skills.entries (deep) + skills.allowBundled (union).
         if skills_patch:
             existing_skills = current.get("skills")
             if not isinstance(existing_skills, dict):
                 existing_skills = {}
 
-            # Pull allowBundled out and union manually so we don't get
-            # duplicate entries from _deep_merge's list-replace semantics.
             patch_bundled = skills_patch.get("allowBundled")
             patch_minus_bundled = {k: v for k, v in skills_patch.items() if k != "allowBundled"}
             if patch_minus_bundled:
@@ -388,7 +361,6 @@ async def apply_deploy_mutation(
                 existing_bundled = existing_skills.get("allowBundled")
                 if not isinstance(existing_bundled, list):
                     existing_bundled = []
-                # Union, preserving caller order for new additions.
                 merged_bundled = list(existing_bundled)
                 for name in patch_bundled:
                     if name not in merged_bundled:
@@ -396,7 +368,7 @@ async def apply_deploy_mutation(
                 existing_skills["allowBundled"] = merged_bundled
             current["skills"] = existing_skills
 
-        # 5. Self-heal: strip the invalid ``tools.allowed`` key if present
+        # Self-heal: strip the invalid ``tools.allowed`` key if present
         # (left over from pre-fix deploys). Cleans up the bad on-disk state
         # so OpenClaw's strict-schema validator accepts the file again.
         tools = current.get("tools")
@@ -408,7 +380,32 @@ async def apply_deploy_mutation(
     await _locked_rmw(
         owner_id,
         _mutate,
-        f"deploy agent_id={agent_entry.get('id')!r}",
+        f"deploy aux merge plugins={bool(plugins_patch)} mcp={bool(mcp_patch)} skills={bool(skills_patch)}",
+    )
+
+
+async def apply_deploy_mutation(
+    owner_id: str,
+    agent_entry: dict,  # noqa: ARG001 — intentionally unused; see docstring.
+    plugins_patch: dict,
+    *,
+    mcp_patch: dict | None = None,
+    skills_patch: dict | None = None,
+) -> None:
+    """DEPRECATED — kept temporarily so the prior catalog_service.py
+    compiles. Task 3 reroutes catalog_service to call
+    ``apply_deploy_aux_mutations`` directly + send ``agent_entry`` through
+    ``pair_with_openclaw``. DELETE this shim in that commit.
+
+    The ``agent_entry`` argument is intentionally discarded: writing the
+    agent into ``openclaw.json["agents"]["list"]`` is exactly the chokidar
+    reload race this refactor is removing.
+    """
+    await apply_deploy_aux_mutations(
+        owner_id,
+        plugins_patch=plugins_patch,
+        mcp_patch=mcp_patch,
+        skills_patch=skills_patch,
     )
 
 

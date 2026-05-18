@@ -295,7 +295,8 @@ async def test_update_draft_writes_only_provided_fields(mock_listings):
     # Only the two fields we passed should appear in the SET clause
     # (besides the always-written updated_at).
     expr = kwargs["UpdateExpression"]
-    assert expr.count("=") == 3  # name, price_cents, updated_at
+    # name, price_cents, status (auto-demoted to draft), updated_at
+    assert expr.count("=") == 4
     values = kwargs["ExpressionAttributeValues"]
     # Field values are bound via :c0/:c1 placeholders to defeat reserved-word
     # collisions ("name" is reserved in DDB).
@@ -352,6 +353,25 @@ async def test_update_draft_rejects_non_draft_or_wrong_seller(mock_listings):
     )
     with pytest.raises(marketplace_service.InvalidStateError):
         await marketplace_service.update_draft(listing_id="l1", seller_id="user_abc", name="x")
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_update_draft_allows_review_state_and_demotes_to_draft(mock_listings):
+    """Edit-during-review (PR #707): a seller editing a listing currently in
+    moderation review pulls it back to draft. Without that demotion, the
+    moderation queue holds a row whose metadata is mid-mutation — a
+    moderator could approve the stale snapshot. The seller resubmits after
+    editing to re-enter review.
+    """
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "draft"}})
+    await marketplace_service.update_draft(listing_id="l1", seller_id="user_abc", name="New Name")
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    # IN list permits both draft and review as starting states.
+    assert kwargs["ConditionExpression"] == "seller_id = :sid AND #s IN (:draft, :review)"
+    # The SET clause always pins status to draft — no-op on draft, demotes on review.
+    assert "#s = :draft" in kwargs["UpdateExpression"]
+    assert kwargs["ExpressionAttributeValues"][":review"] == "review"
 
 
 @pytest.mark.asyncio

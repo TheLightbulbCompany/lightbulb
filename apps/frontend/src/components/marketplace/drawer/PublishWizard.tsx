@@ -328,6 +328,11 @@ export function PublishWizard() {
     [agentLocked],
   );
 
+  // Editing a listing that's currently in review pulls it back to draft
+  // on save (backend update_draft auto-demotes). Warn the seller up front
+  // so the side effect isn't a surprise — they'll need to resubmit.
+  const editingFromReview = editingListing?.status === "review";
+
   return (
     <div className="flex flex-col h-full">
       {rejectionNote && step !== 6 && (
@@ -340,6 +345,19 @@ export function PublishWizard() {
             Admin sent this listing back for revisions.
           </strong>
           {rejectionNote}
+        </div>
+      )}
+      {editingFromReview && step !== 6 && (
+        <div
+          role="status"
+          data-testid="wizard-review-pullback-banner"
+          className="mb-4 rounded-xl border border-[#e8d49a] bg-[#fff4d6] px-3.5 py-2.5 text-[13px] text-[#7d5f1a] leading-snug"
+        >
+          <strong className="block font-semibold text-[#5e4814]">
+            This listing is currently in review.
+          </strong>
+          Saving your edits pulls it out of the moderation queue back to draft.
+          Resubmit to re-enter review.
         </div>
       )}
 

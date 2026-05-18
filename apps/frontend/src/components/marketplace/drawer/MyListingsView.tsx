@@ -181,7 +181,11 @@ function ListingRow({ listing, onEdit }: { listing: Listing; onEdit: () => void 
   // status; presence of rejection_notes is the signal.
   const wasRejected = listing.status === "draft" && !!listing.rejection_notes;
   const rejectedOn = wasRejected ? formatRejectedAt(listing.rejected_at) : null;
-  const isEditable = listing.status === "draft";
+  // Listings in review are also editable: saving an edit auto-demotes
+  // the row back to draft (backend update_draft handles the transition),
+  // so the seller doesn't have to wait for an admin reject just to fix
+  // a typo.
+  const isEditable = listing.status === "draft" || listing.status === "review";
 
   return (
     <div

@@ -13,6 +13,7 @@ in S3 at upload time.
 from __future__ import annotations
 
 import dataclasses
+import gzip
 import io
 import json
 import logging
@@ -254,8 +255,15 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
         raise AgentNotFoundError(f"agent dir not found: {agent_dir}")
 
     contents: list[str] = []
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    # Build the tar UNCOMPRESSED first so we control the gzip wrapper
+    # ourselves. ``tarfile.open(mode="w:gz")`` delegates to
+    # ``GzipFile`` with no way to pass ``mtime=0`` through, so its
+    # header carries the current epoch — that one floating byte makes
+    # the export non-deterministic and breaks
+    # ``test_export_snapshot_is_deterministic`` whenever the two
+    # consecutive exports straddle a one-second boundary.
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w") as tf:
 
         def _filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
             # Skip junk dirs anywhere in the tree.
@@ -302,7 +310,14 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
         # as catalog_package.tar_directory uses for catalog uploads.
         tf.add(str(agent_dir), arcname=".", filter=_filter)
 
-    return buf.getvalue(), sorted(contents)
+    # Gzip the tar with mtime=0 so two consecutive exports of unchanged
+    # content produce byte-identical artifacts (load-bearing for the
+    # listing version's manifest_sha256 dedupe + deterministic deploys).
+    gz_buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=gz_buf, mode="wb", mtime=0) as gz:
+        gz.write(tar_buf.getvalue())
+
+    return gz_buf.getvalue(), sorted(contents)
 
 
 def _summarize_openclaw_config(agent_dir: Path) -> dict:

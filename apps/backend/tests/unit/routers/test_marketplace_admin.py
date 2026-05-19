@@ -756,9 +756,13 @@ def test_list_listings_with_status_uses_search_service(client):
 
 
 def test_list_listings_with_query_only_calls_search(client):
-    """Just q (no status) still routes through the search service so the
-    admin can fuzzy-match across every status without first picking a
-    status pill."""
+    """Just q (no status pill) still routes through the search service so
+    the admin can fuzzy-match across every status. status_in is set to
+    the full real-status whitelist — NOT None — so the listings table's
+    slug-reservation rows (listing_id="slug:...", version=0, no status
+    field) can't leak into admin search results. Codex P2 on PR #718,
+    commit 427b4288.
+    """
     from main import app
 
     _admit_admin(app)
@@ -775,8 +779,10 @@ def test_list_listings_with_query_only_calls_search(client):
     mock_search.assert_awaited_once()
     kwargs = mock_search.await_args.kwargs
     assert kwargs["query"] == "ray"
-    # No status filter → status_in stays None so search returns every status.
-    assert kwargs["status_in"] is None
+    # status_in is the full real-status whitelist so reservation rows
+    # (which have no status) are filtered out by the search service.
+    assert kwargs["status_in"] is not None
+    assert set(kwargs["status_in"]) == {"draft", "review", "published", "retired", "taken_down"}
     assert kwargs["include_unpublished"] is True
 
 

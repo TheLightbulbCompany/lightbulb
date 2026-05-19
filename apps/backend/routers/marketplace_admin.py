@@ -109,13 +109,17 @@ async def list_listings(
 
     # Browse / search path. include_unpublished=True bypasses the helper's
     # public-vs-seller gate so admins see every status; status_in narrows
-    # further when the admin picks a specific status pill.
+    # further when the admin picks a specific status pill. When no pill is
+    # selected we still pass the full real-status whitelist — otherwise
+    # the listings table's slug-reservation rows (``listing_id="slug:..."``,
+    # ``version=0``, no status field) leak into search results and the
+    # admin clicks through to a malformed detail page.
     items = await marketplace_search.search(
         query=q,
         limit=limit,
         seller_id=None,
         include_unpublished=True,
-        status_in=[status] if status else None,
+        status_in=[status] if status else list(_ALLOWED_STATUSES),
     )
     return {"items": items}
 

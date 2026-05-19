@@ -11,6 +11,8 @@ import {
   type HandleAvailability,
   type SellerProfile,
 } from "@/lib/marketplace/api";
+import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
+import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
 
 /**
  * Marketplace handle picker — shared between the settings page (standalone
@@ -55,6 +57,7 @@ export function HandlePicker({
   saveLabel = "Save",
 }: HandlePickerProps) {
   const { getToken } = useAuth();
+  const { restricted } = useMarketplaceWriteGate();
   const [handle, setHandle] = useState(initialProfile?.handle ?? "");
   const [displayName, setDisplayName] = useState(initialProfile?.display_name ?? "");
   const [bio, setBio] = useState(initialProfile?.bio ?? "");
@@ -158,6 +161,18 @@ export function HandlePicker({
 
   const padding = compact ? "p-4" : "p-5";
   const gap = compact ? "gap-3" : "gap-4";
+
+  // Non-admin org members can't set the seller handle — backend PUT
+  // /seller/me 403s for them. Render the restricted state instead of
+  // an input that can't successfully save.
+  if (restricted) {
+    return (
+      <MarketplaceRestrictedView
+        title="Marketplace handle restricted"
+        desc="Only org admins can set the marketplace seller handle. Ask your org admin to do this."
+      />
+    );
+  }
 
   return (
     <div className={`flex flex-col ${gap} ${padding} rounded-2xl border border-[#e0dbd0] bg-white`}>

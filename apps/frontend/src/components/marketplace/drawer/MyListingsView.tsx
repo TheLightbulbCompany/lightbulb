@@ -5,6 +5,8 @@ import { useAuth } from "@clerk/nextjs";
 
 import { myListings } from "@/lib/marketplace/api";
 import { useApi } from "@/lib/api";
+import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
+import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import type { Listing } from "@/lib/marketplace/types";
 
@@ -25,11 +27,17 @@ export function MyListingsView() {
   const { userId, getToken } = useAuth();
   const api = useApi();
   const { setView, startEditListing } = useMarketplaceDrawer();
+  const { restricted } = useMarketplaceWriteGate();
   const [listings, setListings] = useState<Listing[] | null>(null);
   const [dashboard, setDashboard] = useState<PayoutsDashboard | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    // Org members without the org:admin role can't publish OR see payouts
+    // — both POST /listings and GET /payouts/dashboard 403 for them.
+    // Skip the fetches entirely so we don't trip the toast-on-error path
+    // and so the restricted view below renders without a loading flash.
+    if (restricted) return;
     let alive = true;
     (async () => {
       const jwt = await getToken();
@@ -54,9 +62,19 @@ export function MyListingsView() {
     // recreated on every render in tests (mock factories return fresh
     // vi.fn() instances), and we don't want the effect to burn through
     // mockResolvedValueOnce queues. In production both are stable refs so
-    // the omission is benign.
+    // the omission is benign. `restricted` is included so that a member
+    // who gets promoted to admin mid-session triggers the fetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  }, [userId, restricted]);
+
+  if (restricted) {
+    return (
+      <MarketplaceRestrictedView
+        title="Publishing restricted"
+        desc="Only org admins can publish listings or manage marketplace payouts. Ask your org admin to take over."
+      />
+    );
+  }
 
   if (!listings || !dashboard) {
     return <p className="font-editorial-serif italic text-[#8a8578]">Loading…</p>;

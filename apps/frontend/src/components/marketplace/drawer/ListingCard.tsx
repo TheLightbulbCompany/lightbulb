@@ -3,6 +3,7 @@
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import type { Listing } from "@/lib/marketplace/types";
+import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
 import { useHire } from "./useHire";
 
 const FALLBACK_BYLINE = "Community member";
@@ -28,6 +29,7 @@ function bylineFor(listing: Listing, currentUserId: string | null | undefined): 
 export function ListingCard({ listing, installed }: { listing: Listing; installed: boolean }) {
   const { hire, isHiring } = useHire();
   const { userId } = useAuth();
+  const { restricted } = useMarketplaceWriteGate();
   const tagline =
     listing.description_md.split(/\n{2,}/, 1)[0]?.replace(/[#*_`]/g, "").trim() || "";
   const byline = bylineFor(listing, userId);
@@ -64,6 +66,16 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
           >
             Hired ✓
           </button>
+        ) : restricted ? (
+          // Non-admin org members can't deploy. Backend POST /deploy 403s
+          // for them; surface that upfront with a flat text affordance
+          // instead of a button so there's nothing to click.
+          <span
+            data-testid="hire-restricted"
+            className="text-[11.5px] italic text-[#8a8478]"
+          >
+            Ask your org admin to install
+          </span>
         ) : (
           <button
             type="button"

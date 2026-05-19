@@ -2,6 +2,8 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
+import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
+import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
 
 interface DashboardResponse {
   balance_held_cents?: number;
@@ -11,8 +13,11 @@ interface DashboardResponse {
 
 export default function Dashboard() {
   const api = useApi();
+  const { restricted } = useMarketplaceWriteGate();
+  // SWR with a null key skips fetching — keeps non-admin members from
+  // triggering the (guaranteed-403) /payouts/dashboard request.
   const { data, error } = useSWR<DashboardResponse>(
-    "/marketplace/payouts/dashboard",
+    restricted ? null : "/marketplace/payouts/dashboard",
     (path: string) => api.get(path) as Promise<DashboardResponse>,
   );
   const [onboardLoading, setOnboardLoading] = useState(false);
@@ -37,6 +42,17 @@ export default function Dashboard() {
     }
   }
 
+  if (restricted) {
+    return (
+      <main className="max-w-3xl mx-auto px-6 py-12">
+        <h1 className="font-editorial-serif text-4xl mb-8">Creator dashboard</h1>
+        <MarketplaceRestrictedView
+          title="Payouts restricted"
+          desc="Only org admins can manage marketplace payouts. Ask your org admin to set up Stripe Connect."
+        />
+      </main>
+    );
+  }
   if (error) return <p className="p-8 text-[var(--danger)]">Couldn&apos;t load dashboard: {error.message}</p>;
   if (!data) return <p className="p-8">Loading…</p>;
   return (

@@ -442,6 +442,129 @@ def test_preview_returns_partial_when_compressed_exceeds_cap(client):
     s3_client.get_object.assert_not_called()
 
 
+def test_preview_with_version_returns_exact_row_not_review_priority(client):
+    """Regression for Codex P2 on PR #718: when the admin clicks a
+    listing from the browse view, the URL carries ``?version=N`` so
+    the preview endpoint must fetch that exact row — not apply its
+    "prefer review > published > newest" heuristic, which would
+    silently swap to a different version's artifact for a listing
+    that has both a published v1 and a review v2.
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    published_v1 = {
+        "listing_id": "lst_multi",
+        "version": 1,
+        "slug": "demo",
+        "name": "Demo v1",
+        "seller_id": "u_seller",
+        "format": "openclaw",
+        "status": "published",
+        "price_cents": 0,
+        "tags": [],
+        "s3_prefix": "listings/lst_multi/v1/",
+        "manifest_json": {},
+    }
+    # The query path (no-version fallback) would prefer this v2 row.
+    review_v2 = {
+        **published_v1,
+        "version": 2,
+        "name": "Demo v2",
+        "status": "review",
+        "s3_prefix": "listings/lst_multi/v2/",
+    }
+
+    fake_table = MagicMock()
+    fake_table.get_item.return_value = {"Item": published_v1}
+    # Defensive: if the handler took the query path by mistake, it'd see v2.
+    fake_table.query.return_value = {"Items": [review_v2, published_v1]}
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+
+    tar_bytes = _make_tarball([("openclaw.json", b'{"name":"demo"}')])
+    body_stream = MagicMock()
+    body_stream.read.return_value = tar_bytes
+    s3_client = MagicMock()
+    s3_client.head_object.return_value = {"ContentLength": len(tar_bytes)}
+    s3_client.get_object.return_value = {"Body": body_stream}
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+    ):
+        resp = client.get("/api/v1/admin/marketplace/listings/lst_multi/preview?version=1")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # We asked for v1 and got v1 — not the review v2 the heuristic would prefer.
+    assert body["version"] == 1
+    assert body["status"] == "published"
+    assert body["name"] == "Demo v1"
+    # Get-item was used (exact key lookup), query was NOT.
+    fake_table.get_item.assert_called_once_with(Key={"listing_id": "lst_multi", "version": 1})
+    fake_table.query.assert_not_called()
+
+
+def test_preview_without_version_falls_back_to_review_priority(client):
+    """Backwards-compat: the review-queue link still carries no version,
+    so the endpoint applies its "prefer review > published > newest"
+    heuristic — same behavior as before this change."""
+    from main import app
+
+    _admit_admin(app)
+
+    published_v1 = {
+        "listing_id": "lst_multi",
+        "version": 1,
+        "slug": "demo",
+        "name": "Demo v1",
+        "seller_id": "u_seller",
+        "format": "openclaw",
+        "status": "published",
+        "price_cents": 0,
+        "tags": [],
+        "s3_prefix": "listings/lst_multi/v1/",
+        "manifest_json": {},
+    }
+    review_v2 = {
+        **published_v1,
+        "version": 2,
+        "name": "Demo v2",
+        "status": "review",
+        "s3_prefix": "listings/lst_multi/v2/",
+    }
+
+    fake_table = MagicMock()
+    fake_table.query.return_value = {"Items": [review_v2, published_v1]}
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+
+    tar_bytes = _make_tarball([("openclaw.json", b'{"name":"demo"}')])
+    body_stream = MagicMock()
+    body_stream.read.return_value = tar_bytes
+    s3_client = MagicMock()
+    s3_client.head_object.return_value = {"ContentLength": len(tar_bytes)}
+    s3_client.get_object.return_value = {"Body": body_stream}
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+    ):
+        resp = client.get("/api/v1/admin/marketplace/listings/lst_multi/preview")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # No version param → review row wins over published row.
+    assert body["version"] == 2
+    assert body["status"] == "review"
+
+
 def test_approve_refuses_when_artifact_exceeds_cap(client):
     """Defense in depth: a moderator who bypasses the UI gate and POSTs
     approve directly must still be blocked when the artifact is too large
@@ -552,6 +675,193 @@ def test_approve_fails_closed_when_head_object_fails(client):
     assert resp.status_code == 409, resp.text
     assert "could not verify" in resp.json()["detail"]
     mock_approve.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/marketplace/listings — browse / search across statuses
+# ---------------------------------------------------------------------------
+
+
+def test_list_listings_no_params_returns_review_queue_via_gsi(client):
+    """Backwards-compat: hitting /admin/marketplace/listings with no params
+    keeps the original review-queue behavior (GSI query for status='review',
+    Limit=50, no search-service call). Pre-existing callers (the original
+    review page, scripts) must keep working without a code change.
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    fake_table = MagicMock()
+    fake_table.query.return_value = {
+        "Items": [
+            {"listing_id": "l1", "version": 1, "status": "review", "name": "Foo"},
+            {"listing_id": "l2", "version": 1, "status": "review", "name": "Bar"},
+        ]
+    }
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch(
+            "routers.marketplace_admin.marketplace_search.search",
+            new=AsyncMock(),
+        ) as mock_search,
+    ):
+        resp = client.get("/api/v1/admin/marketplace/listings")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [r["listing_id"] for r in body["items"]] == ["l1", "l2"]
+    # Default path uses the GSI query, NOT the search service.
+    mock_search.assert_not_awaited()
+    fake_table.query.assert_called_once()
+    query_kwargs = fake_table.query.call_args.kwargs
+    assert query_kwargs["IndexName"] == "status-published-index"
+    assert query_kwargs["Limit"] == 50
+    assert query_kwargs["ExpressionAttributeValues"][":review"] == "review"
+
+
+def test_list_listings_with_status_uses_search_service(client):
+    """status=published delegates to marketplace_search.search with
+    include_unpublished=True + status_in=['published'] so admins see the
+    full set across statuses (not just the helper's default public gate).
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    expected_items = [
+        {"listing_id": "lp1", "version": 1, "status": "published", "name": "Live"},
+    ]
+    with patch(
+        "routers.marketplace_admin.marketplace_search.search",
+        new=AsyncMock(return_value=expected_items),
+    ) as mock_search:
+        resp = client.get("/api/v1/admin/marketplace/listings?status=published")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["items"] == expected_items
+    mock_search.assert_awaited_once()
+    kwargs = mock_search.await_args.kwargs
+    assert kwargs["include_unpublished"] is True
+    assert kwargs["status_in"] == ["published"]
+    assert kwargs["seller_id"] is None
+    assert kwargs["query"] is None
+
+
+def test_list_listings_with_query_only_calls_search(client):
+    """Just q (no status pill) still routes through the search service so
+    the admin can fuzzy-match across every status. status_in is set to
+    the full real-status whitelist — NOT None — so the listings table's
+    slug-reservation rows (listing_id="slug:...", version=0, no status
+    field) can't leak into admin search results. Codex P2 on PR #718,
+    commit 427b4288.
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    with patch(
+        "routers.marketplace_admin.marketplace_search.search",
+        new=AsyncMock(return_value=[]),
+    ) as mock_search:
+        resp = client.get("/api/v1/admin/marketplace/listings?q=ray")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    mock_search.assert_awaited_once()
+    kwargs = mock_search.await_args.kwargs
+    assert kwargs["query"] == "ray"
+    # status_in is the full real-status whitelist so reservation rows
+    # (which have no status) are filtered out by the search service.
+    assert kwargs["status_in"] is not None
+    assert set(kwargs["status_in"]) == {"draft", "review", "published", "retired", "taken_down"}
+    assert kwargs["include_unpublished"] is True
+
+
+def test_list_listings_with_status_and_query_combines_filters(client):
+    """status + q both narrow the same search call."""
+    from main import app
+
+    _admit_admin(app)
+
+    with patch(
+        "routers.marketplace_admin.marketplace_search.search",
+        new=AsyncMock(return_value=[]),
+    ) as mock_search:
+        resp = client.get("/api/v1/admin/marketplace/listings?status=taken_down&q=fraud")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    kwargs = mock_search.await_args.kwargs
+    assert kwargs["query"] == "fraud"
+    assert kwargs["status_in"] == ["taken_down"]
+
+
+def test_list_listings_clamps_limit_at_200(client):
+    """A 10000-row limit would scan most of the table per call. Clamp
+    server-side to keep this from becoming a free DoS surface."""
+    from main import app
+
+    _admit_admin(app)
+
+    with patch(
+        "routers.marketplace_admin.marketplace_search.search",
+        new=AsyncMock(return_value=[]),
+    ) as mock_search:
+        resp = client.get("/api/v1/admin/marketplace/listings?status=published&limit=10000")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    assert mock_search.await_args.kwargs["limit"] == 200
+
+
+def test_list_listings_rejects_unknown_status(client):
+    """An unknown status must 422 rather than silently returning [] —
+    otherwise a typo in the URL bar looks like "no listings in that state"
+    instead of an error."""
+    from main import app
+
+    _admit_admin(app)
+
+    with patch(
+        "routers.marketplace_admin.marketplace_search.search",
+        new=AsyncMock(),
+    ) as mock_search:
+        resp = client.get("/api/v1/admin/marketplace/listings?status=bogus")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 422
+    mock_search.assert_not_awaited()
+
+
+def test_list_listings_accepts_all_five_statuses(client):
+    """Every status in the marketplace state machine must be a valid filter
+    value — otherwise the admin can't browse half the rows."""
+    from main import app
+
+    _admit_admin(app)
+
+    for status in ("draft", "review", "published", "retired", "taken_down"):
+        with patch(
+            "routers.marketplace_admin.marketplace_search.search",
+            new=AsyncMock(return_value=[]),
+        ) as mock_search:
+            resp = client.get(f"/api/v1/admin/marketplace/listings?status={status}")
+        assert resp.status_code == 200, f"{status}: {resp.text}"
+        assert mock_search.await_args.kwargs["status_in"] == [status]
+
+    app.dependency_overrides.clear()
 
 
 def test_approve_fails_closed_when_artifact_download_fails(client):

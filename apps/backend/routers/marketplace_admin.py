@@ -11,9 +11,18 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, require_platform_admin
 from core.config import settings
-from core.services import marketplace_safety, marketplace_service, takedown_service
+from core.services import marketplace_safety, marketplace_search, marketplace_service, takedown_service
 from core.services.admin_audit import audit_admin_action
 from schemas import marketplace as schemas
+
+
+# Valid listing statuses surfaced to the admin browse view. Anything outside
+# this set is rejected at the router boundary — keeps a typo in the URL bar
+# from quietly returning [] (which would look like "no listings exist").
+_ALLOWED_STATUSES = {"draft", "review", "published", "retired", "taken_down"}
+# Server-side ceiling on the limit query param. Larger values would scan a
+# disproportionate slice of the listings table in marketplace_search.search().
+_MAX_LISTINGS_LIMIT = 200
 
 
 router = APIRouter(prefix="/api/v1/admin/marketplace", tags=["marketplace-admin"])
@@ -33,27 +42,86 @@ _MAX_PREVIEW_TARBALL_BYTES = 50 * 1024 * 1024
 
 @router.get("/listings")
 @audit_admin_action(
-    "marketplace.list_review_queue",
+    "marketplace.list_listings",
     target_user_id_override="__marketplace__",
+    capture_params=["status", "q", "limit"],
 )
-async def review_queue(
+async def list_listings(
     request: Request,
     auth: Annotated[AuthContext, Depends(require_platform_admin)],
+    status: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
 ):
-    """List the marketplace listings currently awaiting moderation.
+    """List / browse marketplace listings across all statuses.
 
-    Queries the status-published-index GSI for status="review" rows. Returns
-    up to 50 newest-first; the admin UI paginates client-side at v0 volume.
+    Two paths:
+
+    * **No params** — backwards-compatible review queue. Queries the
+      ``status-published-index`` GSI directly for ``status="review"`` rows and
+      returns up to 50 newest-first. This is the original ``review_queue``
+      behavior; any pre-existing caller (the admin review page, scripts, etc.)
+      that hits ``GET /admin/marketplace/listings`` with no query string
+      gets the same response shape it always did.
+    * **``status`` and/or ``q`` provided** — admin browse / search. Delegates
+      to :func:`core.services.marketplace_search.search` with
+      ``include_unpublished=True`` so drafts, retired, and taken-down rows are
+      visible (the helper's public-vs-seller gate would otherwise hide them).
+      ``status_in`` is set from the validated ``status`` param when provided
+      so the search service narrows the candidate set before scoring; ``q``
+      drives the same tokenized scoring used elsewhere.
+
+    ``limit`` is clamped at 200 server-side to avoid DDB scan blowups —
+    ``marketplace_search`` does an unfiltered scan and an unbounded ``limit``
+    would scan the whole table for every typo'd URL.
+
+    Auth: ``require_platform_admin`` — only platform admins may browse all
+    statuses (drafts contain seller-private content).
     """
-    table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-    resp = table.query(
-        IndexName="status-published-index",
-        KeyConditionExpression="#s = :review",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":review": "review"},
-        Limit=50,
+    # Clamp before passing to search(). The audit decorator captures the
+    # raw kwargs (pre-clamp) so abuse attempts like ?limit=10000 stay
+    # visible in the audit log — only the actual DDB read is bounded.
+    limit = max(1, min(limit, _MAX_LISTINGS_LIMIT))
+
+    # Validate status against the closed set so a typo in the URL bar fails
+    # loudly with 422 rather than silently returning an empty list (which an
+    # admin could read as "no listings in that state").
+    if status is not None and status not in _ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"status must be one of {sorted(_ALLOWED_STATUSES)}, got {status!r}",
+        )
+
+    # Backwards-compat fast path: no params means "give me the review queue"
+    # via the same GSI query the old endpoint used. Keeps the existing review
+    # page working without a code change and avoids paying the search-service
+    # scan cost on the default load.
+    if status is None and not q:
+        table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
+        resp = table.query(
+            IndexName="status-published-index",
+            KeyConditionExpression="#s = :review",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":review": "review"},
+            Limit=50,
+        )
+        return {"items": resp.get("Items", [])}
+
+    # Browse / search path. include_unpublished=True bypasses the helper's
+    # public-vs-seller gate so admins see every status; status_in narrows
+    # further when the admin picks a specific status pill. When no pill is
+    # selected we still pass the full real-status whitelist — otherwise
+    # the listings table's slug-reservation rows (``listing_id="slug:..."``,
+    # ``version=0``, no status field) leak into search results and the
+    # admin clicks through to a malformed detail page.
+    items = await marketplace_search.search(
+        query=q,
+        limit=limit,
+        seller_id=None,
+        include_unpublished=True,
+        status_in=[status] if status else list(_ALLOWED_STATUSES),
     )
-    return {"items": resp.get("Items", [])}
+    return {"items": items}
 
 
 @router.post("/listings/{listing_id}/approve")
@@ -240,6 +308,7 @@ async def listing_preview(
     listing_id: str,
     request: Request,
     auth: Annotated[AuthContext, Depends(require_platform_admin)],
+    version: int | None = None,
 ):
     """Preview a listing's contents for moderation review.
 
@@ -247,26 +316,35 @@ async def listing_preview(
     (capped at 10 MB), runs the safety scan, and returns a structured
     response that the admin UI renders as a file tree + content viewer +
     safety-flag banner.
+
+    When ``version`` is provided, fetches that exact ``(listing_id, version)``
+    row — used by the browse view to inspect a specific version (e.g.,
+    the published v1 while a v2 sits in review). When omitted, falls
+    back to "prefer review, then published, then highest version" so
+    the moderation-queue link (which doesn't know about versions)
+    still resolves to the actionable row.
     """
-    # Pick the live (or in-review) version dynamically — admin opens the
-    # preview from the review queue, which can hold a v_new=2 row while
-    # v_prev=1 is published. Hardcoding version=1 would 404 for any v2+
-    # listing the moderator wants to inspect.
     table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-    rows = table.query(
-        KeyConditionExpression="listing_id = :l",
-        ExpressionAttributeValues={":l": listing_id},
-        ScanIndexForward=False,  # newest version first
-    ).get("Items", [])
-    if not rows:
-        raise HTTPException(status_code=404, detail="listing not found")
-    # Prefer the row in 'review' state (the moderation target), then the
-    # currently published row, then the highest-version row of any state.
-    listing = (
-        next((r for r in rows if r.get("status") == "review"), None)
-        or next((r for r in rows if r.get("status") == "published"), None)
-        or rows[0]
-    )
+    if version is not None:
+        # Caller selected an exact version (browse-view link). Honor it.
+        item = table.get_item(Key={"listing_id": listing_id, "version": version}).get("Item")
+        if not item:
+            raise HTTPException(status_code=404, detail="listing not found")
+        listing = item
+    else:
+        # Review-queue link path: pick the most-actionable row across versions.
+        rows = table.query(
+            KeyConditionExpression="listing_id = :l",
+            ExpressionAttributeValues={":l": listing_id},
+            ScanIndexForward=False,  # newest version first
+        ).get("Items", [])
+        if not rows:
+            raise HTTPException(status_code=404, detail="listing not found")
+        listing = (
+            next((r for r in rows if r.get("status") == "review"), None)
+            or next((r for r in rows if r.get("status") == "published"), None)
+            or rows[0]
+        )
 
     s3 = boto3.client("s3")
     bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET

@@ -308,23 +308,39 @@ async def apply_deploy_aux_mutations(
     plugins_patch: dict,
     mcp_patch: dict | None = None,
     skills_patch: dict | None = None,
+    agent_entry: dict | None = None,
 ) -> None:
     """Atomically apply the auxiliary subtree mutations for a catalog
-    deploy (plugins, mcp, skills) to openclaw.json.
+    deploy to openclaw.json.
 
-    The agent entry itself is NOT written here — it goes through the
-    OpenClaw gateway's ``agents.create`` + ``agents.update`` RPCs in
-    ``catalog_service.deploy_from_artifact`` so the container's in-memory
-    state updates immediately (instead of waiting for chokidar to pick
-    up the file write, which on EFS with poll-mode can lag 1-30s).
+    Marketplace deploys land state via TWO paths:
 
-    Performed inside a single exclusive lock so concurrent deploys
-    cannot race on the read-modify-write of the plugins / mcp / skills
-    subtrees:
-      1. Deep-merge ``plugins_patch`` into ``config["plugins"]``.
-      2. (Optional) Deep-merge ``mcp_patch`` (e.g. ``{"servers": {…}}``)
+    1. The RPC path (``pair_with_openclaw`` from ``catalog_service``)
+       updates the OpenClaw container's in-memory agent state right
+       away — so the buyer's sidebar shows the right friendly name
+       without waiting for chokidar. OpenClaw's ``agents.update`` AJV
+       schema is narrow (``additionalProperties: false`` — only
+       ``agentId, name, workspace, model, emoji, avatar``), so the RPC
+       can only carry display-level fields.
+
+    2. This file-merge path (you are here) handles the rest of the
+       agent entry — ``skills`` binding, ``reasoningDefault``,
+       ``agentRuntime``, ``embeddedHarness``, etc. — plus the
+       top-level ``plugins`` / ``mcp.servers`` / ``skills.entries``
+       blocks. Chokidar polls EFS (1-30s) and reloads, after which
+       the in-memory agent picks up the full per-agent config.
+
+    Mutations applied under one exclusive lock so concurrent deploys
+    cannot race on the read-modify-write of the touched subtrees:
+
+      1. (Optional) Append ``agent_entry`` to ``config["agents"]["list"]``,
+         creating ``agents.list`` if absent. If an entry with the same
+         ``id`` already exists (idempotent retry), it is replaced
+         in place rather than duplicated.
+      2. Deep-merge ``plugins_patch`` into ``config["plugins"]``.
+      3. (Optional) Deep-merge ``mcp_patch`` (e.g. ``{"servers": {…}}``)
          into ``config["mcp"]``.
-      3. (Optional) Deep-merge ``skills_patch.entries`` and union
+      4. (Optional) Deep-merge ``skills_patch.entries`` and union
          ``skills_patch.allowBundled`` into ``config["skills"]``.
 
     NOTE: top-level ``tools`` is intentionally left alone. The catalog
@@ -336,6 +352,30 @@ async def apply_deploy_aux_mutations(
     """
 
     def _mutate(current: dict) -> bool:
+        if agent_entry is not None:
+            agents_obj = current.get("agents")
+            # Tolerate the legacy flat-list shape on read; normalize to
+            # the canonical ``{list: [...]}`` shape on write.
+            if isinstance(agents_obj, list):
+                agents_obj = {"list": list(agents_obj)}
+            elif not isinstance(agents_obj, dict):
+                agents_obj = {}
+            agents_list = agents_obj.get("list")
+            if not isinstance(agents_list, list):
+                agents_list = []
+            new_id = agent_entry.get("id")
+            existing_idx = next(
+                (i for i, a in enumerate(agents_list) if isinstance(a, dict) and a.get("id") == new_id),
+                None,
+            )
+            entry_copy = copy.deepcopy(agent_entry)
+            if existing_idx is not None:
+                agents_list[existing_idx] = entry_copy
+            else:
+                agents_list.append(entry_copy)
+            agents_obj["list"] = agents_list
+            current["agents"] = agents_obj
+
         if plugins_patch:
             existing_plugins = current.get("plugins")
             if not isinstance(existing_plugins, dict):
@@ -380,7 +420,8 @@ async def apply_deploy_aux_mutations(
     await _locked_rmw(
         owner_id,
         _mutate,
-        f"deploy aux merge plugins={bool(plugins_patch)} mcp={bool(mcp_patch)} skills={bool(skills_patch)}",
+        f"deploy aux merge agent_entry={bool(agent_entry)} plugins={bool(plugins_patch)} "
+        f"mcp={bool(mcp_patch)} skills={bool(skills_patch)}",
     )
 
 

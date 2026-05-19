@@ -214,21 +214,41 @@ class CatalogService:
             agent_entry = copy.deepcopy(slice_.get("agent") or {})
             agent_entry["id"] = new_agent_id
             agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
-            # Strip the helper-owned fields from the extras dict — ``id``
-            # and ``workspace`` are derived from the create RPC's
-            # ``name`` (the agent UUID) so they must not be forwarded as
-            # update fields. pair_with_openclaw also force-overrides
-            # ``agentId`` + ``name`` regardless of caller input, but
-            # being explicit here keeps the contract obvious.
-            extra_update_fields = {k: v for k, v in agent_entry.items() if k not in ("id", "workspace")}
+
+            # OpenClaw's ``agents.update`` AJV schema is strict
+            # (additionalProperties: false) and only accepts
+            # ``agentId, name, workspace, model, emoji, avatar``.
+            # Forwarding anything else (the seller's ``identity`` block as
+            # a nested dict, ``skills``, ``reasoningDefault``, etc.) makes
+            # the whole RPC 422 — leaving the freshly-created agent stuck
+            # with ``name=<uuid>`` from ``agents.create`` and showing the
+            # UUID in the buyer's sidebar.
+            # See openclaw/src/gateway/protocol/schema/agents-models-skills.ts:97.
+            # The pairing helper sets ``agentId`` + ``name`` itself, so we
+            # only need to thread the optional identity decorations here.
+            identity = agent_entry.get("identity")
+            extra_update_fields: dict[str, Any] = {}
+            if isinstance(identity, dict):
+                if identity.get("emoji"):
+                    extra_update_fields["emoji"] = identity["emoji"]
+                if identity.get("avatar"):
+                    extra_update_fields["avatar"] = identity["avatar"]
 
             # Synthesize the Paperclip-shaped dict the helper expects.
             # The actual Paperclip agent was minted upstream in the
             # marketplace router; we're reusing its UUID + name to drive
             # the OpenClaw gateway RPC. No Paperclip API call here.
+            # Prefer the top-level ``name`` field but fall back to the
+            # ``identity.name`` (OpenClaw persists both, but seller agents
+            # exported from older snapshots may only have the nested one).
+            display_name = (
+                agent_entry.get("name")
+                or (identity.get("name") if isinstance(identity, dict) else None)
+                or new_agent_id
+            )
             paperclip_agent: dict[str, Any] = {
                 "id": new_agent_id,
-                "name": agent_entry.get("name") or new_agent_id,
+                "name": display_name,
             }
             if agent_entry.get("model"):
                 paperclip_agent["model"] = agent_entry["model"]
@@ -260,8 +280,18 @@ class CatalogService:
             mcp_patch = _substitute_agent_dir_sentinel(mcp_patch, new_agent_id)
             skills_patch = copy.deepcopy(slice_.get("skills")) or None
 
+            # Also file-merge the full agent_entry into agents.list so the
+            # per-agent fields OpenClaw's narrow agents.update RPC schema
+            # can't accept (``skills`` binding, ``reasoningDefault``,
+            # ``agentRuntime``, ``embeddedHarness``, ``tts``, etc.) land
+            # in the buyer's openclaw.json. Chokidar (CHOKIDAR_USEPOLLING
+            # on EFS, 1-30s) reloads and the in-memory agent picks them
+            # up. Display-level fields (``name``, ``identity``) were
+            # already set instantly via the RPC pair above, so the
+            # sidebar doesn't flicker through the lag.
             await self._apply_aux(
                 owner_id,
+                agent_entry=agent_entry,
                 plugins_patch=plugins_patch,
                 mcp_patch=mcp_patch,
                 skills_patch=skills_patch,

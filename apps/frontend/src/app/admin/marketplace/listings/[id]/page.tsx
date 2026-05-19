@@ -95,11 +95,25 @@ function formatBytes(n: number): string {
  */
 export default async function ListingDetail({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ version?: string }>;
 }) {
   const { id } = await params;
-  const result = await getListingPreview(id);
+  const { version: versionParam } = await searchParams;
+  // Browse-view links include ?version=N to pin the exact row (the same
+  // listing_id can have a published v1 + review v2). Review-queue links
+  // omit it and let the backend pick "most actionable" — for those
+  // we forward no value so the heuristic kicks in.
+  const versionNum =
+    versionParam !== undefined && /^\d+$/.test(versionParam)
+      ? Number(versionParam)
+      : undefined;
+  const result = await getListingPreview(
+    id,
+    versionNum !== undefined ? { version: versionNum } : {},
+  );
 
   if (!result.ok) {
     return (

@@ -177,7 +177,7 @@ export default async function ListingsBrowse({
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="font-semibold text-zinc-100">
                     <Link
-                      href={`/admin/marketplace/listings/${listing.listing_id}`}
+                      href={`/admin/marketplace/listings/${listing.listing_id}?version=${listing.version}`}
                       className="hover:underline"
                     >
                       {listing.name}
@@ -200,7 +200,7 @@ export default async function ListingsBrowse({
                   seller: <span className="font-mono">{listing.seller_id}</span>
                 </p>
                 <Link
-                  href={`/admin/marketplace/listings/${listing.listing_id}`}
+                  href={`/admin/marketplace/listings/${listing.listing_id}?version=${listing.version}`}
                   className="mt-2 inline-block text-xs text-zinc-300 underline"
                 >
                   Open full review →

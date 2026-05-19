@@ -442,6 +442,129 @@ def test_preview_returns_partial_when_compressed_exceeds_cap(client):
     s3_client.get_object.assert_not_called()
 
 
+def test_preview_with_version_returns_exact_row_not_review_priority(client):
+    """Regression for Codex P2 on PR #718: when the admin clicks a
+    listing from the browse view, the URL carries ``?version=N`` so
+    the preview endpoint must fetch that exact row — not apply its
+    "prefer review > published > newest" heuristic, which would
+    silently swap to a different version's artifact for a listing
+    that has both a published v1 and a review v2.
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    published_v1 = {
+        "listing_id": "lst_multi",
+        "version": 1,
+        "slug": "demo",
+        "name": "Demo v1",
+        "seller_id": "u_seller",
+        "format": "openclaw",
+        "status": "published",
+        "price_cents": 0,
+        "tags": [],
+        "s3_prefix": "listings/lst_multi/v1/",
+        "manifest_json": {},
+    }
+    # The query path (no-version fallback) would prefer this v2 row.
+    review_v2 = {
+        **published_v1,
+        "version": 2,
+        "name": "Demo v2",
+        "status": "review",
+        "s3_prefix": "listings/lst_multi/v2/",
+    }
+
+    fake_table = MagicMock()
+    fake_table.get_item.return_value = {"Item": published_v1}
+    # Defensive: if the handler took the query path by mistake, it'd see v2.
+    fake_table.query.return_value = {"Items": [review_v2, published_v1]}
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+
+    tar_bytes = _make_tarball([("openclaw.json", b'{"name":"demo"}')])
+    body_stream = MagicMock()
+    body_stream.read.return_value = tar_bytes
+    s3_client = MagicMock()
+    s3_client.head_object.return_value = {"ContentLength": len(tar_bytes)}
+    s3_client.get_object.return_value = {"Body": body_stream}
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+    ):
+        resp = client.get("/api/v1/admin/marketplace/listings/lst_multi/preview?version=1")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # We asked for v1 and got v1 — not the review v2 the heuristic would prefer.
+    assert body["version"] == 1
+    assert body["status"] == "published"
+    assert body["name"] == "Demo v1"
+    # Get-item was used (exact key lookup), query was NOT.
+    fake_table.get_item.assert_called_once_with(Key={"listing_id": "lst_multi", "version": 1})
+    fake_table.query.assert_not_called()
+
+
+def test_preview_without_version_falls_back_to_review_priority(client):
+    """Backwards-compat: the review-queue link still carries no version,
+    so the endpoint applies its "prefer review > published > newest"
+    heuristic — same behavior as before this change."""
+    from main import app
+
+    _admit_admin(app)
+
+    published_v1 = {
+        "listing_id": "lst_multi",
+        "version": 1,
+        "slug": "demo",
+        "name": "Demo v1",
+        "seller_id": "u_seller",
+        "format": "openclaw",
+        "status": "published",
+        "price_cents": 0,
+        "tags": [],
+        "s3_prefix": "listings/lst_multi/v1/",
+        "manifest_json": {},
+    }
+    review_v2 = {
+        **published_v1,
+        "version": 2,
+        "name": "Demo v2",
+        "status": "review",
+        "s3_prefix": "listings/lst_multi/v2/",
+    }
+
+    fake_table = MagicMock()
+    fake_table.query.return_value = {"Items": [review_v2, published_v1]}
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+
+    tar_bytes = _make_tarball([("openclaw.json", b'{"name":"demo"}')])
+    body_stream = MagicMock()
+    body_stream.read.return_value = tar_bytes
+    s3_client = MagicMock()
+    s3_client.head_object.return_value = {"ContentLength": len(tar_bytes)}
+    s3_client.get_object.return_value = {"Body": body_stream}
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
+    ):
+        resp = client.get("/api/v1/admin/marketplace/listings/lst_multi/preview")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # No version param → review row wins over published row.
+    assert body["version"] == 2
+    assert body["status"] == "review"
+
+
 def test_approve_refuses_when_artifact_exceeds_cap(client):
     """Defense in depth: a moderator who bypasses the UI gate and POSTs
     approve directly must still be blocked when the artifact is too large

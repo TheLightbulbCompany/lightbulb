@@ -83,10 +83,20 @@ export async function rejectListing(
   );
 }
 
-/** Listing detail preview for moderators (file tree, content, safety scan). */
-export async function getListingPreview(listingId: string): Promise<ActionResult> {
+/** Listing detail preview for moderators (file tree, content, safety scan).
+ *
+ * Pass ``version`` to pin the exact row — needed from the browse view
+ * because a listing_id can have multiple versions (e.g., published v1 +
+ * review v2) and the backend's default heuristic would pick the review
+ * row, hiding the published version the moderator clicked on.
+ */
+export async function getListingPreview(
+  listingId: string,
+  options: { version?: number } = {},
+): Promise<ActionResult> {
+  const qs = options.version !== undefined ? `?version=${options.version}` : "";
   return adminGet(
-    `/admin/marketplace/listings/${encodeURIComponent(listingId)}/preview`,
+    `/admin/marketplace/listings/${encodeURIComponent(listingId)}/preview${qs}`,
   );
 }
 

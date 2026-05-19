@@ -78,7 +78,9 @@ async def list_listings(
     Auth: ``require_platform_admin`` — only platform admins may browse all
     statuses (drafts contain seller-private content).
     """
-    # Clamp limit FIRST so the audit log captures the post-clamp value.
+    # Clamp before passing to search(). The audit decorator captures the
+    # raw kwargs (pre-clamp) so abuse attempts like ?limit=10000 stay
+    # visible in the audit log — only the actual DDB read is bounded.
     limit = max(1, min(limit, _MAX_LISTINGS_LIMIT))
 
     # Validate status against the closed set so a typo in the URL bar fails

@@ -59,25 +59,31 @@ export default async function ListingsBrowse({
   searchParams: Promise<{ status?: string; q?: string }>;
 }) {
   const params = await searchParams;
-  // Coerce unknown statuses to "review" rather than passing them through —
-  // the backend would 422, but defaulting here makes a typo'd URL render the
-  // queue instead of an error page.
-  const rawStatus = params.status;
-  const status =
-    rawStatus && VALID_STATUSES.has(rawStatus) ? rawStatus : "review";
+  // Coerce unknown statuses to undefined (= treat as the default Review
+  // queue) — a typo'd URL renders the queue instead of an error page.
+  const explicitStatus =
+    params.status && VALID_STATUSES.has(params.status) ? params.status : undefined;
   const q = params.q?.trim() ?? "";
+  // ``status`` drives the UI (active pill highlight, heading); when the
+  // URL omits it we visually show Review as the active state but DO NOT
+  // forward "review" to the backend.
+  const status = explicitStatus ?? "review";
   // The backend has two paths for /admin/marketplace/listings:
-  //   1. No status + no q → fresh GSI read (status="review") — for the
-  //      default moderator queue, no 60s cache lag.
-  //   2. status or q present → marketplace_search.search() which is
-  //      cache-backed.
-  // For the default landing (no URL params), don't pass any args so we
-  // hit path 1 — otherwise approve/reject + router.refresh() can keep
-  // stale rows in the queue for up to 60s.
-  const usingDefaultReviewQueue = !params.status && !q;
-  const result = usingDefaultReviewQueue
-    ? await listListings()
-    : await listListings({ status, q: q || undefined });
+  //   1. No params → fresh GSI read of status="review" — the moderation
+  //      queue with no 60s cache lag.
+  //   2. Any of status/q present → marketplace_search.search() (cached).
+  // Forward ONLY what the URL actually carries. In particular, when an
+  // admin searches from the default queue the URL is `?q=ray` — they
+  // want a global search across all statuses, NOT a search scoped to
+  // Review. Mapping the absent status back to "review" here would hide
+  // published/draft/retired/taken_down matches from that q-only query.
+  const result =
+    !explicitStatus && !q
+      ? await listListings()
+      : await listListings({
+          ...(explicitStatus ? { status: explicitStatus } : {}),
+          ...(q ? { q } : {}),
+        });
   if (!result.ok) {
     return (
       <p className="text-sm text-red-400" role="alert">
@@ -89,7 +95,14 @@ export default async function ListingsBrowse({
   const items =
     (result.data as { items?: AdminListing[] } | undefined)?.items ?? [];
 
-  const activeFilter = STATUS_FILTERS.find((f) => f.value === status);
+  // Heading reflects the actual scope of the result set: when a user
+  // searches from the default Review queue (no explicit status pill but
+  // q present), they're searching across all statuses — calling that
+  // "Review" matching X would lie about what's in the result set.
+  const isGlobalSearch = !explicitStatus && !!q;
+  const activeFilter = isGlobalSearch
+    ? null
+    : STATUS_FILTERS.find((f) => f.value === status);
   const heading = activeFilter ? activeFilter.label : "Listings";
 
   return (

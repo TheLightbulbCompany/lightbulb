@@ -118,10 +118,15 @@ export default async function ListingsBrowse({
         {STATUS_FILTERS.map((f) => {
           const isActive = f.value === status;
           const search = new URLSearchParams();
-          // Review = the default queue. Omit ?status= entirely so the
-          // backend takes the fresh GSI path (no 60s search-cache lag
-          // after approve/reject). Other statuses use the search path.
-          if (f.value !== "review") search.set("status", f.value);
+          // Review pill is special: when there's no search query, it's
+          // the default queue → omit ?status= so the backend takes the
+          // fresh GSI path (no 60s search-cache lag after approve/reject).
+          // BUT when there IS a search query, the Review pill must
+          // narrow results to status=review like every other pill —
+          // otherwise clicking Review during a global "?q=ray" search
+          // leaves the URL unchanged and the user sees published/draft
+          // matches alongside review ones.
+          if (f.value !== "review" || q) search.set("status", f.value);
           if (q) search.set("q", q);
           const qs = search.toString();
           return (
@@ -154,12 +159,14 @@ export default async function ListingsBrowse({
         className="flex items-center gap-2"
         role="search"
       >
-        {/* Only carry status through the search form when it's not the
-            default Review. Emitting ?status=review on submit would push
-            the URL onto the cache-backed search path (see Codex P2 on
-            commits 4f8e0ada + 65d12a61). */}
-        {status !== "review" && (
-          <input type="hidden" name="status" value={status} />
+        {/* Only carry status through when it was explicit in the URL.
+            On the default queue (no ?status= present) the hidden input
+            stays empty so resubmitting a search lands on ?q=... — a
+            global all-status search, NOT a review-only one. When the
+            user already narrowed to a specific status (incl. an
+            explicit ?status=review on a search), preserve it. */}
+        {explicitStatus !== undefined && (
+          <input type="hidden" name="status" value={explicitStatus} />
         )}
         <input
           type="search"
@@ -178,8 +185,8 @@ export default async function ListingsBrowse({
         {q ? (
           <Link
             href={
-              status !== "review"
-                ? `/admin/marketplace/listings?status=${status}`
+              explicitStatus !== undefined
+                ? `/admin/marketplace/listings?status=${explicitStatus}`
                 : `/admin/marketplace/listings`
             }
             className="rounded-md border border-transparent px-2 py-2 text-sm text-zinc-400 hover:text-zinc-200"

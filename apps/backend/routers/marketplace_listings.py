@@ -14,7 +14,7 @@ import boto3
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
-from core.auth import AuthContext, get_current_user, get_optional_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, get_optional_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.services import (
@@ -308,6 +308,7 @@ async def deploy_listing(
     openclaw-slice.json (or no key at all on the older write path); the
     response's ``config_registered`` flag tells the caller which path ran.
     """
+    require_org_admin(auth)
     listing = await marketplace_service.get_by_slug(slug=slug)
     if not listing or listing.get("status") != "published":
         raise HTTPException(status_code=404, detail="listing not found")
@@ -507,6 +508,7 @@ async def create_listing(
     otherwise we return 409 ``seller_profile_required`` so the publish
     wizard can route them to the handle picker before retrying.
     """
+    require_org_admin(auth)
     profile = await seller_profile.get_profile(auth.user_id)
     if not profile:
         raise HTTPException(status_code=409, detail="seller_profile_required")
@@ -549,6 +551,7 @@ async def update_listing(
     republish flow that produces a rejected v_new=2 row can be revised in
     place.
     """
+    require_org_admin(auth)
     try:
         result = await marketplace_service.update_draft(
             listing_id=listing_id,
@@ -574,6 +577,7 @@ async def submit(
 ):
     """Transition draft -> review. ``version`` lets edit-mode resubmit a
     rejected v_new row instead of always targeting v=1."""
+    require_org_admin(auth)
     try:
         result = await marketplace_service.submit_for_review(
             listing_id=listing_id, seller_id=auth.user_id, version=version
@@ -683,6 +687,7 @@ async def upload_artifact_from_agent(
     the export must use the resolved id. The listing row's seller_id
     below stays as auth.user_id — that's the author/attribution field.
     """
+    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
 
     # Friday-publish guard: the per-owner CEO agent is reserved (its

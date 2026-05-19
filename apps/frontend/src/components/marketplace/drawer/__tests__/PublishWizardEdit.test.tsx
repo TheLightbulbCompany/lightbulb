@@ -17,12 +17,16 @@ vi.mock("@/lib/api", () => ({
   }),
 }));
 
+// Default: personal user (no org membership) — admin-gated CTAs render.
+// Individual tests override via `mockUseOrganization.mockReturnValue(...)`.
+const mockUseOrganization = vi.fn(() => ({ membership: null as null | { role: string } }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({
     userId: "u_seller",
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
+  useOrganization: () => mockUseOrganization(),
 }));
 
 vi.mock("@/hooks/useAgents", () => ({
@@ -83,6 +87,7 @@ describe("PublishWizard edit mode", () => {
     mockApiGet.mockReset();
     mockApiPost.mockReset();
     mockApiGet.mockResolvedValue({ dashboard_url: null });
+    mockUseOrganization.mockReturnValue({ membership: null });
   });
 
   it("renders the rejection banner on entry", async () => {
@@ -148,5 +153,38 @@ describe("PublishWizard edit mode", () => {
     const banner = await screen.findByTestId("wizard-review-pullback-banner");
     expect(banner).toHaveTextContent(/currently in review/i);
     expect(banner).toHaveTextContent(/back to draft/i);
+  });
+});
+
+describe("PublishWizard — org-admin gate", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset();
+    mockApiPost.mockReset();
+    mockApiGet.mockResolvedValue({ dashboard_url: null });
+    mockUseOrganization.mockReturnValue({ membership: null });
+  });
+
+  it("renders the restricted view for non-admin org members", async () => {
+    mockUseOrganization.mockReturnValue({ membership: { role: "org:member" } });
+    renderEditing(listing());
+    expect(await screen.findByTestId("marketplace-restricted")).toBeInTheDocument();
+    // None of the wizard steps render.
+    expect(screen.queryByText(/Pick which agent/)).toBeNull();
+    expect(screen.queryByDisplayValue("Ray")).toBeNull();
+  });
+
+  it("renders the full wizard for personal users (no membership)", async () => {
+    mockUseOrganization.mockReturnValue({ membership: null });
+    renderEditing(listing());
+    expect(screen.queryByTestId("marketplace-restricted")).toBeNull();
+    // Details step prefilled — proves the wizard mounted.
+    expect(await screen.findByDisplayValue("Ray")).toBeInTheDocument();
+  });
+
+  it("renders the full wizard for org admins", async () => {
+    mockUseOrganization.mockReturnValue({ membership: { role: "org:admin" } });
+    renderEditing(listing());
+    expect(screen.queryByTestId("marketplace-restricted")).toBeNull();
+    expect(await screen.findByDisplayValue("Ray")).toBeInTheDocument();
   });
 });

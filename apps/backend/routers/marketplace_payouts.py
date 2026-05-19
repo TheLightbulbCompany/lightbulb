@@ -7,7 +7,7 @@ import stripe
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, require_org_admin
 from core.config import settings
 from core.services import payout_service
 
@@ -27,6 +27,7 @@ async def onboard(auth: Annotated[AuthContext, Depends(get_current_user)]):
     re-uses the seller's existing Stripe account_id from DDB if any, instead
     of relying on Stripe-side idempotency.
     """
+    require_org_admin(auth)
     table = _payout_accounts_table()
     resp = table.get_item(Key={"seller_id": auth.user_id})
     pa = resp.get("Item", {}) or {}
@@ -75,6 +76,7 @@ async def onboard(auth: Annotated[AuthContext, Depends(get_current_user)]):
 @router.get("/dashboard")
 async def dashboard(auth: Annotated[AuthContext, Depends(get_current_user)]):
     """Stripe-hosted dashboard link + held-balance snapshot."""
+    require_org_admin(auth)
     table = _payout_accounts_table()
     resp = table.get_item(Key={"seller_id": auth.user_id})
     pa = resp.get("Item", {}) or {}

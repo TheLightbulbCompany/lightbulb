@@ -16,9 +16,29 @@ import { adminGet, adminPost, type ActionResult } from "./_shared";
  * takedowns (`listRecentTakedowns`).
  */
 
-/** List marketplace listings awaiting moderation review. */
-export async function listReviewQueue(): Promise<ActionResult> {
-  return adminGet("/admin/marketplace/listings");
+/**
+ * List marketplace listings for the admin browse view.
+ *
+ * Backwards-compatible: called with no params, returns the moderation
+ * review queue (status="review" rows) — same shape the page used to get
+ * from the now-renamed `listReviewQueue`.
+ *
+ * With params, filters by status and/or whitespace-tokenized search query.
+ * `status` is one of "draft" | "review" | "published" | "retired" |
+ * "taken_down". The backend clamps `limit` to 200; passing higher values
+ * is a no-op rather than an error.
+ */
+export async function listListings(params?: {
+  status?: string;
+  q?: string;
+  limit?: number;
+}): Promise<ActionResult> {
+  const search = new URLSearchParams();
+  if (params?.status) search.set("status", params.status);
+  if (params?.q) search.set("q", params.q);
+  if (params?.limit !== undefined) search.set("limit", String(params.limit));
+  const qs = search.toString();
+  return adminGet(`/admin/marketplace/listings${qs ? `?${qs}` : ""}`);
 }
 
 /**

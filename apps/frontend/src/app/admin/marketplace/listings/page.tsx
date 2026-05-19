@@ -62,14 +62,22 @@ export default async function ListingsBrowse({
   // Coerce unknown statuses to "review" rather than passing them through —
   // the backend would 422, but defaulting here makes a typo'd URL render the
   // queue instead of an error page.
-  const rawStatus = params.status ?? "review";
-  const status = VALID_STATUSES.has(rawStatus) ? rawStatus : "review";
+  const rawStatus = params.status;
+  const status =
+    rawStatus && VALID_STATUSES.has(rawStatus) ? rawStatus : "review";
   const q = params.q?.trim() ?? "";
-
-  const result = await listListings({
-    status,
-    q: q || undefined,
-  });
+  // The backend has two paths for /admin/marketplace/listings:
+  //   1. No status + no q → fresh GSI read (status="review") — for the
+  //      default moderator queue, no 60s cache lag.
+  //   2. status or q present → marketplace_search.search() which is
+  //      cache-backed.
+  // For the default landing (no URL params), don't pass any args so we
+  // hit path 1 — otherwise approve/reject + router.refresh() can keep
+  // stale rows in the queue for up to 60s.
+  const usingDefaultReviewQueue = !params.status && !q;
+  const result = usingDefaultReviewQueue
+    ? await listListings()
+    : await listListings({ status, q: q || undefined });
   if (!result.ok) {
     return (
       <p className="text-sm text-red-400" role="alert">

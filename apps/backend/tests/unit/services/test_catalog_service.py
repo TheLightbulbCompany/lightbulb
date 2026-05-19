@@ -92,20 +92,25 @@ async def test_deploy_calls_pair_before_aux_merge():
 
 
 @pytest.mark.asyncio
-async def test_deploy_threads_agent_entry_through_pair_extra_update_fields():
-    """The slice's agent dict (minus ``id`` and ``workspace`` which the
-    helper owns) must arrive at ``pair_with_openclaw`` as
-    ``extra_update_fields``. The helper force-overrides ``agentId`` +
-    ``name`` regardless, so callers can leave id/name in but we MUST NOT
-    forward the synthesized ``workspace`` path (it would be wrong shape
-    for ``agents.update`` and is derived from the create RPC's name).
+async def test_deploy_pair_extras_limited_to_agents_update_schema():
+    """OpenClaw's ``agents.update`` AJV schema is narrow
+    (``additionalProperties: false`` — only
+    ``agentId, name, workspace, model, emoji, avatar``). Forwarding the
+    seller's full agent dict (``identity`` as a nested object,
+    ``skills``, ``reasoningDefault``, ``agentRuntime``, etc.) makes the
+    RPC 422 and leaves the agent stuck with name=<uuid>. ``extras``
+    must contain ONLY ``emoji`` / ``avatar`` (extracted from the
+    nested ``identity`` block) — everything else rides on the file-merge
+    path (the ``agent_entry`` arg to ``apply_deploy_aux_mutations``).
     """
     svc, _ws, _aux, pair_fn, gateway_pool = _make_service()
 
     slice_ = _slice_with_agent()
-    # Inject a few extra fields the slice typically carries
-    slice_["agent"]["identity"] = {"role": "concierge"}
+    # Seller stored these fields on their agent — they MUST NOT leak
+    # into agents.update's params.
+    slice_["agent"]["identity"] = {"name": "Demo", "emoji": "🍃", "avatar": "monstera"}
     slice_["agent"]["reasoningDefault"] = "high"
+    slice_["agent"]["agentRuntime"] = {"maxTurns": 50}
 
     await svc.deploy_from_artifact(
         owner_id="user_buyer",
@@ -130,16 +135,76 @@ async def test_deploy_threads_agent_entry_through_pair_extra_update_fields():
         "model": "claude-3-haiku",
     }
 
-    # extras: contains the agent fields except the helper-owned id + workspace.
+    # extras: ONLY emoji + avatar from the seller's identity block.
+    # The narrow schema is the load-bearing invariant.
     extras = kw["extra_update_fields"]
-    assert "id" not in extras
-    assert "workspace" not in extras
-    # Forwarded slice fields are present:
-    assert extras["identity"] == {"role": "concierge"}
-    assert extras["reasoningDefault"] == "high"
-    assert extras["skills"] == ["search"]
-    assert extras["name"] == "Demo"
-    assert extras["model"] == "claude-3-haiku"
+    assert extras == {"emoji": "🍃", "avatar": "monstera"}
+
+
+@pytest.mark.asyncio
+async def test_deploy_file_merges_full_agent_entry_into_agents_list():
+    """The fields the RPC can't carry (skills binding, reasoningDefault,
+    agentRuntime, embeddedHarness, tts, etc.) must land via the
+    file-merge path so chokidar (1-30s) reloads them onto the buyer's
+    in-memory agent. Without this, the seller's per-agent runtime
+    config is lost on every deploy.
+    """
+    svc, _ws, apply_aux, _pair, _gw = _make_service()
+
+    slice_ = _slice_with_agent()
+    slice_["agent"]["identity"] = {"name": "Demo", "emoji": "🍃"}
+    slice_["agent"]["reasoningDefault"] = "high"
+    slice_["agent"]["agentRuntime"] = {"maxTurns": 50}
+
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=slice_,
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.5",
+        container_token="tok",
+        new_agent_id="agent_new",
+    )
+
+    apply_aux.assert_awaited_once()
+    kw = apply_aux.await_args.kwargs
+    # agent_entry threaded through with the buyer's resolved id + workspace
+    # and the full per-agent config preserved.
+    entry = kw["agent_entry"]
+    assert entry["id"] == "agent_new"
+    assert entry["workspace"] == ".openclaw/workspaces/agent_new"
+    assert entry["skills"] == ["search"]
+    assert entry["reasoningDefault"] == "high"
+    assert entry["agentRuntime"] == {"maxTurns": 50}
+    assert entry["identity"] == {"name": "Demo", "emoji": "🍃"}
+
+
+@pytest.mark.asyncio
+async def test_deploy_falls_back_to_identity_name_for_display():
+    """If the seller's agent has ``identity.name`` but no top-level
+    ``name`` (older snapshot shape), use the nested name for the
+    sidebar display instead of falling back to the raw UUID.
+    """
+    svc, _ws, _aux, pair_fn, _gw = _make_service()
+
+    slice_ = _slice_with_agent()
+    del slice_["agent"]["name"]
+    slice_["agent"]["identity"] = {"name": "Ray"}
+
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=slice_,
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.5",
+        container_token="tok",
+        new_agent_id="agent_xyz",
+    )
+
+    pair_fn.assert_awaited_once()
+    assert pair_fn.await_args.kwargs["paperclip_agent"]["name"] == "Ray"
 
 
 @pytest.mark.asyncio

@@ -437,10 +437,11 @@ def catalog_efs_dir():
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_aux_mutations_merges_plugins_mcp_skills_only(tmp_path, monkeypatch):
-    """The aux mutation deep-merges plugins/mcp/skills into openclaw.json.
-    It does NOT touch agents.list — that path is owned by the RPC pair
-    now."""
+async def test_apply_deploy_aux_mutations_no_agent_entry_leaves_list_untouched(tmp_path, monkeypatch):
+    """When no agent_entry is supplied, agents.list stays unchanged.
+    Plugins/mcp/skills still deep-merge. This is the legacy listing
+    path (no slice.agent) plus any call that wants only the aux merges.
+    """
     from core.services import config_patcher
 
     config_dir = tmp_path / "user_abc"
@@ -462,21 +463,102 @@ async def test_apply_deploy_aux_mutations_merges_plugins_mcp_skills_only(tmp_pat
     assert written["mcp"]["servers"]["resy"] == {"command": "node"}
     assert written["skills"]["entries"]["haiku"] == {"enabled": True}
     assert written["skills"]["allowBundled"] == ["foo"]
-    # agents.list untouched — pre-existing agent still there, no new one appended.
+    # agents.list untouched — no agent_entry was passed.
     assert written["agents"]["list"] == [{"id": "agent_pre_existing"}]
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_aux_mutations_no_agent_entry_kwarg():
-    """The renamed function no longer accepts an agent_entry arg. This
-    test exists to lock in the signature so the agent_entry branch
-    cannot accidentally come back without a corresponding test change."""
-    import inspect
+async def test_apply_deploy_aux_mutations_appends_agent_entry_to_list(tmp_path, monkeypatch):
+    """When agent_entry is provided, it gets appended to agents.list so
+    chokidar's eventual reload picks up per-agent fields the OpenClaw
+    agents.update RPC schema can't carry (skills binding,
+    reasoningDefault, agentRuntime, etc.).
+    """
     from core.services import config_patcher
 
-    sig = inspect.signature(config_patcher.apply_deploy_aux_mutations)
-    assert "agent_entry" not in sig.parameters
-    assert list(sig.parameters.keys())[0] == "owner_id"
+    config_dir = tmp_path / "user_abc"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text('{"agents": {"list": [{"id": "agent_pre_existing"}]}}')
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    new_entry = {
+        "id": "agent_new",
+        "name": "Ray",
+        "skills": ["mcp-resy"],
+        "reasoningDefault": "on",
+    }
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_abc",
+        plugins_patch={},
+        agent_entry=new_entry,
+    )
+
+    written = json.loads(config_path.read_text())
+    assert {a["id"] for a in written["agents"]["list"]} == {"agent_pre_existing", "agent_new"}
+    appended = next(a for a in written["agents"]["list"] if a["id"] == "agent_new")
+    assert appended["skills"] == ["mcp-resy"]
+    assert appended["reasoningDefault"] == "on"
+    assert appended["name"] == "Ray"
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_aux_mutations_replaces_existing_agent_entry(tmp_path, monkeypatch):
+    """Idempotent retry: if an agent with the same id already exists in
+    agents.list (a previous deploy attempt got partway through), the
+    new entry replaces it in place instead of duplicating.
+    """
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_abc"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text(
+        '{"agents": {"list": [{"id": "agent_dup", "name": "stale", "skills": []},{"id": "agent_other"}]}}'
+    )
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_abc",
+        plugins_patch={},
+        agent_entry={"id": "agent_dup", "name": "Ray", "skills": ["mcp-resy"]},
+    )
+
+    written = json.loads(config_path.read_text())
+    ids = [a["id"] for a in written["agents"]["list"]]
+    assert ids == ["agent_dup", "agent_other"]  # no duplication, order preserved
+    dup = next(a for a in written["agents"]["list"] if a["id"] == "agent_dup")
+    assert dup["name"] == "Ray"  # replaced, not merged
+    assert dup["skills"] == ["mcp-resy"]
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_aux_mutations_normalizes_legacy_flat_list(tmp_path, monkeypatch):
+    """Legacy configs with ``agents: [...]`` (flat list) are tolerated
+    on read and normalized to ``agents: {list: [...]}`` on write.
+    """
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_abc"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text('{"agents": [{"id": "agent_legacy"}]}')
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_abc",
+        plugins_patch={},
+        agent_entry={"id": "agent_new", "name": "Ray"},
+    )
+
+    written = json.loads(config_path.read_text())
+    # agents is now an object with list — flat shape is gone.
+    assert isinstance(written["agents"], dict)
+    ids = [a["id"] for a in written["agents"]["list"]]
+    assert ids == ["agent_legacy", "agent_new"]
 
 
 @pytest.mark.asyncio

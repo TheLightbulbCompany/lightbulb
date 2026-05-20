@@ -27,12 +27,16 @@ vi.mock("@/lib/api", () => ({
   }),
 }));
 
+// Default: personal user (no org membership) — admin-gated CTAs render.
+// Individual tests can override via `mockUseOrganization.mockReturnValue(...)`.
+const mockUseOrganization = vi.fn(() => ({ membership: null as null | { role: string } }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({
     userId: "u_seller",
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
+  useOrganization: () => mockUseOrganization(),
 }));
 
 function listing(overrides: Partial<Listing> = {}): Listing {
@@ -144,5 +148,47 @@ describe("MyListingsView", () => {
     // assert no crash + the button was reachable. Future test coverage on
     // the wizard's edit-mode rendering pins the round-trip.
     await waitFor(() => expect(editBtn).toBeInTheDocument());
+  });
+});
+
+describe("MyListingsView — org-admin gate", () => {
+  beforeEach(() => {
+    mockMyListings.mockReset();
+    mockApiGet.mockReset();
+    mockApiPost.mockReset();
+    mockApiGet.mockResolvedValue({ dashboard_url: null, balance_held_cents: 0 });
+    mockUseOrganization.mockReturnValue({ membership: null });
+  });
+
+  it("renders the restricted view for non-admin org members and skips the fetch", async () => {
+    mockUseOrganization.mockReturnValue({ membership: { role: "org:member" } });
+    renderInDrawer();
+    expect(await screen.findByTestId("marketplace-restricted")).toBeInTheDocument();
+    // Skipping the fetch is the point — if we ever 403 from /listings or
+    // /payouts/dashboard the seller drawer would surface an error toast.
+    expect(mockMyListings).not.toHaveBeenCalled();
+    expect(mockApiGet).not.toHaveBeenCalled();
+    // The publish CTA is gone.
+    expect(screen.queryByRole("button", { name: /New listing/i })).toBeNull();
+  });
+
+  it("renders the publish CTA for personal users (no active org)", async () => {
+    mockUseOrganization.mockReturnValue({ membership: null });
+    mockMyListings.mockResolvedValue({ items: [] });
+    renderInDrawer();
+    expect(
+      await screen.findByRole("button", { name: /Publish your agent/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("marketplace-restricted")).toBeNull();
+  });
+
+  it("renders the publish CTA for org admins", async () => {
+    mockUseOrganization.mockReturnValue({ membership: { role: "org:admin" } });
+    mockMyListings.mockResolvedValue({ items: [] });
+    renderInDrawer();
+    expect(
+      await screen.findByRole("button", { name: /Publish your agent/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("marketplace-restricted")).toBeNull();
   });
 });

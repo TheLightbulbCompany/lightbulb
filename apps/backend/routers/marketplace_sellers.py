@@ -13,7 +13,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, require_org_admin
 from core.services import seller_profile
 from schemas import marketplace as schemas
 
@@ -40,6 +40,7 @@ async def upsert_my_profile(
     auth: Annotated[AuthContext, Depends(get_current_user)],
 ):
     """Create or update the caller's seller profile."""
+    require_org_admin(auth)
     try:
         return await seller_profile.upsert_profile(
             seller_id=auth.user_id,

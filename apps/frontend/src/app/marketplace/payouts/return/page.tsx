@@ -4,6 +4,9 @@ import { useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
+import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
+
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 /**
@@ -18,11 +21,15 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
  */
 export default function PayoutsReturnPage() {
   const { isSignedIn, getToken } = useAuth();
+  const { restricted } = useMarketplaceWriteGate();
   const router = useRouter();
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!isSignedIn) return;
+    // Non-admin org members can't poll /payouts/dashboard (403). Skip the
+    // poll + redirect so the restricted view below is what they see.
+    if (restricted) return;
     if (attempt >= 8) {
       router.replace("/marketplace/dashboard");
       return;
@@ -47,7 +54,18 @@ export default function PayoutsReturnPage() {
       }
     }, 2000);
     return () => clearTimeout(t);
-  }, [attempt, isSignedIn, getToken, router]);
+  }, [attempt, isSignedIn, getToken, router, restricted]);
+
+  if (restricted) {
+    return (
+      <main className="max-w-md mx-auto px-6 py-16">
+        <MarketplaceRestrictedView
+          title="Payouts restricted"
+          desc="Only org admins can manage marketplace payouts. Ask your org admin to finish Stripe onboarding."
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="max-w-md mx-auto px-6 py-16 text-center">

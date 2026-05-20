@@ -5,7 +5,9 @@ import { useAuth } from "@clerk/nextjs";
 
 import { useApi } from "@/lib/api";
 import { getMySellerProfile, updateListing, type SellerProfile } from "@/lib/marketplace/api";
+import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
 import { HandlePicker } from "@/components/marketplace/HandlePicker";
+import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
 
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import {
@@ -99,6 +101,7 @@ export function PublishWizard() {
   const { setView, state } = useMarketplaceDrawer();
   const api = useApi();
   const { getToken } = useAuth();
+  const { restricted } = useMarketplaceWriteGate();
   const editingListing = state.editListing ?? null;
   const isEditing = !!editingListing;
 
@@ -332,6 +335,19 @@ export function PublishWizard() {
   // on save (backend update_draft auto-demotes). Warn the seller up front
   // so the side effect isn't a surprise — they'll need to resubmit.
   const editingFromReview = editingListing?.status === "review";
+
+  // Non-admin org members can't publish — backend POST /listings,
+  // /artifact-from-agent, /submit all 403 for them. Render the restricted
+  // state instead of the multi-step wizard so they can't get six steps
+  // in and then hit a wall.
+  if (restricted) {
+    return (
+      <MarketplaceRestrictedView
+        title="Publishing restricted"
+        desc="Only org admins can publish agents to the marketplace. Ask your org admin to take over."
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col h-full">

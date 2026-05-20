@@ -182,12 +182,9 @@ def _agents_list(openclaw_json: dict[str, Any]) -> list[Any]:
 
         agents: { defaults: AgentDefaults, list: AgentEntry[] }
 
-    Early versions of the Isol8 catalog code read ``config["agents"]`` as if it
-    were a flat list — that worked only for configs that didn't exist, which
-    is why it went unnoticed until the first real publish attempt. The write
-    path (``config_patcher.apply_deploy_mutation``) migrates flat-list configs
-    to the nested shape on deploy; this reader accepts BOTH so an admin with a
-    legacy config can still publish without first triggering a migration.
+    Accepts BOTH this shape and the legacy flat-list shape — admins
+    occasionally have a pre-existing flat-list config in their workspace
+    and we tolerate it on publish-read so they can still ship.
     """
     agents = openclaw_json.get("agents")
     if isinstance(agents, list):

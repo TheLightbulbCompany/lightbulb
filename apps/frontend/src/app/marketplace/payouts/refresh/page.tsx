@@ -3,6 +3,9 @@
 import { useAuth } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 
+import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
+import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
+
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 /**
@@ -14,11 +17,16 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
  */
 export default function PayoutsRefreshPage() {
   const { isSignedIn, getToken } = useAuth();
+  const { restricted } = useMarketplaceWriteGate();
   const [status, setStatus] = useState<"refreshing" | "error">("refreshing");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isSignedIn) return;
+    // Skip the POST /payouts/onboard fetch entirely for non-admin org
+    // members — the backend would 403 and there's nothing the seller can
+    // do from here.
+    if (restricted) return;
 
     let cancelled = false;
     (async () => {
@@ -50,7 +58,18 @@ export default function PayoutsRefreshPage() {
     return () => {
       cancelled = true;
     };
-  }, [isSignedIn, getToken]);
+  }, [isSignedIn, getToken, restricted]);
+
+  if (restricted) {
+    return (
+      <main className="max-w-md mx-auto px-6 py-16">
+        <MarketplaceRestrictedView
+          title="Payouts restricted"
+          desc="Only org admins can manage marketplace payouts. Ask your org admin to finish Stripe onboarding."
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="max-w-md mx-auto px-6 py-16 text-center">

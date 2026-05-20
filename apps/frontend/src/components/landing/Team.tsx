@@ -14,19 +14,18 @@ type Node = {
 };
 
 const NODES: Node[] = [
-  { id: "F", name: "Friday", role: "Orchestrator", x: 50, y: 50, big: true, status: "delegating", load: "11 in flight" },
-  { id: "L", name: "Lens",   role: "Research",     x: 14, y: 22, status: "working", load: "2 open" },
-  { id: "P", name: "Pitch",  role: "Outreach",     x: 86, y: 22, status: "working", load: "5 open" },
-  { id: "O", name: "Ora",    role: "Schedule",     x: 94, y: 60, status: "working", load: "1 open" },
-  { id: "T", name: "Tally",  role: "Finance",      x: 70, y: 86, status: "working", load: "3 open" },
-  { id: "E", name: "Echo",   role: "Recap",        x: 28, y: 86, status: "idle",    load: "idle"   },
-  { id: "S", name: "Scout",  role: "Sourcing",     x:  8, y: 60, status: "idle",    load: "idle"   },
+  { id: "F",  name: "Friday", role: "Orchestrator",          x: 50, y: 50, big: true, status: "delegating", load: "11 in flight" },
+  { id: "L",  name: "Lens",   role: "Research",              x: 14, y: 22, status: "working", load: "2 open" },
+  { id: "St", name: "Stitch", role: "Sourcing & Outreach",   x: 86, y: 22, status: "working", load: "8 open" },
+  { id: "O",  name: "Ora",    role: "Schedule",              x: 94, y: 60, status: "working", load: "1 open" },
+  { id: "T",  name: "Tally",  role: "Finance",               x: 70, y: 86, status: "working", load: "3 open" },
+  { id: "E",  name: "Echo",   role: "Recap",                 x: 28, y: 86, status: "idle",    load: "idle"   },
 ];
 
 const EDGES: [string, string][] = [
-  ["F", "L"], ["F", "P"], ["F", "O"], ["F", "T"], ["F", "E"], ["F", "S"],
-  ["L", "P"],
-  ["P", "O"],
+  ["F", "L"], ["F", "St"], ["F", "O"], ["F", "T"], ["F", "E"],
+  ["L", "St"],
+  ["St", "O"],
   ["T", "E"],
 ];
 

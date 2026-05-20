@@ -14,6 +14,9 @@ vi.mock("@/lib/api", () => ({
 }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ userId: "u_seller", getToken: vi.fn().mockResolvedValue("tok_abc") }),
+  // useMarketplaceWriteGate (the new admin gate) reads useOrganization.
+  // null membership = personal user → gate open.
+  useOrganization: () => ({ membership: null }),
 }));
 
 const setView = vi.fn();

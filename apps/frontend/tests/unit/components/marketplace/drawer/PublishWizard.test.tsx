@@ -85,6 +85,9 @@ vi.mock("@/hooks/useAgents", () => ({
 }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: vi.fn().mockResolvedValue("tok_abc") }),
+  // PublishWizard now reads useOrganization via useMarketplaceWriteGate.
+  // null membership = personal user → wizard renders normally.
+  useOrganization: () => ({ membership: null }),
 }));
 
 describe("PickAgentStep", () => {

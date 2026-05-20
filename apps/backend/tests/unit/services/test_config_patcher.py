@@ -12,7 +12,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.services.config_patcher import (  # noqa: E402
     ConfigPatchError,
     append_to_openclaw_config_list,
-    apply_deploy_mutation,
+    apply_deploy_aux_mutations,
     delete_openclaw_config_path,
     patch_openclaw_config,
     remove_from_openclaw_config_list,
@@ -412,7 +412,8 @@ async def test_delete_path_missing_intermediate_is_noop(tmp_efs_with_multi_accou
 
 
 # ------------------------------------------------------------------
-# apply_deploy_mutation (catalog deploy path)
+# apply_deploy_aux_mutations (catalog deploy path — plugins/mcp/skills only;
+# agent_entry now goes through pair_with_openclaw RPC, not the file merge)
 # ------------------------------------------------------------------
 
 
@@ -436,74 +437,132 @@ def catalog_efs_dir():
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_appends_agent_and_merges_plugins(catalog_efs_dir):
-    await apply_deploy_mutation(
-        "user_1",
-        {"id": "new_agent", "name": "New", "skills": ["browser"]},
-        {"entries": {"browser": {"enabled": True}}},
+async def test_apply_deploy_aux_mutations_no_agent_entry_leaves_list_untouched(tmp_path, monkeypatch):
+    """When no agent_entry is supplied, agents.list stays unchanged.
+    Plugins/mcp/skills still deep-merge. This is the legacy listing
+    path (no slice.agent) plus any call that wants only the aux merges.
+    """
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_abc"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text('{"agents": {"list": [{"id": "agent_pre_existing"}]}, "plugins": {"entries": {}}}')
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_abc",
+        plugins_patch={"entries": {"resy": {"enabled": True}}},
+        mcp_patch={"servers": {"resy": {"command": "node"}}},
+        skills_patch={"entries": {"haiku": {"enabled": True}}, "allowBundled": ["foo"]},
     )
-    with open(os.path.join(catalog_efs_dir, "user_1", "openclaw.json")) as f:
-        result = json.load(f)
 
-    # Agent was appended to agents.list, existing one preserved.
-    agent_ids = [a["id"] for a in result["agents"]["list"]]
-    assert agent_ids == ["existing_agent", "new_agent"]
-
-    # Plugins deep-merged under entries.{name} (real OpenClaw schema).
-    assert result["plugins"]["memory"]["enabled"] is True
-    assert result["plugins"]["entries"]["browser"]["enabled"] is True
-
-    # Top-level tools left untouched. Crucially, no ``tools.allowed`` key
-    # is written — that's invalid under OpenClaw's strict ToolsSchema and
-    # was the root cause of the deploy-killer (Unrecognized key: "allowed").
-    assert "allowed" not in (result.get("tools") or {})
+    written = json.loads(config_path.read_text())
+    assert written["plugins"]["entries"]["resy"] == {"enabled": True}
+    assert written["mcp"]["servers"]["resy"] == {"command": "node"}
+    assert written["skills"]["entries"]["haiku"] == {"enabled": True}
+    assert written["skills"]["allowBundled"] == ["foo"]
+    # agents.list untouched — no agent_entry was passed.
+    assert written["agents"]["list"] == [{"id": "agent_pre_existing"}]
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_creates_missing_containers(catalog_efs_dir):
-    # Start with an empty config to verify creation paths for missing agents.
-    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
-    with open(config_path, "w") as f:
-        json.dump({}, f)
+async def test_apply_deploy_aux_mutations_appends_agent_entry_to_list(tmp_path, monkeypatch):
+    """When agent_entry is provided, it gets appended to agents.list so
+    chokidar's eventual reload picks up per-agent fields the OpenClaw
+    agents.update RPC schema can't carry (skills binding,
+    reasoningDefault, agentRuntime, etc.).
+    """
+    from core.services import config_patcher
 
-    await apply_deploy_mutation(
-        "user_1",
-        {"id": "first", "name": "First"},
-        {},
+    config_dir = tmp_path / "user_abc"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text('{"agents": {"list": [{"id": "agent_pre_existing"}]}}')
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    new_entry = {
+        "id": "agent_new",
+        "name": "Ray",
+        "skills": ["mcp-resy"],
+        "reasoningDefault": "on",
+    }
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_abc",
+        plugins_patch={},
+        agent_entry=new_entry,
     )
-    with open(config_path) as f:
-        result = json.load(f)
 
-    assert result["agents"] == {"list": [{"id": "first", "name": "First"}]}
-    # No top-level ``tools`` block synthesized — we only mutate it for
-    # the self-heal path (stripping a pre-existing invalid ``allowed`` key).
-    assert "tools" not in result or "allowed" not in result.get("tools") or {}
+    written = json.loads(config_path.read_text())
+    assert {a["id"] for a in written["agents"]["list"]} == {"agent_pre_existing", "agent_new"}
+    appended = next(a for a in written["agents"]["list"] if a["id"] == "agent_new")
+    assert appended["skills"] == ["mcp-resy"]
+    assert appended["reasoningDefault"] == "on"
+    assert appended["name"] == "Ray"
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_sequential_deploys_keep_both_agents(catalog_efs_dir):
-    """Sequential deploys must both land without clobbering each other —
-    this is what the deploy path actually exercises now that the
-    read-modify-write of agents.list happens inside the lock."""
-    await apply_deploy_mutation(
-        "user_1",
-        {"id": "agent_a", "name": "A"},
-        {},
-    )
-    await apply_deploy_mutation(
-        "user_1",
-        {"id": "agent_b", "name": "B"},
-        {},
-    )
-    with open(os.path.join(catalog_efs_dir, "user_1", "openclaw.json")) as f:
-        result = json.load(f)
+async def test_apply_deploy_aux_mutations_replaces_existing_agent_entry(tmp_path, monkeypatch):
+    """Idempotent retry: if an agent with the same id already exists in
+    agents.list (a previous deploy attempt got partway through), the
+    new entry replaces it in place instead of duplicating.
+    """
+    from core.services import config_patcher
 
-    agent_ids = [a["id"] for a in result["agents"]["list"]]
-    assert agent_ids == ["existing_agent", "agent_a", "agent_b"]
+    config_dir = tmp_path / "user_abc"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text(
+        '{"agents": {"list": [{"id": "agent_dup", "name": "stale", "skills": []},{"id": "agent_other"}]}}'
+    )
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_abc",
+        plugins_patch={},
+        agent_entry={"id": "agent_dup", "name": "Ray", "skills": ["mcp-resy"]},
+    )
+
+    written = json.loads(config_path.read_text())
+    ids = [a["id"] for a in written["agents"]["list"]]
+    assert ids == ["agent_dup", "agent_other"]  # no duplication, order preserved
+    dup = next(a for a in written["agents"]["list"] if a["id"] == "agent_dup")
+    assert dup["name"] == "Ray"  # replaced, not merged
+    assert dup["skills"] == ["mcp-resy"]
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_merges_mcp_servers(catalog_efs_dir):
+async def test_apply_deploy_aux_mutations_normalizes_legacy_flat_list(tmp_path, monkeypatch):
+    """Legacy configs with ``agents: [...]`` (flat list) are tolerated
+    on read and normalized to ``agents: {list: [...]}`` on write.
+    """
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_abc"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text('{"agents": [{"id": "agent_legacy"}]}')
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_abc",
+        plugins_patch={},
+        agent_entry={"id": "agent_new", "name": "Ray"},
+    )
+
+    written = json.loads(config_path.read_text())
+    # agents is now an object with list — flat shape is gone.
+    assert isinstance(written["agents"], dict)
+    ids = [a["id"] for a in written["agents"]["list"]]
+    assert ids == ["agent_legacy", "agent_new"]
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_aux_mutations_merges_mcp_servers(catalog_efs_dir):
     """mcp_patch={'servers': {...}} deep-merges into config['mcp']['servers'].
     Existing MCPs untouched; same-name MCPs deep-merged so the buyer's
     config wins for any pre-existing keys (their env values survive)."""
@@ -514,10 +573,9 @@ async def test_apply_deploy_mutation_merges_mcp_servers(catalog_efs_dir):
     with open(config_path, "w") as f:
         json.dump(cfg, f)
 
-    await apply_deploy_mutation(
+    await apply_deploy_aux_mutations(
         "user_1",
-        {"id": "new_agent", "name": "New"},
-        {},
+        plugins_patch={},
         mcp_patch={
             "servers": {
                 "jira-mcp": {
@@ -538,7 +596,7 @@ async def test_apply_deploy_mutation_merges_mcp_servers(catalog_efs_dir):
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_merges_skills_entries_and_allowbundled(
+async def test_apply_deploy_aux_mutations_merges_skills_entries_and_allowbundled(
     catalog_efs_dir,
 ):
     """skills_patch with both `entries` and `allowBundled` merges into
@@ -553,10 +611,9 @@ async def test_apply_deploy_mutation_merges_skills_entries_and_allowbundled(
     with open(config_path, "w") as f:
         json.dump(cfg, f)
 
-    await apply_deploy_mutation(
+    await apply_deploy_aux_mutations(
         "user_1",
-        {"id": "new_agent", "name": "New"},
-        {},
+        plugins_patch={},
         skills_patch={
             "entries": {"jira": {"enabled": True, "apiKey": "", "env": {"JIRA_USER": ""}}},
             "allowBundled": ["search", "fs-read"],
@@ -574,14 +631,13 @@ async def test_apply_deploy_mutation_merges_skills_entries_and_allowbundled(
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_none_patches_are_noops(catalog_efs_dir):
-    """Default (no mcp_patch / no skills_patch) keeps existing behavior:
-    only agent + plugins are mutated, no mcp / skills keys synthesized."""
+async def test_apply_deploy_aux_mutations_none_patches_are_noops(catalog_efs_dir):
+    """Default (no mcp_patch / no skills_patch + empty plugins_patch) leaves
+    mcp/skills keys unsynthesized."""
     config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
-    await apply_deploy_mutation(
+    await apply_deploy_aux_mutations(
         "user_1",
-        {"id": "new_agent", "name": "New"},
-        {},
+        plugins_patch={},
     )
     with open(config_path) as f:
         result = json.load(f)
@@ -591,43 +647,26 @@ async def test_apply_deploy_mutation_none_patches_are_noops(catalog_efs_dir):
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_migrates_legacy_flat_list(catalog_efs_dir):
-    """Codex P1 regression: if a config exists with the old flat-list shape
-    (``agents: [...]``) from pre-schema-fix deploys, we must PROMOTE it into
-    ``agents.list`` — not silently drop the existing entries."""
+async def test_apply_deploy_aux_mutations_merges_plugins(catalog_efs_dir):
+    """plugins_patch deep-merges into config['plugins'] (existing keys
+    preserved, new keys added)."""
     config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
-    with open(config_path, "w") as f:
-        json.dump(
-            {
-                "agents": [
-                    {"id": "legacy_a", "name": "Legacy A"},
-                    {"id": "legacy_b", "name": "Legacy B"},
-                ],
-                "plugins": {},
-                "tools": {"allowed": []},
-            },
-            f,
-        )
-
-    await apply_deploy_mutation(
+    await apply_deploy_aux_mutations(
         "user_1",
-        {"id": "fresh", "name": "Fresh"},
-        {},
+        plugins_patch={"entries": {"browser": {"enabled": True}}},
     )
     with open(config_path) as f:
         result = json.load(f)
 
-    # Legacy entries preserved + new entry appended, all under agents.list.
-    assert isinstance(result["agents"], dict)
-    agent_ids = [a["id"] for a in result["agents"]["list"]]
-    assert agent_ids == ["legacy_a", "legacy_b", "fresh"]
-    # And the invalid ``tools.allowed`` left over from pre-fix deploys is
-    # stripped (self-heal) so OpenClaw's strict validator accepts the file.
-    assert "allowed" not in (result.get("tools") or {})
+    # Plugins deep-merged under entries.{name} (real OpenClaw schema).
+    assert result["plugins"]["memory"]["enabled"] is True
+    assert result["plugins"]["entries"]["browser"]["enabled"] is True
+    # agents.list NOT touched (aux mutation never writes there now).
+    assert [a["id"] for a in result["agents"]["list"]] == ["existing_agent"]
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_self_heals_invalid_tools_allowed(catalog_efs_dir):
+async def test_apply_deploy_aux_mutations_self_heals_invalid_tools_allowed(catalog_efs_dir):
     """Pre-fix deploys wrote ``tools.allowed = []`` which OpenClaw's strict
     ToolsSchema rejects. On the next deploy, that key must be stripped so
     the file becomes valid again — without requiring a manual cleanup."""
@@ -646,10 +685,9 @@ async def test_apply_deploy_mutation_self_heals_invalid_tools_allowed(catalog_ef
             f,
         )
 
-    await apply_deploy_mutation(
+    await apply_deploy_aux_mutations(
         "user_1",
-        {"id": "fresh", "name": "Fresh"},
-        {},
+        plugins_patch={},
     )
     with open(config_path) as f:
         result = json.load(f)
@@ -660,34 +698,6 @@ async def test_apply_deploy_mutation_self_heals_invalid_tools_allowed(catalog_ef
     assert tools.get("profile") == "full"
     assert tools.get("deny") == ["canvas"]
     assert tools.get("web") == {"fetch": {"enabled": True}}
-
-
-@pytest.mark.asyncio
-async def test_apply_deploy_mutation_preserves_agents_defaults(catalog_efs_dir):
-    """Adding an agent to agents.list must NOT drop agents.defaults — that's
-    where OpenClaw keeps shared workspace / model / hook config."""
-    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
-    with open(config_path, "w") as f:
-        json.dump(
-            {
-                "agents": {
-                    "defaults": {"workspace": "/workspace/root"},
-                    "list": [{"id": "existing_agent", "name": "Existing"}],
-                },
-            },
-            f,
-        )
-
-    await apply_deploy_mutation(
-        "user_1",
-        {"id": "new", "name": "N"},
-        {},
-    )
-    with open(config_path) as f:
-        result = json.load(f)
-
-    assert result["agents"]["defaults"] == {"workspace": "/workspace/root"}
-    assert [a["id"] for a in result["agents"]["list"]] == ["existing_agent", "new"]
 
 
 # ---- append_cron_jobs ----

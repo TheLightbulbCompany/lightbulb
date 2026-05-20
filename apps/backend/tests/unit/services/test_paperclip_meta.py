@@ -48,6 +48,8 @@ def test_read_from_params_without_paperclip_block_returns_default():
 
 
 def test_read_from_full_paperclip_block_extracts_all_fields():
+    """Happy path — a fully-populated paperclip sub-block round-trips
+    into PaperclipMeta with every field set."""
     entry = {
         "id": "ray",
         "name": "Ray",
@@ -127,3 +129,73 @@ def test_write_invalid_role_raises():
     time prevents bad data from getting into openclaw.json."""
     with pytest.raises(ValueError, match="role"):
         write_to_agent_entry({"id": "x"}, PaperclipMeta(role="bogus", title=None, capabilities=None, icon=None))
+
+
+# ---------------------------------------------------------------------------
+# derive_from_listing — marketplace fallback for legacy listings
+# ---------------------------------------------------------------------------
+
+
+def test_derive_from_listing_both_none_returns_defaults():
+    """Listings without name+description (impossible per the schema but
+    treated as a non-raise contract) return PaperclipMeta defaults."""
+    from core.services.paperclip_meta import derive_from_listing
+
+    meta = derive_from_listing(name=None, description_md=None)
+    assert meta.role == "general"
+    assert meta.title is None
+    assert meta.capabilities is None
+    assert meta.icon is None
+
+
+def test_derive_from_listing_truncates_long_name_to_title_cap():
+    """``listing.name`` longer than PAPERCLIP_TITLE_MAX_CHARS is truncated
+    so Paperclip's createAgentSchema never 422s on title length."""
+    from core.services.paperclip_meta import PAPERCLIP_TITLE_MAX_CHARS, derive_from_listing
+
+    long_name = "x" * 500
+    meta = derive_from_listing(name=long_name, description_md=None)
+    assert meta.title is not None
+    assert len(meta.title) == PAPERCLIP_TITLE_MAX_CHARS
+
+
+def test_derive_from_listing_truncates_long_description_to_capabilities_cap():
+    """Same contract for description_md → capabilities."""
+    from core.services.paperclip_meta import PAPERCLIP_CAPABILITIES_MAX_CHARS, derive_from_listing
+
+    long_desc = "y" * 5000
+    meta = derive_from_listing(name=None, description_md=long_desc)
+    assert meta.capabilities is not None
+    assert len(meta.capabilities) == PAPERCLIP_CAPABILITIES_MAX_CHARS
+
+
+def test_derive_from_listing_whitespace_only_inputs_become_none():
+    """A name that's only whitespace shouldn't become an empty title —
+    Paperclip would render it weirdly. Collapse to None."""
+    from core.services.paperclip_meta import derive_from_listing
+
+    meta = derive_from_listing(name="   ", description_md="\n\t  \n")
+    assert meta.title is None
+    assert meta.capabilities is None
+
+
+# ---------------------------------------------------------------------------
+# write_to_agent_entry — empty-string clear semantics
+# ---------------------------------------------------------------------------
+
+
+def test_write_empty_string_title_clears_existing_field():
+    """Documented contract: empty string means "clear this field".
+    Different from ``None`` (= no change). Without this, the edit flow
+    can't ever remove a title once set."""
+    entry = {"params": {"paperclip": {"role": "general", "title": "Old"}}}
+    write_to_agent_entry(entry, PaperclipMeta(role="general", title="", capabilities=None, icon=None))
+    assert "title" not in entry["params"]["paperclip"]
+
+
+def test_write_whitespace_string_capabilities_clears_existing_field():
+    """Same contract: whitespace-only string clears the field (same
+    sanitization as the read side which treats whitespace as None)."""
+    entry = {"params": {"paperclip": {"role": "general", "capabilities": "Old caps"}}}
+    write_to_agent_entry(entry, PaperclipMeta(role="general", title=None, capabilities="   ", icon=None))
+    assert "capabilities" not in entry["params"]["paperclip"]

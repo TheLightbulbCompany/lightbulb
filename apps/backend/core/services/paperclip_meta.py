@@ -29,6 +29,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+# Paperclip's createAgentSchema length caps. Source:
+# paperclip/packages/shared/src/validators/agent.ts (the title /
+# capabilities z.string() chains use these in min/max). Mirrored here
+# so derive_from_listing produces values that can never trip a 422.
+# Keep in sync with upstream — if the schema tightens, re-pin here.
+PAPERCLIP_TITLE_MAX_CHARS: Final[int] = 80
+PAPERCLIP_CAPABILITIES_MAX_CHARS: Final[int] = 1024
+
 # Mirrors paperclip/packages/shared/src/constants.ts AGENT_ROLES.
 # If Paperclip upstream changes this list, the test in
 # tests/unit/services/test_paperclip_meta.py will fail and force a
@@ -88,7 +96,7 @@ def read_from_agent_entry(entry: dict) -> PaperclipMeta:
     pc = params.get("paperclip") or {}
     if not isinstance(pc, dict):
         return PaperclipMeta()
-    role = pc.get("role") or "general"
+    role = pc.get("role")
     if role not in PAPERCLIP_AGENT_ROLES:
         role = "general"
     title = pc.get("title")
@@ -159,8 +167,8 @@ def derive_from_listing(*, name: str | None, description_md: str | None) -> Pape
     Returns ``PaperclipMeta`` even when both inputs are None (caller
     gets defaults). Never raises.
     """
-    title = (name or "").strip()[:80] or None
-    caps = (description_md or "").strip()[:1024] or None
+    title = (name or "").strip()[:PAPERCLIP_TITLE_MAX_CHARS] or None
+    caps = (description_md or "").strip()[:PAPERCLIP_CAPABILITIES_MAX_CHARS] or None
     return PaperclipMeta(role="general", title=title, capabilities=caps, icon=None)
 
 
@@ -170,6 +178,8 @@ def derive_from_listing(*, name: str | None, description_md: str | None) -> Pape
 # consistent if we evolve the sub-block later.
 __all__ = [
     "PAPERCLIP_AGENT_ROLES",
+    "PAPERCLIP_CAPABILITIES_MAX_CHARS",
+    "PAPERCLIP_TITLE_MAX_CHARS",
     "PaperclipMeta",
     "derive_from_listing",
     "read_from_agent_entry",

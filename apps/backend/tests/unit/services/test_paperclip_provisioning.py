@@ -3,8 +3,9 @@ heavier moto-backed suite in ``tests/test_paperclip_provisioning.py``.
 
 Currently exercises:
 * The auto-seeded Main Agent name + role (``"Friday"`` / ``"ceo"``).
-* The auto-seeded Atlas (recruiter) agent and its independence from
-  the Friday seed (defense-in-depth).
+* The auto-seeded Atlas agent (role="general"; "recruiter" isn't in
+  Paperclip's AGENT_ROLES enum) and its independence from the Friday
+  seed (defense-in-depth).
 * The service-token mint contract: containers are keyed by
   ``owner_id`` and the JWT ``sub`` claim MUST equal that value (NOT
   the human creator's ``user_id``) — see ``service_token.mint`` and
@@ -94,7 +95,7 @@ def _build_provision_member_doubles(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_provision_org_seeds_friday_and_atlas(monkeypatch):
-    """provision_org seeds BOTH Friday (ceo) and Atlas (recruiter) in one step.
+    """provision_org seeds BOTH Friday (role="ceo") and Atlas (role="general"; "recruiter" isn't in Paperclip's AGENT_ROLES enum) in one step.
 
     Atlas is the in-house agent-recruiter that Friday-as-orchestrator
     delegates "hire a new agent" work to, so it must exist alongside

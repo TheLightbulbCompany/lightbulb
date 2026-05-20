@@ -27,7 +27,7 @@ from core.services.paperclip_adapter_config import (
     OPENCLAW_GATEWAY_TYPE,
     synthesize_openclaw_adapter,
 )
-from core.services.paperclip_meta import PaperclipMeta
+from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fields
 from core.services.paperclip_openclaw_pairing import _resolve_company_id_for_owner
 from core.services.paperclip_provisioning import _ws_gateway_url
 
@@ -89,30 +89,20 @@ async def create_paperclip_for_chat(
             service_token=service_token.mint(owner_id),
             user_id=creator_user_id,
         )
-        # Determine final role/title/capabilities/icon: explicit ``role``
-        # kwarg wins over meta.role (chat path historically passes
-        # role="general"; meta lets future callers override). Title /
-        # capabilities / icon come from meta only.
-        effective_role = role if role is not None else (meta.role if meta else "general")
-        pc_title = meta.title if meta else None
-        pc_capabilities = meta.capabilities if meta else None
-        pc_icon = meta.icon if meta else None
         # No idempotency_key: keying on (creator_user_id, name) returns a
         # stale (potentially deleted) record if the same friendly name is
         # reused within Paperclip's 24h dedupe window — same regression
         # class as memory feedback_stripe_idempotency_with_stable_keys.
         # Paperclip's create_agent treats idempotency_key as Optional, so
         # dropping it is safe.
+        fields = resolve_create_agent_fields(role=role, meta=meta)
         return await admin_client.create_agent(
             company_id=company_id,
             name=name,
-            role=effective_role,
             adapter_type=OPENCLAW_GATEWAY_TYPE,
             adapter_config=adapter_config,
-            title=pc_title,
-            capabilities=pc_capabilities,
-            icon=pc_icon,
             session_cookie=admin_cookie,
+            **fields,
         )
     finally:
         await http.aclose()
@@ -213,23 +203,14 @@ async def create_paperclip_for_marketplace(
             service_token=service_token.mint(owner_id),
             user_id=buyer_user_id,
         )
-        # Determine final role/title/capabilities/icon: explicit ``role``
-        # kwarg wins over meta.role. Title / capabilities / icon come
-        # from meta only.
-        effective_role = role if role is not None else (meta.role if meta else "general")
-        pc_title = meta.title if meta else None
-        pc_capabilities = meta.capabilities if meta else None
-        pc_icon = meta.icon if meta else None
+        fields = resolve_create_agent_fields(role=role, meta=meta)
         return await admin_client.create_agent(
             company_id=company_id,
             name=name,
-            role=effective_role,
             adapter_type=OPENCLAW_GATEWAY_TYPE,
             adapter_config=adapter_config,
-            title=pc_title,
-            capabilities=pc_capabilities,
-            icon=pc_icon,
             session_cookie=admin_cookie,
+            **fields,
         )
     finally:
         await http.aclose()

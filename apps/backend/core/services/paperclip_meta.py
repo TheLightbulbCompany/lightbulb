@@ -172,6 +172,42 @@ def derive_from_listing(*, name: str | None, description_md: str | None) -> Pape
     return PaperclipMeta(role="general", title=title, capabilities=caps, icon=None)
 
 
+def resolve_create_agent_fields(
+    *,
+    role: str | None,
+    meta: "PaperclipMeta | None",
+) -> dict:
+    """Reconcile an explicit ``role`` kwarg with an optional
+    ``PaperclipMeta`` into the keyword set ``PaperclipAdminClient.
+    create_agent`` expects.
+
+    Precedence:
+      * Explicit ``role`` kwarg wins. Used today by the chat path
+        (which passes ``role="general"`` hardcoded) so existing
+        behavior is unchanged when meta is absent.
+      * Falls back to ``meta.role`` when the explicit kwarg is None.
+      * Falls back to ``"general"`` when both are None — Paperclip's
+        ``createAgentSchema`` defaults to "general" anyway, but we
+        materialize it locally for symmetry with the rest of the dict.
+
+    ``title`` / ``capabilities`` / ``icon`` come from ``meta`` only —
+    there's no equivalent explicit kwarg today.
+
+    Returns a dict shaped ``{role, title, capabilities, icon}`` whose
+    values are pre-validated (the role came either from a trusted
+    caller or from ``read_from_agent_entry`` which already coerces
+    unknown roles to "general"). Caller ``**unpacks`` into
+    ``admin_client.create_agent(...)``.
+    """
+    effective_role = role if role is not None else (meta.role if meta else "general")
+    return {
+        "role": effective_role,
+        "title": meta.title if meta else None,
+        "capabilities": meta.capabilities if meta else None,
+        "icon": meta.icon if meta else None,
+    }
+
+
 # Public helpers (intentionally narrow API). Don't reach into
 # ``entry["params"]["paperclip"]`` from outside this module — use
 # read_from_agent_entry / write_to_agent_entry so the format stays
@@ -183,5 +219,6 @@ __all__ = [
     "PaperclipMeta",
     "derive_from_listing",
     "read_from_agent_entry",
+    "resolve_create_agent_fields",
     "write_to_agent_entry",
 ]

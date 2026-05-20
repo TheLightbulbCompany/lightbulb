@@ -695,6 +695,50 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def update_agent(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        agent_id: str,
+        role: Optional[str] = None,
+        title: Optional[str] = None,
+        capabilities: Optional[str] = None,
+        icon: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        """Partial-update an agent.
+
+        Maps to ``PATCH /api/companies/{companyId}/agents/{agentId}``
+        (see ``paperclip/server/src/routes/agents.ts`` —
+        ``updateAgentSchema = createAgentSchema.partial()``). Only the
+        fields explicitly supplied are sent; ``None`` means "leave
+        alone", an empty string would WIPE the field server-side.
+
+        Returns the updated agent dict from Paperclip's response so
+        callers can read the new state without a follow-up GET.
+
+        Raises :class:`PaperclipApiError` on 4xx/5xx (mirrors the
+        existing pattern in ``create_agent`` / ``delete_agent`` via
+        the shared ``_patch`` helper).
+        """
+        body: dict[str, Any] = {}
+        if role is not None:
+            body["role"] = role
+        if title is not None:
+            body["title"] = title
+        if capabilities is not None:
+            body["capabilities"] = capabilities
+        if icon is not None:
+            body["icon"] = icon
+        if metadata is not None:
+            body["metadata"] = metadata
+        return await self._patch(
+            f"/api/companies/{company_id}/agents/{agent_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     async def list_runs(
         self,
         *,

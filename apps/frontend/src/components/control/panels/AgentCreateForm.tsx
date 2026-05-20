@@ -1,12 +1,14 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Loader2, Plus, X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 import { capture } from "@/lib/analytics";
 import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
+import type { PaperclipMeta } from "@/lib/paperclipMeta";
 
 interface AgentCreateFormProps {
   existingIds: string[];
@@ -16,6 +18,7 @@ interface AgentCreateFormProps {
 
 export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreateFormProps) {
   const [name, setName] = useState("");
+  const [meta, setMeta] = useState<PaperclipMeta>({ role: "general" });
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const callRpc = useGatewayRpcMutation();
@@ -26,11 +29,18 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
 
   const handleCreate = useCallback(async () => {
     if (!canCreate) return;
-
     setCreating(true);
     setError(null);
-
     try {
+      // Build params.paperclip payload — only include keys with non-empty values
+      // so the backend's paperclip_meta.read_from_agent_entry doesn't have to
+      // sanitize whitespace-only values into None.
+      const paperclipBlock: Record<string, string> = { role: meta.role };
+      if (meta.title && meta.title.trim()) paperclipBlock.title = meta.title.trim();
+      if (meta.capabilities && meta.capabilities.trim())
+        paperclipBlock.capabilities = meta.capabilities.trim();
+      if (meta.icon && meta.icon.trim()) paperclipBlock.icon = meta.icon.trim();
+
       await callRpc("agents.create", {
         name: name.trim(),
         // OpenClaw's agents.create requires a non-empty `workspace` string —
@@ -41,15 +51,16 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
         // workspaces/main override.
         workspace: ".openclaw/workspaces/" + normalizedId,
         reasoningDefault: "stream",
+        params: { paperclip: paperclipBlock },
       });
-      capture("agent_created", { agent_name: name.trim() });
+      capture("agent_created", { agent_name: name.trim(), paperclip_role: meta.role });
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreating(false);
     }
-  }, [canCreate, callRpc, name, onCreated]);
+  }, [canCreate, callRpc, name, normalizedId, meta, onCreated]);
 
   return (
     <div className="rounded-lg border border-border bg-card/30 p-4 space-y-3">
@@ -76,36 +87,28 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
           placeholder="e.g. Research Assistant"
           disabled={creating}
           onKeyDown={(e) => {
-            if (e.key === "Enter") handleCreate();
             if (e.key === "Escape") onCancel();
           }}
           autoFocus
           className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
         />
         {normalizedId && !clientError && (
-          <p className="text-[10px] text-muted-foreground">
-            ID: {normalizedId}
-          </p>
+          <p className="text-[10px] text-muted-foreground">ID: {normalizedId}</p>
         )}
       </div>
 
-      {/* Error display */}
+      <AgentPaperclipFields value={meta} onChange={setMeta} disabled={creating} />
+
       {(clientError || error) && (
         <p className="text-xs text-red-500">{clientError || error}</p>
       )}
 
-      {/* Actions */}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={onCancel} disabled={creating}>
           Cancel
         </Button>
         <Button size="sm" onClick={handleCreate} disabled={!canCreate}>
-          {creating ? (
-            <Loader2 className="h-3 w-3 animate-spin mr-1" />
-          ) : (
-            <Plus className="h-3 w-3 mr-1" />
-          )}
-          Create
+          {creating ? <Loader2 className="h-3 w-3 animate-spin" /> : "Create"}
         </Button>
       </div>
     </div>

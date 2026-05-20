@@ -121,19 +121,19 @@ async def test_provision_org_seeds_friday_and_atlas(monkeypatch):
 
     assert names == {"Friday", "Atlas"}
     # Friday must remain role='ceo' for default-agent selection;
-    # Atlas must be 'recruiter' (NOT 'ceo') so it doesn't steal default.
-    assert roles == {"ceo", "recruiter"}
+    # Atlas uses 'general' (Paperclip's AGENT_ROLES enum doesn't include "recruiter").
+    assert roles == {"ceo", "general"}
     # Idempotency keys are distinct so retries don't collide.
     assert idempotency_keys == {
         "user_owner:main-agent",
         "user_owner:atlas-agent",
     }
 
-    # Cross-check the pairing: Friday ↔ ceo ↔ :main-agent, Atlas ↔ recruiter ↔ :atlas-agent.
+    # Cross-check the pairing: Friday ↔ ceo ↔ :main-agent, Atlas ↔ general ↔ :atlas-agent.
     by_name = {call.kwargs["name"]: call.kwargs for call in admin.create_agent.await_args_list}
     assert by_name["Friday"]["role"] == "ceo"
     assert by_name["Friday"]["idempotency_key"] == "user_owner:main-agent"
-    assert by_name["Atlas"]["role"] == "recruiter"
+    assert by_name["Atlas"]["role"] == "general"
     assert by_name["Atlas"]["idempotency_key"] == "user_owner:atlas-agent"
 
 

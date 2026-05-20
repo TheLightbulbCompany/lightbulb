@@ -559,6 +559,7 @@ class PaperclipAdminClient:
         adapter_config: dict,
         title: Optional[str] = None,
         capabilities: Optional[str] = None,
+        icon: Optional[str] = None,
         reports_to: Optional[str] = None,
         budget_monthly_cents: int = 0,
         idempotency_key: Optional[str] = None,
@@ -581,6 +582,8 @@ class PaperclipAdminClient:
             body["title"] = title
         if capabilities is not None:
             body["capabilities"] = capabilities
+        if icon is not None:
+            body["icon"] = icon
         if reports_to is not None:
             body["reportsTo"] = reports_to
         if budget_monthly_cents:

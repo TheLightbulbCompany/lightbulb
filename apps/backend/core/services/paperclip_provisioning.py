@@ -362,21 +362,24 @@ class PaperclipProvisioning:
                     e,
                 )
 
-            # 7b. Best-effort seed an "Atlas" agent (role=recruiter) alongside
-            #     Friday. Atlas is the in-house "agent recruiter" — Friday-as-
-            #     orchestrator delegates "hire a new agent" requests to Atlas,
-            #     so it must exist on day one. Wrapped in its own try/except
-            #     so an Atlas failure does NOT undo a successful Friday seed
+            # 7b. Best-effort seed an "Atlas" agent alongside Friday. Atlas
+            #     is the in-house "agent recruiter" — Friday-as-orchestrator
+            #     delegates "hire a new agent" requests to Atlas, so it must
+            #     exist on day one. Wrapped in its own try/except so an Atlas
+            #     failure does NOT undo a successful Friday seed
             #     (defense-in-depth — both seeds are best-effort).
-            #
-            #     ``role="recruiter"`` is deliberate: ``config.py:463`` selects
-            #     the agent with ``role=="ceo"`` as ``default: true``. Friday
-            #     must remain the default, so Atlas cannot share that role.
             try:
                 await self._admin.create_agent(
                     company_id=company_id,
                     name="Atlas",
-                    role="recruiter",
+                    # Atlas was originally typed as ``role="recruiter"``
+                    # but Paperclip's AGENT_ROLES enum doesn't include
+                    # "recruiter" (see paperclip/packages/shared/src/
+                    # constants.ts:44). The constraint here is just
+                    # "must not be 'ceo'" because config.py:463 selects
+                    # the ceo-role agent as the default. "general" is the
+                    # most semantically neutral fit.
+                    role="general",
                     adapter_type=OPENCLAW_GATEWAY_TYPE,
                     adapter_config=synthesize_openclaw_adapter(
                         gateway_url=_ws_gateway_url(self._env_name),

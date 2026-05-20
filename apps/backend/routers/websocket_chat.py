@@ -705,20 +705,19 @@ async def _intercept_agents_update(
     try:
         repo = PaperclipRepo(table_name="paperclip-companies")
         company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
-        if not company_id:
-            return False
-        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
-            admin = PaperclipAdminClient(http_client=http)
-            cookie = await get_admin_session_cookie(http)
-            await admin.update_agent(
-                session_cookie=cookie,
-                company_id=company_id,
-                agent_id=agent_id,
-                role=meta.role,
-                title=meta.title,
-                capabilities=meta.capabilities,
-                icon=meta.icon,
-            )
+        if company_id:
+            async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+                admin = PaperclipAdminClient(http_client=http)
+                cookie = await get_admin_session_cookie(http)
+                await admin.update_agent(
+                    session_cookie=cookie,
+                    company_id=company_id,
+                    agent_id=agent_id,
+                    role=meta.role,
+                    title=meta.title,
+                    capabilities=meta.capabilities,
+                    icon=meta.icon,
+                )
     except (PaperclipApiError, httpx.HTTPError, RuntimeError) as e:
         logger.warning(
             "[%s] paperclip update_agent mirror failed agent=%s err=%s",
@@ -726,6 +725,17 @@ async def _intercept_agents_update(
             agent_id,
             e,
         )
+
+    # Strip the Paperclip-only ``params`` block before the dispatcher
+    # forwards this RPC to OpenClaw. OpenClaw's ``agents.update`` AJV
+    # schema is ``additionalProperties: false`` and only accepts
+    # ``agentId, name, workspace, model, emoji, avatar`` — leaving
+    # ``params`` in would 422 the whole call and surface as a save
+    # error to the user. After stripping, if the user only changed
+    # paperclip fields the forwarded RPC is just ``{agentId}`` which
+    # OpenClaw accepts as a no-op. Codex P1 on PR #720.
+    if isinstance(params, dict) and "params" in params:
+        del params["params"]
     return False
 
 

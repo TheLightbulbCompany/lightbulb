@@ -103,6 +103,12 @@ async def test_intercept_update_calls_paperclip_update_when_meta_present():
     mock_repo = MagicMock()
     mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co-1"))
 
+    rpc_params = {
+        "agentId": "agent-uuid",
+        "name": "Renamed",
+        "params": {"paperclip": {"role": "engineer", "title": "Senior engineer"}},
+    }
+
     with (
         patch("routers.websocket_chat.PaperclipAdminClient", return_value=mock_admin),
         patch("routers.websocket_chat.PaperclipRepo", return_value=mock_repo),
@@ -113,11 +119,7 @@ async def test_intercept_update_calls_paperclip_update_when_meta_present():
     ):
         consumed = await _intercept_agents_update(
             owner_id="user_owner",
-            params={
-                "agentId": "agent-uuid",
-                "name": "Renamed",
-                "params": {"paperclip": {"role": "engineer", "title": "Senior engineer"}},
-            },
+            params=rpc_params,
         )
 
     # Update interceptor does NOT consume — OpenClaw still gets the RPC
@@ -132,6 +134,12 @@ async def test_intercept_update_calls_paperclip_update_when_meta_present():
     # capabilities/icon weren't in the meta block — must NOT be sent
     assert kwargs.get("capabilities") is None
     assert kwargs.get("icon") is None
+    # Codex P1: the Paperclip-only ``params`` block MUST be stripped
+    # in place so the dispatcher's forward to OpenClaw doesn't 422
+    # against ``additionalProperties: false``.
+    assert "params" not in rpc_params
+    assert rpc_params["agentId"] == "agent-uuid"
+    assert rpc_params["name"] == "Renamed"
 
 
 @pytest.mark.asyncio
@@ -185,3 +193,71 @@ async def test_intercept_update_swallows_paperclip_errors():
         )
 
     assert consumed is False
+
+
+@pytest.mark.asyncio
+async def test_intercept_update_strips_paperclip_params_so_openclaw_doesnt_422():
+    """Codex P1: OpenClaw's agents.update schema is strict
+    (additionalProperties: false). The interceptor MUST mutate the
+    params dict to remove the inner ``params`` block before returning,
+    so the dispatcher's forward to OpenClaw only carries
+    schema-allowed fields."""
+    mock_admin = MagicMock()
+    mock_admin.update_agent = AsyncMock(return_value={"id": "agent-uuid"})
+    mock_repo = MagicMock()
+    mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co-1"))
+
+    rpc_params = {
+        "agentId": "agent-uuid",
+        "name": "Ray",  # OpenClaw-allowed, MUST survive
+        "params": {  # Paperclip-only, MUST be stripped
+            "paperclip": {"role": "engineer", "title": "Backend dev"}
+        },
+    }
+
+    with (
+        patch("routers.websocket_chat.PaperclipAdminClient", return_value=mock_admin),
+        patch("routers.websocket_chat.PaperclipRepo", return_value=mock_repo),
+        patch(
+            "routers.websocket_chat.get_admin_session_cookie",
+            new=AsyncMock(return_value="sess=c"),
+        ),
+    ):
+        await _intercept_agents_update(owner_id="user_owner", params=rpc_params)
+
+    # The dict passed in was mutated: paperclip ``params`` is gone,
+    # OpenClaw-allowed fields survive.
+    assert "params" not in rpc_params
+    assert rpc_params["agentId"] == "agent-uuid"
+    assert rpc_params["name"] == "Ray"
+
+
+@pytest.mark.asyncio
+async def test_intercept_update_strips_params_even_when_paperclip_mirror_fails():
+    """The strip happens regardless of whether Paperclip's PATCH
+    succeeded — otherwise an upstream 422/transport blip would also
+    break the OpenClaw-side update."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    mock_admin = MagicMock()
+    mock_admin.update_agent = AsyncMock(side_effect=PaperclipApiError("422", status_code=422, body={"error": "bad"}))
+    mock_repo = MagicMock()
+    mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+
+    rpc_params = {
+        "agentId": "a",
+        "params": {"paperclip": {"role": "bogus"}},
+    }
+
+    with (
+        patch("routers.websocket_chat.PaperclipAdminClient", return_value=mock_admin),
+        patch("routers.websocket_chat.PaperclipRepo", return_value=mock_repo),
+        patch(
+            "routers.websocket_chat.get_admin_session_cookie",
+            new=AsyncMock(return_value="c"),
+        ),
+    ):
+        await _intercept_agents_update(owner_id="u", params=rpc_params)
+
+    assert "params" not in rpc_params
+    assert rpc_params["agentId"] == "a"

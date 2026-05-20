@@ -16,8 +16,10 @@ import secrets
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 
+from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.observability.metrics import put_metric
 from core.services.connection_service import ConnectionService, ConnectionServiceError
@@ -37,7 +39,10 @@ from core.services.paperclip_agent_lifecycle import (
     delete_paperclip_for_chat,
 )
 from core.services.paperclip_meta import PaperclipMeta, read_from_agent_entry
-from core.services.paperclip_openclaw_pairing import pair_with_openclaw
+from core.services.paperclip_openclaw_pairing import (
+    pair_with_openclaw,
+    resolve_company_id_for_owner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -688,10 +693,6 @@ async def _intercept_agents_update(
     Paperclip's row drifts, the next manual edit or a reconciliation
     job can re-sync.
     """
-    import httpx
-
-    from core.config import settings
-
     rpc_params_inner = (params or {}).get("params") or {}
     if not isinstance(rpc_params_inner, dict) or not rpc_params_inner.get("paperclip"):
         return False  # No meta in payload — nothing to mirror.
@@ -703,11 +704,7 @@ async def _intercept_agents_update(
 
     try:
         repo = PaperclipRepo(table_name="paperclip-companies")
-        if owner_id.startswith("org_"):
-            company_id = await repo.get_org_company_id(owner_id)
-        else:
-            row = await repo.get(owner_id)
-            company_id = row.company_id if row else None
+        company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
         if not company_id:
             return False
         async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:

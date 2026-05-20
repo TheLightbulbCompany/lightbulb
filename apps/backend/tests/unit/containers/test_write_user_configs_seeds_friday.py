@@ -65,7 +65,7 @@ async def test_invokes_seeder_after_write_openclaw_config(monkeypatch, tmp_path,
             AsyncMock(return_value=None),
         ),
         patch(
-            "core.services.paperclip_openclaw_pairing._resolve_company_id_for_owner",
+            "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
             AsyncMock(return_value=None),
         ),
         patch.object(manager, "ensure_device_identities", ensure_devices_mock),
@@ -110,7 +110,7 @@ async def test_swallows_seeder_failure_and_continues(monkeypatch, tmp_path, mana
             AsyncMock(return_value=None),
         ),
         patch(
-            "core.services.paperclip_openclaw_pairing._resolve_company_id_for_owner",
+            "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
             AsyncMock(return_value=None),
         ),
         patch.object(manager, "ensure_device_identities", ensure_devices_mock),

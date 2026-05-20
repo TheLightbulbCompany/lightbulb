@@ -28,7 +28,7 @@ from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fields
-from core.services.paperclip_openclaw_pairing import _resolve_company_id_for_owner
+from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 from core.services.paperclip_provisioning import _ws_gateway_url
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ async def create_paperclip_for_chat(
         ``create_agent``. See :mod:`core.services.paperclip_meta`.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         raise RuntimeError(
             f"owner {owner_id} has no Paperclip company — agent create blocked. Re-run org provisioning."
@@ -129,7 +129,7 @@ async def delete_paperclip_for_chat(
     user_id for personal), mirroring the create path.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         # No Paperclip company — owner was never provisioned through the
         # paired path, or the row was already cleaned. Nothing to delete.
@@ -185,7 +185,7 @@ async def create_paperclip_for_marketplace(
         :mod:`core.services.paperclip_meta`.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         raise RuntimeError(
             f"owner {owner_id} has no Paperclip company — marketplace deploy blocked. Re-run org provisioning."
@@ -227,7 +227,7 @@ async def delete_paperclip_for_marketplace(
     a missing or already-cleaned agent is a no-op.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         logger.info(
             "delete_paperclip_for_marketplace: owner %s has no Paperclip company — skip",

@@ -4,6 +4,13 @@ import { useState, useCallback, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { ModelSelector } from "@/components/chat/ModelSelector";
+import { Button } from "@/components/ui/button";
+import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
+import {
+  PAPERCLIP_AGENT_ROLES,
+  type PaperclipMeta,
+  type PaperclipRole,
+} from "@/lib/paperclipMeta";
 import type { AgentEntry, AgentIdentity, ConfigSnapshot } from "./agents-types";
 
 function resolveModelPrimary(model?: string | { primary?: string; fallbacks?: string[] }): string | undefined {
@@ -43,6 +50,50 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
   const agentConfigEntry = configInner?.agents?.list?.find(a => a?.id === agentId);
   const agentModelPrimary = resolveModelPrimary(agentConfigEntry?.model);
   const currentModel = agentModelPrimary || defaultModelPrimary || "";
+
+  // Paperclip meta — role/title/capabilities. Persisted on the agent
+  // entry under params.paperclip and mirrored to Paperclip via
+  // _intercept_agents_update on the backend. Initial value seeded from
+  // the agent's existing params.paperclip block if present.
+  const existingPaperclip = useMemo(() => {
+    const block = (agentConfigEntry?.params as Record<string, unknown> | undefined)?.paperclip;
+    if (!block || typeof block !== "object") return undefined;
+    return block as Partial<PaperclipMeta>;
+  }, [agentConfigEntry]);
+
+  const [meta, setMeta] = useState<PaperclipMeta>(() => ({
+    role:
+      existingPaperclip?.role &&
+      PAPERCLIP_AGENT_ROLES.includes(existingPaperclip.role as PaperclipRole)
+        ? (existingPaperclip.role as PaperclipRole)
+        : "general",
+    title: existingPaperclip?.title,
+    capabilities: existingPaperclip?.capabilities,
+    icon: existingPaperclip?.icon,
+  }));
+  const [savingMeta, setSavingMeta] = useState(false);
+  const [metaError, setMetaError] = useState<string | null>(null);
+
+  const saveMeta = useCallback(async () => {
+    setSavingMeta(true);
+    setMetaError(null);
+    try {
+      const block: Record<string, string> = { role: meta.role };
+      if (meta.title && meta.title.trim()) block.title = meta.title.trim();
+      if (meta.capabilities && meta.capabilities.trim())
+        block.capabilities = meta.capabilities.trim();
+      if (meta.icon && meta.icon.trim()) block.icon = meta.icon.trim();
+      await callRpc("agents.update", {
+        agentId,
+        params: { paperclip: block },
+      });
+      onAgentUpdated?.();
+    } catch (err) {
+      setMetaError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingMeta(false);
+    }
+  }, [agentId, callRpc, meta, onAgentUpdated]);
 
   const handleModelChange = useCallback(async (newModel: string) => {
     setUpdatingModel(true);
@@ -105,6 +156,27 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
             <AlertCircle className="h-3 w-3" /> {modelError}
           </p>
         )}
+      </div>
+
+      <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3 bg-white">
+        <h3 className="text-sm font-medium text-[#1a1a1a]">Role &amp; description</h3>
+        <p className="text-xs text-[#8a8578]">
+          How Friday sees this agent in the org chart. Used when delegating work.
+        </p>
+
+        <AgentPaperclipFields value={meta} onChange={setMeta} disabled={savingMeta} />
+
+        {metaError && (
+          <p className="text-xs text-[#dc2626] flex items-center gap-1">
+            <AlertCircle className="h-3 w-3" /> {metaError}
+          </p>
+        )}
+
+        <div className="flex justify-end">
+          <Button size="sm" onClick={saveMeta} disabled={savingMeta}>
+            {savingMeta ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+          </Button>
+        </div>
       </div>
 
       {data && (

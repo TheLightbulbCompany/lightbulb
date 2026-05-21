@@ -71,3 +71,13 @@ def test_close_connection_raises_on_other_client_errors(client_with_mock):
 
     with pytest.raises(ManagementApiClientError, match="Failed to close connection"):
         client.close_connection("conn_abc")
+
+
+def test_constructor_fails_fast_when_endpoint_url_missing(monkeypatch):
+    """No endpoint URL (neither arg nor WS_MANAGEMENT_API_URL env var) must
+    raise at construction time — not defer the failure into the first
+    websocket fanout where it's harder to diagnose."""
+    monkeypatch.delenv("WS_MANAGEMENT_API_URL", raising=False)
+
+    with pytest.raises(ManagementApiClientError, match="No endpoint URL"):
+        ManagementApiClient()

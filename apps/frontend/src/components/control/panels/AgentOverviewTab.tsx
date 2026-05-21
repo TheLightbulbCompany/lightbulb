@@ -79,11 +79,33 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
   // future config refresh can re-seed if needed.
   const [metaDirty, setMetaDirty] = useState(false);
 
-  // Re-seed meta from the eventual config.get response. The initial
-  // useState lazy initializer ran before SWR resolved, so without
-  // this effect the form would default to general/empty and a Save
-  // would overwrite the stored values. Skipped once the user starts
-  // typing.
+  // Hard reset whenever the selected agent changes. Without this,
+  // the meta form's local state leaks across agents: editing Friday
+  // and then switching to Tally would leave Friday's typed values
+  // in the form, and clicking Save on Tally would write them to
+  // Tally's row. The metaDirty guard below is intentionally bypassed
+  // on agent-id change — the user crossed an agent boundary, so any
+  // unsaved edits from the previous agent must NOT carry over.
+  useEffect(() => {
+    setMeta({
+      role:
+        typeof existingPaperclip?.role === "string" &&
+        PAPERCLIP_AGENT_ROLES.includes(existingPaperclip.role as PaperclipRole)
+          ? (existingPaperclip.role as PaperclipRole)
+          : "general",
+      title: existingPaperclip?.title,
+      capabilities: existingPaperclip?.capabilities,
+      icon: existingPaperclip?.icon,
+    });
+    setMetaDirty(false);
+    setMetaError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId]);
+
+  // Within an agent session, re-seed from SWR's eventual result so
+  // the form picks up the agent's stored values once config.get
+  // resolves. Skipped once the user starts typing — otherwise a
+  // background SWR revalidate would clobber in-flight edits.
   useEffect(() => {
     if (metaDirty || !existingPaperclip) return;
     setMeta({

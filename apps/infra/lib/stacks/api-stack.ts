@@ -231,14 +231,13 @@ export class ApiStack extends cdk.Stack {
         }),
       });
 
-      // The Paperclip ("Teams") public hostname previously had its own
-      // API Gateway custom-domain mapping (CompanyHttpDomain) here. It
-      // was removed when we moved the Paperclip hostname to be served
-      // via Vercel rewrites instead — Vercel routes
+      // The Paperclip ("Teams") public hostname is served via Vercel
+      // rewrites, not a dedicated API Gateway custom domain. Vercel
+      // routes
       //   {env}.company.isol8.co → api[-{env}].isol8.co/__paperclip_proxy__/...
       // so the request still arrives at this same API Gateway, just on
       // the api[-{env}].isol8.co host with the proxy prefix in the URL
-      // path. The DNS A-record for the Paperclip hostname now lives in
+      // path. The DNS A-record for the Paperclip hostname lives in
       // DnsStack and points at Vercel's anycast IP.
       this.httpApiUrl = `https://${httpApiDomain}`;
     } else {

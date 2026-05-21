@@ -254,7 +254,7 @@ export class ServiceStack extends cdk.Stack {
     // grant the put fails with AccessDeniedException after the
     // Paperclip user is already created — leaves an inconsistent
     // bootstrap state (user exists but credentials not persisted, so
-    // re-running fails with "user already exists"). Codex P1 on PR #504.
+    // re-running fails with "user already exists").
     // Read of this secret is already covered by the wildcard
     // SecretsAccess + KmsDecryptForSecrets policies.
     this.taskRole.addToPolicy(
@@ -382,14 +382,13 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // CloudWatch Logs read — for the admin dashboard inline log viewer
-    // (apps/backend/core/services/cloudwatch_logs.py, Phase B). Scoped to
-    // the backend's own log group ARN; never "*" — least privilege per
-    // CEO review (#351, Phase A Task 2).
+    // (apps/backend/core/services/cloudwatch_logs.py). Scoped to the
+    // backend's own log group ARN; never "*" — least privilege.
     //
-    // Log group name matches service-stack.ts:519 + isol8-stage.ts:113 +
-    // local-stage.ts:116 — `/ecs/isol8-${env}` (no /aws prefix, no
-    // -backend suffix). The Phase B cloudwatch_logs service must use this
-    // same name when constructing FilterLogEvents calls.
+    // Log group name matches service-stack.ts + isol8-stage.ts +
+    // local-stage.ts — `/ecs/isol8-${env}` (no /aws prefix, no
+    // -backend suffix). The cloudwatch_logs service must use this same
+    // name when constructing FilterLogEvents calls.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "CloudWatchLogsReadForAdmin",
@@ -754,10 +753,10 @@ export class ServiceStack extends cdk.Stack {
         CONTAINER_EXECUTION_ROLE_ARN:
           props.container.taskExecutionRole.roleArn,
         ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
-        // ECS_TASK_DEFINITION removed (#410). Backend now reads the latest
-        // CDK base revision live via describe_task_definition(family) — the
-        // base family is uncontaminated because per-user clones go to a
-        // separate `<base>-user` family.
+        // ECS_TASK_DEFINITION is intentionally not set. Backend reads the
+        // latest CDK base revision live via describe_task_definition(family)
+        // — the base family is uncontaminated because per-user clones go to
+        // a separate `<base>-user` family.
         ECS_SUBNETS: privateSubnetIds,
         ECS_SECURITY_GROUP_ID:
           props.container.containerSecurityGroup.securityGroupId,

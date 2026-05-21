@@ -62,7 +62,7 @@ export class ContainerStack extends cdk.Stack {
   // SSM parameter carrying the current task-def ARN. Consumed by service-stack
   // via ecs.Secret.fromSsmParameter so the value travels through SSM rather
   // than a cross-stack Fn::ImportValue — the Fn::ImportValue path made every
-  // task-def bump hit CFN's "export is in use" lock (2026-04-20 incident).
+  // task-def bump hit CFN's "export is in use" lock.
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
     super(scope, id, props);
@@ -303,12 +303,13 @@ export class ContainerStack extends cdk.Stack {
       executionRole: this.taskExecutionRole,
     });
 
-    // SSM param + cross-stack export removed in #410. Backend now reads the
-    // latest CDK base revision live via describe_task_definition(family) on
-    // each provision call. The base family is uncontaminated by per-user
-    // clones because EcsManager registers them in `<base>-user`, so a bare
-    // family lookup deterministically returns the most recent CDK base —
-    // no SSM coupling needed and the cache-at-startup bug class is gone.
+    // Backend reads the latest CDK base revision live via
+    // describe_task_definition(family) on each provision call rather than
+    // via an SSM param or cross-stack export. The base family is
+    // uncontaminated by per-user clones because EcsManager registers them
+    // in `<base>-user`, so a bare family lookup deterministically returns
+    // the most recent CDK base — no SSM coupling needed and the
+    // cache-at-startup bug class is gone.
 
     // Startup command — almost everything (apt packages, pip, npm globals,
     // gh, uv) is baked into the extended OpenClaw image. The boot sequence:
@@ -325,7 +326,7 @@ export class ContainerStack extends cdk.Stack {
     // the prior chromium profile on EFS for forensic recovery; ops
     // can delete it manually later. `mv` on NFS is one rename
     // syscall, cheap; `rm -rf` of a deep chromium tree on NFS would
-    // itself risk the very wedge class this PR fixes.
+    // itself risk the very wedge class this migration prevents.
     //
     // Step B (symlink): point `~/.openclaw/browser` at Fargate
     // disk-backed ephemeral task storage (`/tmp`, NOT kernel tmpfs —
@@ -335,21 +336,16 @@ export class ContainerStack extends cdk.Stack {
     // chrome.ts:resolveOpenClawUserDataDir constructs
     // `path.join(CONFIG_DIR, "browser", profileName, "user-data")`
     // and Node's fs.* follow the symlink transparently. Motivated by
-    // the 2026-05-11 wedge investigation: chromium fsync + lock
-    // traffic against NFSv4.1 EFS is the most likely trigger of the
-    // NFS RPC stalls that wedge Node's event loop
-    // (rpc_wait_bit_killable). Tradeoff: chromium cookies /
-    // localStorage are ephemeral per container restart. Container
-    // restart frequency is bounded by the /healthz task healthcheck
-    // (sibling PR), so this is rare in steady state.
+    // a wedge investigation: chromium fsync + lock traffic against
+    // NFSv4.1 EFS is the most likely trigger of the NFS RPC stalls
+    // that wedge Node's event loop (rpc_wait_bit_killable). Tradeoff:
+    // chromium cookies / localStorage are ephemeral per container
+    // restart. Container restart frequency is bounded by the /healthz
+    // task healthcheck, so this is rare in steady state.
     //
-    // Step C: launch the gateway. (Markdown-converter clawhub
-    // install was previously here; removed since nothing in agent
-    // configs actually depended on it. Agents that need
-    // markdown-converter can `clawhub install` it at runtime.)
+    // Step C: launch the gateway. Agents that need markdown-converter
+    // can `clawhub install` it at runtime.
     //
-    // Cold-start: was ~5s with clawhub pre-install, drops slightly
-    // further now that we skip the markdown-converter step.
     // Failure semantics: each step that MUST succeed is suffixed with
     // `|| exit 1` so the container fails fast and ECS replaces it
     // rather than silently degrading. Naïve `set -e` or
@@ -411,8 +407,7 @@ export class ContainerStack extends cdk.Stack {
         // there's no LAN multicast peer, so the announce gets stuck and
         // blocks channel/sidecar startup for ~13 minutes before the
         // bonjour watchdog finally gives up. Verified via runtime logs +
-        // upstream `src/gateway/server-discovery-runtime.ts` — env var
-        // present in image tag 2026.5.7.
+        // upstream `src/gateway/server-discovery-runtime.ts`.
         OPENCLAW_DISABLE_BONJOUR: "true",
         // Emit per-step startup trace lines so we can attribute the multi-minute
         // post-gateway-ready wedge (channels-and-sidecars phase) to a specific
@@ -430,11 +425,11 @@ export class ContainerStack extends cdk.Stack {
       // (exposed by openclaw.mjs gateway — see upstream Dockerfile and
       // src/gateway/server-http.ts:152-157, where /healthz is auth-
       // bypassed and runs on the Node event loop). When Node's event
-      // loop wedges on EFS NFS RPC (see investigation 2026-05-11), the
-      // /healthz async handler can't run; ECS marks the task UNHEALTHY
-      // after retries * interval and replaces it. TCP-only probes
-      // (e.g. nc -z) are insufficient here because TCP accept stays in
-      // the kernel while the JS event loop is frozen.
+      // loop wedges on EFS NFS RPC, the /healthz async handler can't
+      // run; ECS marks the task UNHEALTHY after retries * interval and
+      // replaces it. TCP-only probes (e.g. nc -z) are insufficient here
+      // because TCP accept stays in the kernel while the JS event loop
+      // is frozen.
       healthCheck: {
         command: [
           "CMD-SHELL",
@@ -443,21 +438,20 @@ export class ContainerStack extends cdk.Stack {
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
         retries: 3,
-        // 120s start period covers the upstream `clawhub install
-        // markdown-converter` pre-step (slow on EFS first-touch) plus
-        // gateway boot (~5s warm). Tunable if dev observes false
-        // positives during cold provisioning.
+        // 120s start period covers EFS first-touch latency plus gateway
+        // boot (~5s warm). Tunable if dev observes false positives
+        // during cold provisioning.
         startPeriod: cdk.Duration.seconds(120),
       },
       // Inject Fargate's init process (tini-equivalent) as PID 1. The
       // openclaw container runs `sh -c "... ; exec node ..."` so Node
       // would otherwise be PID 1, and Node doesn't reap orphan children
       // by default. When chromium subprocesses' immediate parent dies
-      // and they get re-parented to PID 1 — which is exactly what we
-      // observed in the 2026-05-11 wedge (51 chrome/crashpad zombies
-      // with ppid=1) — init reaps them unconditionally regardless of
-      // whether Node's event loop is responsive. Does NOT prevent the
-      // NFS wedge itself; pairs with the chromium-tmpfs PR for that.
+      // and they get re-parented to PID 1 (e.g. crashpad zombies with
+      // ppid=1), init reaps them unconditionally regardless of whether
+      // Node's event loop is responsive. Does NOT prevent the NFS wedge
+      // itself; pairs with the chromium-tmpfs symlink in the startup
+      // command for that.
       linuxParameters: new ecs.LinuxParameters(this, "OpenclawLinuxParams", {
         initProcessEnabled: true,
       }),
@@ -483,9 +477,8 @@ export class ContainerStack extends cdk.Stack {
     // ---- ECS task lifecycle telemetry ----
     // ECS retains stopped-task records for only 1 hour, after which we lose
     // the `stoppedReason`/`stopCode` fields entirely. That window has bitten
-    // us at least once already (2026-05-01 user wedge investigation): the
-    // first task of the day was replaced and we couldn't reconstruct why
-    // because the stopped-task record had aged out.
+    // us already — the first task of the day was replaced and we couldn't
+    // reconstruct why because the stopped-task record had aged out.
     //
     // EventBridge surfaces `ECS Task State Change` events as they happen.
     // We forward all transitions on the openclaw cluster to a dedicated log

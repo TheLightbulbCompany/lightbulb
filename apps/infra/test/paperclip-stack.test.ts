@@ -247,9 +247,8 @@ describe("PaperclipStack — Fargate service shape", () => {
 
   test("Aurora SG gets ingress from Paperclip task SG on 5432", () => {
     // sg-on-sg ingress rule, the contract that lets Paperclip reach
-    // Postgres. EC2 rejects non-ASCII in description fields, so the
-    // arrow that originally lived here was downgraded to "to" — see
-    // PR #474.
+    // Postgres. EC2 rejects non-ASCII in description fields, so plain
+    // "to" stays in place of an arrow.
     template.hasResourceProperties("AWS::EC2::SecurityGroupIngress", {
       FromPort: 5432,
       ToPort: 5432,

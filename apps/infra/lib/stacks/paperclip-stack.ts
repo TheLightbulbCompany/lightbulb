@@ -271,7 +271,7 @@ export class PaperclipStack extends cdk.Stack {
     // callback shape. Must match the value backend ServiceStack passes
     // as PAPERCLIP_PUBLIC_URL — Paperclip uses this to build absolute
     // URLs in HTML responses, and any drift means it emits links to a
-    // host the user can't reach. Codex P2 on PR #497.
+    // host the user can't reach.
     const paperclipPublicUrl =
       env === "prod"
         ? "https://company.isol8.co"
@@ -326,9 +326,7 @@ export class PaperclipStack extends cdk.Stack {
         // (verified in paperclip/ui/src/pages/InviteLanding.tsx:368 and
         // paperclip/server/src/auth/better-auth.ts:118-122). Setting this
         // to "true" before any instance_admin exists makes the deployment
-        // un-bootstrappable; PR #473 originally hard-coded "true" with a
-        // "provisioned out-of-band" comment for prod, but no
-        // out-of-band path exists upstream.
+        // un-bootstrappable, and no out-of-band path exists upstream.
         //
         // Practical exposure on this deployment is near zero regardless:
         // `company.isol8.co` has no DNS record, the Paperclip task is in

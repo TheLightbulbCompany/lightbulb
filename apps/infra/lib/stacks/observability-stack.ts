@@ -3,7 +3,6 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
-// synthetics import deferred until canary PR
 // GuardDuty + Access Analyzer already enabled at account level — not managed by CDK
 import * as budgets from "aws-cdk-lib/aws-budgets";
 import * as events from "aws-cdk-lib/aws-events";
@@ -98,7 +97,7 @@ export class ObservabilityStack extends cdk.Stack {
     // SMS subscription will be added manually after the oncall phone secret
     // is created in Secrets Manager. See docs/ops/setup-oncall.md.
 
-    // Warn tier: email only (Slack incoming webhook TODO)
+    // Warn tier: email only
     this.warnTopic = new sns.Topic(this, "AlertsWarn", {
       topicName: `isol8-${props.envName}-alerts-warn`,
       displayName: "Isol8 Warn",
@@ -119,8 +118,6 @@ export class ObservabilityStack extends cdk.Stack {
     // Dashboard
     // -----------------------------------------------------------------------
     this.createDashboard(props);
-
-    // Canaries — deferred to follow-up PR (requires Clerk canary account + Secrets Manager setup)
 
     // -----------------------------------------------------------------------
     // Account hardening
@@ -193,7 +190,7 @@ export class ObservabilityStack extends cdk.Stack {
   }
 
   // =========================================================================
-  // Page-tier alarms (P1-P11)
+  // Page-tier alarms
   // =========================================================================
 
   private createPageAlarms(props: ObservabilityStackProps): void {
@@ -379,8 +376,6 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     p10.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
-
-    // P11: chat-canary-fail — deferred (requires canary infrastructure)
 
     // -------------------------------------------------------------------
     // Free-tier scale-to-zero reaper alarms
@@ -1196,11 +1191,6 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w37.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
-
-    // W38 removed — task count mismatch alarm required Container Insights
-    // metrics (RunningTaskCount / DesiredTaskCount) which are no longer
-    // available.  Coverage is handled by W39 (TaskStoppedUnexpected via
-    // EventBridge) and ALB healthy-host alarms.
 
     // W39: Fargate TaskStopped non-essential reason
     // EventBridge rule captures ECS task state changes with STOPPED status,
@@ -2185,14 +2175,6 @@ def handler(event, context):
       }),
     );
   }
-
-  // =========================================================================
-  // Synthetic canaries — deferred to follow-up PR
-  // Requires: dedicated Clerk canary account, Secrets Manager entries,
-  // canary JS code. See docs/ops/setup-canary.md.
-  // Will add: /health canary (W52), chat round-trip canary (P11),
-  // Stripe webhook replay canary (W53).
-  // =========================================================================
 
   // =========================================================================
   // Account hardening

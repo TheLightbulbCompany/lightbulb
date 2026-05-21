@@ -410,8 +410,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
 //    prop in cdk-pipelines-github (the pipeline-level `runner` would force
 //    macOS on every job including synth + 30 asset publishers). macos-15
 //    (not macos-latest) per actions/runner-images#12482: macos-14's
-//    hdiutil bundler hangs ~10min then fails since the 2025-06-19
-//    Provisioner bump.
+//    hdiutil bundler hangs ~10min then fails after a Provisioner bump.
 //
 // 2. cdk-pipelines-github decamelizes every `with:` key (turning
 //    `tagName` → `tag-name`, etc.). That breaks tauri-action because its

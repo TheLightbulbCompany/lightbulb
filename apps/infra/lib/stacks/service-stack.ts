@@ -28,6 +28,16 @@ export interface SecretNames {
   /** PostHog personal API key for admin Activity tab. Empty string stubs the endpoint gracefully. */
   posthogProjectApiKey: string;
   /**
+   * Name of the Secrets Manager entry holding the JSON blob of third-party API
+   * keys (Apollo, HubSpot, Stripe, Twilio, etc.) that get forwarded into
+   * per-user OpenClaw containers so that mcp.servers.<x>.env placeholders in
+   * shipped agents' openclaw.json resolve at runtime. Backend reads the blob
+   * on startup via MCP_CREDENTIALS_JSON and merges it into each per-user task
+   * definition's environment block. Empty blob is safe: MCPs spawn but their
+   * tool calls 401 at use-time rather than failing at container start.
+   */
+  mcpCredentials: string;
+  /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
    * service-token JWTs forwarded to the Paperclip server (Better Auth
    * verifies them). Must match the secret name AuthStack creates in the
@@ -853,6 +863,20 @@ export class ServiceStack extends cdk.Stack {
             this,
             "ImportPosthogProjectApiKey",
             props.secretNames.posthogProjectApiKey,
+          ),
+        ),
+        // JSON blob of third-party API keys (Apollo, HubSpot, Stripe, Twilio,
+        // Perplexity, Attio, Pipedrive, Instantly, SmartLead, PostHog auth
+        // header, Qdrant, etc.) that the backend forwards into per-user
+        // OpenClaw containers' environment so mcp.servers.<x>.env placeholders
+        // in shipped agents' openclaw.json resolve. Empty/placeholder blob is
+        // safe — MCPs spawn but tool calls 401 at use-time instead of crashing
+        // container boot. See ecs_manager._build_mcp_environment_for_user.
+        MCP_CREDENTIALS_JSON: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportMcpCredentials",
+            props.secretNames.mcpCredentials,
           ),
         ),
         // Symmetric secret used by the paperclip_proxy router to sign

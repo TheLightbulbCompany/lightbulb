@@ -28,15 +28,20 @@
         ],
         "tools": {
           "profile": "coding",
-          "alsoAllow": ["lobster", "llm-task", "message"]
+          "alsoAllow": [
+            "lobster",
+            "llm-task",
+            "message"
+          ]
         }
       }
     ]
   },
-
   "plugins": {
     "entries": {
-      "lobster": { "enabled": true },
+      "lobster": {
+        "enabled": true
+      },
       "llm-task": {
         "enabled": true,
         "config": {
@@ -48,43 +53,97 @@
       }
     }
   },
-
+  "mcp": {
+    "servers": {
+      "stripe": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@stripe/mcp",
+          "--tools=all"
+        ],
+        "env": {
+          "STRIPE_SECRET_KEY": "${STRIPE_SECRET_KEY}"
+        }
+      }
+    }
+  },
   "skills": {
     "entries": {
-      "bookkeeper": { "enabled": true },
+      "bookkeeper": {
+        "enabled": true
+      },
       "stripe-api": {
         "enabled": true,
-        "env": { "STRIPE_API_KEY": "${STRIPE_API_KEY}" },
-        "config": { "scope": "read_only" }
+        "env": {
+          "STRIPE_API_KEY": "${STRIPE_API_KEY}"
+        },
+        "config": {
+          "scope": "read_only"
+        }
       },
       "xero": {
         "enabled": false,
         "note": "Click-to-connect: enabled per-user when they connect Xero in settings. Config key: tally-config/connected-accounting",
-        "env": { "XERO_CLIENT_ID": "${XERO_CLIENT_ID}", "XERO_CLIENT_SECRET": "${XERO_CLIENT_SECRET}" }
+        "env": {
+          "XERO_CLIENT_ID": "${XERO_CLIENT_ID}",
+          "XERO_CLIENT_SECRET": "${XERO_CLIENT_SECRET}"
+        }
       },
       "quickbooks": {
         "enabled": false,
         "note": "Click-to-connect: enabled per-user when they connect QuickBooks in settings. Config key: tally-config/connected-accounting",
-        "env": { "QBO_CLIENT_ID": "${QBO_CLIENT_ID}", "QBO_CLIENT_SECRET": "${QBO_CLIENT_SECRET}", "QBO_REALM_ID": "${QBO_REALM_ID}" }
+        "env": {
+          "QBO_CLIENT_ID": "${QBO_CLIENT_ID}",
+          "QBO_CLIENT_SECRET": "${QBO_CLIENT_SECRET}",
+          "QBO_REALM_ID": "${QBO_REALM_ID}"
+        }
       },
-      "gog": { "enabled": true },
-      "slack": { "enabled": true },
-      "fast-io": { "enabled": true },
-      "taskr": { "enabled": true },
-      "summarize": { "enabled": true },
-      "n8n-workflow": { "enabled": true },
-      "capability-evolver": { "enabled": true },
-      "skill-vetter": { "enabled": true },
-      "sona-security-audit": { "enabled": true },
-      "biz-reporter": { "enabled": true },
-      "bankofbots": { "enabled": true },
-
-      "salesforce-api": { "enabled": false },
-      "pipedrive-api": { "enabled": false },
-      "attio-api": { "enabled": false }
+      "gog": {
+        "enabled": true
+      },
+      "slack": {
+        "enabled": true
+      },
+      "fast-io": {
+        "enabled": true
+      },
+      "taskr": {
+        "enabled": true
+      },
+      "summarize": {
+        "enabled": true
+      },
+      "n8n-workflow": {
+        "enabled": true
+      },
+      "capability-evolver": {
+        "enabled": true
+      },
+      "skill-vetter": {
+        "enabled": true
+      },
+      "sona-security-audit": {
+        "enabled": true
+      },
+      "biz-reporter": {
+        "enabled": true
+      },
+      "bankofbots": {
+        "enabled": true
+      },
+      "salesforce-api": {
+        "enabled": false
+      },
+      "pipedrive-api": {
+        "enabled": false
+      },
+      "attio-api": {
+        "enabled": false
+      }
     }
   },
-
   "tools": {
     "deny": [
       "foxreach-io",
@@ -96,25 +155,31 @@
       "api-gateway"
     ]
   },
-
   "cron": {
     "enabled": true,
     "store": "~/.openclaw/cron/jobs.json",
     "maxConcurrentRuns": 1,
     "retry": {
       "maxAttempts": 3,
-      "backoffMs": [60000, 120000, 300000],
-      "retryOn": ["rate_limit", "overloaded", "network", "server_error"]
+      "backoffMs": [
+        60000,
+        120000,
+        300000
+      ],
+      "retryOn": [
+        "rate_limit",
+        "overloaded",
+        "network",
+        "server_error"
+      ]
     },
     "sessionRetention": "24h"
   },
-
   "hooks": {
     "enabled": true,
     "token": "${OPENCLAW_HOOK_TOKEN}",
     "path": "/hooks"
   },
-
   "channels": {
     "slack": {
       "enabled": true

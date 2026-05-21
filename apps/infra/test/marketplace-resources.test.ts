@@ -90,6 +90,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       stripeWebhookSecret: `isol8/${environment}/stripe_webhook_secret`,
       encryptionKey: `isol8/${environment}/encryption_key`,
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
+      mcpCredentials: `isol8/${environment}/mcp_credentials`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
     },
     kmsKeyArn: kmsKey.keyArn,

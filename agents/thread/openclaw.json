@@ -25,15 +25,20 @@
         ],
         "tools": {
           "profile": "coding",
-          "alsoAllow": ["lobster", "llm-task", "message"]
+          "alsoAllow": [
+            "lobster",
+            "llm-task",
+            "message"
+          ]
         }
       }
     ]
   },
-
   "plugins": {
     "entries": {
-      "lobster": { "enabled": true },
+      "lobster": {
+        "enabled": true
+      },
       "llm-task": {
         "enabled": true,
         "config": {
@@ -45,23 +50,61 @@
       }
     }
   },
-
-  "skills": {
-    "entries": {
-      "gog": { "enabled": true },
-      "email-security": { "enabled": true },
-      "slack": { "enabled": true },
-      "fast-io": { "enabled": true },
-      "taskr": { "enabled": true },
-      "summarize": { "enabled": true },
-      "n8n-workflow": { "enabled": true },
-      "capability-evolver": { "enabled": true },
-      "skill-vetter": { "enabled": true },
-      "sona-security-audit": { "enabled": true },
-      "himalaya": { "enabled": false, "note": "Enable for non-Google IMAP/SMTP accounts" }
+  "mcp": {
+    "servers": {
+      "twilio": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@twilio-alpha/mcp"
+        ],
+        "env": {
+          "TWILIO_ACCOUNT_SID": "${TWILIO_ACCOUNT_SID}",
+          "TWILIO_API_KEY": "${TWILIO_API_KEY}",
+          "TWILIO_API_SECRET": "${TWILIO_API_SECRET}"
+        }
+      }
     }
   },
-
+  "skills": {
+    "entries": {
+      "gog": {
+        "enabled": true
+      },
+      "email-security": {
+        "enabled": true
+      },
+      "slack": {
+        "enabled": true
+      },
+      "fast-io": {
+        "enabled": true
+      },
+      "taskr": {
+        "enabled": true
+      },
+      "summarize": {
+        "enabled": true
+      },
+      "n8n-workflow": {
+        "enabled": true
+      },
+      "capability-evolver": {
+        "enabled": true
+      },
+      "skill-vetter": {
+        "enabled": true
+      },
+      "sona-security-audit": {
+        "enabled": true
+      },
+      "himalaya": {
+        "enabled": false,
+        "note": "Enable for non-Google IMAP/SMTP accounts"
+      }
+    }
+  },
   "tools": {
     "deny": [
       "foxreach-io",
@@ -70,30 +113,50 @@
       "private-web-search-searchxng"
     ]
   },
-
   "cron": {
     "enabled": true,
     "store": "~/.openclaw/cron/jobs.json",
     "maxConcurrentRuns": 2,
     "retry": {
       "maxAttempts": 3,
-      "backoffMs": [30000, 60000, 120000],
-      "retryOn": ["rate_limit", "overloaded", "network", "server_error"]
+      "backoffMs": [
+        30000,
+        60000,
+        120000
+      ],
+      "retryOn": [
+        "rate_limit",
+        "overloaded",
+        "network",
+        "server_error"
+      ]
     },
     "sessionRetention": "24h"
   },
-
   "hooks": {
     "enabled": true,
     "token": "${OPENCLAW_HOOK_TOKEN}",
     "path": "/hooks"
   },
-
   "channels": {
-    "slack": { "enabled": true },
-    "whatsapp": { "enabled": false, "note": "Enable via native OpenClaw channel" },
-    "telegram": { "enabled": false, "note": "Enable via native OpenClaw channel" },
-    "signal": { "enabled": false, "note": "Enable via native OpenClaw channel" },
-    "discord": { "enabled": false, "note": "Enable via native OpenClaw channel" }
+    "slack": {
+      "enabled": true
+    },
+    "whatsapp": {
+      "enabled": false,
+      "note": "Enable via native OpenClaw channel"
+    },
+    "telegram": {
+      "enabled": false,
+      "note": "Enable via native OpenClaw channel"
+    },
+    "signal": {
+      "enabled": false,
+      "note": "Enable via native OpenClaw channel"
+    },
+    "discord": {
+      "enabled": false,
+      "note": "Enable via native OpenClaw channel"
+    }
   }
 }

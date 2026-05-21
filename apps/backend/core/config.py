@@ -75,6 +75,18 @@ class Settings(BaseSettings):
     POSTHOG_PROJECT_ID: str = os.getenv("POSTHOG_PROJECT_ID", "")
     POSTHOG_PROJECT_API_KEY: str = os.getenv("POSTHOG_PROJECT_API_KEY", "")
 
+    # --- Shipped-agent MCP credentials ---
+    # JSON blob of third-party API keys forwarded into per-user OpenClaw
+    # containers so that mcp.servers.<x>.env placeholders in shipped agents'
+    # openclaw.json (Apollo, HubSpot, Stripe, Twilio, Perplexity, Attio,
+    # Pipedrive, Instantly, SmartLead, PostHog, Qdrant, etc.) resolve at
+    # runtime. CDK auth-stack defines the Secrets Manager entry; operator
+    # populates with `aws secretsmanager update-secret`. Empty default keeps
+    # provisioning safe — ecs_manager._build_mcp_environment_for_user returns
+    # an empty list, MCPs spawn with no creds and 401 on tool calls instead
+    # of blocking container boot.
+    MCP_CREDENTIALS_JSON: str = os.getenv("MCP_CREDENTIALS_JSON", "")
+
     # --- IAM ---
     CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
 

@@ -26,15 +26,20 @@
         ],
         "tools": {
           "profile": "coding",
-          "alsoAllow": ["lobster", "llm-task", "message"]
+          "alsoAllow": [
+            "lobster",
+            "llm-task",
+            "message"
+          ]
         }
       }
     ]
   },
-
   "plugins": {
     "entries": {
-      "lobster": { "enabled": true },
+      "lobster": {
+        "enabled": true
+      },
       "llm-task": {
         "enabled": true,
         "config": {
@@ -46,30 +51,104 @@
       }
     }
   },
-
-  "skills": {
-    "entries": {
-      "agent-browser": { "enabled": true },
-      "fast-io": { "enabled": true },
-      "taskr": { "enabled": true },
-      "summarize": { "enabled": true },
-      "gog": { "enabled": true },
-      "slack": { "enabled": true },
-      "n8n-workflow": { "enabled": true },
-      "capability-evolver": { "enabled": true },
-      "skill-vetter": { "enabled": true },
-      "sona-security-audit": { "enabled": true },
-      "deeps": { "enabled": true },
-      "arxiv-search-collector": { "enabled": false, "note": "Enable for academic/tech verticals" },
-      "agentic-paper-digest": { "enabled": false, "note": "Enable for academic monitoring" },
-      "arxiv-watcher": { "enabled": false, "note": "Enable for academic topic monitoring" },
-      "pubmed-edirect": { "enabled": false, "note": "Enable for healthcare/life sciences" },
-      "stackunderflow": { "enabled": false, "note": "Enable for tech vertical community tier" },
-      "depo-bot": { "enabled": false, "note": "Enable for legal vertical" },
-      "social-intelligence": { "enabled": false, "note": "Enable for competitive/market verticals" }
+  "mcp": {
+    "servers": {
+      "perplexity": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@perplexity-ai/mcp-server"
+        ],
+        "env": {
+          "PERPLEXITY_API_KEY": "${PERPLEXITY_API_KEY}"
+        }
+      },
+      "arxiv": {
+        "enabled": true,
+        "command": "uvx",
+        "args": [
+          "arxiv-mcp-server"
+        ],
+        "env": {}
+      },
+      "pubmed": {
+        "enabled": true,
+        "command": "uvx",
+        "args": [
+          "mcp-simple-pubmed"
+        ],
+        "env": {
+          "NCBI_API_KEY": "${NCBI_API_KEY}"
+        }
+      }
     }
   },
-
+  "skills": {
+    "entries": {
+      "agent-browser": {
+        "enabled": true
+      },
+      "fast-io": {
+        "enabled": true
+      },
+      "taskr": {
+        "enabled": true
+      },
+      "summarize": {
+        "enabled": true
+      },
+      "gog": {
+        "enabled": true
+      },
+      "slack": {
+        "enabled": true
+      },
+      "n8n-workflow": {
+        "enabled": true
+      },
+      "capability-evolver": {
+        "enabled": true
+      },
+      "skill-vetter": {
+        "enabled": true
+      },
+      "sona-security-audit": {
+        "enabled": true
+      },
+      "deeps": {
+        "enabled": true
+      },
+      "arxiv-search-collector": {
+        "enabled": false,
+        "note": "Enable for academic/tech verticals"
+      },
+      "agentic-paper-digest": {
+        "enabled": false,
+        "note": "Enable for academic monitoring"
+      },
+      "arxiv-watcher": {
+        "enabled": false,
+        "note": "Enable for academic topic monitoring"
+      },
+      "pubmed-edirect": {
+        "enabled": false,
+        "note": "Enable for healthcare/life sciences"
+      },
+      "stackunderflow": {
+        "enabled": false,
+        "note": "Enable for tech vertical community tier"
+      },
+      "depo-bot": {
+        "enabled": false,
+        "note": "Enable for legal vertical"
+      },
+      "social-intelligence": {
+        "enabled": false,
+        "note": "Enable for competitive/market verticals"
+      }
+    }
+  },
   "tools": {
     "deny": [
       "tavily",
@@ -82,26 +161,34 @@
       "private-web-search-searchxng"
     ]
   },
-
   "cron": {
     "enabled": true,
     "store": "~/.openclaw/cron/jobs.json",
     "maxConcurrentRuns": 2,
     "retry": {
       "maxAttempts": 3,
-      "backoffMs": [60000, 120000, 300000],
-      "retryOn": ["rate_limit", "overloaded", "network", "server_error"]
+      "backoffMs": [
+        60000,
+        120000,
+        300000
+      ],
+      "retryOn": [
+        "rate_limit",
+        "overloaded",
+        "network",
+        "server_error"
+      ]
     },
     "sessionRetention": "24h"
   },
-
   "hooks": {
     "enabled": true,
     "token": "${OPENCLAW_HOOK_TOKEN}",
     "path": "/hooks"
   },
-
   "channels": {
-    "slack": { "enabled": true }
+    "slack": {
+      "enabled": true
+    }
   }
 }

@@ -14,6 +14,16 @@ export interface AuthSecrets {
   stripeWebhookSecret: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
   posthogProjectApiKey: secretsmanager.ISecret;
+  /**
+   * JSON blob holding third-party API keys forwarded into per-user OpenClaw
+   * containers so that mcp.servers.<x>.env placeholders in shipped agent
+   * configs (Apollo, HubSpot, Stripe, Twilio, etc.) resolve at runtime.
+   * Defaults to an empty placeholder; operator populates with the real keys
+   * via `aws secretsmanager update-secret` post-deploy. When empty, the
+   * MCP servers spawn but their API calls return 401 — graceful degradation
+   * rather than container start failure.
+   */
+  mcpCredentials: secretsmanager.ISecret;
 }
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -81,6 +91,19 @@ export class AuthStack extends cdk.Stack {
       // posthog_admin.py also gates on POSTHOG_PROJECT_ID being set, and
       // that defaults to empty in service-stack's environment block.
       posthogProjectApiKey: createSecret("PosthogProjectApiKey", "posthog_project_api_key"),
+      // JSON blob of third-party API keys for shipped agents' MCP servers.
+      // CDK creates this with a random placeholder; operator overrides via
+      // `aws secretsmanager update-secret --secret-id isol8/<env>/mcp_credentials
+      //   --secret-string '{"APOLLO_API_KEY":"...","HUBSPOT_PRIVATE_APP_TOKEN":"...","STRIPE_SECRET_KEY":"...",...}'`.
+      // Backend reads this blob on startup and forwards the keys as plain env
+      // vars into per-user OpenClaw containers (see ecs_manager). Empty/missing
+      // keys cause the corresponding MCP to 401 at call time, not at boot.
+      mcpCredentials: createSecret(
+        "McpCredentials",
+        "mcp_credentials",
+        { passwordLength: 32, excludePunctuation: true },
+        "JSON blob of third-party API keys forwarded into per-user OpenClaw containers for shipped agents' MCP servers.",
+      ),
     };
 
     // Paperclip secrets (Task 3 — Paperclip rebuild). These do not flow through

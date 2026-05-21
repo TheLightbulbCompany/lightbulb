@@ -27,15 +27,20 @@
         ],
         "tools": {
           "profile": "coding",
-          "alsoAllow": ["lobster", "llm-task", "message"]
+          "alsoAllow": [
+            "lobster",
+            "llm-task",
+            "message"
+          ]
         }
       }
     ]
   },
-
   "plugins": {
     "entries": {
-      "lobster": { "enabled": true },
+      "lobster": {
+        "enabled": true
+      },
       "llm-task": {
         "enabled": true,
         "config": {
@@ -47,31 +52,123 @@
       }
     }
   },
-
+  "mcp": {
+    "servers": {
+      "apollo": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "apollo-io-mcp-server"
+        ],
+        "env": {
+          "APOLLO_API_KEY": "${APOLLO_API_KEY}"
+        }
+      },
+      "hubspot": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@hubspot/mcp-server"
+        ],
+        "env": {
+          "PRIVATE_APP_ACCESS_TOKEN": "${HUBSPOT_PRIVATE_APP_TOKEN}"
+        }
+      },
+      "attio": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "attio-mcp-server"
+        ],
+        "env": {
+          "ATTIO_API_KEY": "${ATTIO_API_KEY}"
+        }
+      },
+      "pipedrive": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@iamsamuelfraga/mcp-pipedrive"
+        ],
+        "env": {
+          "PIPEDRIVE_API_KEY": "${PIPEDRIVE_API_KEY}"
+        }
+      },
+      "sec-edgar": {
+        "enabled": true,
+        "command": "uvx",
+        "args": [
+          "sec-edgar-mcp"
+        ],
+        "env": {
+          "SEC_EDGAR_USER_AGENT": "${SEC_EDGAR_USER_AGENT}"
+        }
+      }
+    }
+  },
   "skills": {
     "entries": {
       "apollo": {
         "enabled": true,
-        "env": { "APOLLO_API_KEY": "${APOLLO_API_KEY}" }
+        "env": {
+          "APOLLO_API_KEY": "${APOLLO_API_KEY}"
+        }
       },
-      "agent-browser": { "enabled": true },
-      "gog": { "enabled": true },
-      "slack": { "enabled": true },
-      "capability-evolver": { "enabled": true },
-      "taskr": { "enabled": true },
-      "fast-io": { "enabled": true },
-      "summarize": { "enabled": true },
-      "last30days": { "enabled": true },
-      "skill-vetter": { "enabled": true },
-      "sona-security-audit": { "enabled": true },
-      "n8n-workflow": { "enabled": true },
-      "hubspot-crm": { "enabled": false, "note": "Click-to-connect: enabled per-user when they connect HubSpot as their CRM in settings" },
-      "salesforce-crm": { "enabled": false, "note": "Click-to-connect: enabled per-user when they connect Salesforce as their CRM in settings" },
-      "attio-crm": { "enabled": false, "note": "Click-to-connect: enabled per-user when they connect Attio as their CRM in settings" },
-      "pipedrive-crm": { "enabled": false, "note": "Click-to-connect: enabled per-user when they connect Pipedrive as their CRM in settings" }
+      "agent-browser": {
+        "enabled": true
+      },
+      "gog": {
+        "enabled": true
+      },
+      "slack": {
+        "enabled": true
+      },
+      "capability-evolver": {
+        "enabled": true
+      },
+      "taskr": {
+        "enabled": true
+      },
+      "fast-io": {
+        "enabled": true
+      },
+      "summarize": {
+        "enabled": true
+      },
+      "last30days": {
+        "enabled": true
+      },
+      "skill-vetter": {
+        "enabled": true
+      },
+      "sona-security-audit": {
+        "enabled": true
+      },
+      "n8n-workflow": {
+        "enabled": true
+      },
+      "hubspot-crm": {
+        "enabled": false,
+        "note": "Click-to-connect: enabled per-user when they connect HubSpot as their CRM in settings"
+      },
+      "salesforce-crm": {
+        "enabled": false,
+        "note": "Click-to-connect: enabled per-user when they connect Salesforce as their CRM in settings"
+      },
+      "attio-crm": {
+        "enabled": false,
+        "note": "Click-to-connect: enabled per-user when they connect Attio as their CRM in settings"
+      },
+      "pipedrive-crm": {
+        "enabled": false,
+        "note": "Click-to-connect: enabled per-user when they connect Pipedrive as their CRM in settings"
+      }
     }
   },
-
   "tools": {
     "deny": [
       "foxreach-io",
@@ -83,25 +180,31 @@
       "api-gateway"
     ]
   },
-
   "cron": {
     "enabled": true,
     "store": "~/.openclaw/cron/jobs.json",
     "maxConcurrentRuns": 1,
     "retry": {
       "maxAttempts": 3,
-      "backoffMs": [60000, 120000, 300000],
-      "retryOn": ["rate_limit", "overloaded", "network", "server_error"]
+      "backoffMs": [
+        60000,
+        120000,
+        300000
+      ],
+      "retryOn": [
+        "rate_limit",
+        "overloaded",
+        "network",
+        "server_error"
+      ]
     },
     "sessionRetention": "24h"
   },
-
   "hooks": {
     "enabled": true,
     "token": "${OPENCLAW_HOOK_TOKEN}",
     "path": "/hooks"
   },
-
   "channels": {
     "slack": {
       "enabled": true

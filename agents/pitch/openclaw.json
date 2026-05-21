@@ -26,15 +26,20 @@
         ],
         "tools": {
           "profile": "coding",
-          "alsoAllow": ["lobster", "llm-task", "message"]
+          "alsoAllow": [
+            "lobster",
+            "llm-task",
+            "message"
+          ]
         }
       }
     ]
   },
-
   "plugins": {
     "entries": {
-      "lobster": { "enabled": true },
+      "lobster": {
+        "enabled": true
+      },
       "llm-task": {
         "enabled": true,
         "config": {
@@ -46,33 +51,137 @@
       }
     }
   },
-
-  "skills": {
-    "entries": {
-      "agent-browser": { "enabled": true },
-      "gog": { "enabled": true },
-      "slack": { "enabled": true },
-      "fast-io": { "enabled": true },
-      "summarize": { "enabled": true },
-      "business-development": { "enabled": true },
-      "social-intelligence": { "enabled": true },
-      "capability-evolver": { "enabled": true },
-      "skill-vetter": { "enabled": true },
-      "sona-security-audit": { "enabled": true },
-      "n8n-workflow": { "enabled": true },
-
-      "hubspot-crm": { "enabled": false },
-      "salesforce-crm": { "enabled": false },
-      "attio-crm": { "enabled": false },
-      "pipedrive-crm": { "enabled": false },
-
-      "instantly-outbound": { "enabled": false },
-      "smartlead-outbound": { "enabled": false },
-      "mailshake-outbound": { "enabled": false },
-      "lemlist-outbound": { "enabled": false }
+  "mcp": {
+    "servers": {
+      "apollo": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "apollo-io-mcp-server"
+        ],
+        "env": {
+          "APOLLO_API_KEY": "${APOLLO_API_KEY}"
+        }
+      },
+      "hubspot": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@hubspot/mcp-server"
+        ],
+        "env": {
+          "PRIVATE_APP_ACCESS_TOKEN": "${HUBSPOT_PRIVATE_APP_TOKEN}"
+        }
+      },
+      "attio": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "attio-mcp-server"
+        ],
+        "env": {
+          "ATTIO_API_KEY": "${ATTIO_API_KEY}"
+        }
+      },
+      "pipedrive": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@iamsamuelfraga/mcp-pipedrive"
+        ],
+        "env": {
+          "PIPEDRIVE_API_KEY": "${PIPEDRIVE_API_KEY}"
+        }
+      },
+      "instantly": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "instantly-mcp"
+        ],
+        "env": {
+          "INSTANTLY_API_KEY": "${INSTANTLY_API_KEY}"
+        }
+      },
+      "smartlead": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "smartlead-mcp-server"
+        ],
+        "env": {
+          "SMARTLEAD_API_KEY": "${SMARTLEAD_API_KEY}"
+        }
+      }
     }
   },
-
+  "skills": {
+    "entries": {
+      "agent-browser": {
+        "enabled": true
+      },
+      "gog": {
+        "enabled": true
+      },
+      "slack": {
+        "enabled": true
+      },
+      "fast-io": {
+        "enabled": true
+      },
+      "summarize": {
+        "enabled": true
+      },
+      "business-development": {
+        "enabled": true
+      },
+      "social-intelligence": {
+        "enabled": true
+      },
+      "capability-evolver": {
+        "enabled": true
+      },
+      "skill-vetter": {
+        "enabled": true
+      },
+      "sona-security-audit": {
+        "enabled": true
+      },
+      "n8n-workflow": {
+        "enabled": true
+      },
+      "hubspot-crm": {
+        "enabled": false
+      },
+      "salesforce-crm": {
+        "enabled": false
+      },
+      "attio-crm": {
+        "enabled": false
+      },
+      "pipedrive-crm": {
+        "enabled": false
+      },
+      "instantly-outbound": {
+        "enabled": false
+      },
+      "smartlead-outbound": {
+        "enabled": false
+      },
+      "mailshake-outbound": {
+        "enabled": false
+      },
+      "lemlist-outbound": {
+        "enabled": false
+      }
+    }
+  },
   "tools": {
     "deny": [
       "salesforce-api",
@@ -84,25 +193,31 @@
       "attio-enhanced"
     ]
   },
-
   "cron": {
     "enabled": true,
     "store": "~/.openclaw/cron/jobs.json",
     "maxConcurrentRuns": 1,
     "retry": {
       "maxAttempts": 3,
-      "backoffMs": [60000, 120000, 300000],
-      "retryOn": ["rate_limit", "overloaded", "network", "server_error"]
+      "backoffMs": [
+        60000,
+        120000,
+        300000
+      ],
+      "retryOn": [
+        "rate_limit",
+        "overloaded",
+        "network",
+        "server_error"
+      ]
     },
     "sessionRetention": "24h"
   },
-
   "hooks": {
     "enabled": true,
     "token": "${OPENCLAW_HOOK_TOKEN}",
     "path": "/hooks"
   },
-
   "channels": {
     "slack": {
       "enabled": true

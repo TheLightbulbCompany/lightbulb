@@ -106,6 +106,7 @@ export class Isol8Stage extends cdk.Stage {
         stripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
         encryptionKey: `isol8/${env}/encryption_key`,
         posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
+        mcpCredentials: `isol8/${env}/mcp_credentials`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
       },
       kmsKeyArn: auth.kmsKey.keyArn,

@@ -61,6 +61,47 @@ def _build_per_user_environment(
     return out
 
 
+def _build_mcp_environment_for_user() -> list[dict]:
+    """Return ECS ``environment`` entries from the MCP_CREDENTIALS_JSON blob.
+
+    Reads ``settings.MCP_CREDENTIALS_JSON`` (populated by CDK from the
+    ``isol8/<env>/mcp_credentials`` Secrets Manager entry) and turns each
+    key/value pair into a plain ``{"name": ..., "value": ...}`` env entry so
+    that ``${VAR}`` placeholders in shipped agents' ``openclaw.json``
+    ``mcp.servers.<x>.env`` blocks resolve when OpenClaw boots.
+
+    Safe defaults:
+      • Empty/missing blob → empty list (containers boot, MCPs spawn but
+        their tool calls 401 — graceful degradation, not boot failure).
+      • Malformed JSON → empty list with a logged warning (same posture).
+      • Non-string values → coerced to str; empty-string values are kept
+        so OpenClaw sees the var as set-but-empty (still 401s gracefully).
+
+    Single-tenant by design: the same blob feeds every user container until
+    Composio / Pipedream brokerage lands for per-user credentials. See the
+    PR description for the long-term plan.
+    """
+    import json as _json
+    raw = (settings.MCP_CREDENTIALS_JSON or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = _json.loads(raw)
+    except _json.JSONDecodeError as exc:
+        logger.warning(
+            "MCP_CREDENTIALS_JSON is not valid JSON; skipping MCP env injection",
+            extra={"error": str(exc)},
+        )
+        return []
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "MCP_CREDENTIALS_JSON must be a JSON object; skipping MCP env injection",
+            extra={"actual_type": type(parsed).__name__},
+        )
+        return []
+    return [{"name": str(k), "value": str(v) if v is not None else ""} for k, v in parsed.items()]
+
+
 class EcsManagerError(Exception):
     """Raised when ECS operations fail."""
 
@@ -1229,7 +1270,11 @@ class EcsManager:
         # --- Card-specific pre-task setup (must run BEFORE ECS service create
         # so the first task starts with auth/keys already in place). ---
         secrets_for_task: list[dict] = []
-        environment_for_task: list[dict] = []
+        # Shipped-agent MCP credentials (Apollo, HubSpot, Stripe, Twilio, etc.)
+        # are layered in first; provider-specific setup below can append more
+        # to environment_for_task. Empty blob → empty list, no-op. See
+        # _build_mcp_environment_for_user for the contract.
+        environment_for_task: list[dict] = _build_mcp_environment_for_user()
         if provider_choice == "chatgpt_oauth":
             await self._pre_stage_oauth_for_user(user_id)
             # OpenClaw reads OAuth credentials from

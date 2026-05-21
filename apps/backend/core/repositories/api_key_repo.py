@@ -84,7 +84,7 @@ async def delete_all_for_owner(owner_id: str) -> int:
 
     Used by the e2e teardown endpoint. The api-keys table uses user_id
     as the partition key (legacy naming), so owner_id maps to user_id.
-    Paginates the DDB query so multi-page results don't leak (Codex P2 #309).
+    Paginates the DDB query so multi-page results don't leak.
     """
     table = _get_table()
     deleted = 0

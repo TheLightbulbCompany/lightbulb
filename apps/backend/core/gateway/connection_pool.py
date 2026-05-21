@@ -809,8 +809,8 @@ class GatewayConnection:
             except Exception:
                 logger.exception("Failed to record usage for user %s", self.user_id)
 
-            # Plan 3 Task 5: card-3 (bedrock_claude) deduct credits in
-            # addition to the legacy usage_service path. Other cards skip.
+            # Card-3 (bedrock_claude) deducts credits in addition to the
+            # legacy usage_service path. Other cards skip.
             # Synchronous so the next chat sees the updated balance. The
             # ledger is owner-scoped — _maybe_deduct_credits keys on
             # self.user_id (the container owner), so org members share
@@ -856,10 +856,10 @@ class GatewayConnection:
 
         Markup is applied here (1.4x raw) per the spec's pricing model.
 
-        Both provider_choice (per Workstream B 2026-05-03) and the credit
-        ledger key are owner-scoped — ``self.user_id`` IS the container
-        owner (org_id for org members, user_id for personal). Org members
-        sharing a container all draw from one pooled balance.
+        Both provider_choice and the credit ledger key are owner-scoped —
+        ``self.user_id`` IS the container owner (org_id for org members,
+        user_id for personal). Org members sharing a container all draw
+        from one pooled balance.
         """
         from core.billing.bedrock_pricing import (
             UnknownModelError,
@@ -1447,10 +1447,9 @@ class GatewayConnectionPool:
 
         # --- Layer 1: subscription status ----------------------------
         # Anything that isn't currently allowed by ``is_subscription_active``
-        # — including a *missing* billing row — gets blocked. The original
-        # M1 fix lumped "no row" with "legacy row" and let unfunded users
-        # chat through cards 1+2 (whose LLM is on the user but whose
-        # container is on us). Codex P1 round-2 on PR #488.
+        # — including a *missing* billing row — gets blocked. Lumping "no
+        # row" with "legacy row" would let unfunded users chat through
+        # cards 1+2 (whose LLM is on the user but whose container is on us).
         account = await billing_repo.get_by_owner_id(owner_id)
         if not is_subscription_active(account):
             return {
@@ -1460,9 +1459,9 @@ class GatewayConnectionPool:
             }
 
         # --- Layer 2: card-3 credit balance --------------------------
-        # provider_choice lives on the billing_accounts row (per owner)
-        # since Workstream B 2026-05-03; credits also pool at the owner
-        # level so org members all draw from one balance funded by the
+        # provider_choice lives on the billing_accounts row (per owner);
+        # credits also pool at the owner level so org members all draw
+        # from one balance funded by the
         # admin. Keying on user_id meant org members saw balance=0 and
         # got blocked at chat with code=out_of_credits.
         if account is None or account.get("provider_choice") != "bedrock_claude":

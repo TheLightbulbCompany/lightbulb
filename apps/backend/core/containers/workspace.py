@@ -31,12 +31,12 @@ logger = logging.getLogger(__name__)
 _USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # Build/cache/VCS junk to hide from every directory listing, regardless of
-# depth. Trimmed 2026-05-10 — the prior list also hid every dotfile/dotdir
-# (catch-all `name.startswith(".")` rule below) plus `openclaw.json` and
-# `.openclaw`. That suppressed agent-managed state (e.g., an MCP that
-# writes into `.mcp/` inside its workspace) without giving the user any
-# way to discover it. Paying users can deal with seeing their own files;
-# only build artifacts and VCS metadata stay hidden.
+# depth. Do NOT also hide dotfiles/dotdirs (e.g. a catch-all
+# `name.startswith(".")` rule) plus `openclaw.json` / `.openclaw` — that
+# suppresses agent-managed state (e.g., an MCP that writes into `.mcp/`
+# inside its workspace) without giving the user any way to discover it.
+# Paying users can deal with seeing their own files; only build artifacts
+# and VCS metadata stay hidden.
 _EXCLUDED_NAMES: set[str] = {
     "node_modules",
     "__pycache__",
@@ -233,10 +233,10 @@ class Workspace:
         try:
             for entry in resolved.iterdir():
                 name = entry.name
-                # Skip build artifacts + VCS metadata. The prior dotfile
-                # catch-all was removed — agent-managed dotdirs (e.g., an
-                # MCP's `.mcp/` install state) now show up so the user
-                # can see what their agents have written.
+                # Skip build artifacts + VCS metadata. Agent-managed
+                # dotdirs (e.g., an MCP's `.mcp/` install state) are
+                # intentionally NOT hidden so the user can see what their
+                # agents have written.
                 if name in _EXCLUDED_NAMES:
                     continue
 
@@ -707,8 +707,6 @@ async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> N
     so the file is read at ``/home/node/.openclaw/agents/main/agent/auth-profiles.json``
     — the path OpenClaw's runtime probes for `agent="main"` (the implicit
     default agent declared in our openclaw.json).
-
-    See ``docs/superpowers/specs/2026-04-29-chatgpt-oauth-auth-profiles-design.md``.
 
     Re-OAuth callers can re-invoke this helper; the file is overwritten,
     not merged. After provision, OpenClaw owns the file's lifecycle and

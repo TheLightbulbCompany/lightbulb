@@ -84,8 +84,8 @@ async def test_chat_agents_create_calls_paperclip_first_then_pairs(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_chat_paperclip_create_mints_service_token_with_owner_id(monkeypatch):
-    """Codex P1 regression: when an org member triggers /chat agents.create,
-    the synthesized adapterConfig.authToken must be a JWT minted with
+    """Regression: when an org member triggers /chat agents.create, the
+    synthesized adapterConfig.authToken must be a JWT minted with
     sub=owner_id (the org), NOT sub=member_id. The WS authorizer treats
     sub as the auth principal and puts ``orgId=""`` into the context, so
     a member-keyed service token routes future Paperclip wakes as the
@@ -359,11 +359,11 @@ async def test_chat_agents_create_pair_failure_responds_ok_false(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_chat_create_redacts_paperclip_agent_before_ws_send(monkeypatch):
-    """Codex P1 (Finding A): Paperclip's create response includes
-    ``adapterConfig.authToken`` (the freshly minted OpenClaw service
-    token). The WS response that surfaces back to the browser MUST NOT
-    include that token, or any other adapter fields — those are server-
-    side wiring the browser never needs.
+    """Paperclip's create response includes ``adapterConfig.authToken``
+    (the freshly minted OpenClaw service token). The WS response that
+    surfaces back to the browser MUST NOT include that token, or any
+    other adapter fields — those are server-side wiring the browser
+    never needs.
 
     Mirrors the redaction every /teams handler does via ``_redact_agent``
     in ``routers/teams/agents.py``. The fields that must be stripped are
@@ -442,8 +442,8 @@ async def test_chat_create_redacts_paperclip_agent_before_ws_send(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_chat_delete_cascades_to_paperclip(monkeypatch):
-    """Codex P2 (Finding B): /chat agents.delete RPC must cascade-delete
-    the Paperclip row, not just OpenClaw + EFS.
+    """/chat agents.delete RPC must cascade-delete the Paperclip row,
+    not just OpenClaw + EFS.
 
     Container reprovision rebuilds ``openclaw.json`` from
     ``fetch_paperclip_agents_for_owner`` — leaving the Paperclip row
@@ -508,8 +508,8 @@ async def test_chat_delete_cascades_to_paperclip(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_chat_delete_paperclip_failure_is_non_fatal(monkeypatch):
-    """Codex P2 (Finding B): a failure in the cascade Paperclip-delete
-    must NOT block the RPC response or undo the OpenClaw + EFS delete.
+    """A failure in the cascade Paperclip-delete must NOT block the RPC
+    response or undo the OpenClaw + EFS delete.
 
     The Paperclip-side delete is best-effort: if it fails, the next
     reprovision rewrites openclaw.json from the live Paperclip list

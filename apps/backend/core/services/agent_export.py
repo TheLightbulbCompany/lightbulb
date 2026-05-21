@@ -111,8 +111,7 @@ _SKIP_DIR_NAMES = frozenset(
 #    explicitly so the extensionless-name branch in
 #    ``_looks_like_credential_file`` blocks them while still letting
 #    ``credentials-helper`` (an extensionless script, no AWS shape)
-#    through. The earlier substring-based filter caught these only by
-#    accident (Codex P1 on PR #711, commit 43c49a31).
+#    through. A naive substring filter catches these only by accident.
 _EXACT_CREDENTIAL_FILENAMES = frozenset(
     {
         # SSH-style private keys.
@@ -146,10 +145,10 @@ _CREDENTIAL_EXTENSIONS = frozenset({".pem", ".key", ".p12", ".pfx"})
 
 # 3. Config-shape extensions where the STEM signals secret content. Match
 #    a credentials/secrets/api-key/private-key token at a word boundary
-#    (start, end, or surrounded by `.`/`-`/`_`). Earlier we substring-
-#    matched the basename which would drop legitimate workspace files like
+#    (start, end, or surrounded by `.`/`-`/`_`). A naive substring match
+#    on the basename drops legitimate workspace files like
 #    `skills/secretary.md`, `skills/secret-santa.md`, or
-#    `credentials-helper.ts` (Codex P2 on PR #710, commit 1f30aa3c).
+#    `credentials-helper.ts`.
 _CREDENTIAL_TOKEN_RE = re.compile(
     r"(?:^|[._\-])(credentials?|secrets?|private[._\-]?keys?|api[._\-]?keys?)(?:[._\-]|$)",
     re.IGNORECASE,
@@ -157,8 +156,7 @@ _CREDENTIAL_TOKEN_RE = re.compile(
 # Includes ``.txt`` because sellers commonly paste credentials into a
 # text file — ``secret.txt`` / ``credentials.txt`` / ``private-key.txt``
 # would slip through a config-only extension list, and the content scan
-# only inspects persona / markdown / openclaw.json (Codex P1 on PR #711,
-# commit eb8dae83).
+# only inspects persona / markdown / openclaw.json.
 _CREDENTIAL_CONFIG_EXTENSIONS = frozenset({".json", ".yaml", ".yml", ".env", ".toml", ".ini", ".cfg", ".conf", ".txt"})
 
 
@@ -215,10 +213,9 @@ def _resolve_agent_dir(seller_id: str, agent_id: str) -> Path:
                           TOOLS.md), bundled skills (skills/), MCP server
                           code, memory, etc. This is what buyers need.
 
-    The export tars the WORKSPACE dir. The earlier implementation pointed
-    at agents/{id}/, which contained only OpenClaw's internal state — so
-    the resulting tarball was either runtime junk (pre-PR #687) or empty
-    (post-#687 filter). Buyers got nothing useful. Fix is to point at
+    The export tars the WORKSPACE dir. Pointing at agents/{id}/ instead
+    would only capture OpenClaw's internal state — the resulting tarball
+    would be either runtime junk or empty after filtering. Buyers need
     workspaces/{id}/; the existing filter list strips node_modules, .git,
     dotfiles, etc. so the published artifact stays clean.
 

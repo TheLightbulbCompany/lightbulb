@@ -9,10 +9,10 @@ rows.
 Async repository following the same pattern as peer repos in
 ``core/repositories/`` (api_key_repo, channel_link_repo, etc.): every
 DynamoDB call is wrapped in ``run_in_thread`` and exposed as ``async def``
-so future async callers (T11 paperclip_provisioning, T13 cleanup cron)
-can ``await`` directly without ``asyncio.to_thread`` at each call site.
+so future async callers (paperclip_provisioning, cleanup cron) can
+``await`` directly without ``asyncio.to_thread`` at each call site.
 
-**Multi-member org auth model (2026-04-27 pivot).**
+**Multi-member org auth model.**
 
 Paperclip's REST API has no per-user board-API-key minting endpoint
 (it's only mintable via the CLI auth challenge flow). The right design

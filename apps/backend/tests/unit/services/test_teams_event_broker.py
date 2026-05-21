@@ -205,8 +205,8 @@ async def test_stale_connection_cleaned_up_on_send_false(fake_components):
 
 @pytest.mark.asyncio
 async def test_stale_fanout_conn_removed_from_local_subscribers(fake_components):
-    """Codex P1 on PR #518: when send_message returns False, the conn-id
-    must be removed from self._subscribers (not just from DDB).
+    """When send_message returns False, the conn-id must be removed from
+    self._subscribers (not just from DDB).
     Otherwise _grace_teardown sees a non-empty subscriber set and never
     closes the backing client, pinning the upstream WS forever for any
     user whose Management API send raced a browser close."""
@@ -302,9 +302,9 @@ async def test_event_handling_emits_received_and_fanout_ok_metrics(fake_componen
 
 @pytest.mark.asyncio
 async def test_grace_teardown_keeps_user_lock_to_avoid_race(fake_components):
-    """Codex P1 on PR #518: do NOT prune _locks[user_id] in
-    _grace_teardown. A subscribe racing in between lock release and
-    lock-pop would hold the OLD lock while a subsequent subscribe
+    """Do NOT prune _locks[user_id] in _grace_teardown. A subscribe
+    racing in between lock release and lock-pop holds the OLD lock while
+    a subsequent subscribe
     creates a fresh one, allowing duplicate client creation. The
     bounded memory cost of keeping per-former-user locks is acceptable;
     correctness > the leak."""
@@ -323,8 +323,8 @@ async def test_grace_teardown_keeps_user_lock_to_avoid_race(fake_components):
 
 @pytest.mark.asyncio
 async def test_subscribe_replaces_dead_client_after_reconnect_giveup(fake_components):
-    """Codex P1 on PR #518: PaperclipEventClient stops its background loop
-    after 30 failed reconnect attempts. If the broker treats _clients[user_id]
+    """PaperclipEventClient stops its background loop after 30 failed
+    reconnect attempts. If the broker treats _clients[user_id]
     as reusable forever, realtime stays permanently dead until grace teardown.
     A subsequent subscribe must detect is_alive()==False and replace the dead
     client with a fresh one."""
@@ -349,8 +349,8 @@ async def test_subscribe_replaces_dead_client_after_reconnect_giveup(fake_compon
 
 @pytest.mark.asyncio
 async def test_fanout_skips_non_subscribed_connections(fake_components):
-    """Codex P2 on PR #518: events must fan out only to browsers that
-    subscribed via teams.subscribe — NOT to all of the user's WS conns.
+    """Events must fan out only to browsers that subscribed via
+    teams.subscribe — NOT to all of the user's WS conns.
     Desktop node-role sockets share the same userId in ws-connections
     but never opt into Teams events; sending to them is wasted bandwidth.
     """

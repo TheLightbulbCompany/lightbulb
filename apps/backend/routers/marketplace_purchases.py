@@ -172,7 +172,7 @@ async def _handle_checkout_completed(session: dict) -> None:
         # retries the event — silently persisting an empty transfer_group
         # would permanently mark this event "processed" while leaving the
         # purchase row missing the linkage refund_purchase needs to find and
-        # reverse the seller transfer (Codex P1, round 9).
+        # reverse the seller transfer.
         stripe.api_key = settings.STRIPE_SECRET_KEY
         pi = stripe.PaymentIntent.retrieve(payment_intent_id)
         transfer_group = pi.get("transfer_group") or ""

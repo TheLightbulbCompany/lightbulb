@@ -1,13 +1,12 @@
-"""Tests for admin_service.list_users owner_id resolution (PR #376 follow-up).
+"""Tests for admin_service.list_users owner_id resolution.
 
 Background: the DDB partition key ``owner_id`` equals Clerk ``org_id`` for
-org-member resources and ``user_id`` for personal-mode resources. PR #376
-fixed this for the admin detail views (Overview, Agents, Agent Detail) but
-explicitly deferred the list view at ``/admin/users``. That view fell back to
+org-member resources and ``user_id`` for personal-mode resources. Without
+correct resolution at ``/admin/users`` the list view falls back to
 ``container_repo.get_by_owner_id(user_id)`` using the raw Clerk id, so every
-org member showed "no container" even when their org had one.
+org member shows "no container" even when their org has one.
 
-These tests pin the list-view fix:
+These tests pin the list-view behavior:
 
 1. Two Clerk users in the same org → container_repo is called once for the
    org_id (dedupe by owner_id), not twice.
@@ -55,7 +54,7 @@ async def test_list_users_dedupes_container_lookup_for_same_org_members():
         return [ORG_FIXTURE]
 
     container_mock = AsyncMock(return_value={"status": "running"})
-    # plan_tier lives on billing_accounts, not containers (see fix-plan-tier PR).
+    # plan_tier lives on billing_accounts, not containers.
     billing_mock = AsyncMock(return_value={"subscription_status": "active"})
 
     with (
@@ -238,9 +237,9 @@ async def test_list_users_falls_back_to_personal_mode_when_clerk_errors_for_one_
 async def test_list_users_reads_subscription_status_from_billing_not_container():
     """Regression: plan_tier lives on the billing_accounts row (see
     billing_repo.put_billing), NOT on the container row. Reading it from the
-    container row (the previous bug) caused every user in the list view to
-    render as "free" tier regardless of actual subscription, because container
-    rows never carry a plan_tier field.
+    container row causes every user in the list view to render as "free"
+    tier regardless of actual subscription, because container rows never
+    carry a plan_tier field.
     """
     from core.services import admin_service
 
@@ -273,7 +272,7 @@ async def test_list_users_reads_subscription_status_from_billing_not_container()
     assert len(result["users"]) == 1
     assert result["users"][0]["subscription_status"] == "active", (
         "plan_tier must come from billing_repo, not container_repo; "
-        "previously returned 'free' because containers never have plan_tier"
+        "reading from containers returns 'free' because containers never have plan_tier"
     )
 
 

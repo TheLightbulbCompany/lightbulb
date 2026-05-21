@@ -60,7 +60,7 @@ def _redact_payload(payload: dict, redact_paths: list[str]) -> dict:
     """Shallow redaction — replaces top-level keys in redact_paths with '***redacted***'.
 
     For deep redaction of openclaw.json secret fields, see
-    core.services.admin_redact.redact_openclaw_config (Phase B Task 11).
+    core.services.admin_redact.redact_openclaw_config.
     """
     if not redact_paths:
         return payload

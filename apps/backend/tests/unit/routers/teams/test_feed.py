@@ -1,4 +1,4 @@
-"""Tests for the Teams Feed BFF (Task 11) — Activity + Costs + Dashboard."""
+"""Tests for the Teams Feed BFF — Activity + Costs + Dashboard."""
 
 from unittest.mock import AsyncMock, MagicMock
 

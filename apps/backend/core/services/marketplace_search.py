@@ -209,7 +209,7 @@ async def search(
     if status_in:
         # Run BEFORE the limit slice — otherwise a seller with >limit rows
         # in unrelated statuses ahead of the matching ones loses them to
-        # the limit cut. See PR #567 review (Codex P2).
+        # the limit cut.
         wanted = {s for s in status_in if s}
         if wanted:
             candidates = [li for li in candidates if li.get("status") in wanted]

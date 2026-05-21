@@ -69,7 +69,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         return
 
     if auth.is_org_context and not auth.is_org_admin:
-        # Org member fast path. Implementation in Task 4.
+        # Org member fast path.
         await _ensure_paperclip_for_member(
             org_id=auth.org_id,
             member_user_id=auth.user_id,
@@ -78,7 +78,6 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         return
 
     # Owner path (personal user OR org admin).
-    # Implementation in Tasks 3 + 5.
     await _ensure_paperclip_for_owner(
         owner_id=owner_id,
         owner_user_id=auth.user_id,
@@ -176,13 +175,12 @@ async def _ensure_paperclip_for_member(
     missing, lookup_owner_email falls back to user_repo + Clerk.
 
     Implementation note: ``paperclip_repo`` does not expose a single
-    "fetch the org's company row" helper at the module level — see
-    Task 4 verification (Step 4.1). Instead we reuse
-    ``PaperclipProvisioning.find_org_owner``, which already filters to
-    ``status="active"`` rows and is the same lookup ``provision_member``
-    itself uses internally. Returning ``None`` from that helper means
-    the owner's company is either missing or not yet active —
-    indistinguishable for our purposes (both → return gracefully).
+    "fetch the org's company row" helper at the module level. Instead we
+    reuse ``PaperclipProvisioning.find_org_owner``, which already filters
+    to ``status="active"`` rows and is the same lookup
+    ``provision_member`` itself uses internally. Returning ``None`` from
+    that helper means the owner's company is either missing or not yet
+    active — indistinguishable for our purposes (both → return gracefully).
 
     Idempotent on duplicate-add: ``provision_member`` calls
     ``sign_up_user`` for the joining member; on a duplicate

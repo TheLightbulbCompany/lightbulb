@@ -1,7 +1,7 @@
 """GET /billing/account exposes provider_choice for the frontend picker check.
 
-Workstream B: provider_choice lives on billing_accounts (per-owner). The
-frontend reads it here to skip the ProviderPicker when an org has already
+provider_choice lives on billing_accounts (per-owner). The frontend
+reads it here to skip the ProviderPicker when an org has already
 been onboarded, and to render the matching LLM settings panel without a
 detour through /users/me.
 """

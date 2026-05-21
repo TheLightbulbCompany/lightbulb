@@ -155,7 +155,7 @@ async def delete_all_for_owner(owner_id: str) -> int:
     """Delete all pending-update rows for an owner. Returns count deleted.
 
     Used by the e2e teardown endpoint. PK=owner_id, SK=update_id.
-    Paginates the DDB query so multi-page results don't leak (Codex P2 #309).
+    Paginates the DDB query so multi-page results don't leak.
     """
     table = _get_table()
     deleted = 0

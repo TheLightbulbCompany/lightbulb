@@ -5,10 +5,10 @@ These tests focus on the defense-in-depth observer in
 error and emits a metric when a new org member already has an active
 personal billing row (a tenancy-invariant violation).
 
-After Task 7 the membership webhook is record-keeping + invariant
-probe only — provisioning is deferred to the first /container/status
-poll (Task 8). The probe must still run regardless, and a probe
-failure must not raise (record-keeping must still complete).
+The membership webhook is record-keeping + invariant probe only —
+provisioning is deferred to the first /container/status poll. The
+probe must still run regardless, and a probe failure must not raise
+(record-keeping must still complete).
 """
 
 from __future__ import annotations

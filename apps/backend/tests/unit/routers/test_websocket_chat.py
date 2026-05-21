@@ -104,9 +104,8 @@ class TestConnectEndpoint:
     ):
         """node-host clientIds should be stored with connection_type='node'.
 
-        Regression for the PR #667 round-3 P1 backend rework: ws_connect
-        now kicks off `_kick_off_node_connect` for node-host clients (the
-        proxy no longer injects a wake-up frame to do it), so the
+        Regression: ws_connect kicks off `_kick_off_node_connect` for
+        node-host clients (no proxy-injected wake-up frame), so the
         connection MUST be flagged 'node' at $connect time, not later
         when the first frame arrives.
         """
@@ -358,7 +357,7 @@ class TestMessageEndpoint:
         whichever backend task ALB picks. Without lazy registration in
         /ws/message, the new task's pool has empty `_frontend_connections`
         and openclaw streaming events get silently dropped, leaving the
-        chat UI stuck loading. (2026-05-01 incident.)
+        chat UI stuck loading.
         """
         mock_connection_service.get_connection.return_value = {
             "user_id": "user_3D8qdjOCXakKFHCsErQHS7q8P9v",
@@ -613,8 +612,8 @@ class TestUserActiveLegacy:
 
 
 class TestSessionBindsToCliDevice:
-    """Task 13: agent_chat session-binding must pick the CLI device
-    specifically (not whichever happened to be set last). The exec router
+    """agent_chat session-binding must pick the CLI device specifically
+    (not whichever happened to be set last). The exec router
     only knows how to invoke against the CLI bucket; pinning execNode to
     the Mac-companion's deviceId would silently break exec.
 
@@ -661,8 +660,8 @@ class TestSessionBindsToCliDevice:
             node_proxy._user_nodes.clear()
 
     def test_websocket_chat_imports_get_user_cli_node(self):
-        """Callsite must import get_user_cli_node (the post-Task-13 name),
-        not the deprecated get_user_node."""
+        """Callsite must import get_user_cli_node, not the deprecated
+        get_user_node."""
         import inspect
 
         from routers import websocket_chat
@@ -670,10 +669,10 @@ class TestSessionBindsToCliDevice:
         src = inspect.getsource(websocket_chat)
         # The session-binding block reads the CLI device specifically.
         assert "get_user_cli_node" in src, (
-            "websocket_chat.py must call get_user_cli_node for session-binding "
-            "(Task 13); it currently still calls the deprecated get_user_node."
+            "websocket_chat.py must call get_user_cli_node for "
+            "session-binding; the deprecated get_user_node is wrong here."
         )
         # And it reads deviceId, not the transient nodeId alias.
         assert 'node_info["deviceId"]' in src or "node_info['deviceId']" in src, (
-            "session-binding must read deviceId from the cli-node entry, not the transient nodeId alias (Task 13)."
+            "session-binding must read deviceId from the cli-node entry, not the transient nodeId alias."
         )

@@ -341,12 +341,11 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
 
     # 4. authToken is a freshly-minted service-token JWT whose ``sub``
     # claim equals the container's owner_id (org_id for org members,
-    # user_id for personal owners). Codex P1 finding 3 (PR #563): the
-    # BFF used to pass through the persisted ``service_token_encrypted``
-    # (decrypted), which for legacy member rows could carry the wrong
-    # ``sub``; the route now mints fresh per call. The smoke fixture
-    # plants an org-context auth (org_id="org_smoke_27"), so the new
-    # token must be keyed at the org_id.
+    # user_id for personal owners). The BFF must NOT pass through a
+    # persisted ``service_token_encrypted`` — legacy member rows could
+    # carry the wrong ``sub``; the route mints fresh per call. The smoke
+    # fixture plants an org-context auth (org_id="org_smoke_27"), so the
+    # new token must be keyed at the org_id.
     import jwt as _jwt_lib
 
     auth_token = adapter_config["authToken"]

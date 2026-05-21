@@ -1,8 +1,6 @@
 """Tests for /api/v1/admin/* auth + system-health + audit-viewer endpoints.
 
-TDD-style: these tests are written BEFORE `routers/admin.py` exists. They
-should fail (404 from FastAPI for unregistered router, or ImportError on the
-patch targets) until Phase C lands the implementation.
+TDD-style: these tests were written BEFORE `routers/admin.py` existed.
 
 The 4 endpoints under test:
 - GET /api/v1/admin/me

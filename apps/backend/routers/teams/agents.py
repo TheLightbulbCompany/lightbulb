@@ -114,7 +114,7 @@ def _repo() -> PaperclipRepo:
     """Build the paperclip-companies DDB repo.
 
     Short table name — ``core.dynamodb.get_table`` prepends the
-    ``isol8-{env}-`` prefix. See PR #414 review F1.
+    ``isol8-{env}-`` prefix.
     """
     return PaperclipRepo(table_name="paperclip-companies")
 
@@ -267,11 +267,11 @@ async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
     import) so test code that monkeypatches the deps module Just Works.
 
     The 409 / 202 / 503 status codes from ``resolve_teams_context``
-    propagate as-is. After Task 9, this function does NOT autoprovision
-    on the no-DDB-row branch — provisioning is owned by the canonical
-    ``/container/status`` trigger (Task 8) which polls every 3s during
-    pre-ready state. A 409 here therefore indicates an operator-level
-    error rather than a self-heal opportunity.
+    propagate as-is. This function does NOT autoprovision on the
+    no-DDB-row branch — provisioning is owned by the canonical
+    ``/container/status`` trigger which polls every 3s during pre-ready
+    state. A 409 here therefore indicates an operator-level error rather
+    than a self-heal opportunity.
     """
 
     async def session_factory(user_id: str) -> str:

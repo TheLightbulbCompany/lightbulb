@@ -12,13 +12,11 @@ Stubs gracefully when POSTHOG_PROJECT_API_KEY is unset (returns
 {events: [], stubbed: True}) — local dev works without a real
 PostHog project. Returns missing=True on 404 so the UI can render
 "no PostHog activity recorded" instead of treating the user as
-broken (CEO E5).
+broken.
 
-NOTE: previously queried `/api/projects/{id}/persons/?distinct_id=X` and
-iterated `person["events"]`, but the Persons API does NOT include an
-`events` field — it returns {type, id, uuid, distinct_ids, properties,
-...} only. That caused the Activity tab to always render "no recent
-events". We now query the Events API directly:
+NOTE: do NOT query `/api/projects/{id}/persons/?distinct_id=X` expecting
+a `person["events"]` field — the Persons API returns only {type, id,
+uuid, distinct_ids, properties, ...}. Use the Events API directly:
 `GET /api/projects/{id}/events/?distinct_id=X&limit=N` which returns
 `{results: [...]}` with each element already event-shaped.
 

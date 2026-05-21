@@ -1,4 +1,4 @@
-"""Tests for /api/v1/admin/users/* read endpoints (Phase C, RED until impl).
+"""Tests for /api/v1/admin/users/* read endpoints.
 
 Covers seven GET endpoints on the future ``routers/admin.py`` module:
 

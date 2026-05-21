@@ -53,7 +53,7 @@ async def test_create_draft_rejects_duplicate_slug(mock_client):
     """Regression: slug uniqueness must be atomic via TransactWriteItems +
     a slug-reservation row, not a read-then-put. Two concurrent create_draft
     calls for the same slug both pass the read but TransactWrite fails for
-    the loser (Codex P2 on PR #517, commit 0035a8ac)."""
+    the loser."""
     from botocore.exceptions import ClientError
 
     mock_client.return_value.transact_write_items = MagicMock(
@@ -95,7 +95,7 @@ async def test_submit_for_review_populates_published_at_for_moderation_gsi(mock_
     """Regression: status-published-index has published_at as its sort key.
     DynamoDB sparse-GSI semantics exclude items whose sort key is None, so
     submit_for_review MUST set published_at or the moderation queue is
-    structurally empty (Codex P1 on PR #517, commit 597f4a5d)."""
+    structurally empty."""
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
     await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
     kwargs = mock_listings.return_value.update_item.call_args.kwargs
@@ -122,8 +122,7 @@ async def test_submit_rejects_when_not_in_draft(mock_listings):
 async def test_reject_uses_conditional_status_check(mock_listings):
     """Regression: reject must guard with ConditionExpression so a malformed
     admin request can't upsert a fabricated listing (DDB UpdateItem upserts
-    by default) or transition a non-review row (Codex P1 on PR #517,
-    commit bee2fa1c).
+    by default) or transition a non-review row.
     """
     mock_listings.return_value.update_item = MagicMock()
     await marketplace_service.reject(listing_id="l1", version=1, notes="incomplete docs", rejected_by="admin_xyz")
@@ -153,7 +152,7 @@ async def test_get_by_slug_prefers_published_over_higher_review_version(mock_lis
     """Regression: during publish_v2 flow, a v2 row exists in 'review' state
     while v1 is still 'published'. Returning the highest version
     unconditionally would 404 the still-live v1 on the public storefront for
-    the duration of moderation (Codex P1 on PR #517, commit 40b698f8).
+    the duration of moderation.
     """
     mock_listings.return_value.query.return_value = {
         "Items": [
@@ -189,7 +188,7 @@ async def test_publish_v2_translates_transaction_cancel_to_invalid_state(mock_cl
     """Regression: publish_v2 raises ClientError(TransactionCanceledException)
     when either ConditionExpression fails (prev not 'published' or new not
     'review'). Translate to InvalidStateError so the route turns it into a
-    409 instead of a 500 (Codex P2 on PR #517, commit 0035a8ac)."""
+    409 instead of a 500."""
     from botocore.exceptions import ClientError
 
     mock_client.return_value.transact_write_items = MagicMock(
@@ -248,9 +247,9 @@ async def test_publish_v2_atomically_retires_prev_and_publishes_new(mock_client)
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
 async def test_submit_for_review_clears_prior_rejection_fields(mock_listings):
-    """Regression for Codex P2 on PR #692 (commits 21e0b010 + be4dbcfe):
-    once a seller resubmits a rejected draft, EVERY moderation field must
-    come off the row — rejection_notes, rejected_at, and rejected_by.
+    """Regression: once a seller resubmits a rejected draft, EVERY
+    moderation field must come off the row — rejection_notes,
+    rejected_at, and rejected_by.
     marketplace_search returns raw listing dicts, so anything left on the
     item leaks to buyers once the listing is approved (including the
     internal admin identifier in rejected_by)."""
@@ -315,9 +314,9 @@ async def test_update_draft_rejects_empty_patch():
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
 async def test_update_draft_targets_specified_version(mock_listings):
-    """Regression for Codex P2 on PR #692 (commit 6a56a509): hardcoding
-    version=1 means a rejected v_new=2 row (future republish flow) gets
-    409'd or mutates the wrong row. The version arg threads through.
+    """Regression: hardcoding version=1 means a rejected v_new=2 row
+    (future republish flow) gets 409'd or mutates the wrong row. The
+    version arg threads through.
     """
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"name": "X"}})
     await marketplace_service.update_draft(listing_id="l1", seller_id="user_abc", name="X", version=2)
@@ -358,7 +357,7 @@ async def test_update_draft_rejects_non_draft_or_wrong_seller(mock_listings):
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
 async def test_update_draft_allows_review_state_and_demotes_to_draft(mock_listings):
-    """Edit-during-review (PR #707): a seller editing a listing currently in
+    """Edit-during-review: a seller editing a listing currently in
     moderation review pulls it back to draft. Without that demotion, the
     moderation queue holds a row whose metadata is mid-mutation — a
     moderator could approve the stale snapshot. The seller resubmits after
@@ -381,8 +380,8 @@ async def test_update_draft_allows_review_state_and_demotes_to_draft(mock_listin
     new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
 )
 async def test_replace_artifact_persists_bundle_selection(mock_listings):
-    """Regression for Codex P2 on PR #692 (commit dd9da001): the bundle
-    selection lives in the artifact tarball but isn't recoverable from the
+    """Regression: the bundle selection lives in the artifact tarball but
+    isn't recoverable from the
     listing row alone. Without persisted columns, edit-mode would prefill
     bundleMcps=[]/bundleSkills=[] and silently re-export the artifact
     without the integrations buyers previously received."""

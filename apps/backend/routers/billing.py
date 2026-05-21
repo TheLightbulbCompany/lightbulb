@@ -259,8 +259,7 @@ class TrialCheckoutRequest(BaseModel):
     # the body never reaches billing_repo / Stripe with junk that would later
     # blow up ECS provisioning. byo_provider is optional even for byo_key —
     # the picker submits {provider_choice: "byo_key"} alone, then a later
-    # wizard step collects byo_provider + the actual API key (Codex P1
-    # #3179631946).
+    # wizard step collects byo_provider + the actual API key.
     provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] = Field(
         ...,
         description="chatgpt_oauth | byo_key | bedrock_claude",
@@ -303,16 +302,14 @@ async def create_trial_checkout(
     # for byo_key: ProvisioningStepper.ProviderPicker submits
     # {provider_choice: "byo_key"} alone, then collects byo_provider
     # (openai vs anthropic) and the actual API key in a later wizard step
-    # after Stripe checkout completes (Codex P1 #3179631946 — fixing the
-    # BYO signup regression). The gateway/provisioner enforces "byo_key
-    # + populated byo_provider + populated key" as a separate downstream
-    # gate before any agent run.
+    # after Stripe checkout completes. The gateway/provisioner enforces
+    # "byo_key + populated byo_provider + populated key" as a separate
+    # downstream gate before any agent run.
 
-    # Org-context users cannot pick ChatGPT OAuth — see
-    # memory/project_chatgpt_oauth_personal_only.md (decision 2026-04-30:
+    # Org-context users cannot pick ChatGPT OAuth:
     # OpenAI Plus terms forbid reselling, so org admins can't route their
     # teammates' prompts through their personal ChatGPT subscription; orgs
-    # must use Bedrock or BYOK). Frontend ProviderPicker hides the card too,
+    # must use Bedrock or BYOK. Frontend ProviderPicker hides the card too,
     # but a savvy user could call this endpoint directly without server-side
     # enforcement. Reject before any Stripe Checkout creation so a denied
     # caller never gets a session URL.
@@ -356,7 +353,7 @@ async def create_trial_checkout(
 
     # Org-context callers must be admins — without this gate any org member
     # could create a Stripe Checkout against the org's billing account and
-    # spawn a parallel subscription. Codex P1 on PR #393.
+    # spawn a parallel subscription.
     if auth.is_org_context:
         require_org_admin(auth)
 
@@ -375,7 +372,7 @@ async def create_trial_checkout(
     # regardless of state. Stripe Checkout in mode="subscription"
     # creates a NEW subscription on every successful return, so a retry
     # past the 5-minute idempotency-bucket window would charge the
-    # customer twice (Codex P1 on PR #393).
+    # customer twice.
     #
     # ``is_trial_blocked`` (canonical set in ``provision_gate.py``) blocks
     # any state that has ever billed or might still bill —
@@ -394,7 +391,7 @@ async def create_trial_checkout(
         )
     # Legacy rows: stripe_subscription_id is set but subscription_status
     # hasn't been backfilled. Verify the live Stripe state instead of
-    # creating a parallel subscription. Codex P1 round-4 on PR #393.
+    # creating a parallel subscription.
     if has_legacy_sub:
         sub_id = account["stripe_subscription_id"]
         try:
@@ -426,7 +423,6 @@ async def create_trial_checkout(
     # customer.subscription.created webhook lands (the webhook can be
     # delayed by seconds-to-minutes). The webhook handler still writes to
     # billing_repo as an idempotent backup.
-    # Spec: docs/superpowers/specs/2026-05-03-provider-choice-per-owner-design.md
     owner_type_val = account.get("owner_type", get_owner_type(auth))
     await billing_repo.set_provider_choice(
         account["owner_id"],
@@ -443,7 +439,7 @@ async def create_trial_checkout(
             # auth.user_id is the Clerk user actually clicking the button —
             # in org context this is the admin, NOT the org id. Threaded
             # through subscription_data.metadata so the webhook can persist
-            # provider_choice on the right per-Clerk-user row. Codex P1.
+            # provider_choice on the right per-Clerk-user row.
             clerk_user_id=auth.user_id,
             trial_days=14,
         )
@@ -630,8 +626,7 @@ async def set_auto_reload(
     )
     # Return JSON (not 204) — the frontend `useApi` helper unconditionally
     # parses successful responses with .json(), so an empty body is read as
-    # a parse failure and surfaces as an error in CreditsPanel. Codex P2 on
-    # PR #393.
+    # a parse failure and surfaces as an error in CreditsPanel.
     return {"status": "ok"}
 
 

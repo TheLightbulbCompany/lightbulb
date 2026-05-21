@@ -1,4 +1,4 @@
-"""Tests for the Teams Settings BFF (Task 12).
+"""Tests for the Teams Settings BFF.
 
 PATCH /settings is whitelisted to ``display_name`` + ``description``;
 unknown fields are 422'd at the FastAPI boundary.

@@ -178,7 +178,7 @@ async def deduct(
         # still negative — this races correctly against a concurrent top-up
         # that lands between the failed conditional decrement and this
         # write. Without the guard we'd zero the balance and erase the
-        # top-up entirely (Codex P1 on PR #393).
+        # top-up entirely.
         logger.warning(
             "Credit overdraft for owner_id=%s session=%s amount=%d — applying overdraft deduct",
             owner_id,

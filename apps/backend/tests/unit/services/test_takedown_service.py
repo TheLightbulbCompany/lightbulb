@@ -44,7 +44,6 @@ async def test_execute_full_takedown_pages_through_all_purchases(mock_takedowns,
     """Regression: takedown cascade must page through every purchase row.
     DynamoDB caps Query results at 1MB per page, and a single .query() call
     leaves later buyers with still-valid licenses on a high-volume listing
-    (Codex P2 on PR #517, commit bee2fa1c).
     """
     takedown_service.license_service.revoke.reset_mock()
     mock_purchases.return_value.query = MagicMock(
@@ -77,7 +76,6 @@ async def test_execute_full_takedown_flips_currently_published_version(mock_take
     hardcode v=1. Under publish_v2, v1 is retired and v2 is published; a
     hardcoded v=1 update marks the already-retired row, leaving v2 live —
     admin "success" but listing remains purchasable
-    (Codex P1 on PR #517, commit ba89f60c).
     """
     takedown_service.license_service.revoke.reset_mock()
     mock_purchases.return_value.query = MagicMock(return_value={"Items": []})
@@ -131,7 +129,7 @@ async def test_takedowns_grant_update_guards_with_attribute_exists(mock_takedown
 async def test_admin_initiated_takedown_404s_before_writing_pending_row(mock_takedowns, mock_listings, mock_purchases):
     """Regression: validate listing exists BEFORE writing the pending
     takedown row, so a phantom listing_id doesn't leave an orphan row
-    polluting the audit view (Codex P2 on PR #517, commit 977bf178)."""
+    polluting the audit view."""
     takedown_service.license_service.revoke.reset_mock()
     # Listing query returns empty → ListingNotFoundError before put_item.
     mock_listings.return_value.query = MagicMock(return_value={"Items": []})

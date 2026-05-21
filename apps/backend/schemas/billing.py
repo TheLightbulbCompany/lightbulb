@@ -7,15 +7,15 @@ class BillingAccountResponse(BaseModel):
     is_subscribed: bool
     current_spend: float
     lifetime_spend: float
-    # Stripe-native subscription state (Plan 3 §7.1 / §7.5). Frontend
-    # TrialBanner reads `subscription_status` + `trial_end` to render the
-    # days-left countdown. Both null until the user signs up.
+    # Stripe-native subscription state. Frontend TrialBanner reads
+    # `subscription_status` + `trial_end` to render the days-left
+    # countdown. Both null until the user signs up.
     subscription_status: str | None = None
     trial_end: int | None = None  # Unix epoch seconds
-    # Workstream B: provider_choice lives on billing_accounts (per-owner),
-    # not on the user row. Frontend reads these here to determine whether
-    # to show ProviderPicker (skip when set) and which provider's settings
-    # panel to render.
+    # provider_choice lives on billing_accounts (per-owner), not on the
+    # user row. Frontend reads these here to determine whether to show
+    # ProviderPicker (skip when set) and which provider's settings panel
+    # to render.
     provider_choice: str | None = None
     byo_provider: str | None = None
 

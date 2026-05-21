@@ -41,10 +41,10 @@ def _svix_headers() -> dict:
 
 @pytest.mark.asyncio
 async def test_organization_created_does_not_provision():
-    """After consolidation (Task 6), the webhook is record-keeping only.
-    Should NOT call build_paperclip_provisioning, provision_org, or
-    _enqueue_paperclip_retry. Provisioning fires from
-    /container/status (Task 8) when readiness is satisfied.
+    """The webhook is record-keeping only. Should NOT call
+    build_paperclip_provisioning, provision_org, or
+    _enqueue_paperclip_retry. Provisioning fires from /container/status
+    when readiness is satisfied.
     """
     from routers.webhooks import _handle_organization_created
 
@@ -73,12 +73,11 @@ async def test_organization_created_does_not_provision():
 
 @pytest.mark.asyncio
 async def test_membership_created_does_not_provision():
-    """After consolidation (Task 7), the membership webhook is
-    record-keeping + dual-tenancy invariant probe only. Should NOT call
-    provision_member, build_paperclip_provisioning, or
-    _enqueue_paperclip_retry. The new member's paperclip-membership row
-    will be added by the first /container/status poll on their session
-    via ensure_user_ready (Task 8)."""
+    """The membership webhook is record-keeping + dual-tenancy invariant
+    probe only. Should NOT call provision_member,
+    build_paperclip_provisioning, or _enqueue_paperclip_retry. The new
+    member's paperclip-membership row will be added by the first
+    /container/status poll on their session via ensure_user_ready."""
     from routers.webhooks import _handle_organization_membership_created
 
     with (
@@ -587,7 +586,7 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
 
 
 # ----------------------------------------------------------------------
-# _lookup_owner_email — Codex P1 (round 3): Clerk fallback
+# _lookup_owner_email — Clerk fallback
 # ----------------------------------------------------------------------
 
 

@@ -41,13 +41,12 @@ async def sync_user(
     else:
         status = "exists"
 
-    # provider_choice writes were removed in Workstream B (2026-05-03);
-    # the canonical write path is now POST /billing/trial-checkout, which
-    # persists synchronously to billing_accounts before creating the
-    # Stripe Checkout session. /users/sync is now a pure user-row sync.
-    # The ``body`` parameter is still accepted (so old frontends that
-    # send ``provider_choice``/``byo_provider`` keep working), but the
-    # fields are silently ignored on the server.
+    # The canonical write path for provider_choice is POST
+    # /billing/trial-checkout, which persists synchronously to billing_accounts
+    # before creating the Stripe Checkout session. /users/sync is a pure
+    # user-row sync. The ``body`` parameter is still accepted (so old
+    # frontends that send ``provider_choice``/``byo_provider`` keep working),
+    # but the fields are silently ignored on the server.
 
     # Note: no billing-account creation here. /users/sync fires from multiple
     # places (ChatLayout mount, onboarding, settings), and the caller's JWT
@@ -69,12 +68,11 @@ async def sync_user(
     summary="Get the authenticated user's record",
     description=(
         "Returns the authenticated user's id, plus provider_choice/byo_provider "
-        "for backwards compatibility. In Workstream B (2026-05-03) the canonical "
-        "store moved from user_repo (per-user) to billing_repo (per-owner); this "
-        "endpoint reads from billing_repo by resolved owner_id but still surfaces "
-        "the fields here so existing clients (ControlSidebar, LLMPanel, "
-        "OutOfCreditsBanner, ControlPanelRouter) keep working until they migrate "
-        "to GET /billing/account."
+        "for backwards compatibility. The canonical store lives on billing_repo "
+        "(per-owner); this endpoint reads from billing_repo by resolved owner_id "
+        "but still surfaces the fields here so existing clients (ControlSidebar, "
+        "LLMPanel, OutOfCreditsBanner, ControlPanelRouter) keep working until "
+        "they migrate to GET /billing/account."
     ),
     operation_id="get_me",
     responses={401: {"description": "Missing or invalid Clerk JWT token"}},
@@ -82,11 +80,11 @@ async def sync_user(
 async def get_me(auth: AuthContext = Depends(get_current_user)) -> dict:
     user = await user_repo.get(auth.user_id)
 
-    # Read provider_choice / byo_provider from billing_accounts (Workstream B
-    # storage model — per-owner, not per-user). We surface a copy on /me too
-    # for backwards compatibility with frontend code that still gates UI on
-    # these fields (e.g. ControlSidebar, ControlPanelRouter, LLMPanel,
-    # OutOfCreditsBanner). New clients should prefer GET /billing/account.
+    # Read provider_choice / byo_provider from billing_accounts (per-owner,
+    # not per-user). We surface a copy on /me too for backwards compatibility
+    # with frontend code that still gates UI on these fields (e.g.
+    # ControlSidebar, ControlPanelRouter, LLMPanel, OutOfCreditsBanner). New
+    # clients should prefer GET /billing/account.
     owner_id = resolve_owner_id(auth)
     billing_row = await billing_repo.get_by_owner_id(owner_id)
     provider_choice = (billing_row or {}).get("provider_choice")

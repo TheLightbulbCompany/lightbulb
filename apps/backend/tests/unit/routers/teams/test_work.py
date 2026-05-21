@@ -1,4 +1,4 @@
-"""Tests for the Teams Work BFF (Task 10) — Routines + Goals + Projects."""
+"""Tests for the Teams Work BFF — Routines + Goals + Projects."""
 
 from unittest.mock import AsyncMock, MagicMock
 

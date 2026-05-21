@@ -1,4 +1,4 @@
-"""Tests for the Teams Approvals BFF (Task 8).
+"""Tests for the Teams Approvals BFF.
 
 Audit §3: ``payload.adapterType`` is an indirect smuggling carrier;
 the body whitelist on ``ApproveApprovalBody`` / ``RejectApprovalBody``

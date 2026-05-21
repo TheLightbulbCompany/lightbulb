@@ -57,8 +57,8 @@ async def test_inactive_billing_account_with_subscription_id_returns_subscriptio
 
 @pytest.mark.asyncio
 async def test_billing_account_without_subscription_id_returns_signup_required():
-    """Codex P1 on PR #570: /billing/trial-checkout creates the billing-
-    account row BEFORE the Stripe Checkout session, so a user who
+    """/billing/trial-checkout creates the billing-account row BEFORE the
+    Stripe Checkout session, so a user who
     cancels Stripe (or whose checkout-session creation fails after the
     row is written) lands here with an account but no
     stripe_subscription_id and no subscription_status. /settings/billing
@@ -89,8 +89,8 @@ async def test_billing_account_without_subscription_id_returns_signup_required()
 
 @pytest.mark.asyncio
 async def test_canceled_subscription_with_cleared_subscription_id_routes_to_billing():
-    """Codex P1 round 2 on PR #570: the in-app cancel path
-    (BillingService.cancel_subscription) clears stripe_subscription_id
+    """The in-app cancel path (BillingService.cancel_subscription) clears
+    stripe_subscription_id
     but leaves subscription_status='canceled'. is_trial_blocked still
     rejects 'canceled' rows in /billing/trial-checkout, so we must NOT
     send these admins to the picker — they'd hit 409 already_subscribed.
@@ -255,8 +255,8 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
 
 @pytest.mark.asyncio
 async def test_byo_key_without_byo_provider_returns_byo_provider_required():
-    """Codex P1 (Finding D): provider_choice='byo_key' + byo_provider=None
-    must block ECS dispatch with code='byo_provider_required'.
+    """provider_choice='byo_key' + byo_provider=None must block ECS
+    dispatch with code='byo_provider_required'.
 
     The legacy ``POST /container/provision`` flow had a frontend
     ``needsProviderStep`` guard for the BYO sub-choice (Anthropic/OpenAI).

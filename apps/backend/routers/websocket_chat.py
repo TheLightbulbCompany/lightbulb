@@ -645,6 +645,35 @@ async def _intercept_agents_create(
         token=token,
     )
 
+    # Persist the Paperclip meta into openclaw.json so the marketplace
+    # publish slice extraction picks it up later. Best-effort: failures
+    # log but don't break the chat-side agent create flow (Paperclip
+    # already has the data via the create call above, which is the
+    # user-visible source of truth for Friday's roster).
+    if meta is not None:
+        try:
+            from core.services.config_patcher import apply_paperclip_meta
+
+            meta_block: dict = {"role": meta.role}
+            if meta.title:
+                meta_block["title"] = meta.title
+            if meta.capabilities:
+                meta_block["capabilities"] = meta.capabilities
+            if meta.icon:
+                meta_block["icon"] = meta.icon
+            await apply_paperclip_meta(
+                owner_id,
+                agent_id=paperclip_agent["id"],
+                meta=meta_block,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] config_patcher apply_paperclip_meta failed agent=%s err=%s",
+                owner_id,
+                paperclip_agent.get("id"),
+                exc,
+            )
+
     # Surface the new agent's UUID back to the frontend over the
     # management API. The frontend treats this as the resolution of the
     # original ``agents.create`` req — it will use ``agentId`` to start
@@ -724,6 +753,33 @@ async def _intercept_agents_update(
             owner_id,
             agent_id,
             e,
+        )
+
+    # Persist params.paperclip into openclaw.json on EFS so the
+    # marketplace publish slice extraction picks up the latest meta.
+    # Best-effort like the Paperclip PATCH — failures log but don't
+    # block the user-facing OpenClaw update.
+    try:
+        from core.services.config_patcher import apply_paperclip_meta
+
+        meta_block: dict = {"role": meta.role}
+        if meta.title:
+            meta_block["title"] = meta.title
+        if meta.capabilities:
+            meta_block["capabilities"] = meta.capabilities
+        if meta.icon:
+            meta_block["icon"] = meta.icon
+        await apply_paperclip_meta(
+            owner_id,
+            agent_id=agent_id,
+            meta=meta_block,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[%s] config_patcher apply_paperclip_meta failed agent=%s err=%s",
+            owner_id,
+            agent_id,
+            exc,
         )
 
     # Strip the Paperclip-only ``params`` block before the dispatcher

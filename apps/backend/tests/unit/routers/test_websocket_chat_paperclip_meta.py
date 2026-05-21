@@ -261,3 +261,135 @@ async def test_intercept_update_strips_params_even_when_paperclip_mirror_fails()
 
     assert "params" not in rpc_params
     assert rpc_params["agentId"] == "a"
+
+
+@pytest.mark.asyncio
+async def test_intercept_create_persists_paperclip_meta_to_openclaw_json():
+    """After pair_with_openclaw, the interceptor writes params.paperclip
+    into the buyer's openclaw.json via config_patcher — so marketplace
+    publish slice extraction picks up the meta later."""
+    create_call = AsyncMock(return_value={"id": "agent-uuid", "name": "Ray"})
+    apply_meta = AsyncMock(return_value=None)
+    mock_pair = AsyncMock(return_value=None)
+
+    with (
+        patch("routers.websocket_chat.create_paperclip_for_chat", new=create_call),
+        patch("routers.websocket_chat.pair_with_openclaw", new=mock_pair),
+        patch("routers.websocket_chat.get_gateway_pool", return_value=MagicMock()),
+        patch("routers.websocket_chat.get_management_api_client", new=AsyncMock(return_value=MagicMock())),
+        patch("core.services.config_patcher.apply_paperclip_meta", new=apply_meta),
+    ):
+        await _intercept_agents_create(
+            connection_id="c1",
+            req_id="r1",
+            user_id="u",
+            owner_id="owner",
+            params={
+                "name": "Ray",
+                "params": {
+                    "paperclip": {
+                        "role": "engineer",
+                        "title": "Backend dev",
+                        "capabilities": "Writes Python.",
+                    }
+                },
+            },
+            ip="10.0.0.1",
+            token="tok",
+        )
+
+    apply_meta.assert_awaited_once()
+    kwargs = apply_meta.await_args.kwargs
+    assert kwargs["agent_id"] == "agent-uuid"
+    assert kwargs["meta"]["role"] == "engineer"
+    assert kwargs["meta"]["title"] == "Backend dev"
+    assert kwargs["meta"]["capabilities"] == "Writes Python."
+
+
+@pytest.mark.asyncio
+async def test_intercept_create_skips_efs_write_when_no_meta():
+    """No params.paperclip in the RPC → no EFS write."""
+    create_call = AsyncMock(return_value={"id": "agent-uuid"})
+    apply_meta = AsyncMock(return_value=None)
+
+    with (
+        patch("routers.websocket_chat.create_paperclip_for_chat", new=create_call),
+        patch("routers.websocket_chat.pair_with_openclaw", new=AsyncMock()),
+        patch("routers.websocket_chat.get_gateway_pool", return_value=MagicMock()),
+        patch("routers.websocket_chat.get_management_api_client", new=AsyncMock(return_value=MagicMock())),
+        patch("core.services.config_patcher.apply_paperclip_meta", new=apply_meta),
+    ):
+        await _intercept_agents_create(
+            connection_id="c1",
+            req_id="r1",
+            user_id="u",
+            owner_id="owner",
+            params={"name": "Ray"},
+            ip="10.0.0.1",
+            token="tok",
+        )
+
+    apply_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_intercept_update_persists_paperclip_meta_to_openclaw_json():
+    """Update path also writes params.paperclip to the file, alongside
+    the Paperclip PATCH."""
+    mock_admin = MagicMock()
+    mock_admin.update_agent = AsyncMock(return_value={"id": "agent-uuid"})
+    mock_repo = MagicMock()
+    mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+    apply_meta = AsyncMock(return_value=None)
+
+    with (
+        patch("routers.websocket_chat.PaperclipAdminClient", return_value=mock_admin),
+        patch("routers.websocket_chat.PaperclipRepo", return_value=mock_repo),
+        patch(
+            "routers.websocket_chat.get_admin_session_cookie",
+            new=AsyncMock(return_value="c"),
+        ),
+        patch("core.services.config_patcher.apply_paperclip_meta", new=apply_meta),
+    ):
+        await _intercept_agents_update(
+            owner_id="owner",
+            params={
+                "agentId": "agent-uuid",
+                "params": {"paperclip": {"role": "engineer", "title": "Senior"}},
+            },
+        )
+
+    apply_meta.assert_awaited_once()
+    kwargs = apply_meta.await_args.kwargs
+    assert kwargs["agent_id"] == "agent-uuid"
+    assert kwargs["meta"]["role"] == "engineer"
+    assert kwargs["meta"]["title"] == "Senior"
+
+
+@pytest.mark.asyncio
+async def test_intercept_update_swallows_efs_write_errors():
+    """If config_patcher fails, the update interceptor must still
+    return without raising — the chat-side update still forwards to
+    OpenClaw for its allowed fields."""
+    mock_admin = MagicMock()
+    mock_admin.update_agent = AsyncMock(return_value={"id": "a"})
+    mock_repo = MagicMock()
+    mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+    apply_meta = AsyncMock(side_effect=RuntimeError("EFS write failed"))
+
+    with (
+        patch("routers.websocket_chat.PaperclipAdminClient", return_value=mock_admin),
+        patch("routers.websocket_chat.PaperclipRepo", return_value=mock_repo),
+        patch(
+            "routers.websocket_chat.get_admin_session_cookie",
+            new=AsyncMock(return_value="c"),
+        ),
+        patch("core.services.config_patcher.apply_paperclip_meta", new=apply_meta),
+    ):
+        # Should NOT raise
+        result = await _intercept_agents_update(
+            owner_id="u",
+            params={"agentId": "a", "params": {"paperclip": {"role": "engineer"}}},
+        )
+
+    assert result is False

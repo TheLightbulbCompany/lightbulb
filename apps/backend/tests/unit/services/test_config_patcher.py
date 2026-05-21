@@ -1074,3 +1074,109 @@ async def test_replace_provider_block_creates_missing_intermediates(monkeypatch)
     assert "amazon-bedrock" in result["models"]["providers"]
     assert "amazon-bedrock" in result["plugins"]["entries"]
     assert result["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/x"
+
+
+@pytest.mark.asyncio
+async def test_apply_paperclip_meta_creates_params_paperclip_block(tmp_path, monkeypatch):
+    """When the agent entry has no params yet, the helper creates the
+    nested structure and writes the full meta block."""
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_x"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text('{"agents": {"list": [{"id": "agent_abc", "name": "Ray"}]}}')
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_paperclip_meta(
+        "user_x",
+        agent_id="agent_abc",
+        meta={"role": "engineer", "title": "Backend dev", "capabilities": "Writes Python."},
+    )
+
+    written = json.loads(config_path.read_text())
+    agent = next(a for a in written["agents"]["list"] if a["id"] == "agent_abc")
+    assert agent["params"]["paperclip"]["role"] == "engineer"
+    assert agent["params"]["paperclip"]["title"] == "Backend dev"
+    assert agent["params"]["paperclip"]["capabilities"] == "Writes Python."
+
+
+@pytest.mark.asyncio
+async def test_apply_paperclip_meta_merges_with_existing_block(tmp_path, monkeypatch):
+    """Partial update: existing keys preserved, supplied keys overwritten."""
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_x"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text(
+        '{"agents": {"list": [{"id": "agent_abc", "params": {"paperclip": '
+        '{"role": "engineer", "title": "Original", "icon": "terminal"}}}]}}'
+    )
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_paperclip_meta(
+        "user_x",
+        agent_id="agent_abc",
+        meta={"title": "Updated"},
+    )
+
+    written = json.loads(config_path.read_text())
+    pc = written["agents"]["list"][0]["params"]["paperclip"]
+    # title updated, role + icon preserved
+    assert pc["title"] == "Updated"
+    assert pc["role"] == "engineer"
+    assert pc["icon"] == "terminal"
+
+
+@pytest.mark.asyncio
+async def test_apply_paperclip_meta_preserves_other_agent_entries(tmp_path, monkeypatch):
+    """A meta update for agent_abc must not touch agent_xyz."""
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_x"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text(
+        '{"agents": {"list": ['
+        '{"id": "agent_abc", "name": "A"},'
+        '{"id": "agent_xyz", "name": "X", "params": {"paperclip": {"role": "cmo"}}}'
+        "]}}"
+    )
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_paperclip_meta(
+        "user_x",
+        agent_id="agent_abc",
+        meta={"role": "engineer"},
+    )
+
+    written = json.loads(config_path.read_text())
+    by_id = {a["id"]: a for a in written["agents"]["list"]}
+    assert by_id["agent_abc"]["params"]["paperclip"]["role"] == "engineer"
+    # xyz untouched
+    assert by_id["agent_xyz"]["params"]["paperclip"]["role"] == "cmo"
+
+
+@pytest.mark.asyncio
+async def test_apply_paperclip_meta_noop_when_agent_id_missing(tmp_path, monkeypatch):
+    """If the agent_id isn't in agents.list (e.g. user deleted it
+    concurrently), the helper skips the write entirely — no orphan
+    entry gets created, no exception raised."""
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_x"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    original = '{"agents": {"list": [{"id": "agent_abc"}]}}'
+    config_path.write_text(original)
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_paperclip_meta(
+        "user_x",
+        agent_id="agent_phantom",
+        meta={"role": "engineer"},
+    )
+
+    # File untouched (no agent_phantom entry created).
+    assert config_path.read_text() == original

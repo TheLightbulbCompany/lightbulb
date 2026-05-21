@@ -30,6 +30,7 @@ from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
 )
+from core.services.paperclip_meta import derive_from_listing, read_from_agent_entry
 from schemas import marketplace as schemas
 
 
@@ -415,14 +416,35 @@ async def deploy_listing(
     # new_agent_id, so OpenClaw and Paperclip share the same id. Mirror
     # of the /chat agents.create interception in websocket_chat.py and
     # the /teams create_agent route.
-    agent_name = (slice_.get("agent") or {}).get("name") or listing.get("name") or slug
-    agent_role = (slice_.get("agent") or {}).get("role") or "general"
+    #
+    # Build PaperclipMeta from the slice. If the slice's agent entry has
+    # ``params.paperclip``, use those values (seller explicitly tagged
+    # the agent at publish time). Otherwise — typical for listings
+    # published before the meta-roundtrip feature shipped — derive
+    # title + capabilities from the listing fields so the buyer's
+    # Paperclip profile is at least non-empty.
+    slice_agent = slice_.get("agent") or {}
+    has_paperclip_block = isinstance(slice_agent.get("params"), dict) and isinstance(
+        slice_agent["params"].get("paperclip"), dict
+    )
+    if has_paperclip_block:
+        meta = read_from_agent_entry(slice_agent)
+    else:
+        meta = derive_from_listing(
+            name=listing.get("name"),
+            description_md=listing.get("description_md"),
+        )
+
+    agent_name = slice_agent.get("name") or listing.get("name") or slug
     try:
         paperclip_agent = await create_paperclip_for_marketplace(
             buyer_user_id=auth.user_id,
             owner_id=owner_id,
             name=agent_name,
-            role=agent_role,
+            # meta.role drives — keeps the precedence rule consistent
+            # with the chat path (see resolve_create_agent_fields).
+            role=None,
+            meta=meta,
         )
     except Exception as exc:
         logger.exception(

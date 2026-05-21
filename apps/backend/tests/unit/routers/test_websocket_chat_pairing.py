@@ -115,7 +115,7 @@ async def test_chat_paperclip_create_mints_service_token_with_owner_id(monkeypat
 
     # Stub Paperclip lookup so we never touch DDB / HTTP.
     monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle._resolve_company_id_for_owner",
+        "core.services.paperclip_agent_lifecycle.resolve_company_id_for_owner",
         AsyncMock(return_value="co_xyz"),
     )
 

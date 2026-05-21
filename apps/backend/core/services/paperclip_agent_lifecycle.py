@@ -27,7 +27,8 @@ from core.services.paperclip_adapter_config import (
     OPENCLAW_GATEWAY_TYPE,
     synthesize_openclaw_adapter,
 )
-from core.services.paperclip_openclaw_pairing import _resolve_company_id_for_owner
+from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fields
+from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 from core.services.paperclip_provisioning import _ws_gateway_url
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ async def create_paperclip_for_chat(
     name: str,
     role: str | None,
     model: str | None,
+    meta: PaperclipMeta | None = None,
 ) -> dict:
     """Create a Paperclip agent invoked from /chat WS RPC interception.
 
@@ -53,9 +55,14 @@ async def create_paperclip_for_chat(
     server-side from the agent's role + company defaults. We thread the
     field through anyway so future schema additions don't require a
     second signature change.
+
+    ``meta``: optional :class:`PaperclipMeta` carrying role/title/
+        capabilities/icon parsed off ``params.paperclip`` at the chat
+        boundary. When supplied, threads those fields into
+        ``create_agent``. See :mod:`core.services.paperclip_meta`.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         raise RuntimeError(
             f"owner {owner_id} has no Paperclip company — agent create blocked. Re-run org provisioning."
@@ -88,13 +95,14 @@ async def create_paperclip_for_chat(
         # class as memory feedback_stripe_idempotency_with_stable_keys.
         # Paperclip's create_agent treats idempotency_key as Optional, so
         # dropping it is safe.
+        fields = resolve_create_agent_fields(role=role, meta=meta)
         return await admin_client.create_agent(
             company_id=company_id,
             name=name,
-            role=role or "general",
             adapter_type=OPENCLAW_GATEWAY_TYPE,
             adapter_config=adapter_config,
             session_cookie=admin_cookie,
+            **fields,
         )
     finally:
         await http.aclose()
@@ -121,7 +129,7 @@ async def delete_paperclip_for_chat(
     user_id for personal), mirroring the create path.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         # No Paperclip company — owner was never provisioned through the
         # paired path, or the row was already cleaned. Nothing to delete.
@@ -152,6 +160,7 @@ async def create_paperclip_for_marketplace(
     owner_id: str,
     name: str,
     role: str | None,
+    meta: PaperclipMeta | None = None,
 ) -> dict:
     """Create a Paperclip agent for a marketplace install.
 
@@ -170,9 +179,13 @@ async def create_paperclip_for_marketplace(
         falls back to the listing's slug.
     ``role``: Paperclip role string (e.g. "general"). Defaults to "general"
         when None.
+    ``meta``: optional :class:`PaperclipMeta` carrying role/title/
+        capabilities/icon derived from the listing's slice. When supplied,
+        threads those fields into ``create_agent``. See
+        :mod:`core.services.paperclip_meta`.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         raise RuntimeError(
             f"owner {owner_id} has no Paperclip company — marketplace deploy blocked. Re-run org provisioning."
@@ -190,13 +203,14 @@ async def create_paperclip_for_marketplace(
             service_token=service_token.mint(owner_id),
             user_id=buyer_user_id,
         )
+        fields = resolve_create_agent_fields(role=role, meta=meta)
         return await admin_client.create_agent(
             company_id=company_id,
             name=name,
-            role=role or "general",
             adapter_type=OPENCLAW_GATEWAY_TYPE,
             adapter_config=adapter_config,
             session_cookie=admin_cookie,
+            **fields,
         )
     finally:
         await http.aclose()
@@ -213,7 +227,7 @@ async def delete_paperclip_for_marketplace(
     a missing or already-cleaned agent is a no-op.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await _resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         logger.info(
             "delete_paperclip_for_marketplace: owner %s has no Paperclip company — skip",

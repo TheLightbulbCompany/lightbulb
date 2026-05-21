@@ -16,8 +16,10 @@ import secrets
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 
+from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.observability.metrics import put_metric
 from core.services.connection_service import ConnectionService, ConnectionServiceError
@@ -29,11 +31,18 @@ from core.services.node_proxy import (
     is_node_connection,
     submit_signed_connect as submit_node_signed_connect,
 )
+from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
+from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_chat,
     delete_paperclip_for_chat,
 )
-from core.services.paperclip_openclaw_pairing import pair_with_openclaw
+from core.services.paperclip_meta import PaperclipMeta, read_from_agent_entry
+from core.services.paperclip_openclaw_pairing import (
+    pair_with_openclaw,
+    resolve_company_id_for_owner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -606,12 +615,23 @@ async def _intercept_agents_create(
         # Let OpenClaw's validator reject — we don't duplicate validation.
         return False
 
+    # Pull Paperclip meta out of the RPC params' own ``params`` sub-dict.
+    # The chat UI builds this from its AgentPaperclipFields form. Absent
+    # for legacy clients → meta=None → role defaults to "general".
+    rpc_params_inner = (params or {}).get("params") or {}
+    meta: PaperclipMeta | None = (
+        read_from_agent_entry({"params": rpc_params_inner})
+        if isinstance(rpc_params_inner, dict) and rpc_params_inner.get("paperclip")
+        else None
+    )
+
     paperclip_agent = await create_paperclip_for_chat(
         creator_user_id=user_id,
         owner_id=owner_id,
         name=name,
         role=role,
         model=model,
+        meta=meta,
     )
 
     # pair_with_openclaw issues both agents.create and agents.update RPCs
@@ -624,6 +644,35 @@ async def _intercept_agents_create(
         ip=ip,
         token=token,
     )
+
+    # Persist the Paperclip meta into openclaw.json so the marketplace
+    # publish slice extraction picks it up later. Best-effort: failures
+    # log but don't break the chat-side agent create flow (Paperclip
+    # already has the data via the create call above, which is the
+    # user-visible source of truth for Friday's roster).
+    if meta is not None:
+        try:
+            from core.services.config_patcher import apply_paperclip_meta
+
+            meta_block: dict = {"role": meta.role}
+            if meta.title:
+                meta_block["title"] = meta.title
+            if meta.capabilities:
+                meta_block["capabilities"] = meta.capabilities
+            if meta.icon:
+                meta_block["icon"] = meta.icon
+            await apply_paperclip_meta(
+                owner_id,
+                agent_id=paperclip_agent["id"],
+                meta=meta_block,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] config_patcher apply_paperclip_meta failed agent=%s err=%s",
+                owner_id,
+                paperclip_agent.get("id"),
+                exc,
+            )
 
     # Surface the new agent's UUID back to the frontend over the
     # management API. The frontend treats this as the resolution of the
@@ -653,6 +702,111 @@ async def _intercept_agents_create(
         },
     )
     return True
+
+
+async def _intercept_agents_update(
+    *,
+    owner_id: str,
+    params: dict,
+) -> bool:
+    """Mirror Paperclip-relevant fields from an agents.update RPC over
+    to Paperclip's PATCH /agents.
+
+    Does NOT consume the RPC — returns False so the dispatcher still
+    forwards to OpenClaw (the user's update probably includes
+    OpenClaw-only fields like model / identity / skills which only
+    OpenClaw cares about).
+
+    Best-effort: a Paperclip PATCH failure is logged but never raised.
+    OpenClaw is the source of truth for the agent's runtime state; if
+    Paperclip's row drifts, the next manual edit or a reconciliation
+    job can re-sync.
+    """
+    rpc_params_inner = (params or {}).get("params") or {}
+    if not isinstance(rpc_params_inner, dict):
+        return False  # No meta in payload — nothing to mirror.
+    pc_block = rpc_params_inner.get("paperclip")
+    if not isinstance(pc_block, dict):
+        return False
+
+    meta = read_from_agent_entry({"params": rpc_params_inner})
+    agent_id = (params or {}).get("agentId")
+    if not isinstance(agent_id, str) or not agent_id:
+        return False
+
+    try:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+        if company_id:
+            async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+                admin = PaperclipAdminClient(http_client=http)
+                cookie = await get_admin_session_cookie(http)
+                await admin.update_agent(
+                    session_cookie=cookie,
+                    company_id=company_id,
+                    agent_id=agent_id,
+                    role=meta.role,
+                    title=meta.title,
+                    capabilities=meta.capabilities,
+                    icon=meta.icon,
+                )
+    except (PaperclipApiError, httpx.HTTPError, RuntimeError) as e:
+        logger.warning(
+            "[%s] paperclip update_agent mirror failed agent=%s err=%s",
+            owner_id,
+            agent_id,
+            e,
+        )
+
+    # Persist params.paperclip into openclaw.json on EFS so the
+    # marketplace publish slice extraction picks up the latest meta.
+    # Best-effort like the Paperclip PATCH — failures log but don't
+    # block the user-facing OpenClaw update.
+    #
+    # Order matters: this MUST run BEFORE the ``params`` strip below.
+    # We read straight from the raw ``pc_block`` here (not the
+    # ``meta`` dataclass) so the UI's empty-string-clear contract
+    # round-trips: a field sent as ``""`` lands in openclaw.json as
+    # ``""`` and is then pruned post-merge by ``apply_paperclip_meta``
+    # so the file never carries empty values. ``meta``'s read path
+    # already normalized whitespace strings to ``None``, which would
+    # break the "explicitly clear this field" semantic.
+    try:
+        from core.services.config_patcher import apply_paperclip_meta
+
+        meta_block: dict = {"role": meta.role}
+        for key in ("title", "capabilities", "icon"):
+            raw = pc_block.get(key)
+            if isinstance(raw, str):
+                meta_block[key] = raw.strip()
+        await apply_paperclip_meta(
+            owner_id,
+            agent_id=agent_id,
+            meta=meta_block,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[%s] config_patcher apply_paperclip_meta failed agent=%s err=%s",
+            owner_id,
+            agent_id,
+            exc,
+        )
+
+    # Strip the Paperclip-only ``params`` block before the dispatcher
+    # forwards this RPC to OpenClaw. OpenClaw's ``agents.update`` AJV
+    # schema is ``additionalProperties: false`` and only accepts
+    # ``agentId, name, workspace, model, emoji, avatar`` — leaving
+    # ``params`` in would 422 the whole call and surface as a save
+    # error to the user. After stripping, if the user only changed
+    # paperclip fields the forwarded RPC is just ``{agentId}`` which
+    # OpenClaw accepts as a no-op. Codex P1 on PR #720.
+    #
+    # NOTE: the file write + Paperclip PATCH above already captured
+    # everything they need from ``params`` before this point. Do NOT
+    # move this strip ahead of those calls.
+    if isinstance(params, dict) and "params" in params:
+        del params["params"]
+    return False
 
 
 async def _process_rpc_background(
@@ -739,6 +893,25 @@ async def _process_rpc_background(
             if consumed:
                 return
             # else fall through to forward the original RPC (validator-reject path).
+
+        if method == "agents.update":
+            try:
+                consumed = await _intercept_agents_update(
+                    owner_id=owner_id,
+                    params=params,
+                )
+            except Exception as exc:
+                # Defensive: never let our mirror code crash the RPC.
+                logger.exception(
+                    "[%s] agents.update interception failed: %s",
+                    user_id,
+                    exc,
+                )
+                consumed = False
+            # update interceptor always returns False — fall through
+            # to the gateway forwarding below.
+            if consumed:
+                return
 
         pool = get_gateway_pool()
         result = await pool.send_rpc(

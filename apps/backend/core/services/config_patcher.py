@@ -425,6 +425,97 @@ async def apply_deploy_aux_mutations(
     )
 
 
+async def apply_paperclip_meta(
+    owner_id: str,
+    *,
+    agent_id: str,
+    meta: dict,
+) -> None:
+    """Deep-merge ``params.paperclip`` into ``agents.list[idx]`` for the
+    matching ``agent_id`` in the owner's ``openclaw.json``.
+
+    OpenClaw's on-disk ``AgentEntrySchema`` accepts arbitrary
+    ``params`` (``z.record(z.string(), z.unknown())``) but its
+    ``agents.update`` RPC schema rejects it. So we write the
+    meta directly to the file via the existing locked RMW path —
+    same mechanism ``apply_deploy_aux_mutations`` uses for plugins /
+    mcp / skills writes.
+
+    The data is purely a carrier for marketplace publish slice
+    extraction; nothing inside OpenClaw consumes
+    ``params.paperclip`` at runtime, so chokidar reload lag is
+    irrelevant.
+
+    ``meta`` is the partial paperclip block, e.g.
+    ``{"role": "engineer", "title": "Backend dev"}``. Existing values
+    for unspecified keys are preserved (deep-merge semantics; matches
+    ``apply_deploy_aux_mutations``'s plugins-merge contract).
+
+    Empty-string sentinel = "clear this field". Matches the
+    ``AgentOverviewTab`` UI contract: the form always sends
+    ``title``/``capabilities``/``icon`` as trimmed strings — an empty
+    string means the user cleared the field, and the deep-merge would
+    otherwise leave the old value in place. After merging we sweep
+    these three keys and drop any whose value is a whitespace-only
+    string, so the on-disk block never carries empty sentinels.
+
+    No-op if the agent isn't in ``agents.list`` (the user might have
+    deleted it concurrently — surface as a soft failure rather than
+    a write to a phantom entry).
+    """
+
+    def _mutate(current: dict) -> bool:
+        agents_obj = current.get("agents")
+        if isinstance(agents_obj, list):
+            # Legacy flat-list tolerance (matches apply_deploy_aux_mutations).
+            agents_list = list(agents_obj)
+            agents_obj = {"list": agents_list}
+            current["agents"] = agents_obj
+        elif isinstance(agents_obj, dict):
+            agents_list = agents_obj.get("list")
+            if not isinstance(agents_list, list):
+                return False
+        else:
+            return False
+
+        for idx, entry in enumerate(agents_list):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("id") != agent_id:
+                continue
+            params = entry.get("params")
+            if not isinstance(params, dict):
+                params = {}
+                entry["params"] = params
+            existing_pc = params.get("paperclip")
+            if not isinstance(existing_pc, dict):
+                existing_pc = {}
+            existing_pc.update(meta)
+            # Empty-string sentinel means "clear this field" — match
+            # the frontend's contract in AgentOverviewTab. Without
+            # this sweep, the deep-merge would leave the old value
+            # in place and the user can't actually remove a
+            # once-set title/capabilities/icon.
+            for k in ("title", "capabilities", "icon"):
+                v = existing_pc.get(k)
+                if isinstance(v, str) and not v.strip():
+                    existing_pc.pop(k, None)
+            params["paperclip"] = existing_pc
+            agents_list[idx] = entry
+            agents_obj["list"] = agents_list
+            return True
+
+        # agent_id not found — no-op write, return False so the
+        # _locked_rmw helper skips the file write entirely.
+        return False
+
+    await _locked_rmw(
+        owner_id,
+        _mutate,
+        f"paperclip-meta merge agent_id={agent_id!r}",
+    )
+
+
 async def delete_openclaw_config_path(
     owner_id: str,
     path: list[str],

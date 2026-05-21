@@ -607,11 +607,16 @@ def test_deploy_mints_paperclip_agent_first_and_threads_uuid_to_catalog(
     resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
     assert resp.status_code == 200, resp.text
 
-    # Paperclip mint was called first with the slice's agent name + role.
+    # Paperclip mint was called first with the slice's agent name. Role
+    # now lives on the ``meta`` kwarg (PaperclipMeta) — see T5 of the
+    # paperclip-meta roundtrip plan; the top-level ``role`` kwarg is
+    # passed as ``None`` so meta.role drives, matching the chat path.
     mock_create_pc.assert_awaited_once()
     pc_kwargs = mock_create_pc.await_args.kwargs
     assert pc_kwargs["name"] == "Demo"
-    assert pc_kwargs["role"] == "general"
+    assert pc_kwargs["role"] is None
+    assert pc_kwargs["meta"] is not None
+    assert pc_kwargs["meta"].role == "general"
 
     # Catalog deploy received the Paperclip-minted UUID.
     catalog.deploy_from_artifact.assert_awaited_once()
@@ -765,6 +770,113 @@ def test_deploy_rolls_back_paperclip_when_resolve_running_container_raises(
     catalog.deploy_from_artifact.assert_not_awaited()
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-9999"
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_deploy_passes_paperclip_meta_from_slice(
+    mock_get_by_slug,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """When the slice's agent entry has ``params.paperclip``, the deploy
+    forwards a PaperclipMeta with those values to
+    ``create_paperclip_for_marketplace``. Sellers who explicitly tagged
+    their agent with a role/title/capabilities get those values through
+    to the buyer's Paperclip profile."""
+    mock_get_by_slug.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "agent-uuid-1234", "name": "Ray"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={
+            "agent": {
+                "name": "Ray",
+                "params": {
+                    "paperclip": {
+                        "role": "engineer",
+                        "title": "Restaurant booking specialist",
+                        "capabilities": "Books reservations on Resy.",
+                    }
+                },
+            },
+            "plugins": {},
+            "tools": {},
+            "cron_jobs": [],
+        }
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "agent-uuid-1234"})
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+
+    assert resp.status_code == 200, resp.text
+    mock_create_pc.assert_awaited_once()
+    kwargs = mock_create_pc.await_args.kwargs
+    # meta carried the seller's tags
+    assert kwargs["meta"] is not None
+    assert kwargs["meta"].role == "engineer"
+    assert kwargs["meta"].title == "Restaurant booking specialist"
+    assert kwargs["meta"].capabilities == "Books reservations on Resy."
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_deploy_derives_paperclip_meta_from_listing_when_slice_missing_block(
+    mock_get_by_slug,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """Listings published before this feature shipped have no
+    ``params.paperclip`` in the slice. Deploy falls back to
+    ``derive_from_listing`` — title=listing.name,
+    capabilities=listing.description_md, role="general"."""
+    listing = _published_listing(price_cents=0)
+    # Override with a clearly recognizable description so we can assert on it.
+    listing["description_md"] = "Books Resy reservations. Knows my taste."
+    listing["name"] = "Ray"
+    mock_get_by_slug.return_value = listing
+    mock_create_pc.return_value = {"id": "agent-uuid-2", "name": "Ray"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    # Slice has agent block but NO params.paperclip
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={
+            "agent": {"name": "Ray"},
+            "plugins": {},
+            "tools": {},
+            "cron_jobs": [],
+        }
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "agent-uuid-2"})
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+
+    assert resp.status_code == 200, resp.text
+    kwargs = mock_create_pc.await_args.kwargs
+    assert kwargs["meta"] is not None
+    # role defaults to "general" — no signal to pick something else
+    assert kwargs["meta"].role == "general"
+    # derived from listing fields
+    assert kwargs["meta"].title == "Ray"
+    assert kwargs["meta"].capabilities == "Books Resy reservations. Knows my taste."
 
 
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)

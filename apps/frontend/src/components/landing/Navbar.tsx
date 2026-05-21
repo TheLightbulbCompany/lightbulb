@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useAuth, UserButton } from "@clerk/nextjs";
 
@@ -10,8 +11,15 @@ export function Navbar() {
   const linksRef = useRef<HTMLDivElement>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const { isSignedIn, isLoaded } = useAuth();
+  const pathname = usePathname() ?? "/";
+  const onLanding = pathname === "/";
+  const onMarketplace = pathname.startsWith("/marketplace");
+
+  // From a non-landing route, scroll anchors must navigate back to "/" first.
+  const anchor = (id: string) => (onLanding ? `#${id}` : `/#${id}`);
 
   useEffect(() => {
+    if (!onLanding) return; // Active-state observer only meaningful on the landing page.
     const linksEl = linksRef.current;
     if (!linksEl) return;
 
@@ -32,6 +40,7 @@ export function Navbar() {
       { id: "home", el: document.querySelector(".landing-hero") },
       { id: "features", el: document.getElementById("features") },
       { id: "team", el: document.getElementById("team") },
+      { id: "marketplace", el: document.getElementById("marketplace") },
       { id: "pricing", el: document.getElementById("pricing") },
       { id: "faq", el: document.getElementById("faq") },
       { id: "goosetown", el: document.getElementById("goosetown") },
@@ -59,7 +68,7 @@ export function Navbar() {
         link.removeEventListener("click", clickHandlers[i]);
       });
     };
-  }, []);
+  }, [onLanding]);
 
   // Close mobile menu on resize to desktop
   useEffect(() => {
@@ -69,29 +78,35 @@ export function Navbar() {
     return () => mq.removeEventListener("change", handler);
   }, []);
 
+  const initialActive = (id: string) => {
+    if (onLanding) return id === "home" ? "active" : undefined;
+    if (onMarketplace) return id === "marketplace" ? "active" : undefined;
+    return undefined;
+  };
+
   return (
     <nav className="landing-nav" aria-label="Main navigation">
       <Logo size="md" />
       <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`} ref={linksRef}>
-        <Link href="/" data-section="home" className="active">
+        <Link href="/" data-section="home" className={initialActive("home")}>
           Home
         </Link>
-        <Link href="#features" data-section="features">
+        <Link href={anchor("features")} data-section="features" className={initialActive("features")}>
           Features
         </Link>
-        <Link href="#team" data-section="team">
+        <Link href={anchor("team")} data-section="team" className={initialActive("team")}>
           Team
         </Link>
-        <Link href="/marketplace">
+        <Link href={anchor("marketplace")} data-section="marketplace" className={initialActive("marketplace")}>
           Marketplace
         </Link>
-        <Link href="#pricing" data-section="pricing">
+        <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
           Pricing
         </Link>
-        <Link href="#faq" data-section="faq">
+        <Link href={anchor("faq")} data-section="faq" className={initialActive("faq")}>
           FAQ
         </Link>
-        <Link href="#goosetown" data-section="goosetown">
+        <Link href={anchor("goosetown")} data-section="goosetown" className={initialActive("goosetown")}>
           GooseTown<span className="nav-alpha">alpha</span>
         </Link>
         {isLoaded && !isSignedIn && (

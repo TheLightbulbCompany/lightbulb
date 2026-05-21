@@ -2,6 +2,7 @@ import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 import type { Metadata } from "next";
 
+import { Navbar } from "@/components/landing/Navbar";
 import { UserSync } from "@/components/marketplace/storefront/UserSync";
 
 export const metadata: Metadata = {
@@ -11,33 +12,37 @@ export const metadata: Metadata = {
 
 export default function MarketplaceLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="editorial-page flex min-h-screen flex-col">
+    <div className="editorial-page flex min-h-screen flex-col pt-[65px]">
       <UserSync />
-      <header className="sticky top-0 z-20 border-b border-[var(--edge)] bg-[rgba(250,247,242,0.92)] backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <Link
-            href="/marketplace"
-            className="font-editorial-serif text-[18px] font-bold uppercase tracking-[0.14em] text-[var(--ink)] no-underline"
-          >
-            ISOL8
-          </Link>
-          <nav className="flex items-center gap-1 text-sm">
+      <Navbar />
+      <div className="marketplace-subnav sticky top-[65px] z-10 border-b border-[var(--edge)] bg-[rgba(243,239,230,0.92)] backdrop-blur-xl">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3 text-sm">
+          <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--mute)]">
+            Marketplace
+          </div>
+          <nav className="flex items-center gap-1">
+            <Link
+              href="/marketplace"
+              className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+            >
+              Featured
+            </Link>
             <Link
               href="/marketplace/agents"
-              className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+              className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
             >
               Browse
             </Link>
             <SignedIn>
               <Link
                 href="/marketplace/buyer"
-                className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+                className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
               >
                 Purchases
               </Link>
               <Link
                 href="/marketplace/dashboard"
-                className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+                className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
               >
                 Earnings
               </Link>
@@ -54,7 +59,7 @@ export default function MarketplaceLayout({ children }: { children: React.ReactN
             </SignedOut>
           </nav>
         </div>
-      </header>
+      </div>
       <div className="flex-1">{children}</div>
       <footer className="border-t border-[var(--edge)] bg-[var(--cream-deeper)]">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-6 text-xs text-[var(--mute)]">

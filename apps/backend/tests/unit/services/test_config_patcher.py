@@ -1180,3 +1180,36 @@ async def test_apply_paperclip_meta_noop_when_agent_id_missing(tmp_path, monkeyp
 
     # File untouched (no agent_phantom entry created).
     assert config_path.read_text() == original
+
+
+@pytest.mark.asyncio
+async def test_apply_paperclip_meta_clears_field_when_value_is_empty_string(tmp_path, monkeypatch):
+    """Codex P1 round 2: the UI sends every meta field as a trimmed
+    string on save, including ``""`` to clear. The merge must drop
+    title/capabilities/icon keys whose value is empty so the on-disk
+    block actually loses the previously-set value."""
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_x"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text(
+        '{"agents": {"list": [{"id": "agent_abc", "params": {"paperclip": '
+        '{"role": "engineer", "title": "Original", "capabilities": "Old caps", '
+        '"icon": "terminal"}}}]}}'
+    )
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_paperclip_meta(
+        "user_x",
+        agent_id="agent_abc",
+        meta={"role": "engineer", "title": "", "capabilities": "   ", "icon": ""},
+    )
+
+    written = json.loads(config_path.read_text())
+    pc = written["agents"]["list"][0]["params"]["paperclip"]
+    # role preserved, the three clearable fields dropped entirely.
+    assert pc["role"] == "engineer"
+    assert "title" not in pc
+    assert "capabilities" not in pc
+    assert "icon" not in pc

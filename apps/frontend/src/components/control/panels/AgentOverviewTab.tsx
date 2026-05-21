@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { ModelSelector } from "@/components/chat/ModelSelector";
@@ -73,20 +73,60 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
   }));
   const [savingMeta, setSavingMeta] = useState(false);
   const [metaError, setMetaError] = useState<string | null>(null);
+  // Track whether the user has touched the meta form. Once dirty we
+  // stop auto-syncing from config.get's SWR result so we don't
+  // clobber in-flight edits. Reset after a successful save so a
+  // future config refresh can re-seed if needed.
+  const [metaDirty, setMetaDirty] = useState(false);
+
+  // Re-seed meta from the eventual config.get response. The initial
+  // useState lazy initializer ran before SWR resolved, so without
+  // this effect the form would default to general/empty and a Save
+  // would overwrite the stored values. Skipped once the user starts
+  // typing.
+  useEffect(() => {
+    if (metaDirty || !existingPaperclip) return;
+    setMeta({
+      role:
+        typeof existingPaperclip.role === "string" &&
+        PAPERCLIP_AGENT_ROLES.includes(existingPaperclip.role as PaperclipRole)
+          ? (existingPaperclip.role as PaperclipRole)
+          : "general",
+      title: existingPaperclip.title,
+      capabilities: existingPaperclip.capabilities,
+      icon: existingPaperclip.icon,
+    });
+  }, [existingPaperclip, metaDirty]);
+
+  // Wrap setMeta so any user interaction flips the dirty flag,
+  // preventing the effect above from undoing the user's edits the
+  // next time SWR revalidates.
+  const setMetaFromUser = useCallback((next: PaperclipMeta) => {
+    setMetaDirty(true);
+    setMeta(next);
+  }, []);
 
   const saveMeta = useCallback(async () => {
     setSavingMeta(true);
     setMetaError(null);
     try {
-      const block: Record<string, string> = { role: meta.role };
-      if (meta.title && meta.title.trim()) block.title = meta.title.trim();
-      if (meta.capabilities && meta.capabilities.trim())
-        block.capabilities = meta.capabilities.trim();
-      if (meta.icon && meta.icon.trim()) block.icon = meta.icon.trim();
+      // Always send every meta field — empty strings are the
+      // "clear this field" sentinel that the backend's
+      // apply_paperclip_meta sweeps out post-merge. Skipping empty
+      // values would prevent the user from ever removing a once-set
+      // title/capabilities/icon (the deep-merge would leave the old
+      // value on disk).
+      const block: Record<string, string> = {
+        role: meta.role,
+        title: meta.title?.trim() ?? "",
+        capabilities: meta.capabilities?.trim() ?? "",
+        icon: meta.icon?.trim() ?? "",
+      };
       await callRpc("agents.update", {
         agentId,
         params: { paperclip: block },
       });
+      setMetaDirty(false);
       onAgentUpdated?.();
     } catch (err) {
       setMetaError(err instanceof Error ? err.message : String(err));
@@ -164,7 +204,7 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
           How Friday sees this agent in the org chart. Used when delegating work.
         </p>
 
-        <AgentPaperclipFields value={meta} onChange={setMeta} disabled={savingMeta} />
+        <AgentPaperclipFields value={meta} onChange={setMetaFromUser} disabled={savingMeta} />
 
         {metaError && (
           <p className="text-xs text-[#dc2626] flex items-center gap-1">

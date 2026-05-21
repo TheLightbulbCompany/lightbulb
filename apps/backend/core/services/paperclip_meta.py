@@ -199,7 +199,11 @@ def resolve_create_agent_fields(
     unknown roles to "general"). Caller ``**unpacks`` into
     ``admin_client.create_agent(...)``.
     """
-    effective_role = role if role is not None else (meta.role if meta else "general")
+    # Treat blank/whitespace-only role as unset — Paperclip's enum
+    # would 422 on "". A caller passing role="" (e.g. a UI sending
+    # cleared form state) should fall through to the meta's role or
+    # the "general" default, not forward the empty string.
+    effective_role = role.strip() if isinstance(role, str) and role.strip() else (meta.role if meta else "general")
     return {
         "role": effective_role,
         "title": meta.title if meta else None,

@@ -199,3 +199,18 @@ def test_write_whitespace_string_capabilities_clears_existing_field():
     entry = {"params": {"paperclip": {"role": "general", "capabilities": "Old caps"}}}
     write_to_agent_entry(entry, PaperclipMeta(role="general", title=None, capabilities="   ", icon=None))
     assert "capabilities" not in entry["params"]["paperclip"]
+
+
+def test_resolve_create_agent_fields_treats_blank_role_as_unset():
+    """Codex P2: empty-string role would forward as "" and 422 against
+    Paperclip's AGENT_ROLES enum. Coerce blank/whitespace to the meta
+    fallback (or "general")."""
+    from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fields
+
+    # Empty string role + no meta → "general" default
+    fields = resolve_create_agent_fields(role="", meta=None)
+    assert fields["role"] == "general"
+
+    # Whitespace-only role + meta with engineer → "engineer" (meta wins)
+    fields = resolve_create_agent_fields(role="   ", meta=PaperclipMeta(role="engineer"))
+    assert fields["role"] == "engineer"

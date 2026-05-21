@@ -449,10 +449,15 @@ async def apply_paperclip_meta(
     ``meta`` is the partial paperclip block, e.g.
     ``{"role": "engineer", "title": "Backend dev"}``. Existing values
     for unspecified keys are preserved (deep-merge semantics; matches
-    ``apply_deploy_aux_mutations``'s plugins-merge contract). To
-    clear a field, pass an empty string for that key — the on-disk
-    block keeps the key with the empty value (we don't try to prune,
-    matching the chat path's idempotent-write semantics).
+    ``apply_deploy_aux_mutations``'s plugins-merge contract).
+
+    Empty-string sentinel = "clear this field". Matches the
+    ``AgentOverviewTab`` UI contract: the form always sends
+    ``title``/``capabilities``/``icon`` as trimmed strings — an empty
+    string means the user cleared the field, and the deep-merge would
+    otherwise leave the old value in place. After merging we sweep
+    these three keys and drop any whose value is a whitespace-only
+    string, so the on-disk block never carries empty sentinels.
 
     No-op if the agent isn't in ``agents.list`` (the user might have
     deleted it concurrently — surface as a soft failure rather than
@@ -486,6 +491,15 @@ async def apply_paperclip_meta(
             if not isinstance(existing_pc, dict):
                 existing_pc = {}
             existing_pc.update(meta)
+            # Empty-string sentinel means "clear this field" — match
+            # the frontend's contract in AgentOverviewTab. Without
+            # this sweep, the deep-merge would leave the old value
+            # in place and the user can't actually remove a
+            # once-set title/capabilities/icon.
+            for k in ("title", "capabilities", "icon"):
+                v = existing_pc.get(k)
+                if isinstance(v, str) and not v.strip():
+                    existing_pc.pop(k, None)
             params["paperclip"] = existing_pc
             agents_list[idx] = entry
             agents_obj["list"] = agents_list

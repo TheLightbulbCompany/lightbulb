@@ -723,8 +723,11 @@ async def _intercept_agents_update(
     job can re-sync.
     """
     rpc_params_inner = (params or {}).get("params") or {}
-    if not isinstance(rpc_params_inner, dict) or not rpc_params_inner.get("paperclip"):
+    if not isinstance(rpc_params_inner, dict):
         return False  # No meta in payload — nothing to mirror.
+    pc_block = rpc_params_inner.get("paperclip")
+    if not isinstance(pc_block, dict):
+        return False
 
     meta = read_from_agent_entry({"params": rpc_params_inner})
     agent_id = (params or {}).get("agentId")
@@ -759,16 +762,23 @@ async def _intercept_agents_update(
     # marketplace publish slice extraction picks up the latest meta.
     # Best-effort like the Paperclip PATCH — failures log but don't
     # block the user-facing OpenClaw update.
+    #
+    # Order matters: this MUST run BEFORE the ``params`` strip below.
+    # We read straight from the raw ``pc_block`` here (not the
+    # ``meta`` dataclass) so the UI's empty-string-clear contract
+    # round-trips: a field sent as ``""`` lands in openclaw.json as
+    # ``""`` and is then pruned post-merge by ``apply_paperclip_meta``
+    # so the file never carries empty values. ``meta``'s read path
+    # already normalized whitespace strings to ``None``, which would
+    # break the "explicitly clear this field" semantic.
     try:
         from core.services.config_patcher import apply_paperclip_meta
 
         meta_block: dict = {"role": meta.role}
-        if meta.title:
-            meta_block["title"] = meta.title
-        if meta.capabilities:
-            meta_block["capabilities"] = meta.capabilities
-        if meta.icon:
-            meta_block["icon"] = meta.icon
+        for key in ("title", "capabilities", "icon"):
+            raw = pc_block.get(key)
+            if isinstance(raw, str):
+                meta_block[key] = raw.strip()
         await apply_paperclip_meta(
             owner_id,
             agent_id=agent_id,
@@ -790,6 +800,10 @@ async def _intercept_agents_update(
     # error to the user. After stripping, if the user only changed
     # paperclip fields the forwarded RPC is just ``{agentId}`` which
     # OpenClaw accepts as a no-op. Codex P1 on PR #720.
+    #
+    # NOTE: the file write + Paperclip PATCH above already captured
+    # everything they need from ``params`` before this point. Do NOT
+    # move this strip ahead of those calls.
     if isinstance(params, dict) and "params" in params:
         del params["params"]
     return False

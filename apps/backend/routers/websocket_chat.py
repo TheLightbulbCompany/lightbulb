@@ -741,14 +741,27 @@ async def _intercept_agents_update(
             async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
                 admin = PaperclipAdminClient(http_client=http)
                 cookie = await get_admin_session_cookie(http)
+                # title/capabilities/icon come from the RAW pc_block
+                # (not from ``meta``, which normalizes "" → None via
+                # read_from_agent_entry). The UI sends ``""`` to clear
+                # a field; that empty string has to reach Paperclip's
+                # PATCH as an explicit value for the clear to take
+                # effect. ``role`` stays normalized because invalid /
+                # blank role values must fall back to "general" — an
+                # empty role would 422 Paperclip's enum.
+                pc_title = pc_block.get("title") if isinstance(pc_block.get("title"), str) else None
+                pc_capabilities = (
+                    pc_block.get("capabilities") if isinstance(pc_block.get("capabilities"), str) else None
+                )
+                pc_icon = pc_block.get("icon") if isinstance(pc_block.get("icon"), str) else None
                 await admin.update_agent(
                     session_cookie=cookie,
                     company_id=company_id,
                     agent_id=agent_id,
                     role=meta.role,
-                    title=meta.title,
-                    capabilities=meta.capabilities,
-                    icon=meta.icon,
+                    title=pc_title,
+                    capabilities=pc_capabilities,
+                    icon=pc_icon,
                 )
     except (PaperclipApiError, httpx.HTTPError, RuntimeError) as e:
         logger.warning(

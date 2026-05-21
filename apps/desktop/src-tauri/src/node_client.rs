@@ -75,7 +75,7 @@ pub struct NodeClient {
     stop_tx: Option<oneshot::Sender<()>>,
     status_cb: Option<StatusCallback>,
     /// Mac-slot Ed25519 keypair used to sign the upstream `connect.challenge`
-    /// nonce. Task 14 removed backend signing — clients sign now.
+    /// nonce. Clients sign the nonce; backend does not.
     identity: DeviceIdentity,
     /// Gateway token from `/desktop/pair`. Bound into the v3 signature payload
     /// so the upstream container's signed-connect verifier can authenticate
@@ -212,10 +212,9 @@ async fn connection_loop(
     };
 
     // write_rx lives for the entire loop so that it stays paired with the
-    // write_tx held by NodeClient. Prior design moved it into a per-connection
-    // spawn and replaced it with a brand-new unpaired channel on reconnect —
-    // after the first drop, every send_frame silently went nowhere. Keeping
-    // ownership here and multiplexing via tokio::select! avoids that entirely.
+    // write_tx held by NodeClient. Multiplexing via tokio::select! keeps the
+    // pairing intact across reconnects — moving write_rx into a per-connection
+    // spawn would break send_frame the moment the first connection drops.
     loop {
         // Snapshot the current URL so a mid-connect token update is picked up
         // on the very next reconnect attempt.

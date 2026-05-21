@@ -4,7 +4,7 @@
 #
 # Pre-migration (observed in prod):
 #   workspaces/                  ← bare main-agent workspace (SOUL.md + runtime dirs)
-#   workspaces/{custom_id}/      ← pre-existing upload dirs (from PR #260)
+#   workspaces/{custom_id}/      ← pre-existing upload dirs
 #   agents/{id}/                 ← OpenClaw runtime (agent/, sessions/, qmd/)
 #   openclaw.json                ← main inherits defaults.workspace; custom agents
 #                                  have absolute-path `workspace` overrides like
@@ -147,9 +147,9 @@ is_custom_agent_id() {
 # The old layout put all of main's files + runtime dirs at workspaces/ root.
 # We move everything into workspaces/main/ EXCEPT:
 #   - workspaces/main/ itself (target)
-#   - workspaces/{custom_id}/ dirs — pre-existing from PR #260's upload
-#     endpoint or from OpenClaw's default resolution for custom agents;
-#     those are ALREADY at the target location for the new layout.
+#   - workspaces/{custom_id}/ dirs — pre-existing upload dirs from the
+#     upload endpoint or from OpenClaw's default resolution for custom
+#     agents; those are ALREADY at the target location for the new layout.
 
 if [ ! -d "$WS" ]; then
   echo "  workspaces/ doesn't exist — nothing to migrate for main"

@@ -8,9 +8,9 @@
 //! { ok: true, format, size, mimeType, base64, sha256 }
 //! ```
 //!
-//! Relocated from `file_transfer.rs` in Task 24 once the file/dir
-//! handlers moved into the openclaw subprocess. `screen.snapshot`
-//! stays Mac-native because `screencapture` is macOS-only.
+//! `screen.snapshot` stays Mac-native because `screencapture` is
+//! macOS-only — the rest of the file/dir handlers live in the openclaw
+//! subprocess.
 
 use std::path::PathBuf;
 

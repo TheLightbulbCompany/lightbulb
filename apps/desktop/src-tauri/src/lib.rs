@@ -38,7 +38,7 @@ pub struct AuthState {
     /// transient `/desktop/pair` 5xx, a Keychain permission prompt, or a
     /// missing sidecar binary), this stays `None` so the next
     /// `send_auth_token` retries bootstrap rather than dropping straight to
-    /// the URL-rotation branch. Codex round-3 P2 on PR #667.
+    /// the URL-rotation branch.
     pub gateway_url: Mutex<Option<Arc<RwLock<String>>>>,
     /// Current Clerk JWT, read by the proxy's JwtProvider closure on every
     /// upstream-connect. Updated in-place on rotation so the subprocess never
@@ -127,15 +127,14 @@ mod auth_action_tests {
 
     #[test]
     fn second_call_after_bootstrap_failure_retries() {
-        // Regression test for Codex round-3 P2 on PR #667: if
-        // bootstrap fails (transient /desktop/pair error, Keychain
-        // permission denial, missing sidecar binary), gateway_url MUST
-        // stay None so the next send_auth_token retries. Previously
-        // is_first was keyed off `token`, which was set BEFORE the
-        // spawned bootstrap task, so every retry silently dropped into
-        // the rotation branch without ever bringing the desktop node
-        // back up. Now `bootstrap_completed` is keyed off the URL
-        // handle that is only published after bootstrap succeeds.
+        // Regression test: if bootstrap fails (transient /desktop/pair
+        // error, Keychain permission denial, missing sidecar binary),
+        // gateway_url MUST stay None so the next send_auth_token retries.
+        // `bootstrap_completed` is keyed off the URL handle that is only
+        // published after bootstrap succeeds — not off `token`, which is
+        // set BEFORE the spawned bootstrap task and would otherwise cause
+        // every retry to silently drop into the rotation branch without
+        // bringing the desktop node back up.
         assert_eq!(decide_auth_action(false, false), AuthAction::Bootstrap);
     }
 
@@ -168,9 +167,9 @@ mod auth_action_tests {
 ///      shared `gateway_url` so the next reconnect picks up the fresh
 ///      token. The proxy + subprocess keep running.
 ///   2. Subsequent calls AFTER bootstrap has FAILED retry bootstrap —
-///      this used to silently fall through to the rotation branch
-///      because the `token` was already set, even though the
-///      proxy/subprocess never came up. Codex round-3 P2 on PR #667.
+///      this would otherwise silently fall through to the rotation
+///      branch because the `token` was already set, even though the
+///      proxy/subprocess never came up.
 #[tauri::command]
 fn send_auth_token(
     token: String,
@@ -203,11 +202,11 @@ fn send_auth_token(
     // malformed and AWS ELB rejects with HTTP 400 before API Gateway ever
     // sees it. Browsers normalize this implicitly — native WS clients do
     // not.
-    // clientId is surfaced to the $connect Lambda (Task 9) and on to the
-    // backend's ws_connect (Tasks 10 + 14), which uses it to skip the
-    // synthetic Ed25519 challenge for the Tauri-mac process. The real
-    // challenge is the upstream container's challenge, signed by Tauri-mac
-    // locally with the Mac-slot Keychain key in node_client::perform_handshake.
+    // clientId is surfaced to the $connect Lambda and on to the backend's
+    // ws_connect, which uses it to skip the synthetic Ed25519 challenge for
+    // the Tauri-mac process. The real challenge is the upstream container's
+    // challenge, signed by Tauri-mac locally with the Mac-slot Keychain key
+    // in node_client::perform_handshake.
     let new_gateway_url = format!("{}/?token={}&clientId=openclaw-macos", ws_url, token);
 
     // Decide what to do with this token. See `AuthAction` for the cases.
@@ -335,9 +334,8 @@ async fn run_bootstrap(
     // executable. Dev builds replicate the layout next to
     // `target/debug/<exe>`. So we resolve via current_exe().parent().
     //
-    // Task 20 made `isol8-browser-service` read `ISOL8_PROXY_PORT` and
-    // dial loopback plaintext WS, which is what `spawn_subprocess` is
-    // designed to talk to.
+    // `isol8-browser-service` reads `ISOL8_PROXY_PORT` and dials loopback
+    // plaintext WS — what `spawn_subprocess` is designed to talk to.
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let parent = exe
         .parent()

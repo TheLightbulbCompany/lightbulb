@@ -5,10 +5,10 @@
 //! identity file to disk so openclaw can pick it up on startup.
 //!
 //! The identity file at `<state_dir>/identity/device.json` is not the
-//! source of truth — that's the macOS Keychain (see `keychain.rs`,
-//! Task 16). This file is rewritten on every spawn from the in-memory
-//! keypair passed in, and chmod'd to 0o600 so other users on the host
-//! can't read the private key.
+//! source of truth — that's the macOS Keychain (see `keychain.rs`). This
+//! file is rewritten on every spawn from the in-memory keypair passed in,
+//! and chmod'd to 0o600 so other users on the host can't read the private
+//! key.
 
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::VerifyingKey;
@@ -37,11 +37,11 @@ pub struct SubprocessHandle {
 ///   resolved at runtime alongside the main executable, see
 ///   `lib.rs::run_bootstrap`). The shim then locates the underlying
 ///   per-arch `openclaw-host` npm install on disk.
-/// - `proxy_port`: localhost port of the loopback WSS proxy (Task 18).
+/// - `proxy_port`: localhost port of the loopback WSS proxy.
 /// - `state_dir`: `OPENCLAW_STATE_DIR` — where openclaw stores its on-disk
 ///   state. The identity file is written under here.
 /// - `private_key_pem` / `public_key_pem`: Ed25519 keypair from the
-///   macOS Keychain (Task 16). Serialized into `identity/device.json`.
+///   macOS Keychain. Serialized into `identity/device.json`.
 /// - `gateway_token`: `OPENCLAW_GATEWAY_TOKEN` — pre-shared token the
 ///   proxy validates the subprocess with before forwarding to the
 ///   real gateway.

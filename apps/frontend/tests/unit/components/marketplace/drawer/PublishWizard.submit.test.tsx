@@ -2,10 +2,20 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { apiPost, setView } = vi.hoisted(() => ({
+const { apiPost, setView, getMySellerProfile } = vi.hoisted(() => ({
   apiPost: vi.fn(),
   setView: vi.fn(),
+  getMySellerProfile: vi.fn(),
 }));
+
+const SELLER_PROFILE = {
+  seller_id: "u_seller",
+  handle: "test-seller",
+  display_name: null,
+  bio: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
 
 vi.mock("@/lib/api", () => ({
   useApi: () => ({
@@ -19,6 +29,17 @@ vi.mock("@/lib/api", () => ({
     uploadFiles: vi.fn(),
     saveWorkspaceFile: vi.fn(),
   }),
+}));
+
+// PublishWizard pre-flights the seller's marketplace handle on mount and
+// disables Submit until a profile exists (see PublishWizard.tsx:454). The
+// submit-chain test isn't exercising that gate, so return a populated
+// profile so the Submit button is enabled. Implementation is re-set in
+// beforeEach because the global afterEach (tests/setup.ts) runs
+// vi.clearAllMocks() which wipes `mockResolvedValue` queues.
+vi.mock("@/lib/marketplace/api", () => ({
+  getMySellerProfile,
+  updateListing: vi.fn(),
 }));
 
 vi.mock("@/components/marketplace/drawer/wizardSteps", () => ({
@@ -48,6 +69,8 @@ describe("PublishWizard — submit chain", () => {
   beforeEach(() => {
     apiPost.mockReset();
     setView.mockReset();
+    getMySellerProfile.mockReset();
+    getMySellerProfile.mockResolvedValue(SELLER_PROFILE);
   });
 
   it("3-call submit chain calls listings → artifact → submit, then advances to success", async () => {

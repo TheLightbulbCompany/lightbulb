@@ -118,11 +118,10 @@ describe("PublishWizard edit mode", () => {
   });
 
   it("falls back to step 1 (PickAgent unlocked) when the draft has no recoverable agent_id", async () => {
-    // Regression for Codex P2 on PR #692 (commit a2d75dbc): a draft can
-    // exist without agent_id if the seller's previous submit chain failed
-    // before artifact-from-agent landed. Locking PickAgent for those
-    // drafts would render an undefined-agent BundleStep and post
-    // `agent_id: undefined` to artifact-from-agent on resubmit (422).
+    // A draft can exist without agent_id if the seller's previous submit
+    // chain failed before artifact-from-agent landed. Locking PickAgent
+    // for those drafts would render an undefined-agent BundleStep and
+    // post `agent_id: undefined` to artifact-from-agent on resubmit (422).
     renderEditing(
       listing({
         agent_id: null,

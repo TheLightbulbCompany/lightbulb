@@ -81,13 +81,12 @@ export function ChatLayout({
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   // Stripe Checkout returns either ?subscription=success (legacy) or
   // ?checkout=success (new trial-checkout flow). Both should trigger the
-  // billing-refresh + URL-cleanup effect. Codex P2 on PR #393.
+  // billing-refresh + URL-cleanup effect.
   //
   // Two separate state slices keyed off the same URL param so the banner
   // and the polling lifecycle are independent — banner auto-dismisses at
   // 5s, polling continues for up to 30s. Without this split the
-  // banner-dismiss tear-down was clobbering the poll interval. Codex P2
-  // on PR #399.
+  // banner-dismiss tear-down clobbers the poll interval.
   const cameFromCheckout =
     searchParams.get("subscription") === "success" ||
     searchParams.get("checkout") === "success";
@@ -180,7 +179,6 @@ export function ChatLayout({
   //
   // Keyed on `pollingForWebhook` (independent of the banner state) so the
   // banner's 5s auto-dismiss doesn't cancel the longer poll loop.
-  // Codex P2 on PR #399.
   useEffect(() => {
     if (!pollingForWebhook || isSubscribed) return;
     const pollInterval = setInterval(() => refreshBilling(), 2000);

@@ -6,7 +6,6 @@
 // (paperclip/ui/src/components/Layout.tsx) (MIT, (c) 2025 Paperclip AI).
 // Owns open state + global Cmd/Ctrl+K keydown listener. Children call
 // useCommandPalette() to programmatically open/close.
-// See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { CommandPalette } from "./CommandPalette";

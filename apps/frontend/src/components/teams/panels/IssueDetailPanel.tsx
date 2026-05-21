@@ -1,6 +1,5 @@
 "use client";
 
-// Apr 2026: tier-1 stub replaced by full IssueDetailPage port (PR #3d).
 // The panel is mounted via TeamsLayout when ?panel=issue-detail&issueId=<id>;
 // see apps/frontend/src/components/teams/TeamsPanelRouter.tsx for routing.
 

@@ -1,9 +1,8 @@
 // apps/frontend/src/components/teams/inbox/hooks/useReadInboxItems.ts
 
 // Ported from upstream Paperclip's hooks/useInboxBadge.ts (useReadInboxItems
-// only — useDismissedInboxAlerts/useInboxDismissals deferred per #3c plan).
+// only — useDismissedInboxAlerts / useInboxDismissals are not yet ported).
 // (paperclip/ui/src/hooks/useInboxBadge.ts) (MIT, (c) 2025 Paperclip AI).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import { useCallback, useEffect, useState } from "react";
 import {

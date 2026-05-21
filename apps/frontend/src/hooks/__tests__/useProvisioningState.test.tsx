@@ -44,9 +44,8 @@ describe("useProvisioningState", () => {
 
   it("returns phase=blocked when /status returns 402 with blocked payload", async () => {
     // Real wire shape: FastAPI's HTTPException(detail=gate.to_payload())
-    // serializes to {"detail": {"blocked": {...}}}. Codex P1 on PR #519
-    // flagged that the parser was reading body.blocked instead of
-    // body.detail.blocked; this test now pins the real backend shape.
+    // serializes to {"detail": {"blocked": {...}}}. The parser must read
+    // body.detail.blocked, not body.blocked.
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -115,7 +114,7 @@ describe("useProvisioningState", () => {
     expect(result.current.blocked).toBeNull();
     // Polls on same cadence as blocked/team-pending so a user
     // returning from Stripe before the subscription webhook lands
-    // doesn't get stuck on a stale picker (Codex P1 round 3 on PR #570).
+    // doesn't get stuck on a stale picker.
     expect(result.current.refreshInterval).toBe(5_000);
   });
 
@@ -189,12 +188,12 @@ describe("useProvisioningState", () => {
   });
 
   it("refresh() while blocked restarts the 60s fast-poll window", async () => {
-    // Codex P2 on PR #519: clicking "Check again" must restart the
-    // 60s 5s-poll window. The earlier `[isBlocked]`-only timer effect
-    // never re-fired on subsequent generations, so a refresh after the
-    // first minute could leave the cadence stuck at 5s indefinitely.
-    // Here we verify that immediately after `refresh()`, the cadence
-    // is still 5s (within the new generation's 60s window).
+    // Clicking "Check again" must restart the 60s 5s-poll window. An
+    // `[isBlocked]`-only timer effect would not re-fire on subsequent
+    // generations, leaving the cadence stuck at 5s indefinitely after a
+    // refresh past the first minute. Here we verify that immediately
+    // after `refresh()`, the cadence is still 5s (within the new
+    // generation's 60s window).
     vi.useFakeTimers();
     try {
       global.fetch = vi.fn().mockResolvedValue(

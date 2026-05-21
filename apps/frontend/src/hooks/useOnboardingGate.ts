@@ -33,12 +33,11 @@ export type OnboardingGatePhase =
  * state machine — and its critical side effects — live in one named place
  * with their own tests.
  *
- * The "block the whole shell until this resolves" rule (Codex P1 on PR #393)
- * is what prevents the personal-vs-org JWT race that produced phantom
- * personal billing rows in prod. The hook bundles the three orthogonal
- * conditions (needs-onboarding, needs-auto-activate, needs-invitation-flow)
- * into a single phase so consumers can't accidentally read just one and
- * miss another.
+ * The "block the whole shell until this resolves" rule prevents the
+ * personal-vs-org JWT race that produced phantom personal billing rows in
+ * prod. The hook bundles the three orthogonal conditions (needs-onboarding,
+ * needs-auto-activate, needs-invitation-flow) into a single phase so
+ * consumers can't accidentally read just one and miss another.
  *
  * The hook owns the side effects: ``router.replace("/onboarding")`` for the
  * redirect path and ``setActive`` for the auto-activate path. The consumer

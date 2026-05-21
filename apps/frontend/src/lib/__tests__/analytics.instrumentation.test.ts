@@ -167,7 +167,7 @@ describe("instrumentation: useAgentChat", () => {
     expect(typeof completedCall?.[1].duration_ms).toBe("number");
   });
 
-  it("does NOT fire chat_completed when a turn ends with a scoped error (Codex P2 on PR #383)", async () => {
+  it("does NOT fire chat_completed when a turn ends with a scoped error", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-Z", "session-1"));
 
@@ -206,9 +206,9 @@ describe("instrumentation: useAgentChat", () => {
   });
 
   it("does NOT fire chat_completed when scoped error fires before any chunk (unknown-run branch)", async () => {
-    // Codex P2 follow-up on PR #383: error before first chunk → run not in
-    // runsRef → unknown-run branch must also reset turn refs, otherwise a
-    // late `done` for a sibling run would emit a bogus chat_completed.
+    // Error before first chunk → run not in runsRef → unknown-run branch
+    // must also reset turn refs, otherwise a late `done` for a sibling
+    // run would emit a bogus chat_completed.
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-Z", "session-1"));
 

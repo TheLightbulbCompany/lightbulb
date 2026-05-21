@@ -43,9 +43,9 @@ type Phase =
   | "ready";
 
 // Sub-phase boundaries within backend phase="starting" (frontend
-// gateway/channels-sidecars/agent split). Tuned to the cold-start
-// trace data captured 2026-04-30: gateway-ready ~30 s, sidecars
-// resolves around T+5–6 min, qmd memory armed shortly after.
+// gateway/channels-sidecars/agent split). Tuned to cold-start traces:
+// gateway-ready ~30 s, sidecars resolves around T+5–6 min, qmd memory
+// armed shortly after.
 //
 // TODO(cold-start-signals): replace this time-based heuristic once we
 // pipe openclaw's startup-trace events through the gateway pool to a
@@ -228,7 +228,7 @@ export function ProvisioningStepper({
   // local state that resets on remount; ?provider= persists in the URL
   // unless we clear it. For chatgpt_oauth specifically, re-entering the
   // step calls /oauth/chatgpt/start which 409s on an already-active
-  // session — dead-ending the user. Codex P2 on PR #399.
+  // session — dead-ending the user.
   useEffect(() => {
     if (!providerStepDone) return;
     if (!searchParams.get("provider")) return;
@@ -250,10 +250,10 @@ export function ProvisioningStepper({
   // subscription_required / payment_past_due gate surfaces. The
   // refreshInterval below already throttles non-blocked polling for
   // unsubscribed users (interval=0 when !shouldPollContainer); the
-  // gate-driven cadence (5s/30s) still wins for pending states. Codex
-  // P1 on PR #571 — the previous `enabled: isSubscribed` bypassed the
-  // entire fetch for inactive subscriptions and lost their
-  // /settings/billing reactivation CTA.
+  // gate-driven cadence (5s/30s) still wins for pending states. An
+  // `enabled: isSubscribed` gate would bypass the entire fetch for
+  // inactive subscriptions and lose the /settings/billing reactivation
+  // CTA.
   const {
     phase: gatePhase,
     blocked,
@@ -288,12 +288,12 @@ export function ProvisioningStepper({
   // decide whether to show the create wizard (admin), the link-only wizard
   // (member needs to pair), or skip channel onboarding entirely.
   //
-  // Gate the fetch on EITHER the legacy gatewayHealth probe OR the new
-  // backend-reported phase=ready signal. PR #461 stopped polling
-  // /container/status once phase=ready arrived — but that ALSO stopped the
-  // useGatewayRpc("health") fetch (it shares shouldPollContainer). If
-  // gatewayHealth was still null at that moment, this fetch never fired,
-  // dropping the user back into the "agent" cold-start sub-phase forever.
+  // Gate the fetch on EITHER the legacy gatewayHealth probe OR the
+  // backend-reported phase=ready signal. /container/status polling stops
+  // once phase=ready arrives, which also stops the useGatewayRpc("health")
+  // fetch (it shares shouldPollContainer). If gatewayHealth is still null
+  // at that moment, this fetch would never fire, dropping the user back
+  // into the "agent" cold-start sub-phase forever.
   const { data: linksData, error: linksError } = useSWR<LinksMeResponse>(
     (gatewayHealth || container?.phase === "ready") && !onboardingComplete
       ? "/channels/links/me"
@@ -316,7 +316,7 @@ export function ProvisioningStepper({
   // session — the reset effect below clears it but only after this
   // render commits. Without this regression detection, the stepper
   // would flash "agent" / "timed out" for a single frame before
-  // settling onto the correct early sub-phase. Codex P2 on PR #461.
+  // settling onto the correct early sub-phase.
   const previousBackendPhaseRef = useRef<ColdStartPhase | undefined>(undefined);
   const isRegressingFromReady =
     // eslint-disable-next-line react-hooks/refs
@@ -356,8 +356,7 @@ export function ProvisioningStepper({
       // Split the long "starting" window into three sub-steps by elapsed
       // time so the stepper visibly advances. The transitions are
       // estimates (we have no real-time signal for gateway-ready or
-      // channels-loaded today) — they're calibrated to the cold-start
-      // trace data captured 2026-04-30.
+      // channels-loaded today) — they're calibrated to cold-start traces.
       if (elapsedMs < SUBPHASE_GATEWAY_MS) return "gateway";
       if (elapsedMs < SUBPHASE_CHANNELS_MS) return "channels-sidecars";
       return "agent";
@@ -624,15 +623,14 @@ export function ProvisioningStepper({
     );
   }
 
-  // Plan 3: provider-specific signup step. Renders the right component
-  // based on `?provider=` and advances the wizard once the user finishes.
+  // Provider-specific signup step. Renders the right component based on
+  // `?provider=` and advances the wizard once the user finishes.
   //
-  // Workstream B (2026-05-03, provider-choice-per-owner): provider_choice
-  // is no longer persisted via /users/sync here. The ProviderPicker's
-  // "Subscribe" step writes it synchronously to billing_accounts via
-  // POST /billing/trial-checkout, which is the canonical (and only) write
-  // path now. Prior to Workstream B this hook double-wrote to user_repo;
-  // that path is gone — billing_repo (owner-keyed) is the source of truth.
+  // provider_choice is NOT persisted via /users/sync here. The
+  // ProviderPicker's "Subscribe" step writes it synchronously to
+  // billing_accounts via POST /billing/trial-checkout, which is the
+  // canonical (and only) write path. billing_repo (owner-keyed) is the
+  // source of truth.
   if (phase === "provider" && providerChoice !== null) {
     const handleProviderComplete = async () => {
       capture("onboarding_provider_completed", {
@@ -840,16 +838,14 @@ export function ProvisioningStepper({
   // Skip picker only when the owner is fully onboarded (has a provider
   // choice AND an active subscription). Two cases this handles:
   //
-  //   1. Org member joining an already-onboarded org (Workstream B
-  //      cofounder bug fix from 2026-05-03): admin already picked +
-  //      subscribed, so the member skips the picker and falls through
-  //      to provisioning.
+  //   1. Org member joining an already-onboarded org: admin already
+  //      picked + subscribed, so the member skips the picker and falls
+  //      through to provisioning.
   //
   //   2. User who picks then cancels Stripe Checkout: `provider_choice`
-  //      is persisted before the Stripe redirect (Workstream B race
-  //      fix), so `account.provider_choice` is set but `isSubscribed`
-  //      is false. They MUST see the picker again to restart checkout.
-  //      Codex P1 on PR #521 (#3179594652).
+  //      is persisted before the Stripe redirect, so
+  //      `account.provider_choice` is set but `isSubscribed` is false.
+  //      They MUST see the picker again to restart checkout.
   const ownerOnboarded = isSubscribed && Boolean(account?.provider_choice);
   if (!ownerOnboarded) {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
@@ -1343,8 +1339,8 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
         // wizard re-mounts on /chat?checkout=success&provider=<id>; the
         // subscription.updated webhook persists provider_choice to the user
         // row, the wizard sees subscription_status === "trialing", and
-        // advances into the provider phase. Codex P1 on PR #393 — without
-        // this round-trip the user got stuck in the payment phase forever.
+        // advances into the provider phase. Without this round-trip the
+        // user gets stuck in the payment phase forever.
         window.location.href = resp.checkout_url;
       } else {
         throw new Error("No checkout_url returned");

@@ -5,7 +5,6 @@
 // Vanilla shadcn Dialog + Input + result list (no cmdk dep). v1: navigate +
 // search across agents/issues/projects. Drops "create" actions until #3d
 // (NewIssueDialog) merges.
-// See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
@@ -35,8 +34,8 @@ export interface CommandPaletteProps {
 // the shadcn DialogContent wrapper) because that wrapper bakes in its own
 // DialogPortal + a dark bg-black/80 DialogOverlay. Using the wrapper here
 // would render two backdrops on top of each other and the dark one would
-// cover the editorial rgba(26,26,26,0.45) tint we want (matches T20's
-// NewIssueDialog backdrop). Codex flagged this in PR #542 review.
+// cover the editorial rgba(26,26,26,0.45) tint we want (matches the
+// NewIssueDialog backdrop).
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -137,13 +137,12 @@ export function useChatGPTOAuth() {
   //
   // Concurrency: startedRef prevents the in-flight async work from being
   // duplicated by React 19 StrictMode's intentional remount-replay. We do
-  // NOT use a `cancelled` flag in the cleanup — Codex P2 caught that
-  // pattern: StrictMode runs the cleanup immediately after the first
-  // invocation, which would set cancelled=true on the only in-flight
-  // attempt; the replayed effect then early-returns at startedRef and
-  // the OAuth step would stay on the spinner forever. setState on an
-  // unmounted component is a tolerated no-op in React 18+, so no
-  // cancellation is needed here.
+  // NOT use a `cancelled` flag in the cleanup — StrictMode runs the
+  // cleanup immediately after the first invocation, which would set
+  // cancelled=true on the only in-flight attempt; the replayed effect
+  // then early-returns at startedRef and the OAuth step would stay on
+  // the spinner forever. setState on an unmounted component is a
+  // tolerated no-op in React 18+, so no cancellation is needed here.
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;

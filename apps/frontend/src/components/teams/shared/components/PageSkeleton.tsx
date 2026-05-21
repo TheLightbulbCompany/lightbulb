@@ -3,7 +3,6 @@
 // Ported from upstream Paperclip's components/PageSkeleton.tsx
 // (paperclip/ui/src/components/PageSkeleton.tsx) (MIT, (c) 2025 Paperclip AI).
 // v1: only the 'inbox' variant. Other variants deferred until consumers exist.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import type { JSX } from "react";
 import { cn } from "@/lib/utils";

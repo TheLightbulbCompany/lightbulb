@@ -1,7 +1,6 @@
 // Ported from upstream Paperclip's CommandPalette
 // (paperclip/ui/src/components/CommandPalette.tsx) (MIT, (c) 2025 Paperclip AI).
 // Static "Go to" entries that route between Teams panels in TeamsSidebar.
-// See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import {
   LayoutDashboard, Inbox, Bot, CircleDot, ClipboardCheck, Repeat, Target,

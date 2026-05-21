@@ -2,10 +2,9 @@
 
 // Ported from upstream Paperclip's pages/Inbox.tsx inline keydown listener
 // (paperclip/ui/src/pages/Inbox.tsx:1604-1820) (MIT, (c) 2025 Paperclip AI).
-// Subset for #3c v1: j/k/ArrowDown/Up navigation, Enter open, a/y archive,
-// r mark-read, u undo-archive. Drops ArrowLeft/Right group-collapse,
-// capital-U mark-unread, and quick-archive arming (deferred).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// Subset: j/k/ArrowDown/Up navigation, Enter open, a/y archive, r mark-read,
+// u undo-archive. Drops ArrowLeft/Right group-collapse, capital-U mark-unread,
+// and quick-archive arming.
 
 import { useEffect, useRef } from "react";
 

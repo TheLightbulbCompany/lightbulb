@@ -5,7 +5,6 @@
 // Subset retained for IssueFiltersPopover — workspace resolution, apply /
 // count helpers, and the Issue-typed application logic stay upstream
 // (they're only used by IssuesList which is out of scope for this PR).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import type { IssuePriority, IssueStatus } from "@/components/teams/shared/types";
 

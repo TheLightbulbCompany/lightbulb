@@ -2,10 +2,8 @@
 
 // Ported from upstream Paperclip's IssueFiltersPopover.tsx
 // (paperclip/ui/src/components/IssueFiltersPopover.tsx) (MIT, (c) 2025 Paperclip AI).
-// Retheme: blue active-state classes -> amber-700 (prior) -> editorial forest
-// (current). The active filter chip + count badge use --forest / --cream so
-// the popover matches the rest of the editorial Teams surface.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// The active filter chip + count badge use --forest / --cream so the
+// popover matches the rest of the editorial Teams surface.
 
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";

@@ -1,7 +1,6 @@
 // Ported from upstream Paperclip's CommandPalette
 // (paperclip/ui/src/components/CommandPalette.tsx) (MIT, (c) 2025 Paperclip AI).
 // SWR fan-out for the dynamic search groups (agents/issues/projects).
-// See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import { useMemo } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";

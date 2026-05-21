@@ -3,8 +3,7 @@
 // Ported from upstream Paperclip's pages/Inbox.tsx archiveIssueMutation +
 // unarchiveIssueMutation + archive-stack state (paperclip/ui/src/pages/Inbox.tsx:1407-1582)
 // (MIT, (c) 2025 Paperclip AI). Translated from React Query mutations to SWR
-// cache mutations via useSWRConfig().mutate. See spec at
-// docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// cache mutations via useSWRConfig().mutate.
 
 import { useState, useCallback } from "react";
 import { flushSync } from "react-dom";

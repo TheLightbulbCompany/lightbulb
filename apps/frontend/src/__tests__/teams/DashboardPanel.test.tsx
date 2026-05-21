@@ -1,8 +1,8 @@
 // Smoke test for DashboardPanel — renders the four metric cards from the
-// rich /dashboard payload (un-flattened in PR #2 task 1). The full set of
-// loading/error/populated/empty/normalization scenarios lives in the
-// dedicated suite at __tests__/components/teams/panels/DashboardPanel.test.tsx;
-// this file is kept as a thin smoke test from the original Inbox PR.
+// rich /dashboard payload. The full set of loading/error/populated/empty/
+// normalization scenarios lives in the dedicated suite at
+// __tests__/components/teams/panels/DashboardPanel.test.tsx; this file is
+// kept as a thin smoke test.
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 

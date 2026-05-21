@@ -2,7 +2,6 @@
 
 // Ported from upstream Paperclip's StatusIcon.tsx
 // (paperclip/ui/src/components/StatusIcon.tsx) (MIT, (c) 2025 Paperclip AI).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import { useState } from "react";
 import { cn } from "@/lib/utils";

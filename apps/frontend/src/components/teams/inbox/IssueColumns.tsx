@@ -1,11 +1,9 @@
 // Ported from upstream Paperclip's IssueColumns.tsx
 // (paperclip/ui/src/components/IssueColumns.tsx) (MIT, (c) 2025 Paperclip AI).
 // Three deviations from upstream:
-//   * Retheme: upstream `bg-blue-{500,600}` / `text-blue-{400,600}` were
-//     first swapped to amber-700, and now to the editorial forest token.
-//     Status colors (forest/danger/warn/mute) are KEEP-list and centralized
-//     via StatusIcon's editorial color map (T16). Hardcoded fallback hexes
-//     (EDITORIAL_NEUTRAL_PILL) map to var(--mute).
+//   * Status colors use editorial tokens (forest/danger/warn/mute),
+//     centralized via StatusIcon's editorial color map. Hardcoded fallback
+//     hexes (EDITORIAL_NEUTRAL_PILL) map to var(--mute).
 //   * Tooltip degradation: upstream wraps the workspace filter button in
 //     <Tooltip><TooltipTrigger asChild>...</TooltipContent></Tooltip>, but
 //     the shadcn tooltip primitive + @radix-ui/react-tooltip don't ship in
@@ -15,7 +13,6 @@
 //     accepts as required-but-nullable are made optional (defaulting to
 //     `null` / `false`) so callers can render minimal-fidelity rows
 //     without funneling every metadata field through the BFF on day one.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 // Editorial neutral pill fallback (replaces upstream EDITORIAL_NEUTRAL_PILL slate fallback
 // for project + label color slots when the BFF doesn't provide one).
@@ -217,7 +214,6 @@ export function InboxIssueMetaLeading({
         </span>
       ) : null}
       {isLive && (
-        // Retheme: prior amber-700 live pill → editorial forest tint.
         <span
           className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2"
           style={{ background: "var(--forest-tint)" }}

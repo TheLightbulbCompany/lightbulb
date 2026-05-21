@@ -2,10 +2,9 @@
 
 // Ported from upstream Paperclip's pages/IssueDetail.tsx chat tab
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
-// v1: thread list + plaintext composer with Cmd+Enter submit.
-// Drops markdown editor, @mentions, file upload, action flags, edit/delete.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
-// PR 4 (atoms port): submit action via <EditorialButton>.
+// Thread list + plaintext composer with Cmd+Enter submit. Drops markdown
+// editor, @mentions, file upload, action flags, edit/delete. Submit action
+// uses <EditorialButton>.
 
 "use client";
 

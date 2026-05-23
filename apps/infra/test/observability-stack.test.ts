@@ -101,15 +101,13 @@ describe("ObservabilityStack", () => {
     const alarms = template.findResources("AWS::CloudWatch::Alarm");
     const count = Object.keys(alarms).length;
     // 81 alarms: 11 page + 27 warn custom + 3 x 7 per-table DDB
-    // + remaining AWS-native + 2 cost + 2 canary
+    // + remaining AWS-native + 2 cost
     expect(count).toBeGreaterThanOrEqual(65);
   });
 
   test("creates 1 CloudWatch dashboard", () => {
     template.resourceCountIs("AWS::CloudWatch::Dashboard", 1);
   });
-
-  // Canary count test deferred — canaries not in this PR
 
   // GuardDuty + Access Analyzer already exist at account level — not created by CDK.
   // We only create EventBridge rules to route their findings to SNS.
@@ -146,8 +144,6 @@ describe("ObservabilityStack", () => {
       DashboardName: "isol8-dev-orr",
     });
   });
-
-  // Canary tests deferred — canaries removed from this PR
 
   test("EventBridge rule captures ECS task stopped events", () => {
     template.hasResourceProperties("AWS::Events::Rule", {

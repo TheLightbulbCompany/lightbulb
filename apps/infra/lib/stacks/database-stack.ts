@@ -181,9 +181,9 @@ export class DatabaseStack extends cdk.Stack {
     // Admin-actions audit table — every platform-admin write to /api/v1/admin/*
     // appends a row via @audit_admin_action. PK admin_user_id + SK timestamp#uuidv7
     // for chronological-per-admin queries; GSI flips to target_user_id for the
-    // "show me all actions taken against this user" view. No TTL (CEO review:
-    // audit rows kept forever). Customer-managed KMS encryption like every
-    // other table in this stack.
+    // "show me all actions taken against this user" view. No TTL — audit rows
+    // kept forever. Customer-managed KMS encryption like every other table in
+    // this stack.
     this.adminActionsTable = new dynamodb.Table(this, "AdminActionsTable", {
       tableName: `isol8-${env}-admin-actions`,
       partitionKey: { name: "admin_user_id", type: dynamodb.AttributeType.STRING },

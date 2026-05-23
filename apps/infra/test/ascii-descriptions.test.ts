@@ -4,11 +4,9 @@ import { Isol8Stage } from "../lib/isol8-stage";
 
 /**
  * EC2 rejects non-ASCII in SG GroupDescription + SG Ingress/Egress
- * description. This bug class bit us in PR #414 (database-stack), #473
- * (paperclip-stack first sweep), and #474 (paperclip-stack again — missed
- * during the first sweep). This test synthesizes the dev stage and
- * asserts no description field contains non-ASCII bytes — fails fast at
- * CI time so the next deploy doesn't.
+ * description. This test synthesizes the dev stage and asserts no
+ * description field contains non-ASCII bytes — fails fast at CI time so
+ * the next deploy doesn't.
  *
  * Resources covered:
  *  - AWS::EC2::SecurityGroup → GroupDescription

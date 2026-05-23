@@ -68,7 +68,7 @@ describe("DatabaseStack — admin-actions table", () => {
     });
   });
 
-  test("admin-actions has NO TTL (audit rows kept forever per CEO review)", () => {
+  test("admin-actions has NO TTL (audit rows kept forever)", () => {
     // CDK omits the TimeToLiveSpecification entirely when no TTL is set.
     // Assert it's absent on this specific table.
     const tables = template.findResources("AWS::DynamoDB::Table", {

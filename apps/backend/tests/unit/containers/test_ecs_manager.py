@@ -266,7 +266,7 @@ class TestRegisterTaskDefinition:
         # Verify describe was called against the BASE family (not an ARN with
         # revision). The base family is uncontaminated by per-user clones —
         # those go to `<base>-user` — so a bare family lookup deterministically
-        # returns the latest CDK base. See PR #410.
+        # returns the latest CDK base.
         mock_ecs_client.describe_task_definition.assert_called_once_with(
             taskDefinition=manager._base_task_def_family,
         )
@@ -653,7 +653,7 @@ class TestStartUserService:
     @pytest.mark.asyncio
     async def test_start_service_enables_circuit_breaker_on_existing_services(self, manager, mock_ecs_client):
         """start_user_service's update_service call must include the circuit
-        breaker so pre-existing services (created before Task 1) get upgraded
+        breaker so pre-existing services without circuit-breaker get upgraded
         the first time we touch them. Otherwise _await_running_transition
         can never receive rolloutState=FAILED and polls forever on a broken
         pre-existing service."""
@@ -766,8 +766,7 @@ class TestDeleteUserService:
         """ServiceNotFoundException is treated as idempotent success but the
         function continues into per-user resource cleanup (task-def, EFS
         access point, container row). Service-gone but resources orphaned
-        is a real partial-failure state we need to recover from
-        (Codex P1 on PR #309)."""
+        is a real partial-failure state we need to recover from."""
         mock_ecs_client.update_service.side_effect = ClientError(
             {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
             "UpdateService",
@@ -1527,11 +1526,10 @@ class TestResizeUserContainer:
         """resize must read containerDefinitions from the CDK-managed base
         family, NOT from the user's prior per-user revision.
 
-        Regression: incident 2026-04-17 — the resize path read from the user's
-        own task def, propagating any env-var drift forever. After PR #299 we
-        pinned to a base ARN (with revision) via SSM. After PR #410 we drop
-        the SSM coupling and read the base FAMILY live — per-user clones are
-        in `<base>-user`, so the base family always returns latest CDK base.
+        Regression: if the resize path reads from the user's own task def
+        any env-var drift propagates forever. Read the base FAMILY live —
+        per-user clones live in `<base>-user`, so the base family always
+        returns the latest CDK base.
         """
         # Base task def has CLAWHUB_WORKDIR. User's *prior* per-user task def
         # does NOT (simulating tonight's incident). Resize must produce an env
@@ -1881,9 +1879,9 @@ class TestProvisionUserContainer:
         """Full-provision path (no existing service) must fire
         _await_running_transition EXACTLY ONCE, not twice.
 
-        start_user_service fires one poller (Task 3). Historically
-        provision_user_container fired another at the very end. That's
-        duplicate work -- two identical long-lived tasks doing the same
+        start_user_service fires one poller. A second poller fired by
+        provision_user_container at the end would be duplicate work --
+        two identical long-lived tasks doing the same
         list_tasks/describe_services polling and racing to write the DDB
         transition. Keep only one."""
 
@@ -1992,14 +1990,14 @@ class TestProvisionUserContainer:
     #  test_provision_falls_back_to_free_on_billing_lookup_error,
     #  test_provision_respects_explicit_tier_arg_over_billing,
     #  test_provision_produces_paid_tier_openclaw_config_for_starter [xfail])
-    # were deleted in Plan 2 Task 13 — the flat-fee pivot removes per-tier
-    # plan resolution entirely. Coverage of the new shape lives below in
+    # were deleted with the flat-fee pivot — per-tier plan resolution is
+    # gone. Coverage of the new shape lives below in
     # TestProvisionUserContainerProviderChoice and in
     # tests/unit/containers/test_config_provider_routing.py.
 
 
 class TestProvisionUserContainerProviderChoice:
-    """Tests for the Plan 2 Task 13 provider_choice plumbing.
+    """Tests for the provider_choice plumbing.
 
     Each provider_choice triggers a different pre-task setup:
       * chatgpt_oauth -> pre_stage_auth_profile_store runs BEFORE the ECS service
@@ -2012,7 +2010,7 @@ class TestProvisionUserContainerProviderChoice:
     @pytest.mark.asyncio
     async def test_provision_byo_key_attaches_secret_arn_to_task_def(self, manager, mock_ecs_client, mock_efs_client):
         """For byo_key provider, the per-user Secrets Manager ARN saved by
-        key_service (Task 10) lands in the registered task def's secrets[]
+        key_service lands in the registered task def's secrets[]
         block under OPENAI_API_KEY. The first task that boots reads the key
         from Secrets Manager via the task IAM role grant — no plaintext on
         disk."""
@@ -2347,8 +2345,8 @@ class TestProvisionUserContainerProviderChoice:
 
 
 class TestPerUserTaskSize:
-    """Plan 2 Task 13 / Task 2: every per-user task def is registered with
-    the single PER_USER_CPU/MEMORY constants, regardless of plan tier."""
+    """Every per-user task def is registered with the single PER_USER_CPU
+    / PER_USER_MEMORY constants, regardless of plan tier."""
 
     @pytest.mark.asyncio
     async def test_register_task_definition_uses_per_user_constants(self, manager, mock_ecs_client, mock_efs_client):

@@ -534,9 +534,9 @@ def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
 def test_http_disabled_company_redirects_to_chat(monkeypatch):
     """Cookie path with company.status='disabled' (cancelled subscription)
     must redirect out to /chat — auto-refresh would loop forever since
-    disabled requires admin/billing intervention to clear. Codex P1 on PR
-    #498: the previous version returned the auto-refresh stub for ALL
-    non-active states, locking disabled users into an 8h refresh loop.
+    disabled requires admin/billing intervention to clear. Returning the
+    auto-refresh stub for ALL non-active states would lock disabled users
+    into an 8h refresh loop.
     """
     from fastapi.testclient import TestClient
 
@@ -655,8 +655,8 @@ def test_http_rejects_bearer_missing_subject(monkeypatch):
 def test_http_returns_503_when_jwks_fetch_fails(monkeypatch):
     """JWKS fetch failure on the Bearer path → 503, not 401.
 
-    Codex P2 on PR #487: transient Clerk/network outage shouldn't be
-    surfaced as a credential failure. Mirrors core.auth.get_current_user.
+    A transient Clerk/network outage shouldn't be surfaced as a
+    credential failure. Mirrors core.auth.get_current_user.
     """
     from fastapi.testclient import TestClient
     import httpx

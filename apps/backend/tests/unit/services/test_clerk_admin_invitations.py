@@ -199,11 +199,10 @@ async def test_create_organization_invitation_raises_503_on_timeout():
     ],
 )
 async def test_create_organization_invitation_raises_503_on_other_transport_errors(exc):
-    """Catch everything under httpx.TransportError — Codex P2 on PR #531
-    flagged that the original tuple of (TimeoutException, NetworkError)
-    missed ProtocolError / ProxyError / UnsupportedProtocol. Pin the
-    contract so future httpx subclass additions don't silently leak out
-    as bare 500s."""
+    """Catch everything under httpx.TransportError — a narrow tuple of
+    (TimeoutException, NetworkError) misses ProtocolError / ProxyError
+    / UnsupportedProtocol. Pin the contract so future httpx subclass
+    additions don't silently leak out as bare 500s."""
     from fastapi import HTTPException
 
     with (

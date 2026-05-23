@@ -112,7 +112,7 @@ async def set_subscription(
     existing["stripe_subscription_id"] = subscription_id
     existing["subscription_status"] = status
     # Always overwrite trial_end so a cancellation (trial_end=None) actually
-    # clears the field — Codex P2 on PR #393 (stale trial countdown after
+    # clears the field (otherwise a stale trial countdown lingers after
     # subscription.deleted).
     if trial_end is not None:
         existing["trial_end"] = trial_end
@@ -143,7 +143,7 @@ async def set_provider_choice(
         byo_provider: optional even when ``provider_choice == "byo_key"`` —
             the picker submits ``byo_key`` alone at /trial-checkout time, and
             the BYO wizard fills in ``byo_provider`` (openai vs anthropic) +
-            the actual API key in a later step (Codex P1 #3179631946). The
+            the actual API key in a later step. The
             row's ``byo_provider`` attribute is REMOVE'd whenever it's
             ``None`` so a switch away from byo_key, or a re-pick of byo_key
             without a chosen provider yet, doesn't leave stale data.
@@ -155,8 +155,8 @@ async def set_provider_choice(
     if provider_choice not in _VALID_PROVIDER_CHOICES:
         raise ValueError(f"unknown provider_choice: {provider_choice!r}")
     if owner_type == "org" and provider_choice == "chatgpt_oauth":
-        # Decision 2026-04-30: ChatGPT OAuth is personal-only — orgs use
-        # Bedrock or BYO API key. See memory/project_chatgpt_oauth_personal_only.md.
+        # ChatGPT OAuth is personal-only — orgs use Bedrock or BYO API key
+        # (OpenAI Plus terms forbid reselling).
         raise ValueError(
             "chatgpt_oauth is not allowed for org owners; orgs must use bedrock_claude or byo_key",
         )
@@ -193,7 +193,7 @@ async def clear_provider_choice(owner_id: str) -> None:
     with no ``stripe_customer_id``. That phantom row would then block
     ``/billing/trial-checkout`` from creating a Stripe customer (the
     ``if not account`` branch sees the phantom and skips customer
-    creation). Codex P1 #3179825257 on PR #523.
+    creation).
     """
     now = utc_now_iso()
     table = _get_table()

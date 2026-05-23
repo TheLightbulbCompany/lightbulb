@@ -7,8 +7,8 @@ request. ``_admin`` is referenced via the imported module (rather
 than imported by name) so unit tests can monkeypatch
 ``agents._admin`` once and have every Teams router pick it up.
 
-PR #3a expands this from the 49-line tier-1 stub to a full Inbox
-surface: filter-aware listing + heartbeat-run + live-run sub-routes.
+Exposes a full Inbox surface: filter-aware listing + heartbeat-run +
+live-run sub-routes.
 """
 
 from __future__ import annotations
@@ -128,11 +128,9 @@ async def list_inbox(
 
     rows = await _agents._admin().list_issues(**kwargs)
 
-    # Forward rich rows verbatim — the InboxPage deep port (PR #3c) needs
-    # status / identifier / priority / lastActivityAt / unread etc. to
-    # render IssueRow without crashing in StatusIcon (`status.replace(...)`
-    # on undefined). The earlier 4-field reshape ({id, type, title,
-    # createdAt}) was for the tier-1 stub InboxPanel that no longer exists.
+    # Forward rich rows verbatim — InboxPage needs status / identifier /
+    # priority / lastActivityAt / unread etc. to render IssueRow without
+    # crashing in StatusIcon (`status.replace(...)` on undefined).
     return envelope_list(rows, "items")
 
 

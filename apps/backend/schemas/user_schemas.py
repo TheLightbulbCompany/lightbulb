@@ -8,12 +8,11 @@ from pydantic import BaseModel, Field
 class SyncUserRequest(BaseModel):
     """Optional body for POST /users/sync.
 
-    The frontend onboarding wizard previously sent ``provider_choice`` /
-    ``byo_provider`` here. As of Workstream B (2026-05-03) the canonical
-    write path is POST /billing/trial-checkout (persists synchronously
-    to billing_accounts before creating the Stripe Checkout session).
-    The fields are kept on this schema so old frontends keep parsing,
-    but the server silently ignores them.
+    The canonical write path for ``provider_choice`` / ``byo_provider``
+    is POST /billing/trial-checkout (persists synchronously to
+    billing_accounts before creating the Stripe Checkout session). The
+    fields are kept on this schema so old frontends keep parsing, but
+    the server silently ignores them.
     """
 
     provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] | None = Field(

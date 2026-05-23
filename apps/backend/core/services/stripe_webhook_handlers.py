@@ -136,13 +136,12 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     metadata_provider = metadata.get("provider_choice")
     metadata_byo = metadata.get("byo_provider")
     if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
-        # Workstream B: provider_choice now lives on billing_accounts
-        # (per-owner), not on the user row. /trial-checkout writes
-        # synchronously before creating the Stripe Checkout session;
-        # this webhook write is the idempotent backup for any legacy
-        # Stripe sessions that predate the synchronous write, or for
-        # direct-API callers who skipped the /trial-checkout entry
-        # point.
+        # provider_choice lives on billing_accounts (per-owner), not on
+        # the user row. /trial-checkout writes synchronously before
+        # creating the Stripe Checkout session; this webhook write is
+        # the idempotent backup for any legacy Stripe sessions that
+        # predate the synchronous write, or for direct-API callers who
+        # skipped the /trial-checkout entry point.
         try:
             await billing_repo.set_provider_choice(
                 account["owner_id"],
@@ -281,7 +280,6 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     #                            wait for the async event before
     #                            crediting so a failed ACH doesn't
     #                            leave the user with free credits.
-    # Codex P1 on PR #488.
     payment_status = session.get("payment_status")
     if payment_status not in ("paid", "no_payment_required"):
         put_metric(
@@ -346,7 +344,7 @@ async def handle_checkout_session_async_failed(
     checkout.session.completed had already fired with payment_status
     = "unpaid". Because we *gate* the credit grant on payment_status,
     nothing was ever credited — but emit a metric so we can see the
-    fail rate. Codex P1 on PR #488.
+    fail rate.
     """
     session = event["data"]["object"]
     if session.get("metadata", {}).get("purpose") == "credit_top_up":

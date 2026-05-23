@@ -863,9 +863,8 @@ def _strip_handoff_param(request: Request) -> str:
     from urllib.parse import urlencode
 
     # urlencode handles reserved characters (&, =, %, spaces, …) correctly.
-    # The earlier f-string concat let those through unescaped, which would
-    # split or corrupt query state when the next request decoded the URL
-    # (Codex P2 on PR #495).
+    # Naive f-string concat lets those through unescaped, which would
+    # split or corrupt query state when the next request decoded the URL.
     items = [(k, v) for k, v in request.query_params.multi_items() if k != "__t"]
     qs = urlencode(items) if items else ""
     path = request.url.path
@@ -1015,10 +1014,10 @@ async def proxy(path: str, request: Request) -> Response:
         # (and the JWT-stripped URL) within ms instead of waiting 5–10s
         # for Better Auth signup + company create + agent seed. The
         # subsequent request lands on a "setting up…" stub that
-        # auto-refreshes until the row goes status="active". Codex P1
-        # on PR #495 — keeps the raw Clerk JWT in the address bar for
-        # only ~50ms instead of the full provisioning duration.
-        # provision_org is idempotent so a fast double-click is safe.
+        # auto-refreshes until the row goes status="active". This keeps
+        # the raw Clerk JWT in the address bar for only ~50ms instead of
+        # the full provisioning duration. provision_org is idempotent so
+        # a fast double-click is safe.
         repo = PaperclipRepo(table_name="paperclip-companies")
         existing = await repo.get(auth.user_id)
         if existing is None or existing.status != "active":
@@ -1049,10 +1048,10 @@ async def proxy(path: str, request: Request) -> Response:
         # re-spawn each cycle would queue duplicate concurrent provision
         # runs that race against each other (provision_org is only
         # safely idempotent for already-active rows; concurrent failed
-        # retries can flip a successful row back to "failed"). Codex P1
-        # on PR #499. If the initial spawn somehow died silently, the
-        # user will eventually close the tab and re-handshake — that's
-        # the recovery path, NOT auto-respawn.
+        # retries can flip a successful row back to "failed"). If the
+        # initial spawn somehow died silently, the user will eventually
+        # close the tab and re-handshake — that's the recovery path,
+        # NOT auto-respawn.
         return _provisioning_in_progress_response()
     if company.status != "active":
         # status="failed" or status="disabled". Both require user to
@@ -1138,7 +1137,7 @@ async def proxy(path: str, request: Request) -> Response:
         #      path (dev.company.isol8.co, company.isol8.co). Holds the
         #      real public host the user typed; the only header that
         #      survives the Vercel→API-Gateway hop with the company host
-        #      intact. Codex P1 on PR #497.
+        #      intact.
         #   2. X-Isol8-Public-Host — set by API Gateway parameter mapping
         #      to ``$context.domainName``. For Vercel-routed traffic this
         #      is the API Gateway hostname (``api-{env}.isol8.co``), NOT
@@ -1153,7 +1152,7 @@ async def proxy(path: str, request: Request) -> Response:
         # Multi-hop proxies append to X-Forwarded-Host comma-separated
         # ("hostA, hostB"); the LEFTMOST value is the original public
         # host. Without splitting, Paperclip would see an invalid host
-        # token and emit malformed absolute URLs. Codex P2 on PR #499.
+        # token and emit malformed absolute URLs.
         forwarded_host = forwarded_host_raw.split(",", 1)[0].strip()
         client_host = request.client.host if request.client else ""
         # Auth via Cookie, NOT Authorization: Bearer — Paperclip's
@@ -1173,7 +1172,7 @@ async def proxy(path: str, request: Request) -> Response:
         # bare cookie name (no ``__Secure-`` prefix), so the session we
         # just signed in for is invisible upstream and privileged routes
         # run as anonymous → 401/403. Stamp PAPERCLIP_PUBLIC_URL when
-        # the inbound request didn't carry an Origin. Codex P1 on PR #507.
+        # the inbound request didn't carry an Origin.
         if "origin" not in {k.lower() for k in upstream_headers} and settings.PAPERCLIP_PUBLIC_URL:
             upstream_headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
         if client_host:

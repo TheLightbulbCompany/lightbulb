@@ -265,8 +265,8 @@ async def test_container_is_reachable_returns_false_when_no_running_task(monkeyp
 
 @pytest.mark.asyncio
 async def test_teams_create_agent_mints_service_token_with_owner_id(monkeypatch):
-    """Codex P1 finding 3: in org context the synthesized
-    adapterConfig.authToken MUST be a JWT minted with sub=owner_id (the
+    """In org context the synthesized adapterConfig.authToken MUST be a
+    JWT minted with sub=owner_id (the
     org_id), NOT sub=member_user_id. The WS authorizer treats service
     tokens as orgId="" + userId=<sub>, so a member-keyed token routes
     Paperclip wakes to the member's PERSONAL container instead of the

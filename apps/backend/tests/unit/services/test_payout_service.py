@@ -30,7 +30,7 @@ async def test_create_connect_account_for_seller(mock_stripe):
     assert call_kwargs["metadata"]["seller_id"] == "user_abc"
     # Idempotency key is fresh-uuid-per-call; must NOT be keyed on the stable
     # seller_id (Stripe's 24h cache would return a dead account_id after any
-    # out-of-band Stripe-side delete — same anti-pattern PR #421 fixed).
+    # out-of-band Stripe-side delete).
     key = call_kwargs["idempotency_key"]
     assert "user_abc" not in key
     assert key.startswith("connect_account_create:")

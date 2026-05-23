@@ -21,9 +21,6 @@ be auto-loaded into Friday's first-chat context.
 Best-effort throughout: failures log + emit metrics, never raise. The
 caller (``ecs_manager.write_user_configs``) wraps this in try/except
 so a Clerk outage or EFS hiccup never blocks container provision.
-
-See the design spec at
-``docs/superpowers/specs/2026-05-08-friday-identity-seeding-design.md``.
 """
 
 from __future__ import annotations

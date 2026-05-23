@@ -51,7 +51,7 @@ def test_url_includes_level_filter():
 
 
 def test_url_points_at_correct_log_group():
-    """Same Phase A fix — log group is /ecs/isol8-{env}."""
+    """Log group is /ecs/isol8-{env}."""
     from core.services.cloudwatch_url import build_insights_url
 
     url = build_insights_url(

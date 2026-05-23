@@ -22,8 +22,7 @@ def client():
 def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_boto, client):
     """Regression: /my-purchases must sort by created_at, not by purchase_id
     (UUID, the table's sort key). ScanIndexForward=False on the base table
-    returns reverse-lexical UUID order, not newest-first (Codex P2 on
-    PR #517, commit 977bf178).
+    returns reverse-lexical UUID order, not newest-first.
     """
     from main import app
 
@@ -151,7 +150,7 @@ def test_webhook_skips_fulfillment_for_unpaid_delayed_payment(
     payment_status='unpaid' for delayed-payment methods (ACH, BNPL); the
     actual settlement comes later as async_payment_succeeded. The fulfillment
     path must gate on payment_status='paid' or buyers receive entitlement on
-    payments that may later fail (Codex P1 on PR #517, commit 40b698f8).
+    payments that may later fail.
     """
     from core.services.webhook_dedup import WebhookDedupResult
 
@@ -242,9 +241,8 @@ def test_charge_refunded_debits_held_balance_when_pre_payout(
     mock_pa_table, mock_purchases_table, mock_revoke, mock_dedup, mock_construct, client
 ):
     """Regression: charge.refunded must subtract from balance_held_cents
-    when the purchase hasn't been transferred yet. Otherwise R11's
-    skip-refunded-in-flush leaves the held balance permanently inflated
-    (Codex P1 round 12, commit b6d66c05).
+    when the purchase hasn't been transferred yet. Otherwise the
+    skip-refunded-in-flush path leaves the held balance permanently inflated.
     """
     from core.services.webhook_dedup import WebhookDedupResult
 
@@ -360,7 +358,7 @@ def test_account_updated_skips_refunded_purchases(
     .revoke leaves price_paid_cents intact (preserves buyer history), so
     without an explicit refund check the flush would still Transfer the
     seller for a purchase the buyer was already refunded for — direct
-    accounting loss (Codex P1 round 11, commit 69c76f5e).
+    accounting loss.
     """
     from core.services.webhook_dedup import WebhookDedupResult
 
@@ -452,7 +450,7 @@ def test_account_updated_skips_already_transferred_purchases_idempotently(
     seller_transfer_id is visible. Conditional update on
     attribute_not_exists(seller_transfer_id) is the source of truth;
     only successful updates bump transferred_total. Otherwise held balance
-    decrements twice for one transfer (Codex P1 round 9, commit 3bc1a2eb).
+    decrements twice for one transfer.
     """
     from botocore.exceptions import ClientError
 
@@ -547,8 +545,7 @@ def test_account_updated_flushes_per_purchase_using_purchase_transfer_group(
     each purchase's stored stripe_transfer_group. A single batched
     flush_{seller}_{ts} transfer would not be findable by
     stripe.Transfer.list at refund time, so refunds couldn't reverse the
-    seller transfer (platform eats the cost) (Codex P1 on PR #517,
-    commit ba89f60c).
+    seller transfer (platform eats the cost).
     """
     from core.services.webhook_dedup import WebhookDedupResult
 
@@ -635,7 +632,7 @@ def test_account_updated_flushes_per_purchase_using_purchase_transfer_group(
 def test_webhook_rolls_back_dedup_on_handler_failure(mock_construct, mock_dedup, mock_handler, mock_delete, client):
     """Regression: a transient failure in the handler must NOT leave the
     dedup row behind, otherwise Stripe's retry sees ALREADY_SEEN and
-    silently drops the event (Codex P1 on PR #517, commit bee2fa1c).
+    silently drops the event.
     """
     from core.services.webhook_dedup import WebhookDedupResult
 

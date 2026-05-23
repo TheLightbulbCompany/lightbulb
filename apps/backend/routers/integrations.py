@@ -102,7 +102,7 @@ async def list_mcp_servers(
 ):
     # Mirror the WRITE-endpoint gate. Without this, any org member could
     # read shared MCP server configs (including `env` secrets) even though
-    # they can't create/update/delete them. Codex P1 on PR #592.
+    # they can't create/update/delete them.
     if auth.is_org_context:
         require_org_admin(auth)
     owner_id = resolve_owner_id(auth)

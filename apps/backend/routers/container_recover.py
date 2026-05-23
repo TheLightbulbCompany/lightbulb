@@ -189,8 +189,7 @@ async def container_recover(
             logger.info("Recovering owner %s: reprovision (status=%s)", owner_id, status)
             try:
                 # Read the owner's saved provider_choice so recovery rebuilds
-                # with the correct LLM path. Workstream B (2026-05-03) keys
-                # this on owner_id via billing_repo.
+                # with the correct LLM path. Keyed on owner_id via billing_repo.
                 provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
                 await ecs_manager.provision_user_container(
                     owner_id,
@@ -212,8 +211,7 @@ async def container_recover(
             logger.warning("Owner %s: running container but no IP, reprovisioning", owner_id)
             try:
                 # Read the owner's saved provider_choice so recovery rebuilds
-                # with the correct LLM path. Workstream B (2026-05-03) keys
-                # this on owner_id via billing_repo.
+                # with the correct LLM path. Keyed on owner_id via billing_repo.
                 provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
                 await ecs_manager.provision_user_container(
                     owner_id,
@@ -254,8 +252,7 @@ async def container_recover(
             await container_repo.update_error(owner_id, "Gateway restart failed — reprovisioning")
             try:
                 # Read the owner's saved provider_choice so recovery rebuilds
-                # with the correct LLM path. Workstream B (2026-05-03) keys
-                # this on owner_id via billing_repo.
+                # with the correct LLM path. Keyed on owner_id via billing_repo.
                 provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
                 await ecs_manager.provision_user_container(
                     owner_id,

@@ -140,7 +140,7 @@ async def search_listings(
     # Push status_in down to the search service so it's applied BEFORE the
     # limit slice — otherwise a seller with many published rows ahead of a
     # smaller status (e.g., a single review) loses the match to the limit
-    # cut. See PR #567 review (Codex P2).
+    # cut.
     status_list: list[str] | None = None
     if include_unpublished and status_in:
         status_list = [s.strip() for s in status_in.split(",") if s.strip()] or None
@@ -319,9 +319,9 @@ async def deploy_listing(
     # they have no marketplace-purchases row pointing at their own
     # listing_id. Without this bypass a seller paying for a $10 listing
     # gets 403'd when they hit "Hire" on their own product — surfaced as
-    # an indefinite "Setting up the workspace…" spinner in the storefront
-    # (PR #712 follow-up). Free listings already skip the check; paid
-    # listings need the explicit identity bypass.
+    # an indefinite "Setting up the workspace…" spinner in the storefront.
+    # Free listings already skip the check; paid listings need the explicit
+    # identity bypass.
     is_seller = listing.get("seller_id") == auth.user_id
     if (
         price_cents > 0
@@ -702,8 +702,7 @@ async def upload_artifact_from_agent(
     provisioned container with a registered agent" — ``agent_export``
     surfaces ``AgentNotInConfigError`` (→ 400) when the seller has no
     openclaw.json or the agent_id isn't in their agents.list, so a user
-    without a container can't get past this endpoint regardless. Tier-based
-    publishing gates were retired in the post-2026-04-26 flat-fee cutover.
+    without a container can't get past this endpoint regardless.
 
     EFS workspace is keyed by owner_id (= org_id for org members), so
     the export must use the resolved id. The listing row's seller_id

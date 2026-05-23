@@ -63,7 +63,7 @@ class TestSyncUser:
 
 
 class TestSyncUserProviderChoice:
-    """Workstream B (2026-05-03): /users/sync no longer writes provider_choice.
+    """/users/sync does not write provider_choice.
 
     The canonical write path is POST /billing/trial-checkout, which
     persists synchronously to billing_accounts before creating the
@@ -105,10 +105,10 @@ class TestSyncUserProviderChoice:
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
     async def test_sync_byo_key_without_provider_no_longer_400s(self, mock_repo, async_client):
-        """The pre-Workstream-B 400 on byo_key-without-byo_provider is gone.
+        """byo_key-without-byo_provider succeeds (no 400).
 
-        The endpoint now silently ignores both fields, so a body that
-        previously triggered a 400 just succeeds with no repo write.
+        The endpoint silently ignores both fields, so a body that would
+        otherwise trigger a 400 just succeeds with no repo write.
         Pydantic Literal validation still rejects unknown values (422).
         """
         mock_repo.get = AsyncMock(return_value=None)
@@ -169,11 +169,11 @@ class TestSyncUserProviderChoice:
 class TestGetMe:
     """Tests for GET /api/v1/users/me.
 
-    Workstream B (2026-05-03) moved the canonical provider_choice store from
-    user_repo to billing_repo (per-owner). For backwards compat with frontend
-    callers (ControlSidebar, ControlPanelRouter, LLMPanel, OutOfCreditsBanner),
-    /me still surfaces provider_choice and byo_provider — but reads them from
-    billing_repo by resolved owner_id (Codex P1 fix, PR #521).
+    The canonical provider_choice store lives on billing_repo (per-owner).
+    For backwards compat with frontend callers (ControlSidebar,
+    ControlPanelRouter, LLMPanel, OutOfCreditsBanner), /me still surfaces
+    provider_choice and byo_provider — but reads them from billing_repo
+    by resolved owner_id.
     """
 
     @pytest.mark.asyncio

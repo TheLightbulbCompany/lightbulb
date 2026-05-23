@@ -35,10 +35,9 @@ class PeerAlreadyLinkedError(ChannelLinkError):
 
 
 def _pairing_file_path(owner_id: str, provider: str) -> str:
-    # OpenClaw writes this at `{workspace}/credentials/{provider}-pairing.json`
-    # (verified empirically on EFS 2026-04-09). Do NOT add a `.openclaw/`
-    # prefix — OpenClaw treats the workspace root as the base and puts the
-    # credentials dir directly under it.
+    # OpenClaw writes this at `{workspace}/credentials/{provider}-pairing.json`.
+    # Do NOT add a `.openclaw/` prefix — OpenClaw treats the workspace root
+    # as the base and puts the credentials dir directly under it.
     return os.path.join(
         _efs_mount_path,
         owner_id,

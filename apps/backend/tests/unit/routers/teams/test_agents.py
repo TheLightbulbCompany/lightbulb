@@ -1,4 +1,4 @@
-"""Tests for the Teams Agents BFF (Task 6).
+"""Tests for the Teams Agents BFF.
 
 Spec §5: every agent-mutating endpoint MUST synthesize the openclaw_gateway
 adapter config server-side and reject any client-supplied
@@ -93,7 +93,7 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
         "sessionKeyStrategy": "issue",
         "sessionKey": "u1",
     }
-    # P1 (Codex finding 3): service token MUST be minted with owner_id
+    # Service token MUST be minted with owner_id
     # (== org_id for org members) so the WS authorizer routes Paperclip
     # wakes to the org's shared container, not the member's personal
     # owner. The fixture's TeamsContext has org_id="o1" / owner_id="o1".

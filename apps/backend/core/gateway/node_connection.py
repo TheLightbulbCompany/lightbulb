@@ -1,14 +1,12 @@
 """
 Dedicated per-user upstream WebSocket for node connections -- PURE RELAY.
 
-Post-migration (Task 14 in
-docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md):
-the backend no longer holds device private keys. Clients (Tauri Rust +
+The backend does not hold device private keys. Clients (Tauri Rust +
 the openclaw subprocess) sign locally using keys stored in macOS Keychain.
 
-The relay's role is strictly protocol-level. Post-PR #667 round-3 there
-is no proxy-injected wake-up frame; the backend starts the handshake
-itself on `$connect` for node-host clientIds (see `ws_connect`):
+The relay's role is strictly protocol-level. There is no proxy-injected
+wake-up frame; the backend starts the handshake itself on `$connect` for
+node-host clientIds (see `ws_connect`):
 
   1. `handle_node_connect` constructs this object and calls `connect()`
      immediately after `$connect` for any node-host WS.
@@ -81,9 +79,8 @@ class NodeUpstreamConnection:
         # signed_req_id is the JSON-RPC `id` from the client's signed
         # `connect` request. handle_node_connect uses this to key the
         # `hello-ok` it forwards DOWN so the subprocess's pending-request
-        # map can match the response. Without this, hello-ok was being
-        # keyed to a proxy-injected wake-up id (now gone) and the
-        # subprocess silently timed out — Codex round-3 P1 on PR #667.
+        # map can match the response. Without this, hello-ok would be
+        # keyed to a wake-up id and the subprocess would silently time out.
         self.signed_req_id: str | None = None
         self._ws = None
         self._connected = False

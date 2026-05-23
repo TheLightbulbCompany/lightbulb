@@ -74,7 +74,7 @@ def test_hook_token_param_does_not_leak_into_rendered_config():
     """Tripwire: hook_token MUST NOT be interpolated into the rendered config.
 
     The literal ``${OPENCLAW_HOOK_TOKEN}`` placeholder is what OpenClaw
-    expands at boot from the ECS task-def env var (Task 2). If a future
+    expands at boot from the ECS task-def env var. If a future
     engineer "fixes" the unused hook_token parameter by writing
     ``"token": hook_token`` instead of the placeholder string, the plaintext
     token would land on EFS — a security regression. This test catches that

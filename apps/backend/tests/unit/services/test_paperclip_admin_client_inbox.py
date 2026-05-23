@@ -1,4 +1,4 @@
-"""Unit tests for the new admin-client methods used by Inbox deep port (PR #3a).
+"""Unit tests for the admin-client methods used by the Inbox surface.
 
 Verify each method calls the right upstream URL with the right HTTP verb,
 forwards the session cookie via headers, and returns the parsed JSON body.

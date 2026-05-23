@@ -114,7 +114,7 @@ class TestDeleteUserData:
     ):
         """In an org context, user_repo + connection_service must use the
         Clerk user_id, while owner-scoped tables (container, billing, etc.)
-        use the org_id from resolve_owner_id (Codex P2 on PR #309)."""
+        use the org_id from resolve_owner_id."""
         from httpx import AsyncClient, ASGITransport
         from core.auth import get_current_user
 
@@ -178,7 +178,7 @@ class TestDeleteUserData:
     ):
         """If ECS or EFS teardown raises, every other step still runs but the
         endpoint surfaces 500 with the failure list — silently 200-ing while
-        leaking ECS services was the bug Codex flagged (P1 on PR #309)."""
+        leaking ECS services is the original bug this guards against."""
         mock_container = {
             "owner_id": "user_test_123",
             "service_name": "openclaw-user_test_123-abc",
@@ -212,7 +212,7 @@ class TestDeleteUserData:
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         # ...EXCEPT the containers row, which is preserved when ECS failed
         # so retries still have access_point_id + task_definition_arn to
-        # clean up the orphaned resources (Codex P1 on PR #309).
+        # clean up the orphaned resources.
         mock_container_repo.delete.assert_not_called()
         assert "containers" not in body["deleted"]["ddb"]
         # The failure list surfaces the ECS error so the caller knows what leaked.
@@ -244,11 +244,11 @@ class TestDeleteUserData:
         mock_container_repo,
         async_client,
     ):
-        """Regression for Codex P1 on PR #309: a previous partial run that
-        failed at ECS but succeeded at the DDB sweep would leave the row
-        gone but the ECS service orphaned. The next retry must still
-        attempt ECS teardown (service name is derived from owner_id alone)
-        instead of skipping it because `container is None`."""
+        """Regression: a previous partial run that failed at ECS but
+        succeeded at the DDB sweep would leave the row gone but the ECS
+        service orphaned. The next retry must still attempt ECS teardown
+        (service name is derived from owner_id alone) instead of skipping
+        it because `container is None`."""
         # No container row — simulates the partial-cleanup state.
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_container_repo.delete = AsyncMock()
@@ -281,7 +281,7 @@ class TestDeleteUserData:
     @pytest.mark.asyncio
     async def test_org_member_non_admin_is_rejected(self, app, mock_org_member_user):
         """Non-admin org members cannot wipe shared org-scoped state via this
-        endpoint, even in dev/staging (Codex P1 on PR #309)."""
+        endpoint, even in dev/staging."""
         from httpx import AsyncClient, ASGITransport
         from core.auth import get_current_user
 
@@ -343,9 +343,9 @@ class TestEfsExists:
 
     @pytest.mark.asyncio
     async def test_efs_exists_rejects_other_owners_workspace(self, async_client, tmp_path, monkeypatch):
-        """Caller cannot probe another owner's workspace (Codex P2 on PR #309).
-        Even though the requested path is under the shared mount root, it
-        belongs to a different owner_id so the endpoint must 400."""
+        """Caller cannot probe another owner's workspace. Even though the
+        requested path is under the shared mount root, it belongs to a
+        different owner_id so the endpoint must 400."""
         from core.containers import get_workspace
 
         ws = get_workspace()
@@ -363,9 +363,9 @@ class TestEfsExists:
 
     @pytest.mark.asyncio
     async def test_efs_exists_rejects_traversal_under_owner_prefix(self, async_client, tmp_path, monkeypatch):
-        """Path traversal must be canonicalized — `<owner_root>/../<other>` would
-        pass a string-prefix check but resolve outside the owner_root
-        (Codex P2 on PR #309)."""
+        """Path traversal must be canonicalized — `<owner_root>/../<other>`
+        passes a naive string-prefix check but resolves outside the
+        owner_root."""
         from core.containers import get_workspace
 
         ws = get_workspace()
@@ -517,7 +517,7 @@ class TestDdbRows:
     ):
         """When caller passes both owner_id (org) and user_id (member),
         user-scoped lookups (users, ws-connections) must use the user_id;
-        owner-scoped lookups must use the owner_id (Codex P2 on PR #309)."""
+        owner-scoped lookups must use the owner_id."""
         from httpx import AsyncClient, ASGITransport
         from core.auth import get_current_user
 
@@ -552,7 +552,7 @@ class TestDdbRows:
 
     @pytest.mark.asyncio
     async def test_ddb_rows_rejects_other_owner_id(self, async_client):
-        """Caller cannot probe another owner's row counts (Codex P2 on PR #309)."""
+        """Caller cannot probe another owner's row counts."""
         res = await async_client.get(
             "/api/v1/debug/ddb-rows",
             params={"owner_id": "user_someone_else"},

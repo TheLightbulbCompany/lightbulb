@@ -136,7 +136,7 @@ async def test_ensure_paperclip_for_owner_org_admin_passes_org_id():
 
 
 # ---------------------------------------------------------------------------
-# Org-member fast path (Task 4)
+# Org-member fast path
 # ---------------------------------------------------------------------------
 #
 # Implementation note: ``paperclip_repo`` exposes no module-level
@@ -344,9 +344,9 @@ async def test_ensure_paperclip_for_member_idempotent_on_duplicate_409():
     success — the canonical /container/status trigger may fire this on
     every member poll, so duplicate calls must be idempotent.
 
-    Codex P1 on PR #563: when an org member joins an org whose owner
-    already has a container, /container/status hits the existing-container
-    branch and dispatches ensure_user_ready for the member on every poll.
+    When an org member joins an org whose owner already has a container,
+    /container/status hits the existing-container branch and dispatches
+    ensure_user_ready for the member on every poll.
     The first dispatch successfully adds the member; subsequent dispatches
     see sign_up_user → Better Auth 409 (account already exists). That
     409 must be swallowed, not re-raised — otherwise the member's status
@@ -431,8 +431,8 @@ async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
 
 @pytest.mark.asyncio
 async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409():
-    """Codex P2 (Finding E): provision_org raising PaperclipApiError(409)
-    must be treated as success — the canonical /container/status trigger
+    """provision_org raising PaperclipApiError(409) must be treated as
+    success — the canonical /container/status trigger
     may fire this on every owner poll until container exists, so duplicate
     calls must be idempotent.
 

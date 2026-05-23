@@ -164,9 +164,9 @@ async def test_teams_subscribe_emits_dispatch_ok_metric():
 
 @pytest.mark.asyncio
 async def test_disconnect_unsubscribes_dead_browser_from_broker():
-    """Codex P1: a browser tab crashing without sending teams.unsubscribe
-    must NOT leave a stale conn-id in the broker's subscriber set —
-    that would block grace teardown of the backing Paperclip WS forever.
+    """A browser tab crashing without sending teams.unsubscribe must NOT
+    leave a stale conn-id in the broker's subscriber set — that would
+    block grace teardown of the backing Paperclip WS forever.
     /ws/disconnect cleans up via broker.unsubscribe."""
     from routers.websocket_chat import ws_disconnect
 

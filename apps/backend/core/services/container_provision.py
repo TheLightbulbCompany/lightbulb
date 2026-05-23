@@ -1,13 +1,8 @@
-"""Container provisioning helper — extracted from routers/container.py.
+"""Container provisioning helper.
 
-Lives in core/services/ so both routers/container.py (existing
-auto-retry path) and core/services/user_provision.py (new
-ensure_user_ready) can dispatch container provisioning the same way.
-
-This is a literal extraction of the function previously defined as
-``_background_provision`` in ``routers/container.py``. Behaviour is
-unchanged — same provider lookup, same swallow-exception semantic,
-same call signature.
+Lives in core/services/ so both routers/container.py (auto-retry path)
+and core/services/user_provision.py (ensure_user_ready) can dispatch
+container provisioning the same way.
 """
 
 from __future__ import annotations
@@ -26,7 +21,7 @@ async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     Mirrors routers/container.py:_resolve_provider_choice. Falls back
     to bedrock_claude when no row or no choice is persisted, matching
     the legacy default and keeping recovery working for owners
-    onboarded before Workstream B.
+    onboarded before per-owner provider_choice storage.
     """
     row = await billing_repo.get_by_owner_id(owner_id)
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"

@@ -145,7 +145,7 @@ async def patch_config(
     # usable subscription — pre-signup users (no billing row) and
     # canceled/past_due users can't bind bots. The legacy
     # stripe_subscription_id fallback (for accounts mid-cutover) is
-    # handled inside ``is_subscription_active``. Codex P1 on PR #393.
+    # handled inside ``is_subscription_active``.
     if _patch_touches_channels(body.patch):
         account = await billing_repo.get_by_owner_id(owner_id)
         if not is_subscription_active(account):

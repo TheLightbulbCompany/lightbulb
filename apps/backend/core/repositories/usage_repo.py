@@ -87,7 +87,7 @@ async def delete_all_for_owner(owner_id: str) -> int:
     Used by the e2e teardown endpoint. PK=owner_id, SK=period (which
     includes both period rollup rows and member:{user_id}:{period} rows).
     Paginates the DDB query so org members with many member:* rows beyond
-    the 1MB query page boundary still get fully cleared (Codex P2 #309).
+    the 1MB query page boundary still get fully cleared.
     """
     table = _get_table()
     deleted = 0

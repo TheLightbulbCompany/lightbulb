@@ -14,7 +14,7 @@ agent-pairing PR. Iterates every PaperclipCompany row in DDB,
    into the connection context with ``orgId=""`` and routes by ``sub``,
    so a member-keyed token routes Paperclip wakes to the member's
    PERSONAL container instead of the org's shared container, missing
-   the agent entirely. (Codex P1 finding 4.)
+   the agent entirely.
 
 The two transformations always run together: any agent whose
 ``sessionKeyStrategy`` is being flipped is also a candidate for

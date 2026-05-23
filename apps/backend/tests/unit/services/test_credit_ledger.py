@@ -109,12 +109,12 @@ class TestDeduct:
     async def test_deduct_with_insufficient_balance_applies_overdraft(self, ledger_tables):
         """Race scenario: chat completed, deduction would go negative.
 
-        Codex P1 on PR #393: the previous implementation force-set the
-        balance to 0, which would erase any concurrent top-up that landed
-        between the failed conditional decrement and the fallback write.
-        New behavior — apply the deduct with a guard that balance is still
-        below the requested amount; if a top-up already arrived, do
-        nothing. The next top-up restores the balance correctly.
+        Force-setting the balance to 0 would erase any concurrent top-up
+        that landed between the failed conditional decrement and the
+        fallback write. Correct behavior: apply the deduct with a guard
+        that balance is still below the requested amount; if a top-up
+        already arrived, do nothing. The next top-up restores the balance
+        correctly.
         """
         await top_up("u_1", amount_microcents=1_000_000, stripe_payment_intent_id="pi_x")  # $1
         await deduct(
@@ -133,7 +133,7 @@ class TestDeduct:
     async def test_deduct_overdraft_preserves_concurrent_top_up(self, ledger_tables):
         """If a top-up lands between the failed conditional decrement and
         the fallback write, the fallback's balance < amount guard short-
-        circuits and the top-up is preserved. Codex P1 on PR #393."""
+        circuits and the top-up is preserved."""
         # Simulate the race manually: balance starts low, then a top-up
         # arrives before the deduct's fallback runs. We approximate by
         # topping up enough that the *fallback's* condition (balance <

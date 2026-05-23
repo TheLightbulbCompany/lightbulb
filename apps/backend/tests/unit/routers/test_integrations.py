@@ -197,10 +197,9 @@ class TestIntegrationsRouter:
     async def test_put_rejects_args_as_string(self, app, patched_router, auth_override):
         """PUT rejects entries whose args are not a list of strings.
 
-        Regression guard for the Codex P2 finding on PR #590: pre-fix
-        validation only checked that command was a string, so a string
-        args field would land in openclaw.json and silently break
-        OpenClaw's hot reload.
+        Regression: a naive validator that only checks that command is a
+        string lets a string args field land in openclaw.json and silently
+        break OpenClaw's hot reload.
         """
         app.dependency_overrides[get_current_user] = auth_override
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -277,7 +276,7 @@ class TestIntegrationsRouter:
     async def test_list_servers_org_member_rejected(self, app, patched_router):
         """Non-admin org members can't read the shared MCP server list — the
         entries carry per-server `env` secrets only the admin set up.
-        Mirrors the gate on the WRITE endpoints + GET /config (Codex P1, #592).
+        Mirrors the gate on the WRITE endpoints + GET /config.
         """
 
         async def _member_auth():

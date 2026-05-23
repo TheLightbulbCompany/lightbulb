@@ -435,10 +435,10 @@ async def test_pair_desktop_devices_prunes_stale_desktop_entries_for_same_user()
 
 
 async def test_pair_desktop_devices_preserves_other_org_members_entries():
-    """SHARED-WORKSPACE GUARD (P1 from Codex on PR #683): in an org context
-    paired.json lives on the org's workspace, so multiple members'
-    desktop entries coexist under the same clientId. When Alice re-pairs,
-    we MUST NOT delete Bob's still-valid entries.
+    """SHARED-WORKSPACE GUARD: in an org context paired.json lives on the
+    org's workspace, so multiple members' desktop entries coexist under
+    the same clientId. When Alice re-pairs, we MUST NOT delete Bob's
+    still-valid entries.
     """
     bob_mac_id = "1" * 64
     bob_cli_id = "2" * 64
@@ -495,8 +495,8 @@ async def test_pair_desktop_devices_preserves_other_org_members_entries():
 
 
 async def test_pair_desktop_devices_does_not_stamp_userid_on_idempotent_match():
-    """SECURITY (Codex round-2 P2 on commit 8bc3c157): the idempotent
-    branch must NOT stamp / overwrite userId based on a publicKey match.
+    """SECURITY: the idempotent branch must NOT stamp / overwrite userId
+    based on a publicKey match.
     `POST /desktop/pair` accepts the pubkey unsigned — it does not
     verify possession of the matching private key. If we stamped here,
     Alice could submit Bob's pubkey, relabel Bob's entry as Alice's,
@@ -584,10 +584,10 @@ async def test_pair_desktop_devices_does_not_stamp_userid_on_idempotent_match():
 
 
 async def test_pair_desktop_devices_does_not_overwrite_other_users_stamp_on_pubkey_match():
-    """SECURITY (Codex round-2 P2): if a different user's stamped entry
-    happens to match the caller's submitted pubkey, we MUST NOT relabel
-    it as the caller's. The dev path: Alice steals/observes Bob's pubkey
-    from a shared workspace and submits it via POST /desktop/pair.
+    """SECURITY: if a different user's stamped entry happens to match the
+    caller's submitted pubkey, we MUST NOT relabel it as the caller's.
+    The attack path: Alice steals/observes Bob's pubkey from a shared
+    workspace and submits it via POST /desktop/pair.
     Without this guard, Bob's entry gets userId=user_alice, and Alice's
     next re-pair (with her own keys) would satisfy the prune and delete
     Bob's device.
@@ -704,11 +704,10 @@ async def test_pair_desktop_devices_preserves_legacy_unstamped_entries_in_org_wo
 
 
 async def test_pair_desktop_devices_prunes_legacy_unstamped_entries_in_personal_workspace():
-    """Codex round-3 P2 on PR #683: in a personal workspace
-    (owner_id == user_id), there's no other user who could own a
-    legacy unstamped entry. The attack vector that drove the org-side
-    preserve doesn't exist here. Safely prune so personal users who
-    upgrade from pre-this-PR builds get clean enumeration.
+    """In a personal workspace (owner_id == user_id), there's no other
+    user who could own a legacy unstamped entry. The attack vector that
+    drives the org-side preserve doesn't exist here. Safely prune so
+    personal users get clean enumeration after upgrade.
     """
     legacy_mac_id = "9" * 64
     legacy_cli_id = "8" * 64

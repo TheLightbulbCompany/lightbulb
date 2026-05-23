@@ -218,7 +218,7 @@ async def test_provision_org_happy_path(repo):
     # Canonical adapter_type is the underscore form ("openclaw_gateway")
     # — the previous hyphenated value ("openclaw-gateway") was rejected
     # by Paperclip's assertKnownAdapterType so seed-agent creation
-    # silently failed on every provision. See Task 13.
+    # silently fails on every provision.
     assert agent_kwargs["adapter_type"] == "openclaw_gateway"
     assert agent_kwargs["adapter_config"]["url"] == "wss://ws-dev.isol8.co"
     assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
@@ -545,13 +545,13 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
 
 
 async def test_find_org_owner_skips_disabled_rows(repo):
-    """Codex P1 (round 3): ``find_org_owner`` must NOT return a disabled row.
+    """``find_org_owner`` must NOT return a disabled row.
 
     ``disable()`` flips ``status="disabled"`` and leaves the row in DDB
     until the purge worker runs (up to 30 days). If the OLDEST row in
-    an org is disabled, the previous "min(created_at)" pick handed
-    back a stale Better Auth account and broke ``provision_member``
-    even when other active admins existed.
+    an org is disabled, a naive "min(created_at)" pick would hand back
+    a stale Better Auth account and break ``provision_member`` even
+    when other active admins exist.
 
     Seed: row A (disabled, older created_at) + row B (active, newer).
     Expect: ``find_org_owner`` returns row B.

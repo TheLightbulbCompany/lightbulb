@@ -175,15 +175,13 @@ async def ws_connect(
     #   OpenClaw v3 server-initiated handshake (it waits for
     #   `connect.challenge` from the server before sending anything), so
     #   SOMETHING has to open the upstream container WS to surface that
-    #   challenge. Previously the Tauri proxy injected a wake-up `connect`
-    #   to trigger this — but that frame collided with the subprocess's
-    #   own signed `connect`, with the backend keying `hello-ok` to the
-    #   wake-up id instead of the subprocess's pending id, silently
-    #   timing out the handshake (Codex round-3 P1 on PR #667). The
-    #   proxy is now a transparent relay; we kick off
-    #   `handle_node_connect` here on `$connect` and the subprocess's
-    #   signed-connect frame is the FIRST and ONLY `connect` frame the
-    #   `$default` handler sees.
+    #   challenge. A naive wake-up `connect` injected by the proxy collides
+    #   with the subprocess's own signed `connect`, with the backend keying
+    #   `hello-ok` to the wake-up id instead of the subprocess's pending id,
+    #   silently timing out the handshake. The proxy is now a transparent
+    #   relay; we kick off `handle_node_connect` here on `$connect` and the
+    #   subprocess's signed-connect frame is the FIRST and ONLY `connect`
+    #   frame the `$default` handler sees.
     if is_node_host:
         background_tasks.add_task(
             _kick_off_node_connect,
@@ -437,7 +435,7 @@ async def ws_message(
             connect_params = params or {}
             role = connect_params.get("role", "operator")
 
-            # Node connection: post-PR #667 round-3 pure-relay flow.
+            # Node connection: pure-relay flow.
             #
             # The subprocess only ever sends ONE `connect` frame: the signed
             # reply to the upstream container's `connect.challenge` (the
@@ -451,11 +449,10 @@ async def ws_message(
             # eventually forwards `hello-ok` DOWN to the client (with the
             # subprocess's own request id, captured during the handshake).
             #
-            # The legacy "frame 1: wake-up" path that opened the upstream
-            # WS in response to a proxy-injected unsigned `connect` is
-            # gone — that frame collided with the subprocess's real
-            # signed connect and silently broke JSON-RPC id correlation
-            # (Codex round-3 P1 on PR #667).
+            # A "frame 1: wake-up" path that opened the upstream WS in
+            # response to a proxy-injected unsigned `connect` would collide
+            # with the subprocess's real signed connect and silently break
+            # JSON-RPC id correlation.
             if role == "node":
                 if is_node_connection(x_connection_id):
                     submit_node_signed_connect(x_connection_id, body)
@@ -1138,9 +1135,9 @@ async def _process_agent_chat_background(
         )
 
         # --- Node binding: pin this session to the user's CLI device if connected ---
-        # Task 13: exec is bound to the CLI bucket specifically. The Mac
-        # companion (clientId=openclaw-macos) is a sibling node for
-        # passkey/UI affordances, but execNode must point at the CLI.
+        # Exec is bound to the CLI bucket specifically. The Mac companion
+        # (clientId=openclaw-macos) is a sibling node for passkey/UI
+        # affordances, but execNode must point at the CLI.
         from core.services.node_proxy import (
             get_user_cli_node,
             get_patched_session,
@@ -1199,8 +1196,8 @@ async def _process_agent_chat_background(
                 except Exception:
                     logger.warning("Failed to bind session %s to node", session_key)
 
-        # Plan 3 Task 4 + audit M1: card-3 hard-stop when balance ≤ 0,
-        # AND any provider hard-stop when subscription is inactive.
+        # Card-3 hard-stop when balance ≤ 0, AND any provider hard-stop
+        # when subscription is inactive.
         # provider_choice + credit balance live on the Clerk user row,
         # so we pass user_id; subscription_status lives on the billing
         # row (org_id in org context, user_id in personal), so we also

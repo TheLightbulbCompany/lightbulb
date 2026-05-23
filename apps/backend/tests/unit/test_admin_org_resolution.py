@@ -15,8 +15,8 @@ These tests pin:
   personal-mode payload (fail-open) rather than 500 the whole dashboard.
 
 The second half of this file (``TestAdminMutationOwnerResolution``) covers
-Codex's follow-up P1: admin MUTATION endpoints must also resolve owner_id
-before dispatching to downstream services. Previously only reads did; writes
+admin MUTATION endpoints — they must also resolve owner_id before
+dispatching to downstream services. If only reads do, writes
 (container stop/start/reprovision/resize, billing cancel/pause/credit/invoice,
 PATCH /config, agent delete/clear-sessions) still targeted the raw
 ``{user_id}`` from the URL — so for org members the mutations hit a
@@ -244,7 +244,7 @@ async def test_get_agent_detail_uses_org_id_for_container_lookup():
 
 
 # -----------------------------------------------------------------------------
-# Codex P1+P1+P2 (PR #376) regression tests
+# Regression tests for concurrent admin agent calls
 # -----------------------------------------------------------------------------
 
 
@@ -342,9 +342,9 @@ async def test_list_user_agents_sends_empty_params_to_openclaw():
 
 @pytest.mark.asyncio
 async def test_get_agent_detail_redacts_secrets_in_config_raw_envelope():
-    """Codex P1 on PR #379: config.get returns either a plain dict or the
-    ConfigPanel envelope {raw: "<openclaw.json as string>", hash}. The
-    redactor only walks dict/list nodes; strings pass through unchanged.
+    """config.get returns either a plain dict or the ConfigPanel envelope
+    {raw: "<openclaw.json as string>", hash}. The redactor only walks
+    dict/list nodes; strings pass through unchanged.
     If we redact the envelope directly, config_redacted.raw still
     contains BYOK secrets verbatim. Parse+redact the raw envelope.
     """
@@ -445,10 +445,10 @@ async def test_get_agent_detail_handles_malformed_config_raw_envelope():
 
 @pytest.mark.asyncio
 async def test_get_agent_detail_normalizes_sessions_list_array_response():
-    """Codex P2 (PR #379 follow-up): sessions.list returns either
-    {sessions: [...]} or a raw array depending on OpenClaw version, same as
-    skills.status. Admin must surface both; previously only the dict form
-    was handled and array responses silently rendered 'no recent sessions'.
+    """sessions.list returns either {sessions: [...]} or a raw array
+    depending on OpenClaw version, same as skills.status. Admin must
+    surface both shapes — handling only the dict form makes array
+    responses silently render 'no recent sessions'.
     """
     from core.services import admin_service
 
@@ -495,9 +495,9 @@ async def test_get_agent_detail_normalizes_sessions_list_array_response():
 
 @pytest.mark.asyncio
 async def test_get_agent_detail_normalizes_skills_status_array_response():
-    """Codex P2 (PR #379): skills.status returns either {skills: [...]} or a
-    raw array depending on OpenClaw version. Admin must surface both shapes;
-    previously `skills.get("skills", [])` returned [] for array responses,
+    """skills.status returns either {skills: [...]} or a raw array
+    depending on OpenClaw version. Admin must surface both shapes —
+    `skills.get("skills", [])` would return [] for array responses,
     silently showing "no skills" on environments returning the array form."""
     from core.services import admin_service
 
@@ -624,7 +624,7 @@ async def test_resolve_owner_falls_back_to_personal_mode_on_clerk_timeout(caplog
 
 
 # =============================================================================
-# Codex P1 (PR #376 follow-up): admin MUTATION endpoints must resolve owner_id
+# Admin MUTATION endpoints must resolve owner_id
 # =============================================================================
 #
 # These tests drive the admin router (routers/admin.py) through FastAPI's
@@ -903,13 +903,12 @@ class TestAdminMutationOwnerResolution:
 
 
 # =============================================================================
-# PR #379: get_agent_detail RPC method names + camelCase params
+# get_agent_detail RPC method names + camelCase params
 # =============================================================================
 #
-# Background: prod returned `{"code":"INVALID_REQUEST","message":"unknown
-# method: agents.get"}` — admin_service was calling non-existent RPCs with
-# snake_case params. The correct OpenClaw RPCs, anchored to the main-app
-# call sites:
+# OpenClaw rejects unknown RPCs with snake_case params with
+# `{"code":"INVALID_REQUEST","message":"unknown method: agents.get"}`.
+# The correct OpenClaw RPCs, anchored to the main-app call sites:
 #   agent.identity.get {agentId}            (AgentOverviewTab.tsx:27)
 #   sessions.list     {includeGlobal, ...} (SessionsPanel.tsx:123-137)
 #   skills.status     {agentId}            (SkillsPanel.tsx:219)

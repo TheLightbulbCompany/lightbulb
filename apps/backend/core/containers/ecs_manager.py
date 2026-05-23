@@ -75,8 +75,7 @@ class EcsManager:
     # The CDK base task def lives in this family; per-user clones live in
     # `<base>-user`. Splitting the families means `describe_task_definition`
     # on the base family always returns the latest CDK base — no need for
-    # SSM-pinned ARNs. See PR #410 for the reasoning (and #299 for the
-    # earlier same-family workaround that this supersedes).
+    # SSM-pinned ARNs.
     _BASE_TASK_DEF_FAMILY = "isol8-{env}-openclaw"
     _PER_USER_FAMILY_SUFFIX = "-user"
 
@@ -630,7 +629,7 @@ class EcsManager:
         a follow-up `start_user_service` with forceNewDeployment would
         terminate that still-running task and replace it with a fresh one,
         producing a ~30s outage right after a user logged in (the cascade
-        traced in the post-incident review of the 47h-uptime container).
+        traced in the post-incident review).
 
         Args:
             user_id: Clerk user ID.
@@ -709,8 +708,8 @@ class EcsManager:
             # Always read containerDefinitions/env/command/mounts from the
             # CDK-managed base, NEVER from the user's prior per-user revision.
             # Reading from a prior per-user revision propagates any drift it
-            # had (e.g., missing CLAWHUB_WORKDIR — incident 2026-04-17). Per-
-            # user state (EFS access point, image, cpu/memory) is layered here.
+            # had (e.g., missing CLAWHUB_WORKDIR). Per-user state (EFS access
+            # point, image, cpu/memory) is layered here.
             # The hook_token is per-user state stored on the containers row;
             # we must thread it through so the new task def keeps OPENCLAW_HOOK_TOKEN
             # set (otherwise resize would silently strip the env var).
@@ -888,8 +887,7 @@ class EcsManager:
             # (task-def revision, EFS access point, DDB container row) may
             # still exist even after the service is gone, and a partial
             # cleanup that left the access point orphaned can only be
-            # recovered if subsequent retries fall through to this block
-            # (Codex P1 on PR #309).
+            # recovered if subsequent retries fall through to this block.
             code = e.response.get("Error", {}).get("Code", "")
             if code in ("ServiceNotFoundException", "ServiceNotActiveException"):
                 logger.info(
@@ -1141,7 +1139,7 @@ class EcsManager:
     ) -> list[dict]:
         """Build the ECS task ``secrets:`` block for a BYOK provisioning.
 
-        Looks up the api-keys row populated by ``key_service`` (Task 10) for
+        Looks up the api-keys row populated by ``key_service`` for
         ``{user_id, byo_provider}`` and turns its ``secret_arn`` into a single
         ``secrets:`` entry that the per-user task definition references.
         ``service-stack.ts`` already grants the backend
@@ -1175,9 +1173,6 @@ class EcsManager:
         finds the credentials cold on first boot. Raises if no active
         OAuth row exists — caller should gate provisioning on a completed
         device-code flow.
-
-        See spec at
-        ``docs/superpowers/specs/2026-04-29-chatgpt-oauth-auth-profiles-design.md``.
         """
         from core.services.oauth_service import get_decrypted_tokens
 
@@ -1213,9 +1208,9 @@ class EcsManager:
             user_id: Clerk user ID.
             provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
                 ``"bedrock_claude"``. Selects the LLM provider block in
-                openclaw.json (Task 12) and drives any pre-task setup
-                (codex auth pre-stage for chatgpt_oauth, per-user
-                Secrets Manager wiring for byo_key).
+                openclaw.json and drives any pre-task setup (codex auth
+                pre-stage for chatgpt_oauth, per-user Secrets Manager
+                wiring for byo_key).
             byo_provider: Required when ``provider_choice == "byo_key"``;
                 one of ``"openai"`` or ``"anthropic"``.
             owner_type: "personal" or "org" (for EFS access-point tagging).
@@ -1745,7 +1740,7 @@ class EcsManager:
             gateway_token: Auth token for the OpenClaw gateway HTTP API.
             provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
                 ``"bedrock_claude"``. Drives which provider block lands in
-                openclaw.json (Task 12 contract).
+                openclaw.json.
             byo_provider: ``"openai"`` or ``"anthropic"``. Required when
                 ``provider_choice == "byo_key"`` so the right model block is
                 emitted; ignored otherwise.

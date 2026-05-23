@@ -1,12 +1,11 @@
 """Admin dashboard router — /api/v1/admin/*
 
-Every endpoint is gated by Depends(require_platform_admin) (CEO #351).
+Every endpoint is gated by Depends(require_platform_admin).
 Mutation endpoints are wrapped with @audit_admin_action so a row lands
-in DDB synchronously (CEO S1 fail-closed). Container + billing actions
-also accept an Idempotency-Key header (CEO D1) to short-circuit double
-clicks.
+in DDB synchronously (fail-closed). Container + billing actions also
+accept an Idempotency-Key header to short-circuit double clicks.
 
-Read endpoints delegate to admin_service (Phase B composition layer).
+Read endpoints delegate to admin_service (composition layer).
 Mutation endpoints call the underlying service (ecs_manager,
 billing_service, clerk_admin, gateway_pool, config_patcher) directly —
 admin_service intentionally doesn't compose those because each is a
@@ -64,8 +63,8 @@ class QueueImageUpdateRequest(BaseModel):
         description="Human-readable change summary shown to the owner in their update banner",
     )
     # NB: deliberately omitting `force_by` — update_repo persists it but the
-    # scheduled worker never reads it (Codex #653 P2). Plumbing it through
-    # would belong in a separate PR that wires the worker to honor it.
+    # scheduled worker never reads it. Plumbing it through belongs in a
+    # change that also wires the worker to honor it.
 
 
 # ---------------------------------------------------------------------------
@@ -492,14 +491,12 @@ async def _admin_agent_rpc(
 
     Container / gateway pool keyed on owner_id. For org members that's
     the org_id — resolve before the ECS / gateway dispatch so we don't
-    send the RPC to a non-existent personal-mode container
-    (admin-org-owner-id P1).
+    send the RPC to a non-existent personal-mode container.
 
     uuid4 entropy: org members share a single gateway connection whose
-    pending-RPC dict is keyed by req_id. Deterministic ids (previously
+    pending-RPC dict is keyed by req_id. Deterministic ids (e.g.
     ``admin-agent-delete-{agent_id}``) collide when two admins click on
-    the same shared agent concurrently — same pattern Codex already
-    flagged on the read path.
+    the same shared agent concurrently.
     """
     owner_id, _ = await resolve_admin_owner_id(user_id)
     pool = get_gateway_pool()

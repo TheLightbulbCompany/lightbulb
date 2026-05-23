@@ -30,13 +30,13 @@ router = APIRouter(prefix="/api/v1/admin/marketplace", tags=["marketplace-admin"
 # Cap on tarball size for the in-memory preview extract.
 #
 # 50 MB is a realistic ceiling for an agent workspace once persona files,
-# bundled skills, and a couple of MCPs are included. The previous 10 MB
-# cap was tripping on legitimate listings (e.g. PR #693 — a "Ray" listing
-# carrying normal recipe content). Hitting this cap no longer 413s the
-# endpoint; instead the preview returns a partial response with the file
-# tree intact and ``scan_incomplete=True`` so the admin can still see
-# WHAT is in the tarball and decide to reject. Approval is disabled
-# client-side when scan_incomplete is set — see ModerationActions.
+# bundled skills, and a couple of MCPs are included. A tighter cap would
+# trip on legitimate listings carrying normal recipe content. Hitting this
+# cap no longer 413s the endpoint; instead the preview returns a partial
+# response with the file tree intact and ``scan_incomplete=True`` so the
+# admin can still see WHAT is in the tarball and decide to reject.
+# Approval is disabled client-side when scan_incomplete is set — see
+# ModerationActions.
 _MAX_PREVIEW_TARBALL_BYTES = 50 * 1024 * 1024
 
 

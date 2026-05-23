@@ -5,8 +5,6 @@ Owns one ``PaperclipEventClient`` per *user* (not per browser tab). When
 the last subscriber for a user disconnects, schedules a ``grace_seconds``
 delayed teardown so reconnect storms (e.g. mobile network blip) don't
 churn the upstream WS.
-
-See spec: ``docs/superpowers/specs/2026-05-04-teams-realtime-design.md``.
 """
 
 from __future__ import annotations
@@ -88,12 +86,12 @@ class TeamsEventBroker:
 
             existing = self._clients.get(user_id)
             if existing is not None:
-                # Codex P1 on PR #518: a backing client that exhausted its
-                # reconnect attempts (~15 min of failures) lingers in
-                # self._clients but its background loop has terminated —
-                # reusing it means the user gets no live updates until
-                # all their tabs close long enough for grace teardown.
-                # Replace dead clients before reusing.
+                # A backing client that exhausted its reconnect attempts
+                # (~15 min of failures) lingers in self._clients but its
+                # background loop has terminated — reusing it means the user
+                # gets no live updates until all their tabs close long
+                # enough for grace teardown. Replace dead clients before
+                # reusing.
                 if existing.is_alive():
                     put_metric("teams.broker.subscribe", dimensions={"outcome": "reused"})
                     return
@@ -186,13 +184,13 @@ class TeamsEventBroker:
             logger.info("teams broker: closed backing WS for idle user=%s", user_id)
             put_metric("teams.broker.client", dimensions={"event": "closed"})
             gauge("teams.broker.users.active", len(self._clients))
-        # We deliberately do NOT pop ``self._locks[user_id]`` here. Codex P1 on
-        # PR #518: pruning after releasing the lock creates a race where a
-        # subscribe arriving in the gap between ``async with`` exit and the
-        # pop holds the OLD lock while a subsequent subscribe lazily creates
-        # a FRESH lock, allowing duplicate client creation. The leak from
-        # keeping per-former-user locks is bounded by total user count and
-        # benign at any realistic scale; correctness > the small memory cost.
+        # We deliberately do NOT pop ``self._locks[user_id]`` here: pruning
+        # after releasing the lock creates a race where a subscribe arriving
+        # in the gap between ``async with`` exit and the pop holds the OLD
+        # lock while a subsequent subscribe lazily creates a FRESH lock,
+        # allowing duplicate client creation. The leak from keeping
+        # per-former-user locks is bounded by total user count and benign at
+        # any realistic scale; correctness > the small memory cost.
 
     async def _handle_event(self, user_id: str, event: dict[str, Any]) -> None:
         """Wrap and fan out one event to all of the user's connections."""
@@ -217,11 +215,11 @@ class TeamsEventBroker:
             event.get("type", "unknown"),
         )
 
-        # Codex P2 on PR #518: fan out only to browsers that explicitly
-        # subscribed via teams.subscribe (tracked in self._subscribers),
-        # NOT to every WS connection the user has. ws-connections-by-userId
-        # would also return desktop node-role sockets that never asked for
-        # Teams events; sending events there is wasted bandwidth + adds
+        # Fan out only to browsers that explicitly subscribed via
+        # teams.subscribe (tracked in self._subscribers), NOT to every WS
+        # connection the user has. ws-connections-by-userId would also
+        # return desktop node-role sockets that never asked for Teams
+        # events; sending events there is wasted bandwidth + adds
         # parser/backpressure load on the node connection path.
         # Snapshot the subscriber set so the iteration is stable even if
         # an unsubscribe lands mid-loop.
@@ -255,8 +253,8 @@ class TeamsEventBroker:
                         dimensions={"outcome": "error"},
                     )
 
-        # Codex P1 on PR #518: stale conns must be removed from the local
-        # subscriber set too, not just the DDB row. _grace_teardown checks
+        # Stale conns must be removed from the local subscriber set too,
+        # not just the DDB row. _grace_teardown checks
         # self._subscribers[user_id] to decide whether to close the backing
         # client; if a stale conn-id lingers there, a single missed
         # teams.unsubscribe pins the upstream WS open forever.

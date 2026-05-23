@@ -323,10 +323,9 @@ async def create_credit_top_up_checkout(
 async def create_trial_subscription(*, owner_id: str, payment_method_id: str) -> stripe.Subscription:
     """Create a Stripe Subscription with a 14-day trial.
 
-    Per spec §7.1 / §7.3: backend creates the Subscription IMMEDIATELY at
-    signup against the saved payment method. Stripe handles conversion on
-    day 15 (Smart Retries on failure). Backend just listens to the
-    resulting webhooks (Plan 3 Task 2).
+    Backend creates the Subscription immediately at signup against the
+    saved payment method. Stripe handles conversion on day 15 (Smart
+    Retries on failure). Backend just listens to the resulting webhooks.
 
     The subscription is born in ``status: trialing`` with ``trial_end`` 14
     days out. Subscription id + initial status are persisted via

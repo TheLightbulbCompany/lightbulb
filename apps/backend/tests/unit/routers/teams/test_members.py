@@ -1,4 +1,4 @@
-"""Tests for the Teams Members BFF (Task 12).
+"""Tests for the Teams Members BFF.
 
 Members endpoint joins Paperclip ``companyMemberships`` with Clerk
 user info via ``_resolve_user_email`` (re-exported from

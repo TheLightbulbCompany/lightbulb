@@ -10,10 +10,10 @@ Verification uses the svix HMAC-SHA256 signature scheme:
 If CLERK_WEBHOOK_SECRET is not configured the signature check is skipped
 (safe for local dev; must be set in production).
 
-**Paperclip provisioning dispatch** (added in T12):
+**Paperclip provisioning dispatch**:
 
-  * ``organization.created``           -> log only (provisioning deferred to /container/status; see plan Task 8)
-  * ``organizationMembership.created`` -> log + dual-tenancy probe (provisioning deferred to /container/status; see plan Task 8)
+  * ``organization.created``           -> log only (provisioning deferred to /container/status)
+  * ``organizationMembership.created`` -> log + dual-tenancy probe (provisioning deferred to /container/status)
   * ``organizationMembership.deleted`` -> ``disable`` for that user
   * ``organization.deleted``           -> ``disable`` for every member of the org
   * ``user.deleted``                   -> ``disable`` for that user
@@ -21,8 +21,8 @@ If CLERK_WEBHOOK_SECRET is not configured the signature check is skipped
 Retry semantics: if provisioning raises an exception with
 ``retryable=True`` (``OrgNotProvisionedError`` always; ``PaperclipApiError``
 on 5xx + 429), we enqueue a row in the ``pending-updates`` table for the
-T13 cleanup cron to re-drive. Either way we return 200 to Clerk so the
-svix delivery is acked — we own retries from this point onward.
+cleanup cron to re-drive. Either way we return 200 to Clerk so the svix
+delivery is acked — we own retries from this point onward.
 
 Non-retryable errors (4xx state errors, programmer errors) are logged
 and swallowed; returning 5xx would just have Clerk retry the same
@@ -268,8 +268,7 @@ async def _handle_organization_created(data: dict) -> None:
     time the readiness gate is up (no subscription, no provider
     chosen) and provisioning Paperclip without a container is the
     half-state we're eliminating. Provisioning fires from the
-    canonical GET /container/status trigger (Task 8) once readiness
-    is satisfied.
+    canonical GET /container/status trigger once readiness is satisfied.
     """
     org_id = data.get("id", "")
     owner_user_id = data.get("created_by", "")
@@ -289,7 +288,7 @@ async def _handle_organization_membership_created(data: dict) -> None:
     Provisioning is intentionally NOT done here. The new member's
     paperclip-membership row will be added by their first
     ``/container/status`` poll, which calls ``ensure_user_ready`` and
-    routes to ``_ensure_paperclip_for_member`` (Task 8). That helper:
+    routes to ``_ensure_paperclip_for_member``. That helper:
 
       * adds the member if the owner's company is active
       * logs and returns gracefully if the owner's company isn't ready

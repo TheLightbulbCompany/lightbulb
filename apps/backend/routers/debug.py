@@ -83,8 +83,7 @@ async def provision_container(
         # devices/paired.json (with BOTH the node and the operator device
         # entries, KMS-encrypted operator seed persisted to the DynamoDB
         # containers row).
-        # Plan 2 Task 13 shim: provider_choice defaults to bedrock_claude for
-        # dev provisioning until Plan 3 wires the user's saved choice through.
+        # provider_choice defaults to bedrock_claude for dev provisioning.
         await ecs_manager.write_user_configs(
             owner_id,
             gateway_token,
@@ -132,11 +131,10 @@ async def redeploy_container(
         raise HTTPException(status_code=404, detail="No container found")
 
     try:
-        # Plan 2 Task 13 shim: under the flat-fee pivot, openclaw.json is
-        # generated wholly from provider_choice (Task 12) — there is no longer
-        # a per-tier "backend policy patch" to deep-merge. The dev redeploy
-        # path now just rewrites the file via write_user_configs and bumps the
-        # service. Plan 3 will wire the user's saved provider_choice in.
+        # Under the flat-fee model, openclaw.json is generated wholly from
+        # provider_choice — there is no per-tier "backend policy patch" to
+        # deep-merge. The dev redeploy path just rewrites the file via
+        # write_user_configs and bumps the service.
         ecs_manager = get_ecs_manager()
         # Thread hook_token through so the openclaw.json placeholder lines
         # up with the env-var T2 injects on the per-user task def. Render
@@ -219,13 +217,12 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # In an org context resolve_owner_id returns the org_id, but the `users`
     # and `ws-connections` tables are keyed by the Clerk user_id directly.
     # Without this split, org E2E teardown would target the org id for both,
-    # leaving the Clerk user row + WS connection rows behind on every run
-    # (Codex P2 on PR #309).
+    # leaving the Clerk user row + WS connection rows behind on every run.
     user_id = auth.user_id
     deleted: dict = {"ecs": False, "efs": False, "ddb": []}
     # Track failures so we can return 500 at the end. Test cleanup needs to
     # know if anything leaked — a green 200 with leaked ECS/EFS state was
-    # silently accumulating orphan services every run (Codex P1 on PR #309).
+    # silently accumulating orphan services on every run.
     # Each step is still best-effort (we attempt every step regardless of
     # earlier failures so the spec sees a complete summary), but we surface
     # a non-success status at the end if any destructive step errored.
@@ -239,7 +236,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # subsequent retry would skip ECS and orphan the service forever. The
     # service name is derived from owner_id alone, so delete_user_service
     # can always attempt the call (it treats ServiceNotFoundException as
-    # idempotent success — Codex P1 on PR #309).
+    # idempotent success).
     container = await container_repo.get_by_owner_id(owner_id)
     ecs_mgr = get_ecs_manager()
     ecs_succeeded = False
@@ -271,15 +268,14 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # ---- DynamoDB cleanup, all 8 per-user tables ----------------------------
     # Per-step try/except so one transient throttle on (e.g.) container_repo
     # doesn't abort the rest of the teardown — we want every table attempted,
-    # then surface a 500 with the failure list at the end if anything broke
-    # (Codex P1 on PR #309).
+    # then surface a 500 with the failure list at the end if anything broke.
     # NB: do NOT add ("containers", ...) here unconditionally. If ECS
     # teardown failed, the row still holds the access_point_id +
     # task_definition_arn that the next retry needs to clean up the
     # orphaned resources — wiping the row turns a transient ECS error
-    # into an unrecoverable leak (Codex P1 on PR #309). On the happy
-    # path delete_user_service has already removed the row, so the
-    # explicit delete here is just belt-and-suspenders.
+    # into an unrecoverable leak. On the happy path delete_user_service has
+    # already removed the row, so the explicit delete here is just
+    # belt-and-suspenders.
     ddb_steps = []
     if ecs_succeeded:
         ddb_steps.append(("containers", lambda: container_repo.delete(owner_id)))
@@ -336,9 +332,9 @@ async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
 
     # Scope the probe to the caller's own workspace dir. Without this, any
     # authenticated dev/staging user could probe whether files exist in
-    # another owner's workspace by passing `<mount>/<other_owner>/...`
-    # (Codex P2 on PR #309). Resolve both sides first so traversal segments
-    # like `<mount>/<self>/../<other>` can't escape the owner_root either.
+    # another owner's workspace by passing `<mount>/<other_owner>/...`.
+    # Resolve both sides first so traversal segments like
+    # `<mount>/<self>/../<other>` can't escape the owner_root either.
     workspace = get_workspace()
     owner_id = resolve_owner_id(auth)
     owner_root = workspace.user_path(owner_id).resolve()
@@ -376,8 +372,7 @@ async def ddb_rows(
 
     # Restrict to caller-owned data. The endpoint is meant for the test
     # harness to verify ITS OWN teardown — anyone passing a different
-    # owner/user is fishing for cross-tenant info in dev/staging
-    # (Codex P2 on PR #309).
+    # owner/user is fishing for cross-tenant info in dev/staging.
     if owner_id != resolve_owner_id(auth):
         raise HTTPException(status_code=403, detail="Cannot query another owner's row counts")
     if user_id is not None and user_id != auth.user_id:
@@ -386,7 +381,7 @@ async def ddb_rows(
     # `users` and `ws-connections` are keyed by Clerk user_id even when other
     # tables are scoped by org_id. Caller supplies user_id explicitly in org
     # mode; defaults to owner_id for personal mode where they're the same
-    # value (Codex P2 on PR #309).
+    # value.
     effective_user_id = user_id or owner_id
 
     user = await user_repo.get_by_user_id(effective_user_id)

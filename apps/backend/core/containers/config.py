@@ -620,11 +620,9 @@ def build_openclaw_config_dict(
                     "provider": "bedrock",
                     "model": "amazon.titan-embed-text-v2:0",
                 },
-                # `agents.defaults.llm.idleTimeoutSeconds` was removed from
-                # AgentDefaultsSchema between v2026.4.23 and v2026.5.7 (see
-                # upstream src/config/zod-schema.agent-defaults.ts diff). We
-                # used to set 300s here; OpenClaw v2026.5.7's strict() schema
-                # rejects the unknown key and the gateway exits with
+                # Do NOT add `agents.defaults.llm.idleTimeoutSeconds` here:
+                # OpenClaw v2026.5.7's AgentDefaultsSchema is strict() and
+                # rejects the unknown key, so the gateway exits with
                 # `Unrecognized key: "llm"`. Default idle timeout is fine.
                 # verboseDefault="full" keeps tool result/partialResult in
                 # agent events so the frontend can show tool input + output.
@@ -649,11 +647,11 @@ def build_openclaw_config_dict(
             "list": _build_agents_list(paperclip_agents or []),
         },
         # Memory backend: "builtin" = flat MEMORY.md files in the agent
-        # workspace. The qmd backend was removed 2026-05-02 because qmd's
+        # workspace. Do NOT switch to the qmd backend: qmd's
         # better-sqlite3 store on EFS deadlocks the gateway's V8 main
-        # thread when the NFS client retries forever (`rpc_wait_bit_killable`).
-        # Symptoms: container appears alive (TCP port still listening) but
-        # every WS upgrade times out — 10h outage on 2026-05-01.
+        # thread when the NFS client retries forever
+        # (`rpc_wait_bit_killable`). Symptoms: container appears alive
+        # (TCP port still listening) but every WS upgrade times out.
         # Builtin reads/writes plain markdown files: same EFS underneath,
         # but only on explicit agent recall, not via a long-lived sqlite
         # connection that's constantly hitting the disk. Future semantic
@@ -736,40 +734,16 @@ def build_openclaw_config_dict(
         # restart, not a gateway restart. Plugins with no `accounts`
         # entries sit idle safely.
         "channels": {
-            # REVERTED 2026-05-12: PR #616 added a `channels.webchat` entry
-            # here to flip the system-prompt builder to Mode A (rely on
-            # native approval cards instead of telling Ray to print
-            # `/approve <id> allow-once` in chat). It never worked.
-            #
-            # Upstream's config validator at src/config/validation.ts:1260
-            # rejects any `channels.<id>` whose id is not in
-            # `[...CHANNEL_IDS, ...registry.plugins[].channels]`. "webchat"
-            # is neither bundled (src/channels/ids.ts) nor a plugin-backed
-            # channel, so both startup validation AND chokidar hot-reload
-            # rejected the block (`config reload skipped (invalid config):
-            # channels.webchat: unknown channel id: webchat`). The runtime
-            # config never picked up the capability — Ray kept emitting the
-            # CLI fallback the entire time, and FRESH provisions boot-
-            # looped (cofounder onboarding 2026-05-12 04:25 UTC was the
-            # symptom that exposed this).
-            #
-            # The native-approval system prompt builder has three paths to
-            # Mode A (src/agents/system-prompt.ts:187-191):
-            #   (1) runtimeCapabilities.has("inlinebuttons")
-            #   (2) runtimeCapabilities.has("nativeapprovals")
-            #   (3) runtimeChannel in {discord,matrix,qqbot,slack,telegram}
-            # Paths (1)/(2) source from `cfg.channels[X].capabilities` —
-            # which still has to pass the validator's channel-id allowlist.
-            # Path (3) is a hardcoded set we don't own.
-            #
-            # Real-fix options (none clean, all need a separate PR):
-            #   B. Pass `originatingChannel: "telegram"` from chat.send so
-            #      path (3) fires — side effect: upstream may attempt to
-            #      route replies through telegram-config, needs testing.
-            #   C. Submit an upstream PR adding "webchat" to CHANNEL_IDS +
-            #      KNOWN_NATIVE_APPROVAL_PROMPT_CHANNELS, bump
-            #      openclaw-version.json once it merges.
-            #   D. Bump upstream to a tag where webchat is registered.
+            # Do NOT add a `channels.webchat` entry here. Upstream's config
+            # validator (src/config/validation.ts) rejects any
+            # `channels.<id>` whose id is not in `[...CHANNEL_IDS,
+            # ...registry.plugins[].channels]`. "webchat" is neither
+            # bundled (src/channels/ids.ts) nor a plugin-backed channel,
+            # so both startup validation AND chokidar hot-reload reject
+            # the block (`config reload skipped (invalid config):
+            # channels.webchat: unknown channel id: webchat`) and fresh
+            # provisions boot-loop. Use an upstream channel id or extend
+            # CHANNEL_IDS upstream first.
             "telegram": {
                 "enabled": True,
                 "dmPolicy": "pairing",
@@ -795,8 +769,7 @@ def build_openclaw_config_dict(
             # is paired (extensions/browser/src/browser-tool.ts:243
             # filters by node.connected). Default is `openclaw` so
             # not-yet-bound sessions (channels, cron, unpaired UI) get
-            # container Chromium — bundled in the extended image since
-            # PR #596.
+            # container Chromium — bundled in the extended image.
             "enabled": True,
             "defaultProfile": "openclaw",
             # Required because the gateway runs as root inside the

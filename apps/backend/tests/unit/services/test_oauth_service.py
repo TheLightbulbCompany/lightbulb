@@ -203,7 +203,7 @@ async def test_poll_legacy_row_raises_clean_error(oauth_table):
     """A pending row from the pre-Codex-CLI flow has `device_code` in
     place of `device_auth_id`. We must NOT KeyError on it — instead
     raise OAuthExchangeFailedError so the router returns 502 and the
-    user can click Try Again to restart. Codex P1 on PR #402."""
+    user can click Try Again to restart."""
     # Manually write a legacy-shape pending row (no device_auth_id).
     client = boto3.client("dynamodb", region_name="us-east-1")
     client.put_item(

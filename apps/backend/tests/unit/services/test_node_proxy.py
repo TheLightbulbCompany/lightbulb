@@ -389,8 +389,8 @@ async def test_force_close_device_finds_device_in_mac_bucket(mock_ecs, mock_pool
 async def test_force_close_device_clears_patched_sessions_for_cli_revoke(mock_ecs, mock_pool, mock_config_patcher):
     """Revoking a CLI device must clear that user's patched sessions —
     otherwise chat keeps trying to route exec through the dead nodeId.
-    This is the actual regression Codex flagged: a direct _node_upstreams
-    pop bypassed clear_patched_sessions_for_user.
+    A direct _node_upstreams.pop bypasses clear_patched_sessions_for_user
+    — route through handle_node_disconnect so cleanup goes through one path.
     """
     from core.services.node_proxy import _patched_sessions, set_patched_session
 

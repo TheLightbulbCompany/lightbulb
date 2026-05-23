@@ -81,7 +81,7 @@ def test_extract_agent_slice_raises_when_agents_missing_or_malformed():
 
 
 def test_extract_agent_slice_accepts_legacy_flat_list():
-    """Codex P2 regression: admins whose configs are still in the legacy flat
+    """Regression: admins whose configs are still in the legacy flat
     shape (``agents: [...]``) must still be able to publish. The write path
     in config_patcher migrates the shape on deploy; the read path here
     tolerates it so we don't regress working admins while they wait for a

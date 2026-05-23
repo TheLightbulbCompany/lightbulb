@@ -47,9 +47,9 @@ def _cfg(provider_choice: str = "bedrock_claude", **kwargs) -> dict:
 class TestOpenclawConfigShape:
     """Verifies the static sections OpenClaw refuses to start without.
 
-    These cover the regression PR #391 introduced when ``write_openclaw_config``
-    was reduced to a 5-line stub — gateway/memory/tools/hooks/channels/browser
-    must always be present regardless of provider_choice.
+    Reducing ``write_openclaw_config`` to a stub regresses gateway / memory /
+    tools / hooks / channels / browser — these must always be present
+    regardless of provider_choice.
     """
 
     def test_gateway_token_auth(self):
@@ -115,7 +115,7 @@ class TestOpenclawConfigShape:
         assert main_entry["reasoningDefault"] == "stream"
 
     def test_memory_builtin_backend(self):
-        """qmd backend was removed 2026-05-02 (EFS NFS deadlock class).
+        """Do NOT switch to the qmd backend (EFS NFS deadlock class).
         Builtin = flat MEMORY.md files in agent workspace, no sqlite."""
         config = _cfg()
         memory = config["memory"]
@@ -182,7 +182,7 @@ class TestOpenclawConfigShape:
         browser = config["browser"]
         assert browser["enabled"] is True
         assert browser["defaultProfile"] == "openclaw"
-        # Container Chromium (bundled in the extended image since PR #596).
+        # Container Chromium (bundled in the extended image).
         assert browser["profiles"]["openclaw"]["driver"] == "openclaw"
         assert isinstance(browser["profiles"]["openclaw"]["color"], str)
         # cdpPort required by upstream schema since v2026.5.7-0d10b38:

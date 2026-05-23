@@ -90,7 +90,7 @@ class TestSettingsKeys:
 
 
 class TestSettingsKeysLLM:
-    """Task 11: the router accepts the new LLM provider IDs at the gate."""
+    """The router accepts the LLM provider IDs at the gate."""
 
     @pytest.mark.asyncio
     @patch("routers.settings_keys.KeyService")

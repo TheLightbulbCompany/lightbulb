@@ -148,6 +148,49 @@ async def _cascade_takedown(
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise ListingNotFoundError(f"listing {listing_id} v{target_version} does not exist")
         raise
+
+    # Cascade to any in-flight v(N+1) draft/review row. Without this, taking
+    # down v(N) leaves a non-terminal v(N+1) orphaned — publish_new_version
+    # would later fail because v(N) is no longer 'published', and the
+    # seller's UI would surface a draft on a taken-down listing as if it
+    # were still actionable. By the create_new_version invariant there is
+    # at most one such row, but the loop is correct for any count and the
+    # cascade adds a bounded extra DDB call (typically zero, at most one).
+    #
+    # Each flip is conditional on the row STILL being in draft/review to
+    # avoid clobbering a race (e.g. seller racing a discard_draft against
+    # the admin's takedown). target_version is excluded so we don't
+    # double-write the v(N) row when the fallback above already targeted
+    # a non-terminal highest row.
+    for row in rows:
+        v = int(row["version"])
+        if v == target_version:
+            continue
+        if row.get("status") not in ("draft", "review"):
+            continue
+        try:
+            listings_table.update_item(
+                Key={"listing_id": listing_id, "version": v},
+                UpdateExpression="SET #s = :taken, updated_at = :now",
+                ConditionExpression="#s IN (:draft, :review)",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":taken": "taken_down",
+                    ":draft": "draft",
+                    ":review": "review",
+                    ":now": now_iso,
+                },
+            )
+        except ClientError as e:
+            # Race: the seller transitioned the row (e.g. discarded the
+            # draft, or it was already taken_down via a second admin
+            # action) between our query and this update. Swallow — the
+            # row is no longer in a non-terminal state, which is the
+            # desired end state.
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue
+            raise
+
     # Guard against upsert: a malformed grant request with a fabricated
     # takedown_id would otherwise create a partial row {listing_id,
     # takedown_id, decision:'granted', decided_by, decided_at,

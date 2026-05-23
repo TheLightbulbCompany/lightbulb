@@ -6,11 +6,13 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
-import boto3  # noqa: E402
 import pytest  # noqa: E402
-from moto import mock_aws  # noqa: E402
 
 from core.services import marketplace_service  # noqa: E402
+
+# Shared moto-backed fixtures live in conftest.py so test_takedown_service
+# can reuse them without duplication.
+from tests.unit.services.conftest import _create_and_publish, _upload_dummy_artifact  # noqa: E402, F401
 
 
 @pytest.mark.asyncio
@@ -430,7 +432,7 @@ async def test_replace_artifact_persists_agent_id_when_provided(mock_listings):
 
 
 # ---------------------------------------------------------------------------
-# moto-backed fixtures for create_new_version
+# moto-backed tests for create_new_version
 #
 # Unlike the mock-based tests above, create_new_version's behavior depends on
 # the full row set for a listing (query → filter → max(version) → conditional
@@ -438,119 +440,11 @@ async def test_replace_artifact_persists_agent_id_when_provided(mock_listings):
 # defeats the point) or grow a re-implementation of the conditional-put
 # semantics. moto gives real DDB behavior — slug-reservation rows, conditional
 # puts, query semantics — so the test exercises the actual code path.
+#
+# The `dynamodb_table` fixture + `_create_and_publish` / `_upload_dummy_artifact`
+# helpers live in tests/unit/services/conftest.py so test_takedown_service
+# can reuse them.
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def dynamodb_table():
-    """Moto-backed listings table with the prod schema (HASH listing_id +
-    RANGE version) and the slug-version GSI that get_by_slug needs.
-
-    Also stubs out the S3 artifact upload so create_draft can run without
-    a real bucket — the actual S3 path is exercised by the catalog tests.
-    """
-    with mock_aws():
-        client = boto3.resource("dynamodb", region_name="us-east-1")
-        table = client.create_table(
-            TableName="test-marketplace-listings",
-            KeySchema=[
-                {"AttributeName": "listing_id", "KeyType": "HASH"},
-                {"AttributeName": "version", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "listing_id", "AttributeType": "S"},
-                {"AttributeName": "version", "AttributeType": "N"},
-                {"AttributeName": "slug", "AttributeType": "S"},
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": "slug-version-index",
-                    "KeySchema": [
-                        {"AttributeName": "slug", "KeyType": "HASH"},
-                        {"AttributeName": "version", "KeyType": "RANGE"},
-                    ],
-                    "Projection": {"ProjectionType": "ALL"},
-                },
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        table.meta.client.get_waiter("table_exists").wait(TableName="test-marketplace-listings")
-
-        with (
-            patch.object(
-                marketplace_service.settings,
-                "MARKETPLACE_LISTINGS_TABLE",
-                "test-marketplace-listings",
-            ),
-            patch.object(
-                marketplace_service.settings,
-                "MARKETPLACE_ARTIFACTS_BUCKET",
-                "test-bucket",
-            ),
-            patch(
-                "core.services.marketplace_service._upload_artifact_to_s3",
-                new=AsyncMock(return_value=("listings/x/v1/", "sha-stub")),
-            ),
-        ):
-            yield table
-
-
-async def _create_and_publish(
-    table,
-    listing_id: str,
-    seller_id: str,
-    slug: str,
-    *,
-    name: str = "X",
-    description_md: str = "d",
-    price_cents: int = 0,
-    tags: list[str] | None = None,
-    category: str | None = "agent",
-) -> dict:
-    """Create a v=1 draft, mark its artifact uploaded, submit, approve.
-
-    Mirrors the real flow because create_new_version's guards depend on
-    the row carrying real status transitions — synthesizing a 'published'
-    row via raw put_item would bypass artifact_uploaded and skip the
-    pieces a real publish writes (published_at, published_by).
-    """
-    draft = await marketplace_service.create_draft(
-        seller_id=seller_id,
-        slug=slug,
-        name=name,
-        description_md=description_md,
-        format="openclaw_agent",
-        price_cents=price_cents,
-        tags=tags or [],
-        category=category,
-        artifact_bytes=b"",
-        manifest={"name": name},
-    )
-    # create_draft writes artifact_uploaded=False; submit_for_review's
-    # guard rejects that. Flip it so the test can move through the state
-    # machine end to end.
-    table.update_item(
-        Key={"listing_id": draft["listing_id"], "version": 1},
-        UpdateExpression="SET artifact_uploaded = :t",
-        ExpressionAttributeValues={":t": True},
-    )
-    await marketplace_service.submit_for_review(listing_id=draft["listing_id"], seller_id=seller_id, version=1)
-    await marketplace_service.approve(listing_id=draft["listing_id"], version=1, approved_by="admin_test")
-    return draft
-
-
-def _upload_dummy_artifact(table, listing_id: str, version: int) -> None:
-    """Flip artifact_uploaded=True on the row so submit_for_review accepts
-    it. The real flow runs through replace_artifact + S3; this is a test
-    short-circuit because replace_artifact also writes S3 (mocked away by
-    the fixture) and we don't need the artifact bytes for these tests.
-    Sync because moto's put/update are sync; called from async tests is
-    fine since boto3 itself is sync."""
-    table.update_item(
-        Key={"listing_id": listing_id, "version": version},
-        UpdateExpression="SET artifact_uploaded = :t",
-        ExpressionAttributeValues={":t": True},
-    )
 
 
 class TestCreateNewVersion:

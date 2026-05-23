@@ -5,22 +5,28 @@ import { ListingDetailView } from "../ListingDetailView";
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ userId: "seller_1", getToken: async () => "test-jwt" }),
 }));
+const baseListing = {
+  listing_id: "lst_x",
+  version: 3,
+  status: "published" as const,
+  slug: "x",
+  name: "My Agent",
+  description_md: "# Hello\nThis is the agent.",
+  price_cents: 500,
+  tags: ["productivity", "writing"],
+  category: "agent",
+  format: "openclaw" as const,
+  seller_id: "seller_1",
+  install_count: 17,
+  agent_id: "agent_abc123",
+  created_at: "2026-05-23T00:00:00Z",
+};
+
 vi.mock("@/lib/marketplace/api", () => ({
-  getListingBySlug: vi.fn().mockResolvedValue({
-    listing_id: "lst_x",
-    version: 3,
-    status: "published",
-    slug: "x",
-    name: "My Agent",
-    description_md: "# Hello\nThis is the agent.",
-    price_cents: 500,
-    tags: ["productivity", "writing"],
-    category: "agent",
-    format: "openclaw_agent",
-    seller_id: "seller_1",
-    install_count: 17,
-  }),
-  myListings: vi.fn().mockResolvedValue({ items: [] }),
+  getListingBySlug: vi.fn().mockResolvedValue(baseListing),
+  // ListingDetailView fetches the seller's full list and filters by listing_id.
+  // The detail row(s) must appear in items[] for the component to resolve.
+  myListings: vi.fn().mockResolvedValue({ items: [baseListing] }),
 }));
 
 describe("<ListingDetailView>", () => {

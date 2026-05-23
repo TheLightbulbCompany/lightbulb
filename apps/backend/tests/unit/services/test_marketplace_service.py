@@ -152,7 +152,7 @@ async def test_reject_rejects_non_review_state(mock_listings):
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
 async def test_get_by_slug_prefers_published_over_higher_review_version(mock_listings):
-    """Regression: during publish_v2 flow, a v2 row exists in 'review' state
+    """Regression: during publish_new_version flow, a v2 row exists in 'review' state
     while v1 is still 'published'. Returning the highest version
     unconditionally would 404 the still-live v1 on the public storefront for
     the duration of moderation (Codex P1 on PR #517, commit 40b698f8).
@@ -187,8 +187,8 @@ async def test_get_by_slug_returns_highest_when_no_published(mock_listings):
 
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._dynamodb_client")
-async def test_publish_v2_translates_transaction_cancel_to_invalid_state(mock_client):
-    """Regression: publish_v2 raises ClientError(TransactionCanceledException)
+async def test_publish_new_version_translates_transaction_cancel_to_invalid_state(mock_client):
+    """Regression: publish_new_version raises ClientError(TransactionCanceledException)
     when either ConditionExpression fails (prev not 'published' or new not
     'review'). Translate to InvalidStateError so the route turns it into a
     409 instead of a 500 (Codex P2 on PR #517, commit 0035a8ac)."""
@@ -201,7 +201,7 @@ async def test_publish_v2_translates_transaction_cancel_to_invalid_state(mock_cl
         )
     )
     with pytest.raises(marketplace_service.InvalidStateError):
-        await marketplace_service.publish_v2(
+        await marketplace_service.publish_new_version(
             listing_id="l1",
             prev_version=1,
             new_version=2,
@@ -211,12 +211,12 @@ async def test_publish_v2_translates_transaction_cancel_to_invalid_state(mock_cl
 
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._dynamodb_client")
-async def test_publish_v2_atomically_retires_prev_and_publishes_new(mock_client):
+async def test_publish_new_version_atomically_retires_prev_and_publishes_new(mock_client):
     """Publishing v_new atomically flips prev_version -> retired AND
     new_version -> published in a single TransactWriteItems on the
     listings table."""
     mock_client.return_value.transact_write_items = MagicMock(return_value={})
-    await marketplace_service.publish_v2(
+    await marketplace_service.publish_new_version(
         listing_id="l1",
         prev_version=1,
         new_version=2,
@@ -701,9 +701,7 @@ class TestCreateNewVersion:
         await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
         _upload_dummy_artifact(dynamodb_table, listing_id, version=2)
         await marketplace_service.submit_for_review(listing_id=listing_id, seller_id="seller_1", version=2)
-        # publish_v2 is the current name — Task 2 renames it to
-        # publish_new_version and updates this call site.
-        await marketplace_service.publish_v2(
+        await marketplace_service.publish_new_version(
             listing_id=listing_id,
             prev_version=1,
             new_version=2,

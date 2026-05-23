@@ -74,8 +74,8 @@ async def test_execute_full_takedown_pages_through_all_purchases(mock_takedowns,
 @patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
 async def test_execute_full_takedown_flips_currently_published_version(mock_takedowns, mock_listings, mock_purchases):
     """Regression: takedown must flip the currently-published row, not
-    hardcode v=1. Under publish_v2, v1 is retired and v2 is published; a
-    hardcoded v=1 update marks the already-retired row, leaving v2 live —
+    hardcode v=1. Under publish_new_version, v1 is retired and v2 is
+    published; a hardcoded v=1 update marks the already-retired row, leaving v2 live —
     admin "success" but listing remains purchasable
     (Codex P1 on PR #517, commit ba89f60c).
     """

@@ -15,7 +15,7 @@ Sellers can publish marketplace listings today, but once a listing reaches `publ
 
 Concretely, the current `MyListingsView` (in the `/chat` marketplace drawer) renders Live rows with no click target and no action buttons; the public `/marketplace/listing/[slug]` page is buyer-oriented; and the backend's `PATCH /listings/{id}` rejects with 409 on any non-draft row.
 
-The version-aware storage layer (composite key `(listing_id, version)`, atomic `publish_v2` transaction) was built in anticipation of a republish flow but is currently unused — every call hardcodes `version=1`.
+The version-aware storage layer (composite key `(listing_id, version)`, atomic `publish_new_version` transaction) was built in anticipation of a republish flow but is currently unused — every call hardcodes `version=1`.
 
 ## Goals
 

@@ -417,7 +417,7 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
     row in the listings table, so a new version is just another row at a
     higher `version` value. The currently-published row keeps serving
     buyers until the new row goes through review + approve, at which
-    point publish_v2 atomically retires the old version.
+    point publish_new_version atomically retires the old version.
 
     Guards are grouped by category. Within a category, the check that
     leaks the least information runs first — a non-owner probing for
@@ -599,7 +599,7 @@ async def approve(*, listing_id: str, version: int, approved_by: str) -> dict:
 
     Used for the FIRST publish of a listing (v=1). For subsequent versions
     that need to atomically retire the previous published version, callers
-    use publish_v2 instead.
+    use publish_new_version instead.
     """
     table = _listings_table()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -656,7 +656,7 @@ async def reject(*, listing_id: str, version: int, notes: str, rejected_by: str)
     return {"status": "draft", "rejection_notes": notes, "rejected_at": now_iso}
 
 
-async def publish_v2(
+async def publish_new_version(
     *,
     listing_id: str,
     prev_version: int,
@@ -728,7 +728,7 @@ async def publish_v2(
         # rather than letting a raw ClientError become a 500.
         if e.response["Error"]["Code"] in ("TransactionCanceledException", "ConditionalCheckFailedException"):
             raise InvalidStateError(
-                f"publish_v2 conditional check failed for listing {listing_id} "
+                f"publish_new_version conditional check failed for listing {listing_id} "
                 f"(prev v{prev_version} or new v{new_version} not in expected state)"
             )
         raise
@@ -740,7 +740,7 @@ async def get_by_slug(*, slug: str) -> dict | None:
     Returns the highest-version row that is currently published, falling back
     to the highest-version row of any status if nothing is published yet.
 
-    Why two-tier: during the publish_v2 flow, a v_new row exists in
+    Why two-tier: during the publish_new_version flow, a v_new row exists in
     'review' state while v_prev is still 'published'. The downstream
     public/deploy/checkout routes all gate on status=='published', so
     returning the highest version unconditionally would 404 the still-live

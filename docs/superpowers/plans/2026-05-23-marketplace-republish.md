@@ -170,7 +170,7 @@ class TestCreateNewVersion:
         assert v3["status"] == "draft"
 ```
 
-Helper fixtures `_create_and_publish` and `_upload_dummy_artifact` should be added at the top of the test file if not already present — mirror the patterns used in `TestPublishV2` / `TestSubmitForReview`. Look at lines around the existing `publish_v2` tests for the exact fixture shape; the codebase uses a `dynamodb_table` fixture in this module.
+Helper fixtures `_create_and_publish` and `_upload_dummy_artifact` should be added at the top of the test file if not already present — mirror the patterns used in `TestPublishNewVersion` / `TestSubmitForReview`. Look at lines around the existing `publish_new_version` tests for the exact fixture shape; the codebase uses a `dynamodb_table` fixture in this module.
 
 - [ ] **Step 2: Add the error types and implementation**
 

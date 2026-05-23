@@ -121,8 +121,8 @@ async def _cascade_takedown(
         )
 
     # Resolve the currently-published version dynamically — hardcoding v=1
-    # leaves a v2 listing live after takedown (publish_v2 retires v1 and
-    # publishes v2; admin "success" but listing remains purchasable).
+    # leaves a v2 listing live after takedown (publish_new_version retires v1
+    # and publishes v2; admin "success" but listing remains purchasable).
     # Falls back to the highest-version row if nothing is currently
     # published, so a takedown on a draft/review listing still flips state.
     listings_table = _listings_table()

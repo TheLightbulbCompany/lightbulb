@@ -1650,3 +1650,43 @@ def test_republish_non_admin_org_member_403(mock_create_new_version, org_member_
     resp = org_member_client.post("/api/v1/marketplace/listings/lst_1/republish")
     assert resp.status_code == 403
     mock_create_new_version.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /listings/{listing_id}?version=N (discard pending draft)
+# ---------------------------------------------------------------------------
+
+
+@patch("routers.marketplace_listings.marketplace_service.discard_draft", new_callable=AsyncMock)
+def test_discard_removes_draft_row(mock_discard, authed_client_factory):
+    mock_discard.return_value = None
+    client = authed_client_factory("u_seller", "seller@example.com")
+    r = client.delete("/api/v1/marketplace/listings/lst_1?version=2")
+    assert r.status_code == 204
+    mock_discard.assert_awaited_once_with(listing_id="lst_1", seller_id="u_seller", version=2)
+
+
+@patch("routers.marketplace_listings.marketplace_service.discard_draft", new_callable=AsyncMock)
+def test_discard_returns_409_when_in_review(mock_discard, authed_client_factory):
+    from core.services.marketplace_service import InvalidStateError
+
+    mock_discard.side_effect = InvalidStateError("v2 is in status 'review', not draft")
+    client = authed_client_factory("u_seller", "seller@example.com")
+    r = client.delete("/api/v1/marketplace/listings/lst_1?version=2")
+    assert r.status_code == 409
+
+
+@patch("routers.marketplace_listings.marketplace_service.discard_draft", new_callable=AsyncMock)
+def test_discard_returns_403_for_non_owner(mock_discard, authed_client_factory):
+    from core.services.marketplace_service import PermissionError as MpPermissionError
+
+    mock_discard.side_effect = MpPermissionError("not owner")
+    client = authed_client_factory("u_other", "other@example.com")
+    r = client.delete("/api/v1/marketplace/listings/lst_1?version=2")
+    assert r.status_code == 403
+
+
+def test_discard_requires_version_query_param(authed_client_factory):
+    client = authed_client_factory("u_seller", "seller@example.com")
+    r = client.delete("/api/v1/marketplace/listings/lst_1")
+    assert r.status_code == 422

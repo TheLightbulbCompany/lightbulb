@@ -711,3 +711,53 @@ class TestCreateNewVersion:
         v3 = await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
         assert v3["version"] == 3
         assert v3["status"] == "draft"
+
+
+class TestDiscardDraft:
+    @pytest.mark.asyncio
+    async def test_discards_draft_row(self, dynamodb_table):
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+        await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        await marketplace_service.discard_draft(listing_id=listing_id, seller_id="seller_1", version=2)
+        # v=2 row gone, v=1 still published
+        assert await marketplace_service.get_by_id(listing_id=listing_id, version=2) is None
+        v1 = await marketplace_service.get_by_id(listing_id=listing_id, version=1)
+        assert v1["status"] == "published"
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_not_draft(self, dynamodb_table):
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+        await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        _upload_dummy_artifact(dynamodb_table, listing_id, version=2)
+        await marketplace_service.submit_for_review(listing_id=listing_id, seller_id="seller_1", version=2)
+        with pytest.raises(marketplace_service.InvalidStateError):
+            await marketplace_service.discard_draft(listing_id=listing_id, seller_id="seller_1", version=2)
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_not_owner(self, dynamodb_table):
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+        await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        with pytest.raises(marketplace_service.PermissionError):
+            await marketplace_service.discard_draft(listing_id=listing_id, seller_id="other", version=2)
+
+    @pytest.mark.asyncio
+    async def test_cannot_discard_v1(self, dynamodb_table):
+        """v=1 carries the slug reservation; full listing retraction is a
+        separate flow not in scope here."""
+        result = await marketplace_service.create_draft(
+            seller_id="seller_1",
+            slug="x",
+            name="X",
+            description_md="",
+            format="openclaw_agent",
+            price_cents=0,
+            tags=[],
+            category="agent",
+            artifact_bytes=b"",
+            manifest={"name": "X"},
+        )
+        with pytest.raises(marketplace_service.InvalidStateError):
+            await marketplace_service.discard_draft(listing_id=result["listing_id"], seller_id="seller_1", version=1)

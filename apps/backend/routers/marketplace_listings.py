@@ -644,6 +644,32 @@ async def republish(
     return row
 
 
+@router.delete("/listings/{listing_id}", status_code=204)
+async def discard_listing_version(
+    listing_id: str,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+    version: int = Query(..., ge=2),
+):
+    """Discard a non-terminal draft version (v>=2).
+
+    Used when the seller starts a republish then changes their mind, or
+    when a v(N+1) sits as a rejected draft they no longer want to revise.
+    The live v(N) row is untouched.
+    """
+    require_org_admin(auth)
+    try:
+        await marketplace_service.discard_draft(
+            listing_id=listing_id,
+            seller_id=auth.user_id,
+            version=version,
+        )
+    except marketplace_service.InvalidStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except marketplace_service.PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Artifact dry-run preview — drives the publish wizard's Bundle + Review
 # steps so the seller sees exactly what will ship before submit.

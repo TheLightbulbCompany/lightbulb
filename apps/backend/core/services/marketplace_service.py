@@ -535,6 +535,37 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
     return {**new_row, "published_at": None}
 
 
+async def discard_draft(*, listing_id: str, seller_id: str, version: int) -> None:
+    """Delete a non-terminal draft row.
+
+    Guards:
+      - version must be > 1 (v=1 carries the slug reservation; full
+        listing retraction is a separate flow not in scope here)
+      - row must exist and be in 'draft' status (not 'review', which
+        requires admin reject)
+      - seller_id must match the row's seller_id
+    """
+    if version <= 1:
+        raise InvalidStateError("cannot discard v1; full listing retraction is a separate flow")
+
+    table = _listings_table()
+    resp = table.get_item(Key={"listing_id": listing_id, "version": version})
+    row = resp.get("Item")
+    if row is None:
+        raise InvalidStateError(f"v{version} not found for listing {listing_id}")
+    if row.get("seller_id") != seller_id:
+        raise PermissionError(f"seller {seller_id} does not own listing {listing_id}")
+    if row.get("status") != "draft":
+        raise InvalidStateError(f"v{version} is in status '{row.get('status')}', not draft")
+
+    table.delete_item(
+        Key={"listing_id": listing_id, "version": version},
+        ConditionExpression="#s = :draft",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":draft": "draft"},
+    )
+
+
 async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1) -> dict:
     """Transition draft -> review. Idempotent: re-submitting from review is rejected.
 

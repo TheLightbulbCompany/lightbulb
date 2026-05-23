@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getListing } from "@/lib/marketplace/api";
 import { BuyButton } from "@/components/marketplace/storefront/Listing/BuyButton";
 import { MarkdownDescription } from "@/components/marketplace/storefront/Listing/MarkdownDescription";
+import { OwnerManageLink } from "@/components/marketplace/storefront/Listing/OwnerManageLink";
 import { Monogram, AgentPill, SectionLabel } from "@/components/agents/AgentIdentity";
 import { fromListing } from "@/lib/agentDesign";
 import type { ListingManifest } from "@/lib/marketplace/types";
@@ -47,6 +48,10 @@ export default async function ListingDetail({
           <div className="mt-6">
             <BuyButton listing={listing} />
           </div>
+          {/* Client component — renders the seller-only CTA when the
+              signed-in viewer matches listing.seller_id. Server-rendered
+              parent stays cacheable and seller-agnostic. */}
+          <OwnerManageLink sellerId={listing.seller_id} slug={listing.slug} />
         </div>
       </aside>
 

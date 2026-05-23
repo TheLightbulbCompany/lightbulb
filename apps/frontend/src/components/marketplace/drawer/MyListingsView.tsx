@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 
 import { myListings } from "@/lib/marketplace/api";
@@ -10,23 +10,27 @@ import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedVi
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import type { Listing } from "@/lib/marketplace/types";
 
-function formatRejectedAt(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
 interface PayoutsDashboard {
   balance_held_cents?: number;
   lifetime_earned_cents?: number;
   dashboard_url?: string | null;
 }
 
+interface GroupedListing {
+  /** The seller-visible canonical row for the listing — usually the live
+   * published version. For listings that have never published (or were
+   * taken down / retired) it falls back to the most-relevant non-pending
+   * row so the listing still appears in the list. */
+  live: Listing;
+  /** The pending draft / review row for v(N+1) when the seller has
+   * started a republish. Null when no in-flight revision exists. */
+  pending: Listing | null;
+}
+
 export function MyListingsView() {
   const { userId, getToken } = useAuth();
   const api = useApi();
-  const { setView, startEditListing } = useMarketplaceDrawer();
+  const { setView, openListingDetail } = useMarketplaceDrawer();
   const { restricted } = useMarketplaceWriteGate();
   const [listings, setListings] = useState<Listing[] | null>(null);
   const [dashboard, setDashboard] = useState<PayoutsDashboard | null>(null);
@@ -67,6 +71,39 @@ export function MyListingsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, restricted]);
 
+  // Group raw rows by listing_id so a republish-in-progress (live v1 +
+  // draft/review v2) collapses into a single row. The detail view is the
+  // single door for managing both versions; the list page no longer
+  // exposes v(N+1) as its own clickable row.
+  //
+  // useMemo runs before either early return below — React requires the
+  // hook order to be stable across renders even when one branch bails
+  // straight to a restricted view.
+  const grouped = useMemo<GroupedListing[]>(() => {
+    if (!listings) return [];
+    const byId = new Map<string, { live: Listing | null; pending: Listing | null }>();
+    for (const l of listings) {
+      const entry = byId.get(l.listing_id) ?? { live: null, pending: null };
+      if (l.status === "published") {
+        entry.live = l;
+      } else if (l.status === "draft" || l.status === "review") {
+        // Most recent draft/review wins. Sort key: created_at desc.
+        if (!entry.pending || (l.created_at ?? "") > (entry.pending.created_at ?? "")) {
+          entry.pending = l;
+        }
+      } else if (!entry.live) {
+        // taken_down / retired listings still need a row so the seller
+        // can see + manage them. Only adopt as `live` when no actual
+        // published row exists for this id.
+        entry.live = l;
+      }
+      byId.set(l.listing_id, entry);
+    }
+    return Array.from(byId.values())
+      .filter((e): e is GroupedListing => e.live !== null)
+      .sort((a, b) => (b.live.created_at ?? "").localeCompare(a.live.created_at ?? ""));
+  }, [listings]);
+
   if (restricted) {
     return (
       <MarketplaceRestrictedView
@@ -80,9 +117,11 @@ export function MyListingsView() {
     return <p className="font-editorial-serif italic text-[#8a8578]">Loading…</p>;
   }
 
-  const activeCount = listings.filter((l) => l.status === "published").length;
-  const totalInstalls = listings.reduce(
-    (s, l) => s + ((l as unknown as { install_count?: number }).install_count ?? 0),
+  const activeCount = grouped.filter((g) => g.live.status === "published").length;
+  // Sum installs across the canonical row per listing — counting both the
+  // live and pending rows would double-bill the same installs.
+  const totalInstalls = grouped.reduce(
+    (s, g) => s + ((g.live as unknown as { install_count?: number }).install_count ?? 0),
     0,
   );
   const pendingCents = dashboard.balance_held_cents ?? 0;
@@ -132,7 +171,7 @@ export function MyListingsView() {
         </button>
       </div>
 
-      {listings.length === 0 ? (
+      {grouped.length === 0 ? (
         <div className="text-center py-12 border border-dashed border-[#e0dbd0] rounded-2xl bg-white">
           <h4 className="font-editorial-serif text-xl mb-2">No listings yet.</h4>
           <p className="text-[14px] text-[#5b5b5b] mb-4">
@@ -148,11 +187,12 @@ export function MyListingsView() {
         </div>
       ) : (
         <div className="space-y-2.5">
-          {listings.map((l) => (
+          {grouped.map(({ live, pending }) => (
             <ListingRow
-              key={l.listing_id}
-              listing={l}
-              onEdit={() => startEditListing(l)}
+              key={live.listing_id}
+              live={live}
+              pending={pending}
+              onClick={() => openListingDetail(live.listing_id)}
             />
           ))}
         </div>
@@ -192,80 +232,93 @@ function Stat({
   );
 }
 
-function ListingRow({ listing, onEdit }: { listing: Listing; onEdit: () => void }) {
-  const installCount = (listing as unknown as { install_count?: number }).install_count ?? 0;
+function ListingRow({
+  live,
+  pending,
+  onClick,
+}: {
+  live: Listing;
+  pending: Listing | null;
+  onClick: () => void;
+}) {
+  const installCount = (live as unknown as { install_count?: number }).install_count ?? 0;
   // A draft with rejection_notes is the post-rejection state — the seller
   // submitted, the admin sent it back. Frontend doesn't get a distinct
-  // status; presence of rejection_notes is the signal.
-  const wasRejected = listing.status === "draft" && !!listing.rejection_notes;
-  const rejectedOn = wasRejected ? formatRejectedAt(listing.rejected_at) : null;
-  // Listings in review are also editable: saving an edit auto-demotes
-  // the row back to draft (backend update_draft handles the transition),
-  // so the seller doesn't have to wait for an admin reject just to fix
-  // a typo.
-  const isEditable = listing.status === "draft" || listing.status === "review";
+  // status; presence of rejection_notes is the signal. Inspect both rows
+  // — a rejected v(N+1) lives on the pending row even though `live`
+  // remains the previously published version.
+  const liveWasRejected = live.status === "draft" && !!live.rejection_notes;
+  const pendingWasRejected = pending?.status === "draft" && !!pending?.rejection_notes;
+  const wasRejected = liveWasRejected || pendingWasRejected;
+
+  // Base label reflects the live row only. The pending suffix (below)
+  // tells the seller whether v(N+1) is in motion.
+  const baseStatusLabel =
+    live.status === "published"
+      ? "Live"
+      : live.status === "review"
+        ? "In review"
+        : live.status === "draft" && live.rejection_notes
+          ? "Rejected"
+          : live.status === "draft"
+            ? "Draft"
+            : live.status;
+
+  // Suffix surfaces a republish-in-progress on a row whose live status
+  // is already published. We deliberately only emit it for the
+  // review / rejected states — a fresh untouched draft (no
+  // rejection_notes, no submit) is a private workspace the seller
+  // hasn't surfaced and doesn't need a callout for.
+  const pendingLabel =
+    pending && pending.status === "review"
+      ? `· v${pending.version} in review`
+      : pendingWasRejected
+        ? `· v${pending!.version} rejected`
+        : null;
+
+  // Pill color follows the most-alarming state present. Pending
+  // rejected outranks live published — we want the seller's eye on the
+  // republish that needs attention.
+  const pillTone = pendingWasRejected
+    ? "bg-[#fbe9e7] text-[#8a3a2a]"
+    : pending?.status === "review"
+      ? "bg-[#fef4e3] text-[#a07520]"
+      : live.status === "published"
+        ? "bg-[#e3efe6] text-[#06402b]"
+        : live.status === "review"
+          ? "bg-[#fef4e3] text-[#a07520]"
+          : liveWasRejected
+            ? "bg-[#fbe9e7] text-[#8a3a2a]"
+            : "bg-[#f3eee5] text-[#5b5b5b]";
 
   return (
-    <div
+    <button
+      type="button"
       data-testid="my-listings-row"
       data-was-rejected={wasRejected ? "true" : undefined}
-      className={`bg-white border rounded-2xl p-5 flex items-start gap-4 ${
+      onClick={onClick}
+      className={`w-full text-left bg-white border rounded-2xl p-5 flex items-start gap-4 hover:bg-[#fbf9f4] transition-colors ${
         wasRejected ? "border-[#f0b3a8] bg-[#fff8f5]" : "border-[#e0dbd0]"
       }`}
     >
       <div className="flex-1 min-w-0">
-        <div className="font-editorial-serif text-lg">{listing.name}</div>
+        <div className="font-editorial-serif text-lg">{live.name}</div>
         <div className="flex gap-3 text-[12.5px] text-[#5b5b5b] mt-0.5">
-          <span>Updated {new Date(listing.created_at).toLocaleDateString()}</span>
+          <span>Updated {new Date(live.created_at).toLocaleDateString()}</span>
           <span>{installCount} installs</span>
           <span className="font-semibold text-[#06402b]">
-            {listing.price_cents === 0 ? "Free" : "Premium tier"}
+            {live.price_cents === 0 ? "Free" : "Premium tier"}
           </span>
         </div>
-        {wasRejected && (
-          <div
-            role="status"
-            data-testid="rejection-notes"
-            className="mt-2.5 rounded-xl border border-[#f0b3a8] bg-[#fbe9e7] px-3 py-2 text-[12.5px] text-[#8a3a2a] leading-snug"
-          >
-            <strong className="font-semibold">
-              Rejected{rejectedOn ? ` · ${rejectedOn}` : ""}.
-            </strong>{" "}
-            {listing.rejection_notes}
-          </div>
-        )}
       </div>
       <div className="flex flex-col items-end gap-2 flex-shrink-0">
         <span
-          className={`text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${
-            listing.status === "published"
-              ? "bg-[#e3efe6] text-[#06402b]"
-              : listing.status === "review"
-                ? "bg-[#fef4e3] text-[#a07520]"
-                : wasRejected
-                  ? "bg-[#fbe9e7] text-[#8a3a2a]"
-                  : "bg-[#f3eee5] text-[#5b5b5b]"
-          }`}
+          className={`text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${pillTone}`}
         >
-          {listing.status === "published"
-            ? "Live"
-            : listing.status === "review"
-              ? "In review"
-              : wasRejected
-                ? "Rejected"
-                : listing.status}
+          {baseStatusLabel}
+          {pendingLabel ? ` ${pendingLabel}` : ""}
         </span>
-        {isEditable && (
-          <button
-            type="button"
-            onClick={onEdit}
-            data-testid="edit-listing"
-            className="text-[12.5px] font-semibold text-[#06402b] hover:bg-[#e3efe6] rounded-full px-3 py-1"
-          >
-            {wasRejected ? "Revise →" : "Edit →"}
-          </button>
-        )}
       </div>
-    </div>
+    </button>
   );
 }

@@ -48,7 +48,7 @@ export async function listListings(params?: {
  * for safety on legacy callers). The backend defaults `version=1`, so a
  * v2+ moderation action without this would target the wrong row and 409.
  *
- * `prevVersion` triggers the publish_v2 atomic flip on backend (retires
+ * `prevVersion` triggers the publish_new_version atomic flip on backend (retires
  * the previous published version + publishes the new one in one
  * TransactWriteItems). Pass it for any version > 1.
  */

@@ -27,13 +27,13 @@ export interface ModerationActionsProps {
   slug: string;
   /**
    * Listing version to action on. The review queue is multi-version
-   * (publish_v2 flow), so this MUST come from the review row — calling
+   * (publish_new_version flow), so this MUST come from the review row — calling
    * approve/reject without it falls through to backend default version=1
    * and either targets the wrong row or 409s for v2+ items.
    */
   version: number;
   /**
-   * For publish_v2: the previously-published version to retire when this
+   * For publish_new_version: the previously-published version to retire when this
    * one is approved. Triggers the atomic flip on backend. Omit for
    * first-publish (v1) listings.
    */

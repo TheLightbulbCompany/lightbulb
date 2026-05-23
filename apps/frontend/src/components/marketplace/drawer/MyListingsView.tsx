@@ -99,6 +99,19 @@ export function MyListingsView() {
       }
       byId.set(l.listing_id, entry);
     }
+    // Promote draft-only / review-only listings (no published row yet) so
+    // they render in the seller's list. Otherwise a fresh draft or a
+    // first-time submission that hasn't been approved would vanish from
+    // My Listings entirely — invisible to the seller who just created it.
+    // The promoted row's status pill (Draft / In review / Rejected) flows
+    // through ListingRow naturally; pendingLabel stays null because
+    // `pending` is cleared, so no "· vN in review" suffix is appended.
+    for (const entry of byId.values()) {
+      if (entry.live === null && entry.pending !== null) {
+        entry.live = entry.pending;
+        entry.pending = null;
+      }
+    }
     return Array.from(byId.values())
       .filter((e): e is GroupedListing => e.live !== null)
       .sort((a, b) => (b.live.created_at ?? "").localeCompare(a.live.created_at ?? ""));

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ListingDetailView } from "../ListingDetailView";
 import {
   discardListingVersion,
@@ -7,25 +7,39 @@ import {
   republishListing,
 } from "@/lib/marketplace/api";
 
-vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ userId: "seller_1", getToken: async () => "test-jwt" }),
+// Return a STABLE object reference — otherwise ListingDetailView's useEffect
+// dependency on getToken would treat each render as a fresh function and
+// re-fire the fetch, swallowing the mockResolvedValueOnce on subsequent
+// renders and falling back to the default `myListings` mock. vi.hoisted
+// because vi.mock runs above any module-level const.
+const { stableAuth } = vi.hoisted(() => ({
+  stableAuth: { userId: "seller_1", getToken: async () => "test-jwt" },
 }));
-const baseListing = {
-  listing_id: "lst_x",
-  version: 3,
-  status: "published" as const,
-  slug: "x",
-  name: "My Agent",
-  description_md: "# Hello\nThis is the agent.",
-  price_cents: 500,
-  tags: ["productivity", "writing"],
-  category: "agent",
-  format: "openclaw" as const,
-  seller_id: "seller_1",
-  install_count: 17,
-  agent_id: "agent_abc123",
-  created_at: "2026-05-23T00:00:00Z",
-};
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => stableAuth,
+}));
+
+// vi.mock is hoisted ABOVE module-level const declarations, so any data the
+// mock factory references must come through vi.hoisted() — otherwise the
+// factory body runs while `baseListing` is still in the TDZ and throws.
+const { baseListing } = vi.hoisted(() => ({
+  baseListing: {
+    listing_id: "lst_x",
+    version: 3,
+    status: "published" as const,
+    slug: "x",
+    name: "My Agent",
+    description_md: "# Hello\nThis is the agent.",
+    price_cents: 500,
+    tags: ["productivity", "writing"],
+    category: "agent",
+    format: "openclaw" as const,
+    seller_id: "seller_1",
+    install_count: 17,
+    agent_id: "agent_abc123",
+    created_at: "2026-05-23T00:00:00Z",
+  },
+}));
 
 vi.mock("@/lib/marketplace/api", () => ({
   getListingBySlug: vi.fn().mockResolvedValue(baseListing),
@@ -72,8 +86,9 @@ describe("<ListingDetailView>", () => {
   it("Bundle tab shows agent_id and manifest data", async () => {
     render(<ListingDetailView listingId="lst_x" mode="drawer" />);
     await waitFor(() => expect(screen.getByText("My Agent")).toBeInTheDocument());
-    // Click Bundle tab
-    screen.getByRole("tab", { name: /bundle/i }).click();
+    // fireEvent (not raw .click()) so the resulting setState is wrapped in act
+    // — otherwise React schedules the update after the assertion runs.
+    fireEvent.click(screen.getByRole("tab", { name: /bundle/i }));
     await waitFor(() => expect(screen.getByText(/agent_/)).toBeInTheDocument());
   });
 
@@ -116,7 +131,7 @@ describe("<ListingDetailView> actions", () => {
       expect(screen.getByText(/Live/)).toBeInTheDocument(),
     );
     const btn = screen.getByRole("button", { name: /republish/i });
-    btn.click();
+    fireEvent.click(btn);
     await waitFor(() =>
       expect(republishListing).toHaveBeenCalledWith(
         expect.objectContaining({ listingId: "lst_x" }),
@@ -145,8 +160,12 @@ describe("<ListingDetailView> actions", () => {
         screen.getByRole("tab", { name: /pending update/i }),
       ).toBeInTheDocument(),
     );
-    screen.getByRole("tab", { name: /pending update/i }).click();
-    expect(screen.getByText(/Description is too vague/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /pending update/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Description is too vague/),
+      ).toBeInTheDocument(),
+    );
   });
 
   it("Discard button calls discardListingVersion and refetches", async () => {
@@ -169,7 +188,7 @@ describe("<ListingDetailView> actions", () => {
         screen.getByRole("button", { name: /discard/i }),
       ).toBeInTheDocument(),
     );
-    screen.getByRole("button", { name: /discard/i }).click();
+    fireEvent.click(screen.getByRole("button", { name: /discard/i }));
     await waitFor(() =>
       expect(discardListingVersion).toHaveBeenCalledWith(
         expect.objectContaining({ listingId: "lst_x", version: 2 }),

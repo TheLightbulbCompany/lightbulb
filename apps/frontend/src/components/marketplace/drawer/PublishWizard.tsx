@@ -245,18 +245,19 @@ export function PublishWizard() {
       const priceCents = form.priceTier === "free" ? 0 : Math.round(form.priceDollars * 100);
 
       let listingId = draftListingId;
-      // Edit mode targets the rejected row's actual version. Today every
-      // listing is v=1 (create_draft hardcodes that), but threading the
-      // value through closes the future republish hole: when a v_new=2
-      // row gets rejected, this code will revise that row instead of v=1.
-      const editVersion = editingListing?.version ?? 1;
+      // Republish path: editingListing is a v_new=N+1 draft row created
+      // by POST /republish. PATCH, artifact-from-agent, and submit all
+      // need ?version=N+1 to revise that row instead of clobbering the
+      // currently-published v=1. Initial-publish path leaves version=1
+      // (the backend default) so the URL stays unadorned.
+      const version = editingListing?.version ?? 1;
       if (isEditing && listingId) {
         const jwt = await getToken();
         if (!jwt) throw new Error("Not signed in");
         await updateListing({
           listingId,
           jwt,
-          version: editVersion,
+          version,
           patch: {
             name: form.name.trim(),
             description_md: form.description || form.tagline,
@@ -281,7 +282,10 @@ export function PublishWizard() {
         listingId = draft.listing_id;
         setDraftListingId(listingId);
       }
-      const versionQs = isEditing && editVersion !== 1 ? `?version=${editVersion}` : "";
+      // Always include ?version=N when editing so the artifact + submit
+      // calls land on the same row we PATCH'd. Initial publish (version=1)
+      // omits the QS to match the backend default and keep URLs clean.
+      const versionQs = isEditing ? `?version=${version}` : "";
       await api.post(
         `/marketplace/listings/${listingId}/artifact-from-agent${versionQs}`,
         {

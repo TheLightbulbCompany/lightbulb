@@ -7,8 +7,7 @@
 //! What remains here is the macOS-platform surface that the subprocess
 //! can't (or shouldn't) re-implement: native notifications, device
 //! probes, and screen snapshot. `screen.snapshot`'s implementation
-//! lives in `crate::screen` (relocated from the now-deleted
-//! `file_transfer.rs` in Task 24).
+//! lives in `crate::screen`.
 //!
 //! Original upstream references (kept for context until the subprocess
 //! has full parity): openclaw/src/node-host/invoke.ts (dispatch) +

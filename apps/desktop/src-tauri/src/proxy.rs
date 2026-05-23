@@ -1,7 +1,7 @@
 //! Loopback WSS proxy.
 //!
-//! The bundled openclaw subprocess (see node_invoke / Task 19) connects
-//! to `ws://127.0.0.1:<random>/` instead of dialing the gateway directly.
+//! The bundled openclaw subprocess (see node_invoke) connects to
+//! `ws://127.0.0.1:<random>/` instead of dialing the gateway directly.
 //! This proxy then opens the real upstream WSS, injecting the Clerk JWT
 //! and clientId into the query string, and bridges frames in both
 //! directions.
@@ -9,8 +9,8 @@
 //! Why a proxy:
 //!
 //! 1. The subprocess shouldn't know about Clerk auth — JWT rotation
-//!    stays in the Tauri host (Task 21 plumbs a shared `RwLock<String>`
-//!    into the [`JwtProvider`] callback).
+//!    stays in the Tauri host, plumbed via a shared `RwLock<String>`
+//!    into the [`JwtProvider`] callback.
 //! 2. JWT rotation: the proxy reads the current token via [`JwtProvider`]
 //!    on every upstream-open so reconnects pick up fresh credentials
 //!    without bouncing the subprocess.
@@ -38,7 +38,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::log;
 
 /// Callback the proxy invokes whenever it opens a new upstream connection
-/// so it can fetch the current Clerk JWT. Task 21 wires this to the shared
+/// so it can fetch the current Clerk JWT. Wired to the shared
 /// `Arc<RwLock<String>>` that already backs the chat WS in `lib.rs`.
 pub type JwtProvider = Arc<dyn Fn() -> String + Send + Sync>;
 
@@ -51,7 +51,7 @@ pub struct ProxyHandle {
 
 impl ProxyHandle {
     /// The 127.0.0.1 port the proxy is listening on. Hand this to the
-    /// openclaw subprocess via `ISOL8_PROXY_PORT` (Task 20).
+    /// openclaw subprocess via `ISOL8_PROXY_PORT`.
     pub fn local_port(&self) -> u16 {
         self.port
     }

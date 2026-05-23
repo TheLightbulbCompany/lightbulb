@@ -49,6 +49,27 @@ class ArtifactNotUploadedError(Exception):
     """
 
 
+class NoPublishedVersionError(Exception):
+    """Republish requested for a listing with no currently-published
+    version. Sellers can only clone a v(N+1) draft from a live published
+    row; a listing that has never been approved (or whose last published
+    version was taken_down) has no source to fork from.
+    """
+
+
+class RepublishAlreadyInProgressError(Exception):
+    """A non-terminal (draft or review) version already exists for this
+    listing. Republish is single-flight per listing — sellers must
+    finish or discard the in-flight v(N+1) before starting another.
+    """
+
+
+class PermissionError(Exception):  # noqa: A001 - shadows builtin intentionally; module-scoped
+    """Seller does not own the listing being modified. Distinct from
+    InvalidStateError so callers can map to 403 vs 409.
+    """
+
+
 async def _upload_artifact_to_s3(
     *,
     listing_id: str,
@@ -387,6 +408,115 @@ async def update_draft(
             raise InvalidStateError("listing is not in 'draft' or 'review' state, or you are not the seller")
         raise
     return resp.get("Attributes", {})
+
+
+async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
+    """Clone the currently-published row into a new draft at max(version)+1.
+
+    Republish entry point. Single-table design: every version lives as a
+    row in the listings table, so a new version is just another row at a
+    higher `version` value. The currently-published row keeps serving
+    buyers until the new row goes through review + approve, at which
+    point publish_v2 atomically retires the old version.
+
+    Guards (evaluated in order so callers get a specific error):
+      1. seller_id matches the published row's seller_id, else
+         PermissionError (403).
+      2. A row with status='published' exists for listing_id, else
+         NoPublishedVersionError (404). A listing whose last published
+         version was taken_down has no source to fork from; the seller
+         must submit fresh metadata via create_draft instead.
+      3. No row with status in {'draft','review'} exists for listing_id,
+         else RepublishAlreadyInProgressError naming the offending vN.
+         Republish is single-flight per listing — sellers must finish
+         or discard the in-flight v(N+1) before starting another.
+
+    The new row insert uses a conditional put on attribute_not_exists so
+    a concurrent caller can't race past the in-process scan and double-
+    write v(N+1). TransactWriteItems would also work, but the scan
+    already covers the "no in-flight version" check and the conditional
+    put covers the "version+1 not taken" check — collectively they
+    close the read-then-write race without needing a transaction.
+    """
+    table = _listings_table()
+
+    # Read every row for this listing. Filter out the v=0 slug-reservation
+    # sentinel — that row carries no status/seller_id and would noise up
+    # every check below. We pull all versions in one query so the
+    # max(version)+1 calculation has a complete view.
+    resp = table.query(
+        KeyConditionExpression="listing_id = :l AND version > :z",
+        ExpressionAttributeValues={":l": listing_id, ":z": 0},
+    )
+    rows = resp.get("Items", [])
+    if not rows:
+        raise NoPublishedVersionError(f"listing {listing_id} has no versions")
+
+    published = next((r for r in rows if r.get("status") == "published"), None)
+    if published is None:
+        raise NoPublishedVersionError(f"listing {listing_id} has no published version to republish")
+
+    # Permission check before in-flight check: a non-owner probing for an
+    # in-flight republish would otherwise leak that one exists.
+    if published.get("seller_id") != seller_id:
+        raise PermissionError(f"seller {seller_id} does not own listing {listing_id}")
+
+    non_terminal = next(
+        (r for r in rows if r.get("status") in ("draft", "review")),
+        None,
+    )
+    if non_terminal is not None:
+        v = int(non_terminal["version"])
+        raise RepublishAlreadyInProgressError(f"republish already in progress for v{v}")
+
+    new_version = max(int(r["version"]) for r in rows) + 1
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    # Clone metadata; artifact fields stay unset so submit_for_review's
+    # artifact_uploaded=False guard forces the seller through
+    # /artifact-from-agent before the new draft can be submitted.
+    # Moderation residue (rejection_notes, approved_by, etc.) and the
+    # buyer-side install_count are intentionally NOT copied — they're
+    # per-row attestations.
+    new_row: dict = {
+        "listing_id": listing_id,
+        "version": new_version,
+        "status": "draft",
+        "seller_id": seller_id,
+        "slug": published["slug"],
+        "name": published["name"],
+        "description_md": published.get("description_md", ""),
+        "format": published["format"],
+        "price_cents": int(published.get("price_cents", 0)),
+        "tags": list(published.get("tags", [])),
+        "artifact_uploaded": False,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    # Optional columns: only include when present on the source. DDB
+    # rejects explicit-None values on put_item, so a `category=None`
+    # would 400 here.
+    if published.get("category"):
+        new_row["category"] = published["category"]
+    if published.get("entitlement_policy"):
+        new_row["entitlement_policy"] = published["entitlement_policy"]
+    if published.get("artifact_format_version"):
+        new_row["artifact_format_version"] = published["artifact_format_version"]
+
+    try:
+        table.put_item(
+            Item=new_row,
+            # Closes the read-then-write race: if two callers both scan
+            # the same row set and both compute the same new_version,
+            # only the first put_item succeeds.
+            ConditionExpression="attribute_not_exists(listing_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise RepublishAlreadyInProgressError(f"race detected creating v{new_version}; refetch and retry")
+        raise
+
+    return new_row
 
 
 async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1) -> dict:

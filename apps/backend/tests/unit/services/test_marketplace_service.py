@@ -6,7 +6,9 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
+import boto3  # noqa: E402
 import pytest  # noqa: E402
+from moto import mock_aws  # noqa: E402
 
 from core.services import marketplace_service  # noqa: E402
 
@@ -425,3 +427,232 @@ async def test_replace_artifact_persists_agent_id_when_provided(mock_listings):
     kwargs = mock_listings.return_value.update_item.call_args.kwargs
     assert "agent_id = :aid" in kwargs["UpdateExpression"]
     assert kwargs["ExpressionAttributeValues"][":aid"] == "agent_ray"
+
+
+# ---------------------------------------------------------------------------
+# moto-backed fixtures for create_new_version
+#
+# Unlike the mock-based tests above, create_new_version's behavior depends on
+# the full row set for a listing (query → filter → max(version) → conditional
+# put). Mocking that with MagicMock would either hardcode the responses (which
+# defeats the point) or grow a re-implementation of the conditional-put
+# semantics. moto gives real DDB behavior — slug-reservation rows, conditional
+# puts, query semantics — so the test exercises the actual code path.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def dynamodb_table():
+    """Moto-backed listings table with the prod schema (HASH listing_id +
+    RANGE version) and the slug-version GSI that get_by_slug needs.
+
+    Also stubs out the S3 artifact upload so create_draft can run without
+    a real bucket — the actual S3 path is exercised by the catalog tests.
+    """
+    with mock_aws():
+        client = boto3.resource("dynamodb", region_name="us-east-1")
+        table = client.create_table(
+            TableName="test-marketplace-listings",
+            KeySchema=[
+                {"AttributeName": "listing_id", "KeyType": "HASH"},
+                {"AttributeName": "version", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "listing_id", "AttributeType": "S"},
+                {"AttributeName": "version", "AttributeType": "N"},
+                {"AttributeName": "slug", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "slug-version-index",
+                    "KeySchema": [
+                        {"AttributeName": "slug", "KeyType": "HASH"},
+                        {"AttributeName": "version", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.meta.client.get_waiter("table_exists").wait(TableName="test-marketplace-listings")
+
+        with (
+            patch.object(
+                marketplace_service.settings,
+                "MARKETPLACE_LISTINGS_TABLE",
+                "test-marketplace-listings",
+            ),
+            patch.object(
+                marketplace_service.settings,
+                "MARKETPLACE_ARTIFACTS_BUCKET",
+                "test-bucket",
+            ),
+            patch(
+                "core.services.marketplace_service._upload_artifact_to_s3",
+                new=AsyncMock(return_value=("listings/x/v1/", "sha-stub")),
+            ),
+        ):
+            yield table
+
+
+async def _create_and_publish(
+    table,
+    listing_id: str,
+    seller_id: str,
+    slug: str,
+    *,
+    name: str = "X",
+    description_md: str = "d",
+    price_cents: int = 0,
+    tags: list[str] | None = None,
+    category: str | None = "agent",
+) -> dict:
+    """Create a v=1 draft, mark its artifact uploaded, submit, approve.
+
+    Mirrors the real flow because create_new_version's guards depend on
+    the row carrying real status transitions — synthesizing a 'published'
+    row via raw put_item would bypass artifact_uploaded and skip the
+    pieces a real publish writes (published_at, published_by).
+    """
+    draft = await marketplace_service.create_draft(
+        seller_id=seller_id,
+        slug=slug,
+        name=name,
+        description_md=description_md,
+        format="openclaw_agent",
+        price_cents=price_cents,
+        tags=tags or [],
+        category=category,
+        artifact_bytes=b"",
+        manifest={"name": name},
+    )
+    # create_draft writes artifact_uploaded=False; submit_for_review's
+    # guard rejects that. Flip it so the test can move through the state
+    # machine end to end.
+    table.update_item(
+        Key={"listing_id": draft["listing_id"], "version": 1},
+        UpdateExpression="SET artifact_uploaded = :t",
+        ExpressionAttributeValues={":t": True},
+    )
+    await marketplace_service.submit_for_review(listing_id=draft["listing_id"], seller_id=seller_id, version=1)
+    await marketplace_service.approve(listing_id=draft["listing_id"], version=1, approved_by="admin_test")
+    return draft
+
+
+def _upload_dummy_artifact(table, listing_id: str, version: int) -> None:
+    """Flip artifact_uploaded=True on the row so submit_for_review accepts
+    it. The real flow runs through replace_artifact + S3; this is a test
+    short-circuit because replace_artifact also writes S3 (mocked away by
+    the fixture) and we don't need the artifact bytes for these tests.
+    Sync because moto's put/update are sync; called from async tests is
+    fine since boto3 itself is sync."""
+    table.update_item(
+        Key={"listing_id": listing_id, "version": version},
+        UpdateExpression="SET artifact_uploaded = :t",
+        ExpressionAttributeValues={":t": True},
+    )
+
+
+class TestCreateNewVersion:
+    @pytest.mark.asyncio
+    async def test_clones_published_row_to_next_version_draft(self, dynamodb_table):
+        draft = await _create_and_publish(
+            dynamodb_table,
+            listing_id="ignored",  # listing_id is generated by create_draft
+            seller_id="seller_1",
+            slug="my-agent",
+            name="My Agent",
+            description_md="hello",
+            price_cents=500,
+            tags=["productivity"],
+            category="agent",
+        )
+        listing_id = draft["listing_id"]
+
+        result = await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+
+        assert result["version"] == 2
+        assert result["status"] == "draft"
+        assert result["seller_id"] == "seller_1"
+        assert result["name"] == "My Agent"
+        assert result["description_md"] == "hello"
+        assert int(result["price_cents"]) == 500
+        assert list(result["tags"]) == ["productivity"]
+        assert result["category"] == "agent"
+        # Artifact fields intentionally NOT carried over — seller must
+        # call /artifact-from-agent before submit_for_review will accept
+        # the new draft.
+        assert "manifest_sha256" not in result
+        assert "s3_prefix" not in result
+        assert result["artifact_uploaded"] is False
+        # v=1 is still published (still the buyer-visible row).
+        v1 = await marketplace_service.get_by_id(listing_id=listing_id, version=1)
+        assert v1["status"] == "published"
+
+    @pytest.mark.asyncio
+    async def test_raises_no_published_version_when_only_draft_exists(self, dynamodb_table):
+        draft = await marketplace_service.create_draft(
+            seller_id="seller_1",
+            slug="x",
+            name="X",
+            description_md="d",
+            format="openclaw_agent",
+            price_cents=0,
+            tags=[],
+            category="agent",
+            artifact_bytes=b"",
+            manifest={"name": "X"},
+        )
+        with pytest.raises(marketplace_service.NoPublishedVersionError):
+            await marketplace_service.create_new_version(listing_id=draft["listing_id"], seller_id="seller_1")
+
+    @pytest.mark.asyncio
+    async def test_raises_when_existing_draft_in_progress(self, dynamodb_table):
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+        await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        # Second call must fail — there's already a draft v=2 in flight.
+        with pytest.raises(marketplace_service.RepublishAlreadyInProgressError) as exc:
+            await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        # Error message names the in-flight version so the seller UI can
+        # render a "you have a draft v2" affordance.
+        assert "v2" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_raises_when_existing_review_in_progress(self, dynamodb_table):
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+        await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        _upload_dummy_artifact(dynamodb_table, listing_id, version=2)
+        await marketplace_service.submit_for_review(listing_id=listing_id, seller_id="seller_1", version=2)
+        with pytest.raises(marketplace_service.RepublishAlreadyInProgressError):
+            await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+
+    @pytest.mark.asyncio
+    async def test_raises_permission_when_seller_mismatch(self, dynamodb_table):
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        with pytest.raises(marketplace_service.PermissionError):
+            await marketplace_service.create_new_version(listing_id=draft["listing_id"], seller_id="other_seller")
+
+    @pytest.mark.asyncio
+    async def test_scales_to_v3(self, dynamodb_table):
+        """v=1 published → v=2 republished+approved → v=3 republish must
+        succeed. Guards against an off-by-one in max(version)+1 that would
+        only show up on the second republish cycle."""
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+        await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        _upload_dummy_artifact(dynamodb_table, listing_id, version=2)
+        await marketplace_service.submit_for_review(listing_id=listing_id, seller_id="seller_1", version=2)
+        # publish_v2 is the current name — Task 2 renames it to
+        # publish_new_version and updates this call site.
+        await marketplace_service.publish_v2(
+            listing_id=listing_id,
+            prev_version=1,
+            new_version=2,
+            approved_by="admin",
+        )
+        # v=2 is now published; v=1 is retired. Republish to v=3.
+        v3 = await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        assert v3["version"] == 3
+        assert v3["status"] == "draft"

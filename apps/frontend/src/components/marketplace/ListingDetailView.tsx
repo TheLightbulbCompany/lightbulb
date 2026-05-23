@@ -95,16 +95,15 @@ function Header({
 function Stats({ live }: { live: Listing }) {
   // install_count isn't on the typed Listing today — the backend includes
   // it on storefront responses but it's optional on the seller-side rows.
-  // Cast through unknown so the surface degrades gracefully to 0.
   const installs =
     (live as unknown as { install_count?: number }).install_count ?? 0;
   return (
     <div className="flex gap-6 mb-6 text-[13px] text-[#5b5b5b]">
       <div>
         <strong className="block font-editorial-serif text-lg text-[#1a1a1a]">
-          {installs}
+          {installs.toLocaleString()}
         </strong>
-        <span>{installs} installs</span>
+        <span>installs</span>
       </div>
       <div>
         <strong className="block font-editorial-serif text-lg text-[#1a1a1a]">
@@ -211,26 +210,20 @@ function OverviewTab({ listing }: { listing: Listing }) {
 }
 
 function BundleTab({ listing }: { listing: Listing }) {
-  // The manifest fields aren't on the typed Listing today; cast to read
-  // them. Future: extend Listing type once we add them to the backend
-  // response shape.
-  const meta = listing as unknown as {
-    agent_id?: string;
-    bundle_mcps?: string[];
-    bundle_skills?: string[];
-  };
+  const mcps = listing.bundle_mcps ?? [];
+  const skills = listing.bundle_skills ?? [];
   return (
     <div className="space-y-4">
-      <Field label="Snapshotted from agent" value={meta.agent_id ?? "—"} />
+      <Field label="Snapshotted from agent" value={listing.agent_id ?? "—"} />
       <section>
         <h3 className="text-[12px] tracking-widest uppercase font-bold text-[#5b5b5b] mb-2">
           MCPs bundled
         </h3>
         <ul className="text-[13px] space-y-1">
-          {(meta.bundle_mcps ?? []).length === 0 ? (
+          {mcps.length === 0 ? (
             <li className="text-[#8a8578] italic">None</li>
           ) : (
-            meta.bundle_mcps!.map((m) => <li key={m}>{m}</li>)
+            mcps.map((m) => <li key={m}>{m}</li>)
           )}
         </ul>
       </section>
@@ -239,10 +232,10 @@ function BundleTab({ listing }: { listing: Listing }) {
           Skills bundled
         </h3>
         <ul className="text-[13px] space-y-1">
-          {(meta.bundle_skills ?? []).length === 0 ? (
+          {skills.length === 0 ? (
             <li className="text-[#8a8578] italic">None</li>
           ) : (
-            meta.bundle_skills!.map((s) => <li key={s}>{s}</li>)
+            skills.map((s) => <li key={s}>{s}</li>)
           )}
         </ul>
       </section>

@@ -34,7 +34,9 @@ describe("<ListingDetailView>", () => {
     render(<ListingDetailView listingId="lst_x" mode="drawer" />);
     await waitFor(() => expect(screen.getByText("My Agent")).toBeInTheDocument());
     expect(screen.getByText(/Live/)).toBeInTheDocument();
-    expect(screen.getByText(/17 installs/)).toBeInTheDocument();
+    // Stats split the number and label into separate elements.
+    expect(screen.getByText("17")).toBeInTheDocument();
+    expect(screen.getByText("installs")).toBeInTheDocument();
     expect(screen.getByText("productivity")).toBeInTheDocument();
     expect(screen.getByText("writing")).toBeInTheDocument();
   });

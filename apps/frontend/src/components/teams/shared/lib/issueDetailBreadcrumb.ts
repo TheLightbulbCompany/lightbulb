@@ -5,7 +5,6 @@
 // Upstream relies on React Router location state; in Next App Router route
 // state is not a primitive, so the breadcrumb / header-seed helpers degrade
 // to no-op stubs that preserve call-site signatures.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import type { Issue } from "@/components/teams/shared/types";
 

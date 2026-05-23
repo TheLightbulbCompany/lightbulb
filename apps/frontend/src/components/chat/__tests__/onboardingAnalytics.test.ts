@@ -25,9 +25,9 @@ describe("nextOnboardingCompletion", () => {
   });
 
   it("emits gateway completion when transitioning into channels (off-list curr)", () => {
-    // Codex P2 follow-up: channels is not in STEPS_PAID; the gateway →
-    // channels transition must still record gateway as completed,
-    // otherwise paid users with channel setup get under-counted.
+    // channels is not in STEPS_PAID; the gateway → channels transition
+    // must still record gateway as completed, otherwise paid users with
+    // channel setup get under-counted.
     expect(nextOnboardingCompletion("gateway", "channels", STEPS_PAID)).toEqual({
       step_name: "gateway",
       step_index: 2,

@@ -1,7 +1,6 @@
 // apps/frontend/src/components/control/panels/cron/sessionMessageAdapter.ts
 //
-// Cron-run transcripts reuse MessageList. Post the flat-chat-timeline
-// migration (plan 2026-05-13), MessageList consumes `RenderGroup[]` —
+// Cron-run transcripts reuse MessageList, which consumes `RenderGroup[]` —
 // the same shape useAgentChat produces for the live chat.
 //
 // This adapter wires `chat.history` payloads (cron run sessions) through

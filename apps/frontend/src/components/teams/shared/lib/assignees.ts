@@ -4,7 +4,6 @@
 // (MIT, (c) 2025 Paperclip AI). Subset retained for IssueRow / IssueColumns /
 // IssueFiltersPopover. Upstream's User parameter was already a bare userId
 // string, so no Isol8 CompanyMember swap is required.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 export interface AssigneeSelection {
   assigneeAgentId: string | null;

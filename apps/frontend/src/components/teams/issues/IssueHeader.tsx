@@ -4,7 +4,6 @@
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
 // v1: identifier + title (inline editable) + status + priority pickers.
 // Drops assignee picker, parent issue, watcher list, run actions, plugin slots.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 "use client";
 

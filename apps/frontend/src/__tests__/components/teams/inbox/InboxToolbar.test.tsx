@@ -60,8 +60,8 @@ describe("InboxToolbar", () => {
   test("typing in search fires onSearchChange (each keystroke)", () => {
     const onSearchChange = vi.fn();
     render(<InboxToolbar {...baseProps} onSearchChange={onSearchChange} />);
-    // PR2 atom port: both mobile + desktop variants now render via
-    // PanelToolbar, which emits `<input type="search">` (role=searchbox).
+    // Both mobile + desktop variants render via PanelToolbar, which emits
+    // `<input type="search">` (role=searchbox).
     const inputs = screen.getAllByRole("searchbox");
     expect(inputs.length).toBe(2);
     fireEvent.change(inputs[0], { target: { value: "fix" } });

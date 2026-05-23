@@ -3,7 +3,6 @@
 // Ported from upstream Paperclip's lib/inbox.ts (loadInbox*/saveInbox*) and
 // hooks/useInboxBadge.ts (loadReadInboxItems/saveReadInboxItems).
 // (paperclip/ui/src/lib/inbox.ts, hooks/useInboxBadge.ts) (MIT, (c) 2025 Paperclip AI).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 // Deliberate divergences from upstream:
 //   - Key shape `paperclip:inbox:<companyId>:<key>` (vs upstream's

@@ -20,9 +20,8 @@ export function OutOfCreditsBanner() {
   );
 
   // Only the bedrock_claude path uses prepaid credits. Without the gate,
-  // chatgpt_oauth / byo_key users see a false "out of credits" banner because
-  // /billing/credits/balance returns 0 when no credits row exists. Codex P2
-  // on PR #393.
+  // chatgpt_oauth / byo_key users see a false "out of credits" banner
+  // because /billing/credits/balance returns 0 when no credits row exists.
   if (me?.provider_choice !== "bedrock_claude") return null;
   if (!balance || balance.balance_microcents > 0) return null;
 
@@ -32,14 +31,13 @@ export function OutOfCreditsBanner() {
         You&apos;re out of Claude credits. Top up to keep chatting.
       </span>
       {/*
-        Audit C2: previously linked to /chat?panel=credits. That stripped
-        the ?provider= URL param the ProvisioningStepper uses to gate the
-        provider step (ProvisioningStepper.tsx:222), causing the wizard to
-        proceed straight into container provisioning without any payment
-        — and the destination panel (CreditsPanel) is a placeholder that
-        can't actually take a payment. Route to the working CreditsStep
-        flow inside the stepper instead. URL stays inside /chat so we
-        don't lose ChatLayout chrome / the in-flight gateway socket.
+        Route into the CreditsStep flow inside the ProvisioningStepper. A
+        link to /chat?panel=credits would strip the ?provider= URL param
+        the stepper uses to gate the provider step, causing the wizard to
+        proceed into container provisioning without any payment — and the
+        destination panel (CreditsPanel) is a placeholder that can't take
+        a payment. URL stays inside /chat so we don't lose ChatLayout
+        chrome / the in-flight gateway socket.
       */}
       <Link
         href="/chat?provider=bedrock_claude"

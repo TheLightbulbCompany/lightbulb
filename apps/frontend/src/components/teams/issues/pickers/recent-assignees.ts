@@ -25,7 +25,7 @@ function isBrowser(): boolean {
 // iframes, COEP-restricted contexts). isBrowser() is necessary but
 // not sufficient — we need defensive try/catch on every storage
 // call too. AssigneePicker treats this util as a UX nicety; never
-// let it block the actual assignment PATCH (Codex P2 on PR #575/#576).
+// let it block the actual assignment PATCH.
 
 /** Returns most-recent-first, capped at 5. Empty on SSR or any storage failure. */
 export function getRecentAssignees(): string[] {

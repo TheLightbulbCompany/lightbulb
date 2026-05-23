@@ -290,13 +290,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
 
-  // Busy gate (preserved from PR #621). The approval-pause guard from
-  // #628 is reinstated below via the approvalQueueRef + queue-drain
-  // effect — OpenClaw emits chat.final mid-turn while awaiting an exec
-  // approval and only starts the real continuation after the user
-  // resolves it (upstream #70953). Releasing the gate on that
+  // Busy gate. The approval-pause guard is implemented below via the
+  // approvalQueueRef + queue-drain effect — OpenClaw emits chat.final
+  // mid-turn while awaiting an exec approval and only starts the real
+  // continuation after the user resolves it. Releasing the gate on that
   // intermediate `done` would reopen ChatInput and let a user-typed
-  // follow-up race with the post-approval resume (Codex P1, PR #682).
+  // follow-up race with the post-approval resume.
   const clientRunIdRef = useRef<string | null>(null);
 
   // Approval queue snapshot — used to keep the busy gate armed while an
@@ -307,7 +306,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // is coming server-side), but `resolved` keeps it armed until the
   // post-approval continuation's terminal event arrives — otherwise a
   // follow-up typed in the window between queue-empty and the first
-  // continuation chunk would race with the resume (Codex P1 on PR #682).
+  // continuation chunk would race with the resume.
   const { queue: approvalQueue, onApprovalRemoved } =
     useExecApprovalsContextOptional();
   const approvalQueueRef = useRef(approvalQueue);
@@ -321,10 +320,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // see is therefore the resume — transfer the busy gate to that fresh
   // runId so its eventual terminal `done` releases the gate the normal
   // way. Without this, `done.runId !== clientRunIdRef.current` and the
-  // gate stays armed forever (Codex P1 on PR #682).
+  // gate stays armed forever.
   const resumeExpectedRef = useRef(false);
 
-  // Queue (preserved from #621).
+  // Pending message queue.
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   useEffect(() => {
@@ -490,7 +489,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // late chat.aborted-as-error for runA would append a stale "Error:"
       // bubble AND wipe runB's in-flight stream/tools; a late `done` for
       // runA would fold runB's live segments+tools into a HistoryMessage
-      // tagged with runA's runId. (Codex P1, PR #682.)
+      // tagged with runA's runId.
       if (
         (msg.type === "done" || msg.type === "error") &&
         msg.runId &&
@@ -505,7 +504,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // first event of that fresh run and reassign clientRunIdRef so
       // the eventual terminal `done` (which carries the fresh runId)
       // releases the busy gate. Without this transfer the gate sticks
-      // armed forever and queued follow-ups never flush (Codex P1 c).
+      // armed forever and queued follow-ups never flush.
       //
       // The first fresh-run event is whichever the agent produces next
       // — usually chunk/thinking, but for an approved exec it can be
@@ -580,9 +579,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // foldLiveTurnIntoContent both rely on the contract that segments[i]
         // is "the text immediately before tool[i]". Without the sentinel push
         // a tool firing before any text would shift post-tool text into
-        // segment[0], making interleave emit it BEFORE its tool (Codex P2:
-        // tool-first ordering). buildChatItems/fold already skip empty
-        // segments so the sentinel is invisible at render time.
+        // segment[0], making interleave emit it BEFORE its tool.
+        // buildChatItems/fold already skip empty segments so the sentinel is
+        // invisible at render time.
         //
         // Advance streamCommittedOffsetRef by the committed length so the
         // next post-tool chunk (which arrives cumulative from start-of-run)
@@ -631,7 +630,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // HistoryMessage at the interim chat.final (live state was
         // cleared there). Append the tool_result block to that message
         // so the approved command's output reaches history and the UI,
-        // instead of being silently dropped (Codex P2 on PR #690).
+        // instead of being silently dropped.
         setChatMessages((prev) => {
           for (let i = prev.length - 1; i >= 0; i--) {
             const m = prev[i];
@@ -846,7 +845,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   //   continuation is coming. Release the gate AND drop isStreaming —
   //   the interim `done` handler skipped setIsStreaming(false) because
   //   the gate was held for the approval, so the chat would otherwise
-  //   show the stop button indefinitely (Codex P2 on PR #682).
+  //   show the stop button indefinitely.
   useEffect(() => {
     return onApprovalRemoved((removedId, reason) => {
       // Subscribers fire synchronously inside removeFromQueue before

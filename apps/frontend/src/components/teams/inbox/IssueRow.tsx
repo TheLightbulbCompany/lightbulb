@@ -1,6 +1,5 @@
 // Ported from upstream Paperclip's IssueRow.tsx
 // (paperclip/ui/src/components/IssueRow.tsx) (MIT, (c) 2025 Paperclip AI).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import type { ReactNode } from "react";
 import Link from "next/link";
@@ -81,7 +80,6 @@ export function IssueRow({
   const blockerAttention =
     typeof issue.blockerAttention === "object" ? issue.blockerAttention : null;
   const productivityReviewIndicator = productivityReview ? (
-    // Retheme: amber-500 productivity-review chip → editorial warn token.
     <span
       className={cn(
         "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
@@ -224,7 +222,6 @@ export function IssueRow({
               )}
               aria-label="Mark as read"
             >
-              {/* Retheme: amber-700 unread dot → editorial forest token. */}
               <span
                 className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",

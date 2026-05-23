@@ -349,8 +349,7 @@ export default function SettingsPage() {
 function SettingsPageInner() {
   // ?panel=billing|profile|channels preselects the tab. Used by deep
   // links from the chat banners (TrialBanner "Manage" CTA, etc.) so they
-  // land on the right pane. Codex P2 on PR #393 — the prior /settings/
-  // billing href was a 404.
+  // land on the right pane.
   const searchParams = useSearchParams();
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =

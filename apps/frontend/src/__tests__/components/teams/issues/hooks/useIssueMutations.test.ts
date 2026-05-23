@@ -120,14 +120,12 @@ describe("useIssueMutations", () => {
     expect(mockMutate).not.toHaveBeenCalled();
   });
 
-  // Whitelist enforcement: since the camelCase unification (Task 3 of
-  // 2026-05-09-teams-bff-camelcase-unification), the frontend forwards
-  // IssueCreateInput verbatim to the BFF — there is no client-side body
-  // builder stripping disallowed fields. The BFF's CreateIssueBody schema
-  // (extra="forbid") is the single source of truth for the whitelist; if a
-  // caller smuggles `status` past TypeScript via a `as never` cast, the
-  // BFF will 422. This test pins the new contract: the body the frontend
-  // posts is exactly the (typed) input.
+  // Whitelist enforcement: the frontend forwards IssueCreateInput verbatim
+  // to the BFF — there is no client-side body builder stripping disallowed
+  // fields. The BFF's CreateIssueBody schema (extra="forbid") is the single
+  // source of truth for the whitelist; if a caller smuggles `status` past
+  // TypeScript via a `as never` cast, the BFF will 422. This test pins
+  // the contract: the body the frontend posts is exactly the (typed) input.
   test("create posts the typed input verbatim (whitelist enforced server-side)", async () => {
     mockPost.mockResolvedValue({ id: "iss_1", title: "x", status: "todo" });
     const { result } = renderHook(() => useIssueMutations());

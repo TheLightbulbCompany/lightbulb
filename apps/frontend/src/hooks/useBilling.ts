@@ -17,8 +17,7 @@ export interface BillingAccount {
   // Stripe-native subscription state. Both null until the user signs up.
   subscription_status: string | null;
   trial_end: number | null;
-  // Provider-choice-per-owner (Workstream B, 2026-05-03): the owner-keyed
-  // billing row carries the chosen inference path. Used by
+  // The owner-keyed billing row carries the chosen inference path. Used by
   // ProvisioningStepper to skip the ProviderPicker for org members joining
   // an org whose admin has already picked.
   provider_choice: string | null;

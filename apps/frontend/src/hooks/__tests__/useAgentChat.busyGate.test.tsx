@@ -1,7 +1,7 @@
 /**
  * Busy-gate behavior for useAgentChat.
  *
- * Covers two Codex P1 findings on PR #682:
+ * Two invariants:
  *   1. Tombstoned terminals: a late `done` or `error` for a runId the
  *      user already cancelled must not mutate the current live turn.
  *   2. Approval-pause: the busy gate must stay armed across the
@@ -93,7 +93,7 @@ function dispatch(msg: ChatIncomingMessage) {
   chatHandlers.forEach((h) => h(msg));
 }
 
-describe("useAgentChat — tombstoned terminals (Codex P1 a)", () => {
+describe("useAgentChat — tombstoned terminals", () => {
   beforeEach(() => {
     chatHandlers = [];
     eventHandlers = [];
@@ -104,12 +104,12 @@ describe("useAgentChat — tombstoned terminals (Codex P1 a)", () => {
   });
 
   it("late `done` for a cancelled run must not fold runB's live state into a runA-tagged message", async () => {
-    // Reproduces the race Codex flagged: user cancels runA, sends a new
-    // prompt that starts runB, then a stale chat.final for runA arrives.
-    // Before the fix, the done handler would fold runB's live segments +
-    // tools into a synthesized HistoryMessage tagged with runA's runId
-    // and wipe runB's live state. After the fix it cleans up the
-    // tombstone marker and returns without touching state.
+    // The race: user cancels runA, sends a new prompt that starts runB,
+    // then a stale chat.final for runA arrives. Without the tombstone
+    // path, the done handler folds runB's live segments + tools into a
+    // synthesized HistoryMessage tagged with runA's runId and wipes runB's
+    // live state. The tombstone marker swallows the late terminal and
+    // returns without touching state.
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
 
@@ -202,7 +202,7 @@ describe("useAgentChat — tombstoned terminals (Codex P1 a)", () => {
   });
 });
 
-describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
+describe("useAgentChat — approval-pause busy gate", () => {
   beforeEach(() => {
     chatHandlers = [];
     eventHandlers = [];
@@ -324,7 +324,7 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(sendChat).toHaveBeenCalledTimes(3);
   });
 
-  it("keeps the gate armed on `resolved` AND transfers it to the fresh continuation runId (Codex P1 c)", async () => {
+  it("keeps the gate armed on `resolved` AND transfers it to the fresh continuation runId", async () => {
     // After resolve, OpenClaw's continuation runs as a FRESH server-side
     // run with its own runId — the original run truly ended at the
     // intermediate chat.final. The gate must (a) stay armed across the
@@ -378,7 +378,7 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
-  it("preserves the approved tool's result by appending tool_result to the synthesized history message (Codex P2 on PR #690)", async () => {
+  it("preserves the approved tool's result by appending tool_result to the synthesized history message", async () => {
     // Pre-approval flow folds the tool_use into a HistoryMessage at
     // the interim chat.final and clears toolStreamByIdRef. When the
     // continuation's tool_end arrives, the live-state lookup returns
@@ -444,7 +444,7 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     });
   });
 
-  it("doesn't adopt a fresh continuation runId after the user cancels mid-resume (Codex P2 on PR #690)", async () => {
+  it("doesn't adopt a fresh continuation runId after the user cancels mid-resume", async () => {
     // Scenario: user resolves approval → resumeExpectedRef is armed →
     // user hits Stop before the continuation emits → cancelMessage
     // clears clientRunIdRef. A late continuation chunk on a fresh
@@ -523,7 +523,7 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     // (backend transforms it via connection_pool.py) before any chunk.
     // The transfer must handle that path or the gate sticks armed
     // forever — the terminal done's runId never matches the pre-
-    // approval clientRunIdRef. (Codex P1 on PR #690.)
+    // approval clientRunIdRef.
     approvalQueue = [fakeApproval("agent-X", "ap-tool")];
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result, rerender } = renderHook(() =>
@@ -582,7 +582,7 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
-  it("keeps the gate armed when one approval is dismissed but siblings for this agent remain (Codex P2)", async () => {
+  it("keeps the gate armed when one approval is dismissed but siblings for this agent remain", async () => {
     // Multiple approvals can be pending on the same run (e.g. parallel
     // tools). Dismissing/expiring one must NOT release the gate while
     // siblings are still queued — the agent is still effectively
@@ -626,7 +626,7 @@ describe("useAgentChat — approval-pause busy gate (Codex P1 b/c)", () => {
     expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");
   });
 
-  it("clears isStreaming when releasing the gate on dismiss (Codex P2)", async () => {
+  it("clears isStreaming when releasing the gate on dismiss", async () => {
     // The interim `done` skipped setIsStreaming(false) because the gate
     // was held for the approval. When the user dismisses the stuck
     // card, the gate-release path must also clear isStreaming —

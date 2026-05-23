@@ -5,14 +5,6 @@ import { resolve } from "node:path";
 /**
  * Smoke test for the Teams link in ChatLayout.tsx.
  *
- * History:
- *   - PR #509 added the native /teams UI and a flag-gated <Link href="/teams">.
- *   - PR #510 removed the Vercel alias that kept the cross-subdomain
- *     Paperclip preview hostname pointing at the latest deploy.
- *   - But ChatLayout still derived a stale URL like ``${env}.company.isol8.co``
- *     and rendered it as the sidebar Teams link, which now points at a
- *     dead origin.
- *
  * Rendering ChatLayout end-to-end requires mocking Clerk, SWR, gateway,
  * agents/billing hooks, posthog, and the catalog — far heavier than what
  * this regression deserves. A source-level assertion is the most direct

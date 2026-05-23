@@ -2,7 +2,6 @@
 
 // Ported from upstream Paperclip's timeAgo.ts (paperclip/ui/src/lib/timeAgo.ts)
 // (MIT, (c) 2025 Paperclip AI). Verbatim port of the pure date-math helper.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;

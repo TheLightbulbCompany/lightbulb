@@ -9,8 +9,6 @@ import { useGateway } from "@/hooks/useGateway";
  * to Paperclip live events forwarded by the BFF and invalidates SWR cache
  * keys per event type so panels rerender automatically.
  *
- * Spec: docs/superpowers/specs/2026-05-04-teams-realtime-design.md
- *
  * Pattern mirrors Paperclip's own LiveUpdatesProvider — a single mount
  * point owns all realtime invalidation; panels themselves stay free of
  * realtime concerns.
@@ -18,9 +16,9 @@ import { useGateway } from "@/hooks/useGateway";
 
 // Each entry below is a path PREFIX. `mutateKeyPrefix` invalidates any SWR
 // cache key that exactly matches `${prefix}` OR starts with `${prefix}?` so
-// query-stringed variants (e.g. `/teams/inbox?tab=mine` from the Inbox page
-// in #3c) get caught alongside the bare `/teams/inbox` key. The `?` boundary
-// keeps `/teams/inbox-foo` from accidentally matching `/teams/inbox`.
+// query-stringed variants (e.g. `/teams/inbox?tab=mine`) get caught alongside
+// the bare `/teams/inbox` key. The `?` boundary keeps `/teams/inbox-foo` from
+// accidentally matching `/teams/inbox`.
 const ALL_KEYS = [
   "/teams/dashboard",
   "/teams/activity",

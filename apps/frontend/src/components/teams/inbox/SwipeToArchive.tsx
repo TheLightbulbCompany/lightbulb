@@ -1,6 +1,5 @@
 // Ported from upstream Paperclip's SwipeToArchive.tsx
 // (paperclip/ui/src/components/SwipeToArchive.tsx) (MIT, (c) 2025 Paperclip AI).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Archive } from "lucide-react";
@@ -146,7 +145,6 @@ export function SwipeToArchive({
         suppressClickRef.current = false;
       }}
     >
-      {/* Retheme: emerald-600 archive reveal → editorial forest token. */}
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 flex items-center justify-end px-4"
@@ -161,7 +159,6 @@ export function SwipeToArchive({
           Archive
         </span>
       </div>
-      {/* Retheme: stone-100 selected highlight → editorial cream-deeper. */}
       <div
         data-inbox-row-surface
         className={cn("relative will-change-transform")}

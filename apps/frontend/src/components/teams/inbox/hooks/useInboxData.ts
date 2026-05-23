@@ -1,9 +1,8 @@
 // Ported from upstream Paperclip's pages/Inbox.tsx data-fetching block
 // (paperclip/ui/src/pages/Inbox.tsx:744-835) (MIT, (c) 2025 Paperclip AI).
 // Translated from React Query's useQuery to SWR via our useTeamsApi hook.
-// Subset: 3 issue fetches (mine / recent-touched / all). Defers heartbeat /
-// dashboard / live-runs / approvals fetches to later tasks per #3c plan.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// Subset: 3 issue fetches (mine / recent-touched / all). Heartbeat /
+// dashboard / live-runs / approvals fetches are not yet ported.
 
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";

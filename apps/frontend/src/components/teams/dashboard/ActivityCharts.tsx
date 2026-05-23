@@ -8,7 +8,6 @@
 // Colors mapped onto the editorial palette (forest / forest-soft /
 // warn / mute / mute-soft / ink / ink-soft / edge) — class-only swap,
 // chart axis + height logic untouched.
-// See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import type { DashboardRunActivityDay, HeartbeatRun } from "@/components/teams/shared/types";
 

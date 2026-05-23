@@ -2,15 +2,14 @@
 
 // Ported from upstream Paperclip's pages/Inbox.tsx toolbar block
 // (paperclip/ui/src/pages/Inbox.tsx:1874-2056) (MIT, (c) 2025 Paperclip AI).
-// v1: tabs + search + filters + mark-all-read. Drops nesting toggle, group-by
-// popover, and column picker (deferred per #3c plan).
+// Tabs + search + filters + mark-all-read. Drops nesting toggle, group-by
+// popover, and column picker.
 //
-// PR2 atom port: search/filters/actions cluster composes the editorial atom
-// library — `PanelToolbar` for the search-row scaffold, `EditorialButton` for
-// the primary "New issue" CTA + secondary "Mark all as read" trigger. Tabs
+// The search/filters/actions cluster composes the editorial atom library —
+// `PanelToolbar` for the search-row scaffold, `EditorialButton` for the
+// primary "New issue" CTA + secondary "Mark all as read" trigger. Tabs
 // retain their bespoke pill styling (does not match `PanelTabs`'s underline
 // look) and stay as raw <button role="tab"> elements.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 "use client";
 
@@ -237,8 +236,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
         {/* Tab bar — bespoke pill styling, intentionally does not use
             PanelTabs (which renders an underline-style tab list).
             TODO(teams-ui-parity): migrate to PanelTabs once that atom
-            supports a pill variant matching this forest-tint active style.
-            Spec at docs/superpowers/specs/2026-05-07-teams-panel-port-editorial-atoms-design.md. */}
+            supports a pill variant matching this forest-tint active style. */}
         <div
           role="tablist"
           aria-label="Inbox tabs"

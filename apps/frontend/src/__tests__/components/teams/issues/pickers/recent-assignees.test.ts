@@ -94,11 +94,10 @@ describe("recent-assignees", () => {
   });
 
   it("does not throw when localStorage.setItem fails (quota / blocked storage)", () => {
-    // Codex P2 on PR #575: AssigneePicker's handleSelect calls
-    // trackRecentAssignee BEFORE onChange. If setItem throws (Safari
-    // Private Browsing, quota exceeded, sandboxed iframe), an uncaught
-    // exception there blocks the assignment PATCH. Track must be
-    // best-effort.
+    // AssigneePicker's handleSelect calls trackRecentAssignee BEFORE
+    // onChange. If setItem throws (Safari Private Browsing, quota
+    // exceeded, sandboxed iframe), an uncaught exception there blocks
+    // the assignment PATCH. Track must be best-effort.
     const realSetItem = localStorage.setItem.bind(localStorage);
     localStorage.setItem = () => {
       throw new DOMException("QuotaExceededError", "QuotaExceededError");
@@ -111,12 +110,12 @@ describe("recent-assignees", () => {
   });
 
   it("does not throw when localStorage.getItem fails (private mode read)", () => {
-    // Codex P2 on PR #576: trackRecentAssignee internally calls
-    // getRecentAssignees() which itself reads localStorage. If getItem
-    // throws (private-mode read failure), the read needs to fall
-    // through to []. Without defensive try/catch on the read path,
-    // trackRecentAssignee throws before the write attempt — same
-    // user-visible failure (assignment PATCH blocked).
+    // trackRecentAssignee internally calls getRecentAssignees() which
+    // itself reads localStorage. If getItem throws (private-mode read
+    // failure), the read needs to fall through to []. Without defensive
+    // try/catch on the read path, trackRecentAssignee throws before the
+    // write attempt — same user-visible failure (assignment PATCH
+    // blocked).
     const realGetItem = localStorage.getItem.bind(localStorage);
     localStorage.getItem = () => {
       throw new DOMException("SecurityError", "SecurityError");

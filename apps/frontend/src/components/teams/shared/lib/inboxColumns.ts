@@ -2,9 +2,8 @@
 // (MIT, (c) 2025 Paperclip AI). Slim subset retained for IssueColumns: only
 // the column-key tuple/type and the default-visible-columns constant. The
 // full upstream module also contains localStorage column persistence,
-// availability helpers, and workspace-name resolution — those are deferred
-// to PR #3c (column picker wiring) and InboxPanel data plumbing respectively.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// availability helpers, and workspace-name resolution — those are not yet
+// ported.
 
 export const inboxIssueColumns = [
   "status",

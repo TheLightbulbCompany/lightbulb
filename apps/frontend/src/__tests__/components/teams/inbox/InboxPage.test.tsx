@@ -155,8 +155,8 @@ describe("InboxPage", () => {
       error: null,
     });
     render(<InboxPage {...baseProps} />);
-    // PR2 atom port: PanelToolbar emits `<input type="search">` (role=searchbox).
-    // Both mobile + desktop variants are present; either one drives state.
+    // PanelToolbar emits `<input type="search">` (role=searchbox). Both
+    // mobile + desktop variants are present; either one drives state.
     const searchInput = screen.getAllByRole("searchbox")[0] as HTMLInputElement;
     fireEvent.change(searchInput, { target: { value: "zzzzzz" } });
     expect(

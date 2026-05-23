@@ -2,7 +2,6 @@
 
 // Ported from upstream Paperclip's MetricCard
 // (paperclip/ui/src/components/MetricCard.tsx) (MIT, (c) 2025 Paperclip AI).
-// See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import Link from "next/link";
 import type { LucideIcon } from "lucide-react";

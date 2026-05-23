@@ -1572,6 +1572,7 @@ def _new_draft_row(*, listing_id: str = "lst_1", seller_id: str = "u_seller", ve
         "artifact_uploaded": False,
         "created_at": "2026-05-23T10:00:00Z",
         "updated_at": "2026-05-23T10:00:00Z",
+        "published_at": None,
     }
 
 

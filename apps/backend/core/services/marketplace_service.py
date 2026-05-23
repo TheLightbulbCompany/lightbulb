@@ -507,7 +507,9 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
     }
     # Optional columns: only include when present on the source. DDB
     # rejects explicit-None values on put_item, so a `category=None`
-    # would 400 here.
+    # would 400 here. published_at follows the same rule — written as
+    # NULL by the GSI-aware paths (submit_for_review, approve), but the
+    # API response shape (schemas.Listing) requires the key to be present.
     if published.get("category"):
         new_row["category"] = published["category"]
     if published.get("entitlement_policy"):
@@ -528,7 +530,9 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
             raise RepublishAlreadyInProgressError(f"race detected creating v{new_version}; refetch and retry")
         raise
 
-    return new_row
+    # Return-shape includes published_at=None so schemas.Listing validates
+    # at the API boundary (HTTP responses serialize this row directly).
+    return {**new_row, "published_at": None}
 
 
 async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1) -> dict:

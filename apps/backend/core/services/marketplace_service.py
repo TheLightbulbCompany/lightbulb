@@ -419,17 +419,29 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
     buyers until the new row goes through review + approve, at which
     point publish_v2 atomically retires the old version.
 
-    Guards (evaluated in order so callers get a specific error):
-      1. seller_id matches the published row's seller_id, else
-         PermissionError (403).
-      2. A row with status='published' exists for listing_id, else
-         NoPublishedVersionError (404). A listing whose last published
-         version was taken_down has no source to fork from; the seller
-         must submit fresh metadata via create_draft instead.
-      3. No row with status in {'draft','review'} exists for listing_id,
-         else RepublishAlreadyInProgressError naming the offending vN.
-         Republish is single-flight per listing — sellers must finish
-         or discard the in-flight v(N+1) before starting another.
+    Guards are grouped by category. Within a category, the check that
+    leaks the least information runs first — a non-owner probing for
+    an in-flight republish must not learn one exists, so ownership is
+    asserted before state. Errors are mapped as:
+
+      Existence:
+        - Listing has no non-sentinel rows at all -> NoPublishedVersionError.
+        - Listing has rows but none with status='published'
+          -> NoPublishedVersionError. A listing whose last published
+          version was taken_down has no source to fork from; the seller
+          must submit fresh metadata via create_draft instead.
+
+      Ownership:
+        - seller_id does not match the published row's seller_id
+          -> PermissionError (403). Runs before the in-flight check so a
+          non-owner can't tell whether a v(N+1) is in flight.
+
+      State:
+        - A row with status in {'draft','review'} already exists for
+          listing_id -> RepublishAlreadyInProgressError naming the
+          offending vN. Republish is single-flight per listing —
+          sellers must finish or discard the in-flight v(N+1) before
+          starting another.
 
     The new row insert uses a conditional put on attribute_not_exists so
     a concurrent caller can't race past the in-process scan and double-

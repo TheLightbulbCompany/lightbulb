@@ -635,6 +635,63 @@ class TestCreateNewVersion:
             await marketplace_service.create_new_version(listing_id=draft["listing_id"], seller_id="other_seller")
 
     @pytest.mark.asyncio
+    async def test_race_detected_via_conditional_put(self, dynamodb_table, monkeypatch):
+        """The scan-side guard and the conditional-put rescue are
+        independent defenses: the scan catches the common case where a
+        prior draft already exists, the conditional put catches the rare
+        case where two callers both pass the scan and try to insert the
+        same v(N+1). This test exercises the rescue branch by forcing
+        put_item to raise as if a parallel caller won the write.
+
+        We monkeypatch `_listings_table` (not the table instance) because
+        `_listings_table()` returns a fresh `.Table(...)` resource on
+        every call, so patching the instance returned to the test
+        wouldn't stick across calls. The stub proxies reads to the real
+        moto table so the scan-side guard still passes, then raises
+        ConditionalCheckFailedException on put_item.
+        """
+        import botocore.exceptions
+
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+
+        class _FailingPutTable:
+            """Delegates everything to the real moto table except
+            put_item, which raises as if a concurrent caller already
+            inserted v(N+1)."""
+
+            def __init__(self, real_table):
+                self._real_table = real_table
+
+            def __getattr__(self, name):
+                return getattr(self._real_table, name)
+
+            def put_item(self, *args, **kwargs):
+                raise botocore.exceptions.ClientError(
+                    error_response={
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "simulated race",
+                        }
+                    },
+                    operation_name="PutItem",
+                )
+
+        monkeypatch.setattr(
+            marketplace_service,
+            "_listings_table",
+            lambda: _FailingPutTable(dynamodb_table),
+        )
+
+        with pytest.raises(marketplace_service.RepublishAlreadyInProgressError) as exc:
+            await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+        # The rescue path's message is distinct from the scan-side
+        # guard's "republish already in progress for vN" so the API
+        # layer (and any future log scraping) can tell them apart.
+        assert "race detected" in str(exc.value)
+        assert "v2" in str(exc.value)
+
+    @pytest.mark.asyncio
     async def test_scales_to_v3(self, dynamodb_table):
         """v=1 published → v=2 republished+approved → v=3 republish must
         succeed. Guards against an off-by-one in max(version)+1 that would

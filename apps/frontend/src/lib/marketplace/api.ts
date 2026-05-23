@@ -154,6 +154,55 @@ export async function myListings(opts: {
   return (await resp.json()) as { items: Listing[] };
 }
 
+/** Clone a published listing into a fresh draft (v_new). Backend creates a
+ * new version row carried back into the wizard for re-snapshot + re-submit.
+ * The previously published version remains live until the new one is approved
+ * and the atomic version transition swaps them. */
+export async function republishListing(opts: {
+  listingId: string;
+  jwt: string;
+}): Promise<Listing> {
+  const resp = await fetch(
+    `${API}/marketplace/listings/${encodeURIComponent(opts.listingId)}/republish`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${opts.jwt}` },
+    },
+  );
+  if (!resp.ok) {
+    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
+    throw Object.assign(new Error(body.detail || `republishListing failed: ${resp.status}`), {
+      status: resp.status,
+      detail: body.detail,
+    });
+  }
+  return (await resp.json()) as Listing;
+}
+
+/** Discard a non-live listing version (typically a rejected v_new or an
+ * in-progress republish draft). The currently-published version is protected
+ * server-side — this call cannot take a listing offline. */
+export async function discardListingVersion(opts: {
+  listingId: string;
+  version: number;
+  jwt: string;
+}): Promise<void> {
+  const resp = await fetch(
+    `${API}/marketplace/listings/${encodeURIComponent(opts.listingId)}?version=${opts.version}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${opts.jwt}` },
+    },
+  );
+  if (!resp.ok) {
+    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
+    throw Object.assign(
+      new Error(body.detail || `discardListingVersion failed: ${resp.status}`),
+      { status: resp.status, detail: body.detail },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Publish wizard — artifact preview (Bundle step + Review safety_flags)
 // ---------------------------------------------------------------------------

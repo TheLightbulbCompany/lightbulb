@@ -7,6 +7,7 @@ import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import { BrowseView } from "./BrowseView";
 import { MyListingsView } from "./MyListingsView";
 import { PublishWizard } from "./PublishWizard";
+import { ListingDetailView } from "../ListingDetailView";
 
 export function MarketplaceDrawer() {
   const { state, close, open } = useMarketplaceDrawer();
@@ -14,6 +15,11 @@ export function MarketplaceDrawer() {
   if (!state.isOpen) return null;
 
   const isPublish = state.view === "publish";
+  const isDetail = state.view === "detail";
+  // Both publish and detail are focused views: hide the "+ Publish" /
+  // "Open in full page" action cluster so the user isn't tempted to jump
+  // away mid-task.
+  const showActions = !isPublish && !isDetail;
 
   return (
     <>
@@ -30,9 +36,9 @@ export function MarketplaceDrawer() {
       >
         {/* HEADER */}
         <div className="px-6 py-3.5 border-b border-[#e0dbd0] bg-[#faf7f2] flex items-center justify-between gap-3.5">
-          {isPublish ? <PublishHeader /> : <DefaultHeader />}
+          {isPublish ? <PublishHeader /> : isDetail ? <DetailHeader /> : <DefaultHeader />}
           <div className="flex items-center gap-2.5 flex-shrink-0">
-            {!isPublish && (
+            {showActions && (
               <>
                 <button
                   type="button"
@@ -68,6 +74,7 @@ export function MarketplaceDrawer() {
           {state.view === "browse" && <BrowseView />}
           {state.view === "mine" && <MyListingsView />}
           {state.view === "publish" && <PublishWizard />}
+          {state.view === "detail" && <DetailBody />}
         </div>
       </aside>
     </>
@@ -124,6 +131,34 @@ function PublishHeader() {
       <span className="font-editorial-serif italic text-[14px] text-[#5b5b5b]">
         {isEditing ? `Edit "${state.editListing?.name}"` : "Publish an agent"}
       </span>
+    </div>
+  );
+}
+
+function DetailHeader() {
+  return (
+    <div className="flex items-center gap-3.5 min-w-0">
+      <span className="font-editorial-serif italic text-[13px] text-[#5b5b5b]">Marketplace</span>
+      <span className="font-editorial-serif italic text-[14px] text-[#5b5b5b]">Listing details</span>
+    </div>
+  );
+}
+
+function DetailBody() {
+  const { state, setView } = useMarketplaceDrawer();
+  // detailListingId is required to render — guard against the (provider-bug)
+  // case where view flipped to "detail" without an id being set.
+  if (!state.detailListingId) return null;
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setView("mine")}
+        className="text-[12.5px] font-semibold text-[#06402b] hover:underline mb-3"
+      >
+        ← Back to my listings
+      </button>
+      <ListingDetailView listingId={state.detailListingId} mode="drawer" />
     </div>
   );
 }

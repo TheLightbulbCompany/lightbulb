@@ -46,6 +46,28 @@ export async function getListing(slug: string): Promise<ListingDetailResponse | 
   return (await resp.json()) as ListingDetailResponse;
 }
 
+/** Authenticated fetch of a single listing by slug, returning the row
+ * directly (no manifest envelope). Used by the seller-facing /manage page
+ * which navigates from a slug URL and needs the live row's listing_id to
+ * drive ListingDetailView. */
+export async function getListingBySlug(opts: {
+  slug: string;
+  jwt: string;
+}): Promise<Listing> {
+  const resp = await fetch(
+    `${API}/marketplace/listings/${encodeURIComponent(opts.slug)}`,
+    { headers: { Authorization: `Bearer ${opts.jwt}` } },
+  );
+  if (!resp.ok) {
+    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
+    throw Object.assign(
+      new Error(body.detail || `getListingBySlug failed: ${resp.status}`),
+      { status: resp.status, detail: body.detail },
+    );
+  }
+  return (await resp.json()) as Listing;
+}
+
 export async function checkout(opts: {
   listingSlug: string;
   successUrl: string;

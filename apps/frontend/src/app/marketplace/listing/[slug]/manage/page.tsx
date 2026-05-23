@@ -5,6 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 
 import { getListingBySlug } from "@/lib/marketplace/api";
 import { ListingDetailView } from "@/components/marketplace/ListingDetailView";
+import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import type { Listing } from "@/lib/marketplace/types";
 
@@ -69,6 +70,10 @@ export default function ManagePage({
         </nav>
         <ListingDetailView listingId={listing.listing_id} mode="page" />
       </main>
+      {/* MarketplaceDrawer renders the publish wizard when startEditListing
+          fires (Republish / Continue editing). Without it, clicks succeed
+          but no UI appears. */}
+      <MarketplaceDrawer />
     </MarketplaceDrawerProvider>
   );
 }

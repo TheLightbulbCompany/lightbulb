@@ -1,6 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { ListingDetailView } from "../ListingDetailView";
+import {
+  discardListingVersion,
+  myListings,
+  republishListing,
+} from "@/lib/marketplace/api";
 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ userId: "seller_1", getToken: async () => "test-jwt" }),
@@ -27,7 +32,30 @@ vi.mock("@/lib/marketplace/api", () => ({
   // ListingDetailView fetches the seller's full list and filters by listing_id.
   // The detail row(s) must appear in items[] for the component to resolve.
   myListings: vi.fn().mockResolvedValue({ items: [baseListing] }),
+  republishListing: vi.fn(),
+  discardListingVersion: vi.fn(),
 }));
+
+// Hoisted spy so the test body can both inject it into the mocked provider
+// and assert on it. vi.mock runs before module init, so plain const won't do.
+const { startEditListingSpy } = vi.hoisted(() => ({
+  startEditListingSpy: vi.fn(),
+}));
+
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({
+    startEditListing: startEditListingSpy,
+    setView: vi.fn(),
+  }),
+}));
+
+beforeEach(() => {
+  vi.mocked(myListings).mockReset();
+  vi.mocked(myListings).mockResolvedValue({ items: [baseListing] });
+  vi.mocked(republishListing).mockReset();
+  vi.mocked(discardListingVersion).mockReset();
+  startEditListingSpy.mockReset();
+});
 
 describe("<ListingDetailView>", () => {
   it("renders live row metadata in Overview tab", async () => {
@@ -57,5 +85,95 @@ describe("<ListingDetailView>", () => {
     expect(container.querySelector("[data-mode='drawer']")).not.toBeNull();
     rerender(<ListingDetailView listingId="lst_x" mode="page" />);
     expect(container.querySelector("[data-mode='page']")).not.toBeNull();
+  });
+});
+
+describe("<ListingDetailView> actions", () => {
+  it("Republish button disabled with tooltip when pending row exists", async () => {
+    vi.mocked(myListings).mockResolvedValueOnce({
+      items: [
+        { ...baseListing, version: 1, status: "published" },
+        { ...baseListing, version: 2, status: "draft" },
+      ],
+    });
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(screen.getByText(/Live/)).toBeInTheDocument(),
+    );
+    const btn = screen.getByRole("button", { name: /republish/i });
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("title");
+  });
+
+  it("Republish click POSTs republish and opens wizard", async () => {
+    vi.mocked(republishListing).mockResolvedValueOnce({
+      ...baseListing,
+      version: 4,
+      status: "draft",
+    });
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(screen.getByText(/Live/)).toBeInTheDocument(),
+    );
+    const btn = screen.getByRole("button", { name: /republish/i });
+    btn.click();
+    await waitFor(() =>
+      expect(republishListing).toHaveBeenCalledWith(
+        expect.objectContaining({ listingId: "lst_x" }),
+      ),
+    );
+    await waitFor(() => expect(startEditListingSpy).toHaveBeenCalled());
+  });
+
+  it("Pending Update tab shows rejection notes verbatim", async () => {
+    vi.mocked(myListings).mockResolvedValueOnce({
+      items: [
+        { ...baseListing, version: 1, status: "published" },
+        {
+          ...baseListing,
+          version: 2,
+          status: "draft",
+          rejection_notes:
+            "Description is too vague — be specific about what the agent does.",
+          rejected_at: "2026-05-22T10:00:00Z",
+        },
+      ],
+    });
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("tab", { name: /pending update/i }),
+      ).toBeInTheDocument(),
+    );
+    screen.getByRole("tab", { name: /pending update/i }).click();
+    expect(screen.getByText(/Description is too vague/)).toBeInTheDocument();
+  });
+
+  it("Discard button calls discardListingVersion and refetches", async () => {
+    vi.mocked(myListings)
+      .mockResolvedValueOnce({
+        // initial load: live + pending draft
+        items: [
+          { ...baseListing, version: 1, status: "published" },
+          { ...baseListing, version: 2, status: "draft" },
+        ],
+      })
+      .mockResolvedValueOnce({
+        // after discard: only the live row remains
+        items: [{ ...baseListing, version: 1, status: "published" }],
+      });
+    vi.mocked(discardListingVersion).mockResolvedValueOnce(undefined);
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /discard/i }),
+      ).toBeInTheDocument(),
+    );
+    screen.getByRole("button", { name: /discard/i }).click();
+    await waitFor(() =>
+      expect(discardListingVersion).toHaveBeenCalledWith(
+        expect.objectContaining({ listingId: "lst_x", version: 2 }),
+      ),
+    );
   });
 });

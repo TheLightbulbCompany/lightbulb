@@ -2,8 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { myListings } from "@/lib/marketplace/api";
+import {
+  discardListingVersion,
+  myListings,
+  republishListing,
+} from "@/lib/marketplace/api";
 import type { Listing } from "@/lib/marketplace/types";
+import { useMarketplaceDrawer } from "./drawer/MarketplaceDrawerProvider";
 
 type Tab = "overview" | "bundle" | "pending";
 
@@ -17,6 +22,9 @@ export function ListingDetailView({ listingId, mode }: Props) {
   const [live, setLive] = useState<Listing | null>(null);
   const [pending, setPending] = useState<Listing | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
+  // Bump to force the fetch effect to re-run after a mutation (discard).
+  // Republish hands off to the wizard so doesn't need a local refetch.
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -37,7 +45,7 @@ export function ListingDetailView({ listingId, mode }: Props) {
     return () => {
       alive = false;
     };
-  }, [listingId, userId, getToken]);
+  }, [listingId, userId, getToken, refreshKey]);
 
   if (!live) {
     return (
@@ -50,7 +58,11 @@ export function ListingDetailView({ listingId, mode }: Props) {
 
   return (
     <div data-mode={mode} className={containerCls}>
-      <Header live={live} pending={pending} />
+      <Header
+        live={live}
+        pending={pending}
+        onPendingChange={() => setRefreshKey((k) => k + 1)}
+      />
       <Stats live={live} />
       <Tabs tab={tab} setTab={setTab} showPending={!!pending} />
       {tab === "overview" && <OverviewTab listing={live} />}
@@ -63,13 +75,18 @@ export function ListingDetailView({ listingId, mode }: Props) {
 function Header({
   live,
   pending,
+  onPendingChange,
 }: {
   live: Listing;
   pending: Listing | null;
+  onPendingChange: () => void;
 }) {
+  const { getToken } = useAuth();
+  const { startEditListing } = useMarketplaceDrawer();
+  const [busy, setBusy] = useState(false);
+
   // Sub-badge surfaces an in-flight v(N+1) on the same pill so the seller
-  // can tell at a glance whether they have a republish in motion. Task 8
-  // wires the Pending tab + action buttons that consume this signal.
+  // can tell at a glance whether they have a republish in motion.
   const pendingBadge =
     pending &&
     (pending.status === "review"
@@ -77,17 +94,90 @@ function Header({
       : pending.rejection_notes
         ? `· v${pending.version} rejected`
         : `· v${pending.version} draft`);
+
+  async function handleRepublish() {
+    setBusy(true);
+    try {
+      const jwt = await getToken();
+      if (!jwt) return;
+      // Backend clones the live row into a fresh v(N+1) draft. We hand the
+      // new row to the publish wizard, which prefills + locks the agent
+      // picker and submits via PATCH → artifact → submit.
+      const draft = await republishListing({
+        listingId: live.listing_id,
+        jwt,
+      });
+      startEditListing(draft);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDiscard() {
+    if (!pending) return;
+    setBusy(true);
+    try {
+      const jwt = await getToken();
+      if (!jwt) return;
+      await discardListingVersion({
+        listingId: live.listing_id,
+        version: pending.version,
+        jwt,
+      });
+      onPendingChange();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Republish is only available when there's no in-flight v(N+1). The
+  // backend would 409 otherwise — we surface that as a disabled button +
+  // tooltip so the seller sees the reason without a network round-trip.
+  const canRepublish = !pending;
+  const canDiscard = pending !== null && pending.status === "draft";
+
   return (
-    <header className="mb-6 flex items-start justify-between gap-3">
+    <header className="mb-6 flex items-start justify-between gap-3 flex-wrap">
       <div>
         <h2 className="font-editorial-serif text-3xl text-[#1a1a1a]">
           {live.name}
         </h2>
         <p className="text-[12.5px] text-[#5b5b5b] mt-1">{live.slug}</p>
+        <span className="inline-block mt-2 text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full bg-[#e3efe6] text-[#06402b]">
+          Live {pendingBadge}
+        </span>
       </div>
-      <span className="text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full bg-[#e3efe6] text-[#06402b]">
-        Live {pendingBadge}
-      </span>
+      <div className="flex flex-col items-end gap-2">
+        <button
+          type="button"
+          onClick={handleRepublish}
+          disabled={!canRepublish || busy}
+          title={
+            !canRepublish
+              ? `Republish blocked — v${pending!.version} is ${pending!.status}`
+              : undefined
+          }
+          className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+        >
+          Republish with updates
+        </button>
+        {canDiscard && (
+          <button
+            type="button"
+            onClick={handleDiscard}
+            disabled={busy}
+            className="text-[12.5px] font-semibold text-[#8a3a2a] hover:underline"
+          >
+            Discard pending update
+          </button>
+        )}
+        <a
+          href={`/marketplace/listing/${live.slug}`}
+          className="text-[12.5px] font-semibold text-[#06402b] hover:underline"
+        >
+          View on marketplace →
+        </a>
+      </div>
     </header>
   );
 }
@@ -244,14 +334,41 @@ function BundleTab({ listing }: { listing: Listing }) {
 }
 
 function PendingTab({ pending }: { pending: Listing }) {
+  const { startEditListing } = useMarketplaceDrawer();
+  // Reject flips status back to draft and stamps rejection_notes — that's
+  // the only way a draft row carries notes. Use this to switch CTA copy.
+  const wasRejected = pending.status === "draft" && !!pending.rejection_notes;
   return (
-    <div>
-      <p className="text-[13px] text-[#5b5b5b]">
-        Pending tab content placeholder — filled in Task 8.
-      </p>
-      <p className="text-[13px] text-[#5b5b5b] mt-1">
-        v{pending.version} · {pending.status}
-      </p>
+    <div className="space-y-4">
+      <section>
+        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[#5b5b5b] mb-2">
+          v{pending.version} {wasRejected ? "rejected" : pending.status}
+        </h3>
+        <p className="text-[13px] text-[#5b5b5b]">
+          Created {new Date(pending.created_at).toLocaleDateString()}
+        </p>
+      </section>
+
+      {wasRejected && (
+        <div
+          role="status"
+          data-testid="rejection-notes"
+          className="rounded-xl border border-[#f0b3a8] bg-[#fbe9e7] px-4 py-3 text-[13px] text-[#8a3a2a]"
+        >
+          <strong className="font-semibold block mb-1">
+            Rejection reason
+          </strong>
+          {pending.rejection_notes}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => startEditListing(pending)}
+        className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
+      >
+        {wasRejected ? "Revise & resubmit →" : "Continue editing →"}
+      </button>
     </div>
   );
 }

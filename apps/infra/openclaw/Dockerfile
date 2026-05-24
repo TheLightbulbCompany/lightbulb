@@ -112,9 +112,17 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     apt-get update -qq && apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
 
-# ---- Layer 4: uv (Python package manager) ----
+# ---- Layer 4: uv + uvx (Python package manager) ----
+# The astral.sh installer drops BOTH `uv` and `uvx` into /tmp/.local/bin/.
+# uv runs the package manager; uvx runs a one-shot tool from a transient
+# venv (e.g. `uvx arxiv-mcp-server`). Without uvx on PATH, any
+# user-configured MCP server invoked as `uvx <package>` fails at spawn
+# with "uvx: not found" — bundle-mcp reports "Connection closed" and
+# re-attempts on every session prep, eventually driving the container
+# into ECS-healthcheck-unhealthy replacement.
 RUN curl -sSL https://astral.sh/uv/install.sh | HOME=/tmp sh && \
-    install -m 755 /tmp/.local/bin/uv /usr/local/bin/uv
+    install -m 755 /tmp/.local/bin/uv /usr/local/bin/uv && \
+    install -m 755 /tmp/.local/bin/uvx /usr/local/bin/uvx
 
 # ---- Layer 5: pip packages (no cache, pre-built wheels only) ----
 # nano-pdf entry points land on PATH via system python (/usr/local/bin).

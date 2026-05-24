@@ -104,10 +104,12 @@ describe("<ListingDetailView>", () => {
     expect(screen.queryByText(/Loading…/)).toBeNull();
   });
 
-  it("draft-only listing: promotes draft to live, no pending tab, no discard button", async () => {
+  it("draft-only listing: promotes draft to live, no pending tab, no discard, shows Continue editing", async () => {
     // Brand-new listing in v=1 draft (never published). Pending tab + Discard
     // would be misleading: the row IS the listing, not a pending update.
     // Backend rejects discard for version<=1 anyway, so the button would 422.
+    // Continue editing CTA gives the seller a path back to the wizard so
+    // they can finish + submit their first publish.
     vi.mocked(myListings).mockResolvedValueOnce({
       items: [{ ...baseListing, version: 1, status: "draft" as const }],
     });
@@ -117,6 +119,44 @@ describe("<ListingDetailView>", () => {
     );
     expect(screen.queryByRole("tab", { name: /pending update/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /discard/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /republish/i })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /continue editing/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("rejected v=1 listing: Continue editing CTA reads 'Revise & resubmit'", async () => {
+    vi.mocked(myListings).mockResolvedValueOnce({
+      items: [
+        {
+          ...baseListing,
+          version: 1,
+          status: "draft" as const,
+          rejection_notes: "be more specific about scope",
+        },
+      ],
+    });
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(screen.getByText("My Agent")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: /revise & resubmit/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders not-found terminal state when myListings rejects", async () => {
+    // Network / 5xx / token expiry on the seller-listings fetch. Without
+    // try/catch the view would sit on Loading… forever and leak an
+    // unhandled promise rejection.
+    vi.mocked(myListings).mockRejectedValueOnce(new Error("network down"));
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/couldn't find this listing/i),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Loading…/)).toBeNull();
   });
 
   it("mode='page' renders wider layout chrome than mode='drawer'", async () => {

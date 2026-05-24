@@ -37,7 +37,17 @@ export function ListingDetailView({ listingId, mode }: Props) {
       // Fetch this seller's listings; find the rows for our listing_id. One
       // round-trip surfaces both the live row and any in-flight v(N+1)
       // draft/review — we don't need a per-row GET for either.
-      const { items } = await myListings({ sellerId: userId, jwt });
+      let items: Listing[];
+      try {
+        ({ items } = await myListings({ sellerId: userId, jwt }));
+      } catch {
+        // Network / 5xx / expired-token. Fold the failure into the same
+        // terminal state as the empty-rows case so the view exits the
+        // spinner instead of stranding the seller.
+        if (!alive) return;
+        setLoadState("not-found");
+        return;
+      }
       if (!alive) return;
       const rows = items.filter((l) => l.listing_id === listingId);
       if (rows.length === 0) {
@@ -177,9 +187,30 @@ function Header({
   // The backend would 409 in either failed case — we surface that as a
   // disabled button + tooltip so the seller sees the reason without a
   // network round-trip. Non-published live rows (draft-only listings
-  // pre-first-approval, retired, taken_down) have nothing to republish FROM.
+  // pre-first-approval, retired, taken_down) have nothing to republish
+  // FROM — for draft/review listings we surface a Continue/Resubmit CTA
+  // instead so the seller can finish their first publish.
   const canRepublish = !pending && live.status === "published";
   const canDiscard = pending !== null && pending.status === "draft";
+  // A draft/review/rejected `live` row means this listing was promoted up
+  // from `pending` because no published version exists yet. The Pending
+  // tab is hidden in that case, so the wizard is otherwise unreachable.
+  const showContinueEdit =
+    live.status === "draft" || live.status === "review";
+  const continueEditLabel = live.rejection_notes
+    ? "Revise & resubmit →"
+    : live.status === "review"
+      ? "Edit draft →"
+      : "Continue editing →";
+
+  async function handleContinueEdit() {
+    setBusy(true);
+    try {
+      startEditListing(live);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const republishDisabledReason = pending
     ? `Republish blocked — v${pending.version} is ${pending.status}`
@@ -218,15 +249,26 @@ function Header({
         </span>
       </div>
       <div className="flex flex-col items-end gap-2">
-        <button
-          type="button"
-          onClick={handleRepublish}
-          disabled={!canRepublish || busy}
-          title={republishDisabledReason}
-          className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
-        >
-          Republish with updates
-        </button>
+        {showContinueEdit ? (
+          <button
+            type="button"
+            onClick={handleContinueEdit}
+            disabled={busy}
+            className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+          >
+            {continueEditLabel}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleRepublish}
+            disabled={!canRepublish || busy}
+            title={republishDisabledReason}
+            className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+          >
+            Republish with updates
+          </button>
+        )}
         {canDiscard && (
           <button
             type="button"

@@ -37,10 +37,23 @@ export function ListingDetailView({ listingId, mode }: Props) {
       const { items } = await myListings({ sellerId: userId, jwt });
       if (!alive) return;
       const rows = items.filter((l) => l.listing_id === listingId);
-      setLive(rows.find((r) => r.status === "published") ?? rows[0] ?? null);
-      setPending(
-        rows.find((r) => r.status === "draft" || r.status === "review") ?? null,
-      );
+      const publishedRow = rows.find((r) => r.status === "published") ?? null;
+      const nonTerminalRow =
+        rows.find((r) => r.status === "draft" || r.status === "review") ?? null;
+      // When there's no published row yet (brand-new draft or first-time
+      // submission in review), promote the non-terminal row into the
+      // `live` slot so the detail view renders SOMETHING. This mirrors
+      // the same promotion MyListingsView does — keeps the "is this row
+      // a pending update?" semantics tight: pending only fires when
+      // there's a distinct live + non-terminal pair (i.e. a true
+      // republish in flight), not for a listing's base v=1 draft.
+      if (publishedRow) {
+        setLive(publishedRow);
+        setPending(nonTerminalRow);
+      } else {
+        setLive(nonTerminalRow ?? rows[0] ?? null);
+        setPending(null);
+      }
     })();
     return () => {
       alive = false;

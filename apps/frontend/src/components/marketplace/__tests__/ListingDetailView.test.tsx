@@ -92,6 +92,21 @@ describe("<ListingDetailView>", () => {
     await waitFor(() => expect(screen.getByText(/agent_/)).toBeInTheDocument());
   });
 
+  it("draft-only listing: promotes draft to live, no pending tab, no discard button", async () => {
+    // Brand-new listing in v=1 draft (never published). Pending tab + Discard
+    // would be misleading: the row IS the listing, not a pending update.
+    // Backend rejects discard for version<=1 anyway, so the button would 422.
+    vi.mocked(myListings).mockResolvedValueOnce({
+      items: [{ ...baseListing, version: 1, status: "draft" as const }],
+    });
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(screen.getByText("My Agent")).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("tab", { name: /pending update/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /discard/i })).toBeNull();
+  });
+
   it("mode='page' renders wider layout chrome than mode='drawer'", async () => {
     const { rerender, container } = render(
       <ListingDetailView listingId="lst_x" mode="drawer" />

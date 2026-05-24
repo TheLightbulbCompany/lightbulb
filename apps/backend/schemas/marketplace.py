@@ -56,6 +56,13 @@ class Listing(BaseModel):
     created_at: datetime
     published_at: datetime | None
     artifact_format_version: str = "v1"
+    # Edit-context fields surfaced for the wizard. PublishWizard /
+    # MarketplaceDrawerProvider read these on republish (startEditListing →
+    # publishAgentId, BundleStep prefill). Optional so create flows that
+    # haven't uploaded an artifact yet validate cleanly.
+    agent_id: str | None = None
+    bundle_mcps: list[str] | None = None
+    bundle_skills: list[str] | None = None
 
 
 class ListingUpdate(BaseModel):

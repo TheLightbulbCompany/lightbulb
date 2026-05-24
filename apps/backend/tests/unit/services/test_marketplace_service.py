@@ -484,6 +484,36 @@ class TestCreateNewVersion:
         assert v1["status"] == "published"
 
     @pytest.mark.asyncio
+    async def test_preserves_agent_and_bundle_metadata_on_clone(self, dynamodb_table):
+        """Republish drafts MUST carry agent_id + bundle_mcps + bundle_skills
+        forward so the wizard locks the right agent and prefills the bundle
+        checkboxes. Without these, a metadata-only republish silently strips
+        integrations the live version shipped."""
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+        # Real flow sets these via replace_artifact (which also writes S3);
+        # we stamp them directly so the test stays scoped to the cloning logic.
+        dynamodb_table.update_item(
+            Key={"listing_id": listing_id, "version": 1},
+            UpdateExpression="SET agent_id = :a, bundle_mcps = :m, bundle_skills = :s, manifest_json = :mj",
+            ExpressionAttributeValues={
+                ":a": "agent_abc",
+                ":m": ["filesystem", "github"],
+                ":s": ["calendar"],
+                ":mj": {"agent_id": "agent_abc", "name": "X"},
+            },
+        )
+
+        result = await marketplace_service.create_new_version(
+            listing_id=listing_id, seller_id="seller_1"
+        )
+
+        assert result["agent_id"] == "agent_abc"
+        assert list(result["bundle_mcps"]) == ["filesystem", "github"]
+        assert list(result["bundle_skills"]) == ["calendar"]
+        assert result["manifest_json"]["agent_id"] == "agent_abc"
+
+    @pytest.mark.asyncio
     async def test_raises_no_published_version_when_only_draft_exists(self, dynamodb_table):
         draft = await marketplace_service.create_draft(
             seller_id="seller_1",

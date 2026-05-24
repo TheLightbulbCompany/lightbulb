@@ -527,6 +527,20 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
         new_row["entitlement_policy"] = published["entitlement_policy"]
     if published.get("artifact_format_version"):
         new_row["artifact_format_version"] = published["artifact_format_version"]
+    # Edit-context fields for the wizard: agent_id locks the agent picker
+    # so the seller can't accidentally re-snapshot a different agent into
+    # the same listing; bundle_mcps/bundle_skills prefill the Bundle step
+    # so a metadata-only republish doesn't silently strip integrations.
+    # The seller can still uncheck items before submit, but the default
+    # is "ship what v(N) shipped" rather than "ship nothing."
+    if published.get("agent_id"):
+        new_row["agent_id"] = published["agent_id"]
+    if published.get("manifest_json"):
+        new_row["manifest_json"] = published["manifest_json"]
+    if published.get("bundle_mcps"):
+        new_row["bundle_mcps"] = list(published["bundle_mcps"])
+    if published.get("bundle_skills"):
+        new_row["bundle_skills"] = list(published["bundle_skills"])
 
     try:
         table.put_item(

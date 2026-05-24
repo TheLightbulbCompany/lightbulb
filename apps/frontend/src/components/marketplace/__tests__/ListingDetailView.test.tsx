@@ -13,7 +13,11 @@ import {
 // renders and falling back to the default `myListings` mock. vi.hoisted
 // because vi.mock runs above any module-level const.
 const { stableAuth } = vi.hoisted(() => ({
-  stableAuth: { userId: "seller_1", getToken: async () => "test-jwt" },
+  stableAuth: {
+    isLoaded: true,
+    userId: "seller_1" as string | null,
+    getToken: async (): Promise<string | null> => "test-jwt",
+  },
 }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => stableAuth,
@@ -143,6 +147,33 @@ describe("<ListingDetailView>", () => {
     expect(
       screen.getByRole("button", { name: /revise & resubmit/i }),
     ).toBeInTheDocument();
+  });
+
+  it("renders not-found terminal state when getToken returns null", async () => {
+    // Mid-session token issuance failure (auth expiry, transient Clerk).
+    // Without an explicit terminal state, the view sits on Loading… forever.
+    stableAuth.getToken = async () => null;
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/couldn't find this listing/i),
+      ).toBeInTheDocument(),
+    );
+    stableAuth.getToken = async () => "test-jwt";
+  });
+
+  it("renders not-found terminal state when auth resolved with no user", async () => {
+    // Signed-out user reached the detail surface somehow (e.g. /chat sub-
+    // route opened in a fresh tab). Render the terminal state instead of
+    // indefinite spinner.
+    stableAuth.userId = null;
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/couldn't find this listing/i),
+      ).toBeInTheDocument(),
+    );
+    stableAuth.userId = "seller_1";
   });
 
   it("renders not-found terminal state when myListings rejects", async () => {

@@ -20,7 +20,7 @@ interface Props {
 type LoadState = "loading" | "loaded" | "not-found";
 
 export function ListingDetailView({ listingId, mode }: Props) {
-  const { userId, getToken } = useAuth();
+  const { isLoaded, userId, getToken } = useAuth();
   const [live, setLive] = useState<Listing | null>(null);
   const [pending, setPending] = useState<Listing | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
@@ -30,10 +30,25 @@ export function ListingDetailView({ listingId, mode }: Props) {
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
+    // Clerk still resolving — leave loadState as "loading" so we don't
+    // flash a terminal state during initial hydration.
+    if (!isLoaded) return;
+    // Auth resolved but no user, or token issuance failed (transient
+    // Clerk issue / mid-session expiry). Fold into the same terminal
+    // state as the rejected-fetch path — otherwise the view sits on
+    // Loading… forever.
+    if (!userId) {
+      setLoadState("not-found");
+      return;
+    }
     let alive = true;
     (async () => {
       const jwt = await getToken();
-      if (!jwt || !userId) return;
+      if (!alive) return;
+      if (!jwt) {
+        setLoadState("not-found");
+        return;
+      }
       // Fetch this seller's listings; find the rows for our listing_id. One
       // round-trip surfaces both the live row and any in-flight v(N+1)
       // draft/review — we don't need a per-row GET for either.
@@ -79,7 +94,7 @@ export function ListingDetailView({ listingId, mode }: Props) {
     return () => {
       alive = false;
     };
-  }, [listingId, userId, getToken, refreshKey]);
+  }, [listingId, isLoaded, userId, getToken, refreshKey]);
 
   // When the pending row disappears (discarded, or admin approved/rejected),
   // bounce the user off the now-hidden Pending tab so they don't land on an

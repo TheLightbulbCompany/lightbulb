@@ -2,7 +2,6 @@
 
 // Ported (subset) from upstream Paperclip's lib/keyboardShortcuts.ts
 // (paperclip/ui/src/lib/keyboardShortcuts.ts) (MIT, (c) 2025 Paperclip AI).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 // Subset: pure DOM helpers used by the Inbox keyboard-nav hook (Task 6).
 // Skipped from upstream: issue-detail chord shortcuts (g i / g c) and the

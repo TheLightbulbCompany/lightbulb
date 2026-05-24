@@ -6,10 +6,9 @@ container reprovision rebuilds ``openclaw.json`` from the live Paperclip
 list and resurrects the supposedly-deleted agent (or fails to find a
 freshly-created one).
 
-These helpers were previously co-located in ``routers/websocket_chat``
-where they pulled the router back across the routers→services boundary
-and re-invented the ``httpx.AsyncClient`` + admin-cookie boilerplate that
-``core/services/paperclip_admin_session`` already owns.
+Lives in core/services/ so the router stays on its side of the
+routers→services boundary and reuses ``core/services/paperclip_admin_session``
+for ``httpx.AsyncClient`` + admin-cookie management.
 """
 
 from __future__ import annotations

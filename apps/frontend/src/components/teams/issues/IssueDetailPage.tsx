@@ -5,7 +5,6 @@
 // v1: header + description + comments thread + read-only properties sidebar.
 // Drops chat/activity/related-work tabs, run ledger, sub-issues, plugin slots,
 // documents, feedback, file uploads, interactions, continuation handoff.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 "use client";
 

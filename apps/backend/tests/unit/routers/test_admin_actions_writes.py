@@ -1,13 +1,11 @@
 """Tests for /api/v1/admin/* WRITE endpoints (container/billing/account/config/agent actions).
 
-TDD-style: these tests are written BEFORE `routers/admin.py` (and its action
-endpoints) exist. They should fail with 404 (router not registered) until
-Phase C lands the implementation.
+TDD-style: these tests were written BEFORE the action endpoints existed.
 
 Each of the 15 mutation endpoints under test must:
   1. Be gated by `Depends(require_platform_admin)` (403 for non-admins)
   2. Be decorated with `@audit_admin_action("...")` so a row lands in
-     admin_actions DDB synchronously (CEO S1 fail-closed)
+     admin_actions DDB synchronously (fail-closed)
   3. Accept an optional `Idempotency-Key` header (CEO D1) — the same key
      within a 60s window returns the cached response and short-circuits
      the underlying side effect

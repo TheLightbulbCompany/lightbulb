@@ -1,4 +1,4 @@
-"""Workstream B race-fix tests for /trial-checkout (Task 3 of provider-choice-per-owner).
+"""Race-fix tests for /trial-checkout.
 
 The /trial-checkout endpoint must synchronously persist provider_choice on
 billing_accounts BEFORE creating the Stripe Checkout session. Without that
@@ -12,7 +12,7 @@ These tests pin down:
   1. provider_choice (no byo_provider) is persisted before the Stripe call
   2. byo_provider is persisted alongside provider_choice when byo_key
   3. byo_key without byo_provider succeeds (picker submits it alone; the
-     BYO wizard fills in byo_provider later — Codex P1 #3179631946)
+     BYO wizard fills in byo_provider later)
 """
 
 from unittest.mock import AsyncMock, patch
@@ -22,9 +22,9 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_trial_checkout_persists_provider_choice_synchronously(async_client):
-    """Workstream B race-fix: /trial-checkout must write provider_choice
-    to billing_accounts BEFORE creating the Stripe Checkout session, so
-    /container/provision can read it without waiting for the async webhook.
+    """/trial-checkout must write provider_choice to billing_accounts
+    BEFORE creating the Stripe Checkout session, so /container/provision
+    can read it without waiting for the async webhook.
     """
     fake_account = {
         "owner_id": "user_x",
@@ -92,7 +92,6 @@ async def test_trial_checkout_persists_byo_provider_when_byo_key(async_client):
 async def test_trial_checkout_byo_key_without_provider_now_allowed(async_client):
     """The picker submits {provider_choice: 'byo_key'} alone; byo_provider
     gets set later in the BYO wizard step after Stripe checkout completes.
-    Per Codex P1 #3179631946 — fixing the BYO signup regression.
     """
     fake_account = {
         "owner_id": "user_v",
@@ -126,8 +125,8 @@ async def test_trial_checkout_byo_key_without_provider_now_allowed(async_client)
 
 @pytest.mark.asyncio
 async def test_trial_checkout_invalid_provider_choice_rejected(async_client):
-    """Codex P2 (PR #521): unknown provider_choice values are rejected by
-    pydantic Literal with 422, before any DDB write or Stripe call."""
+    """Unknown provider_choice values are rejected by pydantic Literal
+    with 422, before any DDB write or Stripe call."""
     with patch(
         "routers.billing.billing_repo.set_provider_choice",
         new_callable=AsyncMock,
@@ -143,9 +142,9 @@ async def test_trial_checkout_invalid_provider_choice_rejected(async_client):
 
 @pytest.mark.asyncio
 async def test_trial_checkout_invalid_byo_provider_rejected(async_client):
-    """Codex P2 (PR #521): unknown byo_provider values are rejected by
-    pydantic Literal with 422 — pre-fix the field accepted any string and
-    junk like 'cohere' was persisted to billing then blew up ECS provisioning.
+    """Unknown byo_provider values are rejected by pydantic Literal with
+    422 — without this, junk like 'cohere' would be persisted to billing
+    then blow up ECS provisioning.
     """
     with patch(
         "routers.billing.billing_repo.set_provider_choice",

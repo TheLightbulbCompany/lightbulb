@@ -14,9 +14,8 @@ themselves stay (so the admin can see "anthropic_api_key was set"
 without seeing the value).
 
 Note: this is the deep-recursive redactor for nested config dicts.
-The lighter `_redact_payload` in admin_audit.py (Task 7) is a shallow
-top-level redact — different use case (audit row payload vs full
-config tree).
+The lighter `_redact_payload` in admin_audit.py is a shallow top-level
+redact — different use case (audit row payload vs full config tree).
 """
 
 import re

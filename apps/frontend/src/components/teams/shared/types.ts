@@ -4,7 +4,6 @@
 // (https://github.com/Paperclip-AI/paperclip/tree/main/packages/shared/src/types)
 // (MIT, © 2025 Paperclip AI). Subset retained for IssueRow / IssueColumns /
 // IssueFiltersPopover. Full type lives in upstream packages/shared/src/types/.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 export type IssueStatus =
   | "backlog"
@@ -193,7 +192,7 @@ export interface CompanyAgent {
 //
 // Mirrors upstream Paperclip's dashboard summary
 // (paperclip/server/src/services/dashboard.ts:summary). Returned by
-// `GET /teams/dashboard` since the BFF un-flatten in PR #2 task 1.
+// `GET /teams/dashboard`.
 
 export interface DashboardRunActivityDay {
   date: string; // YYYY-MM-DD

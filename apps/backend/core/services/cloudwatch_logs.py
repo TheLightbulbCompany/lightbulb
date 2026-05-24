@@ -10,8 +10,8 @@ The IAM permission lives on the backend ECS task role
 
 Log group naming matches service-stack.ts:519 + isol8-stage.ts:113 +
 local-stage.ts:116 — `/ecs/isol8-${env}` (no /aws prefix, no -backend
-suffix). Phase A's IAM policy was originally scoped to the wrong ARN
-and got fixed in commit 9f5323f2 — keep this module's name in sync.
+suffix). Keep this module's IAM scope in sync with the resolved log
+group ARN.
 """
 
 import json

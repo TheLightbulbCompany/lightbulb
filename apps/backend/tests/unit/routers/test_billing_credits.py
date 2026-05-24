@@ -1,4 +1,4 @@
-"""Tests for the credit-management endpoints (Plan 2 Tasks 14 + 15)."""
+"""Tests for the credit-management endpoints."""
 
 import json
 from unittest.mock import AsyncMock, patch
@@ -294,9 +294,9 @@ async def test_checkout_session_completed_ignores_non_credit_purposes(async_clie
 async def test_checkout_session_completed_with_unpaid_status_defers_credit(
     async_client, monkeypatch, credit_ledger_tables
 ):
-    """Codex P1 on PR #488: ACH / bank-transfer / Klarna sessions land
-    in checkout.session.completed with payment_status=unpaid. We must
-    NOT credit at this point — wait for async_payment_succeeded."""
+    """ACH / bank-transfer / Klarna sessions land in
+    checkout.session.completed with payment_status=unpaid. We must NOT
+    credit at this point — wait for async_payment_succeeded."""
     fake_event = {
         "id": "evt_cs_unpaid_1",
         "type": "checkout.session.completed",

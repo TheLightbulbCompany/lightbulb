@@ -600,13 +600,13 @@ app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
 # webhook URL + token. See routers/hooks_credentials.py.
 app.include_router(hooks_credentials.router, prefix="/api/v1/hooks", tags=["hooks"])
 
-# Admin dashboard (#351) — every endpoint gated by Depends(require_platform_admin).
+# Admin dashboard — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402
 
 app.include_router(admin_router.router, prefix="/api/v1")
 
-# Teams BFF — native UI for Paperclip (spec 2026-05-02). The router itself
-# carries the /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
+# Teams BFF — native UI for Paperclip. The router itself carries the
+# /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
 app.include_router(teams_router, prefix="/api/v1")
 
 # Paperclip proxy router — mounted at the sentinel prefix that

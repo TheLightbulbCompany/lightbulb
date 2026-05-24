@@ -357,8 +357,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   // on the order of a minute; without this, a dropped NodeClient in the
   // desktop app retries with stale auth after any network blip or server
   // restart that forces a reconnect. Decoupled from `connect` itself so
-  // the WS lifecycle isn't disturbed when Clerk resolves (the regression
-  // PR #302 fixed).
+  // the WS lifecycle isn't disturbed when Clerk resolves.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const tauri = // eslint-disable-next-line @typescript-eslint/no-explicit-any

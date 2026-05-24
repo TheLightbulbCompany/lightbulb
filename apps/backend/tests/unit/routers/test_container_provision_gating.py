@@ -104,7 +104,7 @@ async def test_provision_rejects_bedrock_with_zero_balance():
                 "owner_id": "user_paid",
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "trialing",
-                # Workstream B: provider_choice lives on billing_accounts now.
+                # provider_choice lives on billing_accounts.
                 "provider_choice": "bedrock_claude",
             },
         ),
@@ -140,7 +140,7 @@ async def test_provision_allows_bedrock_with_positive_balance():
                 "owner_id": "user_paid",
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "trialing",
-                # Workstream B: provider_choice lives on billing_accounts now.
+                # provider_choice lives on billing_accounts.
                 "provider_choice": "bedrock_claude",
             },
         ),
@@ -184,10 +184,10 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
                 "owner_id": "user_paid",
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "active",
-                # Workstream B: provider_choice lives on billing_accounts now.
+                # provider_choice lives on billing_accounts.
                 "provider_choice": provider_choice,
-                # The byo_provider sub-choice gate (Finding D on PR #563)
-                # blocks byo_key without a sub-provider; this test isolates
+                # The byo_provider sub-choice gate blocks byo_key without
+                # a sub-provider; this test isolates
                 # the credit-balance behaviour, so seed a complete BYO row.
                 "byo_provider": "anthropic" if provider_choice == "byo_key" else None,
             },
@@ -205,10 +205,10 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
 
 @pytest.mark.asyncio
 async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
-    """Codex P1 on PR #488: legacy billing rows pre-Plan-3 may have a
-    valid stripe_subscription_id but no subscription_status backfilled
-    yet. Other gates (gate_chat) preserve those — the provision gate
-    must too, or we 402 paying customers mid-migration.
+    """Legacy billing rows may have a valid stripe_subscription_id but no
+    subscription_status backfilled yet. Other gates (gate_chat) preserve
+    those — the provision gate must too, or we 402 paying customers
+    mid-migration.
 
     bedrock_claude users still need credits regardless of legacy
     status, so this test uses chatgpt_oauth to isolate the legacy-row
@@ -234,7 +234,7 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
                 "owner_id": "user_paid",
                 "stripe_subscription_id": "sub_legacy_pre_plan_3",
                 # subscription_status deliberately absent / None
-                # Workstream B: provider_choice lives on billing_accounts now.
+                # provider_choice lives on billing_accounts.
                 "provider_choice": "chatgpt_oauth",
             },
         ),

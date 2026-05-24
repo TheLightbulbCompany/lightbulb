@@ -1,11 +1,10 @@
 """Tests for the BFF ``_ctx`` Depends helper.
 
-After Task 9, ``_ctx`` is a thin wrapper around
-``deps.resolve_teams_context``: it builds the session_factory closure
-and propagates whatever the resolver returns or raises. The lazy
-autoprovision branch was deleted in favor of the canonical
-``/container/status`` provisioning trigger (Task 8), which every
-authenticated user already polls during pre-ready state.
+``_ctx`` is a thin wrapper around ``deps.resolve_teams_context``: it
+builds the session_factory closure and propagates whatever the resolver
+returns or raises. The canonical ``/container/status`` provisioning
+trigger drives lazy autoprovision — every authenticated user already
+polls it during pre-ready state.
 
 The 409 / 202 / 503 status codes from ``resolve_teams_context``
 propagate as-is. A 409 indicates an operator-level error
@@ -60,10 +59,9 @@ async def test_ctx_returns_context_when_resolve_succeeds():
 
 @pytest.mark.asyncio
 async def test_ctx_does_not_autoprovision():
-    """After Task 9, _ctx is simplified — it does not autoprovision
-    on the no-DDB-row branch. The canonical /container/status trigger
-    (Task 8) handles all provisioning. A 409 from
-    ``resolve_teams_context`` propagates unchanged.
+    """_ctx does not autoprovision on the no-DDB-row branch. The
+    canonical /container/status trigger handles all provisioning. A 409
+    from ``resolve_teams_context`` propagates unchanged.
     """
     from routers.teams import agents as agents_mod
     from routers.teams.deps import TeamsContextError

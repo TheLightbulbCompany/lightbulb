@@ -51,8 +51,7 @@ export function ControlPanelRouter({ panel, onPanelChange }: ControlPanelRouterP
   // Sync the parent's panel state so the URL + sidebar match what's actually
   // rendered. Without this, a non-Bedrock user landing on ?panel=credits sees
   // OverviewPanel, but the URL stays at ?panel=credits and no sidebar item
-  // highlights — back/refresh keeps reopening the invalid panel. Codex P2 on
-  // PR #479.
+  // highlights — back/refresh keeps reopening the invalid panel.
   useEffect(() => {
     if (shouldFallbackFromCredits) onPanelChange?.("overview");
   }, [shouldFallbackFromCredits, onPanelChange]);

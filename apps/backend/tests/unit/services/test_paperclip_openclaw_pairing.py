@@ -179,11 +179,11 @@ async def test_fetch_returns_empty_on_admin_cookie_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_propagates_unexpected_errors(monkeypatch):
-    """Codex P2 (Finding C): the broad ``except Exception`` was tightened
-    to ``(PaperclipApiError, httpx.HTTPError, RuntimeError)``. Non-network
-    bugs (e.g. KeyError, AttributeError, TypeError) inside the helper or
-    the admin client must NOT be swallowed as "Paperclip unavailable" —
-    they need to surface in CloudWatch so we can fix them.
+    """The except clause is tightened to ``(PaperclipApiError,
+    httpx.HTTPError, RuntimeError)``. Non-network bugs (e.g. KeyError,
+    AttributeError, TypeError) inside the helper or the admin client
+    must NOT be swallowed as "Paperclip unavailable" — they need to
+    surface in CloudWatch so we can fix them.
 
     A blanket Exception catch would silently mask real programming bugs
     behind a fallback to the legacy 'main' agent path; the resulting

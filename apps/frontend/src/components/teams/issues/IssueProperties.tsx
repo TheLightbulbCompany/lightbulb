@@ -2,9 +2,8 @@
 
 // Ported from upstream Paperclip's pages/IssueDetail.tsx sidebar block
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
-// v2: assignee + project rows are now interactive pickers; status +
-// priority remain read-only here (they live in the IssueHeader's pickers).
-// See plan at docs/superpowers/plans/2026-05-09-teams-issue-pickers-v2.md
+// Assignee + project rows are interactive pickers; status + priority remain
+// read-only here (they live in the IssueHeader's pickers).
 
 "use client";
 

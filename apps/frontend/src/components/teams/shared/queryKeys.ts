@@ -2,8 +2,7 @@
 
 // Ported from upstream Paperclip's queryKeys.ts (paperclip/ui/src/lib/queryKeys.ts)
 // (MIT, © 2025 Paperclip AI). Translated from React Query tuple keys to SWR
-// string keys. See spec at
-// docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// string keys.
 //
 // Path-prefix contract: keys are RELATIVE to the Teams BFF base. They do NOT
 // include the leading `/teams` segment because `useTeamsApi.read(path)`

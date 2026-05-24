@@ -251,9 +251,9 @@ def test_get_listing_404_for_taken_down(mock_get_by_slug, unauth_client):
 @pytest.mark.parametrize("status", ["draft", "review", "retired"])
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_get_listing_404_for_non_published_states(mock_get_by_slug, unauth_client, status):
-    """Regression: only published listings are publicly visible. The previous
-    blacklist allowed draft + review through, leaking unmoderated content if
-    a slug was guessed (Codex P1 on PR #517, commit 23bdc518).
+    """Regression: only published listings are publicly visible. A blacklist
+    approach that allows draft + review through leaks unmoderated content
+    if a slug is guessed.
     """
     listing = _published_listing()
     listing["status"] = status
@@ -451,11 +451,10 @@ def test_deploy_paid_listing_without_purchase_403(
 def test_deploy_paid_listing_seller_bypass_succeeds(
     mock_get_by_slug, mock_get_catalog, mock_boto, mock_purchases, mock_create_pc, mock_get_ecs, client
 ):
-    """Regression for PR #712 follow-up: a seller deploying their own paid
-    listing must bypass the entitlement check. Without the bypass, sellers
-    are 403'd by their own listings — surfaced as an indefinite "Setting up
-    the workspace…" spinner. Discovered when the user hit Hire on Ray the
-    Resy Bot ($10) on their own account.
+    """Regression: a seller deploying their own paid listing must bypass
+    the entitlement check. Without the bypass, sellers are 403'd by their
+    own listings — surfaced as an indefinite "Setting up the workspace…"
+    spinner.
     """
     listing = _published_listing(price_cents=1000)
     # ``client`` fixture authenticates as user_test_123 — match seller_id
@@ -1329,9 +1328,9 @@ def test_my_agents_summary_handles_array_shape_skills(mock_workspace_factory, au
     """Real agent configs (e.g. atlas) store skills/channels as plain arrays.
 
     The endpoint must return correct counts for both array and object shapes
-    without raising AttributeError. Codex P2 (PR #567 round 7) flagged that
-    ``len((a.get("skills") or {}).get("list", []))`` blows up on non-empty
-    array-shaped fields because the ``or`` short-circuit doesn't fire.
+    without raising AttributeError. ``len((a.get("skills") or {}).get("list",
+    []))`` blows up on non-empty array-shaped fields because the ``or``
+    short-circuit doesn't fire.
     """
     workspace = mock_workspace_factory.return_value
     workspace.read_openclaw_config.return_value = {

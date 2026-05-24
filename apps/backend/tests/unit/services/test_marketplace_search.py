@@ -580,8 +580,7 @@ async def test_status_in_filter_runs_before_limit(monkeypatch):
 
     Otherwise a seller with many published rows ahead of a single ``review``
     row loses the match — the limit cuts the published rows first and the
-    review row never makes it into the response. Regression for PR #567
-    Codex P2.
+    review row never makes it into the response.
 
     Setup: 30 published listings + 1 review listing for the same seller.
     Caller asks for ``status_in=["review"]`` with ``limit=10``.
@@ -652,7 +651,7 @@ async def test_seller_scoped_bypasses_cache(monkeypatch):
     wizard's "View my listings →" CTA could surface a 60-second-stale
     snapshot, hiding a row the seller just submitted. The fix is to
     bypass the module-level cache when the caller is seller-scoped AND
-    has opted into ``include_unpublished``. PR #567 Codex P2.
+    has opted into ``include_unpublished``.
     """
     # Start clean — autouse _reset_cache fixture also runs, but be explicit.
     marketplace_search._reset_cache()

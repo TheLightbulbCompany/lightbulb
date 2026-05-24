@@ -1,11 +1,10 @@
 // Ported from upstream Paperclip's NewIssueDialog
 // (paperclip/ui/src/components/NewIssueDialog.tsx) (MIT, (c) 2025 Paperclip AI).
-// v1: title + description + priority + project + assignee. Drops markdown editor,
-// attachments, reviewer/approver, execution-workspace, model overrides, labels,
-// parent-issue picker, draft autosave. Status is set server-side on create
-// (BFF CreateIssueBody schema forbids it; use PATCH to change post-create).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
-// PR 4 (atoms port): wrapped in <EditorialDialog>; Cancel / Create are
+// Title + description + priority + project + assignee. Drops markdown editor,
+// attachments, reviewer/approver, execution-workspace, model overrides,
+// labels, parent-issue picker, draft autosave. Status is set server-side on
+// create (BFF CreateIssueBody schema forbids it; use PATCH to change
+// post-create). Wrapped in <EditorialDialog>; Cancel / Create are
 // <EditorialButton>s.
 
 "use client";

@@ -1,21 +1,21 @@
-"""Admin dashboard composition layer (CEO C1: composes existing services).
+"""Admin dashboard composition layer.
 
-Read-side aggregation for /api/v1/admin/* endpoints. Phase B v1 covers:
+Read-side aggregation for /api/v1/admin/* endpoints. Covers:
 - list_users (Clerk + container_repo join)
 - get_overview (Clerk + Stripe DDB row + container DDB row + usage)
-- list_user_agents (gateway RPC, with E2 timeout + E3 stopped detection)
+- list_user_agents (gateway RPC, with timeout + stopped detection)
 - get_agent_detail (4-way gateway parallel + S3 redaction)
 - get_logs (delegates to cloudwatch_logs)
 - get_cloudwatch_url (delegates to cloudwatch_url)
 - get_posthog_timeline (delegates to posthog_admin)
 - get_actions_audit (delegates to admin_actions_repo)
 
-Mutation-side composition (cancel_subscription, etc.) lives in Phase C
+Mutation-side composition (cancel_subscription, etc.) lives in the
 admin router handlers — they call existing services directly via the
 @audit_admin_action decorator.
 
-CEO P1: parallel reads in get_overview wrap each upstream with a 2s
-timeout via _with_timeout. Slow Stripe doesn't starve other panels.
+Parallel reads in get_overview wrap each upstream with a 2s timeout via
+_with_timeout. Slow Stripe doesn't starve other panels.
 """
 
 import asyncio
@@ -98,10 +98,9 @@ async def resolve_admin_owner_id(user_id: str) -> tuple[str, dict | None]:
     return org["id"], org
 
 
-# Back-compat alias: the helper was previously private (``_resolve_owner_for_admin``)
-# and is still referenced by at least one regression test. Keep the alias so the
-# existing unit test in test_admin_org_resolution.py (``test_resolve_owner_falls_back_
-# to_personal_mode_on_clerk_timeout``) keeps working without churning the test
+# Back-compat alias: ``_resolve_owner_for_admin`` is still referenced by at
+# least one regression test. Keep the alias so the test in
+# test_admin_org_resolution.py keeps working without churning the test
 # name alongside the rename. Safe to delete in a follow-up once the test is
 # migrated.
 _resolve_owner_for_admin = resolve_admin_owner_id
@@ -111,7 +110,7 @@ async def _with_timeout(coro, label: str, timeout_s: float | None = None):
     """Wrap a coroutine with a timeout; return {error, source} on timeout/error.
 
     Used in get_overview's parallel fetches so a slow Clerk/Stripe doesn't
-    take the whole overview page down (CEO P1). timeout_s defaults to the
+    take the whole overview page down. timeout_s defaults to the
     module-level _PARALLEL_TIMEOUT_S resolved at call time so tests can
     monkeypatch the constant.
     """
@@ -136,7 +135,7 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
     ``resolve_admin_owner_id`` before looking up the container row — org
     members' containers are keyed by ``owner_id == org_id`` in DDB, so using
     the raw Clerk user_id would render every org member as "no container
-    provisioned" (admin-org-owner-id fix, list-view follow-up to PR #376).
+    provisioned".
 
     Owner_ids are deduped before the container fetch so two org members sharing
     the same owner_id cost one DDB call, not two. Each row also carries an
@@ -439,8 +438,8 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     # {raw: "<openclaw.json as string>", hash} used by ConfigPanel (see
     # ConfigPanel.tsx lines 21-26). redact_openclaw_config only walks
     # dict/list nodes and passes strings through, so a raw-envelope
-    # response would leak BYOK secrets verbatim in config_redacted.raw
-    # (Codex P1 on PR #379). Parse+redact the envelope before returning.
+    # response would leak BYOK secrets verbatim in config_redacted.raw.
+    # Parse+redact the envelope before returning.
     if isinstance(config, dict) and isinstance(config.get("raw"), str):
         try:
             config_to_redact = json.loads(config["raw"])
@@ -528,7 +527,7 @@ async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
     # ECR's describe_images doesn't guarantee ordering across pages, so we
     # must paginate the whole tagged set before sorting — otherwise the
     # actually-newest tag can land on page 2 and we'd silently default the
-    # dropdown to an older image (Codex #657 P2). Bounded at MAX_PAGES so a
+    # dropdown to an older image. Bounded at MAX_PAGES so a
     # misconfigured filter can't loop forever; the openclaw-extended repo is
     # small enough that we expect <= 2 pages in practice.
     MAX_PAGES = 10

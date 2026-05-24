@@ -26,7 +26,7 @@ function ChatPageInner() {
   // Single source of truth for view + panel is the URL. ?panel=credits
   // opens the credits control panel directly (used by OutOfCreditsBanner's
   // CTA). The sidebar updates the URL via router.replace so in-app deep
-  // links and clicks share the same code path. Codex P1/P2 on PR #393.
+  // links and clicks share the same code path.
   const panelParam = searchParams.get("panel");
   const viewParam = searchParams.get("view");
   const activeView: "chat" | "control" =
@@ -103,8 +103,7 @@ function ChatPageInner() {
           )}
         </ChatLayout>
         {/* Drawer + toast must live INSIDE GatewayProvider — useHire() and
-            PickAgentStep both call useAgents() which calls useGateway().
-            See PR #567 review (Codex P1). */}
+            PickAgentStep both call useAgents() which calls useGateway(). */}
         <MarketplaceDrawer />
         <MarketplaceToast />
       </GatewayProvider>

@@ -107,10 +107,10 @@ def test_invite_to_email_with_inactive_billing_succeeds(app, admin_auth):
 
 
 def test_invite_to_email_with_legacy_sub_no_status_returns_409(app, admin_auth):
-    """Pre-cutover legacy rows have stripe_subscription_id set but
-    subscription_status null/missing. Conservatively treat as active
-    personal tenancy and refuse the invite — let the user cancel cleanly
-    via Stripe portal first. Codex P1 on PR #531."""
+    """Legacy rows have stripe_subscription_id set but subscription_status
+    null/missing. Conservatively treat as active personal tenancy and
+    refuse the invite — let the user cancel cleanly via Stripe portal
+    first."""
     _override_auth(app, admin_auth)
     with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
         mock_clerk.find_user_by_email = AsyncMock(return_value={"id": "user_legacy"})

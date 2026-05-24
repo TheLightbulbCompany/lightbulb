@@ -322,11 +322,10 @@ async def pair_desktop_devices(
                 # handshake). If Alice submitted Bob's pubkey, this
                 # branch would relabel Bob's stamped entry as Alice's,
                 # and Alice's next re-pair would satisfy the prune check
-                # and delete Bob's still-valid device (Codex P2 on
-                # commit 8bc3c157). Refusing to stamp here means legacy
-                # pre-this-PR entries stay unstamped forever and aren't
-                # pruned by the userId-scoped prune above — purely
-                # cosmetic ghosts. The alternative is a real
+                # and delete Bob's still-valid device. Refusing to stamp
+                # here means legacy unstamped entries stay unstamped forever
+                # and aren't pruned by the userId-scoped prune above —
+                # purely cosmetic ghosts. The alternative is a real
                 # cross-member privilege escalation in shared org
                 # workspaces. Worth the trade.
                 continue

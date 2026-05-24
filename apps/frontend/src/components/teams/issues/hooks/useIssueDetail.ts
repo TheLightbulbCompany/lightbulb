@@ -1,7 +1,6 @@
 // Ported from upstream Paperclip's pages/IssueDetail.tsx data-fetching block
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
 // v1: just issue + comments. Defers documents, attachments, runs, votes, etc.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";

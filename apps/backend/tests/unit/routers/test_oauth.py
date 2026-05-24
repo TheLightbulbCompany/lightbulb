@@ -84,8 +84,7 @@ async def test_disconnect_clears_provider_choice(async_client):
     The repo-level guarantee (billing_repo.clear_provider_choice no-op on
     missing row) is covered separately. This test pins the integration —
     swapping in a disconnect implementation that forgets the
-    clear_provider_choice call would silently regress the dead-end fix
-    shipped in PR #587.
+    clear_provider_choice call would silently regress the dead-end fix.
     """
     with (
         patch("routers.oauth.revoke_user_oauth", new=AsyncMock()),

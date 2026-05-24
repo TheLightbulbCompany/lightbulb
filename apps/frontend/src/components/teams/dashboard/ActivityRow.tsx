@@ -5,7 +5,6 @@
 // Simplified for our BFF shape (no agentMap / entityNameMap / IssueReferenceSummary
 // — those upstream maps require sibling reads we don't yet wire). Renders the
 // actor identity + verb + entity hint + relative timestamp.
-// See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import Link from "next/link";
 import { Identity } from "@/components/teams/shared/components/Identity";

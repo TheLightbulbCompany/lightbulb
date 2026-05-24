@@ -79,9 +79,9 @@ from cryptography.hazmat.primitives.serialization import (
 # appear anywhere in the server's auth pipeline. Hence: admin, read, write
 # (alphabetical), not read-write-admin as added originally.
 #
-# Original attempt used `[read, write]` only — principle of least privilege —
-# but the frontend's skill install flow hit a "missing scope: operator.admin"
-# error because `skills.install` is an admin-only method. Widened on 2026-04-09.
+# A narrower `[read, write]` set fails the frontend's skill install
+# flow ("missing scope: operator.admin") because `skills.install` is an
+# admin-only method.
 BACKEND_OPERATOR_SCOPES: tuple[str, ...] = (
     "operator.admin",  # skills.install, agents.create/update/delete, etc.
     "operator.read",  # health, sessions.list, status, agents.list, etc.

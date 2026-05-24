@@ -231,9 +231,9 @@ export function useProvisioningState(
   //     in the React docs
   //   - on every `refresh()` call
   //
-  // Codex P2 on PR #519: the previous `[isBlocked]`-only effect never
-  // re-fired on subsequent refreshes, so a manual refresh after the
-  // first minute could leave polling stuck at 5s indefinitely.
+  // An `[isBlocked]`-only effect would not re-fire on subsequent refreshes,
+  // leaving polling stuck at 5s indefinitely after a manual refresh past
+  // the first minute.
   const isPending =
     data?.kind === "blocked" ||
     data?.kind === "team-pending" ||

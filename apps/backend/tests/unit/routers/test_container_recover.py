@@ -30,9 +30,8 @@ class TestContainerRecover:
     @pytest.fixture(autouse=True)
     def mock_billing_repo(self):
         """Recovery reads provider_choice from billing_repo (keyed on
-        owner_id) before reprovisioning. Workstream B (2026-05-03) moved
-        the lookup off user_repo onto billing_accounts. Mock the lookup
-        so tests don't hit DDB.
+        owner_id) before reprovisioning. Mock the lookup so tests don't
+        hit DDB.
 
         Patches the lookup at its source — `resolve_provider_choice` now
         lives in `core.services.container_provision` (the local copy in

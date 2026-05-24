@@ -1,6 +1,5 @@
 // Ported from upstream Paperclip's color-contrast.ts
 // (paperclip/ui/src/lib/color-contrast.ts) (MIT, (c) 2025 Paperclip AI).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 /**
  * Shared color-contrast utilities for pill / badge / chip components.

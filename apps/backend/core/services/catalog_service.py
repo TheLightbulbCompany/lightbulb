@@ -110,8 +110,8 @@ def _remap_cron_jobs_for_deploy(
         new_job["sessionKey"] = f"agent:{new_agent_id}:{owner_id_lower}"
         new_job["createdAtMs"] = now_ms
         new_job["updatedAtMs"] = now_ms
-        # Codex P1: per-agent channel bindings pair ``accountId`` 1:1 with
-        # ``agentId`` (see config_patcher._ensure_channel_bindings_for_patch).
+        # Per-agent channel bindings pair ``accountId`` 1:1 with ``agentId``
+        # (see config_patcher._ensure_channel_bindings_for_patch).
         # Rewrite delivery.accountId to the new agent id so the cron lands on
         # the deployer's binding instead of the publisher's.
         delivery = new_job.get("delivery")

@@ -2,19 +2,18 @@
 
 // Ported (subset) from upstream Paperclip's lib/inbox.ts
 // (paperclip/ui/src/lib/inbox.ts) (MIT, (c) 2025 Paperclip AI).
-// Subset: pure helpers only. localStorage helpers in inboxStorage.ts (Task 3).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+// Subset: pure helpers only. localStorage helpers in inboxStorage.ts.
 
 import type { Issue } from "@/components/teams/shared/types";
 import type { IssueFilterState } from "@/components/teams/shared/lib/issueFilters";
 
 // Re-export so consumers can `import { InboxTab } from ".../lib/inbox"` without
-// reaching into queryKeys.ts. The canonical type lives in queryKeys.ts (PR #3b).
+// reaching into queryKeys.ts. The canonical type lives in queryKeys.ts.
 import type { InboxTab } from "@/components/teams/shared/queryKeys";
 export type { InboxTab };
 
-// Re-export the column constants from PR #3b so call sites can pull everything
-// inbox-shaped through this module.
+// Re-export the column constants from inboxColumns.ts so call sites can pull
+// everything inbox-shaped through this module.
 export {
   inboxIssueColumns,
   DEFAULT_INBOX_ISSUE_COLUMNS,

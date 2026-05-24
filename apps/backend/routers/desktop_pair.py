@@ -1,7 +1,6 @@
 """Desktop pair / revoke endpoints (Clerk-authed).
 
-Backs the two-node desktop architecture (spec:
-docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md).
+Backs the two-node desktop architecture.
 
 POST /api/v1/desktop/pair
     Idempotently pre-pair the caller's two Mac-side devices (Tauri-mac +

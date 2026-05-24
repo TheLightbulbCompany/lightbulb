@@ -304,10 +304,9 @@ class TestStripeWebhook:
         Stripe Checkout are stuck on the provider picker because is_subscribed
         stays False.
 
-        Workstream B: provider_choice is persisted on the *billing_accounts*
-        row keyed by ``account["owner_id"]`` (not the legacy users-table
-        write keyed by clerk_user_id). The webhook is now an idempotent
-        backup for /trial-checkout's synchronous write.
+        provider_choice is persisted on the *billing_accounts* row keyed
+        by ``account["owner_id"]``. The webhook is an idempotent backup
+        for /trial-checkout's synchronous write.
         """
         mock_stripe.Webhook.construct_event.return_value = {
             "id": "evt_created_x",
@@ -539,8 +538,8 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
-        # Workstream B: trial-checkout synchronously persists provider_choice
-        # via billing_repo.set_provider_choice before creating the Stripe
+        # trial-checkout synchronously persists provider_choice via
+        # billing_repo.set_provider_choice before creating the Stripe
         # Checkout session. Mock as AsyncMock so the await works.
         mock_repo.set_provider_choice = AsyncMock()
 
@@ -570,7 +569,7 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
-        # Workstream B sync-persist of provider_choice — see byo test above.
+        # Sync-persist of provider_choice — see byo test above.
         mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:
@@ -600,7 +599,7 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
-        # Workstream B sync-persist of provider_choice — see byo test above.
+        # Sync-persist of provider_choice — see byo test above.
         mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:

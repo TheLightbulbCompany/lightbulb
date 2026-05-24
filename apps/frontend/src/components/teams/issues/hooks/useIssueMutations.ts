@@ -2,7 +2,6 @@
 // NewIssueDialog form submit (paperclip/ui/src/pages/IssueDetail.tsx,
 // components/NewIssueDialog.tsx) (MIT, (c) 2025 Paperclip AI).
 // v1: create + update + addComment. Defers checkout/feedback/interactions/etc.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import { useCallback } from "react";
 import { useSWRConfig } from "swr";

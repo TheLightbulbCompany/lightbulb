@@ -1,14 +1,12 @@
 // Ported from upstream Paperclip's pages/Inbox.tsx row-renderer block
 // (paperclip/ui/src/pages/Inbox.tsx:2121-2521) (MIT, (c) 2025 Paperclip AI).
-// v1: flat list with today/earlier/search section dividers. Drops parent-child
-// nesting (deferred per #3c plan). Only renders InboxWorkItem.kind="issue".
+// Flat list with today/earlier/search section dividers. Drops parent-child
+// nesting. Only renders InboxWorkItem.kind="issue".
 //
 // Wrapper-level fade: upstream applies the archiving className directly to
 // `IssueRow`'s root <Link>; we apply it to an outer wrapper instead so
 // `data-inbox-item-id` and `onClickCapture` (for selectedId sync) live at the
 // same node. Visual + pointer-events behavior is identical.
-//
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import type { JSX, ReactNode } from "react";
 import { Fragment } from "react";
@@ -78,7 +76,6 @@ export function InboxList({
         if (issueItems.length === 0) return null;
         return (
           <Fragment key={`${section.kind}-${sectionIndex}`}>
-            {/* Retheme: muted-foreground section header → editorial mute mono caps. */}
             <h3
               className="section-label px-3 pt-3 pb-1 sm:px-4"
               style={{ marginBottom: 0 }}

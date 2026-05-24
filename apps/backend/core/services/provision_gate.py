@@ -60,10 +60,9 @@ def is_subscription_active(account: Mapping[str, Any] | None) -> bool:
     Returns True when:
       - ``subscription_status`` is in {"active", "trialing"}, OR
       - ``subscription_status`` is None *and* ``stripe_subscription_id`` is
-        set — the legacy pre-Plan-3 fallback for rows whose status hadn't
-        been backfilled by ``customer.subscription.updated`` yet. Without
-        the fallback, paid users mid-cutover got pushed back into the
-        payment phase (Codex P1 on PR #393).
+        set — legacy fallback for rows whose status hasn't been backfilled
+        by ``customer.subscription.updated`` yet. Without this, paid users
+        get pushed back into the payment phase.
 
     Otherwise False, including for ``None`` accounts (no billing row =
     not subscribed).
@@ -197,8 +196,8 @@ async def evaluate_provision_gate(
                 owner_role=owner_role,
             )
         # Align routing with what /billing/trial-checkout will actually
-        # accept (Codex P1 rounds 1+2 on PR #570). trial-checkout 409s
-        # any row whose subscription_status is in TRIAL_BLOCKED_STATUSES
+        # accept. trial-checkout 409s any row whose subscription_status
+        # is in TRIAL_BLOCKED_STATUSES
         # (canceled, incomplete, incomplete_expired, unpaid, paused —
         # plus active/trialing, but those are filtered out by
         # is_subscription_active above). Those rows must be routed to

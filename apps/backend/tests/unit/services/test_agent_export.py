@@ -116,14 +116,13 @@ def test_export_skips_junk_dirs(fake_efs):
 
 
 def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
-    """Regression for Codex P2 on PR #710 (commit 1f30aa3c): the previous
-    implementation stripped any top-level ``sessions/`` or ``agent/`` dir
-    from the tarball as a belt-and-suspenders guard against OpenClaw
-    runtime-state leaks. That guard is dead now that exports come from
-    ``workspaces/{id}/`` (runtime state lives in the sibling ``agents/{id}/``
-    tree we don't touch) and worse, it would silently drop legitimate
-    seller content in workspaces named ``sessions/`` (e.g. user-recorded
-    data) or ``agent/`` (e.g. project files describing the agent).
+    """Regression: a guard that strips any top-level ``sessions/`` or
+    ``agent/`` dir from the tarball is unnecessary now that exports come
+    from ``workspaces/{id}/`` (runtime state lives in the sibling
+    ``agents/{id}/`` tree we don't touch) and would silently drop
+    legitimate seller content in workspaces named ``sessions/`` (e.g.
+    user-recorded data) or ``agent/`` (e.g. project files describing the
+    agent).
     """
     seller_id, agent_id, agent_dir = fake_efs
     # Plant content under top-level "sessions/" and "agent/" subdirs of
@@ -143,11 +142,10 @@ def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
 
 
 def test_credential_filter_blocks_txt_pasted_secrets(fake_efs):
-    """Regression for Codex P1 on PR #711 (commit eb8dae83): sellers
-    commonly paste credentials into a .txt file (``secret.txt``,
-    ``credentials.txt``, ``private-key.txt``). The content scan only
-    inspects persona/.md/openclaw.json, so these slip through if .txt
-    isn't a config-shape extension. Add .txt to the gate.
+    """Sellers commonly paste credentials into a .txt file
+    (``secret.txt``, ``credentials.txt``, ``private-key.txt``). The
+    content scan only inspects persona/.md/openclaw.json, so these slip
+    through if .txt isn't a config-shape extension. Add .txt to the gate.
     """
     seller_id, agent_id, agent_dir = fake_efs
     (agent_dir / "secret.txt").write_text("aws_secret_key=hunter2\n", encoding="utf-8")
@@ -165,12 +163,10 @@ def test_credential_filter_blocks_txt_pasted_secrets(fake_efs):
 
 
 def test_credential_filter_blocks_extensionless_aws_credentials(fake_efs):
-    """Regression for Codex P1 on PR #711 (commit 43c49a31): the
-    AWS-style ``credentials`` file (extensionless, e.g. copied from
-    ``~/.aws/credentials``) must be blocked. The original substring-
-    based filter caught it; the tighter word-boundary filter
-    accidentally let it through because the early-return on
-    extensionless files bypassed the token check.
+    """The AWS-style ``credentials`` file (extensionless, e.g. copied from
+    ``~/.aws/credentials``) must be blocked. A substring-based filter
+    catches it; a tighter word-boundary filter with an early-return on
+    extensionless files bypasses the token check.
 
     Also pins that an extensionless ``credentials-helper`` script does
     NOT get blocked — only the EXACT canonical credential filenames hit
@@ -199,13 +195,11 @@ def test_credential_filter_blocks_extensionless_aws_credentials(fake_efs):
 
 
 def test_credential_filter_word_boundary_does_not_strip_skills(fake_efs):
-    """Regression for Codex P2 on PR #710 (commit 1f30aa3c): the credential
-    filename filter used to substring-match the basename, so a skill named
+    """A naive substring-match on the basename drops a skill named
     ``secretary.md`` or ``secret-santa.md`` or a helper file
-    ``credentials-helper.ts`` would be silently dropped — yet
-    ``_enumerate_workspace_skill_names`` would still classify the skill as
-    WORKSPACE bucket, leaving the buyer with a config slice referencing a
-    file that wasn't actually shipped.
+    ``credentials-helper.ts`` — yet ``_enumerate_workspace_skill_names``
+    still classifies the skill as WORKSPACE bucket, leaving the buyer
+    with a config slice referencing a file that wasn't actually shipped.
 
     Whole-token + extension-shape match keeps these legit files in.
     """
@@ -228,8 +222,7 @@ def test_export_skips_dotfiles_anywhere_in_tree(fake_efs, tmp_path):
     """Regression: hidden files / hidden dirs at any depth must NOT ship in
     the marketplace artifact. Sellers commonly have .env, .ssh/*, .aws/
     credentials, .openclaw/secrets in their workspace; bundling them
-    would deliver secrets directly to buyers
-    (Codex P1 round 13, commit fc0581bd).
+    would deliver secrets directly to buyers.
     """
     seller_id, agent_id, agent_dir = fake_efs
     # Plant a bunch of dotfile / dotdir scenarios.
@@ -283,9 +276,9 @@ def test_export_invalid_seller_id_rejected(tmp_path):
 
 
 def test_export_reads_from_workspaces_dir_not_agents_dir(tmp_path: Path):
-    """Regression for the agents/-vs-workspaces/ mix-up (Ray empty tarball,
-    PR #710): the OpenClaw EFS layout puts INTERNAL runtime state under
-    ``agents/{id}/`` and the actual seller workspace content under
+    """Regression for the agents/-vs-workspaces/ mix-up: the OpenClaw EFS
+    layout puts INTERNAL runtime state under ``agents/{id}/`` and the
+    actual seller workspace content under
     ``workspaces/{id}/``. The export must tar the workspace dir; the agents
     dir holds only sessions/ logs and OAuth tokens.
 

@@ -7,7 +7,6 @@
 // primitive in this PR (out of scope), we render a minimal initials-on-circle
 // avatar inline. Visual behaviour matches the upstream fallback path; once
 // the shadcn Avatar primitive lands, swap the inline span for the real one.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import { cn } from "@/lib/utils";
 

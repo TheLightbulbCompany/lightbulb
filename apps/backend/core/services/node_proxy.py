@@ -14,8 +14,7 @@ State:
                     }
                     Each Mac has TWO openclaw nodes (the CLI subprocess +
                     the Tauri-mac companion). The bucket is selected by
-                    the clientId from the connect handshake. See spec
-                    docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md.
+                    the clientId from the connect handshake.
   _node_count       owner_id -> int (active node connections)
   _patched_sessions session_key -> nodeId (in-memory cache)
 """
@@ -36,9 +35,8 @@ _node_upstreams: dict[str, NodeUpstreamConnection] = {}
 #   "cli": {"deviceId": str, "clientId": "node-host",      "connection_id": str, "owner_id": str},
 #   "mac": {"deviceId": str, "clientId": "openclaw-macos", "connection_id": str, "owner_id": str},
 # }
-# Per spec 2026-05-15-desktop-node-architecture-migration-design.md:
-# each Mac has TWO openclaw nodes (cli subprocess + Tauri-mac companion).
-# Slot by clientId from the connect handshake.
+# Each Mac has TWO openclaw nodes (cli subprocess + Tauri-mac
+# companion). Slot by clientId from the connect handshake.
 _user_nodes: dict[str, dict] = {}
 
 # owner_id -> count of active node connections (for ref-counted config patching)
@@ -51,10 +49,9 @@ _patched_sessions: dict[str, str] = {}
 def get_user_cli_node(user_id: str) -> dict | None:
     """Return the CLI subprocess node info for user, or None if not connected.
 
-    Tolerates the legacy flat `{nodeId, connection_id, owner_id}` shape
-    until Task 12 finishes the migration in handle_node_connect: any flat
-    entry whose clientId is not `openclaw-macos` is treated as the CLI
-    bucket.
+    Tolerates the legacy flat `{nodeId, connection_id, owner_id}` shape:
+    any flat entry whose clientId is not `openclaw-macos` is treated as
+    the CLI bucket.
     """
     entry = _user_nodes.get(user_id)
     if not entry:
@@ -147,7 +144,7 @@ async def handle_node_connect(
     # identity by user_id so org members each get a distinct nodeId. The
     # client (not the backend) signs the connect.challenge using a Keychain-
     # stored Ed25519 key; paired.json registration happens at pairing time
-    # via the /desktop/pair endpoint (Task 7), not here.
+    # via the /desktop/pair endpoint, not here.
     upstream = NodeUpstreamConnection(
         user_id=user_id,
         owner_id=owner_id,
@@ -206,7 +203,7 @@ async def handle_node_connect(
     # NodeUpstreamConnection). The upstream container emits its own id
     # for its own bookkeeping; forwarding that verbatim would miss the
     # subprocess's pending-request map and silently time out the
-    # handshake. See Codex round-3 P1 on PR #667.
+    # handshake.
     if upstream.signed_req_id and hello:
         try:
             management_api.send_message(
@@ -231,8 +228,7 @@ async def handle_node_connect(
     # Slot the device into the cli/mac bucket based on the connecting
     # client's advertised clientId. Anything other than "openclaw-macos"
     # goes into the cli bucket (catches "node-host" plus any
-    # legacy/unknown clients — safe fallback). See spec
-    # docs/superpowers/specs/2026-05-15-desktop-node-architecture-migration-design.md.
+    # legacy/unknown clients — safe fallback).
     client_id_raw = (connect_params.get("client") or {}).get("id") or "node-host"
     bucket = "mac" if client_id_raw == "openclaw-macos" else "cli"
 
@@ -331,9 +327,8 @@ async def handle_node_disconnect(
 
         # Patched sessions reference the CLI device for exec routing
         # (websocket_chat.py session-binding pins execNode to the CLI
-        # bucket — see Task 13). A Mac-only disconnect must NOT clear
-        # the pin: the CLI device is still alive and the exec target
-        # is still valid.
+        # bucket). A Mac-only disconnect must NOT clear the pin: the
+        # CLI device is still alive and the exec target is still valid.
         if matching_bucket == "cli":
             cleared_sessions = clear_patched_sessions_for_user(user_id)
         else:
@@ -445,7 +440,7 @@ async def force_close_device(device_id: str) -> bool:
     for user_id, slots in list(_user_nodes.items()):
         if not isinstance(slots, dict):
             continue
-        # Bucketed shape (post-Task 11): walk cli/mac slots.
+        # Bucketed shape: walk cli/mac slots.
         bucketed = "cli" in slots or "mac" in slots
         candidate_slots = [slots.get("cli"), slots.get("mac")] if bucketed else [slots]
         for slot in candidate_slots:

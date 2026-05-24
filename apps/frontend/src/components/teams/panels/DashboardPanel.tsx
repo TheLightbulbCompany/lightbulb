@@ -9,7 +9,6 @@
 // elsewhere in our TeamsLayout), and configurable date ranges (14d hardcoded).
 // Editorial reskin: tokens (cream/ink/mute/forest/edge) + Lora display
 // for masthead H1 + section H2s; class-only swap, hooks/data preserved.
-// See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
 import Link from "next/link";
 import { Bot, CircleDot, DollarSign, ShieldCheck } from "lucide-react";

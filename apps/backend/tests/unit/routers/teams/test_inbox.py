@@ -1,4 +1,4 @@
-"""Tests for the Teams Inbox BFF (Task 7)."""
+"""Tests for the Teams Inbox BFF."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -66,12 +66,12 @@ def test_list_inbox_forwards_rich_issue_rows(client, monkeypatch):
     """The BFF forwards Paperclip's full Issue rows verbatim inside
     ``{items: [...]}``.
 
-    Regression guard: PR #3c's InboxPage / IssueRow / StatusIcon read
+    Regression guard: InboxPage / IssueRow / StatusIcon read
     ``issue.status``, ``issue.identifier``, ``issue.priority``,
-    ``issue.lastActivityAt`` etc. directly. The previous handler reshaped
-    rows into a 4-field stub (``{id, type, title, createdAt}``) which made
-    StatusIcon throw ``Cannot read properties of undefined (reading
-    'replace')`` because ``issue.status`` was missing.
+    ``issue.lastActivityAt`` etc. directly. A 4-field stub reshape
+    (``{id, type, title, createdAt}``) would make StatusIcon throw
+    ``Cannot read properties of undefined (reading 'replace')`` because
+    ``issue.status`` would be missing.
     """
     admin = MagicMock()
     admin.list_issues = AsyncMock(

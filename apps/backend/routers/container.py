@@ -199,7 +199,6 @@ async def container_status(
     # row here and skips it. Fire ensure_user_ready idempotently —
     # _ensure_paperclip_for_member treats provision_member's duplicate-409
     # as success, so this is safe to invoke on every member status poll.
-    # Codex P1 on PR #563.
     if auth.is_org_context and not auth.is_org_admin:
         asyncio.create_task(ensure_user_ready(auth))
 
@@ -234,9 +233,8 @@ def _safe_phase(container: dict, owner_id: str) -> str:
                                         in a never-ending stepper)
       - anything else -> "provisioning"
 
-    Codex P1 on PR #461: returning "starting" here keeps users stuck
-    in the cold-start UI indefinitely even when the container itself
-    is healthy and usable.
+    Returning "starting" here keeps users stuck in the cold-start UI
+    indefinitely even when the container itself is healthy and usable.
 
     Anything other than ManagementApiClientError bubbles up as a real
     bug. Logs once per process so a production misconfiguration shows
@@ -317,7 +315,7 @@ async def container_provision(
 
     # Provision new container — read the owner's saved provider_choice so the
     # container is configured for the right LLM path (OAuth / BYO key /
-    # bedrock_claude). Workstream B keys this on owner_id via billing_repo.
+    # bedrock_claude). Keyed on owner_id via billing_repo.
     try:
         provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
         service_name = await get_ecs_manager().provision_user_container(

@@ -1,4 +1,4 @@
-"""Unit tests for the issue-comments admin-client methods (PR #3d Task 1).
+"""Unit tests for the issue-comments admin-client methods.
 
 Verify ``list_issue_comments`` and ``add_issue_comment`` call the right
 upstream URL with the right HTTP verb, forward the session cookie via

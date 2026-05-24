@@ -296,7 +296,7 @@ class TestContainerStatusGate:
     provision gate POST /provision uses and return 402 + structured
     `blocked` payload if a gate fires. If no gate fires, /status now
     dispatches ensure_user_ready and returns a synthetic provisioning
-    response (Task 8 — was a 404 contract pre-Task-8).
+    response.
     """
 
     @pytest.mark.asyncio
@@ -471,8 +471,8 @@ class TestContainerStatusGate:
 
     @pytest.mark.asyncio
     async def test_admin_subscription_required_still_returns_402(self):
-        """Codex P1 on PR #569: admin with an *inactive* existing billing
-        row (canceled/unpaid/paused) hits subscription_required, NOT
+        """Admin with an *inactive* existing billing row
+        (canceled/unpaid/paused) hits subscription_required, NOT
         signup_required. /status must still 402 with the structured
         action so the frontend routes them to /settings/billing — not
         the picker, which would 409 already_subscribed on click."""
@@ -567,12 +567,12 @@ class TestContainerStatusGate:
 
 
 class TestContainerStatusEnsureUserReadyDispatch:
-    """Task 8 — /container/status as the canonical readiness trigger.
+    """/container/status as the canonical readiness trigger.
 
-    After the Clerk-webhook eager-provisioning paths were stripped (Tasks
-    6 + 7), this endpoint is the only path that drives a fresh user from
-    "Clerk-authed" to "container provisioning." Owners get a synthetic
-    provisioning response; org members get 202 'workspace pending'.
+    With Clerk-webhook eager-provisioning removed, this endpoint is the
+    only path that drives a fresh user from "Clerk-authed" to "container
+    provisioning." Owners get a synthetic provisioning response; org
+    members get 202 'workspace pending'.
     """
 
     @pytest.mark.asyncio
@@ -709,9 +709,7 @@ class TestContainerStatusEnsureUserReadyDispatch:
 
 
 class TestContainerStatusOrgMemberDispatchOnExisting:
-    """Codex P1 on PR #563.
-
-    For an org member joining an org whose owner already has a container,
+    """For an org member joining an org whose owner already has a container,
     /container/status resolves the owner's existing container row via
     resolve_running_container and skips the missing-container branch
     (which is the canonical paperclip-add trigger). Without an explicit

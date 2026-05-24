@@ -91,8 +91,7 @@ def test_admin_takedown_endpoint_creates_and_grants(client):
 def test_reject_reads_notes_from_request_body(client):
     """Regression: reject must accept notes as a JSON body field, not a
     query param. The admin UI sends ``{ notes }`` in JSON; if `notes`
-    binds to a query param, every UI reject 422s (Codex P1 on PR #517,
-    commit 23bdc518).
+    binds to a query param, every UI reject 422s.
     """
     from main import app
 
@@ -116,9 +115,9 @@ def test_reject_reads_notes_from_request_body(client):
 
 def test_admin_takedown_404s_for_nonexistent_listing(client):
     """Regression: the takedown cascade's ``_listings_table().update_item``
-    used to upsert a fake listing for nonexistent IDs. Now guarded with
-    ``ConditionExpression="attribute_exists(listing_id)"`` and surfaced as
-    404 (Codex P2 on PR #517, commit 23bdc518).
+    must NOT upsert a fake listing for nonexistent IDs. Guard with
+    ``ConditionExpression="attribute_exists(listing_id)"`` and surface
+    as 404.
     """
     from main import app
 
@@ -147,8 +146,7 @@ def test_admin_takedown_404s_for_nonexistent_listing(client):
 def test_approve_v2_derives_prev_version_from_history(client):
     """Regression: approving version=N (N>1) without explicit prev_version
     must auto-derive it from the listing's history and route through
-    publish_new_version — otherwise both versions end up published (Codex P1 on
-    PR #517, commit 977bf178).
+    publish_new_version — otherwise both versions end up published.
     """
     from main import app
 
@@ -443,8 +441,8 @@ def test_preview_returns_partial_when_compressed_exceeds_cap(client):
 
 
 def test_preview_with_version_returns_exact_row_not_review_priority(client):
-    """Regression for Codex P2 on PR #718: when the admin clicks a
-    listing from the browse view, the URL carries ``?version=N`` so
+    """Regression: when the admin clicks a listing from the browse view,
+    the URL carries ``?version=N`` so
     the preview endpoint must fetch that exact row — not apply its
     "prefer review > published > newest" heuristic, which would
     silently swap to a different version's artifact for a listing
@@ -598,10 +596,10 @@ def test_approve_refuses_when_artifact_exceeds_cap(client):
 
 
 def test_approve_refuses_when_unpacked_exceeds_cap(client):
-    """Regression for Codex P1 on PR #693 (commit df4f8263): a gzip with a
-    high compression ratio can be small on disk but unpack into more than
-    the safety-scan budget. The compressed-size check alone would let such
-    a listing through. Walk tar headers and check the unpacked sum too.
+    """Regression: a gzip with a high compression ratio can be small on
+    disk but unpack into more than the safety-scan budget. The
+    compressed-size check alone lets such a listing through. Walk tar
+    headers and check the unpacked sum too.
     """
     from main import app
 
@@ -645,10 +643,10 @@ def test_approve_refuses_when_unpacked_exceeds_cap(client):
 
 
 def test_approve_fails_closed_when_head_object_fails(client):
-    """Regression for Codex P2 on PR #693 (commit 42968c8f): a head_object
-    failure on a listing whose artifact_uploaded=True (i.e. it MUST exist
-    because submit_for_review enforced that invariant) means we can't
-    verify scan safety. Fail closed instead of falling through to publish.
+    """Regression: a head_object failure on a listing whose
+    artifact_uploaded=True (i.e. it MUST exist because submit_for_review
+    enforced that invariant) means we can't verify scan safety. Fail
+    closed instead of falling through to publish.
     """
     from main import app
 
@@ -760,8 +758,7 @@ def test_list_listings_with_query_only_calls_search(client):
     the admin can fuzzy-match across every status. status_in is set to
     the full real-status whitelist — NOT None — so the listings table's
     slug-reservation rows (listing_id="slug:...", version=0, no status
-    field) can't leak into admin search results. Codex P2 on PR #718,
-    commit 427b4288.
+    field) can't leak into admin search results.
     """
     from main import app
 
@@ -865,11 +862,11 @@ def test_list_listings_accepts_all_five_statuses(client):
 
 
 def test_approve_fails_closed_when_artifact_download_fails(client):
-    """Regression for Codex P2 on PR #693 (commit 805655bb): once
-    head_object confirms an artifact exists, any subsequent S3 failure
-    (AccessDenied, NoSuchKey race, timeout) must block approval. A broad
-    catch that fell through to the publish path would ship an unscanned
-    listing — exactly the case the scan cap is meant to prevent.
+    """Regression: once head_object confirms an artifact exists, any
+    subsequent S3 failure (AccessDenied, NoSuchKey race, timeout) must
+    block approval. A broad catch that fell through to the publish path
+    would ship an unscanned listing — exactly the case the scan cap is
+    meant to prevent.
     """
     from main import app
 

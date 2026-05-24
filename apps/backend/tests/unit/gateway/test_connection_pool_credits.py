@@ -1,4 +1,4 @@
-"""Tests for the credit-aware gateway hooks (Plan 3 Tasks 4 + 5).
+"""Tests for the credit-aware gateway hooks.
 
 Two surfaces:
 
@@ -10,9 +10,9 @@ Two surfaces:
   ``sessions.list``; deducts from credit_ledger for card-3 only with
   1.4x markup.
 
-Workstream B (2026-05-03): ``provider_choice`` is read from the
-``billing_accounts`` row (per owner_id), NOT from the ``users`` row.
-Credit balance + deduction stay keyed on the chatting member.
+``provider_choice`` is read from the ``billing_accounts`` row (per
+owner_id), NOT from the ``users`` row. Credit balance + deduction stay
+keyed on the chatting member.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -165,8 +165,8 @@ async def test_card2_byo_user_never_gated_by_credits():
 
 @pytest.mark.asyncio
 async def test_billing_row_without_provider_choice_never_gated():
-    """Legacy billing rows (pre-Workstream-B) without provider_choice
-    shouldn't be locked out — they keep working until provider is set."""
+    """Legacy billing rows without provider_choice shouldn't be locked
+    out — they keep working until provider is set."""
     pool = GatewayConnectionPool(management_api=None)
     with patch(
         "core.repositories.billing_repo.get_by_owner_id",
@@ -226,11 +226,10 @@ async def test_active_or_trialing_subscription_does_not_trigger_sub_gate(status)
 
 @pytest.mark.asyncio
 async def test_missing_billing_row_blocks_chat_when_owner_id_provided():
-    """Codex P1 round-2 on PR #488: an authenticated user whose
-    billing row doesn't exist at all (never went through trial-checkout,
-    or got cleaned up out-of-band) must be blocked. Otherwise non-
-    Bedrock providers would chat freely with us still on the hook for
-    container compute."""
+    """An authenticated user whose billing row doesn't exist at all
+    (never went through trial-checkout, or got cleaned up out-of-band)
+    must be blocked. Otherwise non-Bedrock providers would chat freely
+    with us still on the hook for container compute."""
     pool = GatewayConnectionPool(management_api=None)
     with patch(
         "core.repositories.billing_repo.get_by_owner_id",

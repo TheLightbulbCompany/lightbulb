@@ -1,7 +1,7 @@
 """Typed httpx async client for Paperclip's REST API.
 
-**Auth model** (2026-05-02 fix): every call that "acts as" a user
-carries that user's Better Auth session as a
+**Auth model**: every call that "acts as" a user carries that user's
+Better Auth session as a
 ``Cookie: paperclip-<instance>.session_token=<signed-value>`` header.
 Paperclip's Better Auth config (``server/src/auth/better-auth.ts``)
 does NOT enable the ``bearer()`` plugin, so ``Authorization: Bearer``
@@ -198,8 +198,8 @@ class PaperclipAdminClient:
         ``__Secure-`` cookie prefix. Without an https Origin it looks
         for the bare cookie name and our admin call lands as
         anonymous → 403 on every privileged endpoint. Verified
-        empirically against dev on 2026-05-02. The official handler
-        path (``/api/auth/get-session``) doesn't have this dependency
+        empirically against dev. The official handler path
+        (``/api/auth/get-session``) doesn't have this dependency
         because it has the real request URL.
         """
         headers = {
@@ -209,7 +209,7 @@ class PaperclipAdminClient:
         # Read from the settings singleton (canonical config source —
         # pydantic loads from .env, tests monkeypatch via
         # settings.PAPERCLIP_PUBLIC_URL). Reading os.environ would miss
-        # both .env loading and test-suite overrides. Codex P2 on PR #508.
+        # both .env loading and test-suite overrides.
         # Local import keeps the module load lightweight and avoids a
         # circular import for tests that bypass settings entirely.
         from core.config import settings
@@ -813,7 +813,7 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
-    # Heartbeat runs (NEW for #3a — Inbox deep port)
+    # Heartbeat runs
     # ------------------------------------------------------------------
 
     async def list_company_heartbeat_runs(
@@ -1019,7 +1019,7 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
-    # Issue inbox state (NEW for #3a)
+    # Issue inbox state
     # ------------------------------------------------------------------
 
     async def archive_issue(
@@ -1030,8 +1030,8 @@ class PaperclipAdminClient:
     ) -> dict:
         """Archive an issue from the inbox.
 
-        Maps to ``POST /api/issues/{id}/inbox-archive``. The 49-line BFF
-        stub previously had a ``dismiss`` endpoint that mapped to
+        Maps to ``POST /api/issues/{id}/inbox-archive``. Note: there is
+        also a sibling ``dismiss`` endpoint that maps to
         ``/api/inbox/{itemId}/dismiss`` — that's a different upstream
         concept (inbox dismissals table) and we keep it. ``archive_issue``
         is the modern Paperclip flow that flips an issue's
@@ -1091,7 +1091,7 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
-    # Issue comments (NEW for #3a)
+    # Issue comments
     # ------------------------------------------------------------------
 
     async def list_issue_comments(

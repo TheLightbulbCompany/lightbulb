@@ -16,7 +16,6 @@
 // bg-amber-500/10, text-amber-700) map onto `--warn` in the editorial
 // palette — the badge still reads as "attention required" against the
 // cream surface, but in the right hue for the new chrome.
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 import Link from "next/link";
 import { Eye } from "lucide-react";

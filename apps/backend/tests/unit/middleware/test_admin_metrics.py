@@ -1,7 +1,7 @@
-"""Tests for AdminMetricsMiddleware (CEO O1 — admin_api.* metrics emission).
+"""Tests for AdminMetricsMiddleware — admin_api.* metrics emission.
 
-These tests are RED until Phase C lands the implementation at
-``core/middleware/admin_metrics.py``. The middleware contract under test:
+The middleware lives at ``core/middleware/admin_metrics.py``. The
+middleware contract under test:
 
 1. Only intercept requests under ``/api/v1/admin/*`` — non-admin paths pass
    through with no metrics emitted.

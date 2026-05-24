@@ -1,13 +1,12 @@
-"""Clerk Backend API client for admin-side read operations.
+"""Clerk Backend API client for admin-side operations.
 
-Phase B v1 surface: list users, get one user. Mutation operations
-(ban / unban / revoke sessions / resend verification) are added in
-Phase C alongside the admin router endpoints that need them.
+Read surface: list users, get one user. Mutation surface: ban / unban /
+revoke sessions / resend verification, alongside the admin router
+endpoints that need them.
 
-There is no centralized Clerk client in this codebase yet — billing.py
-and desktop_auth.py call api.clerk.com inline via httpx. This module
-consolidates the admin-side calls so admin_service.py can compose
-without duplicating httpx setup.
+billing.py and desktop_auth.py call api.clerk.com inline via httpx;
+this module consolidates the admin-side calls so admin_service.py can
+compose without duplicating httpx setup.
 
 Empty/missing CLERK_SECRET_KEY → callers get a stubbed empty response
 so local dev without real Clerk admin creds still renders the admin

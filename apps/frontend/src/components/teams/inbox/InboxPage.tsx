@@ -2,8 +2,6 @@
 
 // Ported from upstream Paperclip's pages/Inbox.tsx (assembly + state mgmt)
 // (paperclip/ui/src/pages/Inbox.tsx) (MIT, (c) 2025 Paperclip AI).
-// Composes Tasks 1-10 outputs (lib + 4 hooks + 3 components).
-// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 "use client";
 

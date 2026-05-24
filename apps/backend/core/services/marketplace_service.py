@@ -49,6 +49,27 @@ class ArtifactNotUploadedError(Exception):
     """
 
 
+class NoPublishedVersionError(Exception):
+    """Republish requested for a listing with no currently-published
+    version. Sellers can only clone a v(N+1) draft from a live published
+    row; a listing that has never been approved (or whose last published
+    version was taken_down) has no source to fork from.
+    """
+
+
+class RepublishAlreadyInProgressError(Exception):
+    """A non-terminal (draft or review) version already exists for this
+    listing. Republish is single-flight per listing — sellers must
+    finish or discard the in-flight v(N+1) before starting another.
+    """
+
+
+class PermissionError(Exception):  # noqa: A001 - shadows builtin intentionally; module-scoped
+    """Seller does not own the listing being modified. Distinct from
+    InvalidStateError so callers can map to 403 vs 409.
+    """
+
+
 async def _upload_artifact_to_s3(
     *,
     listing_id: str,
@@ -389,6 +410,197 @@ async def update_draft(
     return resp.get("Attributes", {})
 
 
+async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
+    """Clone the currently-published row into a new draft at max(version)+1.
+
+    Republish entry point. Single-table design: every version lives as a
+    row in the listings table, so a new version is just another row at a
+    higher `version` value. The currently-published row keeps serving
+    buyers until the new row goes through review + approve, at which
+    point publish_new_version atomically retires the old version.
+
+    Guards are grouped by category. Within a category, the check that
+    leaks the least information runs first — a non-owner probing for
+    an in-flight republish must not learn one exists, so ownership is
+    asserted before state. Errors are mapped as:
+
+      Existence:
+        - Listing has no non-sentinel rows at all -> NoPublishedVersionError.
+        - Listing has rows but none with status='published'
+          -> NoPublishedVersionError. A listing whose last published
+          version was taken_down has no source to fork from; the seller
+          must submit fresh metadata via create_draft instead.
+
+      Ownership:
+        - seller_id does not match the published row's seller_id
+          -> PermissionError (403). Runs before the in-flight check so a
+          non-owner can't tell whether a v(N+1) is in flight.
+
+      State:
+        - A row with status in {'draft','review'} already exists for
+          listing_id -> RepublishAlreadyInProgressError naming the
+          offending vN. Republish is single-flight per listing —
+          sellers must finish or discard the in-flight v(N+1) before
+          starting another.
+
+    The new row insert uses a conditional put on attribute_not_exists so
+    a concurrent caller can't race past the in-process scan and double-
+    write v(N+1). TransactWriteItems would also work, but the scan
+    already covers the "no in-flight version" check and the conditional
+    put covers the "version+1 not taken" check — collectively they
+    close the read-then-write race without needing a transaction.
+    """
+    table = _listings_table()
+
+    # Read every row for this listing. Filter out the v=0 slug-reservation
+    # sentinel — that row carries no status/seller_id and would noise up
+    # every check below. We pull all versions in one paginated query so
+    # the max(version)+1 calculation has a complete view; DDB caps a
+    # single query response at 1MB, and a listing with enough history
+    # could span pages.
+    rows: list[dict] = []
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": "listing_id = :l AND version > :z",
+            "ExpressionAttributeValues": {":l": listing_id, ":z": 0},
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        resp = table.query(**kwargs)
+        rows.extend(resp.get("Items", []))
+        last_key = resp.get("LastEvaluatedKey")
+        if last_key is None:
+            break
+    if not rows:
+        raise NoPublishedVersionError(f"listing {listing_id} has no versions")
+
+    published = next((r for r in rows if r.get("status") == "published"), None)
+    if published is None:
+        raise NoPublishedVersionError(f"listing {listing_id} has no published version to republish")
+
+    # Permission check before in-flight check: a non-owner probing for an
+    # in-flight republish would otherwise leak that one exists.
+    if published.get("seller_id") != seller_id:
+        raise PermissionError(f"seller {seller_id} does not own listing {listing_id}")
+
+    non_terminal = next(
+        (r for r in rows if r.get("status") in ("draft", "review")),
+        None,
+    )
+    if non_terminal is not None:
+        v = int(non_terminal["version"])
+        raise RepublishAlreadyInProgressError(f"republish already in progress for v{v}")
+
+    new_version = max(int(r["version"]) for r in rows) + 1
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    # Clone metadata; artifact fields stay unset so submit_for_review's
+    # artifact_uploaded=False guard forces the seller through
+    # /artifact-from-agent before the new draft can be submitted.
+    # Moderation residue (rejection_notes, approved_by, etc.) and the
+    # buyer-side install_count are intentionally NOT copied — they're
+    # per-row attestations.
+    new_row: dict = {
+        "listing_id": listing_id,
+        "version": new_version,
+        "status": "draft",
+        "seller_id": seller_id,
+        "slug": published["slug"],
+        "name": published["name"],
+        "description_md": published.get("description_md", ""),
+        "format": published["format"],
+        "price_cents": int(published.get("price_cents", 0)),
+        "tags": list(published.get("tags", [])),
+        "artifact_uploaded": False,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    # Optional columns: only include when present on the source. DDB
+    # rejects explicit-None values on put_item, so a `category=None`
+    # would 400 here. published_at follows the same rule — written as
+    # NULL by the GSI-aware paths (submit_for_review, approve), but the
+    # API response shape (schemas.Listing) requires the key to be present.
+    if published.get("category"):
+        new_row["category"] = published["category"]
+    if published.get("entitlement_policy"):
+        new_row["entitlement_policy"] = published["entitlement_policy"]
+    if published.get("artifact_format_version"):
+        new_row["artifact_format_version"] = published["artifact_format_version"]
+    # Edit-context fields for the wizard: agent_id locks the agent picker
+    # so the seller can't accidentally re-snapshot a different agent into
+    # the same listing; bundle_mcps/bundle_skills prefill the Bundle step
+    # so a metadata-only republish doesn't silently strip integrations.
+    # The seller can still uncheck items before submit, but the default
+    # is "ship what v(N) shipped" rather than "ship nothing."
+    if published.get("agent_id"):
+        new_row["agent_id"] = published["agent_id"]
+    if published.get("manifest_json"):
+        new_row["manifest_json"] = published["manifest_json"]
+    if published.get("bundle_mcps"):
+        new_row["bundle_mcps"] = list(published["bundle_mcps"])
+    if published.get("bundle_skills"):
+        new_row["bundle_skills"] = list(published["bundle_skills"])
+
+    try:
+        table.put_item(
+            Item=new_row,
+            # Closes the read-then-write race: if two callers both scan
+            # the same row set and both compute the same new_version,
+            # only the first put_item succeeds.
+            ConditionExpression="attribute_not_exists(listing_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise RepublishAlreadyInProgressError(f"race detected creating v{new_version}; refetch and retry")
+        raise
+
+    # Return-shape includes published_at=None so schemas.Listing validates
+    # at the API boundary (HTTP responses serialize this row directly).
+    return {**new_row, "published_at": None}
+
+
+async def discard_draft(*, listing_id: str, seller_id: str, version: int) -> None:
+    """Delete a non-terminal draft row.
+
+    Guards:
+      - version must be > 1 (v=1 carries the slug reservation; full
+        listing retraction is a separate flow not in scope here)
+      - row must exist and be in 'draft' status (not 'review', which
+        requires admin reject)
+      - seller_id must match the row's seller_id
+    """
+    if version <= 1:
+        raise InvalidStateError("cannot discard v1; full listing retraction is a separate flow")
+
+    table = _listings_table()
+    resp = table.get_item(Key={"listing_id": listing_id, "version": version})
+    row = resp.get("Item")
+    if row is None:
+        raise InvalidStateError(f"v{version} not found for listing {listing_id}")
+    if row.get("seller_id") != seller_id:
+        raise PermissionError(f"seller {seller_id} does not own listing {listing_id}")
+    if row.get("status") != "draft":
+        raise InvalidStateError(f"v{version} is in status '{row.get('status')}', not draft")
+
+    try:
+        table.delete_item(
+            Key={"listing_id": listing_id, "version": version},
+            ConditionExpression="#s = :draft",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":draft": "draft"},
+        )
+    except ClientError as e:
+        # Race: the row transitioned out of 'draft' between the read and the
+        # conditional delete (e.g. parallel submit_for_review or another
+        # discard winning first). Treat it as the same kind of state conflict
+        # the scan-side guard surfaces — the router maps InvalidStateError to
+        # 409 so the seller can refetch and retry.
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise InvalidStateError(f"v{version} changed state during discard; refetch and retry")
+        raise
+
+
 async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1) -> dict:
     """Transition draft -> review. Idempotent: re-submitting from review is rejected.
 
@@ -457,7 +669,7 @@ async def approve(*, listing_id: str, version: int, approved_by: str) -> dict:
 
     Used for the FIRST publish of a listing (v=1). For subsequent versions
     that need to atomically retire the previous published version, callers
-    use publish_v2 instead.
+    use publish_new_version instead.
     """
     table = _listings_table()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -514,7 +726,7 @@ async def reject(*, listing_id: str, version: int, notes: str, rejected_by: str)
     return {"status": "draft", "rejection_notes": notes, "rejected_at": now_iso}
 
 
-async def publish_v2(
+async def publish_new_version(
     *,
     listing_id: str,
     prev_version: int,
@@ -586,7 +798,7 @@ async def publish_v2(
         # rather than letting a raw ClientError become a 500.
         if e.response["Error"]["Code"] in ("TransactionCanceledException", "ConditionalCheckFailedException"):
             raise InvalidStateError(
-                f"publish_v2 conditional check failed for listing {listing_id} "
+                f"publish_new_version conditional check failed for listing {listing_id} "
                 f"(prev v{prev_version} or new v{new_version} not in expected state)"
             )
         raise
@@ -598,7 +810,7 @@ async def get_by_slug(*, slug: str) -> dict | None:
     Returns the highest-version row that is currently published, falling back
     to the highest-version row of any status if nothing is published yet.
 
-    Why two-tier: during the publish_v2 flow, a v_new row exists in
+    Why two-tier: during the publish_new_version flow, a v_new row exists in
     'review' state while v_prev is still 'published'. The downstream
     public/deploy/checkout routes all gate on status=='published', so
     returning the highest version unconditionally would 404 the still-live

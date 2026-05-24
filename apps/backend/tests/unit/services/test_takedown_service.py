@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
 import pytest  # noqa: E402
 
-from core.services import takedown_service  # noqa: E402
+from core.services import marketplace_service, takedown_service  # noqa: E402
+
+# Shared moto-backed fixtures live in conftest.py; reuse them for the
+# cascade tests so we exercise the real DDB state machine end to end.
+from tests.unit.services.conftest import _create_and_publish, _upload_dummy_artifact  # noqa: E402, F401
 
 
 @pytest.mark.asyncio
@@ -73,8 +77,8 @@ async def test_execute_full_takedown_pages_through_all_purchases(mock_takedowns,
 @patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
 async def test_execute_full_takedown_flips_currently_published_version(mock_takedowns, mock_listings, mock_purchases):
     """Regression: takedown must flip the currently-published row, not
-    hardcode v=1. Under publish_v2, v1 is retired and v2 is published; a
-    hardcoded v=1 update marks the already-retired row, leaving v2 live —
+    hardcode v=1. Under publish_new_version, v1 is retired and v2 is
+    published; a hardcoded v=1 update marks the already-retired row, leaving v2 live —
     admin "success" but listing remains purchasable
     """
     takedown_service.license_service.revoke.reset_mock()
@@ -225,3 +229,111 @@ async def test_execute_admin_initiated_takedown(mock_takedowns, mock_listings, m
     assert stamp_kwargs["ExpressionAttributeValues"][":n"] == 2
     assert stamp_kwargs["ExpressionAttributeValues"][":granted"] == "granted"
     assert stamp_kwargs["ExpressionAttributeValues"][":by"] == "user_admin1"
+
+
+# ---------------------------------------------------------------------------
+# Cascade-to-non-terminal-v(N+1) tests (moto-backed)
+#
+# When admin takes down v(N), any in-flight v(N+1) draft/review row must
+# also flip to taken_down. Without the cascade the seller's UI surfaces a
+# draft on a taken-down listing as if it were still actionable, and a
+# later publish_new_version would silently fail because the prev_version
+# is no longer 'published'.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_takedown_cascades_to_non_terminal_v2_draft(dynamodb_table):
+    """v=1 published + v=2 draft (mid-republish) → both end as taken_down."""
+    draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+    listing_id = draft["listing_id"]
+    await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+
+    await takedown_service.execute_admin_initiated_takedown(
+        listing_id=listing_id,
+        reason="policy",
+        basis_md="Listing violates platform policy section 4.",
+        decided_by="admin_1",
+    )
+
+    v1 = await marketplace_service.get_by_id(listing_id=listing_id, version=1)
+    v2 = await marketplace_service.get_by_id(listing_id=listing_id, version=2)
+    assert v1["status"] == "taken_down"
+    assert v2["status"] == "taken_down"
+
+
+@pytest.mark.asyncio
+async def test_takedown_cascades_to_v2_in_review(dynamodb_table):
+    """v=1 published + v=2 review (post-submit, pre-approve) → both taken_down."""
+    draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+    listing_id = draft["listing_id"]
+    await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+    _upload_dummy_artifact(dynamodb_table, listing_id, version=2)
+    await marketplace_service.submit_for_review(listing_id=listing_id, seller_id="seller_1", version=2)
+
+    await takedown_service.execute_admin_initiated_takedown(
+        listing_id=listing_id,
+        reason="policy",
+        basis_md="Listing violates platform policy section 4.",
+        decided_by="admin_1",
+    )
+
+    v1 = await marketplace_service.get_by_id(listing_id=listing_id, version=1)
+    v2 = await marketplace_service.get_by_id(listing_id=listing_id, version=2)
+    assert v1["status"] == "taken_down"
+    assert v2["status"] == "taken_down"
+
+
+@pytest.mark.asyncio
+async def test_takedown_no_cascade_when_no_v2_exists(dynamodb_table):
+    """Listings with no in-flight republish behave exactly as before —
+    only the v=1 published row flips. This guards against the cascade
+    loop accidentally double-writing the target row when there is no
+    v(N+1)."""
+    draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+    listing_id = draft["listing_id"]
+
+    await takedown_service.execute_admin_initiated_takedown(
+        listing_id=listing_id,
+        reason="policy",
+        basis_md="Listing violates platform policy section 4.",
+        decided_by="admin_1",
+    )
+
+    v1 = await marketplace_service.get_by_id(listing_id=listing_id, version=1)
+    assert v1["status"] == "taken_down"
+    # No v=2 row should have been conjured by the cascade loop.
+    v2 = await marketplace_service.get_by_id(listing_id=listing_id, version=2)
+    assert v2 is None
+
+
+@pytest.mark.asyncio
+async def test_takedown_cascade_skips_already_terminal_rows(dynamodb_table):
+    """A retired v=1 + published v=2 (post second-publish cycle) →
+    takedown flips v=2 to taken_down, leaves v=1 retired. The cascade
+    must NOT clobber the retired row back to taken_down — its history
+    matters for buyer license resolution."""
+    draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+    listing_id = draft["listing_id"]
+    await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+    _upload_dummy_artifact(dynamodb_table, listing_id, version=2)
+    await marketplace_service.submit_for_review(listing_id=listing_id, seller_id="seller_1", version=2)
+    await marketplace_service.publish_new_version(
+        listing_id=listing_id,
+        prev_version=1,
+        new_version=2,
+        approved_by="admin",
+    )
+    # Now: v=1 retired, v=2 published — no non-terminal rows.
+
+    await takedown_service.execute_admin_initiated_takedown(
+        listing_id=listing_id,
+        reason="policy",
+        basis_md="Listing violates platform policy section 4.",
+        decided_by="admin_1",
+    )
+
+    v1 = await marketplace_service.get_by_id(listing_id=listing_id, version=1)
+    v2 = await marketplace_service.get_by_id(listing_id=listing_id, version=2)
+    assert v1["status"] == "retired", "retired row must not be clobbered to taken_down"
+    assert v2["status"] == "taken_down"

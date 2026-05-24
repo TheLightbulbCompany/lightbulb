@@ -612,6 +612,64 @@ async def submit(
     return result
 
 
+@router.post("/listings/{listing_id}/republish", response_model=schemas.Listing)
+async def republish(
+    listing_id: str,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+):
+    """Create a new draft version cloning the currently-published row.
+
+    Returns the new draft row at version=max(version)+1. The wizard then
+    drives it through PATCH/artifact-from-agent/submit at that version.
+
+    Guards: no-live-version -> 409; existing draft/review -> 409 naming
+    the offending version; non-owner -> 403. Ownership is checked before
+    the in-flight state inside the service so a non-owner probing a
+    listing they don't own can't learn whether a republish is already
+    underway (see create_new_version docstring).
+    """
+    require_org_admin(auth)
+    try:
+        row = await marketplace_service.create_new_version(
+            listing_id=listing_id,
+            seller_id=auth.user_id,
+        )
+    except marketplace_service.NoPublishedVersionError:
+        raise HTTPException(status_code=409, detail="no live version to republish")
+    except marketplace_service.RepublishAlreadyInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except marketplace_service.PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    await seller_display.attach_seller_name(row)
+    return row
+
+
+@router.delete("/listings/{listing_id}", status_code=204)
+async def discard_listing_version(
+    listing_id: str,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+    version: int = Query(..., ge=2),
+):
+    """Discard a non-terminal draft version (v>=2).
+
+    Used when the seller starts a republish then changes their mind, or
+    when a v(N+1) sits as a rejected draft they no longer want to revise.
+    The live v(N) row is untouched.
+    """
+    require_org_admin(auth)
+    try:
+        await marketplace_service.discard_draft(
+            listing_id=listing_id,
+            seller_id=auth.user_id,
+            version=version,
+        )
+    except marketplace_service.InvalidStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except marketplace_service.PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Artifact dry-run preview — drives the publish wizard's Bundle + Review
 # steps so the seller sees exactly what will ship before submit.

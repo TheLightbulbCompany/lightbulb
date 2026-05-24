@@ -144,7 +144,7 @@ async def approve(
 
     Subsequent versions: when version > 1, derive prev_version automatically
     by reading the listing's history and finding the currently-published
-    row. publish_v2 atomically flips prev_version's status published→retired
+    row. publish_new_version atomically flips prev_version's status published→retired
     AND new version's review→published in one TransactWriteItems. This
     keeps the frontend ignorant of the v_prev concept — the admin just
     approves; the backend figures out which version (if any) to retire.
@@ -245,7 +245,7 @@ async def approve(
                 prev_version = int(published["version"])
 
         if prev_version is not None:
-            await marketplace_service.publish_v2(
+            await marketplace_service.publish_new_version(
                 listing_id=listing_id,
                 prev_version=prev_version,
                 new_version=version,

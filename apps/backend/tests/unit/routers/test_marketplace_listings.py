@@ -1543,3 +1543,149 @@ def test_deploy_listing_non_admin_org_member_403(mock_get_by_slug, mock_get_cata
     assert resp.status_code == 403
     mock_get_by_slug.assert_not_called()
     mock_get_catalog.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# POST /listings/{listing_id}/republish
+# ---------------------------------------------------------------------------
+
+
+def _new_draft_row(*, listing_id: str = "lst_1", seller_id: str = "u_seller", version: int = 2) -> dict:
+    """Shape of a row returned by ``marketplace_service.create_new_version``.
+
+    Mirrors what the service writes — the response model is ``schemas.Listing``
+    so the row must carry every required field (status, version, format,
+    created_at, etc.) or FastAPI's response validation will trip.
+    """
+    return {
+        "listing_id": listing_id,
+        "version": version,
+        "status": "draft",
+        "seller_id": seller_id,
+        "slug": "demo-agent",
+        "name": "Demo Agent",
+        "description_md": "An agent.",
+        "format": "openclaw",
+        "price_cents": 0,
+        "tags": [],
+        "artifact_uploaded": False,
+        "created_at": "2026-05-23T10:00:00Z",
+        "updated_at": "2026-05-23T10:00:00Z",
+        "published_at": None,
+    }
+
+
+@patch("routers.marketplace_listings.marketplace_service.create_new_version", new_callable=AsyncMock)
+def test_republish_creates_v2_draft(mock_create_new_version, authed_client_factory):
+    """Happy path: service returns the new draft row at v=N+1 and the
+    router forwards it through ``attach_seller_name`` to the response."""
+    mock_create_new_version.return_value = _new_draft_row(listing_id="lst_1", seller_id="u_seller", version=2)
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post("/api/v1/marketplace/listings/lst_1/republish")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["version"] == 2
+    assert body["status"] == "draft"
+    assert body["seller_id"] == "u_seller"
+    assert body["name"] == "Demo Agent"
+    # Service was called with the listing_id from the path and the
+    # caller's user_id as seller_id.
+    mock_create_new_version.assert_awaited_once_with(
+        listing_id="lst_1",
+        seller_id="u_seller",
+    )
+
+
+@patch("routers.marketplace_listings.marketplace_service.create_new_version", new_callable=AsyncMock)
+def test_republish_returns_409_when_no_live_version(mock_create_new_version, authed_client_factory):
+    """Service raises NoPublishedVersionError -> 409 with a stable detail
+    string the frontend can match on to render the no-live-version UI."""
+    from core.services.marketplace_service import NoPublishedVersionError
+
+    mock_create_new_version.side_effect = NoPublishedVersionError("listing lst_1 has no published version to republish")
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post("/api/v1/marketplace/listings/lst_1/republish")
+    assert resp.status_code == 409
+    assert "no live version" in resp.json()["detail"]
+
+
+@patch("routers.marketplace_listings.marketplace_service.create_new_version", new_callable=AsyncMock)
+def test_republish_returns_409_when_already_in_progress(mock_create_new_version, authed_client_factory):
+    """Service raises RepublishAlreadyInProgressError -> 409 surfacing the
+    offending version so the wizard can route the seller to that draft."""
+    from core.services.marketplace_service import RepublishAlreadyInProgressError
+
+    mock_create_new_version.side_effect = RepublishAlreadyInProgressError("republish already in progress for v2")
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post("/api/v1/marketplace/listings/lst_1/republish")
+    assert resp.status_code == 409
+    assert "v2" in resp.json()["detail"]
+
+
+@patch("routers.marketplace_listings.marketplace_service.create_new_version", new_callable=AsyncMock)
+def test_republish_returns_403_for_non_owner(mock_create_new_version, authed_client_factory):
+    """Service raises PermissionError -> 403. Ownership is enforced inside
+    the service (before the in-flight check) so a non-owner can't probe
+    for an in-flight republish on a listing they don't own.
+    """
+    from core.services.marketplace_service import PermissionError as MpPermissionError
+
+    mock_create_new_version.side_effect = MpPermissionError("seller u_attacker does not own listing lst_1")
+    tc = authed_client_factory("u_attacker", "attacker@example.com")
+    resp = tc.post("/api/v1/marketplace/listings/lst_1/republish")
+    assert resp.status_code == 403
+
+
+def test_republish_requires_auth(unauth_client):
+    """Without a Clerk JWT, republish must 401/403 before reaching the service."""
+    resp = unauth_client.post("/api/v1/marketplace/listings/lst_1/republish")
+    assert resp.status_code in (401, 403)
+
+
+@patch("routers.marketplace_listings.marketplace_service.create_new_version", new_callable=AsyncMock)
+def test_republish_non_admin_org_member_403(mock_create_new_version, org_member_client):
+    """Non-admin org members cannot republish — gate fires before the
+    service runs (matches the other marketplace write endpoints)."""
+    resp = org_member_client.post("/api/v1/marketplace/listings/lst_1/republish")
+    assert resp.status_code == 403
+    mock_create_new_version.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /listings/{listing_id}?version=N (discard pending draft)
+# ---------------------------------------------------------------------------
+
+
+@patch("routers.marketplace_listings.marketplace_service.discard_draft", new_callable=AsyncMock)
+def test_discard_removes_draft_row(mock_discard, authed_client_factory):
+    mock_discard.return_value = None
+    client = authed_client_factory("u_seller", "seller@example.com")
+    r = client.delete("/api/v1/marketplace/listings/lst_1?version=2")
+    assert r.status_code == 204
+    mock_discard.assert_awaited_once_with(listing_id="lst_1", seller_id="u_seller", version=2)
+
+
+@patch("routers.marketplace_listings.marketplace_service.discard_draft", new_callable=AsyncMock)
+def test_discard_returns_409_when_in_review(mock_discard, authed_client_factory):
+    from core.services.marketplace_service import InvalidStateError
+
+    mock_discard.side_effect = InvalidStateError("v2 is in status 'review', not draft")
+    client = authed_client_factory("u_seller", "seller@example.com")
+    r = client.delete("/api/v1/marketplace/listings/lst_1?version=2")
+    assert r.status_code == 409
+
+
+@patch("routers.marketplace_listings.marketplace_service.discard_draft", new_callable=AsyncMock)
+def test_discard_returns_403_for_non_owner(mock_discard, authed_client_factory):
+    from core.services.marketplace_service import PermissionError as MpPermissionError
+
+    mock_discard.side_effect = MpPermissionError("not owner")
+    client = authed_client_factory("u_other", "other@example.com")
+    r = client.delete("/api/v1/marketplace/listings/lst_1?version=2")
+    assert r.status_code == 403
+
+
+def test_discard_requires_version_query_param(authed_client_factory):
+    client = authed_client_factory("u_seller", "seller@example.com")
+    r = client.delete("/api/v1/marketplace/listings/lst_1")
+    assert r.status_code == 422

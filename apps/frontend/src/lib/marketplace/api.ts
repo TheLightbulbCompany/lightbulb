@@ -46,6 +46,32 @@ export async function getListing(slug: string): Promise<ListingDetailResponse | 
   return (await resp.json()) as ListingDetailResponse;
 }
 
+/** Authenticated fetch of a single listing by slug, returning the row
+ * directly (no manifest envelope). Used by the seller-facing /manage page
+ * which navigates from a slug URL and needs the live row's listing_id +
+ * seller_id to drive ListingDetailView and the owner-gate redirect.
+ *
+ * The backend returns a { listing, manifest } envelope (same shape as
+ * getListing above); we unwrap it here so callers get a Listing directly. */
+export async function getListingBySlug(opts: {
+  slug: string;
+  jwt: string;
+}): Promise<Listing> {
+  const resp = await fetch(
+    `${API}/marketplace/listings/${encodeURIComponent(opts.slug)}`,
+    { headers: { Authorization: `Bearer ${opts.jwt}` } },
+  );
+  if (!resp.ok) {
+    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
+    throw Object.assign(
+      new Error(body.detail || `getListingBySlug failed: ${resp.status}`),
+      { status: resp.status, detail: body.detail },
+    );
+  }
+  const envelope = (await resp.json()) as ListingDetailResponse;
+  return envelope.listing;
+}
+
 export async function checkout(opts: {
   listingSlug: string;
   successUrl: string;
@@ -152,6 +178,55 @@ export async function myListings(opts: {
   });
   if (!resp.ok) throw new Error(`myListings failed: ${resp.status}`);
   return (await resp.json()) as { items: Listing[] };
+}
+
+/** Clone a published listing into a fresh draft (v_new). Backend creates a
+ * new version row carried back into the wizard for re-snapshot + re-submit.
+ * The previously published version remains live until the new one is approved
+ * and the atomic version transition swaps them. */
+export async function republishListing(opts: {
+  listingId: string;
+  jwt: string;
+}): Promise<Listing> {
+  const resp = await fetch(
+    `${API}/marketplace/listings/${encodeURIComponent(opts.listingId)}/republish`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${opts.jwt}` },
+    },
+  );
+  if (!resp.ok) {
+    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
+    throw Object.assign(new Error(body.detail || `republishListing failed: ${resp.status}`), {
+      status: resp.status,
+      detail: body.detail,
+    });
+  }
+  return (await resp.json()) as Listing;
+}
+
+/** Discard a non-live listing version (typically a rejected v_new or an
+ * in-progress republish draft). The currently-published version is protected
+ * server-side — this call cannot take a listing offline. */
+export async function discardListingVersion(opts: {
+  listingId: string;
+  version: number;
+  jwt: string;
+}): Promise<void> {
+  const resp = await fetch(
+    `${API}/marketplace/listings/${encodeURIComponent(opts.listingId)}?version=${opts.version}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${opts.jwt}` },
+    },
+  );
+  if (!resp.ok) {
+    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
+    throw Object.assign(
+      new Error(body.detail || `discardListingVersion failed: ${resp.status}`),
+      { status: resp.status, detail: body.detail },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

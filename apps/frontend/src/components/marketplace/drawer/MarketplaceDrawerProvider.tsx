@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 
 import type { Listing } from "@/lib/marketplace/types";
 
-export type DrawerView = "browse" | "mine" | "publish";
+export type DrawerView = "browse" | "mine" | "publish" | "detail";
 
 export interface DrawerState {
   isOpen: boolean;
@@ -15,6 +15,10 @@ export interface DrawerState {
    * publish wizard reads it on mount, pre-fills its form, locks the agent
    * picker, and switches its submit path to PATCH → artifact → submit. */
   editListing?: Listing | null;
+  /** Set by openListingDetail when the seller drills into a listing row.
+   * The detail view reads it to fetch + render the listing; clearing it
+   * on view changes keeps a stale id from leaking back into the page. */
+  detailListingId?: string | null;
   freshlyInstalledAgentId: string | null;
   toast: { agentName: string; agentId: string } | null;
 }
@@ -31,6 +35,7 @@ interface DrawerContextValue {
   close: () => void;
   setView: (view: DrawerView) => void;
   startEditListing: (listing: Listing) => void;
+  openListingDetail: (listingId: string) => void;
   showInstallToast: (toast: { agentName: string; agentId: string }) => void;
   dismissToast: () => void;
   setFreshlyInstalled: (agentId: string | null) => void;
@@ -56,6 +61,9 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       publishAgentId: opts.agentId,
       editListing: opts.editListing ?? null,
       prevView: opts.view === "publish" ? prev.view : prev.prevView,
+      // Opening into any non-detail view drops a stale detail id so the
+      // detail render branch can't flash old content.
+      detailListingId: opts.view === "detail" ? prev.detailListingId : null,
     }));
   }, []);
 
@@ -65,6 +73,7 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       isOpen: false,
       publishAgentId: undefined,
       editListing: null,
+      detailListingId: null,
       // toast persists across drawer close — it has its own dismiss timer
     }));
   }, []);
@@ -78,16 +87,37 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       // Leaving the publish view also clears the editListing — re-entering
       // publish with the "+ New listing" button must start fresh.
       editListing: view === "publish" ? prev.editListing : null,
+      // Same idea for detail: navigating away (e.g. Back to my listings)
+      // should not preserve the id — a future detail open re-supplies it.
+      detailListingId: view === "detail" ? prev.detailListingId : null,
     }));
   }, []);
 
   const startEditListing = useCallback((listing: Listing) => {
     setState((prev) => ({
       ...prev,
+      // Without isOpen=true, callers from a closed-drawer surface (e.g.
+      // /marketplace/listing/[slug]/manage) update state but never render
+      // the wizard. On /chat the drawer is already open so this is a no-op.
+      isOpen: true,
       view: "publish",
       prevView: prev.view,
       editListing: listing,
       publishAgentId: listing.agent_id ?? listing.manifest_json?.agent_id,
+      detailListingId: null,
+    }));
+  }, []);
+
+  const openListingDetail = useCallback((listingId: string) => {
+    setState((prev) => ({
+      ...prev,
+      isOpen: true,
+      view: "detail",
+      prevView: prev.view,
+      detailListingId: listingId,
+      // Detail is a read-only inspector — clear any in-flight publish edit.
+      editListing: null,
+      publishAgentId: undefined,
     }));
   }, []);
 
@@ -110,11 +140,22 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       close,
       setView,
       startEditListing,
+      openListingDetail,
       showInstallToast,
       dismissToast,
       setFreshlyInstalled,
     }),
-    [state, open, close, setView, startEditListing, showInstallToast, dismissToast, setFreshlyInstalled],
+    [
+      state,
+      open,
+      close,
+      setView,
+      startEditListing,
+      openListingDetail,
+      showInstallToast,
+      dismissToast,
+      setFreshlyInstalled,
+    ],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

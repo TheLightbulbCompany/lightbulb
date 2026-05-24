@@ -146,7 +146,7 @@ def test_admin_takedown_404s_for_nonexistent_listing(client):
 def test_approve_v2_derives_prev_version_from_history(client):
     """Regression: approving version=N (N>1) without explicit prev_version
     must auto-derive it from the listing's history and route through
-    publish_v2 — otherwise both versions end up published.
+    publish_new_version — otherwise both versions end up published.
     """
     from main import app
 
@@ -160,7 +160,7 @@ def test_approve_v2_derives_prev_version_from_history(client):
         ]
     }
     # The new approve-side scan gate calls get_item before reaching the
-    # publish_v2 derivation path. Returning a row without s3_prefix
+    # publish_new_version derivation path. Returning a row without s3_prefix
     # short-circuits the gate so this test only exercises the prev_version
     # derivation logic it cares about.
     fake_table.get_item.return_value = {"Item": {"listing_id": "l1", "version": 2, "status": "review"}}
@@ -170,9 +170,9 @@ def test_approve_v2_derives_prev_version_from_history(client):
     with (
         patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
         patch(
-            "routers.marketplace_admin.marketplace_service.publish_v2",
+            "routers.marketplace_admin.marketplace_service.publish_new_version",
             new=AsyncMock(return_value=None),
-        ) as mock_publish_v2,
+        ) as mock_publish_new_version,
         patch(
             "routers.marketplace_admin.marketplace_service.approve",
             new=AsyncMock(return_value={"status": "published", "version": 2}),
@@ -183,10 +183,10 @@ def test_approve_v2_derives_prev_version_from_history(client):
     app.dependency_overrides.clear()
 
     assert resp.status_code == 200, resp.text
-    # publish_v2 path was taken with derived prev_version=1.
-    mock_publish_v2.assert_awaited_once()
-    assert mock_publish_v2.await_args.kwargs["prev_version"] == 1
-    assert mock_publish_v2.await_args.kwargs["new_version"] == 2
+    # publish_new_version path was taken with derived prev_version=1.
+    mock_publish_new_version.assert_awaited_once()
+    assert mock_publish_new_version.await_args.kwargs["prev_version"] == 1
+    assert mock_publish_new_version.await_args.kwargs["new_version"] == 2
     # The simple approve path was NOT taken.
     mock_simple_approve.assert_not_awaited()
     body = resp.json()

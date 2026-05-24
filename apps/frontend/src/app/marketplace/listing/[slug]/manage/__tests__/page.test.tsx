@@ -9,7 +9,11 @@ import { getListingBySlug, myListings } from "@/lib/marketplace/api";
 // fresh function per render would refetch indefinitely (same trap that bit
 // the ListingDetailView tests).
 const { stableAuth } = vi.hoisted(() => ({
-  stableAuth: { userId: "seller_1", getToken: async () => "test-jwt" },
+  stableAuth: {
+    isLoaded: true,
+    userId: "seller_1" as string | null,
+    getToken: async () => "test-jwt",
+  },
 }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => stableAuth,
@@ -141,5 +145,35 @@ describe("/marketplace/listing/[slug]/manage", () => {
       writable: true,
       value: originalLocation,
     });
+  });
+
+  it("redirects unauthenticated visitors to public listing page", async () => {
+    // Clerk has resolved but there's no signed-in user — auth.isLoaded is
+    // true with userId=null. Without the redirect, the visitor would sit
+    // on an indefinite Loading… screen.
+    stableAuth.userId = null;
+
+    const replaceSpy = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, replace: replaceSpy },
+    });
+
+    await renderManagePage();
+    await waitFor(() =>
+      expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/x"),
+    );
+    // getListingBySlug should never have been called — we shortcut before
+    // any authed fetch.
+    expect(getListingBySlug).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
+    stableAuth.userId = "seller_1";
   });
 });

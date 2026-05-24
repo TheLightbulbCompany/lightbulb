@@ -130,11 +130,19 @@ function Header({
     }
   }
 
-  // Republish is only available when there's no in-flight v(N+1). The
-  // backend would 409 otherwise — we surface that as a disabled button +
-  // tooltip so the seller sees the reason without a network round-trip.
-  const canRepublish = !pending;
+  // Republish requires a Live (published) row AND no in-flight v(N+1).
+  // The backend would 409 in either failed case — we surface that as a
+  // disabled button + tooltip so the seller sees the reason without a
+  // network round-trip. Non-published live rows (draft-only listings
+  // pre-first-approval, retired, taken_down) have nothing to republish FROM.
+  const canRepublish = !pending && live.status === "published";
   const canDiscard = pending !== null && pending.status === "draft";
+
+  const republishDisabledReason = pending
+    ? `Republish blocked — v${pending.version} is ${pending.status}`
+    : live.status !== "published"
+      ? `Republish blocked — listing is ${live.status}, not Live`
+      : undefined;
 
   return (
     <header className="mb-6 flex items-start justify-between gap-3 flex-wrap">
@@ -143,8 +151,27 @@ function Header({
           {live.name}
         </h2>
         <p className="text-[12.5px] text-[#5b5b5b] mt-1">{live.slug}</p>
-        <span className="inline-block mt-2 text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full bg-[#e3efe6] text-[#06402b]">
-          Live {pendingBadge}
+        <span
+          className={`inline-block mt-2 text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full ${
+            live.status === "published"
+              ? "bg-[#e3efe6] text-[#06402b]"
+              : live.status === "review"
+                ? "bg-[#fef4e3] text-[#a07520]"
+                : live.status === "draft" && live.rejection_notes
+                  ? "bg-[#fbe9e7] text-[#8a3a2a]"
+                  : "bg-[#f3eee5] text-[#5b5b5b]"
+          }`}
+        >
+          {live.status === "published"
+            ? "Live"
+            : live.status === "review"
+              ? "In review"
+              : live.status === "draft" && live.rejection_notes
+                ? "Rejected"
+                : live.status === "draft"
+                  ? "Draft"
+                  : live.status}{" "}
+          {pendingBadge}
         </span>
       </div>
       <div className="flex flex-col items-end gap-2">
@@ -152,11 +179,7 @@ function Header({
           type="button"
           onClick={handleRepublish}
           disabled={!canRepublish || busy}
-          title={
-            !canRepublish
-              ? `Republish blocked — v${pending!.version} is ${pending!.status}`
-              : undefined
-          }
+          title={republishDisabledReason}
           className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
         >
           Republish with updates

@@ -558,12 +558,22 @@ async def discard_draft(*, listing_id: str, seller_id: str, version: int) -> Non
     if row.get("status") != "draft":
         raise InvalidStateError(f"v{version} is in status '{row.get('status')}', not draft")
 
-    table.delete_item(
-        Key={"listing_id": listing_id, "version": version},
-        ConditionExpression="#s = :draft",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":draft": "draft"},
-    )
+    try:
+        table.delete_item(
+            Key={"listing_id": listing_id, "version": version},
+            ConditionExpression="#s = :draft",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":draft": "draft"},
+        )
+    except ClientError as e:
+        # Race: the row transitioned out of 'draft' between the read and the
+        # conditional delete (e.g. parallel submit_for_review or another
+        # discard winning first). Treat it as the same kind of state conflict
+        # the scan-side guard surfaces — the router maps InvalidStateError to
+        # 409 so the seller can refetch and retry.
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise InvalidStateError(f"v{version} changed state during discard; refetch and retry")
+        raise
 
 
 async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1) -> dict:

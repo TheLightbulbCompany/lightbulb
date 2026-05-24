@@ -28,15 +28,23 @@ export default function ManagePage({
   // Next.js 16 makes route params async; unwrap with React.use() in client
   // components — `await params` would force the file into a server component.
   const { slug } = use(params);
-  const { userId, getToken } = useAuth();
+  const { isLoaded, userId, getToken } = useAuth();
   const [listing, setListing] = useState<Listing | null>(null);
   const [forbidden, setForbidden] = useState(false);
 
   useEffect(() => {
+    if (!isLoaded) return; // Clerk still resolving; wait for the next render.
+    if (!userId) {
+      // Auth resolved but no signed-in user. Send them to the public listing
+      // page rather than stranding them on an indefinite Loading… screen.
+      setForbidden(true);
+      window.location.replace(`/marketplace/listing/${slug}`);
+      return;
+    }
     let alive = true;
     (async () => {
       const jwt = await getToken();
-      if (!jwt || !userId) return;
+      if (!alive || !jwt) return;
       const row = await getListingBySlug({ slug, jwt });
       if (!alive) return;
       if (row.seller_id !== userId) {
@@ -52,7 +60,7 @@ export default function ManagePage({
     return () => {
       alive = false;
     };
-  }, [slug, userId, getToken]);
+  }, [slug, isLoaded, userId, getToken]);
 
   if (forbidden) return null;
   if (!listing) return <p className="p-8">Loading…</p>;

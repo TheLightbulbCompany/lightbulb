@@ -655,3 +655,49 @@ class TestDiscardDraft:
         )
         with pytest.raises(marketplace_service.InvalidStateError):
             await marketplace_service.discard_draft(listing_id=result["listing_id"], seller_id="seller_1", version=1)
+
+    @pytest.mark.asyncio
+    async def test_race_handled_when_state_changes_between_read_and_delete(self, dynamodb_table, monkeypatch):
+        """If the row's status flips between get_item and delete_item (e.g.
+        a parallel submit_for_review wins), the conditional delete throws
+        ConditionalCheckFailedException — map it to InvalidStateError so
+        the router returns 409 instead of 500.
+
+        Uses the same `_FailingTable` proxy pattern as
+        test_race_detected_via_conditional_put — `_listings_table()` returns
+        a fresh resource each call, so we monkeypatch the factory itself.
+        Reads (get_item) proxy through to real moto; delete_item raises.
+        """
+        import botocore.exceptions
+
+        draft = await _create_and_publish(dynamodb_table, "ignored", "seller_1", "x")
+        listing_id = draft["listing_id"]
+        await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
+
+        class _FailingDeleteTable:
+            def __init__(self, real_table):
+                self._real_table = real_table
+
+            def __getattr__(self, name):
+                return getattr(self._real_table, name)
+
+            def delete_item(self, *args, **kwargs):
+                raise botocore.exceptions.ClientError(
+                    error_response={
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "simulated race",
+                        }
+                    },
+                    operation_name="DeleteItem",
+                )
+
+        monkeypatch.setattr(
+            marketplace_service,
+            "_listings_table",
+            lambda: _FailingDeleteTable(dynamodb_table),
+        )
+
+        with pytest.raises(marketplace_service.InvalidStateError) as exc:
+            await marketplace_service.discard_draft(listing_id=listing_id, seller_id="seller_1", version=2)
+        assert "changed state during discard" in str(exc.value)

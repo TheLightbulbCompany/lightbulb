@@ -147,6 +147,34 @@ describe("/marketplace/listing/[slug]/manage", () => {
     });
   });
 
+  it("soft-redirects when getListingBySlug rejects (404/401/network)", async () => {
+    // Backend 404 / token-expiry / transient failure must terminate the
+    // gate flow — otherwise the page sits on indefinite Loading… and the
+    // owner-gate effect never completes.
+    vi.mocked(getListingBySlug).mockRejectedValueOnce(
+      Object.assign(new Error("not found"), { status: 404 }),
+    );
+
+    const replaceSpy = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, replace: replaceSpy },
+    });
+
+    await renderManagePage();
+    await waitFor(() =>
+      expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/x"),
+    );
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
   it("redirects unauthenticated visitors to public listing page", async () => {
     // Clerk has resolved but there's no signed-in user — auth.isLoaded is
     // true with userId=null. Without the redirect, the visitor would sit

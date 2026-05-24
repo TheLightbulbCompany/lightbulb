@@ -45,7 +45,19 @@ export default function ManagePage({
     (async () => {
       const jwt = await getToken();
       if (!alive || !jwt) return;
-      const row = await getListingBySlug({ slug, jwt });
+      let row: Listing;
+      try {
+        row = await getListingBySlug({ slug, jwt });
+      } catch {
+        // 404 (bad slug), 401 (token expired), 5xx, network. All map to the
+        // same UX: send them to the public listing page rather than
+        // stranding on indefinite Loading…. The public page handles 404
+        // with its own NotFound state.
+        if (!alive) return;
+        setForbidden(true);
+        window.location.replace(`/marketplace/listing/${slug}`);
+        return;
+      }
       if (!alive) return;
       if (row.seller_id !== userId) {
         // Soft-redirect rather than throwing — owners arriving via a stale

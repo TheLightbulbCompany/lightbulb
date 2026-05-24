@@ -92,6 +92,18 @@ describe("<ListingDetailView>", () => {
     await waitFor(() => expect(screen.getByText(/agent_/)).toBeInTheDocument());
   });
 
+  it("renders a terminal not-found state when myListings has no matching row", async () => {
+    // Empty items[] simulates: bad listingId, ownership change, or a /me
+    // pagination gap. Without an explicit terminal state, the view would
+    // render Loading… forever.
+    vi.mocked(myListings).mockResolvedValueOnce({ items: [] });
+    render(<ListingDetailView listingId="lst_missing" mode="drawer" />);
+    await waitFor(() =>
+      expect(screen.getByText(/couldn't find this listing/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Loading…/)).toBeNull();
+  });
+
   it("draft-only listing: promotes draft to live, no pending tab, no discard button", async () => {
     // Brand-new listing in v=1 draft (never published). Pending tab + Discard
     // would be misleading: the row IS the listing, not a pending update.

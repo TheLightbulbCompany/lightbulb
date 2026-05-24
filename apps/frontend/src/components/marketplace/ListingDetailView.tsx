@@ -17,11 +17,14 @@ interface Props {
   mode: "drawer" | "page";
 }
 
+type LoadState = "loading" | "loaded" | "not-found";
+
 export function ListingDetailView({ listingId, mode }: Props) {
   const { userId, getToken } = useAuth();
   const [live, setLive] = useState<Listing | null>(null);
   const [pending, setPending] = useState<Listing | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
+  const [loadState, setLoadState] = useState<LoadState>("loading");
   // Bump to force the fetch effect to re-run after a mutation (discard).
   // Republish hands off to the wizard so doesn't need a local refetch.
   const [refreshKey, setRefreshKey] = useState(0);
@@ -37,6 +40,13 @@ export function ListingDetailView({ listingId, mode }: Props) {
       const { items } = await myListings({ sellerId: userId, jwt });
       if (!alive) return;
       const rows = items.filter((l) => l.listing_id === listingId);
+      if (rows.length === 0) {
+        // Seller's list doesn't include this listing — bad listing_id,
+        // ownership changed, or a pagination/limit gap on /me/listings.
+        // Render a terminal error state instead of indefinite Loading…
+        setLoadState("not-found");
+        return;
+      }
       const publishedRow = rows.find((r) => r.status === "published") ?? null;
       const nonTerminalRow =
         rows.find((r) => r.status === "draft" || r.status === "review") ?? null;
@@ -54,6 +64,7 @@ export function ListingDetailView({ listingId, mode }: Props) {
         setLive(nonTerminalRow ?? rows[0] ?? null);
         setPending(null);
       }
+      setLoadState("loaded");
     })();
     return () => {
       alive = false;
@@ -66,6 +77,18 @@ export function ListingDetailView({ listingId, mode }: Props) {
   useEffect(() => {
     if (tab === "pending" && !pending) setTab("overview");
   }, [pending, tab]);
+
+  if (loadState === "not-found") {
+    return (
+      <p
+        role="status"
+        className="font-editorial-serif italic text-[#8a3a2a] p-4"
+      >
+        We couldn&apos;t find this listing in your account. It may have been
+        retired, taken down, or transferred to another owner.
+      </p>
+    );
+  }
 
   if (!live) {
     return (

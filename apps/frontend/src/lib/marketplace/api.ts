@@ -48,8 +48,11 @@ export async function getListing(slug: string): Promise<ListingDetailResponse | 
 
 /** Authenticated fetch of a single listing by slug, returning the row
  * directly (no manifest envelope). Used by the seller-facing /manage page
- * which navigates from a slug URL and needs the live row's listing_id to
- * drive ListingDetailView. */
+ * which navigates from a slug URL and needs the live row's listing_id +
+ * seller_id to drive ListingDetailView and the owner-gate redirect.
+ *
+ * The backend returns a { listing, manifest } envelope (same shape as
+ * getListing above); we unwrap it here so callers get a Listing directly. */
 export async function getListingBySlug(opts: {
   slug: string;
   jwt: string;
@@ -65,7 +68,8 @@ export async function getListingBySlug(opts: {
       { status: resp.status, detail: body.detail },
     );
   }
-  return (await resp.json()) as Listing;
+  const envelope = (await resp.json()) as ListingDetailResponse;
+  return envelope.listing;
 }
 
 export async function checkout(opts: {

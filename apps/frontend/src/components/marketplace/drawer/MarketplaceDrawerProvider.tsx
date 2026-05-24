@@ -96,6 +96,10 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
   const startEditListing = useCallback((listing: Listing) => {
     setState((prev) => ({
       ...prev,
+      // Without isOpen=true, callers from a closed-drawer surface (e.g.
+      // /marketplace/listing/[slug]/manage) update state but never render
+      // the wizard. On /chat the drawer is already open so this is a no-op.
+      isOpen: true,
       view: "publish",
       prevView: prev.view,
       editListing: listing,

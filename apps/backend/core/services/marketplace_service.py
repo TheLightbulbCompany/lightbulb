@@ -454,13 +454,24 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
 
     # Read every row for this listing. Filter out the v=0 slug-reservation
     # sentinel — that row carries no status/seller_id and would noise up
-    # every check below. We pull all versions in one query so the
-    # max(version)+1 calculation has a complete view.
-    resp = table.query(
-        KeyConditionExpression="listing_id = :l AND version > :z",
-        ExpressionAttributeValues={":l": listing_id, ":z": 0},
-    )
-    rows = resp.get("Items", [])
+    # every check below. We pull all versions in one paginated query so
+    # the max(version)+1 calculation has a complete view; DDB caps a
+    # single query response at 1MB, and a listing with enough history
+    # could span pages.
+    rows: list[dict] = []
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": "listing_id = :l AND version > :z",
+            "ExpressionAttributeValues": {":l": listing_id, ":z": 0},
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        resp = table.query(**kwargs)
+        rows.extend(resp.get("Items", []))
+        last_key = resp.get("LastEvaluatedKey")
+        if last_key is None:
+            break
     if not rows:
         raise NoPublishedVersionError(f"listing {listing_id} has no versions")
 

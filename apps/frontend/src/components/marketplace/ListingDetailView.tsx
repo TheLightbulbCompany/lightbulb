@@ -47,6 +47,13 @@ export function ListingDetailView({ listingId, mode }: Props) {
     };
   }, [listingId, userId, getToken, refreshKey]);
 
+  // When the pending row disappears (discarded, or admin approved/rejected),
+  // bounce the user off the now-hidden Pending tab so they don't land on an
+  // empty pane.
+  useEffect(() => {
+    if (tab === "pending" && !pending) setTab("overview");
+  }, [pending, tab]);
+
   if (!live) {
     return (
       <p className="font-editorial-serif italic text-[#8a8578]">Loading…</p>

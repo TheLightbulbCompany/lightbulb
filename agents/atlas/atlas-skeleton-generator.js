@@ -535,14 +535,25 @@ function writeDisk(buildId, agentName) {
   }
 
   // Compute per-file SHA256s BEFORE mv (for rollback error report)
+  // Recursive walk — preserves staging-dir subdirectories (workspace/, skills/, etc.).
   const stagedHashes = {};
-  const stagedFiles = fs.readdirSync(stagingDir, { withFileTypes: true })
-    .filter(d => d.isFile())
-    .map(d => d.name);
-  for (const fname of stagedFiles) {
-    const content = fs.readFileSync(path.join(stagingDir, fname));
-    stagedHashes[fname] = crypto.createHash('sha256').update(content).digest('hex');
+  function _walk(dir, relBase) {
+    for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const rel = relBase ? path.join(relBase, dirent.name) : dirent.name;
+      const full = path.join(dir, dirent.name);
+      if (dirent.isDirectory()) {
+        _walk(full, rel);
+      } else if (dirent.isFile()) {
+        const content = fs.readFileSync(full);
+        // Use forward-slash separators in the hash key so the manifest is
+        // portable across host OSes (POSIX-style is what the spec uses).
+        stagedHashes[rel.split(path.sep).join('/')] =
+          crypto.createHash('sha256').update(content).digest('hex');
+      }
+    }
   }
+  _walk(stagingDir, '');
+  const stagedFileCount = Object.keys(stagedHashes).length;
 
   if (fs.existsSync(destDir)) {
     const err = {
@@ -569,7 +580,7 @@ function writeDisk(buildId, agentName) {
       staging_dir: stagingDir,
       destination_dir: destDir,
       agent_name: agentName,
-      file_count: stagedFiles.length,
+      file_count: stagedFileCount,
       file_hashes: stagedHashes,
       mv_method: 'fs.renameSync (POSIX rename(2), atomic on local filesystem)',
       written_at: new Date().toISOString()
@@ -616,19 +627,27 @@ function verifyWrite(buildId, agentName) {
     };
   }
   const observedHashes = {};
-  const files = fs.readdirSync(destDir, { withFileTypes: true })
-    .filter(d => d.isFile())
-    .map(d => d.name);
-  for (const fname of files) {
-    const content = fs.readFileSync(path.join(destDir, fname));
-    observedHashes[fname] = crypto.createHash('sha256').update(content).digest('hex');
+  function _walk(dir, relBase) {
+    for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const rel = relBase ? path.join(relBase, dirent.name) : dirent.name;
+      const full = path.join(dir, dirent.name);
+      if (dirent.isDirectory()) {
+        _walk(full, rel);
+      } else if (dirent.isFile()) {
+        const content = fs.readFileSync(full);
+        observedHashes[rel.split(path.sep).join('/')] =
+          crypto.createHash('sha256').update(content).digest('hex');
+      }
+    }
   }
+  _walk(destDir, '');
+  const observedFileCount = Object.keys(observedHashes).length;
   return {
     success: true,
     build_id: buildId,
     agent_name: agentName,
     destination_dir: destDir,
-    file_count: files.length,
+    file_count: observedFileCount,
     observed_hashes: observedHashes,
     verified_at: new Date().toISOString()
   };

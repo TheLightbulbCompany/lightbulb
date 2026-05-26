@@ -26,44 +26,54 @@ function seedStaging(agentsRoot, buildId, files) {
 
 test('writeDisk preserves nested workspace/ subdirectory', () => {
   const agentsRoot = makeTmpAgentsRoot();
-  process.env.ISOL8_AGENTS_DIR = agentsRoot;
-  const buildId = 'build_recursive_1';
-  seedStaging(agentsRoot, buildId, {
-    'build-manifest.json': JSON.stringify({ build_id: buildId, agent_name: 'rebot' }),
-    'workspace/openclaw.json': JSON.stringify({ agents: { list: [{ id: 'rebot' }] } }),
-    'workspace/AGENTS.md': '# AGENTS\n',
-    'workspace/skills/foo/SKILL.md': '# foo\n',
-    'workspace/p.lobster': 'name: p\n'
-  });
-  const { writeDisk } = require('../atlas-skeleton-generator.js');
-  const result = writeDisk(buildId, 'rebot');
-  assert.ok(result.success, JSON.stringify(result));
-  // Nested files preserved.
-  assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'workspace', 'openclaw.json')));
-  assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'workspace', 'AGENTS.md')));
-  assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'workspace', 'skills', 'foo', 'SKILL.md')));
-  assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'workspace', 'p.lobster')));
-  // build-manifest.json at root.
-  assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'build-manifest.json')));
-  // file_hashes contains every nested file (relative paths).
-  assert.ok(result.file_hashes['workspace/skills/foo/SKILL.md']);
-  assert.equal(result.file_count, 5);
+  try {
+    process.env.ISOL8_AGENTS_DIR = agentsRoot;
+    const buildId = 'build_recursive_1';
+    seedStaging(agentsRoot, buildId, {
+      'build-manifest.json': JSON.stringify({ build_id: buildId, agent_name: 'rebot' }),
+      'workspace/openclaw.json': JSON.stringify({ agents: { list: [{ id: 'rebot' }] } }),
+      'workspace/AGENTS.md': '# AGENTS\n',
+      'workspace/skills/foo/SKILL.md': '# foo\n',
+      'workspace/p.lobster': 'name: p\n'
+    });
+    const { writeDisk } = require('../atlas-skeleton-generator.js');
+    const result = writeDisk(buildId, 'rebot');
+    assert.ok(result.success, JSON.stringify(result));
+    // Nested files preserved.
+    assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'workspace', 'openclaw.json')));
+    assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'workspace', 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'workspace', 'skills', 'foo', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'workspace', 'p.lobster')));
+    // build-manifest.json at root.
+    assert.ok(fs.existsSync(path.join(agentsRoot, 'rebot', 'build-manifest.json')));
+    // file_hashes contains every nested file (relative paths).
+    assert.ok(result.file_hashes['workspace/skills/foo/SKILL.md']);
+    assert.equal(result.file_count, 5);
+  } finally {
+    fs.rmSync(agentsRoot, { recursive: true, force: true });
+    delete process.env.ISOL8_AGENTS_DIR;
+  }
 });
 
 test('verifyWrite recursively hashes nested files', () => {
   const agentsRoot = makeTmpAgentsRoot();
-  process.env.ISOL8_AGENTS_DIR = agentsRoot;
-  const destDir = path.join(agentsRoot, 'vbot');
-  fs.mkdirSync(path.join(destDir, 'workspace', 'inner'), { recursive: true });
-  fs.writeFileSync(path.join(destDir, 'build-manifest.json'), 'm');
-  fs.writeFileSync(path.join(destDir, 'workspace', 'a.md'), 'a');
-  fs.writeFileSync(path.join(destDir, 'workspace', 'inner', 'b.md'), 'b');
+  try {
+    process.env.ISOL8_AGENTS_DIR = agentsRoot;
+    const destDir = path.join(agentsRoot, 'vbot');
+    fs.mkdirSync(path.join(destDir, 'workspace', 'inner'), { recursive: true });
+    fs.writeFileSync(path.join(destDir, 'build-manifest.json'), 'm');
+    fs.writeFileSync(path.join(destDir, 'workspace', 'a.md'), 'a');
+    fs.writeFileSync(path.join(destDir, 'workspace', 'inner', 'b.md'), 'b');
 
-  const { verifyWrite } = require('../atlas-skeleton-generator.js');
-  const result = verifyWrite('build_v_1', 'vbot');
-  assert.ok(result.success);
-  assert.equal(result.file_count, 3);
-  assert.ok(result.observed_hashes['workspace/a.md']);
-  assert.ok(result.observed_hashes['workspace/inner/b.md']);
-  assert.ok(result.observed_hashes['build-manifest.json']);
+    const { verifyWrite } = require('../atlas-skeleton-generator.js');
+    const result = verifyWrite('build_v_1', 'vbot');
+    assert.ok(result.success);
+    assert.equal(result.file_count, 3);
+    assert.ok(result.observed_hashes['workspace/a.md']);
+    assert.ok(result.observed_hashes['workspace/inner/b.md']);
+    assert.ok(result.observed_hashes['build-manifest.json']);
+  } finally {
+    fs.rmSync(agentsRoot, { recursive: true, force: true });
+    delete process.env.ISOL8_AGENTS_DIR;
+  }
 });

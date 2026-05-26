@@ -92,13 +92,13 @@ steps:
   - id: deregister-triggers
     command: >
       exec --json --shell 'node atlas-trigger-registrar.js --mode=deregister --build-id="{{build_id}}" --agent-name="{{agent_name}}"'
-    condition: $openclaw-agents-add.json.exit_code != 0 || $register-triggers.json.success == false
+    condition: $openclaw-agents-add.json.exit_code != 0 || ($openclaw-agents-add.json.exit_code == 0 && $register-triggers.json.success == false)
 
   # Step 6.10b — Rollback on agents-add OR register-triggers failure
   - id: rollback
     command: >
       exec --json --shell 'openclaw agents delete {{agent_name}} --force'
-    condition: $openclaw-agents-add.json.exit_code != 0 || $register-triggers.json.success == false
+    condition: $openclaw-agents-add.json.exit_code != 0 || ($openclaw-agents-add.json.exit_code == 0 && $register-triggers.json.success == false)
 
   # Audit log
   - id: audit-log
@@ -119,7 +119,7 @@ steps:
           "register_triggers_success": $register-triggers.json.success,
           "register_triggers_cron_count": $register-triggers.json.cron_registered_count,
           "register_triggers_hook_count": $register-triggers.json.hook_asserted_count,
-          "rollback_fired": $openclaw-agents-add.json.exit_code != 0 || $register-triggers.json.success == false,
+          "rollback_fired": $openclaw-agents-add.json.exit_code != 0 || ($openclaw-agents-add.json.exit_code == 0 && $register-triggers.json.success == false),
           "deregister_triggers_cron_removed": $deregister-triggers.json.cron_removed
         }
       }'

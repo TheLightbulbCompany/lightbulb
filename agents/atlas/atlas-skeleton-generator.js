@@ -653,10 +653,25 @@ function verifyWrite(buildId, agentName) {
   };
 }
 
+function loadManifest(agentName) {
+  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
+  const manifestPath = path.join(agentsRoot, agentName, 'build-manifest.json');
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (e) {
+    return null;
+  }
+}
+
 function main() {
   const args = parseArgs(process.argv);
   const stdinData = readStdin();
 
+  if (args.action === 'load-manifest') {
+    process.stdout.write(JSON.stringify(loadManifest(args.agentName) || {}));
+    return;
+  }
   if (args.action === 'write-disk') {
     process.stdout.write(JSON.stringify(writeDisk(args.buildId, args.agentName)));
     return;
@@ -686,6 +701,7 @@ module.exports = {
   draftToFastIo,
   writeDisk,
   verifyWrite,
+  loadManifest,
   _flattenTriggers,
   _buildManifest,
   _buildTriggersJson

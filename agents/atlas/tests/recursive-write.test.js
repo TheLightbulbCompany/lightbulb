@@ -77,3 +77,34 @@ test('verifyWrite recursively hashes nested files', () => {
     delete process.env.ISOL8_AGENTS_DIR;
   }
 });
+
+test('loadManifest reads build-manifest.json from deployed agent root', () => {
+  const agentsRoot = makeTmpAgentsRoot();
+  process.env.ISOL8_AGENTS_DIR = agentsRoot;
+  try {
+    const destDir = path.join(agentsRoot, 'lmbot');
+    fs.mkdirSync(destDir, { recursive: true });
+    const manifest = { build_id: 'b1', agent_name: 'lmbot', triggers: [{ kind: 'cron', req_id: 'R1' }] };
+    fs.writeFileSync(path.join(destDir, 'build-manifest.json'), JSON.stringify(manifest));
+
+    const { loadManifest } = require('../atlas-skeleton-generator.js');
+    const loaded = loadManifest('lmbot');
+    assert.deepEqual(loaded, manifest);
+  } finally {
+    fs.rmSync(agentsRoot, { recursive: true, force: true });
+    delete process.env.ISOL8_AGENTS_DIR;
+  }
+});
+
+test('loadManifest returns null when manifest missing', () => {
+  const agentsRoot = makeTmpAgentsRoot();
+  process.env.ISOL8_AGENTS_DIR = agentsRoot;
+  try {
+    fs.mkdirSync(path.join(agentsRoot, 'nomanibot'), { recursive: true });
+    const { loadManifest } = require('../atlas-skeleton-generator.js');
+    assert.equal(loadManifest('nomanibot'), null);
+  } finally {
+    fs.rmSync(agentsRoot, { recursive: true, force: true });
+    delete process.env.ISOL8_AGENTS_DIR;
+  }
+});

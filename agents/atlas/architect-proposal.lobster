@@ -39,15 +39,29 @@ steps:
       exec --json --shell 'node atlas-skill-recommender.js'
     stdin: { skeleton: $skeleton-generate.json, brief: $load-brief.json }
 
-  # Step 3.6 — Archetype synthesis (1 LLM call; produces user-stories AND SOUL.md voice/tone in shared schema)
+  # Step 3.6 — Archetype synthesis (1 LLM call; produces user-stories,
+  # voice/tone, AND per-requirement triggers[] binding in the same response.
+  # No new LLM call — triggers ride on the existing multi-field-output schema.
+  #
+  # Schema notes for the LLM:
+  #   requirements_with_triggers[i].req_id           — matches user_stories[].req_id
+  #   requirements_with_triggers[i].classification   — "deterministic" | "llm" | "hybrid"
+  #                                                    (echo the classifier's assignment)
+  #   requirements_with_triggers[i].triggers[]       — array of triggers; for `deterministic`
+  #                                                    classification MUST be non-empty
+  #   trigger kinds:
+  #     cron       — {kind, schedule, tz?, pipeline}   — pipeline ends in .lobster
+  #     hook       — {kind, route, pipeline}            — route starts with /hooks/
+  #     agent-call — {kind, callable_as, pipeline|null}
+  #   `channel` kind is NOT supported in v1.
   - id: archetype-synthesis
     command: >
       openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Phrase each requirement as a user-story (As a [agent], I should [action] so that [outcome]) and produce SOUL.md voice/tone guidance for the agent archetype.",
-        "input": {"skeleton": $skeleton-generate.json, "intake": $load-intake.json, "brief": $load-brief.json},
-        "schema": {"type":"object","properties":{"schema_version":{"type":"string"},"user_stories":{"type":"array"},"voice_tone":{"type":"object"}},"required":["schema_version","user_stories","voice_tone"]},
+        "prompt": "For each requirement: (1) phrase as user-story (As a [agent], I should [action] so that [outcome]); (2) propose triggers[] binding the requirement to runtime entry points. Triggers MUST be non-empty when classification is `deterministic`. Trigger kinds: cron (schedule + .lobster pipeline), hook (/hooks/ route + .lobster pipeline), agent-call (callable_as + optional .lobster pipeline). Also produce SOUL.md voice/tone for the archetype.",
+        "input": {"skeleton": $skeleton-generate.json, "classifications": $det-llm-classify.json, "intake": $load-intake.json, "brief": $load-brief.json},
+        "schema": {"type":"object","properties":{"schema_version":{"type":"string"},"user_stories":{"type":"array"},"voice_tone":{"type":"object"},"requirements_with_triggers":{"type":"array","items":{"type":"object","properties":{"req_id":{"type":"string"},"classification":{"type":"string","enum":["deterministic","llm","hybrid"]},"triggers":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["cron","hook","agent-call"]},"schedule":{"type":"string"},"tz":{"type":"string"},"route":{"type":"string"},"callable_as":{"type":"string"},"pipeline":{"type":["string","null"]}},"required":["kind"]}}},"required":["req_id","classification","triggers"]}}},"required":["schema_version","user_stories","voice_tone","requirements_with_triggers"]},
         "thinking": "low",
-        "maxTokens": 2500
+        "maxTokens": 3500
       }'
 
   # Step 3.7 — Snapshot original requirement matrix (W5 hash-verification pattern)
@@ -61,6 +75,7 @@ steps:
           "skill_recommendations": $skill-recommend.json,
           "user_stories": $archetype-synthesis.json.user_stories,
           "voice_tone": $archetype-synthesis.json.voice_tone,
+          "requirements_with_triggers": $archetype-synthesis.json.requirements_with_triggers,
           "snapshot_at": "{{timestamp}}"
         }
       }'

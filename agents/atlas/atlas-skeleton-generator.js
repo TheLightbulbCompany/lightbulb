@@ -396,10 +396,50 @@ module.exports = { process };
 `;
 }
 
+function _flattenTriggers(requirementsWithTriggers) {
+  const out = [];
+  for (const row of (requirementsWithTriggers || [])) {
+    for (const t of (row.triggers || [])) {
+      out.push({ req_id: row.req_id, ...t });
+    }
+  }
+  return out;
+}
+
+function _sha256OfString(s) {
+  return crypto.createHash('sha256').update(s).digest('hex');
+}
+
+function _buildManifest(buildId, agentName, artifactsUnderWorkspace, triggers) {
+  const files = Object.keys(artifactsUnderWorkspace).sort().map(p => ({
+    path: p,
+    sha256: _sha256OfString(artifactsUnderWorkspace[p])
+  }));
+  return {
+    build_id: buildId,
+    agent_name: agentName,
+    generated_at: new Date().toISOString(),
+    files,
+    triggers
+  };
+}
+
+function _buildTriggersJson(buildId, agentName, triggers) {
+  // registered_as is filled in by the registrar at register-time; emit blank
+  // here so the file shape matches what the registrar later mutates.
+  return {
+    agent_name: agentName,
+    build_id: buildId,
+    triggers: triggers.map(t => ({ ...t, registered_as: null }))
+  };
+}
+
 function draftToFastIo(spec) {
-  let agentsMd, soulMd, identityMd, toolsMd, bootstrapMd, userMd, openclawJson;
+  const agentName = spec.intake && spec.intake.name;
+  const buildId = spec.build_id || (spec.intake && spec.intake.build_id) || 'build_unknown';
   const errors = [];
 
+  let agentsMd, soulMd, identityMd, toolsMd, bootstrapMd, userMd, openclawJson;
   try { openclawJson = generateOpenclawJson(spec); } catch (e) { errors.push({ file: 'openclaw.json', error: e.message }); }
   try { agentsMd = generateAgentsMd(spec); } catch (e) { errors.push({ file: 'AGENTS.md', error: e.message }); }
   try { soulMd = generateSoulMd(spec); } catch (e) { errors.push({ file: 'SOUL.md', error: e.message }); }
@@ -412,29 +452,44 @@ function draftToFastIo(spec) {
     return { pass: false, errors };
   }
 
-  const artifacts = {
-    'openclaw.json': openclawJson,
-    'AGENTS.md': agentsMd,
-    'SOUL.md': soulMd,
-    'IDENTITY.md': identityMd,
-    'TOOLS.md': toolsMd,
-    'BOOTSTRAP.md': bootstrapMd,
-    'USER.md': userMd
+  // All generated agent files land under workspace/ — matches
+  // openclaw.json#agents.defaults.workspace = "~/.openclaw/agents/{name}/workspace".
+  const underWorkspace = {
+    'workspace/openclaw.json': openclawJson,
+    'workspace/AGENTS.md': agentsMd,
+    'workspace/SOUL.md': soulMd,
+    'workspace/IDENTITY.md': identityMd,
+    'workspace/TOOLS.md': toolsMd,
+    'workspace/BOOTSTRAP.md': bootstrapMd,
+    'workspace/USER.md': userMd
   };
 
-  // Add .lobster pipelines
   for (const pipeline of (spec.pipelines || [])) {
-    artifacts[`${pipeline.name}.lobster`] = generateLobsterPipeline(pipeline);
+    underWorkspace[`workspace/${pipeline.name}.lobster`] = generateLobsterPipeline(pipeline);
+  }
+  for (const script of (spec.scripts || [])) {
+    underWorkspace[`workspace/${script.name}.js`] = generateScriptArchetype(script);
   }
 
-  // Add .js scripts
-  for (const script of (spec.scripts || [])) {
-    artifacts[`${script.name}.js`] = generateScriptArchetype(script);
-  }
+  const flatTriggers = _flattenTriggers(spec.requirements_with_triggers);
+  underWorkspace['workspace/triggers.json'] = JSON.stringify(
+    _buildTriggersJson(buildId, agentName, flatTriggers), null, 2
+  );
+
+  // build-manifest.json lives at the staging ROOT, not under workspace/.
+  // It documents the build itself (files + triggers + sha256s); it's not
+  // shipped to the agent's runtime workspace.
+  const manifest = _buildManifest(buildId, agentName, underWorkspace, flatTriggers);
+
+  const artifacts = {
+    ...underWorkspace,
+    'build-manifest.json': JSON.stringify(manifest, null, 2)
+  };
 
   return {
     pass: true,
     requirement_count: (spec.user_stories || []).length,
+    trigger_count: flatTriggers.length,
     artifact_count: Object.keys(artifacts).length,
     artifacts_to_stage: artifacts
   };
@@ -611,5 +666,8 @@ module.exports = {
   generateScriptArchetype,
   draftToFastIo,
   writeDisk,
-  verifyWrite
+  verifyWrite,
+  _flattenTriggers,
+  _buildManifest,
+  _buildTriggersJson
 };

@@ -58,6 +58,27 @@ steps:
       }'
     approval: required
 
+  # Step 5.8 — S9.5 determinism-audit gate (HARD; no override per spec §5).
+  # Asserts every requirement classified `deterministic` has triggers.length > 0
+  # AND every trigger's pipeline exists in the staging dir. On failure, the
+  # pipeline halts and the user must re-vet to bind triggers OR reclassify
+  # the requirement to llm/hybrid.
+  - id: determinism-audit
+    command: >
+      exec --json --shell 'node atlas-determinism-audit.js --build-id="{{build_id}}"'
+    condition: $architecture-signoff.json.confirmed == true
+
+  # Step 5.9 — Surface failures to the user when the gate refuses to advance.
+  # The audit script exits non-zero on failure, which stops the pipeline; this
+  # step posts the failure list to the vet channel so the user knows what to fix.
+  - id: determinism-failure-notice
+    command: >
+      openclaw.invoke --tool slack --action post --args-json '{
+        "channel": "{{vet_channel}}",
+        "text": "S9.5 determinism-audit HALTED the build. $determinism-audit.json.failures.length requirement(s) need either a trigger binding or a reclassification:\n$determinism-audit.json.failures"
+      }'
+    condition: $determinism-audit.json.pass == false
+
   # Audit log
   - id: audit-log
     command: >
@@ -68,6 +89,8 @@ steps:
           "build_id": "{{build_id}}",
           "matrix_hash_verified": $verify-matrix-hash.json.hash_matches,
           "replacement_ratio": $cost-count.json.replacement_ratio,
-          "architecture_signoff": "$architecture-signoff.json.confirmed"
+          "architecture_signoff": "$architecture-signoff.json.confirmed",
+          "determinism_audit_pass": $determinism-audit.json.pass,
+          "determinism_audit_failures": $determinism-audit.json.failures
         }
       }'

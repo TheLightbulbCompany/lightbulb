@@ -122,3 +122,111 @@ test('register updates triggers.json with registered_as', () => {
     delete process.env.ATLAS_CRON_STORE;
   }
 });
+
+test('register fails when hook trigger references missing pipeline', () => {
+  const { root, agentsRoot, cronStore } = mkTmpDirs();
+  process.env.ISOL8_AGENTS_DIR = agentsRoot;
+  process.env.ATLAS_CRON_STORE = cronStore;
+  try {
+    seedDeployedAgent(agentsRoot, 'hbot', {
+      build_id: 'B4', agent_name: 'hbot',
+      triggers: [
+        { req_id: 'R1', kind: 'hook', route: '/hooks/test', pipeline: 'missing.lobster' }
+      ]
+    }, {});
+
+    const { register } = require('../atlas-trigger-registrar.js');
+    const result = register({ buildId: 'B4', agentName: 'hbot' });
+    assert.ok(!result.success);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].kind, 'hook');
+    assert.match(result.errors[0].error, /pipeline file not in workspace/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    delete process.env.ISOL8_AGENTS_DIR;
+    delete process.env.ATLAS_CRON_STORE;
+  }
+});
+
+test('register rejects channel kind (v1)', () => {
+  const { root, agentsRoot, cronStore } = mkTmpDirs();
+  process.env.ISOL8_AGENTS_DIR = agentsRoot;
+  process.env.ATLAS_CRON_STORE = cronStore;
+  try {
+    seedDeployedAgent(agentsRoot, 'chbot', {
+      build_id: 'B5', agent_name: 'chbot',
+      triggers: [
+        { req_id: 'R1', kind: 'channel', channel: 'slack', match: '@x', pipeline: 'x.lobster' }
+      ]
+    }, { 'x.lobster': 'name: x\n' });
+
+    const { register } = require('../atlas-trigger-registrar.js');
+    const result = register({ buildId: 'B5', agentName: 'chbot' });
+    assert.ok(!result.success);
+    assert.match(result.errors[0].error, /unsupported trigger kind: channel/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    delete process.env.ISOL8_AGENTS_DIR;
+    delete process.env.ATLAS_CRON_STORE;
+  }
+});
+
+test('register aborts at first failure but preserves earlier registrations', () => {
+  const { root, agentsRoot, cronStore } = mkTmpDirs();
+  process.env.ISOL8_AGENTS_DIR = agentsRoot;
+  process.env.ATLAS_CRON_STORE = cronStore;
+  try {
+    seedDeployedAgent(agentsRoot, 'mixbot', {
+      build_id: 'B6', agent_name: 'mixbot',
+      triggers: [
+        { req_id: 'R1', kind: 'cron', schedule: '* * * * *', pipeline: 'ok.lobster' },
+        { req_id: 'R2', kind: 'hook', route: '/hooks/x', pipeline: 'gone.lobster' }
+      ]
+    }, { 'ok.lobster': 'name: ok\n' });
+
+    const { register } = require('../atlas-trigger-registrar.js');
+    const result = register({ buildId: 'B6', agentName: 'mixbot' });
+    assert.ok(!result.success);
+    assert.equal(result.registered.length, 1, 'only first trigger registered');
+    assert.equal(result.registered[0].kind, 'cron');
+
+    const store = JSON.parse(fs.readFileSync(cronStore, 'utf8'));
+    assert.equal(store.jobs.length, 1);
+    assert.equal(store.jobs[0].name, 'B6-R1-1');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    delete process.env.ISOL8_AGENTS_DIR;
+    delete process.env.ATLAS_CRON_STORE;
+  }
+});
+
+test('deregister removes only this build_id+agent_name jobs', () => {
+  const { root, agentsRoot, cronStore } = mkTmpDirs();
+  process.env.ISOL8_AGENTS_DIR = agentsRoot;
+  process.env.ATLAS_CRON_STORE = cronStore;
+  try {
+    // Pre-seed jobs.json with 4 jobs
+    fs.writeFileSync(cronStore, JSON.stringify({
+      version: 1,
+      jobs: [
+        { id: 'a', agentId: 'pbot', name: 'B1-R1-1' },
+        { id: 'b', agentId: 'pbot', name: 'B1-R2-1' },
+        { id: 'c', agentId: 'other', name: 'B1-R1-1' },
+        { id: 'd', agentId: 'pbot', name: 'B2-R1-1' }
+      ]
+    }));
+
+    const { deregister } = require('../atlas-trigger-registrar.js');
+    const result = deregister({ buildId: 'B1', agentName: 'pbot' });
+    assert.ok(result.success);
+    assert.equal(result.cron_removed, 2);
+
+    const store = JSON.parse(fs.readFileSync(cronStore, 'utf8'));
+    const remaining = store.jobs.map(j => j.id).sort();
+    assert.deepEqual(remaining, ['c', 'd']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    delete process.env.ISOL8_AGENTS_DIR;
+    delete process.env.ATLAS_CRON_STORE;
+  }
+});

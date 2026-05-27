@@ -11,6 +11,16 @@ const SILENT_REPLY_TOKEN = "NO_REPLY";
 const HEARTBEAT_OK_TOKEN = "HEARTBEAT_OK";
 const SYNTHETIC_REPAIR_TOKEN = "SYNTHETIC_TRANSCRIPT_REPAIR_RESULT";
 
+// OpenClaw injects a "post-exec wrapper" user-role message after each tool
+// run. It contains raw stdout + a meta-prompt telling the LLM to continue.
+// Without this filter the wrapper renders as a user bubble in chat history.
+// Any one of these substrings is distinctive enough to identify the template.
+const SYNTHETIC_EXEC_WRAPPER_MARKERS = [
+  "Exec finished (gateway id=",
+  "Exact completion details:",
+  "Continue the task if needed, then reply to the user",
+] as const;
+
 function extractFirstText(m: HistoryMessage): string {
   if (typeof m.text === "string") return m.text;
   if (!Array.isArray(m.content)) return "";
@@ -63,12 +73,20 @@ export function isEmptyUserTextOnlyMessage(m: HistoryMessage): boolean {
   );
 }
 
+export function isSyntheticExecWrapper(m: HistoryMessage): boolean {
+  if (lowerRole(m) !== "user") return false;
+  const text = extractFirstText(m);
+  if (!text) return false;
+  return SYNTHETIC_EXEC_WRAPPER_MARKERS.some((marker) => text.includes(marker));
+}
+
 export function shouldHideHistoryMessage(m: HistoryMessage): boolean {
   return (
     isAssistantSilentReply(m) ||
     isAssistantHeartbeatAck(m) ||
     isSyntheticTranscriptRepairToolResult(m) ||
-    isEmptyUserTextOnlyMessage(m)
+    isEmptyUserTextOnlyMessage(m) ||
+    isSyntheticExecWrapper(m)
   );
 }
 

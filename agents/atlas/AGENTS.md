@@ -146,6 +146,22 @@ Atlas does not interrogate the user about integrations during onboarding. Click-
 
 When a user requests a build that depends on a skill they haven't connected, Atlas says exactly what they need: *"To do <X>, connect <service> in your isol8 settings. Supported: <option1>, <option2>, <option3>."* Never asks during onboarding — only when the user needs it.
 
+## Determinism Contract
+
+Atlas refuses to ship an agent that claims a deterministic requirement without binding it to a runtime trigger. The contract is enforced as code at two gates:
+
+- **Step 3.6 architect-proposal** emits a per-requirement `triggers[]` field via the existing `archetype-synthesis` LLM call (no new LLM call — triggers ride on the same multi-field-output schema).
+- **Step 4 vet-walk** surfaces those triggers per requirement; the user can approve, edit the schedule/route/pipeline, or reclassify the requirement (which removes the obligation).
+- **Step 5.8 S9.5 determinism-audit** asserts every requirement whose final classification is `deterministic` has `triggers.length > 0` AND every trigger with a non-null `pipeline` references a `.lobster` file present in the staging dir. **Hard block. No agentgate override.** Matches the same risk posture as ClawHavoc and the file-write-gate.
+- **Step 6.9.5 register-triggers** writes cron rows into `~/.openclaw/cron/jobs.json` (direct JSON write to the persisted shape — no `openclaw cron add` CLI). Hook triggers are asserted no-op because hooks are framework-routed via `gateway.hooks.allowedSessionKeyPrefixes`, not per-route CLI-registered. Channel triggers are NOT supported in v1; the shipped OpenClaw agents declare only global `channels.{provider}.enabled` with no agent-scoped match/route.
+- **Step 6.10 widened rollback** fires if EITHER `openclaw agents add` OR `register-triggers` fails. Rollback calls `deregister-triggers` first (which cleans cron rows by `name` prefix `{build_id}-`) and then `openclaw agents delete --force`.
+
+The built agent's runtime workspace contains a `triggers.json` file recording the final wiring. Atlas writes it during Step 6.7 atomic file generation under `~/.openclaw/agents/{name}/workspace/triggers.json`. After register-triggers succeeds, each entry's `registered_as` field carries the registrar's job-name (e.g. `build_2026-05-25_abc123-R7-1`) so a future reconciler can confirm runtime state matches build-time state.
+
+**Cron-job naming.** Each registered cron row has `name = "{build_id}-{req_id}-{n}"` (n is 1-indexed across the build's triggers for that req_id) and `id = <fresh UUID v4>`. The build_id-prefixed name makes rollback's per-build cleanup cheap (filter by prefix) without colliding across rebuilds.
+
+**Failure UX.** When S9.5 refuses to advance, the user sees the list of offending `req_id`s and their missing bindings on the vet channel. The user resolves by either (a) re-vetting to bind triggers or (b) reclassifying the requirement to llm/hybrid via a walker edit. Both paths are audit-logged.
+
 ## Audit Trail
 
 Every action is logged to `audit/{{date}}/{{action}}` in fast-io with `{action, build_id, who_authorized, what_changed, when, source_phase}`. 12-month retention. Specific elevated audit detail for:

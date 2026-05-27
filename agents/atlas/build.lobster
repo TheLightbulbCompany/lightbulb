@@ -82,11 +82,23 @@ steps:
       exec --json --shell 'openclaw agents add {{agent_name}}'
     condition: $verify-write.json.success == true
 
-  # Step 6.10 — Rollback on add failure (openclaw agents delete recovers to Trash per docs)
+  # Step 6.9.5 — Register triggers (cron rows + hook/agent-call asserts)
+  - id: register-triggers
+    command: >
+      exec --json --shell 'node atlas-trigger-registrar.js --mode=register --build-id="{{build_id}}" --agent-name="{{agent_name}}"'
+    condition: $openclaw-agents-add.json.exit_code == 0
+
+  # Step 6.10a — Deregister triggers on rollback (cleans cron rows written this build)
+  - id: deregister-triggers
+    command: >
+      exec --json --shell 'node atlas-trigger-registrar.js --mode=deregister --build-id="{{build_id}}" --agent-name="{{agent_name}}"'
+    condition: $openclaw-agents-add.json.exit_code != 0 || ($openclaw-agents-add.json.exit_code == 0 && $register-triggers.json.success == false)
+
+  # Step 6.10b — Rollback on agents-add OR register-triggers failure
   - id: rollback
     command: >
       exec --json --shell 'openclaw agents delete {{agent_name}} --force'
-    condition: $openclaw-agents-add.json.exit_code != 0
+    condition: $openclaw-agents-add.json.exit_code != 0 || ($openclaw-agents-add.json.exit_code == 0 && $register-triggers.json.success == false)
 
   # Audit log
   - id: audit-log
@@ -104,6 +116,10 @@ steps:
           "file_write_confirmed": $file-write-gate.json.confirmed,
           "atomic_mv_succeeded": $verify-write.json.success,
           "openclaw_add_succeeded": $openclaw-agents-add.json.exit_code == 0,
-          "rollback_fired": $openclaw-agents-add.json.exit_code != 0
+          "register_triggers_success": $register-triggers.json.success,
+          "register_triggers_cron_count": $register-triggers.json.cron_registered_count,
+          "register_triggers_hook_count": $register-triggers.json.hook_asserted_count,
+          "rollback_fired": $openclaw-agents-add.json.exit_code != 0 || ($openclaw-agents-add.json.exit_code == 0 && $register-triggers.json.success == false),
+          "deregister_triggers_cron_removed": $deregister-triggers.json.cron_removed
         }
       }'

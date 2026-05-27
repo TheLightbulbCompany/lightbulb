@@ -396,10 +396,50 @@ module.exports = { process };
 `;
 }
 
+function _flattenTriggers(requirementsWithTriggers) {
+  const out = [];
+  for (const row of (requirementsWithTriggers || [])) {
+    for (const t of (row.triggers || [])) {
+      out.push({ req_id: row.req_id, ...t });
+    }
+  }
+  return out;
+}
+
+function _sha256OfString(s) {
+  return crypto.createHash('sha256').update(s).digest('hex');
+}
+
+function _buildManifest(buildId, agentName, artifactsUnderWorkspace, triggers) {
+  const files = Object.keys(artifactsUnderWorkspace).sort().map(p => ({
+    path: p,
+    sha256: _sha256OfString(artifactsUnderWorkspace[p])
+  }));
+  return {
+    build_id: buildId,
+    agent_name: agentName,
+    generated_at: new Date().toISOString(),
+    files,
+    triggers
+  };
+}
+
+function _buildTriggersJson(buildId, agentName, triggers) {
+  // registered_as is filled in by the registrar at register-time; emit blank
+  // here so the file shape matches what the registrar later mutates.
+  return {
+    agent_name: agentName,
+    build_id: buildId,
+    triggers: triggers.map(t => ({ ...t, registered_as: null }))
+  };
+}
+
 function draftToFastIo(spec) {
-  let agentsMd, soulMd, identityMd, toolsMd, bootstrapMd, userMd, openclawJson;
+  const agentName = spec.intake && spec.intake.name;
+  const buildId = spec.build_id || (spec.intake && spec.intake.build_id) || 'build_unknown';
   const errors = [];
 
+  let agentsMd, soulMd, identityMd, toolsMd, bootstrapMd, userMd, openclawJson;
   try { openclawJson = generateOpenclawJson(spec); } catch (e) { errors.push({ file: 'openclaw.json', error: e.message }); }
   try { agentsMd = generateAgentsMd(spec); } catch (e) { errors.push({ file: 'AGENTS.md', error: e.message }); }
   try { soulMd = generateSoulMd(spec); } catch (e) { errors.push({ file: 'SOUL.md', error: e.message }); }
@@ -412,29 +452,44 @@ function draftToFastIo(spec) {
     return { pass: false, errors };
   }
 
-  const artifacts = {
-    'openclaw.json': openclawJson,
-    'AGENTS.md': agentsMd,
-    'SOUL.md': soulMd,
-    'IDENTITY.md': identityMd,
-    'TOOLS.md': toolsMd,
-    'BOOTSTRAP.md': bootstrapMd,
-    'USER.md': userMd
+  // All generated agent files land under workspace/ — matches
+  // openclaw.json#agents.defaults.workspace = "~/.openclaw/agents/{name}/workspace".
+  const underWorkspace = {
+    'workspace/openclaw.json': openclawJson,
+    'workspace/AGENTS.md': agentsMd,
+    'workspace/SOUL.md': soulMd,
+    'workspace/IDENTITY.md': identityMd,
+    'workspace/TOOLS.md': toolsMd,
+    'workspace/BOOTSTRAP.md': bootstrapMd,
+    'workspace/USER.md': userMd
   };
 
-  // Add .lobster pipelines
   for (const pipeline of (spec.pipelines || [])) {
-    artifacts[`${pipeline.name}.lobster`] = generateLobsterPipeline(pipeline);
+    underWorkspace[`workspace/${pipeline.name}.lobster`] = generateLobsterPipeline(pipeline);
+  }
+  for (const script of (spec.scripts || [])) {
+    underWorkspace[`workspace/${script.name}.js`] = generateScriptArchetype(script);
   }
 
-  // Add .js scripts
-  for (const script of (spec.scripts || [])) {
-    artifacts[`${script.name}.js`] = generateScriptArchetype(script);
-  }
+  const flatTriggers = _flattenTriggers(spec.requirements_with_triggers);
+  underWorkspace['workspace/triggers.json'] = JSON.stringify(
+    _buildTriggersJson(buildId, agentName, flatTriggers), null, 2
+  );
+
+  // build-manifest.json lives at the staging ROOT, not under workspace/.
+  // It documents the build itself (files + triggers + sha256s); it's not
+  // shipped to the agent's runtime workspace.
+  const manifest = _buildManifest(buildId, agentName, underWorkspace, flatTriggers);
+
+  const artifacts = {
+    ...underWorkspace,
+    'build-manifest.json': JSON.stringify(manifest, null, 2)
+  };
 
   return {
     pass: true,
     requirement_count: (spec.user_stories || []).length,
+    trigger_count: flatTriggers.length,
     artifact_count: Object.keys(artifacts).length,
     artifacts_to_stage: artifacts
   };
@@ -480,14 +535,25 @@ function writeDisk(buildId, agentName) {
   }
 
   // Compute per-file SHA256s BEFORE mv (for rollback error report)
+  // Recursive walk — preserves staging-dir subdirectories (workspace/, skills/, etc.).
   const stagedHashes = {};
-  const stagedFiles = fs.readdirSync(stagingDir, { withFileTypes: true })
-    .filter(d => d.isFile())
-    .map(d => d.name);
-  for (const fname of stagedFiles) {
-    const content = fs.readFileSync(path.join(stagingDir, fname));
-    stagedHashes[fname] = crypto.createHash('sha256').update(content).digest('hex');
+  function _walk(dir, relBase) {
+    for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const rel = relBase ? path.join(relBase, dirent.name) : dirent.name;
+      const full = path.join(dir, dirent.name);
+      if (dirent.isDirectory()) {
+        _walk(full, rel);
+      } else if (dirent.isFile()) {
+        const content = fs.readFileSync(full);
+        // Use forward-slash separators in the hash key so the manifest is
+        // portable across host OSes (POSIX-style is what the spec uses).
+        stagedHashes[rel.split(path.sep).join('/')] =
+          crypto.createHash('sha256').update(content).digest('hex');
+      }
+    }
   }
+  _walk(stagingDir, '');
+  const stagedFileCount = Object.keys(stagedHashes).length;
 
   if (fs.existsSync(destDir)) {
     const err = {
@@ -514,7 +580,7 @@ function writeDisk(buildId, agentName) {
       staging_dir: stagingDir,
       destination_dir: destDir,
       agent_name: agentName,
-      file_count: stagedFiles.length,
+      file_count: stagedFileCount,
       file_hashes: stagedHashes,
       mv_method: 'fs.renameSync (POSIX rename(2), atomic on local filesystem)',
       written_at: new Date().toISOString()
@@ -561,28 +627,51 @@ function verifyWrite(buildId, agentName) {
     };
   }
   const observedHashes = {};
-  const files = fs.readdirSync(destDir, { withFileTypes: true })
-    .filter(d => d.isFile())
-    .map(d => d.name);
-  for (const fname of files) {
-    const content = fs.readFileSync(path.join(destDir, fname));
-    observedHashes[fname] = crypto.createHash('sha256').update(content).digest('hex');
+  function _walk(dir, relBase) {
+    for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const rel = relBase ? path.join(relBase, dirent.name) : dirent.name;
+      const full = path.join(dir, dirent.name);
+      if (dirent.isDirectory()) {
+        _walk(full, rel);
+      } else if (dirent.isFile()) {
+        const content = fs.readFileSync(full);
+        observedHashes[rel.split(path.sep).join('/')] =
+          crypto.createHash('sha256').update(content).digest('hex');
+      }
+    }
   }
+  _walk(destDir, '');
+  const observedFileCount = Object.keys(observedHashes).length;
   return {
     success: true,
     build_id: buildId,
     agent_name: agentName,
     destination_dir: destDir,
-    file_count: files.length,
+    file_count: observedFileCount,
     observed_hashes: observedHashes,
     verified_at: new Date().toISOString()
   };
+}
+
+function loadManifest(agentName) {
+  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
+  const manifestPath = path.join(agentsRoot, agentName, 'build-manifest.json');
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (e) {
+    return null;
+  }
 }
 
 function main() {
   const args = parseArgs(process.argv);
   const stdinData = readStdin();
 
+  if (args.action === 'load-manifest') {
+    process.stdout.write(JSON.stringify(loadManifest(args.agentName) || {}));
+    return;
+  }
   if (args.action === 'write-disk') {
     process.stdout.write(JSON.stringify(writeDisk(args.buildId, args.agentName)));
     return;
@@ -611,5 +700,9 @@ module.exports = {
   generateScriptArchetype,
   draftToFastIo,
   writeDisk,
-  verifyWrite
+  verifyWrite,
+  loadManifest,
+  _flattenTriggers,
+  _buildManifest,
+  _buildTriggersJson
 };

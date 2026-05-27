@@ -31,27 +31,31 @@ steps:
     command: >
       exec --json --shell 'node atlas-requirement-walker.js --action=present-next --build-id="{{build_id}}"'
 
-  # Step 4.4 — Present row to user with rationale, gate on response
+  # Step 4.4 — Present row to user with rationale + triggers, gate on response.
+  # When classification == "deterministic" the user MUST either approve the
+  # triggers as drafted, edit them (change kind, schedule, route, pipeline),
+  # or reclassify the requirement to llm/hybrid (which removes the trigger
+  # obligation). S9.5 will refuse to advance the build otherwise.
   - id: present-row
     command: >
       openclaw.invoke --tool slack --action post --args-json '{
         "channel": "{{vet_channel}}",
-        "text": "$walker-iteration.json.req_id: $walker-iteration.json.requirement_text\n\nRationale: $walker-iteration.json.rationale\n\nApprove / change (with what) / drop (with why)?"
+        "text": "$walker-iteration.json.req_id ($walker-iteration.json.classification): $walker-iteration.json.requirement_text\n\nRationale: $walker-iteration.json.rationale\n\nTriggers (deterministic-binding):\n$walker-iteration.json.triggers\n\nApprove / change (triggers and/or classification) / drop (with why)?"
       }'
     approval: required
 
-  # Step 4.5 — Record decision per-requirement
+  # Step 4.5 — Record decision per-requirement (now also accepts trigger + classification edits)
   - id: record-decision
+    command: >
+      exec --json --shell 'node atlas-requirement-walker.js --action=apply-trigger-edits --build-id="{{build_id}}" --req-id="$walker-iteration.json.req_id"'
+    stdin: { decision: $present-row.json.decision, user_note: $present-row.json.user_note, triggers: $present-row.json.triggers, classification_override: $present-row.json.classification_override }
+
+  # Step 4.5b — Persist the normalized decision row.
+  - id: persist-decision
     command: >
       openclaw.invoke --tool fast-io --action write --args-json '{
         "key": "atlas-builds/{{build_id}}/decisions/$walker-iteration.json.req_id",
-        "data": {
-          "req_id": "$walker-iteration.json.req_id",
-          "decision": "$present-row.json.decision",
-          "user_note": "$present-row.json.user_note",
-          "decided_at": "{{timestamp}}",
-          "presented_at": "$walker-iteration.json.presented_at"
-        }
+        "data": $record-decision.json
       }'
 
   # Step 4.6 — Update taskr (move req from outstanding to completed)

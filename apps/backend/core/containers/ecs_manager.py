@@ -3,8 +3,8 @@ ECS Fargate service manager for per-user OpenClaw gateways.
 
 Each subscriber gets a dedicated ECS Service (desiredCount 0/1) that
 runs an OpenClaw gateway container with a per-user EFS access point
-for data isolation. Task IPs are discovered via the ECS describe_tasks
-API.
+for data isolation. Task IPs are discovered via AWS Cloud Map
+(``DiscoverInstances``).
 """
 
 import asyncio
@@ -89,6 +89,9 @@ class EcsManager:
         self._subnets = [s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()]
         self._security_groups = [settings.ECS_SECURITY_GROUP_ID]
         self._cloud_map_service_arn = settings.CLOUD_MAP_SERVICE_ARN
+        self._servicediscovery = boto3.client("servicediscovery", region_name=settings.AWS_REGION)
+        self._cloud_map_namespace_name = settings.CLOUD_MAP_NAMESPACE_NAME
+        self._cloud_map_service_name = settings.CLOUD_MAP_SERVICE_NAME
         self._efs_file_system_id = settings.EFS_FILE_SYSTEM_ID
 
     def _service_name(self, user_id: str) -> str:
@@ -951,47 +954,49 @@ class EcsManager:
     # ------------------------------------------------------------------
 
     def discover_ip(self, service_name: str) -> str | None:
-        """Discover a task's private IP via ECS describe_tasks API.
+        """Discover a task's private IP via AWS Cloud Map.
 
-        Lists running tasks for the given ECS service, then describes
-        them to extract the private IPv4 address from the ENI attachment.
-        This is more reliable than Cloud Map and ensures per-service
-        isolation (each service's tasks are queried independently).
+        Every per-user OpenClaw ECS service registers its task into one shared
+        Cloud Map service (see apps/infra/lib/stacks/container-stack.ts), each
+        instance carrying an ``ECS_SERVICE_NAME`` attribute. We scope the
+        lookup to a single tenant by filtering on that attribute, so the IP
+        reflects the *current* task and can never be stale across task
+        replacements — unlike a cached address.
+
+        ``HealthStatus="HEALTHY_OR_ELSE_ALL"``: the shared Cloud Map service has
+        no HealthCheckCustomConfig, so ECS-registered instances report health
+        ``UNKNOWN``. This mode returns the current task regardless of that, and
+        automatically prefers healthy tasks if health-checking is ever enabled.
 
         Args:
-            service_name: The ECS service name.
+            service_name: The per-user ECS service name (the ``ECS_SERVICE_NAME``
+                attribute value to match).
 
         Returns:
-            The task's private IPv4 address, or None if no running task.
+            The current task's private IPv4 address, or None.
         """
+        if not self._cloud_map_namespace_name or not self._cloud_map_service_name:
+            logger.error(
+                "Cloud Map names not configured (namespace=%r service=%r); cannot discover %s",
+                self._cloud_map_namespace_name,
+                self._cloud_map_service_name,
+                service_name,
+            )
+            return None
         try:
-            # List tasks for this specific service
-            list_resp = self._ecs.list_tasks(
-                cluster=self._cluster,
-                serviceName=service_name,
-                desiredStatus="RUNNING",
+            resp = self._servicediscovery.discover_instances(
+                NamespaceName=self._cloud_map_namespace_name,
+                ServiceName=self._cloud_map_service_name,
+                QueryParameters={"ECS_SERVICE_NAME": service_name},
+                HealthStatus="HEALTHY_OR_ELSE_ALL",
             )
-            task_arns = list_resp.get("taskArns", [])
-            if not task_arns:
-                return None
-
-            # Describe the first running task to get its ENI IP
-            desc_resp = self._ecs.describe_tasks(
-                cluster=self._cluster,
-                tasks=[task_arns[0]],
-            )
-            tasks = desc_resp.get("tasks", [])
-            if not tasks:
-                return None
-
-            # Extract private IP from ENI attachment
-            for attachment in tasks[0].get("attachments", []):
-                if attachment.get("type") == "ElasticNetworkInterface":
-                    for detail in attachment.get("details", []):
-                        if detail.get("name") == "privateIPv4Address":
-                            return detail.get("value")
         except Exception as e:
-            logger.error("ECS task discovery failed for %s: %s", service_name, e)
+            logger.error("Cloud Map discovery failed for %s: %s", service_name, e)
+            return None
+        for inst in resp.get("Instances", []):
+            attrs = inst.get("Attributes", {})
+            if attrs.get("ECS_SERVICE_NAME") == service_name and attrs.get("AWS_INSTANCE_IPV4"):
+                return attrs["AWS_INSTANCE_IPV4"]
         return None
 
     def is_healthy(self, ip: str) -> bool:

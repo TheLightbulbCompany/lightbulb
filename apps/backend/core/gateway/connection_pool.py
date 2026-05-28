@@ -1308,9 +1308,7 @@ class GatewayConnection:
             # watchdog. That wedges it forever: every reopen re-dials and
             # fails, and the parked->dead escalation (which lets the pool
             # recreate from scratch) never fires. Re-arm so it can escalate.
-            if self._active_runs and (
-                self._parked_watchdog_task is None or self._parked_watchdog_task.done()
-            ):
+            if self._active_runs and (self._parked_watchdog_task is None or self._parked_watchdog_task.done()):
                 self._parked_watchdog_task = asyncio.create_task(self._parked_watchdog())
             raise
         self._parked = False

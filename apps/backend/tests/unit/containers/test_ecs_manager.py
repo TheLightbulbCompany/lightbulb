@@ -107,6 +107,7 @@ def mock_settings():
 def manager(mock_settings, mock_ecs_client, mock_efs_client, mock_servicediscovery_client):
     """Create an EcsManager with mocked boto3 clients."""
     with patch("core.containers.ecs_manager.boto3") as mock_boto3:
+
         def client_factory(service, **kwargs):
             if service == "ecs":
                 return mock_ecs_client
@@ -852,9 +853,7 @@ class TestDiscoverIp:
     def test_ignores_instances_for_other_tenants(self, manager, mock_servicediscovery_client):
         """Defensive client-side filter: never return another tenant's IP."""
         mock_servicediscovery_client.discover_instances.return_value = {
-            "Instances": [
-                {"Attributes": {"ECS_SERVICE_NAME": "openclaw-other", "AWS_INSTANCE_IPV4": "10.0.9.9"}}
-            ]
+            "Instances": [{"Attributes": {"ECS_SERVICE_NAME": "openclaw-other", "AWS_INSTANCE_IPV4": "10.0.9.9"}}]
         }
         assert manager.discover_ip("openclaw-abc123def4") is None
 

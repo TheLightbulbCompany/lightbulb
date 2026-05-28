@@ -503,9 +503,7 @@ class TestCreateNewVersion:
             },
         )
 
-        result = await marketplace_service.create_new_version(
-            listing_id=listing_id, seller_id="seller_1"
-        )
+        result = await marketplace_service.create_new_version(listing_id=listing_id, seller_id="seller_1")
 
         assert result["agent_id"] == "agent_abc"
         assert list(result["bundle_mcps"]) == ["filesystem", "github"]

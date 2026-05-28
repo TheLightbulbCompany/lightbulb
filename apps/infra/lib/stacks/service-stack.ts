@@ -764,6 +764,8 @@ export class ServiceStack extends cdk.Stack {
           props.container.cloudMapNamespace.namespaceId,
         CLOUD_MAP_SERVICE_ID: props.container.cloudMapService.serviceId,
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
+        CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
+        CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
         CREDITS_TABLE: props.database.creditsTable.tableName,
         CREDIT_TRANSACTIONS_TABLE:

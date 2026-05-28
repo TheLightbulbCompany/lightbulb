@@ -115,6 +115,7 @@ class TestGatewayConnectionPool:
     async def test_send_rpc_reuses_existing(self, pool):
         """send_rpc should reuse an existing connected GatewayConnection."""
         mock_conn = AsyncMock(spec=GatewayConnection)
+        mock_conn.ip = "10.0.0.1"  # matches the resolved ip → adoption is a no-op
         mock_conn.is_connected = True
         mock_conn._parked = False  # send_rpc consults this before is_connected
         mock_conn.wait_for_response = AsyncMock(return_value={"data": 1})
@@ -123,6 +124,24 @@ class TestGatewayConnectionPool:
         result = await pool.send_rpc("user-1", "req-2", "agents.list", {}, "10.0.0.1", "tok")
         assert result == {"data": 1}
         mock_conn.send_rpc.assert_called_once_with("req-2", "agents.list", {})
+
+    @pytest.mark.asyncio
+    async def test_send_rpc_adopts_fresh_ip_on_parked_reopen(self, pool):
+        """A parked connection must adopt the freshly-resolved IP before reopen,
+        so a container task replacement (new IP) can't wedge it on the dead old IP."""
+        parked = AsyncMock(spec=GatewayConnection)
+        parked.ip = "10.0.0.1"  # stale: previous task
+        parked._parked = True
+        parked.is_connected = False
+        parked.wait_for_response = AsyncMock(return_value={"ok": True})
+        parked._frontend_connections = set()
+        pool._connections["user-1"] = parked
+
+        result = await pool.send_rpc("user-1", "r", "agents.list", {}, "10.0.0.2", "tok")
+
+        assert parked.ip == "10.0.0.2"  # adopted the fresh IP before reopen
+        parked.reopen.assert_awaited_once()
+        assert result == {"ok": True}
 
     @pytest.mark.asyncio
     async def test_close_all(self, pool):
@@ -137,6 +156,7 @@ class TestGatewayConnectionPool:
     async def test_send_rpc_replaces_disconnected_connection(self, pool):
         """send_rpc closes and replaces a connection that is no longer connected."""
         stale_conn = AsyncMock(spec=GatewayConnection)
+        stale_conn.ip = "10.0.0.1"  # matches the resolved ip → adoption is a no-op
         stale_conn.is_connected = False
         stale_conn._parked = False  # stale, not parked → close+recreate path
         pool._connections["user-1"] = stale_conn

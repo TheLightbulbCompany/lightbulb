@@ -1520,6 +1520,18 @@ class GatewayConnectionPool:
         """
         async with self._lock:
             conn = self._connections.get(user_id)
+            # Always adopt the freshly-resolved endpoint. Container task IPs are
+            # ephemeral (every ECS task replacement changes them); a parked/stale
+            # connection still holds the previous task's IP, so reopen() would
+            # otherwise re-dial a dead address forever.
+            if conn is not None and conn.ip != ip:
+                logger.info(
+                    "Gateway endpoint changed for user=%s %s -> %s — adopting before reconnect",
+                    user_id,
+                    conn.ip,
+                    ip,
+                )
+                conn.ip = ip
             if conn is not None and conn._parked:
                 self._respect_reconnect_floor(user_id)
                 await conn.reopen()

@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1147,3 +1148,35 @@ class TestPoolReconnectFloor:
         pool._connections["user-parked"] = conn
 
         assert pool.is_user_connected("user-parked") is True
+
+
+@pytest.mark.asyncio
+async def test_reopen_failure_rearms_parked_watchdog(monkeypatch):
+    """A failed reopen must re-arm the parked watchdog so the connection can
+    still escalate parked->dead instead of wedging forever."""
+    from core.gateway.connection_pool import GatewayConnection
+
+    conn = GatewayConnection(
+        user_id="u",
+        ip="10.0.0.1",
+        token="t",
+        management_api=MagicMock(),
+        frontend_connections=set(),
+        conn_member_map={},
+    )
+    conn._parked = True
+    conn._active_runs = {"agent:1:m": {"last_event_at": time.monotonic(), "agent_id": "1"}}
+
+    async def boom():
+        raise TimeoutError("handshake timeout")
+
+    monkeypatch.setattr(conn, "connect", boom)
+
+    with pytest.raises(TimeoutError):
+        await conn.reopen()
+
+    assert conn._parked is True
+    assert conn._parked_watchdog_task is not None
+    assert not conn._parked_watchdog_task.done()
+
+    conn._parked_watchdog_task.cancel()

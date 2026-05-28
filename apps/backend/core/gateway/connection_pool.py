@@ -1301,7 +1301,18 @@ class GatewayConnection:
         self._parked_watchdog_task = None
         # Old WS is already torn down (reader_loop exited); just drop the ref.
         self._ws = None
-        await self.connect()
+        try:
+            await self.connect()
+        except Exception:
+            # connect() failed — do NOT leave the connection parked with no
+            # watchdog. That wedges it forever: every reopen re-dials and
+            # fails, and the parked->dead escalation (which lets the pool
+            # recreate from scratch) never fires. Re-arm so it can escalate.
+            if self._active_runs and (
+                self._parked_watchdog_task is None or self._parked_watchdog_task.done()
+            ):
+                self._parked_watchdog_task = asyncio.create_task(self._parked_watchdog())
+            raise
         self._parked = False
         put_metric("gateway.parked.reopen")
         logger.info(

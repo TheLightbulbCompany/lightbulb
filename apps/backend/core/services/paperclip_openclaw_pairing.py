@@ -28,6 +28,7 @@ from typing import Any
 
 import httpx
 
+from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
@@ -120,6 +121,34 @@ async def fetch_paperclip_agents_for_owner(
         return []
 
     return agents
+
+
+async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
+    """Whether ``agent_id`` is an Isol8-seeded agent (Friday or Atlas).
+
+    Seeded agents are part of the provisioning contract and must not be
+    deleted. Identification: Friday = the ``role == "ceo"`` agent (robust
+    against rename); Atlas = ``name == "Atlas"``.
+
+    Best-effort: ``fetch_paperclip_agents_for_owner`` already returns [] on
+    Paperclip availability issues; we also swallow construction errors and
+    a not-found agent so a transient lookup never blocks deletion.
+    """
+    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+    try:
+        agents = await fetch_paperclip_agents_for_owner(
+            owner_id=owner_id,
+            repo=PaperclipRepo(table_name="paperclip-companies"),
+            admin_client=PaperclipAdminClient(http_client=http),
+        )
+    except Exception:  # noqa: BLE001 — never block on a lookup failure
+        return False
+    finally:
+        await http.aclose()
+    for a in agents:
+        if a.get("id") == agent_id:
+            return a.get("role") == "ceo" or a.get("name") == "Atlas"
+    return False
 
 
 async def pair_with_openclaw(

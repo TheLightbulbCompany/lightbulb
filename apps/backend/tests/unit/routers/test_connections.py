@@ -117,3 +117,88 @@ class TestDisconnect:
     async def test_disconnect_unknown_provider_returns_404(self, async_client):
         response = await async_client.delete("/api/v1/connections/does-not-exist")
         assert response.status_code == 404
+
+
+class TestAuthorize:
+    """GET /api/v1/connections/{provider}/authorize — start the OAuth dance."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    async def test_authorize_returns_consent_url(self, mock_dance, async_client):
+        consent_url = "https://accounts.google.com/o/oauth2/v2/auth?x=1"
+        mock_dance.start = AsyncMock(return_value=consent_url)
+
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 200
+        assert response.json()["authorize_url"].startswith(consent_url)
+
+        # Dance started with the server-derived redirect_uri.
+        mock_dance.start.assert_awaited_once()
+        call = mock_dance.start.await_args
+        assert call.args[0] == "user_test_123"
+        assert call.args[1] == "google"
+        assert call.kwargs["redirect_uri"].endswith("/api/v1/oauth/google/callback")
+
+    @pytest.mark.asyncio
+    async def test_authorize_non_oauth_provider_returns_400(self, async_client):
+        # linear is paste_token, not an OAuth integration.
+        response = await async_client.get("/api/v1/connections/linear/authorize")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_authorize_unknown_provider_returns_404(self, async_client):
+        response = await async_client.get("/api/v1/connections/does-not-exist/authorize")
+        assert response.status_code == 404
+
+
+class TestOAuthCallback:
+    """GET /api/v1/oauth/{provider}/callback — PUBLIC; identity from state record."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_happy_path_persists_and_redirects(self, mock_dance, mock_repo, mock_apply, async_client):
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_repo.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "/settings/connections?connected=google" in response.headers["location"]
+
+        # Identity + credential recovered from the state record.
+        mock_dance.exchange.assert_awaited_once()
+        ex_call = mock_dance.exchange.await_args
+        assert ex_call.args[0] == "st1"
+        assert ex_call.args[1] == "abc"
+        assert ex_call.kwargs["redirect_uri"].endswith("/api/v1/oauth/google/callback")
+
+        mock_repo.put.assert_awaited_once()
+        mock_apply.apply_connection.assert_awaited_once_with("org_1", "google", cred)
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_bad_state_redirects_with_error_and_no_writes(
+        self, mock_dance, mock_repo, mock_apply, async_client
+    ):
+        mock_dance.exchange = AsyncMock(side_effect=ValueError("invalid or expired OAuth state"))
+        mock_repo.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=bad",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "error=oauth_state" in response.headers["location"]
+
+        # Nothing persisted / wired when state validation fails.
+        mock_repo.put.assert_not_called()
+        mock_apply.apply_connection.assert_not_called()

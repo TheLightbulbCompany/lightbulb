@@ -577,6 +577,8 @@ app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
 
 # Connections (Bucket A paste-key integrations: list / connect / disconnect)
 app.include_router(connections.router, prefix="/api/v1", tags=["connections"])
+# Public OAuth callback surface (provider redirects the unauthenticated browser here)
+app.include_router(connections.oauth_router, prefix="/api/v1", tags=["connections"])
 
 # Workspace file browser (EFS agent workspace)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])

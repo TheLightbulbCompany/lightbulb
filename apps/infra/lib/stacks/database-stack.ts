@@ -34,6 +34,8 @@ export class DatabaseStack extends cdk.Stack {
   public readonly creditsTable: dynamodb.Table;
   public readonly creditTransactionsTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
+  public readonly connectionsTable: dynamodb.Table;
+  public readonly oauthStateTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
 
   // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
@@ -244,6 +246,30 @@ export class DatabaseStack extends cdk.Stack {
       encryptionKey: props.kmsKey,
     });
 
+    // Credential vault — mirrors oauthTokensTable (CMK at rest) + a `provider` sort key.
+    // Stored payloads are ALSO Fernet-encrypted app-side; KMS-at-rest is the separate snapshot layer.
+    this.connectionsTable = new dynamodb.Table(this, "ConnectionsTable", {
+      tableName: `isol8-${env}-connections`,
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      pointInTimeRecovery: true,
+      removalPolicy: config.removalPolicy,
+    });
+
+    // Short-lived OAuth dance state (PKCE verifier + state nonce). TTL'd, CMK, DESTROY (mirrors the webhook-event-dedup table).
+    this.oauthStateTable = new dynamodb.Table(this, "OauthStateTable", {
+      tableName: `isol8-${env}-oauth-state`,
+      partitionKey: { name: "state", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "ttl",
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // Paperclip companies — maps Isol8 user_id → their Paperclip company
     // record + encrypted credentials. GSI by-status-purge-at lets the
     // cleanup cron find disabled rows past their grace window. Per the
@@ -285,6 +311,14 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "OAuthTokensTableName", {
       value: this.oauthTokensTable.tableName,
       exportName: `${this.stackName}-oauth-tokens-table`,
+    });
+    new cdk.CfnOutput(this, "ConnectionsTableName", {
+      value: this.connectionsTable.tableName,
+      exportName: `${this.stackName}-connections-table`,
+    });
+    new cdk.CfnOutput(this, "OauthStateTableName", {
+      value: this.oauthStateTable.tableName,
+      exportName: `${this.stackName}-oauth-state-table`,
     });
     new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
       value: this.paperclipCompaniesTable.tableName,

@@ -1860,6 +1860,28 @@ class EcsManager:
                 exc,
             )
 
+        # Seed Atlas's recruiter workspace (files + skill bundles) on EFS,
+        # mirroring Friday. Best-effort — an Atlas failure MUST NOT block
+        # provision; Atlas boots with an empty workspace if this fails.
+        from core.services.atlas_seed import pre_stage_atlas
+
+        try:
+            await pre_stage_atlas(
+                owner_id=owner_id,
+                paperclip_agents=paperclip_agents,
+                workspace=get_workspace(),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort.
+            # Distinct from the seeder's per-file `atlas_seed.error`: this fires
+            # only on a catastrophic failure (e.g. import error) where the seeder
+            # never ran, vs a single bad file the seeder logged and skipped.
+            put_metric("atlas_seed.invoke_error")
+            logger.warning(
+                "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
+                owner_id,
+                exc,
+            )
+
         await self.ensure_device_identities(owner_id, gateway_token)
 
     async def ensure_device_identities(self, user_id: str, gateway_token: str) -> None:

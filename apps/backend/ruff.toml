@@ -1,8 +1,15 @@
 # Ruff configuration for Isol8 backend
 line-length = 120
 
-# Exclude git submodules (external code)
-exclude = ["agent/"]
+# Exclude git submodules (external code) and vendored Atlas seed resources.
+# atlas_seed/files holds vendored agent-workspace files (skills, scripts)
+# shipped verbatim into the image and read at provision time — not backend
+# source, so they must not be held to the backend lint/format gate.
+exclude = ["agent/", "core/services/atlas_seed/files/**"]
+
+# Honor the excludes above even when paths are passed explicitly, which is how
+# the pre-commit hook and CI invoke ruff.
+force-exclude = true
 
 [lint]
 # Ignore line length for now

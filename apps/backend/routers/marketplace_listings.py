@@ -46,7 +46,7 @@ def _purchases_table():
 def _count_field(field) -> int:
     """Count items in an agent config field that may be array- or object-shaped.
 
-    Real agent configs in this repo (e.g. ``agents/atlas/openclaw.json``)
+    Real agent configs (e.g. a published listing's ``openclaw.json`` slice)
     store ``skills`` and ``channels`` as plain arrays
     (``"skills": ["foo", "bar"]``). Older / hand-built configs use the
     object form ``{"list": [...]}``. Both must be supported — the previous

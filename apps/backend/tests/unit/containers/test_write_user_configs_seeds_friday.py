@@ -47,6 +47,7 @@ async def test_invokes_seeder_after_write_openclaw_config(monkeypatch, tmp_path,
     fetch_mock = AsyncMock(return_value=paperclip_agents)
     write_oc_mock = AsyncMock()
     seeder_mock = AsyncMock()
+    atlas_seeder_mock = AsyncMock()
     ensure_devices_mock = AsyncMock()
 
     # Patch every external dependency of write_user_configs.
@@ -59,6 +60,10 @@ async def test_invokes_seeder_after_write_openclaw_config(monkeypatch, tmp_path,
         patch(
             "core.services.friday_identity.pre_stage_friday_identity",
             seeder_mock,
+        ),
+        patch(
+            "core.services.atlas_seed.pre_stage_atlas",
+            atlas_seeder_mock,
         ),
         patch(
             "core.services.paperclip_api_key.ensure_paperclip_api_key",
@@ -83,6 +88,11 @@ async def test_invokes_seeder_after_write_openclaw_config(monkeypatch, tmp_path,
     seeder_kwargs = seeder_mock.call_args.kwargs
     assert seeder_kwargs["owner_id"] == "user_abc"
     assert seeder_kwargs["paperclip_agents"] == paperclip_agents
+
+    atlas_seeder_mock.assert_awaited_once()
+    atlas_kwargs = atlas_seeder_mock.call_args.kwargs
+    assert atlas_kwargs["owner_id"] == "user_abc"
+    assert atlas_kwargs["paperclip_agents"] == paperclip_agents
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from core.config import settings
 from core.repositories import connection_repo
 from core.services import config_patcher
 from core.services.credentials import apply_connection, oauth_dance, registry
+from core.services.credentials.materializers import MATERIALIZER_REMOVERS
 
 router = APIRouter(prefix="/connections", tags=["connections"])
 
@@ -28,7 +29,9 @@ def _get_provider_or_404(provider: str) -> registry.Provider:
 async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
-    headers = {p.validation.auth_header: f"Bearer {token}"}
+    scheme = p.validation.auth_scheme
+    value = f"{scheme} {token}".strip() if scheme else token
+    headers = {p.validation.auth_header: value}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.request(p.validation.method, p.validation.url, headers=headers)
@@ -64,7 +67,15 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     if not await _validate_token(p, body.token):
         raise HTTPException(status_code=422, detail="token failed validation against the provider")
     await connection_repo.put(owner_id, provider, {"token": body.token}, status="connected")
-    await apply_connection.apply_connection(owner_id, provider, {"token": body.token})
+    # Roll the row back if wiring fails, so status never reports a false "connected".
+    try:
+        await apply_connection.apply_connection(owner_id, provider, {"token": body.token})
+    except Exception:
+        await connection_repo.delete(owner_id, provider)
+        raise HTTPException(
+            status_code=502,
+            detail="failed to apply the connection to your container; please retry",
+        )
     return {"status": "connected", "provider": provider}
 
 
@@ -72,6 +83,15 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
 async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
+    # Materializer-backed providers wrote credential files onto EFS; remove
+    # those before dropping the row so disconnect leaves no on-disk residue.
+    if p.wiring.materializer:
+        row = await connection_repo.get(owner_id, provider)
+        if row:
+            cred = connection_repo.decrypt_credential(row)
+            remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
+            if remover:
+                remover(owner_id, provider, cred)
     await connection_repo.delete(owner_id, provider)
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:
@@ -107,5 +127,10 @@ async def oauth_callback(provider: str, code: str, state: str):
     except ValueError:
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_state")
     await connection_repo.put(owner_id, prov, credential, status="connected")
-    await apply_connection.apply_connection(owner_id, prov, credential)
+    # Roll the row back if wiring fails, so status never reports a false "connected".
+    try:
+        await apply_connection.apply_connection(owner_id, prov, credential)
+    except Exception:
+        await connection_repo.delete(owner_id, prov)
+        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
     return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?connected={prov}")

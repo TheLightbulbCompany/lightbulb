@@ -39,6 +39,13 @@ def test_validate_key_maps_to_validation_field():
     assert p.validation.url == "https://api.linear.app/graphql"
 
 
+def test_validate_auth_scheme_is_per_provider():
+    # Linear personal API keys are sent as a BARE Authorization header (no "Bearer").
+    assert registry.get_provider("linear").validation.auth_scheme == ""
+    # Stripe accepts the default Bearer scheme.
+    assert registry.get_provider("stripe").validation.auth_scheme == "Bearer"
+
+
 def test_wiring_rejects_neither_or_both():
     from pydantic import ValidationError
     from core.services.credentials.registry import Wiring, OpenclawPath

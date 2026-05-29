@@ -32,3 +32,9 @@ def write(owner_id: str, provider_key: str, credential: dict) -> None:
         "access_token": credential.get("access_token", ""),
     }
     atomic_write(root / "tokens.json", json.dumps(token).encode())
+
+
+def remove(owner_id: str, provider_key: str, credential: dict) -> None:
+    root = owner_efs_root(owner_id) / ".config" / "gogcli"
+    (root / "config.json").unlink(missing_ok=True)
+    (root / "tokens.json").unlink(missing_ok=True)

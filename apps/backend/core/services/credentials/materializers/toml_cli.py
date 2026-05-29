@@ -17,3 +17,9 @@ def write(owner_id: str, provider_key: str, credential: dict) -> None:
     fields = ["access_token", "refresh_token", "token_expiry", "client_id", "client_secret"]
     body = "\n".join(f'{k} = "{_toml_escape(str(credential[k]))}"' for k in fields if credential.get(k)) + "\n"
     atomic_write(path, body.encode())
+
+
+def remove(owner_id: str, provider_key: str, credential: dict) -> None:
+    cli = credential.get("cli")
+    if cli:
+        (owner_efs_root(owner_id) / ".config" / cli / "config.toml").unlink(missing_ok=True)

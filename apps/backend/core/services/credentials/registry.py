@@ -48,6 +48,10 @@ class ValidateSpec(BaseModel):
     method: str
     url: str
     auth_header: str = "Authorization"
+    # Auth scheme prefix for the validate header value (e.g. "Bearer"). Some
+    # providers (Linear personal API keys) require a bare key with no scheme —
+    # set auth_scheme: "" for those.
+    auth_scheme: str = "Bearer"
 
 
 class Requires(BaseModel):

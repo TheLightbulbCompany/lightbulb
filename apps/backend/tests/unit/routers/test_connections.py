@@ -8,7 +8,62 @@ mode, owner_id == "user_test_123"). Async repo / apply calls are patched with
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
+
+
+class TestValidateToken:
+    """``_validate_token`` builds the Authorization header from the per-provider
+    validate ``auth_scheme`` (Linear = bare key, Stripe = ``Bearer <key>``)."""
+
+    @pytest.mark.asyncio
+    async def test_linear_sends_bare_authorization_header(self, monkeypatch):
+        from routers import connections
+        from core.services.credentials import registry
+
+        captured: dict = {}
+
+        async def fake_request(self, method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers")
+            return httpx.Response(200)
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        ok = await connections._validate_token(registry.get_provider("linear"), "lin_api_KEY")
+        assert ok is True
+        # Linear: bare key, no "Bearer " prefix.
+        assert captured["headers"]["Authorization"] == "lin_api_KEY"
+
+    @pytest.mark.asyncio
+    async def test_stripe_sends_bearer_authorization_header(self, monkeypatch):
+        from routers import connections
+        from core.services.credentials import registry
+
+        captured: dict = {}
+
+        async def fake_request(self, method, url, **kwargs):
+            captured["headers"] = kwargs.get("headers")
+            return httpx.Response(200)
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        ok = await connections._validate_token(registry.get_provider("stripe"), "sk_test_KEY")
+        assert ok is True
+        # Stripe: default Bearer scheme.
+        assert captured["headers"]["Authorization"] == "Bearer sk_test_KEY"
+
+    @pytest.mark.asyncio
+    async def test_non_2xx_status_fails_validation(self, monkeypatch):
+        from routers import connections
+        from core.services.credentials import registry
+
+        async def fake_request(self, method, url, **kwargs):
+            return httpx.Response(401)
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        assert await connections._validate_token(registry.get_provider("linear"), "bad") is False
 
 
 class TestListConnections:
@@ -80,6 +135,26 @@ class TestConnectPaste:
         mock_apply.apply_connection.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.connection_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_connect_paste_rolls_back_row_when_wiring_fails(
+        self, mock_validate, mock_repo, mock_apply, async_client
+    ):
+        mock_validate.return_value = True
+        mock_repo.put = AsyncMock()
+        mock_repo.delete = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
+
+        response = await async_client.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
+        # Wiring failure surfaces as a 502 — the connection never reports a false "connected".
+        assert response.status_code == 502
+
+        # The just-persisted row was rolled back.
+        mock_repo.put.assert_awaited_once()
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "linear")
+
+    @pytest.mark.asyncio
     async def test_connect_non_paste_provider_returns_400(self, async_client):
         # google is direct_oauth, not paste_token — must be rejected at this surface.
         response = await async_client.post("/api/v1/connections/google", json={"token": "anything"})
@@ -112,6 +187,46 @@ class TestDisconnect:
             ["mcp", "servers", "linear", "env", "LINEAR_API_KEY"],
             "",
         )
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.connection_repo")
+    async def test_disconnect_materializer_provider_removes_materialized_creds(
+        self, mock_repo, mock_patcher, mock_removers, async_client
+    ):
+        # google is a materializer-backed (gog_keyring) provider.
+        row = {"owner_id": "user_test_123", "provider": "google", "credential_enc": "enc"}
+        cred = {"cli": "gogcli", "refresh_token": "r"}
+        mock_repo.get = AsyncMock(return_value=row)
+        mock_repo.decrypt_credential = lambda r: cred
+        mock_repo.delete = AsyncMock()
+        remover = mock_removers.get.return_value
+        mock_patcher.set_openclaw_config_path = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google")
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "google"}
+
+        # Materialized credential files cleaned up BEFORE the row is deleted.
+        mock_repo.get.assert_awaited_once_with("user_test_123", "google")
+        mock_removers.get.assert_called_once_with("gog_keyring")
+        remover.assert_called_once_with("user_test_123", "google", cred)
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
+        # No openclaw_paths on a materializer provider -> nothing blanked.
+        mock_patcher.set_openclaw_config_path.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.connection_repo")
+    async def test_disconnect_materializer_no_row_skips_remover(self, mock_repo, mock_removers, async_client):
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.delete = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google")
+        assert response.status_code == 200
+        mock_removers.get.assert_not_called()
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
 
     @pytest.mark.asyncio
     async def test_disconnect_unknown_provider_returns_404(self, async_client):
@@ -180,6 +295,29 @@ class TestOAuthCallback:
 
         mock_repo.put.assert_awaited_once()
         mock_apply.apply_connection.assert_awaited_once_with("org_1", "google", cred)
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_rolls_back_row_when_wiring_fails(self, mock_dance, mock_repo, mock_apply, async_client):
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_repo.put = AsyncMock()
+        mock_repo.delete = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        # Redirect surfaces the apply failure rather than a false "connected".
+        assert "error=apply_failed" in response.headers["location"]
+
+        # The just-persisted row was rolled back.
+        mock_repo.put.assert_awaited_once()
+        mock_repo.delete.assert_awaited_once_with("org_1", "google")
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")

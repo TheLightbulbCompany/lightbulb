@@ -148,41 +148,58 @@ async def _ensure_paperclip_for_org(
         provisioning = await build_paperclip_provisioning()
         try:
             owner = await provisioning.find_org_owner(org_id)
+
+            if owner is None:
+                if not is_admin:
+                    # Member polling a not-yet-bootstrapped org: wait for an
+                    # admin to create the shared company. The pending state is
+                    # implicit and resolves on the member's next poll.
+                    logger.info(
+                        "ensure_user_ready (org member): org=%s has no active "
+                        "paperclip company yet — waiting for an admin to "
+                        "bootstrap it; will retry on next /container/status poll",
+                        org_id,
+                    )
+                    return
+
+                # Strongly-consistent cross-instance guard against
+                # double-create. The per-org asyncio lock above only
+                # serializes THIS process, and find_org_owner reads the
+                # eventually-consistent by-org-id GSI — so two admins on
+                # different backend instances (or within the GSI propagation
+                # gap) could both see owner=None and both create a separate
+                # company, silently splitting the org's workspace. The claim
+                # is a strongly-consistent PK conditional write that exactly
+                # one caller wins; losers fall through to the join path on
+                # their next poll once the winner's company is GSI-visible.
+                if not await provisioning.try_acquire_org_create_claim(org_id, holder=user_id):
+                    logger.info(
+                        "ensure_user_ready (org): org=%s create claim held by "
+                        "another backend instance — waiting; will join on the "
+                        "next /container/status poll",
+                        org_id,
+                    )
+                    return
+
+                # We won the claim: become the org's company owner-of-record.
+                try:
+                    await _ensure_paperclip_for_owner(
+                        owner_id=org_id,
+                        owner_user_id=user_id,
+                        owner_email=email,
+                        org_id=org_id,
+                    )
+                except BaseException:
+                    # Release the claim so the next poll (this instance or
+                    # another) can re-acquire and retry. On SUCCESS the claim
+                    # is intentionally left as a permanent "bootstrapped"
+                    # marker — by then find_org_owner returns the real
+                    # company and this branch is not re-entered.
+                    await provisioning.release_org_create_claim(org_id, holder=user_id)
+                    raise
+                return
         finally:
             await close_paperclip_provisioning(provisioning)
-
-        if owner is None:
-            if not is_admin:
-                # Member polling a not-yet-bootstrapped org: wait for an
-                # admin to create the shared company. The pending state is
-                # implicit and resolves on the member's next poll.
-                logger.info(
-                    "ensure_user_ready (org member): org=%s has no active "
-                    "paperclip company yet — waiting for an admin to "
-                    "bootstrap it; will retry on next /container/status poll",
-                    org_id,
-                )
-                return
-            # We win the create: become the org's company owner-of-record.
-            # The lock is held across the ENTIRE provision_org below (several
-            # seconds of sequential Paperclip HTTP calls), so a concurrent
-            # first-poller blocks here until we finish, then re-queries
-            # find_org_owner. Note find_org_owner reads the by-org-id GSI,
-            # which is eventually consistent — so this serializes-then-rechecks
-            # makes a double-create highly improbable (GSI propagation is
-            # sub-second vs the multi-second create) but not impossible across
-            # the propagation gap or across backend instances. A residual
-            # duplicate company is tolerated: the loser's row/company is
-            # handled by the existing failed/duplicate-row paths, and
-            # find_org_owner deterministically picks the oldest active row as
-            # owner-of-record thereafter.
-            await _ensure_paperclip_for_owner(
-                owner_id=org_id,
-                owner_user_id=user_id,
-                owner_email=email,
-                org_id=org_id,
-            )
-            return
 
     # Company already exists → join it. Outside the create lock so member
     # adds for an established org don't serialize behind one mutex.

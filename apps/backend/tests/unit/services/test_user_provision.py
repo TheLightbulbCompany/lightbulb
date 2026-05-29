@@ -110,6 +110,8 @@ async def test_org_admin_with_no_company_creates_it():
     Decided by company existence, not role."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.release_org_create_claim = AsyncMock()
     fake_provisioning.provision_org = AsyncMock()
     fake_provisioning.provision_member = AsyncMock()
     captured: list[str] = []
@@ -127,13 +129,78 @@ async def test_org_admin_with_no_company_creates_it():
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    fake_provisioning.try_acquire_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
     fake_provisioning.provision_org.assert_awaited_once_with(
         owner_id="org_xyz",
         owner_user_id="user_admin",
         owner_email="a@example.com",
     )
     fake_provisioning.provision_member.assert_not_awaited()
+    fake_provisioning.release_org_create_claim.assert_not_awaited()
     assert captured == ["background_provision"], f"admin-create should dispatch container, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_org_admin_create_claim_lost_skips_paperclip_create():
+    """Cross-instance race: admin sees no company but LOSES the create claim
+    (another backend instance is bootstrapping) → must NOT call provision_org
+    or provision_member; it joins on a later poll once the winner's company is
+    visible. Container provisioning is a SEPARATE, idempotent concern gated on
+    admin/personal, so background_provision is still dispatched (the winner
+    dispatches it too; concurrent provision_user_container on an absent service
+    is exception-safe)."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=False)
+    fake_provisioning.release_org_create_claim = AsyncMock()
+    fake_provisioning.provision_org = AsyncMock()
+    fake_provisioning.provision_member = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    fake_provisioning.provision_org.assert_not_awaited()
+    fake_provisioning.provision_member.assert_not_awaited()
+    fake_provisioning.release_org_create_claim.assert_not_awaited()
+    assert captured == ["background_provision"], (
+        f"claim-loser skips paperclip create but still dispatches container, got {captured}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_org_admin_create_failure_releases_claim():
+    """If provision_org raises after we won the claim, the claim must be
+    RELEASED so a retry (this instance or another) can re-acquire it —
+    otherwise a crash/error would strand the org's company forever."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.release_org_create_claim = AsyncMock()
+    boom = RuntimeError("paperclip down")
+    fake_provisioning.provision_org = AsyncMock(side_effect=boom)
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        with pytest.raises(RuntimeError):
+            await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
 
 
 @pytest.mark.asyncio

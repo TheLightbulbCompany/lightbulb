@@ -795,6 +795,20 @@ class PaperclipProvisioning:
     # Helpers
     # ------------------------------------------------------------------
 
+    async def try_acquire_org_create_claim(self, owner_id: str, *, holder: str) -> bool:
+        """Delegate to the repo's strongly-consistent per-org create claim.
+
+        Used by ``ensure_user_ready`` to serialize company creation across
+        backend instances (the per-org asyncio lock only covers one process,
+        and ``find_org_owner`` reads an eventually-consistent GSI). Returns
+        True iff this caller may proceed to create the company.
+        """
+        return await self._repo.try_acquire_org_create_claim(owner_id, holder=holder)
+
+    async def release_org_create_claim(self, owner_id: str, *, holder: str) -> None:
+        """Delegate to the repo: release the per-org create claim on failure."""
+        await self._repo.release_org_create_claim(owner_id, holder=holder)
+
     async def find_org_owner(self, owner_id: str) -> Optional[PaperclipCompany]:
         """Find the owner row (oldest ACTIVE ``created_at`` for this owner_id).
 

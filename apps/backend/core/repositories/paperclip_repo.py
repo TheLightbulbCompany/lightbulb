@@ -53,6 +53,20 @@ logger = logging.getLogger(__name__)
 PaperclipCompanyStatus = Literal["provisioning", "active", "failed", "disabled"]
 
 
+# Reserved user_id namespace for per-org "company create" claim sentinels.
+# These items DELIBERATELY omit org_id / status / scheduled_purge_at so they
+# never appear in the by-org-id or by-status-purge-at GSIs (DynamoDB only
+# indexes items that carry the index's key attributes). They are reached only
+# by direct get/put on this synthetic PK, which — unlike the eventually
+# consistent by-org-id GSI used by ``find_org_owner`` — is strongly consistent,
+# so it can serialize company creation across backend instances.
+_ORG_CREATE_CLAIM_PREFIX = "__org_create_claim__:"
+
+
+def _org_create_claim_key(org_id: str) -> str:
+    return f"{_ORG_CREATE_CLAIM_PREFIX}{org_id}"
+
+
 @dataclass
 class PaperclipCompany:
     """Per-USER row. ``company_id`` is shared across all rows belonging
@@ -287,6 +301,105 @@ class PaperclipRepo:
             self._table().delete_item,
             Key={"user_id": user_id},
         )
+
+    async def try_acquire_org_create_claim(
+        self,
+        org_id: str,
+        *,
+        holder: str,
+        stale_after_seconds: int = 120,
+    ) -> bool:
+        """Strongly-consistent "I am creating this org's company" claim.
+
+        Returns True iff THIS caller now holds the claim — by winning a fresh
+        claim, or by stealing one whose holder went silent for longer than
+        ``stale_after_seconds`` (e.g. an instance killed mid-create during a
+        deploy). Returns False when another caller holds a fresh claim.
+
+        This is a PK conditional write, so it is strongly consistent and
+        cross-instance-safe — it closes the double-create window that the
+        eventually-consistent ``by-org-id`` GSI (used by ``find_org_owner``)
+        leaves open. Callers MUST ``release_org_create_claim`` on create
+        FAILURE so a retry can proceed; on success the claim is left in place
+        as a permanent "org bootstrapped" marker (by then ``find_org_owner``
+        returns the real company and this path is not re-entered).
+        """
+        key = _org_create_claim_key(org_id)
+        now = datetime.now(timezone.utc)
+        item = {
+            "user_id": key,
+            "kind": "org_create_claim",
+            "holder": holder,
+            "claimed_at": now.isoformat(),
+        }
+        table = self._table()
+
+        # 1. Fresh claim — wins iff no sentinel exists yet.
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="attribute_not_exists(user_id)",
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+        # 2. A sentinel exists — strongly-consistent read, then steal only if
+        #    its holder has gone stale.
+        resp = await run_in_thread(table.get_item, Key={"user_id": key}, ConsistentRead=True)
+        existing = resp.get("Item")
+        if existing is None:
+            # Released (deleted) between our put and get — try one fresh claim.
+            try:
+                await run_in_thread(
+                    table.put_item,
+                    Item=item,
+                    ConditionExpression="attribute_not_exists(user_id)",
+                )
+                return True
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                return False
+
+        prev_claimed_at = existing.get("claimed_at", "")
+        try:
+            age = (now - datetime.fromisoformat(prev_claimed_at)).total_seconds()
+        except (ValueError, TypeError):
+            age = float("inf")  # unparseable timestamp → treat as stale
+        if age < stale_after_seconds:
+            return False
+
+        # Steal — overwrite only if claimed_at is unchanged since our read, so
+        # two concurrent stealers can't both win.
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="claimed_at = :prev",
+                ExpressionAttributeValues={":prev": prev_claimed_at},
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    async def release_org_create_claim(self, org_id: str, *, holder: str) -> None:
+        """Delete the per-org create claim iff we still hold it.
+
+        Called on create FAILURE so the next poll can re-acquire and retry.
+        Guarded on ``holder`` so we never delete a claim another caller has
+        since stolen. Best-effort: a lost guard is a no-op.
+        """
+        key = _org_create_claim_key(org_id)
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.delete_item,
+                Key={"user_id": key},
+                ConditionExpression="holder = :h",
+                ExpressionAttributeValues={":h": holder},
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
 
     async def scan_purge_due(self, now: datetime) -> list[PaperclipCompany]:
         """Return disabled rows whose ``scheduled_purge_at <= now`` via the GSI.

@@ -191,3 +191,61 @@ async def test_count_org_members_post_delete_reflects_remaining(repo):
     assert await repo.count_org_members("org_acme") == 1
     await repo.delete("u2")
     assert await repo.count_org_members("org_acme") == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-org create claim (strongly-consistent cross-instance guard)
+# ---------------------------------------------------------------------------
+
+
+async def test_org_create_claim_fresh_wins_then_second_caller_loses(repo):
+    """First caller wins the fresh claim; a second caller (fresh holder) loses
+    while the first holder is non-stale."""
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is False
+
+
+async def test_org_create_claim_is_per_org(repo):
+    """Claims are independent per org_id."""
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
+    assert await repo.try_acquire_org_create_claim("org_y", holder="a") is True
+
+
+async def test_org_create_claim_steals_when_stale(repo):
+    """A holder that has gone silent past stale_after_seconds can be stolen,
+    so a crash mid-create doesn't strand the org forever."""
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
+    # Non-stale → loses.
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b", stale_after_seconds=120) is False
+    # stale_after_seconds=0 → any existing claim is stale → steal succeeds.
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b", stale_after_seconds=0) is True
+
+
+async def test_org_create_claim_release_allows_reacquire(repo):
+    """Releasing on failure lets the next caller re-acquire a fresh claim."""
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
+    await repo.release_org_create_claim("org_x", holder="a")
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is True
+
+
+async def test_org_create_claim_release_only_by_holder(repo):
+    """A non-holder cannot release the claim (guards against deleting a claim
+    another caller has stolen)."""
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
+    await repo.release_org_create_claim("org_x", holder="someone_else")
+    # Still held by "a" → a fresh caller loses.
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is False
+
+
+async def test_org_create_claim_sentinel_invisible_to_org_gsi_queries(repo):
+    """The claim sentinel must NOT appear in any by-org-id GSI query — it omits
+    org_id so it's never indexed. Otherwise it would corrupt find_org_owner /
+    get_org_company_id / count_org_members / list_by_org_id."""
+    await repo.try_acquire_org_create_claim("org_acme", holder="a")
+    assert await repo.get_org_company_id("org_acme") is None
+    assert await repo.count_org_members("org_acme") == 0
+    assert await repo.list_by_org_id("org_acme") == []
+    # A real row for the same org is still found normally.
+    await repo.put(_make_company(user_id="u1", org_id="org_acme"))
+    assert await repo.count_org_members("org_acme") == 1
+    assert await repo.get_org_company_id("org_acme") is not None

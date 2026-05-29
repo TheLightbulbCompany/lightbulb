@@ -4,7 +4,7 @@
 
 **Goal:** Make every member of a Clerk org get a Paperclip "team workspace" (a `paperclip-companies` row in the org's single shared company), regardless of their Clerk role, so `/teams` stops 409-ing for co-admins who joined an already-provisioned org.
 
-**Architecture:** Two independent concerns were tangled together via Clerk role. (1) **Paperclip workspace** — the bug was deciding *create-vs-join* by role. The fix: **JOIN is role-blind** (any org member, admin or not, joins the org's one shared company via `find_org_owner(org_id)`); **CREATE is admin-gated** (only an admin bootstraps a fresh org's company — a non-admin member waits for one, mirroring who bootstraps the shared container). An in-process per-org lock serializes concurrent first-pollers because Paperclip ignores `Idempotency-Key`. (2) **Container (ECS) provisioning** — stays gated to container-owners (personal user or org *admin*); members ride the shared box. CREATE-company and CREATE-container are thus symmetric (both admin/personal), so a member never creates a company whose seeded Friday/Atlas point at a container no member can provision.
+**Architecture:** Two independent concerns were tangled together via Clerk role. (1) **Paperclip workspace** — the bug was deciding *create-vs-join* by role. The fix: **JOIN is role-blind** (any org member, admin or not, joins the org's one shared company via `find_org_owner(org_id)`); **CREATE is admin-gated** (only an admin bootstraps a fresh org's company — a non-admin member waits for one, mirroring who bootstraps the shared container). Concurrent first-poller creation is serialized two ways: an in-process per-org `asyncio.Lock` (same-process), and a **strongly-consistent per-org create claim** in DynamoDB (cross-instance). The claim is needed because `find_org_owner` reads an eventually-consistent GSI and Paperclip ignores `Idempotency-Key`, so without it two admins on different backend instances could both create a company and silently split the org's workspace. (2) **Container (ECS) provisioning** — stays gated to container-owners (personal user or org *admin*); members ride the shared box. CREATE-company and CREATE-container are thus symmetric (both admin/personal), so a member never creates a company whose seeded Friday/Atlas point at a container no member can provision.
 
 **Tech Stack:** Python 3.12, FastAPI, pytest/pytest-asyncio, DynamoDB (boto3), `unittest.mock`.
 
@@ -486,7 +486,7 @@ By re-reading the final `container.py` + `user_provision.py`, confirm and write 
 **Spec coverage:**
 - Defect 1 (admins skipped on running-container poll) → Task 3.
 - Defect 2 (role-routing fragments the company) → Task 2 (`_ensure_paperclip_for_org` joins when a company exists).
-- Defect 3 (concurrent first-pollers double-create) → Task 2 (per-org lock + re-check inside lock).
+- Defect 3 (concurrent first-pollers double-create) → Task 2 (per-org asyncio lock for same-process) + a strongly-consistent per-org create claim in DynamoDB (`PaperclipRepo.try_acquire_org_create_claim` / `release_org_create_claim`) for cross-instance / GSI-lag races. Claim is a sentinel keyed by a reserved `user_id` namespace, omitting org_id/status so it never appears in any GSI; stale claims (crashed holder) are stealable; released on create failure.
 - Restart hazard (the Task 1 finding) → Task 2 `provision_container` flag + owner-gated dispatch; Task 3 passes False.
 - Self-heal for currently-stuck users → Task 4 Step 4.3.
 

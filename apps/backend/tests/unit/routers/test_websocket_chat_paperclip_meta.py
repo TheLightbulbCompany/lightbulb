@@ -128,7 +128,9 @@ async def test_intercept_update_calls_paperclip_update_when_meta_present():
     mock_admin.update_agent.assert_awaited_once()
     kwargs = mock_admin.update_agent.await_args.kwargs
     assert kwargs["agent_id"] == "agent-uuid"
-    assert kwargs["company_id"] == "co-1"
+    # Route is PATCH /api/agents/:id — not company-scoped, so the
+    # interceptor must not thread a companyId into the update call.
+    assert "company_id" not in kwargs
     assert kwargs["role"] == "engineer"
     assert kwargs["title"] == "Senior engineer"
     # capabilities/icon weren't in the meta block — must NOT be sent

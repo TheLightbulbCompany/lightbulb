@@ -753,7 +753,6 @@ async def _intercept_agents_update(
                 pc_icon = pc_block.get("icon") if isinstance(pc_block.get("icon"), str) else None
                 await admin.update_agent(
                     session_cookie=cookie,
-                    company_id=company_id,
                     agent_id=agent_id,
                     role=meta.role,
                     title=pc_title,

@@ -751,15 +751,29 @@ async def _intercept_agents_update(
                     pc_block.get("capabilities") if isinstance(pc_block.get("capabilities"), str) else None
                 )
                 pc_icon = pc_block.get("icon") if isinstance(pc_block.get("icon"), str) else None
-                await admin.update_agent(
-                    session_cookie=cookie,
-                    company_id=company_id,
-                    agent_id=agent_id,
-                    role=meta.role,
-                    title=pc_title,
-                    capabilities=pc_capabilities,
-                    icon=pc_icon,
-                )
+                # The PATCH below hits the unscoped /api/agents/{id} with
+                # the bootstrap admin cookie, which can reach any
+                # company's agent. agent_id is client-supplied, so confirm
+                # the target belongs to THIS owner's company before
+                # mutating it — otherwise a caller could pass another
+                # tenant's agent id and have us write to their row.
+                target = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
+                if target.get("companyId") != company_id:
+                    logger.warning(
+                        "[%s] paperclip meta mirror skipped: agent=%s not in company=%s",
+                        owner_id,
+                        agent_id,
+                        company_id,
+                    )
+                else:
+                    await admin.update_agent(
+                        session_cookie=cookie,
+                        agent_id=agent_id,
+                        role=meta.role,
+                        title=pc_title,
+                        capabilities=pc_capabilities,
+                        icon=pc_icon,
+                    )
     except (PaperclipApiError, httpx.HTTPError, RuntimeError) as e:
         logger.warning(
             "[%s] paperclip update_agent mirror failed agent=%s err=%s",

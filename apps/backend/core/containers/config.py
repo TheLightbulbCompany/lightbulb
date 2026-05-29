@@ -596,18 +596,21 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
-                # Stubs preserved from a v2026.4.22-era constraint where
-                # AgentDefaultsSchema referenced these schemas without
-                # .optional(). At v2026.5.7 each schema (Heartbeat,
-                # AgentContextLimits, AgentEmbeddedHarness) ends in
-                # .optional() so emitting them is no longer required.
-                # Kept as explicit no-op defaults; safe to delete in a
-                # follow-up cleanup PR. None of these features are
-                # opted into (no heartbeat cadence, no context-limit
-                # caps, no embedded-harness override).
+                # embeddedHarness / contextLimits are genuine no-op stubs
+                # (their schemas don't change behavior when empty); kept as
+                # explicit defaults, safe to delete in a later cleanup.
                 "embeddedHarness": {},
                 "contextLimits": {},
-                "heartbeat": {},
+                # heartbeat is NOT a no-op: upstream treats a present
+                # `agents.defaults.heartbeat` as truthy and falls back to a
+                # 30m interval with `target: none`. That is OpenClaw's
+                # intended default — a periodic internal-maintenance turn per
+                # agent (review HEARTBEAT.md, update memory) that does NOT
+                # send any outbound message. We set `every` explicitly so the
+                # cadence is visible in our config rather than inherited from
+                # an upstream default. Event-driven waking (Paperclip issue
+                # assignment/comment) is independent of this.
+                "heartbeat": {"every": "30m"},
                 "workspace": "/home/node/.openclaw/workspaces",
                 # Memory embedding provider, kept pinned to Bedrock so any
                 # future plugin that does want embeddings inherits a sane

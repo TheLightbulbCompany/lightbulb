@@ -128,3 +128,14 @@ def test_mcp_block_omitted_when_paperclip_agents_empty():
         paperclip_api_url="http://paperclip.internal:3100",
     )
     assert "mcp" not in cfg
+
+
+def test_defaults_heartbeat_is_explicit_30m():
+    cfg = build_openclaw_config_dict(
+        user_id="user_x",
+        gateway_token="t" * 32,
+        provider_choice="bedrock_claude",
+    )
+    # Explicit cadence (not an empty dict) so the 30m internal heartbeat is
+    # visible in our config, not silently inherited from upstream defaults.
+    assert cfg["agents"]["defaults"]["heartbeat"] == {"every": "30m"}

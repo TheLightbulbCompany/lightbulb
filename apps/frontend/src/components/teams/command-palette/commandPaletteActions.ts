@@ -22,7 +22,7 @@ export const NAV_ACTIONS: CommandPaletteAction[] = [
   { id: "go-agents", label: "Agents", path: "/teams/agents", Icon: Bot, keywords: ["bot"] },
   { id: "go-org-chart", label: "Org chart", path: "/teams/org-chart", Icon: Network, keywords: ["network", "hierarchy"] },
   { id: "go-issues", label: "Issues", path: "/teams/issues", Icon: CircleDot, keywords: ["tasks", "tickets"] },
-  { id: "go-approvals", label: "Approvals", path: "/teams/approvals", Icon: ClipboardCheck },
+  { id: "go-approvals", label: "Approvals", path: "/teams/inbox", Icon: ClipboardCheck },
   { id: "go-routines", label: "Routines", path: "/teams/routines", Icon: Repeat, keywords: ["cron", "schedule"] },
   { id: "go-goals", label: "Goals", path: "/teams/goals", Icon: Target },
   { id: "go-projects", label: "Projects", path: "/teams/projects", Icon: FolderOpen },

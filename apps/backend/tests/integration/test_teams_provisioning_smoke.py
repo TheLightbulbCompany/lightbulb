@@ -335,9 +335,15 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
     )
 
     # 3. URL matches the gateway allowlist (env=dev -> wss://ws-dev.isol8.co).
-    assert _GATEWAY_URL_RE.match(adapter_config["url"]), (
-        f"adapterConfig.url must match the gateway allowlist; got {adapter_config['url']!r}"
+    # The URL now carries the auth token in the query string (so the WS API
+    # Gateway authorizer, which reads ?token=, accepts the connection).
+    url = adapter_config["url"]
+    base, _, query = url.partition("?")
+    assert _GATEWAY_URL_RE.match(base), f"adapterConfig.url base must match the gateway allowlist; got {base!r}"
+    assert query.startswith("token="), (
+        f"adapterConfig.url must carry the auth token in a token= query param; got {url!r}"
     )
+    assert query[len("token=") :], "adapterConfig.url token= query param must be non-empty"
 
     # 4. authToken is a freshly-minted service-token JWT whose ``sub``
     # claim equals the container's owner_id (org_id for org members,

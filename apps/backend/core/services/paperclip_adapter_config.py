@@ -68,8 +68,20 @@ def synthesize_openclaw_adapter(
     if not user_id or not isinstance(user_id, str):
         raise AdapterConfigError("user_id is empty or non-string")
 
+    # The Isol8 WS API Gateway authorizer reads the auth token ONLY from
+    # the `?token=` query string (identitySource
+    # `route.request.querystring.token`). The upstream Paperclip
+    # openclaw_gateway adapter sends `authToken` as an Authorization header,
+    # which API Gateway ignores, so the handshake 401s before the authorizer
+    # Lambda runs. Embedding the token in the URL query string is where the
+    # authorizer looks — the same mechanism the browser web-chat client uses.
+    # `authToken` is kept for adapter compatibility; the duplicate header is
+    # harmless because API Gateway authorizes on the query string. The token
+    # is URL-safe (JWT base64url uses only [A-Za-z0-9-_.]), so no escaping is
+    # needed. The full adapterConfig (incl. this URL) is stripped by
+    # `_redact_agent` before any agent record reaches the browser.
     return {
-        "url": gateway_url,
+        "url": f"{gateway_url}?token={service_token}",
         "authToken": service_token,
         "sessionKeyStrategy": "issue",
         "sessionKey": user_id,

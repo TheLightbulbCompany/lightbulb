@@ -279,7 +279,7 @@ async def test_unknown_agent_not_seeded():
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_is_seeded_agent.py -v`
 Expected: FAIL — `AttributeError: module ... has no attribute 'is_seeded_agent'`.
 
-- [ ] **Step 3.3: Implement** — add to `paperclip_openclaw_pairing.py`:
+- [ ] **Step 3.3: Implement** — `fetch_paperclip_agents_for_owner` is keyword-only and takes injected deps `(*, owner_id, repo, admin_client)`, so the helper constructs them itself (mirroring `paperclip_agent_lifecycle.delete_paperclip_for_chat`). Add `from core.config import settings` to the imports (the module imports `httpx`, `PaperclipRepo`, `PaperclipAdminClient` already but not `settings`). Then add:
 
 ```python
 async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
@@ -290,18 +290,28 @@ async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
     against rename); Atlas = ``name == "Atlas"``. (A durable
     ``params.paperclip.seeded`` marker is future hardening — see roadmap I.)
 
-    Best-effort: if the Paperclip lookup fails or the agent isn't found,
-    returns False (don't block deletion on a transient lookup error).
+    Best-effort: ``fetch_paperclip_agents_for_owner`` already returns [] on
+    Paperclip availability issues; we also swallow construction errors and
+    a not-found agent so a transient lookup never blocks deletion.
     """
+    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
     try:
-        agents = await fetch_paperclip_agents_for_owner(owner_id)
+        agents = await fetch_paperclip_agents_for_owner(
+            owner_id=owner_id,
+            repo=PaperclipRepo(table_name="paperclip-companies"),
+            admin_client=PaperclipAdminClient(http_client=http),
+        )
     except Exception:  # noqa: BLE001 — never block on a lookup failure
         return False
+    finally:
+        await http.aclose()
     for a in agents:
         if a.get("id") == agent_id:
             return a.get("role") == "ceo" or a.get("name") == "Atlas"
     return False
 ```
+
+The Step 3.1 test patches `fetch_paperclip_agents_for_owner` with an `AsyncMock`, so the real `repo`/`admin_client`/HTTP construction is bypassed — the test is unchanged.
 
 - [ ] **Step 3.4: Run it — verify PASS**
 

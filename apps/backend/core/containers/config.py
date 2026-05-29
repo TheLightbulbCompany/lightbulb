@@ -663,6 +663,17 @@ def build_openclaw_config_dict(
         },
         "tools": {
             "profile": "full",
+            # Explicit wildcard allow, separate from ``profile: "full"``.
+            # The profile's implicit wildcard surfaces core tools and
+            # NON-optional plugin tools, but the optional-plugin-tool gate
+            # (OpenClaw src/plugins/tools.ts isOptionalToolAllowed) checks
+            # the *explicit* tools.allow and denies optional tools whenever
+            # that list resolves empty. Our optional plugin tools (lobster,
+            # llm-task — both registered optional:true) therefore stay hidden
+            # under profile-full alone; an explicit "*" is the token that
+            # surfaces them. ``deny`` still wins over the wildcard, so the
+            # canvas/nodes denials below are unaffected.
+            "allow": ["*"],
             # Default-deny both canvas and nodes. node_proxy.py toggles
             # "nodes" back to enabled dynamically when a desktop node
             # pairs, and back to denied when the last one disconnects.
@@ -721,7 +732,20 @@ def build_openclaw_config_dict(
         },
         "plugins": {
             "slots": {},
-            "entries": plugin_entries,
+            "entries": {
+                # Provider-derived entries (e.g. amazon-bedrock with
+                # discovery disabled) selected by ``provider_choice``.
+                **plugin_entries,
+                # Bundled workflow extensions shipped in the OpenClaw image
+                # (OPENCLAW_BUNDLED_PLUGIN_DIR=extensions). Both activate
+                # onStartup once enabled; their tools are optional:true and
+                # are surfaced via the explicit tools.allow wildcard above.
+                # llm-task is left unconfigured so it inherits the agent's
+                # default provider/model at call time — works across every
+                # provider path without per-path branching.
+                "lobster": {"enabled": True},
+                "llm-task": {"enabled": True},
+            },
         },
         # Channels: we ship every supported provider as `enabled: true`
         # so the plugin is loaded into the gateway at startup.

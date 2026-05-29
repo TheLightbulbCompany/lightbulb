@@ -503,8 +503,8 @@ _OPENCLAW_EXTENDED_REGISTRY = "877352799272"
 # Vercel build context). Drift test in test_admin_service.py keeps these
 # locked to the pinned values, mirroring the OPENCLAW_UPSTREAM_VERSION
 # pattern in core/containers/config.py.
-CURRENT_DEV_TAG = "2026.5.12-570e197"
-CURRENT_PROD_TAG = "2026.5.12-570e197"
+CURRENT_DEV_TAG = "2026.5.12-d91e86b"
+CURRENT_PROD_TAG = "2026.5.12-d91e86b"
 
 
 async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:

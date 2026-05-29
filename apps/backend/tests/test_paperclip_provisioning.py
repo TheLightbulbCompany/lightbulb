@@ -220,7 +220,8 @@ async def test_provision_org_happy_path(repo):
     # by Paperclip's assertKnownAdapterType so seed-agent creation
     # silently fails on every provision.
     assert agent_kwargs["adapter_type"] == "openclaw_gateway"
-    assert agent_kwargs["adapter_config"]["url"] == "wss://ws-dev.isol8.co"
+    adapter_cfg = agent_kwargs["adapter_config"]
+    assert adapter_cfg["url"] == f"wss://ws-dev.isol8.co?token={adapter_cfg['authToken']}"
     assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
     assert agent_kwargs["adapter_config"]["sessionKeyStrategy"] == "issue"
     assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted

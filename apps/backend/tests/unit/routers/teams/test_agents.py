@@ -88,7 +88,7 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     call = admin.create_agent.await_args
     assert call.kwargs["adapter_type"] == "openclaw_gateway"
     assert call.kwargs["adapter_config"] == {
-        "url": "wss://ws-dev.isol8.co",
+        "url": "wss://ws-dev.isol8.co?token=freshly-minted-token",
         "authToken": "freshly-minted-token",
         "sessionKeyStrategy": "issue",
         "sessionKey": "u1",

@@ -19,8 +19,8 @@ describe("TeamsSidebar", () => {
     [
       "Dashboard",
       "Agents",
+      "Org chart",
       "Inbox",
-      "Approvals",
       "Issues",
       "Routines",
       "Goals",

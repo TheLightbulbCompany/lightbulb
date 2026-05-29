@@ -3,12 +3,8 @@
 import { useState } from "react";
 import { PanelMasthead, PanelTabs } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-
-interface Agent {
-  id: string;
-  name: string;
-  role: string;
-}
+import type { CompanyAgent } from "@/components/teams/shared/types";
+import { AgentManageSection } from "@/components/teams/agents/AgentManageSection";
 
 interface RunRow {
   id: string;
@@ -17,16 +13,16 @@ interface RunRow {
 }
 
 const TABS = [
-  { value: "overview", label: "Overview" },
+  { value: "manage", label: "Manage" },
   { value: "runs", label: "Runs" },
-  { value: "config", label: "Config" },
 ];
 
 export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const { read } = useTeamsApi();
-  const { data: agent } = read<Agent>(`/agents/${agentId}`);
+  const { data: agent } = read<CompanyAgent>(`/agents/${agentId}`);
+  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: runs } = read<{ runs: RunRow[] }>(`/agents/${agentId}/runs`);
-  const [tab, setTab] = useState<string>("overview");
+  const [tab, setTab] = useState<string>("manage");
 
   if (!agent) {
     return (
@@ -43,14 +39,12 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
       <PanelMasthead
         overline="Agent"
         title={agent.name}
-        meta={agent.role.toUpperCase()}
+        meta={(agent.role ?? "").toUpperCase()}
       />
       <PanelTabs tabs={TABS} value={tab} onValueChange={setTab} />
 
-      {tab === "overview" && (
-        <pre className="editorial-card text-xs p-4 whitespace-pre-wrap text-[var(--ink-soft)] bg-[var(--cream-deeper)]">
-          {JSON.stringify(agent, null, 2)}
-        </pre>
+      {tab === "manage" && agent && (
+        <AgentManageSection agent={agent} agents={agentsData?.agents ?? []} />
       )}
       {tab === "runs" && (
         <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
@@ -71,11 +65,6 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
             </li>
           )}
         </ul>
-      )}
-      {tab === "config" && (
-        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
-          Adapter configuration is managed by Isol8 and cannot be edited here.
-        </div>
       )}
     </div>
   );

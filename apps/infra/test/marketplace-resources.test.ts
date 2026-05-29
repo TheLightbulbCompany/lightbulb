@@ -108,6 +108,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       openclawTaskDef: container.openclawTaskDef,
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
+    webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
     connectionsTableName: `isol8-${environment}-ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",

@@ -30,3 +30,38 @@ def test_direct_oauth_provider_shape():
 def test_unknown_provider_raises():
     with pytest.raises(KeyError):
         registry.get_provider("does-not-exist")
+
+
+def test_validate_key_maps_to_validation_field():
+    p = registry.get_provider("linear")
+    assert p.validation is not None
+    assert p.validation.method == "GET"
+    assert p.validation.url == "https://api.linear.app/graphql"
+
+
+def test_wiring_rejects_neither_or_both():
+    from pydantic import ValidationError
+    from core.services.credentials.registry import Wiring, OpenclawPath
+
+    with pytest.raises(ValidationError):
+        Wiring()  # neither
+    with pytest.raises(ValidationError):
+        Wiring(
+            openclaw_paths=[OpenclawPath(path="a.b", source="input.token")],
+            materializer="x",
+        )  # both
+
+
+def test_direct_oauth_requires_oauth_block():
+    from pydantic import ValidationError
+    from core.services.credentials.registry import Provider, Wiring
+
+    with pytest.raises(ValidationError):
+        Provider(
+            key="bad",
+            display_name="Bad",
+            acquisition="direct_oauth",
+            actor="cli",
+            refresh_owner="actor",
+            wiring=Wiring(materializer="x"),
+        )  # no oauth

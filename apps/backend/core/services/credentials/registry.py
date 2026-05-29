@@ -1,6 +1,7 @@
 """Integration registry: the single source of truth for how each third-party
 provider is acquired, who acts with the credential, and exactly where it lands.
 Loaded + validated once at import."""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 _YAML = Path(__file__).parent / "providers.yaml"
 
@@ -28,6 +29,7 @@ class Wiring(BaseModel):
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "Wiring":
+        # Truthiness XOR: an empty `openclaw_paths: []` is intentionally treated as "not set".
         if bool(self.openclaw_paths) == bool(self.materializer):
             raise ValueError("wiring must set exactly one of openclaw_paths | materializer")
         return self
@@ -39,7 +41,7 @@ class OAuthSpec(BaseModel):
     scopes: list[str]
     scope_separator: str = " "
     pkce: bool = True
-    extra_authorize_params: dict[str, str] = {}
+    extra_authorize_params: dict[str, str] = Field(default_factory=dict)
 
 
 class ValidateSpec(BaseModel):
@@ -49,8 +51,8 @@ class ValidateSpec(BaseModel):
 
 
 class Requires(BaseModel):
-    bins: list[str] = []
-    config: list[str] = []
+    bins: list[str] = Field(default_factory=list)
+    config: list[str] = Field(default_factory=list)
 
 
 class Provider(BaseModel):
@@ -62,8 +64,10 @@ class Provider(BaseModel):
     wiring: Wiring
     requires: Requires = Requires()
     oauth: OAuthSpec | None = None
-    validation: ValidateSpec | None = None   # YAML key is `validate`; aliased below
+    validation: ValidateSpec | None = Field(default=None, alias="validate")
 
+    # populate_by_name lets us pass either the `validate` alias (YAML) or the
+    # `validation` field name (Python construction) when building a Provider.
     model_config = {"populate_by_name": True}
 
     @model_validator(mode="after")
@@ -78,9 +82,8 @@ def _load() -> dict[str, Provider]:
     raw = yaml.safe_load(_YAML.read_text()) or {}
     out: dict[str, Provider] = {}
     for k, v in raw.items():
-        # YAML uses `validate` as the key; map it to the `validation` field.
-        if "validate" in v:
-            v = {**v, "validation": v.pop("validate")}
+        if not isinstance(v, dict):
+            raise ValueError(f"provider {k!r} has an empty or malformed definition")
         out[k] = Provider(key=k, **v)
     return out
 

@@ -38,6 +38,9 @@ export function ListingDetailView({ listingId, mode }: Props) {
     // state as the rejected-fetch path — otherwise the view sits on
     // Loading… forever.
     if (!userId) {
+      // Synchronizing Clerk's resolved auth state into our terminal view
+      // state — the external-system→React sync the rule explicitly allows.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoadState("not-found");
       return;
     }
@@ -100,6 +103,9 @@ export function ListingDetailView({ listingId, mode }: Props) {
   // bounce the user off the now-hidden Pending tab so they don't land on an
   // empty pane.
   useEffect(() => {
+    // Reacting to the server-derived `pending` row vanishing — an
+    // external-data→React sync, which the rule sanctions.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (tab === "pending" && !pending) setTab("overview");
   }, [pending, tab]);
 

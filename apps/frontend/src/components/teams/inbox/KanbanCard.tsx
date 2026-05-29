@@ -49,6 +49,12 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
       href={issueHref(issue)}
       className="block no-underline"
       style={{ color: "var(--ink)" }}
+      // Native anchors are browser-draggable by default, which hijacks the
+      // pointer and prevents dnd-kit's PointerSensor from starting the
+      // sortable drag — so the card never moves. Disable native drag so the
+      // kanban drag-to-change-status works; the onClick guard below still
+      // suppresses navigation when a drag just happened.
+      draggable={false}
       onClick={(e) => {
         if (isDragging) e.preventDefault();
       }}

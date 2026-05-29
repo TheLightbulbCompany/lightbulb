@@ -46,6 +46,16 @@ describe("KanbanCard", () => {
     expect(screen.getByRole("link")).toHaveAttribute("href", "/teams/issues/iss-1");
   });
 
+  it("disables native anchor drag so dnd-kit can drive the sort", () => {
+    // Native anchors are browser-draggable by default, which hijacks the
+    // pointer and prevents dnd-kit's PointerSensor from starting the sortable
+    // drag — so cards "move but don't stay." draggable={false} is the fix.
+    render(wrap(<KanbanCard issue={baseIssue} agents={[]} />));
+    const link = screen.getByRole("link");
+    expect(link).toHaveAttribute("draggable", "false");
+    expect(link).toHaveAttribute("href", "/teams/issues/iss-1");
+  });
+
   it("renders agent name when assigneeAgentId resolves", () => {
     render(
       wrap(

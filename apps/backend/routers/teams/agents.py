@@ -432,6 +432,24 @@ async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     )
 
 
+@router.post("/agents/{agent_id}/pause")
+async def pause_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Pause an agent (stops it running on events)."""
+    return await _admin().pause_agent(
+        agent_id=agent_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/agents/{agent_id}/resume")
+async def resume_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Resume a paused agent."""
+    return await _admin().resume_agent(
+        agent_id=agent_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
 @router.get("/agents/{agent_id}/runs")
 async def list_runs(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     """List runs for a given agent."""

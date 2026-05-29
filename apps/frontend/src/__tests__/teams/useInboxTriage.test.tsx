@@ -34,11 +34,18 @@ describe("useInboxTriage", () => {
     expect(result.current.count).toBe(2);
   });
 
-  it("normalizes bare-array and {items} run payloads and tolerates undefined", () => {
+  it("normalizes bare-array run payloads and tolerates undefined", () => {
     mockRead(undefined, [{ id: "r1", status: "failed" }]);
     const { result } = renderHook(() => useInboxTriage(new Set()));
     expect(result.current.approvals).toEqual([]);
     expect(result.current.failedRuns.map((r) => r.id)).toEqual(["r1"]);
+    expect(result.current.count).toBe(1);
+  });
+
+  it("normalizes the {items} run-payload wrapper", () => {
+    mockRead({ approvals: [] }, { items: [{ id: "r9", agentId: "ag1", status: "failed" }] });
+    const { result } = renderHook(() => useInboxTriage(new Set()));
+    expect(result.current.failedRuns.map((r) => r.id)).toEqual(["r9"]);
     expect(result.current.count).toBe(1);
   });
 });

@@ -353,13 +353,20 @@ class PaperclipProvisioning:
             #    for org members.
             svc_token = service_token.mint(owner_id)
 
+            # IDs of the agents we seed below. Persisted on the company
+            # row (step 8) as the STABLE marker of "Isol8-seeded, must not
+            # be deleted" — see PaperclipCompany.seeded_agent_ids and
+            # paperclip_openclaw_pairing.is_seeded_agent. Each seed is
+            # best-effort, so a failed seed simply contributes no id.
+            seeded_agent_ids: list[str] = []
+
             # 7. Best-effort seed a "Main Agent" pointing at the
             #    user's OpenClaw container. Failure here is not fatal
             #    — the company is still usable, the user can create
             #    agents from the UI manually. Acts AS the user (their
             #    session) so the agent ends up owned by them.
             try:
-                await self._admin.create_agent(
+                friday = await self._admin.create_agent(
                     company_id=company_id,
                     name="Friday",
                     role="ceo",
@@ -372,6 +379,8 @@ class PaperclipProvisioning:
                     session_cookie=new_user_session_cookie,
                     idempotency_key=f"{owner_user_id}:main-agent",
                 )
+                if isinstance(friday, dict) and friday.get("id"):
+                    seeded_agent_ids.append(friday["id"])
             except PaperclipApiError as e:
                 logger.warning(
                     "paperclip_provisioning.provision_org: seed agent failed for %s: %s",
@@ -386,7 +395,7 @@ class PaperclipProvisioning:
             #     failure does NOT undo a successful Friday seed
             #     (defense-in-depth — both seeds are best-effort).
             try:
-                await self._admin.create_agent(
+                atlas = await self._admin.create_agent(
                     company_id=company_id,
                     name="Atlas",
                     # Atlas was originally typed as ``role="recruiter"``
@@ -406,6 +415,8 @@ class PaperclipProvisioning:
                     session_cookie=new_user_session_cookie,
                     idempotency_key=f"{owner_user_id}:atlas-agent",
                 )
+                if isinstance(atlas, dict) and atlas.get("id"):
+                    seeded_agent_ids.append(atlas["id"])
             except PaperclipApiError as e:
                 logger.warning(
                     "paperclip_provisioning.provision_org: seed Atlas agent failed for %s: %s",
@@ -427,6 +438,7 @@ class PaperclipProvisioning:
                 status="active",
                 created_at=now,
                 updated_at=now,
+                seeded_agent_ids=seeded_agent_ids or None,
             )
             await self._repo.put(row)
             logger.info(

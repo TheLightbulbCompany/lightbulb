@@ -66,7 +66,7 @@ Agents list row → quick pause/resume/delete (guarded) + opens detail
 
 **B. reports_to.** Already accepted on `PatchAgentBody` (`routers/teams/schemas.py:55`) and forwarded by `patch_agent`. Add a regression test only.
 
-**C. Delete guard (seeded agents).** In the `agents.delete` cascade (`paperclip_agent_lifecycle.delete_paperclip_for_chat` and its `websocket_chat` call site), reject deletion of a seeded agent with a clear error. Identification (no new provisioning code): **Friday = the `role == "ceo"` agent** (robust against rename — role ≠ name); **Atlas = `name == "Atlas"`** (documented fragility; a durable `params.paperclip.seeded` marker is noted as future hardening but NOT added here, to keep this sub-project off the provisioning/container path). The `/teams` and `/chat` UIs hide/disable delete for seeded agents; the guard is the backstop.
+**C. Delete guard (seeded agents).** In the `agents.delete` cascade (`paperclip_agent_lifecycle.delete_paperclip_for_chat` and its `websocket_chat` call site), reject deletion of a seeded agent with a clear error. Identification is by a **stable persisted marker**, not role/name: `provision_org` captures Friday's and Atlas's Paperclip agent IDs and stores them in `PaperclipCompany.seeded_agent_ids` on the provisioner's row. `paperclip_openclaw_pairing.get_seeded_agent_ids(owner_id)` reads that set (org owners: the provisioner's row among the org's rows; personal: the single row), and `is_seeded_agent` is membership in it. A user-created agent that happens to use role `ceo` or the name `Atlas` is therefore never falsely locked, and renaming a seeded agent never drops its protection. The BFF stamps `seeded: bool` on every agent read so the `/teams` and `/chat` UIs hide/disable delete without re-deriving the rule; the guard is the backstop. (No legacy backfill: orgs provisioned before this change carry no `seeded_agent_ids`, so their Friday/Atlas are simply not flagged — accepted.)
 
 No other backend changes: no gateway meta-write from `/teams`, no role-lock-in-meta, no `_build_agents_list` change.
 
@@ -96,12 +96,12 @@ Extend the slim `CompanyAgent` (`components/teams/shared/types.ts`) to carry `ro
 
 ## Testing
 
-- **BFF:** unit tests for pause/resume routes + admin-client methods; the delete-seeded guard (Friday-by-ceo, Atlas-by-name); reports_to PATCH.
+- **BFF:** unit tests for pause/resume routes + admin-client methods; the delete-seeded guard (persisted `seeded_agent_ids` membership, incl. a user role=`ceo` agent NOT flagged); the `seeded` stamp on list/get; `seeded_agent_ids` repo round-trip; reports_to PATCH.
 - **Frontend:** `ReportsToPicker` (self/cycle exclusion, no-manager); `AgentPropertiesPanel` (meta read-only, reports_to save, actions); quick actions disabled for seeded agents; `useAgentMutations` SWR invalidation.
 
 ## Open items (resolved; verify during implementation)
 
-- **Seeded identification:** Friday-by-`ceo`-role, Atlas-by-name for the delete guard now; durable `params.paperclip.seeded` marker is a future hardening (out of scope here).
+- **Seeded identification:** stable persisted `PaperclipCompany.seeded_agent_ids` captured at `provision_org` time; the BFF stamps `seeded` on reads. Role/name heuristics are NOT used (they false-positive on user agents and break on rename). No legacy backfill — pre-change orgs simply aren't flagged.
 - **Icon display:** opaque `AGENT_ICON_NAMES` string rendered read-only; no picker in `/teams`.
 - **Budget:** omitted (Isol8 bills owner-level Bedrock credits; per-agent Paperclip budget is presumed cosmetic — revisit only if it drives real enforcement).
 - **"Manage in control panel" deep-link:** confirm the exact `/chat` route/param that opens a given agent's control panel for the meta-edit pointer.

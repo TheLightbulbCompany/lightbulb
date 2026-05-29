@@ -30,7 +30,7 @@ from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_openclaw_pairing import pair_with_openclaw
+from core.services.paperclip_openclaw_pairing import get_seeded_agent_ids, pair_with_openclaw
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 
@@ -51,6 +51,19 @@ router = APIRouter()
 # at the BFF boundary becomes a token-in-DOM exposure. Strip on every
 # read path as defense in depth — the frontend should never need these.
 _AGENT_REDACTED_FIELDS = ("adapterConfig", "adapterType")
+
+
+def _mark_seeded(agent, seeded_ids):
+    """Stamp ``seeded: bool`` onto an agent record for the browser.
+
+    ``seeded`` is the single source of truth the Teams UI uses to lock
+    Friday/Atlas (hide Delete, show meta read-only). Determined from the
+    persisted seeded-agent IDs — never role/name — so a user-created
+    agent is never falsely locked. Non-dicts pass through unchanged.
+    """
+    if not isinstance(agent, dict):
+        return agent
+    return {**agent, "seeded": agent.get("id") in seeded_ids}
 
 
 def _redact_agent(agent):
@@ -304,7 +317,8 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
         session_cookie=ctx.session_cookie,
     )
     envelope = envelope_list(upstream, "agents")
-    return {"agents": [_redact_agent(a) for a in envelope["agents"]]}
+    seeded_ids = await get_seeded_agent_ids(owner_id=_resolve_owner_id(ctx), repo=_repo())
+    return {"agents": [_mark_seeded(_redact_agent(a), seeded_ids) for a in envelope["agents"]]}
 
 
 @router.post("/agents")
@@ -397,7 +411,8 @@ async def get_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
         agent_id=agent_id,
         session_cookie=ctx.session_cookie,
     )
-    return _redact_agent(upstream)
+    seeded_ids = await get_seeded_agent_ids(owner_id=_resolve_owner_id(ctx), repo=_repo())
+    return _mark_seeded(_redact_agent(upstream), seeded_ids)
 
 
 @router.patch("/agents/{agent_id}")

@@ -198,6 +198,10 @@ export interface CompanyAgent {
   status?: string | null;
   /** ID of the agent this one reports to (null/absent = root). */
   reportsTo?: string | null;
+  /** Server-stamped: this is an Isol8-seeded agent (Friday/Atlas) and is
+   *  locked — undeletable, meta read-only. Determined from persisted
+   *  seeded-agent IDs by the BFF, never from role/name. */
+  seeded?: boolean;
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────

@@ -28,7 +28,6 @@ from typing import Any
 
 import httpx
 
-from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
@@ -123,32 +122,46 @@ async def fetch_paperclip_agents_for_owner(
     return agents
 
 
+async def get_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:
+    """Return the set of Isol8-seeded agent IDs (Friday + Atlas) for an owner.
+
+    Source of truth is the persisted ``seeded_agent_ids`` captured on the
+    provisioner's ``paperclip-companies`` row at ``provision_org`` time —
+    NOT a role/name heuristic. A user-created agent that happens to use
+    role ``ceo`` or the name ``Atlas`` is therefore never mistaken for a
+    seeded one, and renaming a seeded agent never drops its protection.
+
+    Owner keying mirrors ``resolve_company_id_for_owner``: personal owners
+    are their own row key; for orgs the seeded IDs live on the
+    provisioner's row, so we scan the org's rows for the one that carries
+    them. Best-effort — any lookup failure yields an empty set so a
+    transient DDB error never blocks deletion or mislabels the UI.
+    """
+    try:
+        if _is_org_owner_id(owner_id):
+            for row in await repo.list_by_org_id(owner_id):
+                ids = row.get("seeded_agent_ids")
+                if ids:
+                    return set(ids)
+            return set()
+        row = await repo.get(owner_id)
+        return set(row.seeded_agent_ids) if row and row.seeded_agent_ids else set()
+    except Exception:  # noqa: BLE001 — never block on a lookup failure
+        return set()
+
+
 async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
     """Whether ``agent_id`` is an Isol8-seeded agent (Friday or Atlas).
 
     Seeded agents are part of the provisioning contract and must not be
-    deleted. Identification: Friday = the ``role == "ceo"`` agent (robust
-    against rename); Atlas = ``name == "Atlas"``.
-
-    Best-effort: ``fetch_paperclip_agents_for_owner`` already returns [] on
-    Paperclip availability issues; we also swallow construction errors and
-    a not-found agent so a transient lookup never blocks deletion.
+    deleted. Identification is by the persisted seeded-agent IDs — see
+    ``get_seeded_agent_ids``. Never raises (best-effort lookup).
     """
-    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
-    try:
-        agents = await fetch_paperclip_agents_for_owner(
-            owner_id=owner_id,
-            repo=PaperclipRepo(table_name="paperclip-companies"),
-            admin_client=PaperclipAdminClient(http_client=http),
-        )
-    except Exception:  # noqa: BLE001 — never block on a lookup failure
-        return False
-    finally:
-        await http.aclose()
-    for a in agents:
-        if a.get("id") == agent_id:
-            return a.get("role") == "ceo" or a.get("name") == "Atlas"
-    return False
+    ids = await get_seeded_agent_ids(
+        owner_id=owner_id,
+        repo=PaperclipRepo(table_name="paperclip-companies"),
+    )
+    return agent_id in ids
 
 
 async def pair_with_openclaw(

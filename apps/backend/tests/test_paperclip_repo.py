@@ -77,7 +77,20 @@ def _make_company(user_id="u1", status="active", **kwargs):
         updated_at=kwargs.get("updated_at", now),
         last_error=kwargs.get("last_error"),
         scheduled_purge_at=kwargs.get("scheduled_purge_at"),
+        seeded_agent_ids=kwargs.get("seeded_agent_ids"),
     )
+
+
+async def test_seeded_agent_ids_round_trip(repo):
+    await repo.put(_make_company(user_id="user_seed", seeded_agent_ids=["friday_id", "atlas_id"]))
+    retrieved = await repo.get("user_seed")
+    assert retrieved.seeded_agent_ids == ["friday_id", "atlas_id"]
+
+
+async def test_seeded_agent_ids_absent_round_trips_as_none(repo):
+    await repo.put(_make_company(user_id="user_noseed"))
+    retrieved = await repo.get("user_noseed")
+    assert retrieved.seeded_agent_ids is None
 
 
 async def test_put_and_get_round_trips(repo):

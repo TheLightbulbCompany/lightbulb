@@ -50,17 +50,34 @@ def test_list_agents_calls_upstream_with_user_session(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
 
     r = client.get(
         "/api/v1/teams/agents",
         headers={"Authorization": "Bearer test"},
     )
     assert r.status_code == 200
-    assert r.json() == {"agents": [{"id": "a1"}]}
+    # Every item is stamped with a ``seeded`` flag (False here — no seeded ids).
+    assert r.json() == {"agents": [{"id": "a1", "seeded": False}]}
     admin.list_agents.assert_awaited_once_with(
         company_id="co_abc",
         session_cookie="cookie-value",
     )
+
+
+def test_list_agents_stamps_seeded_flag(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "friday_id"}, {"id": "user_id"}]})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value={"friday_id"}))
+
+    r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer test"})
+    assert r.status_code == 200
+    by_id = {a["id"]: a for a in r.json()["agents"]}
+    assert by_id["friday_id"]["seeded"] is True
+    assert by_id["user_id"]["seeded"] is False
 
 
 def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
@@ -140,6 +157,7 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
 
     r = client.get("/api/v1/teams/agents/a1", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
@@ -147,6 +165,7 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
     assert "adapterConfig" not in body
     assert "adapterType" not in body
     assert body["name"] == "Helper"
+    assert body["seeded"] is False
 
 
 def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeypatch):
@@ -203,6 +222,7 @@ def test_list_agents_strips_adapter_config_per_item(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
 
     r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200

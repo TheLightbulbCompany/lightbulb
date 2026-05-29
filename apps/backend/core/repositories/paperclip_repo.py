@@ -103,6 +103,17 @@ class PaperclipCompany:
     updated_at: datetime
     last_error: Optional[str] = None
     scheduled_purge_at: Optional[datetime] = None
+    seeded_agent_ids: Optional[list[str]] = None
+    """Paperclip agent IDs of the Isol8-seeded agents (Friday + Atlas)
+    captured at provision time. The stable marker for "this agent is part
+    of the provisioning contract and must not be deleted" — used by
+    ``paperclip_openclaw_pairing.is_seeded_agent`` and the Teams BFF
+    ``seeded`` flag. Only the provisioner's row carries this (it's the
+    row whose ``provision_org`` actually seeded the agents); members'
+    rows leave it None. Matching on persisted IDs (rather than role/name)
+    means a user-created agent that happens to use role ``ceo`` or the
+    name ``Atlas`` is never mistaken for a seeded one, and renaming a
+    seeded agent never drops its protection."""
 
 
 class PaperclipRepo:
@@ -140,6 +151,8 @@ class PaperclipRepo:
             item["last_error"] = company.last_error
         if company.scheduled_purge_at is not None:
             item["scheduled_purge_at"] = company.scheduled_purge_at.isoformat()
+        if company.seeded_agent_ids:
+            item["seeded_agent_ids"] = company.seeded_agent_ids
         await run_in_thread(self._table().put_item, Item=item)
 
     async def get(self, user_id: str, *, consistent_read: bool = False) -> Optional[PaperclipCompany]:
@@ -165,6 +178,7 @@ class PaperclipRepo:
             scheduled_purge_at=(
                 datetime.fromisoformat(item["scheduled_purge_at"]) if item.get("scheduled_purge_at") else None
             ),
+            seeded_agent_ids=(list(item["seeded_agent_ids"]) if item.get("seeded_agent_ids") else None),
         )
 
     async def get_org_company_id(self, org_id: str) -> Optional[str]:

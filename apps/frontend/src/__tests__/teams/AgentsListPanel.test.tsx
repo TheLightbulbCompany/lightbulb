@@ -13,6 +13,7 @@ interface AgentRow {
   name: string;
   role: string;
   status?: string;
+  seeded?: boolean;
 }
 interface AgentsResp {
   data: { agents: AgentRow[] };
@@ -106,10 +107,11 @@ describe("AgentsListPanel", () => {
     expect(link.closest("a")).toHaveAttribute("href", "/teams/agents/a1");
   });
 
-  it("row pause action calls pause; delete hidden for ceo", async () => {
+  it("row pause action calls pause; delete hidden for seeded agents", async () => {
     mockPause.mockClear();
     mockRead.mockReturnValueOnce({
-      data: { agents: [{ id: "f", name: "Friday", role: "ceo", status: "idle" }] },
+      // seeded:true is the server-stamped lock — delete is hidden for it.
+      data: { agents: [{ id: "f", name: "Friday", role: "ceo", status: "idle", seeded: true }] },
       isLoading: false,
       error: null,
       mutate: mockMutate,
@@ -118,5 +120,17 @@ describe("AgentsListPanel", () => {
     expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /pause/i }));
     await waitFor(() => expect(mockPause).toHaveBeenCalledWith("f"));
+  });
+
+  it("shows delete for a non-seeded agent even if its role is ceo", () => {
+    mockRead.mockReturnValueOnce({
+      // A user-created agent that happens to use role "ceo" is NOT seeded.
+      data: { agents: [{ id: "u", name: "Faux", role: "ceo", status: "idle" }] },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    });
+    render(<AgentsListPanel />);
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
   });
 });

@@ -7,10 +7,13 @@ import { EditorialButton } from "@/components/teams/shell";
 import { ReportsToPicker } from "@/components/teams/agents/ReportsToPicker";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 
-/** Seeded = Isol8 provisioning contract (Friday/Atlas). Mirror of the server
- *  rule in core/services/paperclip_openclaw_pairing.is_seeded_agent. */
+/** Seeded = Isol8 provisioning contract (Friday/Atlas), locked from
+ *  deletion/meta-edits. The BFF stamps ``seeded`` from the persisted
+ *  seeded-agent IDs (core/services/paperclip_openclaw_pairing.is_seeded_agent),
+ *  so a user-created agent using role "ceo" or the name "Atlas" is never
+ *  mistaken for one. */
 export function isSeededAgent(a: CompanyAgent): boolean {
-  return a.role === "ceo" || a.name === "Atlas";
+  return a.seeded === true;
 }
 
 function MetaRow({ label, value }: { label: string; value?: string | null }) {

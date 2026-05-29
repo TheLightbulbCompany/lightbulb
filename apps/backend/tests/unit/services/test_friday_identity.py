@@ -121,10 +121,12 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     assert "PAPERCLIP_WAKE_REASON" in agents_md
     assert "PAPERCLIP_RUN_ID" in agents_md
     assert "409" in agents_md  # 'never retry a 409' rule
-    # In-house roster present so Friday has baseline knowledge of
-    # specialists before her first paperclipListAgents call.
+    # Only Atlas (recruiter) and Friday (CEO) ship in the container, so the
+    # playbook may name Atlas as the hire path. Every other specialist must
+    # come from paperclipListAgents at runtime — no hardcoded roster.
     assert "Atlas" in agents_md
-    assert "Pulse" in agents_md
+    assert "Pulse" not in agents_md
+    assert "Tally" not in agents_md
     # Owner display interpolated.
     assert "Sam's AI company" in agents_md or "Sam" in agents_md
     # Triage section present — handles bubble-ups from stuck specialists.

@@ -9,7 +9,7 @@ interface RpcResult<T = unknown> {
   data: T | undefined;
   error: Error | undefined;
   isLoading: boolean;
-  mutate: () => void;
+  mutate: () => Promise<T | undefined>;
 }
 
 /**
@@ -101,9 +101,9 @@ export function useGatewayRpc<T = unknown>(
     data,
     error: error as Error | undefined,
     isLoading,
-    mutate: () => {
-      mutate();
-    },
+    // Return SWR's mutate promise so callers can `await` a revalidation
+    // and act only after the fresh data has been applied.
+    mutate: () => mutate(),
   };
 }
 

@@ -148,6 +148,12 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
         agentId,
         params: { paperclip: block },
       });
+      // Re-read config.get before clearing the dirty flag. The form
+      // re-seeds itself from config.get's params.paperclip whenever
+      // the dirty flag is false; without a fresh read it would re-seed
+      // from the pre-save snapshot and the just-saved values would
+      // appear to vanish on navigating back to this agent.
+      await mutateConfig();
       setMetaDirty(false);
       onAgentUpdated?.();
     } catch (err) {
@@ -155,7 +161,7 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
     } finally {
       setSavingMeta(false);
     }
-  }, [agentId, callRpc, meta, onAgentUpdated]);
+  }, [agentId, callRpc, meta, mutateConfig, onAgentUpdated]);
 
   const handleModelChange = useCallback(async (newModel: string) => {
     setUpdatingModel(true);

@@ -456,6 +456,27 @@ def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
     return entries
 
 
+def workflow_plugin_entries() -> dict:
+    """Bundled OpenClaw workflow extensions enabled on every container,
+    independent of the LLM provider.
+
+    Single source of truth so BOTH the provision-time builder
+    (``build_openclaw_config_dict``) and the post-onboarding provider
+    hot-swap path (``config_patcher.replace_provider_block``, which replaces
+    ``plugins.entries`` wholesale) include them. Without this shared seam a
+    Bedrock ↔ ChatGPT switch would drop ``lobster`` / ``llm-task`` until the
+    next full reprovision.
+
+    Returned fresh each call so callers may merge/mutate without corrupting
+    shared module state. ``llm-task`` is left unconfigured so it inherits the
+    agent's default provider/model at call time across every provider path.
+    """
+    return {
+        "lobster": {"enabled": True},
+        "llm-task": {"enabled": True},
+    }
+
+
 def build_openclaw_config_dict(
     *,
     user_id: str,
@@ -596,18 +617,21 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
-                # Stubs preserved from a v2026.4.22-era constraint where
-                # AgentDefaultsSchema referenced these schemas without
-                # .optional(). At v2026.5.7 each schema (Heartbeat,
-                # AgentContextLimits, AgentEmbeddedHarness) ends in
-                # .optional() so emitting them is no longer required.
-                # Kept as explicit no-op defaults; safe to delete in a
-                # follow-up cleanup PR. None of these features are
-                # opted into (no heartbeat cadence, no context-limit
-                # caps, no embedded-harness override).
+                # embeddedHarness / contextLimits are genuine no-op stubs
+                # (their schemas don't change behavior when empty); kept as
+                # explicit defaults, safe to delete in a later cleanup.
                 "embeddedHarness": {},
                 "contextLimits": {},
-                "heartbeat": {},
+                # heartbeat is NOT a no-op: upstream treats a present
+                # `agents.defaults.heartbeat` as truthy and falls back to a
+                # 30m interval with `target: none`. That is OpenClaw's
+                # intended default — a periodic internal-maintenance turn per
+                # agent (review HEARTBEAT.md, update memory) that does NOT
+                # send any outbound message. We set `every` explicitly so the
+                # cadence is visible in our config rather than inherited from
+                # an upstream default. Event-driven waking (Paperclip issue
+                # assignment/comment) is independent of this.
+                "heartbeat": {"every": "30m"},
                 "workspace": "/home/node/.openclaw/workspaces",
                 # Memory embedding provider, kept pinned to Bedrock so any
                 # future plugin that does want embeddings inherits a sane
@@ -663,6 +687,17 @@ def build_openclaw_config_dict(
         },
         "tools": {
             "profile": "full",
+            # Explicit wildcard allow, separate from ``profile: "full"``.
+            # The profile's implicit wildcard surfaces core tools and
+            # NON-optional plugin tools, but the optional-plugin-tool gate
+            # (OpenClaw src/plugins/tools.ts isOptionalToolAllowed) checks
+            # the *explicit* tools.allow and denies optional tools whenever
+            # that list resolves empty. Our optional plugin tools (lobster,
+            # llm-task — both registered optional:true) therefore stay hidden
+            # under profile-full alone; an explicit "*" is the token that
+            # surfaces them. ``deny`` still wins over the wildcard, so the
+            # canvas/nodes denials below are unaffected.
+            "allow": ["*"],
             # Default-deny both canvas and nodes. node_proxy.py toggles
             # "nodes" back to enabled dynamically when a desktop node
             # pairs, and back to denied when the last one disconnects.
@@ -721,7 +756,18 @@ def build_openclaw_config_dict(
         },
         "plugins": {
             "slots": {},
-            "entries": plugin_entries,
+            "entries": {
+                # Provider-derived entries (e.g. amazon-bedrock with
+                # discovery disabled) selected by ``provider_choice``.
+                **plugin_entries,
+                # Bundled workflow extensions shipped in the OpenClaw image
+                # (OPENCLAW_BUNDLED_PLUGIN_DIR=extensions). Both activate
+                # onStartup once enabled; their tools are optional:true and
+                # are surfaced via the explicit tools.allow wildcard above.
+                # Kept in sync with the provider hot-swap path via the shared
+                # workflow_plugin_entries() seam.
+                **workflow_plugin_entries(),
+            },
         },
         # Channels: we ship every supported provider as `enabled: true`
         # so the plugin is loaded into the gateway at startup.

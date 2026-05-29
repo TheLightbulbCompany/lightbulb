@@ -53,12 +53,15 @@ def test_synthesize_returns_canonical_shape():
         service_token="JWT_TOKEN_HERE",
         user_id="user_123",
     )
-    assert cfg == {
-        "url": "wss://ws-dev.isol8.co",
-        "authToken": "JWT_TOKEN_HERE",
-        "sessionKeyStrategy": "issue",
-        "sessionKey": "user_123",
-    }
+    # Token must live in the URL query string — the Isol8 WS API Gateway
+    # authorizer reads it from `route.request.querystring.token`, NOT from
+    # the Authorization header the upstream adapter would otherwise send.
+    assert cfg["url"] == "wss://ws-dev.isol8.co?token=JWT_TOKEN_HERE"
+    # authToken retained for adapter compatibility (header is ignored by API GW).
+    assert cfg["authToken"] == "JWT_TOKEN_HERE"
+    assert cfg["sessionKeyStrategy"] == "issue"
+    assert cfg["sessionKey"] == "user_123"
+    assert set(cfg.keys()) == {"url", "authToken", "sessionKeyStrategy", "sessionKey"}
 
 
 def test_synthesize_rejects_bad_url():
@@ -100,5 +103,5 @@ def test_strategy_is_issue_for_per_issue_session_isolation():
     )
     assert cfg["sessionKeyStrategy"] == "issue"
     assert cfg["sessionKey"] == "user_abc"
-    assert cfg["url"] == "wss://ws.isol8.co"
+    assert cfg["url"] == "wss://ws.isol8.co?token=" + "t" * 100
     assert cfg["authToken"] == "t" * 100

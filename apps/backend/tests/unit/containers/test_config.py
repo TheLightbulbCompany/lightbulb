@@ -133,6 +133,29 @@ class TestOpenclawConfigShape:
         assert "canvas" in config["tools"]["deny"]
         assert "nodes" in config["tools"]["deny"]
 
+    def test_tools_explicit_wildcard_allow_present(self):
+        """An explicit ``tools.allow: ["*"]`` is required (separate from
+        ``profile: "full"``) so the optional-plugin-tool gate
+        (OpenClaw isOptionalToolAllowed) surfaces optional:true tools like
+        lobster / llm-task. profile-full's implicit wildcard does NOT reach
+        that gate — it resolves empty there and hides optional tools. The
+        explicit wildcard must coexist with the canvas/nodes denials, which
+        still win over it."""
+        config = _cfg()
+        assert config["tools"]["allow"] == ["*"]
+        # deny must still be intact — wildcard allow does not override deny.
+        assert "canvas" in config["tools"]["deny"]
+        assert "nodes" in config["tools"]["deny"]
+
+    def test_workflow_plugins_enabled(self):
+        """lobster + llm-task are bundled OpenClaw extensions enabled on every
+        provision. llm-task is left unconfigured so it inherits the agent's
+        default provider/model at call time."""
+        config = _cfg()
+        entries = config["plugins"]["entries"]
+        assert entries["lobster"] == {"enabled": True}
+        assert entries["llm-task"] == {"enabled": True}
+
     def test_tools_exec_approval_policy(self):
         """allowlist + on-miss lets the in-chat approval card decide on
         unknown commands. OpenClaw's default security=deny silently blocks
@@ -303,6 +326,27 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
         assert config["channels"]["telegram"]["enabled"] is True
         assert config["channels"]["discord"]["enabled"] is True
         assert config["channels"]["slack"]["enabled"] is True
+
+    @pytest.mark.parametrize(
+        "provider_choice,kwargs",
+        [
+            ("chatgpt_oauth", {}),
+            ("byo_key", {"byo_provider": "openai"}),
+            ("byo_key", {"byo_provider": "anthropic"}),
+            ("bedrock_claude", {}),
+        ],
+    )
+    def test_workflow_plugins_enabled_for_every_provider(self, provider_choice, kwargs):
+        """The static lobster/llm-task entries must merge alongside the
+        provider-derived plugin entries (e.g. bedrock's ``amazon-bedrock``)
+        rather than clobbering them — and vice versa."""
+        config = _cfg(provider_choice=provider_choice, **kwargs)
+        entries = config["plugins"]["entries"]
+        assert entries["lobster"] == {"enabled": True}
+        assert entries["llm-task"] == {"enabled": True}
+        # The provider block's own entry must survive the merge.
+        if provider_choice == "bedrock_claude":
+            assert entries["amazon-bedrock"]["config"]["discovery"]["enabled"] is False
 
 
 @pytest.mark.asyncio

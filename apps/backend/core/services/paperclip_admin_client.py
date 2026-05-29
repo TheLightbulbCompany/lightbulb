@@ -702,7 +702,6 @@ class PaperclipAdminClient:
         self,
         *,
         session_cookie: str,
-        company_id: str,
         agent_id: str,
         role: Optional[str] = None,
         title: Optional[str] = None,
@@ -712,11 +711,14 @@ class PaperclipAdminClient:
     ) -> dict:
         """Partial-update an agent.
 
-        Maps to ``PATCH /api/companies/{companyId}/agents/{agentId}``
-        (see ``paperclip/server/src/routes/agents.ts`` —
-        ``updateAgentSchema = createAgentSchema.partial()``). Only the
-        fields explicitly supplied are sent; ``None`` means "leave
-        alone", an empty string would WIPE the field server-side.
+        Maps to ``PATCH /api/agents/{agentId}`` (see
+        ``paperclip/server/src/routes/agents.ts`` —
+        ``updateAgentSchema = createAgentSchema.partial()``). The route
+        is not company-scoped: Paperclip authorizes the caller against
+        the agent's own company server-side from the session cookie, so
+        no ``companyId`` belongs in the path. Only the fields explicitly
+        supplied are sent; ``None`` means "leave alone", an empty string
+        would WIPE the field server-side.
 
         Returns the updated agent dict from Paperclip's response so
         callers can read the new state without a follow-up GET.
@@ -737,7 +739,7 @@ class PaperclipAdminClient:
         if metadata is not None:
             body["metadata"] = metadata
         return await self._patch(
-            f"/api/companies/{company_id}/agents/{agent_id}",
+            f"/api/agents/{agent_id}",
             json=body,
             session_cookie=session_cookie,
         )

@@ -1,5 +1,5 @@
 """Tests for PaperclipAdminClient.update_agent — partial-update wrapper
-around Paperclip's PATCH /api/companies/{companyId}/agents/{agentId}."""
+around Paperclip's PATCH /api/agents/{agentId}."""
 
 import os
 
@@ -33,7 +33,6 @@ async def test_update_agent_sends_only_provided_fields():
 
     result = await admin.update_agent(
         session_cookie="sess=abc",
-        company_id="co-1",
         agent_id="agent-uuid",
         title="New title",
     )
@@ -42,7 +41,8 @@ async def test_update_agent_sends_only_provided_fields():
     http.patch.assert_awaited_once()
     call = http.patch.await_args
     # URL — relative path per the admin client's base_url contract.
-    assert call.args[0] == "/api/companies/co-1/agents/agent-uuid"
+    # Not company-scoped: Paperclip exposes only PATCH /api/agents/:id.
+    assert call.args[0] == "/api/agents/agent-uuid"
     # Body — only title.
     assert call.kwargs["json"] == {"title": "New title"}
     # Session cookie threaded through headers.
@@ -58,7 +58,6 @@ async def test_update_agent_sends_all_provided_fields():
 
     await admin.update_agent(
         session_cookie="c",
-        company_id="co",
         agent_id="a",
         role="engineer",
         title="Backend dev",
@@ -84,7 +83,6 @@ async def test_update_agent_skips_none_fields():
 
     await admin.update_agent(
         session_cookie="c",
-        company_id="co",
         agent_id="a",
         role=None,
         title="New title",
@@ -110,7 +108,6 @@ async def test_update_agent_raises_paperclip_api_error_on_non_2xx():
     with pytest.raises(PaperclipApiError):
         await admin.update_agent(
             session_cookie="c",
-            company_id="co",
             agent_id="a",
             role="bogus",
         )
@@ -126,7 +123,6 @@ async def test_update_agent_returns_dict_payload():
 
     result = await admin.update_agent(
         session_cookie="c",
-        company_id="co",
         agent_id="a",
         title="T",
     )

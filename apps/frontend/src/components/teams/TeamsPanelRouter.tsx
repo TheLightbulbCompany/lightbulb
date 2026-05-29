@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 
 const PANELS: Record<string, React.ComponentType> = {
   dashboard: dynamic(() =>
@@ -14,9 +16,6 @@ const PANELS: Record<string, React.ComponentType> = {
   ),
   inbox: dynamic(() =>
     import("./panels/InboxPanel").then((m) => m.InboxPanel),
-  ),
-  approvals: dynamic(() =>
-    import("./panels/ApprovalsPanel").then((m) => m.ApprovalsPanel),
   ),
   issues: dynamic(() =>
     import("./panels/IssuesPanel").then((m) => m.IssuesPanel),
@@ -47,7 +46,21 @@ const PANELS: Record<string, React.ComponentType> = {
   ),
 };
 
+// Panels removed from the nav but still reachable by old URLs/bookmarks.
+const RETIRED_REDIRECTS: Record<string, string> = {
+  approvals: "/teams/inbox", // folded into the inbox "Needs attention" band
+};
+
 export function TeamsPanelRouter({ panel }: { panel: string }) {
+  const router = useRouter();
+  const redirectTo = RETIRED_REDIRECTS[panel];
+
+  useEffect(() => {
+    if (redirectTo) router.replace(redirectTo);
+  }, [redirectTo, router]);
+
+  if (redirectTo) return null;
+
   const Cmp = PANELS[panel];
   if (!Cmp) return <div className="p-8">Unknown panel: {panel}</div>;
   return <Cmp />;

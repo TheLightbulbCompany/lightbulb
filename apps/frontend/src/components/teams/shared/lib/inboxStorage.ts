@@ -175,3 +175,59 @@ export function saveInboxViewMode(
     // Swallow — Safari Private mode / quota exceeded.
   }
 }
+
+/**
+ * Read the per-company set of acknowledged (dismissed-from-band) failed-run
+ * IDs. Mirrors loadReadInboxItems. Empty Set on missing/malformed/throw.
+ */
+export function loadAckRuns(companyId: string): Set<string> {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(inboxStorageKey(companyId, "ack-runs"));
+  } catch {
+    return new Set();
+  }
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is string => typeof v === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Persist the acknowledged failed-run IDs as a JSON array. Swallows errors. */
+export function saveAckRuns(companyId: string, ids: Set<string>): void {
+  try {
+    localStorage.setItem(
+      inboxStorageKey(companyId, "ack-runs"),
+      JSON.stringify([...ids]),
+    );
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+/** Read the per-company "Needs attention" band collapsed flag. Default false. */
+export function loadBandCollapsed(companyId: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(inboxStorageKey(companyId, "triage-collapsed")) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Persist the band collapsed flag. Swallows storage errors. */
+export function saveBandCollapsed(companyId: string, collapsed: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      inboxStorageKey(companyId, "triage-collapsed"),
+      collapsed ? "1" : "0",
+    );
+  } catch {
+    // Swallow — Safari Private mode / quota exceeded.
+  }
+}

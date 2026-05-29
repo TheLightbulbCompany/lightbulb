@@ -456,6 +456,27 @@ def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
     return entries
 
 
+def workflow_plugin_entries() -> dict:
+    """Bundled OpenClaw workflow extensions enabled on every container,
+    independent of the LLM provider.
+
+    Single source of truth so BOTH the provision-time builder
+    (``build_openclaw_config_dict``) and the post-onboarding provider
+    hot-swap path (``config_patcher.replace_provider_block``, which replaces
+    ``plugins.entries`` wholesale) include them. Without this shared seam a
+    Bedrock ↔ ChatGPT switch would drop ``lobster`` / ``llm-task`` until the
+    next full reprovision.
+
+    Returned fresh each call so callers may merge/mutate without corrupting
+    shared module state. ``llm-task`` is left unconfigured so it inherits the
+    agent's default provider/model at call time across every provider path.
+    """
+    return {
+        "lobster": {"enabled": True},
+        "llm-task": {"enabled": True},
+    }
+
+
 def build_openclaw_config_dict(
     *,
     user_id: str,
@@ -740,11 +761,9 @@ def build_openclaw_config_dict(
                 # (OPENCLAW_BUNDLED_PLUGIN_DIR=extensions). Both activate
                 # onStartup once enabled; their tools are optional:true and
                 # are surfaced via the explicit tools.allow wildcard above.
-                # llm-task is left unconfigured so it inherits the agent's
-                # default provider/model at call time — works across every
-                # provider path without per-path branching.
-                "lobster": {"enabled": True},
-                "llm-task": {"enabled": True},
+                # Kept in sync with the provider hot-swap path via the shared
+                # workflow_plugin_entries() seam.
+                **workflow_plugin_entries(),
             },
         },
         # Channels: we ship every supported provider as `enabled: true`

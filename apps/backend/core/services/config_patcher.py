@@ -11,6 +11,7 @@ import tempfile
 from typing import Any, Callable
 
 from core.config import settings
+from core.containers.config import workflow_plugin_entries
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,11 @@ async def replace_provider_block(
     ``plugins``) are created or coerced as needed — a partial existing
     structure from a legacy config doesn't block the swap.
 
+    ``plugins.entries`` is rebuilt as ``workflow_plugin_entries()`` merged
+    with the provider entries, so the provider-independent workflow plugins
+    (lobster / llm-task) persist across provider switches even though the
+    old provider's entry is dropped.
+
     Raises ``ConfigPatchError`` (via ``_locked_rmw``) if the owner has
     no ``openclaw.json`` on EFS yet. Callers should fall back to a full
     re-provision in that case.
@@ -191,7 +197,16 @@ async def replace_provider_block(
         if not isinstance(plugins, dict):
             plugins = {}
             current["plugins"] = plugins
-        plugins["entries"] = copy.deepcopy(plugin_entries)
+        # Provider entries are replaced wholesale (to drop the OLD provider's
+        # entry on a switch), but the provider-independent workflow plugins
+        # must persist — otherwise a Bedrock ↔ ChatGPT swap would drop
+        # lobster / llm-task until full reprovision. Re-seed them from the
+        # same source the provision builder uses. Distinct keys, so the
+        # provider entries below never collide with them.
+        plugins["entries"] = {
+            **workflow_plugin_entries(),
+            **copy.deepcopy(plugin_entries),
+        }
 
         return True
 

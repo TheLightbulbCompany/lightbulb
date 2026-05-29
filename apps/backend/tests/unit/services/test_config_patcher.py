@@ -955,7 +955,10 @@ def tmp_efs_with_bedrock_provider(monkeypatch):
 async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bedrock_provider):
     """Bedrock → ChatGPT OAuth: amazon-bedrock provider entry MUST be
     gone after the replace (a deep-merge into {} would leave it in place).
-    Same for plugins.entries."""
+    The provider-independent workflow plugins persist, so entries is the
+    workflow seam exactly (no lingering amazon-bedrock)."""
+    from core.containers.config import workflow_plugin_entries
+
     await replace_provider_block(
         "user_p",
         providers={},
@@ -965,8 +968,28 @@ async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bed
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         result = json.load(f)
     assert result["models"]["providers"] == {}
-    assert result["plugins"]["entries"] == {}
+    # amazon-bedrock dropped; workflow plugins survive the wholesale replace.
+    assert result["plugins"]["entries"] == workflow_plugin_entries()
+    assert "amazon-bedrock" not in result["plugins"]["entries"]
     assert result["agents"]["defaults"]["model"]["primary"] == "openai-codex/gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_preserves_workflow_plugins(tmp_efs_with_bedrock_provider):
+    """A provider swap must not drop lobster / llm-task. They are bundled
+    workflow extensions enabled at provision time and are independent of the
+    chosen LLM provider; losing them on a Bedrock ↔ ChatGPT switch would
+    silently break workflows until a full reprovision."""
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        entries = json.load(f)["plugins"]["entries"]
+    assert entries["lobster"] == {"enabled": True}
+    assert entries["llm-task"] == {"enabled": True}
 
 
 @pytest.mark.asyncio

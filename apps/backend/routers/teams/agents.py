@@ -435,18 +435,25 @@ async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
 @router.post("/agents/{agent_id}/pause")
 async def pause_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Pause an agent (stops it running on events)."""
-    return await _admin().pause_agent(
-        agent_id=agent_id,
-        session_cookie=ctx.session_cookie,
+    # Paperclip echoes the updated agent record, which can include
+    # adapterConfig/adapterType (the OpenClaw service token). Redact for the
+    # same reason as the GET/PATCH handlers — never leak it to the browser.
+    return _redact_agent(
+        await _admin().pause_agent(
+            agent_id=agent_id,
+            session_cookie=ctx.session_cookie,
+        )
     )
 
 
 @router.post("/agents/{agent_id}/resume")
 async def resume_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Resume a paused agent."""
-    return await _admin().resume_agent(
-        agent_id=agent_id,
-        session_cookie=ctx.session_cookie,
+    return _redact_agent(
+        await _admin().resume_agent(
+            agent_id=agent_id,
+            session_cookie=ctx.session_cookie,
+        )
     )
 
 

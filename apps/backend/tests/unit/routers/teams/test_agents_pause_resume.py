@@ -36,3 +36,26 @@ async def test_resume_agent_route_calls_admin_resume():
         out = await agents_mod.resume_agent("a1", ctx=_ctx())
     fake_admin.resume_agent.assert_awaited_once_with(agent_id="a1", session_cookie="cookie1")
     assert out["status"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_pause_resume_redact_adapter_fields():
+    """Paperclip echoes the agent record on pause/resume, which can include
+    adapterConfig/adapterType (the OpenClaw service token). The routes MUST
+    redact them like the GET/PATCH handlers — never leak to the browser."""
+    record = {
+        "id": "a1",
+        "status": "paused",
+        "adapterConfig": {"authToken": "SECRET"},
+        "adapterType": "openclaw_gateway",
+    }
+    fake_admin = MagicMock()
+    fake_admin.pause_agent = AsyncMock(return_value=dict(record))
+    fake_admin.resume_agent = AsyncMock(return_value={**record, "status": "idle"})
+    with patch("routers.teams.agents._admin", return_value=fake_admin):
+        paused = await agents_mod.pause_agent("a1", ctx=_ctx())
+        resumed = await agents_mod.resume_agent("a1", ctx=_ctx())
+    for out in (paused, resumed):
+        assert "adapterConfig" not in out
+        assert "adapterType" not in out
+        assert out["id"] == "a1"

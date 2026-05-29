@@ -1,4 +1,5 @@
-"""Materializer registry: name -> callable(owner_id, provider_key, credential).
-Populated in M3 (toml_cli, gog_keyring)."""
+"""Materializer registry: name -> callable(owner_id, provider_key, credential)."""
 
-MATERIALIZERS: dict[str, object] = {}
+from core.services.credentials.materializers.toml_cli import write as _toml
+
+MATERIALIZERS: dict[str, object] = {"toml_cli": _toml}

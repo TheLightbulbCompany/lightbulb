@@ -88,6 +88,8 @@ export class Isol8Stage extends cdk.Stage {
         creditsTable: database.creditsTable,
         creditTransactionsTable: database.creditTransactionsTable,
         oauthTokensTable: database.oauthTokensTable,
+        connectionsTable: database.connectionsTable,
+        oauthStateTable: database.oauthStateTable,
         webhookDedupTable: database.webhookDedupTable,
         paperclipCompaniesTable: database.paperclipCompaniesTable,
         marketplaceListingsTable: database.marketplaceListingsTable,

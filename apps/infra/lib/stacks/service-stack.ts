@@ -54,6 +54,8 @@ export interface ServiceStackProps extends cdk.StackProps {
     creditsTable: dynamodb.Table;
     creditTransactionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
+    connectionsTable: dynamodb.Table;
+    oauthStateTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
     paperclipCompaniesTable: dynamodb.Table;
     marketplaceListingsTable: dynamodb.Table;
@@ -302,6 +304,8 @@ export class ServiceStack extends cdk.Stack {
     props.database.creditsTable.grantReadWriteData(this.taskRole);
     props.database.creditTransactionsTable.grantReadWriteData(this.taskRole);
     props.database.oauthTokensTable.grantReadWriteData(this.taskRole);
+    props.database.connectionsTable.grantReadWriteData(this.taskRole);
+    props.database.oauthStateTable.grantReadWriteData(this.taskRole);
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
     // never reads. Write-only grant is sufficient.
     props.database.webhookDedupTable.grantWriteData(this.taskRole);

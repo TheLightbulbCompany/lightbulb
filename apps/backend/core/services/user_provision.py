@@ -210,8 +210,17 @@ async def _ensure_paperclip_for_org(
                 # just-written row. On genuine success the claim stays as a
                 # permanent "bootstrapped" marker (find_org_owner then returns
                 # the company and this branch is not re-entered).
+                #
+                # The row must also belong to THIS org. provision_org
+                # short-circuits on repo.get(user_id) when the user already has
+                # an active row — and since rows are keyed per-user, a user who
+                # was provisioned in a PERSONAL context (row.org_id == their
+                # user_id) would make this read return that unrelated active row
+                # even though no org-indexed company exists. Checking org_id
+                # keeps us from holding the claim on a personal row while
+                # find_org_owner(org_id) stays None.
                 row = await provisioning.get_company_row(user_id)
-                if row is None or row.status != "active":
+                if row is None or row.status != "active" or row.org_id != org_id:
                     logger.warning(
                         "ensure_user_ready (org): create for org=%s user=%s "
                         "returned without an active paperclip row (likely a "

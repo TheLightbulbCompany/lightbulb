@@ -80,6 +80,14 @@ def mock_efs_client():
 
 
 @pytest.fixture
+def mock_servicediscovery_client():
+    """Create a mock AWS Cloud Map (servicediscovery) boto3 client."""
+    client = MagicMock()
+    client.discover_instances.return_value = {"Instances": []}
+    return client
+
+
+@pytest.fixture
 def mock_settings():
     """Mock settings with test ECS configuration."""
     with patch("core.containers.ecs_manager.settings") as s:
@@ -89,20 +97,24 @@ def mock_settings():
         s.ECS_SUBNETS = "subnet-aaa,subnet-bbb"
         s.ECS_SECURITY_GROUP_ID = "sg-12345"
         s.CLOUD_MAP_SERVICE_ARN = "arn:aws:servicediscovery:us-east-1:123456789:service/srv-test"
+        s.CLOUD_MAP_NAMESPACE_NAME = "isol8-dev.local"
+        s.CLOUD_MAP_SERVICE_NAME = "openclaw-containers"
         s.EFS_FILE_SYSTEM_ID = "fs-test123"
         yield s
 
 
 @pytest.fixture
-def manager(mock_settings, mock_ecs_client, mock_efs_client):
+def manager(mock_settings, mock_ecs_client, mock_efs_client, mock_servicediscovery_client):
     """Create an EcsManager with mocked boto3 clients."""
     with patch("core.containers.ecs_manager.boto3") as mock_boto3:
-        # Return different clients for ecs vs efs
+
         def client_factory(service, **kwargs):
             if service == "ecs":
                 return mock_ecs_client
             elif service == "efs":
                 return mock_efs_client
+            elif service == "servicediscovery":
+                return mock_servicediscovery_client
             return MagicMock()
 
         mock_boto3.client.side_effect = client_factory
@@ -799,26 +811,18 @@ class TestDeleteUserService:
 
 
 class TestDiscoverIp:
-    """Test ECS-based task IP discovery."""
+    """Test Cloud Map (DiscoverInstances) task IP discovery."""
 
-    def test_returns_ip(self, manager, mock_ecs_client):
-        """discover_ip returns the private IPv4 from ECS describe_tasks."""
-        mock_ecs_client.list_tasks.return_value = {
-            "taskArns": ["arn:aws:ecs:us-east-1:123456789:task/test-cluster/abc123"]
-        }
-        mock_ecs_client.describe_tasks.return_value = {
-            "tasks": [
+    def test_returns_ip(self, manager, mock_servicediscovery_client):
+        """discover_ip returns the instance IP for the matching tenant."""
+        mock_servicediscovery_client.discover_instances.return_value = {
+            "Instances": [
                 {
-                    "taskArn": "arn:aws:ecs:us-east-1:123456789:task/test-cluster/abc123",
-                    "attachments": [
-                        {
-                            "type": "ElasticNetworkInterface",
-                            "details": [
-                                {"name": "subnetId", "value": "subnet-aaa"},
-                                {"name": "privateIPv4Address", "value": "10.0.1.42"},
-                            ],
-                        }
-                    ],
+                    "InstanceId": "task-abc",
+                    "Attributes": {
+                        "ECS_SERVICE_NAME": "openclaw-abc123def4",
+                        "AWS_INSTANCE_IPV4": "10.0.1.42",
+                    },
                 }
             ]
         }
@@ -826,62 +830,38 @@ class TestDiscoverIp:
         ip = manager.discover_ip("openclaw-abc123def4")
 
         assert ip == "10.0.1.42"
-        mock_ecs_client.list_tasks.assert_called_once_with(
-            cluster=manager._cluster,
-            serviceName="openclaw-abc123def4",
-            desiredStatus="RUNNING",
+        mock_servicediscovery_client.discover_instances.assert_called_once_with(
+            NamespaceName="isol8-dev.local",
+            ServiceName="openclaw-containers",
+            QueryParameters={"ECS_SERVICE_NAME": "openclaw-abc123def4"},
+            HealthStatus="HEALTHY_OR_ELSE_ALL",
         )
 
-    def test_returns_none_when_no_tasks(self, manager, mock_ecs_client):
-        """discover_ip returns None when no running tasks found."""
-        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+    def test_returns_none_when_no_instances(self, manager, mock_servicediscovery_client):
+        """No instance for the tenant -> None."""
+        mock_servicediscovery_client.discover_instances.return_value = {"Instances": []}
+        assert manager.discover_ip("openclaw-abc123def4") is None
 
-        ip = manager.discover_ip("openclaw-abc123def4")
-        assert ip is None
-
-    def test_returns_none_on_error(self, manager, mock_ecs_client):
-        """discover_ip returns None on SDK error."""
-        mock_ecs_client.list_tasks.side_effect = ClientError(
-            {"Error": {"Code": "ServiceNotFound", "Message": "not found"}},
-            "ListTasks",
+    def test_returns_none_on_error(self, manager, mock_servicediscovery_client):
+        """SDK error -> None (caller treats as not-ready)."""
+        mock_servicediscovery_client.discover_instances.side_effect = ClientError(
+            {"Error": {"Code": "ServiceNotFound", "Message": "x"}},
+            "DiscoverInstances",
         )
+        assert manager.discover_ip("openclaw-abc123def4") is None
 
-        ip = manager.discover_ip("openclaw-abc123def4")
-        assert ip is None
-
-    def test_returns_none_when_no_eni(self, manager, mock_ecs_client):
-        """discover_ip returns None when task has no ENI attachment."""
-        mock_ecs_client.list_tasks.return_value = {
-            "taskArns": ["arn:aws:ecs:us-east-1:123456789:task/test-cluster/abc123"]
+    def test_ignores_instances_for_other_tenants(self, manager, mock_servicediscovery_client):
+        """Defensive client-side filter: never return another tenant's IP."""
+        mock_servicediscovery_client.discover_instances.return_value = {
+            "Instances": [{"Attributes": {"ECS_SERVICE_NAME": "openclaw-other", "AWS_INSTANCE_IPV4": "10.0.9.9"}}]
         }
-        mock_ecs_client.describe_tasks.return_value = {"tasks": [{"taskArn": "...", "attachments": []}]}
+        assert manager.discover_ip("openclaw-abc123def4") is None
 
-        ip = manager.discover_ip("openclaw-abc123def4")
-        assert ip is None
-
-    def test_returns_none_when_no_ip_in_eni(self, manager, mock_ecs_client):
-        """discover_ip returns None when ENI lacks privateIPv4Address."""
-        mock_ecs_client.list_tasks.return_value = {
-            "taskArns": ["arn:aws:ecs:us-east-1:123456789:task/test-cluster/abc123"]
-        }
-        mock_ecs_client.describe_tasks.return_value = {
-            "tasks": [
-                {
-                    "taskArn": "...",
-                    "attachments": [
-                        {
-                            "type": "ElasticNetworkInterface",
-                            "details": [
-                                {"name": "subnetId", "value": "subnet-aaa"},
-                            ],
-                        }
-                    ],
-                }
-            ]
-        }
-
-        ip = manager.discover_ip("openclaw-abc123def4")
-        assert ip is None
+    def test_namespace_not_configured_returns_none(self, manager, mock_servicediscovery_client):
+        """Missing Cloud Map names -> None, no SDK call."""
+        manager._cloud_map_namespace_name = ""
+        assert manager.discover_ip("openclaw-abc123def4") is None
+        mock_servicediscovery_client.discover_instances.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

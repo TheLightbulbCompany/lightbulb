@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -115,6 +116,7 @@ class TestGatewayConnectionPool:
     async def test_send_rpc_reuses_existing(self, pool):
         """send_rpc should reuse an existing connected GatewayConnection."""
         mock_conn = AsyncMock(spec=GatewayConnection)
+        mock_conn.ip = "10.0.0.1"  # matches the resolved ip → adoption is a no-op
         mock_conn.is_connected = True
         mock_conn._parked = False  # send_rpc consults this before is_connected
         mock_conn.wait_for_response = AsyncMock(return_value={"data": 1})
@@ -123,6 +125,24 @@ class TestGatewayConnectionPool:
         result = await pool.send_rpc("user-1", "req-2", "agents.list", {}, "10.0.0.1", "tok")
         assert result == {"data": 1}
         mock_conn.send_rpc.assert_called_once_with("req-2", "agents.list", {})
+
+    @pytest.mark.asyncio
+    async def test_send_rpc_adopts_fresh_ip_on_parked_reopen(self, pool):
+        """A parked connection must adopt the freshly-resolved IP before reopen,
+        so a container task replacement (new IP) can't wedge it on the dead old IP."""
+        parked = AsyncMock(spec=GatewayConnection)
+        parked.ip = "10.0.0.1"  # stale: previous task
+        parked._parked = True
+        parked.is_connected = False
+        parked.wait_for_response = AsyncMock(return_value={"ok": True})
+        parked._frontend_connections = set()
+        pool._connections["user-1"] = parked
+
+        result = await pool.send_rpc("user-1", "r", "agents.list", {}, "10.0.0.2", "tok")
+
+        assert parked.ip == "10.0.0.2"  # adopted the fresh IP before reopen
+        parked.reopen.assert_awaited_once()
+        assert result == {"ok": True}
 
     @pytest.mark.asyncio
     async def test_close_all(self, pool):
@@ -137,6 +157,7 @@ class TestGatewayConnectionPool:
     async def test_send_rpc_replaces_disconnected_connection(self, pool):
         """send_rpc closes and replaces a connection that is no longer connected."""
         stale_conn = AsyncMock(spec=GatewayConnection)
+        stale_conn.ip = "10.0.0.1"  # matches the resolved ip → adoption is a no-op
         stale_conn.is_connected = False
         stale_conn._parked = False  # stale, not parked → close+recreate path
         pool._connections["user-1"] = stale_conn
@@ -1127,3 +1148,35 @@ class TestPoolReconnectFloor:
         pool._connections["user-parked"] = conn
 
         assert pool.is_user_connected("user-parked") is True
+
+
+@pytest.mark.asyncio
+async def test_reopen_failure_rearms_parked_watchdog(monkeypatch):
+    """A failed reopen must re-arm the parked watchdog so the connection can
+    still escalate parked->dead instead of wedging forever."""
+    from core.gateway.connection_pool import GatewayConnection
+
+    conn = GatewayConnection(
+        user_id="u",
+        ip="10.0.0.1",
+        token="t",
+        management_api=MagicMock(),
+        frontend_connections=set(),
+        conn_member_map={},
+    )
+    conn._parked = True
+    conn._active_runs = {"agent:1:m": {"last_event_at": time.monotonic(), "agent_id": "1"}}
+
+    async def boom():
+        raise TimeoutError("handshake timeout")
+
+    monkeypatch.setattr(conn, "connect", boom)
+
+    with pytest.raises(TimeoutError):
+        await conn.reopen()
+
+    assert conn._parked is True
+    assert conn._parked_watchdog_task is not None
+    assert not conn._parked_watchdog_task.done()
+
+    conn._parked_watchdog_task.cancel()

@@ -267,39 +267,184 @@ asyncio.run(main())
 Then call `DELETE /api/companies/{company_id}` similarly (admin client has
 `delete_company`). Cascades to agents/threads/etc.
 
-**4b. Delete the orphan user(s) via RDS Query Editor** (the cleanest path):
+**4b. Delete the orphan user(s) via RDS Data API** (the fastest path):
 
 There is NO Paperclip API for user deletion. Direct SQL is the only option.
 **Don't try to ECS-exec a `psql` task or override the migrate task def** —
-both shell-quoting paths failed silently in 2026-05 testing. Use the
-RDS-console Query Editor instead:
+both shell-quoting paths failed silently in 2026-05 testing.
 
-1. AWS Console → RDS → DB instances → click `isol8-dev-paperclip-db`
-2. **Connectivity & security** tab → **Connect using: Query Editor** → "Launch"
-3. Connection dialog:
-   - Database instance: `isol8-dev-paperclip-db`
-   - Database username: **Connect with a Secrets Manager ARN**
-   - Secrets manager ARN: full ARN of `isol8-dev-paperclip-db-credentials-<6-char-suffix>` (find via `aws secretsmanager list-secrets ... --query 'SecretList[?contains(Name,\`paperclip-db-credentials\`)].[Name,ARN]'`); ⚠️ pick the **dev** one, NOT prod — they're one click apart
-   - Database name: `paperclip`
-4. Run:
-   ```sql
-   DELETE FROM "user" WHERE id = '<orphan_user_id>';
-   SELECT id, email FROM "user";
-   ```
-   `account` and `session` cascade automatically (`onDelete: "cascade"` per
-   `paperclip/packages/db/src/schema/auth.ts`). Expected output: `DELETE 1`,
-   then a list with just `admin@isol8.co`.
+The Aurora cluster has **Data API enabled** (`HttpEndpointEnabled=true`), so
+`aws rds-data execute-statement` works from the CLI without any network
+plumbing. This is faster than the RDS console Query Editor and scriptable
+into the rest of the cleanup:
 
-**Why Query Editor and not CloudShell `psql`:** the Aurora cluster sits in
-a private subnet with no internet gateway; CloudShell can't reach it
-directly. Query Editor uses the RDS Data API (HTTPS) which is enabled on
-the cluster.
+```bash
+# Find the credentials secret ARN (dev shown — replace with prod when needed)
+SECRET=$(aws secretsmanager list-secrets --profile isol8-admin --region us-east-1 \
+  --query "SecretList[?contains(Name,\`isol8-dev-paperclip-db-credentials\`)].ARN" \
+  --output text)
+CLUSTER=arn:aws:rds:us-east-1:877352799272:cluster:isol8-dev-paperclip-db
+
+# List remaining users
+aws rds-data execute-statement \
+  --resource-arn "$CLUSTER" --secret-arn "$SECRET" --database paperclip \
+  --sql 'SELECT id, email FROM "user" ORDER BY email' \
+  --profile isol8-admin --region us-east-1
+
+# Delete one or more orphan users. ``account`` and ``session`` cascade
+# automatically (``onDelete: cascade`` per
+# ``paperclip/packages/db/src/schema/auth.ts``).
+aws rds-data execute-statement \
+  --resource-arn "$CLUSTER" --secret-arn "$SECRET" --database paperclip \
+  --sql "DELETE FROM \"user\" WHERE id IN ('<orphan_user_id_1>','<orphan_user_id_2>')" \
+  --profile isol8-admin --region us-east-1
+```
+
+**Bootstrap admin to PRESERVE:**
+- Dev: `admin@isol8.co` (Better Auth user id from `secrets/admin-id`)
+- Prod: `admin+paperclip@isol8.co`
+
+Deleting the bootstrap user breaks the backend's
+`PaperclipAdminClient` — `get_admin_session_cookie` can't authenticate
+without it. Cross-check the SELECT before issuing the DELETE.
+
+The RDS console Query Editor (which also uses the Data API under the hood)
+remains a valid fallback if you prefer a GUI.
+
+**Why neither CloudShell `psql` nor ECS-exec `psql`:** the Aurora cluster
+sits in a private subnet with no internet gateway; CloudShell can't reach
+it directly, and the migrate task's shell-quoting through ECS exec
+silently swallows the SQL. Data API uses HTTPS to a dedicated endpoint and
+bypasses both.
 
 **5. Clean up Stripe:** Delete orphan test customers manually from the [Stripe dashboard](https://dashboard.stripe.com/test/customers) (dev uses test mode keys).
 
 **6. Clean up Clerk:** Delete test users/orgs from the [Clerk dashboard](https://dashboard.clerk.com) if needed.
 
 After all six steps, re-provision starts fresh: new Clerk sign-up → onboarding → container provision → single Stripe customer + fresh Paperclip company.
+
+### Prod Org Reprovision (preserving billing/sub/marketplace)
+
+Different workflow from the dev reset above. The goal is to wipe an
+existing owner's **container runtime + Paperclip side** so the next
+`/container/status` poll re-provisions Friday/Atlas onto the latest
+pinned OpenClaw image — but keep their Stripe subscription, Bedrock
+credits, Clerk org, and any marketplace listings/purchases intact.
+
+Use cases: orgs whose container was provisioned before a major upgrade
+(e.g. pre-Paperclip, pre-marketplace) and need to be brought current.
+Performed live on 2026-05-20 against `org_3DBS8G83oPrMm49yN2b70EjoFpN`.
+
+**Preserved (do NOT touch):** `users`, `billing-accounts`, `api-keys`,
+`usage-counters`, `admin-actions`, all `marketplace-*` tables, Clerk
+org/users, Stripe customer + subscription.
+
+**Wiped:** ECS service, EFS access point + workspace dir, `containers`
+DDB row, `pending-updates`, `channel-links`, Paperclip company in
+Aurora (cascades to agents/threads), Aurora Better Auth `user` rows
+for each org member, all `paperclip-companies` DDB rows for the org.
+
+```bash
+OWNER=org_xxx                                  # from `containers` DDB scan
+CLUSTER=$(aws ecs list-clusters --profile isol8-admin --region us-east-1 \
+  --output text --query 'clusterArns' | tr '\t' '\n' | grep isol8-prod-container)
+PER_USER_SERVICE=$(aws dynamodb get-item --table-name isol8-prod-containers \
+  --key "{\"owner_id\":{\"S\":\"$OWNER\"}}" --profile isol8-admin --region us-east-1 \
+  --output text --query 'Item.service_name.S')
+ACCESS_POINT=$(aws dynamodb get-item --table-name isol8-prod-containers \
+  --key "{\"owner_id\":{\"S\":\"$OWNER\"}}" --profile isol8-admin --region us-east-1 \
+  --output text --query 'Item.access_point_id.S')
+BACKEND_SERVICE=$(aws ecs list-services --cluster "$CLUSTER" --profile isol8-admin \
+  --region us-east-1 --output text --query 'serviceArns' | tr '\t' '\n' \
+  | grep isol8-prod-service)
+
+# 1. Drain + delete per-user ECS service. Wait for runningCount=0 before step 2.
+aws ecs update-service --cluster "$CLUSTER" --service "$PER_USER_SERVICE" \
+  --desired-count 0 --profile isol8-admin --region us-east-1
+aws ecs delete-service --cluster "$CLUSTER" --service "$PER_USER_SERVICE" \
+  --force --profile isol8-admin --region us-east-1
+
+# 2. Delete EFS access point (must wait until step 1's task fully stopped or this errors with "in use").
+aws efs delete-access-point --access-point-id "$ACCESS_POINT" \
+  --profile isol8-admin --region us-east-1
+
+# 3. rm -rf the EFS workspace dir via ECS exec on the BACKEND task.
+TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$BACKEND_SERVICE" \
+  --profile isol8-admin --region us-east-1 --query 'taskArns[0]' --output text \
+  | awk -F/ '{print $NF}')
+aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend \
+  --interactive --command "/bin/sh -c 'rm -rf /mnt/efs/users/$OWNER && ls /mnt/efs/users/'" \
+  --profile isol8-admin --region us-east-1
+
+# 4. Delete the containers DDB row.
+aws dynamodb delete-item --table-name isol8-prod-containers \
+  --key "{\"owner_id\":{\"S\":\"$OWNER\"}}" --profile isol8-admin --region us-east-1
+
+# 5a. Delete the Paperclip company via the admin API. Pipe a base64-encoded
+#     Python script through ECS exec to bypass shell-quoting issues — calls
+#     PaperclipAdminClient.delete_company. Cascades to agents/threads.
+COMPANY_ID=...   # from `aws dynamodb scan isol8-prod-paperclip-companies` (all rows for OWNER share the same company_id)
+SCRIPT_B64=$(cat <<PYEOF | base64
+import asyncio, httpx
+from core.config import settings
+from core.services.paperclip_admin_client import PaperclipAdminClient
+from core.services.paperclip_admin_session import get_admin_session_cookie
+async def main():
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=30) as c:
+        cookie = await get_admin_session_cookie(c)
+        admin = PaperclipAdminClient(http_client=c)
+        await admin.delete_company(session_cookie=cookie, company_id="$COMPANY_ID")
+asyncio.run(main())
+PYEOF
+)
+SCRIPT_B64=$(echo "$SCRIPT_B64" | tr -d '\n')
+aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend \
+  --interactive --command "/bin/sh -c 'cd /app && echo $SCRIPT_B64 | base64 -d | uv run python -'" \
+  --profile isol8-admin --region us-east-1
+
+# 5b. Delete the orphan Aurora ``user`` rows for each org member. Use the
+#     Data API path documented above. Org owners have ONE PaperclipCompany
+#     row PER MEMBER, all sharing the same ``company_id``; each row's
+#     ``paperclip_user_id`` is a separate Better Auth user.
+SECRET=$(aws secretsmanager list-secrets --profile isol8-admin --region us-east-1 \
+  --query "SecretList[?contains(Name,\`isol8-prod-paperclip-db-credentials\`)].ARN" \
+  --output text)
+DB=arn:aws:rds:us-east-1:877352799272:cluster:isol8-prod-paperclip-db
+aws rds-data execute-statement --resource-arn "$DB" --secret-arn "$SECRET" \
+  --database paperclip \
+  --sql "DELETE FROM \"user\" WHERE id IN ('<member1_pcuid>','<member2_pcuid>','<member3_pcuid>')" \
+  --profile isol8-admin --region us-east-1
+# Verify only ``admin+paperclip@isol8.co`` (the prod bootstrap) remains.
+
+# 5c. Delete all PaperclipCompany DDB rows for the org's members.
+for uid in user_xxx user_yyy user_zzz; do
+  aws dynamodb delete-item --table-name isol8-prod-paperclip-companies \
+    --key "{\"user_id\":{\"S\":\"$uid\"}}" --profile isol8-admin --region us-east-1
+done
+```
+
+**Hands-off after step 5c.** Steps 6–8 require the user's Clerk session
+and physical machine:
+
+6. **Visit `/chat`** → frontend polls `GET /container/status` → backend's
+   `ensure_user_ready` re-runs `provision_org` (re-seeds Paperclip company
+   + Friday + Atlas with current adapter wiring) and dispatches
+   `background_provision` which creates a new per-user ECS service.
+   The service clones from the CDK base task def (e.g.
+   `isol8-prod-openclaw:55`) so it automatically picks up the latest
+   pinned OpenClaw image — no manual task-def step needed.
+7. **Hit Hire on each marketplace listing** the org owns. Seller-self-deploy
+   bypass (PR #712) skips Stripe checkout.
+8. **Re-pair the desktop app** if used. The container row's
+   `operator_device_id` + `operator_priv_key_enc` were wiped with step 4.
+
+**Multi-member org caveat:** PaperclipCompany is keyed per-user (NOT
+per-org), so an org with N members has N DDB rows all pointing at the
+same `company_id`. Each member also has their own Better Auth user
+record in Aurora. The cleanup MUST remove every member's row in both
+places — leaving any one of them blocks re-provision (the surviving
+PaperclipCompany row short-circuits `provision_org`'s idempotency check,
+preventing Friday/Atlas re-seeding for everyone).
 
 ### Manual dev testing accounts
 
@@ -336,7 +481,7 @@ gh run view <run-id> --repo Isol8AI/isol8 --json status,jobs
 
 ```
 Client --> wss://ws-dev.isol8.co --> API Gateway --> Lambda Auth --> VPC Link V1 --> NLB --> ALB
-  --> FastAPI /ws/message --> Cloud Map discovery (?) --> per-user OpenClaw container (ECS Fargate)
+  --> FastAPI /ws/message --> ECS describe_tasks IP discovery --> per-user OpenClaw container (ECS Fargate)
   <-- FastAPI pushes streaming chunks via Management API
                                                     |
                                         EFS /mnt/efs/users/{user_id}/
@@ -441,7 +586,7 @@ DynamoDB-backed data access. One repo per table.
 | File | Purpose |
 |------|---------|
 | `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`, `get_gateway_pool()`. `startup_containers()` / `shutdown_containers()` lifecycle. Usage-recording callback. |
-| `ecs_manager.py` | Per-user ECS Fargate lifecycle. Cloud Map discovery. Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
+| `ecs_manager.py` | Per-user ECS Fargate lifecycle. Container IP discovery via ECS `describe_tasks` (`discover_ip`), **not** Cloud Map — Cloud Map is registration-only (each per-user service is attached via `serviceRegistries`, but the backend never queries it for IPs). Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
 | `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider and memory plugin. |
 | `workspace.py` | EFS file I/O at `/mnt/efs/users/{user_id}/`. |
 
@@ -593,7 +738,7 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
   |  agent_id,       |  POST /ws/message|                       |
   |  message}        |  (VPC Link/NLB)  |                       |
   |----------------->|----------------->|                       |
-  |                  |                  | Cloud Map discovery   |
+  |                  |                  | ECS describe_tasks    |
   |                  |                  | -> user container IP  |
   |                  |                  | WebSocket RPC pool    |
   |                  |                  | chat.send {message}   |

@@ -1301,7 +1301,16 @@ class GatewayConnection:
         self._parked_watchdog_task = None
         # Old WS is already torn down (reader_loop exited); just drop the ref.
         self._ws = None
-        await self.connect()
+        try:
+            await self.connect()
+        except Exception:
+            # connect() failed — do NOT leave the connection parked with no
+            # watchdog. That wedges it forever: every reopen re-dials and
+            # fails, and the parked->dead escalation (which lets the pool
+            # recreate from scratch) never fires. Re-arm so it can escalate.
+            if self._active_runs and (self._parked_watchdog_task is None or self._parked_watchdog_task.done()):
+                self._parked_watchdog_task = asyncio.create_task(self._parked_watchdog())
+            raise
         self._parked = False
         put_metric("gateway.parked.reopen")
         logger.info(
@@ -1520,6 +1529,18 @@ class GatewayConnectionPool:
         """
         async with self._lock:
             conn = self._connections.get(user_id)
+            # Always adopt the freshly-resolved endpoint. Container task IPs are
+            # ephemeral (every ECS task replacement changes them); a parked/stale
+            # connection still holds the previous task's IP, so reopen() would
+            # otherwise re-dial a dead address forever.
+            if conn is not None and conn.ip != ip:
+                logger.info(
+                    "Gateway endpoint changed for user=%s %s -> %s — adopting before reconnect",
+                    user_id,
+                    conn.ip,
+                    ip,
+                )
+                conn.ip = ip
             if conn is not None and conn._parked:
                 self._respect_reconnect_floor(user_id)
                 await conn.reopen()

@@ -12,6 +12,9 @@ import {
   type PanelDataColumn,
 } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
+import { isSeededAgent } from "@/components/teams/agents/AgentManageSection";
+import type { CompanyAgent } from "@/components/teams/shared/types";
 
 interface Agent {
   id: string;
@@ -22,6 +25,7 @@ interface Agent {
 
 export function AgentsListPanel() {
   const { read } = useTeamsApi();
+  const { pause, resume, remove } = useAgentMutations();
   const { data, isLoading, error, mutate } = read<{ agents: Agent[] }>(
     "/agents",
   );
@@ -63,6 +67,37 @@ export function AgentsListPanel() {
           {a.role}
         </span>
       ),
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      cell: (a) => {
+        const seeded = isSeededAgent(a as unknown as CompanyAgent);
+        const paused = a.status === "paused";
+        return (
+          <span className="flex items-center justify-end gap-2">
+            <button
+              className="text-sm hover:underline text-[var(--ink-soft)]"
+              onClick={() => (paused ? resume(a.id) : pause(a.id))}
+            >
+              {paused ? "Resume" : "Pause"}
+            </button>
+            {!seeded && (
+              <button
+                className="text-sm hover:underline text-[var(--danger)]"
+                onClick={() => {
+                  if (window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) {
+                    remove(a.id);
+                  }
+                }}
+              >
+                Delete
+              </button>
+            )}
+          </span>
+        );
+      },
     },
     {
       key: "open",

@@ -12,6 +12,7 @@ interface AgentRow {
   id: string;
   name: string;
   role: string;
+  status?: string;
 }
 interface AgentsResp {
   data: { agents: AgentRow[] };
@@ -34,6 +35,18 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     post: mockPost,
     patch: vi.fn(),
     del: vi.fn(),
+  }),
+}));
+
+const mockPause = vi.fn().mockResolvedValue(undefined);
+const mockResume = vi.fn().mockResolvedValue(undefined);
+const mockRemove = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
+  useAgentMutations: () => ({
+    setReportsTo: vi.fn(),
+    pause: mockPause,
+    resume: mockResume,
+    remove: mockRemove,
   }),
 }));
 
@@ -91,5 +104,19 @@ describe("AgentsListPanel", () => {
     expect(screen.getByText("Alice")).toBeInTheDocument();
     const link = screen.getByText("Open →");
     expect(link.closest("a")).toHaveAttribute("href", "/teams/agents/a1");
+  });
+
+  it("row pause action calls pause; delete hidden for ceo", async () => {
+    mockPause.mockClear();
+    mockRead.mockReturnValueOnce({
+      data: { agents: [{ id: "f", name: "Friday", role: "ceo", status: "idle" }] },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    });
+    render(<AgentsListPanel />);
+    expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /pause/i }));
+    await waitFor(() => expect(mockPause).toHaveBeenCalledWith("f"));
   });
 });

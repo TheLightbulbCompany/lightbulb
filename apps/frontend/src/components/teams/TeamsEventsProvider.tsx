@@ -27,13 +27,14 @@ const ALL_KEYS = [
   "/teams/agents",
 ];
 
-const EVENT_KEY_MAP: Record<string, string[]> = {
+export const EVENT_KEY_MAP: Record<string, string[]> = {
   "teams.activity.logged": [
     "/teams/dashboard", "/teams/activity", "/teams/inbox", "/teams/issues",
+    "/teams/approvals",
   ],
   "teams.agent.status": ["/teams/dashboard", "/teams/agents"],
-  "teams.heartbeat.run.queued": ["/teams/dashboard", "/teams/inbox"],
-  "teams.heartbeat.run.status": ["/teams/dashboard", "/teams/inbox"],
+  "teams.heartbeat.run.queued": ["/teams/dashboard", "/teams/inbox", "/teams/inbox/runs"],
+  "teams.heartbeat.run.status": ["/teams/dashboard", "/teams/inbox", "/teams/inbox/runs"],
   // Run-event/log only matter when run-detail is open. SWR mutate on a
   // path-prefix is not natively supported; the panels for those routes
   // can subscribe themselves later. For now, no global invalidation.

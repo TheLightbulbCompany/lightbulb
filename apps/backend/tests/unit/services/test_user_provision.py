@@ -120,7 +120,9 @@ async def test_org_admin_with_no_company_creates_it():
 
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
@@ -146,7 +148,9 @@ async def test_org_admin_with_existing_company_joins_it():
     fake_provisioning.provision_member = AsyncMock()
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
         patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="owner@example.com")),
         patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
@@ -181,7 +185,9 @@ async def test_org_member_with_no_company_waits_does_not_create():
 
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
@@ -587,7 +593,9 @@ async def test_member_joins_company_but_does_not_dispatch_container():
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
-        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
@@ -615,7 +623,9 @@ async def test_provision_container_false_skips_container_dispatch_for_admin():
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
-        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):

@@ -29,7 +29,7 @@ A second gap audit (full upstream surface sweep) produced this batch. Grounded i
 | # | Sub-project | Effort | Status | Spec | Plan | PR |
 |---|---|---|---|---|---|---|
 | A | Kanban drag bug fix (shipped board: native-anchor drag hijack + optimistic snap-back). Folded into the first sprint PR. | S | Pending | — | — | — |
-| B | Agent management — `/teams`: reports_to editing + pause/resume + delete (seeded-guard) + **read-only** meta. **Single-editor rule:** role/title/capabilities/icon stay editable only in the `/chat` control panel (avoids Paperclip↔OpenClaw divergence). | S–M | Spec | [2026-05-29-teams-agent-management-design.md](./2026-05-29-teams-agent-management-design.md) | — | — |
+| B | Agent management — `/teams`: reports_to editing + pause/resume + delete (seeded-guard) + **read-only** meta. **Single-editor rule:** role/title/capabilities/icon stay editable only in the `/chat` control panel (avoids Paperclip↔OpenClaw divergence). | S–M | Plan | [2026-05-29-teams-agent-management-design.md](./2026-05-29-teams-agent-management-design.md) | [2026-05-29-teams-agent-management.md](../plans/2026-05-29-teams-agent-management.md) | — |
 | C | Issue tracker actions (close/cancel/reopen from the list; decide standalone Issues page = tracker vs fold into Inbox). Extends #6. | S–M | Pending | — | — | — |
 | D | Issue detail depth (sub-issues, thread interactions, documents, work products, run ledger, linked approvals) | XL | Pending | — | — | — |
 | E | Inbox mixed triage (interleave approvals / failed-runs / join-requests rows with inline actions). Extends #3. | L | Pending | — | — | — |

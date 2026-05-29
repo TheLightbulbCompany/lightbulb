@@ -186,6 +186,22 @@ export interface CompanyAgent {
   id: string;
   name: string;
   iconUrl?: string | null;
+  /** Paperclip agent role e.g. "ceo" | "engineer" | "general". */
+  role?: string | null;
+  /** Short one-liner shown in the roster. */
+  title?: string | null;
+  /** Longer freeform description Friday reads when orchestrating. */
+  capabilities?: string | null;
+  /** Paperclip icon-picker value (opaque AGENT_ICON_NAMES string). */
+  icon?: string | null;
+  /** Runtime status: "idle" | "running" | "error" | "paused" | "terminated". */
+  status?: string | null;
+  /** ID of the agent this one reports to (null/absent = root). */
+  reportsTo?: string | null;
+  /** Server-stamped: this is an Isol8-seeded agent (Friday/Atlas) and is
+   *  locked — undeletable, meta read-only. Determined from persisted
+   *  seeded-agent IDs by the BFF, never from role/name. */
+  seeded?: boolean;
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────

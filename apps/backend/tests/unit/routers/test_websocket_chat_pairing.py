@@ -457,6 +457,14 @@ async def test_chat_delete_cascades_to_paperclip(monkeypatch):
         paperclip_delete_mock,
     )
 
+    # The agent under test is a regular (non-seeded) agent, so the delete
+    # guard must let it through. is_seeded_agent fails CLOSED on a real DDB
+    # lookup error, which would otherwise block the delete in this unit env.
+    monkeypatch.setattr(
+        "routers.websocket_chat.is_seeded_agent",
+        AsyncMock(return_value=False),
+    )
+
     # Stub the OpenClaw delete RPC + EFS cleanup so they don't try real I/O.
     pool_mock = MagicMock()
     pool_mock.send_rpc = AsyncMock(return_value={"ok": True})
@@ -522,6 +530,13 @@ async def test_chat_delete_paperclip_failure_is_non_fatal(monkeypatch):
     monkeypatch.setattr(
         "routers.websocket_chat.delete_paperclip_for_chat",
         paperclip_delete_mock,
+    )
+
+    # Regular (non-seeded) agent — let the delete guard pass. is_seeded_agent
+    # fails CLOSED on a real DDB lookup error, which would block it here.
+    monkeypatch.setattr(
+        "routers.websocket_chat.is_seeded_agent",
+        AsyncMock(return_value=False),
     )
 
     pool_mock = MagicMock()

@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings
@@ -30,7 +30,11 @@ from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_openclaw_pairing import pair_with_openclaw
+from core.services.paperclip_openclaw_pairing import (
+    get_seeded_agent_ids,
+    is_seeded_agent,
+    pair_with_openclaw,
+)
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 
@@ -51,6 +55,19 @@ router = APIRouter()
 # at the BFF boundary becomes a token-in-DOM exposure. Strip on every
 # read path as defense in depth — the frontend should never need these.
 _AGENT_REDACTED_FIELDS = ("adapterConfig", "adapterType")
+
+
+def _mark_seeded(agent, seeded_ids):
+    """Stamp ``seeded: bool`` onto an agent record for the browser.
+
+    ``seeded`` is the single source of truth the Teams UI uses to lock
+    Friday/Atlas (hide Delete, show meta read-only). Determined from the
+    persisted seeded-agent IDs — never role/name — so a user-created
+    agent is never falsely locked. Non-dicts pass through unchanged.
+    """
+    if not isinstance(agent, dict):
+        return agent
+    return {**agent, "seeded": agent.get("id") in seeded_ids}
 
 
 def _redact_agent(agent):
@@ -304,7 +321,8 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
         session_cookie=ctx.session_cookie,
     )
     envelope = envelope_list(upstream, "agents")
-    return {"agents": [_redact_agent(a) for a in envelope["agents"]]}
+    seeded_ids = await get_seeded_agent_ids(owner_id=_resolve_owner_id(ctx), repo=_repo())
+    return {"agents": [_mark_seeded(_redact_agent(a), seeded_ids) for a in envelope["agents"]]}
 
 
 @router.post("/agents")
@@ -397,7 +415,8 @@ async def get_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
         agent_id=agent_id,
         session_cookie=ctx.session_cookie,
     )
-    return _redact_agent(upstream)
+    seeded_ids = await get_seeded_agent_ids(owner_id=_resolve_owner_id(ctx), repo=_repo())
+    return _mark_seeded(_redact_agent(upstream), seeded_ids)
 
 
 @router.patch("/agents/{agent_id}")
@@ -412,7 +431,15 @@ async def patch_agent(
     a service token is an admin-side operation handled by the
     provisioning path, not user-facing PATCH.
     """
+    # Drop unset/null fields by default. ``reportsTo`` is the one field that is
+    # nullable upstream (`uuid().nullable()`) — an explicit null clears the
+    # manager (root). exclude_none would drop that null, so re-insert it only
+    # when the client explicitly sent reportsTo=null. The other optional fields
+    # (title/capabilities/budget) are NOT nullable upstream, so keep dropping
+    # their nulls to avoid Paperclip validation errors.
     payload = body.model_dump(exclude_none=True, by_alias=True)
+    if "reports_to" in body.model_fields_set and body.reports_to is None:
+        payload["reportsTo"] = None
     upstream = await _admin().patch_agent(
         agent_id=agent_id,
         body=payload,
@@ -425,10 +452,44 @@ async def patch_agent(
 
 @router.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Delete an agent. Idempotent — 404 from upstream is swallowed."""
+    """Delete an agent. Idempotent — 404 from upstream is swallowed.
+
+    Seeded agents (Friday/Atlas) are part of the provisioning contract and
+    must not be deleted. The OpenClaw gateway delete path enforces this in
+    ``websocket_chat._guard_seeded_delete``; guard the REST path too
+    (defense in depth — the UI deletes via the gateway, but this endpoint
+    is still reachable directly).
+    """
+    if await is_seeded_agent(owner_id=_resolve_owner_id(ctx), agent_id=agent_id):
+        raise HTTPException(status_code=403, detail="Seeded agents (Friday/Atlas) cannot be deleted.")
     return await _admin().delete_agent(
         agent_id=agent_id,
         session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/agents/{agent_id}/pause")
+async def pause_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Pause an agent (stops it running on events)."""
+    # Paperclip echoes the updated agent record, which can include
+    # adapterConfig/adapterType (the OpenClaw service token). Redact for the
+    # same reason as the GET/PATCH handlers — never leak it to the browser.
+    return _redact_agent(
+        await _admin().pause_agent(
+            agent_id=agent_id,
+            session_cookie=ctx.session_cookie,
+        )
+    )
+
+
+@router.post("/agents/{agent_id}/resume")
+async def resume_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Resume a paused agent."""
+    return _redact_agent(
+        await _admin().resume_agent(
+            agent_id=agent_id,
+            session_cookie=ctx.session_cookie,
+        )
     )
 
 

@@ -50,17 +50,34 @@ def test_list_agents_calls_upstream_with_user_session(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
 
     r = client.get(
         "/api/v1/teams/agents",
         headers={"Authorization": "Bearer test"},
     )
     assert r.status_code == 200
-    assert r.json() == {"agents": [{"id": "a1"}]}
+    # Every item is stamped with a ``seeded`` flag (False here — no seeded ids).
+    assert r.json() == {"agents": [{"id": "a1", "seeded": False}]}
     admin.list_agents.assert_awaited_once_with(
         company_id="co_abc",
         session_cookie="cookie-value",
     )
+
+
+def test_list_agents_stamps_seeded_flag(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "friday_id"}, {"id": "user_id"}]})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value={"friday_id"}))
+
+    r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer test"})
+    assert r.status_code == 200
+    by_id = {a["id"]: a for a in r.json()["agents"]}
+    assert by_id["friday_id"]["seeded"] is True
+    assert by_id["user_id"]["seeded"] is False
 
 
 def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
@@ -140,6 +157,7 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
 
     r = client.get("/api/v1/teams/agents/a1", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
@@ -147,6 +165,7 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
     assert "adapterConfig" not in body
     assert "adapterType" not in body
     assert body["name"] == "Helper"
+    assert body["seeded"] is False
 
 
 def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeypatch):
@@ -203,9 +222,79 @@ def test_list_agents_strips_adapter_config_per_item(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
 
     r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
     for agent in r.json()["agents"]:
         assert "adapterConfig" not in agent
         assert "adapterType" not in agent
+
+
+def test_patch_agent_forwards_explicit_null_reports_to(client, monkeypatch):
+    """Clearing a manager sends {"reportsTo": null}; the BFF must forward the
+    null (exclude_unset, not exclude_none) so Paperclip makes the agent a root.
+    Paperclip rejects "" (uuid().nullable())."""
+    admin = MagicMock()
+    admin.patch_agent = AsyncMock(return_value={"id": "a1", "reportsTo": None})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/agents/a1",
+        json={"reportsTo": None},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    forwarded = admin.patch_agent.await_args.kwargs["body"]
+    assert forwarded == {"reportsTo": None}
+
+
+def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
+    """Only reportsTo is nullable upstream. An explicit null for other optional
+    fields (title here) must still be dropped, not forwarded, while a
+    concurrent reportsTo value passes through."""
+    admin = MagicMock()
+    admin.patch_agent = AsyncMock(return_value={"id": "a1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/agents/a1",
+        json={"title": None, "reportsTo": "mgr1"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    forwarded = admin.patch_agent.await_args.kwargs["body"]
+    assert forwarded == {"reportsTo": "mgr1"}
+    assert "title" not in forwarded
+
+
+def test_delete_agent_rejects_seeded(client, monkeypatch):
+    """The REST delete path must refuse seeded agents (Friday/Atlas) — same
+    guard as the OpenClaw gateway path. 403, upstream delete NOT called."""
+    admin = MagicMock()
+    admin.delete_agent = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=True))
+
+    r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 403
+    admin.delete_agent.assert_not_awaited()
+
+
+def test_delete_agent_allows_non_seeded(client, monkeypatch):
+    admin = MagicMock()
+    admin.delete_agent = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=False))
+
+    r = client.delete("/api/v1/teams/agents/a_user", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    admin.delete_agent.assert_awaited_once()

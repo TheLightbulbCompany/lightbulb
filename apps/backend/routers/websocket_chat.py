@@ -40,6 +40,7 @@ from core.services.paperclip_agent_lifecycle import (
 )
 from core.services.paperclip_meta import PaperclipMeta, read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
+    is_seeded_agent,
     pair_with_openclaw,
     resolve_company_id_for_owner,
 )
@@ -60,6 +61,11 @@ NODE_HOST_CLIENT_IDS = frozenset({"node-host", "openclaw-macos"})
 _connection_service: Optional[ConnectionService] = None
 _management_api_client: Optional[ManagementApiClient] = None
 _singleton_lock = asyncio.Lock()
+
+# Module-level handle used by _guard_seeded_delete. Left None in production so
+# the lazy get_management_api_client() singleton is used (constructing the
+# client eagerly raises when WS_MANAGEMENT_API_URL is unset); tests patch it.
+management_api: Optional[ManagementApiClient] = None
 
 
 async def get_connection_service() -> ConnectionService:
@@ -572,6 +578,43 @@ async def ws_message(
 # =============================================================================
 
 
+async def _guard_seeded_delete(
+    *,
+    owner_id: str,
+    method: str,
+    params: dict | None,
+    connection_id: str,
+    req_id: str,
+) -> bool:
+    """Reject deletion of seeded agents (Friday/Atlas) BEFORE forwarding the
+    RPC to OpenClaw (the post-forward cleanup is too late — the container has
+    already deleted the agent by then).
+
+    Returns True if it consumed the request (sent an error res; caller must
+    return without forwarding). False otherwise (caller forwards normally).
+    """
+    if method != "agents.delete":
+        return False
+    agent_id = (params or {}).get("agentId")
+    if not isinstance(agent_id, str) or not agent_id:
+        return False
+    if not await is_seeded_agent(owner_id=owner_id, agent_id=agent_id):
+        return False
+    mgmt = management_api or await get_management_api_client()
+    mgmt.send_message(
+        connection_id,
+        {
+            "type": "res",
+            "id": req_id,
+            "ok": False,
+            "error": {
+                "message": "Friday and Atlas are managed by Isol8 and can't be deleted.",
+            },
+        },
+    )
+    return True
+
+
 async def _intercept_agents_create(
     *,
     connection_id: str,
@@ -936,6 +979,15 @@ async def _process_rpc_background(
             # to the gateway forwarding below.
             if consumed:
                 return
+
+        if await _guard_seeded_delete(
+            owner_id=owner_id,
+            method=method,
+            params=params,
+            connection_id=connection_id,
+            req_id=req_id,
+        ):
+            return
 
         pool = get_gateway_pool()
         result = await pool.send_rpc(

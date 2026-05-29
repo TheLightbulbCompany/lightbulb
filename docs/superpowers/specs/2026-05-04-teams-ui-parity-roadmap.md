@@ -22,6 +22,22 @@ A gap audit produced this prioritized list of sub-projects to close the most-vis
 | 6 | Issue header + properties pickers v2 (assignee + project pickers editable post-creation; recent-assignee bubble-up via localStorage) | M | In progress | — | [2026-05-09-teams-issue-pickers-v2.md](../plans/2026-05-09-teams-issue-pickers-v2.md) | TBD |
 | 7 | Issues kanban board (list/board toggle in /teams/inbox; verbatim KanbanBoard port + retheme) | M | In progress | [2026-05-09-teams-kanban-board-design.md](./2026-05-09-teams-kanban-board-design.md) | [2026-05-09-teams-kanban-board.md](../plans/2026-05-09-teams-kanban-board.md) | [#577](https://github.com/Isol8AI/isol8/pull/577) |
 
+### 2026-05-29 parity sprint (from the 3-agent upstream parity audit)
+
+A second gap audit (full upstream surface sweep) produced this batch. Grounded in the Paperclip↔OpenClaw overlap map (see the agent-management spec). Recommended order: A → B → E → C → D → F/G/H.
+
+| # | Sub-project | Effort | Status | Spec | Plan | PR |
+|---|---|---|---|---|---|---|
+| A | Kanban drag bug fix (shipped board: native-anchor drag hijack + optimistic snap-back). Folded into the first sprint PR. | S | Pending | — | — | — |
+| B | Agent management — `/teams`: reports_to editing + pause/resume + delete (seeded-guard) + **read-only** meta. **Single-editor rule:** role/title/capabilities/icon stay editable only in the `/chat` control panel (avoids Paperclip↔OpenClaw divergence). | S–M | Plan | [2026-05-29-teams-agent-management-design.md](./2026-05-29-teams-agent-management-design.md) | [2026-05-29-teams-agent-management.md](../plans/2026-05-29-teams-agent-management.md) | — |
+| C | Issue tracker actions (close/cancel/reopen from the list; decide standalone Issues page = tracker vs fold into Inbox). Extends #6. | S–M | Pending | — | — | — |
+| D | Issue detail depth (sub-issues, thread interactions, documents, work products, run ledger, linked approvals) | XL | Pending | — | — | — |
+| E | Inbox mixed triage (interleave approvals / failed-runs / join-requests rows with inline actions). Extends #3. | L | Pending | — | — | — |
+| F | Costs depth (budgets/providers/billers/finance tabs + policies) | L | Pending | — | — | — |
+| G | Skills CRUD (create/edit/delete/version-install) | M–L | Pending | — | — | — |
+| H | Polish (routine run-history tab, goal edit, approval detail, activity filters, dashboard date-range) | S | Pending | — | — | — |
+| I | (latent fix, low pri) `params.paperclip` full-wipe restore — `_build_agents_list` re-seeds agent meta from the Paperclip master so a full EFS wipe reconstructs role/title/capabilities/icon. Pre-existing edge; split out of B by the single-editor decision. | S | Pending | — | — | — |
+
 ## Dependency graph
 
 ```

@@ -122,6 +122,69 @@ async def fetch_paperclip_agents_for_owner(
     return agents
 
 
+async def _resolve_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:
+    """Resolve the persisted seeded-agent IDs (Friday + Atlas) for an owner.
+
+    Source of truth is the persisted ``seeded_agent_ids`` captured on the
+    provisioner's ``paperclip-companies`` row at ``provision_org`` time —
+    NOT a role/name heuristic. A user-created agent that happens to use
+    role ``ceo`` or the name ``Atlas`` is therefore never mistaken for a
+    seeded one, and renaming a seeded agent never drops its protection.
+
+    Owner keying mirrors ``resolve_company_id_for_owner``: personal owners
+    are their own row key; for orgs the seeded IDs live on the
+    provisioner's row, so we scan the org's rows for the one that carries
+    them.
+
+    RAISES on lookup failure — callers choose the failure posture
+    (``get_seeded_agent_ids`` fails open for UI labeling;
+    ``is_seeded_agent`` fails closed for delete enforcement).
+    """
+    if _is_org_owner_id(owner_id):
+        for row in await repo.list_by_org_id(owner_id):
+            ids = row.get("seeded_agent_ids")
+            if ids:
+                return set(ids)
+        return set()
+    row = await repo.get(owner_id)
+    return set(row.seeded_agent_ids) if row and row.seeded_agent_ids else set()
+
+
+async def get_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:
+    """Best-effort seeded-id set for **UI labeling** (the Teams ``seeded``
+    stamp). Returns an empty set on any lookup failure — a cosmetic stamp must
+    never break an agent read. Do NOT use this for delete enforcement; use
+    ``is_seeded_agent``, which fails CLOSED.
+    """
+    try:
+        return await _resolve_seeded_agent_ids(owner_id=owner_id, repo=repo)
+    except Exception:  # noqa: BLE001 — labeling is cosmetic; never break a read
+        return set()
+
+
+async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
+    """Whether ``agent_id`` is an Isol8-seeded agent (Friday or Atlas).
+
+    This backs the **delete guards** (OpenClaw gateway + Teams REST), so it
+    FAILS CLOSED: if the persisted-id lookup errors (e.g. a DynamoDB outage),
+    we return ``True`` to block deletion rather than risk removing a seeded
+    agent during the error window. A blocked delete is recoverable on retry;
+    a deleted Friday/Atlas breaks the provisioning contract.
+    """
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    try:
+        ids = await _resolve_seeded_agent_ids(owner_id=owner_id, repo=repo)
+    except Exception:  # noqa: BLE001 — fail closed: block delete on lookup error
+        logger.warning(
+            "is_seeded_agent: seeded-id lookup failed for owner=%s agent=%s — failing closed (treating as seeded)",
+            owner_id,
+            agent_id,
+            exc_info=True,
+        )
+        return True
+    return agent_id in ids
+
+
 async def pair_with_openclaw(
     *,
     owner_id: str,

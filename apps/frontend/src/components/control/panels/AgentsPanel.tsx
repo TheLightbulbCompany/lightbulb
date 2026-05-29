@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Loader2,
   RefreshCw,
@@ -29,7 +30,14 @@ export function AgentsPanel() {
   // shouldn't see the Channels tab.
   const { isSubscribed } = useBilling();
   const channelsEnabled = isSubscribed;
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  // Deep-link: /chat?view=control&panel=agents&agent=<id> selects that agent on
+  // first render. This is the single editing entry point for agent meta (the
+  // Teams "Edit in control panel" link points here). An unknown id falls back
+  // to the list (selected resolves to undefined below).
+  const searchParams = useSearchParams();
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(
+    () => searchParams.get("agent"),
+  );
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);

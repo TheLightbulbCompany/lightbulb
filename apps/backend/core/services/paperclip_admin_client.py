@@ -698,6 +698,27 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def pause_agent(self, *, session_cookie: str, agent_id: str) -> dict:
+        """Pause an agent (stops it running on events).
+
+        Maps to ``POST /api/agents/{agentId}/pause`` (upstream
+        ``paperclip/server/src/routes/agents.ts``). Not company-scoped —
+        Paperclip authorizes from the session cookie.
+        """
+        return await self._post(
+            f"/api/agents/{agent_id}/pause",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    async def resume_agent(self, *, session_cookie: str, agent_id: str) -> dict:
+        """Resume a paused agent. Maps to ``POST /api/agents/{agentId}/resume``."""
+        return await self._post(
+            f"/api/agents/{agent_id}/resume",
+            json={},
+            session_cookie=session_cookie,
+        )
+
     async def update_agent(
         self,
         *,

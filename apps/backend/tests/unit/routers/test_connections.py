@@ -176,6 +176,80 @@ class TestConnectPaste:
         assert response.status_code == 404
 
 
+class TestConnectionWriteOrgAdminGate:
+    """Org callers write the SHARED org workspace (resolve_owner_id -> org_id),
+    so the connect/authorize/disconnect writes must be gated to org admins —
+    matching settings_keys / channels / config. Non-admin members get 403 with
+    no side effects; admins pass through; the GET list is NOT gated."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.connection_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_connect_paste_non_admin_member_forbidden(
+        self, mock_validate, mock_repo, mock_apply, async_client_org_member
+    ):
+        mock_validate.return_value = True
+        mock_repo.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client_org_member.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
+        assert response.status_code == 403
+        # Gate fires before any persistence / wiring.
+        mock_repo.put.assert_not_called()
+        mock_apply.apply_connection.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    async def test_authorize_non_admin_member_forbidden(self, mock_dance, async_client_org_member):
+        mock_dance.start = AsyncMock()
+
+        response = await async_client_org_member.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 403
+        # OAuth dance never started for a non-admin member.
+        mock_dance.start.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.connection_repo")
+    async def test_disconnect_non_admin_member_forbidden(self, mock_repo, mock_patcher, async_client_org_member):
+        mock_repo.delete = AsyncMock()
+        mock_patcher.set_openclaw_config_path = AsyncMock()
+
+        response = await async_client_org_member.delete("/api/v1/connections/linear")
+        assert response.status_code == 403
+        # Nothing deleted / unwired for a non-admin member.
+        mock_repo.delete.assert_not_called()
+        mock_patcher.set_openclaw_config_path.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.connection_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_connect_paste_org_admin_allowed(self, mock_validate, mock_repo, mock_apply, async_client_org_admin):
+        mock_validate.return_value = True
+        mock_repo.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client_org_admin.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
+        # Admin clears the gate; write targets the shared org workspace.
+        assert response.status_code == 200
+        assert response.json() == {"status": "connected", "provider": "linear"}
+        put_args = mock_repo.put.await_args
+        assert put_args.args[0] == "org_test_456"
+        mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "linear", {"token": "lin_api_abc123"})
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.connection_repo")
+    async def test_list_connections_not_gated_for_org_member(self, mock_repo, async_client_org_member):
+        # GET returns only provider names + status (no secrets) -> members may read it.
+        mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "linear", "status": "connected"}])
+
+        response = await async_client_org_member.get("/api/v1/connections")
+        assert response.status_code == 200
+        mock_repo.list_for_owner.assert_awaited_once_with("org_test_456")
+
+
 class TestDisconnect:
     """DELETE /api/v1/connections/{provider} — disconnect + unwire."""
 

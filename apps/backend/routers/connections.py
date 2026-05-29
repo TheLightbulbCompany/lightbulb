@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.repositories import connection_repo
 from core.services import config_patcher
@@ -63,6 +63,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
 
 @router.post("/{provider}")
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
     if p.acquisition != "paste_token":
@@ -84,6 +85,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
 
 @router.delete("/{provider}")
 async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
     # Materializer-backed providers wrote credential files onto EFS; remove
@@ -110,6 +112,7 @@ def _redirect_uri(provider: str) -> str:
 
 @router.get("/{provider}/authorize")
 async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
     if p.acquisition != "direct_oauth":
@@ -120,6 +123,8 @@ async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)
 
 # Public callback — the OAuth provider redirects the (unauthenticated) browser here.
 # Identity comes from the server-side state record, NOT from the request. Mounted at /api/v1/oauth/...
+# No org-admin gate here: the single-use `state` it consumes could only have been
+# minted by `authorize`, which is admin-gated — so this write path is admin-gated transitively.
 oauth_router = APIRouter(prefix="/oauth", tags=["connections"])
 
 

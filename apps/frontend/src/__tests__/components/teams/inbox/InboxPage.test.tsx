@@ -22,6 +22,26 @@ vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
   useIssueMutations: vi.fn(),
 }));
 
+// NeedsAttentionBand (mounted above the toolbar) calls useTeamsApi().read for
+// "/approvals" and "/inbox/runs". Mock the hook so every read returns a benign
+// empty SWR-shaped object — with no triage data the band's count is 0 and it
+// renders null, leaving every assertion below untouched. The default applies to
+// any path, so the band's two reads are both covered.
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: () => ({
+      data: undefined,
+      isLoading: false,
+      error: undefined,
+      isValidating: false,
+      mutate: vi.fn(),
+    }),
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  }),
+}));
+
 // Override the global next/navigation mock so we can capture router.push calls.
 const { mockRouterPush, mockRouterReplace } = vi.hoisted(() => ({
   mockRouterPush: vi.fn(),

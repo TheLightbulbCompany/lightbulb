@@ -47,12 +47,12 @@ async def test_get_seeded_ids_swallows_errors():
     assert await pop.get_seeded_agent_ids(owner_id="user_x", repo=repo) == set()
 
 
-# --- is_seeded_agent: membership against the persisted set ---
+# --- is_seeded_agent: membership against the persisted set (fails CLOSED) ---
 
 
 @pytest.mark.asyncio
 async def test_seeded_id_is_seeded():
-    with patch.object(pop, "get_seeded_agent_ids", new=AsyncMock(return_value={"a1", "a3"})):
+    with patch.object(pop, "_resolve_seeded_agent_ids", new=AsyncMock(return_value={"a1", "a3"})):
         assert await pop.is_seeded_agent(owner_id="o1", agent_id="a1") is True
         assert await pop.is_seeded_agent(owner_id="o1", agent_id="a3") is True
 
@@ -61,11 +61,19 @@ async def test_seeded_id_is_seeded():
 async def test_user_created_ceo_is_not_seeded():
     # A user agent that uses role "ceo" / name "Atlas" must NOT be flagged —
     # only persisted seeded ids count.
-    with patch.object(pop, "get_seeded_agent_ids", new=AsyncMock(return_value={"a1"})):
+    with patch.object(pop, "_resolve_seeded_agent_ids", new=AsyncMock(return_value={"a1"})):
         assert await pop.is_seeded_agent(owner_id="o1", agent_id="a2") is False
 
 
 @pytest.mark.asyncio
 async def test_unknown_agent_not_seeded():
-    with patch.object(pop, "get_seeded_agent_ids", new=AsyncMock(return_value=set())):
+    with patch.object(pop, "_resolve_seeded_agent_ids", new=AsyncMock(return_value=set())):
         assert await pop.is_seeded_agent(owner_id="o1", agent_id="ghost") is False
+
+
+@pytest.mark.asyncio
+async def test_is_seeded_fails_closed_on_lookup_error():
+    # A DDB outage must NOT let a seeded agent be deleted: the delete guard
+    # treats a lookup failure as seeded (blocks the delete).
+    with patch.object(pop, "_resolve_seeded_agent_ids", new=AsyncMock(side_effect=RuntimeError("ddb down"))):
+        assert await pop.is_seeded_agent(owner_id="o1", agent_id="anything") is True

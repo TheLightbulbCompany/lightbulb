@@ -43,10 +43,20 @@ async def pre_stage_atlas(
     paperclip_agents: list[dict],
     workspace: Workspace,
 ) -> None:
-    atlas = next(
-        (a for a in paperclip_agents if a.get("name") == _ATLAS_AGENT_NAME and a.get("id")),
-        None,
-    )
+    matches = [a for a in paperclip_agents if a.get("name") == _ATLAS_AGENT_NAME and a.get("id")]
+    if len(matches) > 1:
+        # Ambiguous: the seeded Atlas was renamed and a user created another
+        # agent named "Atlas", or duplicates exist. role="general" is shared, so
+        # we can't tell which is the real recruiter — refuse to seed rather than
+        # dump Atlas's files into a user-created agent's workspace.
+        put_metric("atlas_seed.skipped_ambiguous")
+        logger.warning(
+            "atlas_seed.skipped: %d agents named Atlas for owner=%s — refusing to seed (ambiguous)",
+            len(matches),
+            owner_id,
+        )
+        return
+    atlas = matches[0] if matches else None
     if atlas is None:
         # Mirror Friday's two-branch split: an empty roster means Paperclip
         # isn't ready yet (defer to next provision); a non-empty roster with no

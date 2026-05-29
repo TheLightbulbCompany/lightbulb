@@ -55,6 +55,18 @@ async def test_skips_when_no_atlas(workspace_stub, fake_files_dir):
 
 
 @pytest.mark.asyncio
+async def test_skips_when_ambiguous_atlas(workspace_stub, fake_files_dir):
+    """Two agents named Atlas (e.g. seeded Atlas renamed + a user-created one)
+    => refuse to seed, so a custom agent's workspace is never polluted."""
+    agents = [
+        {"id": "uuid-1", "role": "general", "name": "Atlas"},
+        {"id": "uuid-2", "role": "general", "name": "Atlas"},
+    ]
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
+    workspace_stub.write_file_if_missing.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_skips_junk_files(workspace_stub, tmp_path, monkeypatch):
     root = tmp_path / "files"
     (root / "__pycache__").mkdir(parents=True)

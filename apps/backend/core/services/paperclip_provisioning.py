@@ -218,7 +218,12 @@ class PaperclipProvisioning:
         looping autoprovisions.
         """
         existing = await self._repo.get(owner_user_id)
-        if existing is not None and existing.status == "active":
+        # Idempotency must be org-scoped: rows are keyed per-user, so a user
+        # provisioned in a different context (e.g. a personal company,
+        # org_id == their user_id) would otherwise short-circuit here and
+        # never get an org-indexed company. Only an active row for THIS
+        # owner_id counts as "already provisioned."
+        if existing is not None and existing.status == "active" and existing.org_id == owner_id:
             logger.info(
                 "paperclip_provisioning.provision_org: owner %s already active for owner_id %s",
                 owner_user_id,
@@ -468,7 +473,12 @@ class PaperclipProvisioning:
         to a no-op return.
         """
         existing = await self._repo.get(user_id)
-        if existing is not None and existing.status == "active":
+        # Idempotency must be org-scoped: rows are keyed per-user, so a user
+        # with an active row for a DIFFERENT org_id (e.g. a personal company)
+        # must be treated as not-yet-joined to THIS org, not idempotent
+        # success — otherwise they'd never be invited and /teams would keep
+        # resolving them to their other company.
+        if existing is not None and existing.status == "active" and existing.org_id == owner_id:
             logger.info(
                 "paperclip_provisioning.provision_member: member %s already active",
                 user_id,

@@ -251,6 +251,27 @@ def test_patch_agent_forwards_explicit_null_reports_to(client, monkeypatch):
     assert forwarded == {"reportsTo": None}
 
 
+def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
+    """Only reportsTo is nullable upstream. An explicit null for other optional
+    fields (title here) must still be dropped, not forwarded, while a
+    concurrent reportsTo value passes through."""
+    admin = MagicMock()
+    admin.patch_agent = AsyncMock(return_value={"id": "a1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/agents/a1",
+        json={"title": None, "reportsTo": "mgr1"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    forwarded = admin.patch_agent.await_args.kwargs["body"]
+    assert forwarded == {"reportsTo": "mgr1"}
+    assert "title" not in forwarded
+
+
 def test_delete_agent_rejects_seeded(client, monkeypatch):
     """The REST delete path must refuse seeded agents (Friday/Atlas) — same
     guard as the OpenClaw gateway path. 403, upstream delete NOT called."""

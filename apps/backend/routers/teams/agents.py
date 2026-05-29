@@ -431,11 +431,15 @@ async def patch_agent(
     a service token is an admin-side operation handled by the
     provisioning path, not user-facing PATCH.
     """
-    # exclude_unset (not exclude_none) so the frontend can CLEAR reportsTo by
-    # sending an explicit null (root agent). Paperclip's updateAgentSchema is
-    # `reportsTo: uuid().nullable()` — it accepts null but rejects "" — and
-    # exclude_none would drop the null entirely, so the clear would no-op.
-    payload = body.model_dump(exclude_unset=True, by_alias=True)
+    # Drop unset/null fields by default. ``reportsTo`` is the one field that is
+    # nullable upstream (`uuid().nullable()`) — an explicit null clears the
+    # manager (root). exclude_none would drop that null, so re-insert it only
+    # when the client explicitly sent reportsTo=null. The other optional fields
+    # (title/capabilities/budget) are NOT nullable upstream, so keep dropping
+    # their nulls to avoid Paperclip validation errors.
+    payload = body.model_dump(exclude_none=True, by_alias=True)
+    if "reports_to" in body.model_fields_set and body.reports_to is None:
+        payload["reportsTo"] = None
     upstream = await _admin().patch_agent(
         agent_id=agent_id,
         body=payload,

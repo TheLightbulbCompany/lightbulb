@@ -287,3 +287,159 @@ async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
             "service_token.mint was called with the joining member's user_id; "
             "org members share the org's container so the JWT sub MUST be the owner_id."
         )
+
+
+def _active_row(*, user_id, org_id):
+    from datetime import datetime, timezone
+
+    from core.repositories.paperclip_repo import PaperclipCompany
+
+    now = datetime.now(timezone.utc)
+    return PaperclipCompany(
+        user_id=user_id,
+        org_id=org_id,
+        company_id="co_existing",
+        paperclip_user_id="pc_existing",
+        paperclip_password_encrypted="",
+        service_token_encrypted="",
+        status="active",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@pytest.mark.asyncio
+async def test_provision_member_short_circuits_only_when_org_matches(monkeypatch):
+    """An active row for THIS org short-circuits as idempotent success."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=_active_row(user_id="user_m", org_id="org_xyz"))
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    result = await svc.provision_member(
+        owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com"
+    )
+
+    assert result.org_id == "org_xyz"
+    repo.get_org_company_id.assert_not_awaited()  # short-circuited before the join flow
+    repo.put.assert_not_awaited()
+    admin.sign_up_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provision_member_does_not_short_circuit_on_other_org_row(monkeypatch):
+    """An active row for a DIFFERENT org (e.g. a personal company) must NOT
+    be treated as idempotent success — provision_member proceeds past the
+    short-circuit (here it reaches get_org_company_id, stubbed empty, and
+    raises rather than returning the unrelated row)."""
+    from core.services.paperclip_provisioning import OrgNotProvisionedError, PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    repo = MagicMock()
+    # Active row, but for the user's PERSONAL context (org_id == user_id).
+    repo.get = AsyncMock(return_value=_active_row(user_id="user_m", org_id="user_m"))
+    repo.get_org_company_id = AsyncMock(return_value=None)
+    repo.put = AsyncMock()
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(OrgNotProvisionedError):
+        await svc.provision_member(
+            owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com"
+        )
+    repo.get_org_company_id.assert_awaited_once_with("org_xyz")  # proved it went past the short-circuit
+
+
+@pytest.mark.asyncio
+async def test_provision_member_adopts_existing_account_instead_of_resignup(monkeypatch):
+    """A user who already has a Paperclip account (e.g. a personal row) must
+    be ADOPTED via sign-in — NOT re-signed-up (which would 409 and corrupt
+    their row). The member row is then re-pointed at this org."""
+    from core.encryption import encrypt
+    from core.services import service_token
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    # Distinct return shapes so we can tell adopt-signin from owner-signin.
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_m"}, "_session_cookie": "member-session"})
+
+    existing_personal = _active_row(user_id="user_m", org_id="user_m")
+    existing_personal.paperclip_user_id = "pc_user_m"
+    existing_personal.paperclip_password_encrypted = encrypt("member-pw-plain")
+
+    owner_row = _active_row(user_id="user_owner", org_id="org_xyz")
+    owner_row.paperclip_password_encrypted = encrypt("owner-pw-plain")
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=existing_personal)
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+
+    import core.services.paperclip_provisioning as prov_mod
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+    monkeypatch.setattr(service_token, "mint", MagicMock(return_value="svc.tok"))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_member(owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com")
+
+    admin.sign_up_user.assert_not_awaited()  # adopted, not re-signed-up
+    # Signed in as the member with their stored password.
+    member_signins = [c for c in admin.sign_in_user.await_args_list if c.kwargs.get("email") == "m@example.com"]
+    assert member_signins, "expected a member sign-in (adoption)"
+    assert member_signins[0].kwargs["password"] == "member-pw-plain"
+    # Row re-pointed at the org.
+    put_row = repo.put.await_args.args[0]
+    assert put_row.org_id == "org_xyz"
+    assert put_row.paperclip_user_id == "pc_user_m"
+
+
+@pytest.mark.asyncio
+async def test_provision_member_adoption_failure_does_not_mark_existing_row_failed(monkeypatch):
+    """A transient join failure while ADOPTING an existing row must NOT
+    mark that (e.g. personal) row failed — the re-point only lands on the
+    successful put, so the existing workspace stays intact and the next poll
+    retries."""
+    from core.encryption import encrypt
+    from core.services.paperclip_admin_client import PaperclipApiError
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_m"}, "_session_cookie": "s"})
+    # Fail mid-join (after adoption sign-in), before the final put.
+    admin.create_invite = AsyncMock(side_effect=PaperclipApiError("invite boom", status_code=500, body="x"))
+
+    existing_personal = _active_row(user_id="user_m", org_id="user_m")
+    existing_personal.paperclip_user_id = "pc_user_m"
+    existing_personal.paperclip_password_encrypted = encrypt("member-pw-plain")
+    owner_row = _active_row(user_id="user_owner", org_id="org_xyz")
+    owner_row.paperclip_password_encrypted = encrypt("owner-pw-plain")
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=existing_personal)
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+
+    import core.services.paperclip_provisioning as prov_mod
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    svc._mark_failed = AsyncMock()  # spy
+
+    with pytest.raises(PaperclipApiError):
+        await svc.provision_member(
+            owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com"
+        )
+
+    svc._mark_failed.assert_not_awaited()  # adopted row preserved, not corrupted
+    repo.put.assert_not_awaited()  # never re-pointed (join failed)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 
 from core.auth import AuthContext
 from core.observability.metrics import put_metric
@@ -34,22 +35,34 @@ from core.services.provision_gate import evaluate_provision_gate
 
 logger = logging.getLogger(__name__)
 
+# Per-org in-process lock serializing the create-vs-join decision so two
+# concurrent first-pollers in an all-admin org don't each create a separate
+# Paperclip company. Paperclip ignores the Idempotency-Key header
+# (see paperclip_admin_client.py module docstring), so dedup must happen
+# here. Single-backend-instance scope: if the service scales to N tasks the
+# window reopens across tasks; acceptable for current fleet size — the loser
+# of a cross-instance race resolves to the join path on its next poll.
+_org_provision_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-async def ensure_user_ready(auth: AuthContext) -> None:
+
+async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = True) -> None:
     """Single canonical readiness entry point. Idempotent.
 
     Flow:
       1. Resolve readiness gate via evaluate_provision_gate. If a gate
          is up, return — pre-conditions not satisfied. (No exception:
          this is a normal "not ready yet" outcome.)
-      2. For owner roles (personal user OR org admin):
-           a. Synchronously ensure Paperclip company (~2-3s).
-           b. Dispatch container provisioning as a background task.
-      3. For org members:
-           If owner's Paperclip company exists & active → add member.
-           Else log info and return. Member's pending state is
-           implicit; resolves on the next /container/status poll
-           once owner is ready.
+      2. Paperclip workspace (role-blind for org context):
+           - Org context: create the org's ONE shared company if it
+             doesn't exist yet, otherwise join it. The decision is
+             company existence, never Clerk role.
+           - Personal: always sole owner of their own company.
+      3. Container (ECS) provisioning is a SEPARATE concern. Dispatched
+         only when the caller is a container-owner (personal user OR org
+         admin) AND provision_container is True. The /container/status
+         running-container poll path passes provision_container=False
+         because provision_user_container force-restarts an already-running
+         service — calling it on every ~3s poll would restart the box.
     """
     owner_id = auth.org_id if auth.is_org_context else auth.user_id
 
@@ -68,26 +81,166 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         )
         return
 
-    if auth.is_org_context and not auth.is_org_admin:
-        # Org member fast path.
-        await _ensure_paperclip_for_member(
+    if auth.is_org_context:
+        # JOIN is role-blind — a co-admin (or member) of an
+        # already-provisioned org joins the org's ONE shared company, never
+        # creates a second one. CREATE is gated to admins: bootstrapping the
+        # org's shared company mirrors who bootstraps the shared container
+        # (admins; members ride). A member polling a not-yet-bootstrapped
+        # org waits for an admin — avoids a company seeded with Friday/Atlas
+        # whose adapters point at a container no member can provision yet.
+        await _ensure_paperclip_for_org(
             org_id=auth.org_id,
-            member_user_id=auth.user_id,
-            member_email=auth.email or "",
+            user_id=auth.user_id,
+            email=auth.email or "",
+            is_admin=auth.is_org_admin,
         )
-        return
+    else:
+        # Personal owner: always the sole owner of their own company.
+        await _ensure_paperclip_for_owner(
+            owner_id=owner_id,
+            owner_user_id=auth.user_id,
+            owner_email=auth.email or "",
+            org_id=None,
+        )
 
-    # Owner path (personal user OR org admin).
-    await _ensure_paperclip_for_owner(
-        owner_id=owner_id,
-        owner_user_id=auth.user_id,
-        owner_email=auth.email or "",
-        org_id=auth.org_id if auth.is_org_context else None,
+    # Container (ECS) provisioning is a SEPARATE concern from the Paperclip
+    # workspace above. Dispatch it only when:
+    #   (a) the caller is a container-owner — personal user or org ADMIN.
+    #       Org members ride the shared org container; they never spin one
+    #       up. (This role check is about WHO SPINS UP THE BOX, which is
+    #       unrelated to Teams/Paperclip access — that is role-blind above.)
+    #   (b) provision_container is True. The /container/status running-
+    #       container branch passes False, because provision_user_container
+    #       force-restarts an already-running service (ecs_manager docstring
+    #       scenario 3) — calling it every ~3s poll would restart the box.
+    # background_provision is idempotent on the absent/0-desired cases, so
+    # repeated owner polls on a not-yet-running container are safe.
+    if provision_container and (not auth.is_org_context or auth.is_org_admin):
+        asyncio.create_task(background_provision(owner_id, auth.user_id))
+
+
+async def _ensure_paperclip_for_org(
+    *,
+    org_id: str,
+    user_id: str,
+    email: str,
+    is_admin: bool,
+) -> None:
+    """Ensure this user has a row in the org's shared Paperclip company.
+
+    Decided by company existence:
+      - Company exists → JOIN it (provision_member), regardless of role.
+        This is the role-blind fix: admins and members alike join the one
+        shared company.
+      - No active company yet → only an ADMIN creates it (provision_org),
+        under a per-org lock so concurrent first-pollers can't
+        double-create. A member returns gracefully and waits — an admin
+        will bootstrap the company (and the container it rides) on their
+        poll, and the member joins on a subsequent poll. Letting a member
+        create here would seed Friday/Atlas pointing at a container members
+        can't provision, leaving a company-without-container window.
+
+    The underlying helpers treat a duplicate-409 as idempotent success, so
+    this is safe to call on every /container/status poll.
+    """
+    async with _org_provision_locks[org_id]:
+        provisioning = await build_paperclip_provisioning()
+        try:
+            owner = await provisioning.find_org_owner(org_id)
+
+            if owner is None:
+                if not is_admin:
+                    # Member polling a not-yet-bootstrapped org: wait for an
+                    # admin to create the shared company. The pending state is
+                    # implicit and resolves on the member's next poll.
+                    logger.info(
+                        "ensure_user_ready (org member): org=%s has no active "
+                        "paperclip company yet — waiting for an admin to "
+                        "bootstrap it; will retry on next /container/status poll",
+                        org_id,
+                    )
+                    return
+
+                # Strongly-consistent cross-instance guard against
+                # double-create. The per-org asyncio lock above only
+                # serializes THIS process, and find_org_owner reads the
+                # eventually-consistent by-org-id GSI — so two admins on
+                # different backend instances (or within the GSI propagation
+                # gap) could both see owner=None and both create a separate
+                # company, silently splitting the org's workspace. The claim
+                # is a strongly-consistent PK conditional write that exactly
+                # one caller wins; losers fall through to the join path on
+                # their next poll once the winner's company is GSI-visible.
+                if not await provisioning.try_acquire_org_create_claim(org_id, holder=user_id):
+                    logger.info(
+                        "ensure_user_ready (org): org=%s create claim held by "
+                        "another backend instance — waiting; will join on the "
+                        "next /container/status poll",
+                        org_id,
+                    )
+                    return
+
+                # We won the claim: become the org's company owner-of-record.
+                try:
+                    await _ensure_paperclip_for_owner(
+                        owner_id=org_id,
+                        owner_user_id=user_id,
+                        owner_email=email,
+                        org_id=org_id,
+                    )
+                except BaseException:
+                    # Release the claim so the next poll (this instance or
+                    # another) can re-acquire and retry.
+                    await provisioning.release_org_create_claim(org_id, holder=user_id)
+                    raise
+
+                # Verify the create actually wrote an active row before
+                # leaving the claim in place. provision_org's
+                # 409-as-idempotent path can return WITHOUT writing one — e.g.
+                # a prior holder crashed (SIGKILL) after Better Auth signup
+                # but before the row was persisted: the random signup password
+                # is lost and Paperclip exposes no user-delete/reset, so this
+                # email's signup now 409s and _ensure_paperclip_for_owner
+                # swallows it as "already provisioned." Leaving the claim then
+                # would strand the org behind a held claim with no discoverable
+                # company. Releasing it lets the next poll retry — ideally
+                # another admin whose signup isn't burned — recover the org.
+                # Strongly-consistent read so we never false-release on our own
+                # just-written row. On genuine success the claim stays as a
+                # permanent "bootstrapped" marker (find_org_owner then returns
+                # the company and this branch is not re-entered).
+                #
+                # The row must also belong to THIS org. provision_org
+                # short-circuits on repo.get(user_id) when the user already has
+                # an active row — and since rows are keyed per-user, a user who
+                # was provisioned in a PERSONAL context (row.org_id == their
+                # user_id) would make this read return that unrelated active row
+                # even though no org-indexed company exists. Checking org_id
+                # keeps us from holding the claim on a personal row while
+                # find_org_owner(org_id) stays None.
+                row = await provisioning.get_company_row(user_id)
+                if row is None or row.status != "active" or row.org_id != org_id:
+                    logger.warning(
+                        "ensure_user_ready (org): create for org=%s user=%s "
+                        "returned without an active paperclip row (likely a "
+                        "prior partial/crashed attempt); releasing create claim "
+                        "so a retry can recover",
+                        org_id,
+                        user_id,
+                    )
+                    await provisioning.release_org_create_claim(org_id, holder=user_id)
+                return
+        finally:
+            await close_paperclip_provisioning(provisioning)
+
+    # Company already exists → join it. Outside the create lock so member
+    # adds for an established org don't serialize behind one mutex.
+    await _ensure_paperclip_for_member(
+        org_id=org_id,
+        member_user_id=user_id,
+        member_email=email,
     )
-
-    # Container provisioning is dispatched, not awaited. /container/status
-    # polling (~3s cadence) drives the user from "provisioning" to "ready".
-    asyncio.create_task(background_provision(owner_id, auth.user_id))
 
 
 async def _ensure_paperclip_for_owner(

@@ -218,7 +218,12 @@ class PaperclipProvisioning:
         looping autoprovisions.
         """
         existing = await self._repo.get(owner_user_id)
-        if existing is not None and existing.status == "active":
+        # Idempotency must be org-scoped: rows are keyed per-user, so a user
+        # provisioned in a different context (e.g. a personal company,
+        # org_id == their user_id) would otherwise short-circuit here and
+        # never get an org-indexed company. Only an active row for THIS
+        # owner_id counts as "already provisioned."
+        if existing is not None and existing.status == "active" and existing.org_id == owner_id:
             logger.info(
                 "paperclip_provisioning.provision_org: owner %s already active for owner_id %s",
                 owner_user_id,
@@ -238,20 +243,33 @@ class PaperclipProvisioning:
         # bootstrap secret is missing (rather than failing 4 steps in).
         admin_cookie = await get_admin_session_cookie(self._admin._http)
 
-        password = secrets.token_urlsafe(32)
+        # Sign-up-or-ADOPT (same rationale as provision_member): a user who
+        # already has a Paperclip account — a personal row that the org-scoped
+        # idempotency check let fall through, or a prior ``failed`` row
+        # (``_mark_failed`` preserves paperclip_user_id + password) — is
+        # adopted by signing in with their stored password rather than
+        # re-signing-up (which would 409 and corrupt the row). We hold the
+        # password, and Paperclip has no user-delete/reset. The final
+        # ``repo.put`` re-points the row at this org.
+        adopting_existing = existing is not None and bool(existing.paperclip_user_id)
+        password = decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
         try:
-            # 1. Better Auth public signup — creates the new Paperclip
-            #    user. Doesn't require admin privileges (unless
-            #    ``disableSignUp`` is set, which it isn't on this
-            #    deployment). Returns a session token we'll use later
-            #    for the invite-accept and Main Agent steps.
-            signup = await self._admin.sign_up_user(
-                email=owner_email,
-                password=password,
-                name=owner_email,
-            )
-            paperclip_user_id = signup["user"]["id"]
-            new_user_session_cookie = signup["_session_cookie"]
+            # 1. Obtain the owner's Better Auth account + session — signup for
+            #    a brand-new user, sign-in to adopt an existing account. The
+            #    session is used later for the invite-accept and seed-agent
+            #    steps.
+            if adopting_existing:
+                signin = await self._admin.sign_in_user(email=owner_email, password=password)
+                paperclip_user_id = existing.paperclip_user_id
+                new_user_session_cookie = signin["_session_cookie"]
+            else:
+                signup = await self._admin.sign_up_user(
+                    email=owner_email,
+                    password=password,
+                    name=owner_email,
+                )
+                paperclip_user_id = signup["user"]["id"]
+                new_user_session_cookie = signup["_session_cookie"]
 
             # 2. ADMIN creates the company. Admin becomes the initial
             #    owner via Paperclip's auto-ensureMembership in
@@ -420,11 +438,16 @@ class PaperclipProvisioning:
             return row
 
         except Exception as e:
-            await self._mark_failed(
-                user_id=owner_user_id,
-                owner_id=owner_id,
-                reason=f"provision_org failed: {e}",
-            )
+            # Don't corrupt an ADOPTED row (see provision_member): re-pointing
+            # a user's existing active row at this org only lands on the
+            # successful repo.put above, so a transient failure must preserve
+            # that row. Only mark-failed for net-new owners.
+            if not adopting_existing:
+                await self._mark_failed(
+                    user_id=owner_user_id,
+                    owner_id=owner_id,
+                    reason=f"provision_org failed: {e}",
+                )
             # ``retryable`` is now set automatically:
             #   - PaperclipApiError sets it in __init__ (5xx/429 → True).
             #   - OrgNotProvisionedError carries the class attribute.
@@ -468,7 +491,12 @@ class PaperclipProvisioning:
         to a no-op return.
         """
         existing = await self._repo.get(user_id)
-        if existing is not None and existing.status == "active":
+        # Idempotency must be org-scoped: rows are keyed per-user, so a user
+        # with an active row for a DIFFERENT org_id (e.g. a personal company)
+        # must be treated as not-yet-joined to THIS org, not idempotent
+        # success — otherwise they'd never be invited and /teams would keep
+        # resolving them to their other company.
+        if existing is not None and existing.status == "active" and existing.org_id == owner_id:
             logger.info(
                 "paperclip_provisioning.provision_member: member %s already active",
                 user_id,
@@ -490,16 +518,35 @@ class PaperclipProvisioning:
             raise OrgNotProvisionedError(f"Owner {owner_id} has company {company_id} but no owner row found")
         owner_password = decrypt(owner_row.paperclip_password_encrypted)
 
-        member_password = secrets.token_urlsafe(32)
+        # Sign-up-or-ADOPT. A brand-new user signs up. A user who ALREADY has
+        # a Paperclip account — e.g. a personal workspace row, which the
+        # org-scoped idempotency check above intentionally let fall through,
+        # or a prior attempt that left a ``failed`` row (``_mark_failed``
+        # preserves paperclip_user_id + password) — is ADOPTED by signing in
+        # with their stored password. Re-signing-up would 409 (email already
+        # in Better Auth) and corrupt their existing row via ``_mark_failed``;
+        # Paperclip exposes no user-delete/reset, but we hold the account's
+        # password, so sign-in is the clean path and also recovers a
+        # previously-corrupted row. The final ``repo.put`` re-points the row
+        # at this org.
+        adopting_existing = existing is not None and bool(existing.paperclip_user_id)
+        member_password = (
+            decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
+        )
         try:
-            # 1. Sign up the new member (creates their Better Auth account).
-            member_signup = await self._admin.sign_up_user(
-                email=email,
-                password=member_password,
-                name=email,
-            )
-            member_paperclip_user_id = member_signup["user"]["id"]
-            member_session_cookie = member_signup["_session_cookie"]
+            # 1. Obtain the member's Better Auth account + session.
+            if adopting_existing:
+                member_signin = await self._admin.sign_in_user(email=email, password=member_password)
+                member_paperclip_user_id = existing.paperclip_user_id
+                member_session_cookie = member_signin["_session_cookie"]
+            else:
+                member_signup = await self._admin.sign_up_user(
+                    email=email,
+                    password=member_password,
+                    name=email,
+                )
+                member_paperclip_user_id = member_signup["user"]["id"]
+                member_session_cookie = member_signup["_session_cookie"]
 
             # 2. Sign in as the org owner so we can act on the company
             #    (create invite + approve join request).
@@ -590,12 +637,20 @@ class PaperclipProvisioning:
             return row
 
         except Exception as e:  # noqa: F841 — kept for clarity in future logging
-            await self._mark_failed(
-                user_id=user_id,
-                owner_id=owner_id,
-                reason=f"provision_member failed: {e}",
-                company_id=company_id,
-            )
+            # Don't corrupt an ADOPTED row: when we're re-pointing a user's
+            # existing (e.g. personal) active row at this org, a transient
+            # join failure must NOT mark that unrelated workspace failed — the
+            # re-point only lands on the successful repo.put above, so on
+            # failure the existing row is still valid and the next poll
+            # retries. Only mark-failed for net-new users (their own
+            # placeholder).
+            if not adopting_existing:
+                await self._mark_failed(
+                    user_id=user_id,
+                    owner_id=owner_id,
+                    reason=f"provision_member failed: {e}",
+                    company_id=company_id,
+                )
             # ``retryable`` is set on the exception itself (see provision_org
             # for the full rationale).
             raise
@@ -794,6 +849,30 @@ class PaperclipProvisioning:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def try_acquire_org_create_claim(self, owner_id: str, *, holder: str) -> bool:
+        """Delegate to the repo's strongly-consistent per-org create claim.
+
+        Used by ``ensure_user_ready`` to serialize company creation across
+        backend instances (the per-org asyncio lock only covers one process,
+        and ``find_org_owner`` reads an eventually-consistent GSI). Returns
+        True iff this caller may proceed to create the company.
+        """
+        return await self._repo.try_acquire_org_create_claim(owner_id, holder=holder)
+
+    async def release_org_create_claim(self, owner_id: str, *, holder: str) -> None:
+        """Delegate to the repo: release the per-org create claim on failure."""
+        await self._repo.release_org_create_claim(owner_id, holder=holder)
+
+    async def get_company_row(self, user_id: str) -> Optional[PaperclipCompany]:
+        """Strongly-consistent fetch of a user's row.
+
+        Used by ``ensure_user_ready`` to verify that a create actually wrote
+        an active row before leaving the per-org claim in place — a
+        strongly-consistent read so it never false-negatives on our own
+        just-written row.
+        """
+        return await self._repo.get(user_id, consistent_read=True)
 
     async def find_org_owner(self, owner_id: str) -> Optional[PaperclipCompany]:
         """Find the owner row (oldest ACTIVE ``created_at`` for this owner_id).

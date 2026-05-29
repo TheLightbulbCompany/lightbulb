@@ -1,7 +1,8 @@
 // Test for AgentDetailPanel.
 //
-// Confirms the overview/runs/config tab switching works and that the config
-// tab renders the operator-controlled disclaimer (no edit form ever).
+// The panel now has Manage + Runs tabs (the old Overview JSON dump + disabled
+// Config tab were replaced by AgentManageSection). Meta (role/title/etc.) is
+// read-only here — managed in the /chat control panel (single-editor rule).
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,6 +17,8 @@ vi.mock("@/hooks/useTeamsApi", () => ({
           error: null,
           mutate: vi.fn(),
         };
+      if (path === "/agents")
+        return { data: { agents: [] }, isLoading: false, error: null, mutate: vi.fn() };
       return {
         data: { id: "a1", name: "Alice", role: "ceo" },
         isLoading: false,
@@ -26,6 +29,17 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     post: vi.fn(),
     patch: vi.fn(),
     del: vi.fn(),
+  }),
+}));
+
+// AgentManageSection (rendered on the default Manage tab) uses useAgentMutations,
+// which reaches the gateway — mock it so the panel renders without a provider.
+vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
+  useAgentMutations: () => ({
+    setReportsTo: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    remove: vi.fn(),
   }),
 }));
 
@@ -51,12 +65,12 @@ describe("AgentDetailPanel", () => {
     );
   });
 
-  it("Config tab shows operator-controlled disclaimer (no edit form)", async () => {
-    const user = userEvent.setup();
+  it("Manage tab shows read-only meta managed in the control panel (no edit form)", () => {
     render(<AgentDetailPanel agentId="a1" />);
-    await user.click(screen.getByRole("tab", { name: /config/i }));
+    // Default tab is Manage; meta fields are read-only with a pointer to the
+    // control panel — never an in-panel edit form for role/title/etc.
     expect(
-      screen.getByText(/Adapter configuration is managed by Isol8/i),
+      screen.getByText(/managed in the agent.s control panel/i),
     ).toBeInTheDocument();
   });
 });

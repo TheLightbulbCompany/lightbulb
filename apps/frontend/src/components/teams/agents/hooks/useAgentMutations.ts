@@ -5,6 +5,7 @@ import { useCallback } from "react";
 import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import type { CompanyAgent } from "@/components/teams/shared/types";
 
 // All /teams reads use keys prefixed "/teams". The agents LIST key is
 // "/teams/agents" (org chart + agents list); the per-agent DETAIL key is
@@ -57,9 +58,22 @@ export function useAgentMutations() {
   const remove = useCallback(
     async (agentId: string) => {
       await callRpc("agents.delete", { agentId, deleteFiles: true });
-      revalidate(agentId);
+      // The gateway acks agents.delete BEFORE the backend cascades the
+      // Paperclip row removal: websocket_chat sends the WS success, THEN runs
+      // EFS cleanup + delete_paperclip_for_chat. A blind revalidate here races
+      // that cascade and can refetch the still-present row, resurrecting the
+      // agent in the UI until a manual refresh. Drop it from the caches
+      // optimistically WITHOUT refetching — the agent is gone; any natural
+      // later revalidation reflects the server once the cascade has run.
+      mutate(
+        AGENTS_KEY,
+        (cur: { agents?: CompanyAgent[] } | undefined) =>
+          cur?.agents ? { ...cur, agents: cur.agents.filter((a) => a.id !== agentId) } : cur,
+        { revalidate: false },
+      );
+      mutate(`${AGENTS_KEY}/${agentId}`, undefined, { revalidate: false });
     },
-    [callRpc, revalidate],
+    [callRpc, mutate],
   );
 
   return { setReportsTo, pause, resume, remove };

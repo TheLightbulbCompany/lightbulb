@@ -289,6 +289,106 @@ async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
         )
 
 
+@pytest.mark.asyncio
+async def test_provision_org_persists_seeded_agent_ids(monkeypatch):
+    """The seeded Friday/Atlas Paperclip IDs are captured onto the
+    provisioner's row as the stable seeded marker (see
+    paperclip_openclaw_pairing.get_seeded_agent_ids)."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    # create_agent returns the created agent dict (Friday then Atlas).
+    admin.create_agent = AsyncMock(side_effect=[{"id": "friday_id"}, {"id": "atlas_id"}])
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    repo.put.assert_awaited_once()
+    persisted = repo.put.await_args.args[0]
+    assert persisted.seeded_agent_ids == ["friday_id", "atlas_id"]
+
+
+@pytest.mark.asyncio
+async def test_provision_org_seeded_ids_none_when_seeds_fail(monkeypatch):
+    """If both seeds fail, no ids are captured and the field stays None
+    (best-effort — the company is still persisted and usable)."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            PaperclipApiError("friday", status_code=500, body="x"),
+            PaperclipApiError("atlas", status_code=500, body="x"),
+        ]
+    )
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    persisted = repo.put.await_args.args[0]
+    assert persisted.seeded_agent_ids is None
+
+
+@pytest.mark.asyncio
+async def test_provision_member_replicates_seeded_agent_ids(monkeypatch):
+    """Member rows copy the owner row's seeded marker so Friday/Atlas stay
+    protected even if the original provisioner's row is later purged."""
+    from datetime import datetime, timezone
+
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services import service_token
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+
+    now = datetime.now(timezone.utc)
+    owner_row = PaperclipCompany(
+        user_id="user_owner",
+        org_id="org_xyz",
+        company_id="co_xyz",
+        paperclip_user_id="pc_user_owner",
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted=encrypt("svc-token"),
+        status="active",
+        created_at=now,
+        updated_at=now,
+        seeded_agent_ids=["friday_id", "atlas_id"],
+    )
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+
+    import core.services.paperclip_provisioning as prov_mod
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+    monkeypatch.setattr(service_token, "mint", MagicMock(return_value="svc.tok.minted"))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_member(
+        owner_id="org_xyz",
+        user_id="user_member",
+        email="member@example.com",
+        owner_email="owner@example.com",
+    )
+
+    persisted = repo.put.await_args.args[0]
+    assert persisted.seeded_agent_ids == ["friday_id", "atlas_id"]
+
+
 def _active_row(*, user_id, org_id):
     from datetime import datetime, timezone
 

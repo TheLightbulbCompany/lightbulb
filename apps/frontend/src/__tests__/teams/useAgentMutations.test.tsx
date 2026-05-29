@@ -47,11 +47,24 @@ describe("useAgentMutations", () => {
     expect(post).toHaveBeenCalledWith("/agents/a1/resume", {});
   });
 
-  it("remove deletes via gateway agents.delete RPC", async () => {
+  it("remove deletes via gateway RPC and optimistically drops the agent without refetching", async () => {
     callRpc.mockResolvedValue({});
     const { result } = renderHook(() => useAgentMutations());
     await act(async () => { await result.current.remove("a1"); });
     expect(callRpc).toHaveBeenCalledWith("agents.delete", { agentId: "a1", deleteFiles: true });
-    expect(swrMutate).toHaveBeenCalled();
+
+    // List cache: optimistic removal with NO revalidation — a blind refetch
+    // would race the backend's post-ack Paperclip cascade and resurrect the row.
+    const listCall = swrMutate.mock.calls.find((c) => c[0] === "/teams/agents");
+    expect(listCall).toBeTruthy();
+    expect(listCall![2]).toEqual({ revalidate: false });
+    const updater = listCall![1] as (cur: unknown) => unknown;
+    expect(updater({ agents: [{ id: "a1" }, { id: "a2" }] })).toEqual({ agents: [{ id: "a2" }] });
+
+    // Detail cache cleared, also without revalidation.
+    const detailCall = swrMutate.mock.calls.find((c) => c[0] === "/teams/agents/a1");
+    expect(detailCall).toBeTruthy();
+    expect(detailCall![1]).toBeUndefined();
+    expect(detailCall![2]).toEqual({ revalidate: false });
   });
 });

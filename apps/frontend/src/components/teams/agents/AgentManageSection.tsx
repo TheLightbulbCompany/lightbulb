@@ -28,9 +28,14 @@ function MetaRow({ label, value }: { label: string; value?: string | null }) {
 export function AgentManageSection({
   agent,
   agents,
+  onDeleted,
 }: {
   agent: CompanyAgent;
   agents: CompanyAgent[];
+  /** Called after a successful delete. The detail view passes this to
+   *  navigate away — remove() clears the agent's detail cache, so staying on
+   *  /teams/agents/{id} would render a permanent "Loading…". */
+  onDeleted?: () => void;
 }) {
   const { setReportsTo, pause, resume, remove } = useAgentMutations();
   const [busy, setBusy] = useState(false);
@@ -104,7 +109,7 @@ export function AgentManageSection({
           <>
             <span className="text-sm text-[var(--danger)]">Delete {agent.name}?</span>
             <EditorialButton size="sm" disabled={busy}
-              onClick={() => run(() => remove(agent.id))}>
+              onClick={() => run(async () => { await remove(agent.id); onDeleted?.(); })}>
               Confirm
             </EditorialButton>
             <EditorialButton variant="secondary" size="sm" disabled={busy}

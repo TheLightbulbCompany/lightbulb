@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { PanelMasthead, PanelTabs } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
@@ -19,6 +20,7 @@ const TABS = [
 
 export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const { read } = useTeamsApi();
+  const router = useRouter();
   const { data: agent } = read<CompanyAgent>(`/agents/${agentId}`);
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: runs } = read<{ runs: RunRow[] }>(`/agents/${agentId}/runs`);
@@ -44,7 +46,11 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
       <PanelTabs tabs={TABS} value={tab} onValueChange={setTab} />
 
       {tab === "manage" && agent && (
-        <AgentManageSection agent={agent} agents={agentsData?.agents ?? []} />
+        <AgentManageSection
+          agent={agent}
+          agents={agentsData?.agents ?? []}
+          onDeleted={() => router.push("/teams/agents")}
+        />
       )}
       {tab === "runs" && (
         <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">

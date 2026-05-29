@@ -35,12 +35,16 @@ describe("AgentManageSection", () => {
     expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
   });
 
-  it("shows delete for regular agents and calls remove", async () => {
+  it("shows delete for regular agents, calls remove, then onDeleted", async () => {
     remove.mockResolvedValue(undefined);
-    render(<AgentManageSection agent={BOB} agents={AGENTS} />);
+    const onDeleted = vi.fn();
+    render(<AgentManageSection agent={BOB} agents={AGENTS} onDeleted={onDeleted} />);
     fireEvent.click(screen.getByRole("button", { name: /delete/i }));
     fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith("b"));
+    // onDeleted fires after remove resolves so the detail view can redirect
+    // off /teams/agents/{id} (whose cache remove() just cleared).
+    await waitFor(() => expect(onDeleted).toHaveBeenCalled());
   });
 
   it("renders meta read-only (no role <select>)", () => {

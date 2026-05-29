@@ -7,6 +7,10 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+// AgentDetailPanel uses useRouter() to redirect after a delete from the detail
+// view. jsdom has no app-router context, so stub next/navigation.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: (path: string) => {

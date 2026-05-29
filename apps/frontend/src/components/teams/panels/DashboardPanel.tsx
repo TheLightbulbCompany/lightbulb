@@ -189,7 +189,7 @@ export function DashboardPanel() {
           icon={ShieldCheck}
           value={totalApprovals}
           label="Pending Approvals"
-          to="/teams/approvals"
+          to="/teams/inbox"
           description={
             dashboard.budgets.pendingApprovals > 0 ? (
               <span>

@@ -67,7 +67,7 @@ function invalidatedKeys(): string[] {
   return [...out];
 }
 
-import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
+import { TeamsEventsProvider, EVENT_KEY_MAP } from "@/components/teams/TeamsEventsProvider";
 
 beforeEach(() => {
   sendMock.mockReset();
@@ -221,6 +221,16 @@ describe("TeamsEventsProvider", () => {
       (p) => typeof p === "function" && p("/teams/inbox-foo"),
     );
     expect(inboxPredicateMatchedSibling).toBe(false);
+  });
+});
+
+describe("EVENT_KEY_MAP triage wiring", () => {
+  it("activity.logged invalidates approvals", () => {
+    expect(EVENT_KEY_MAP["teams.activity.logged"]).toContain("/teams/approvals");
+  });
+  it("heartbeat run events invalidate the failed-runs source", () => {
+    expect(EVENT_KEY_MAP["teams.heartbeat.run.queued"]).toContain("/teams/inbox/runs");
+    expect(EVENT_KEY_MAP["teams.heartbeat.run.status"]).toContain("/teams/inbox/runs");
   });
 });
 

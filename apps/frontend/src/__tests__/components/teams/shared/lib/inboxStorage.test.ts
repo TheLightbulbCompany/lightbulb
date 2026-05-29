@@ -7,6 +7,10 @@ import {
   loadReadInboxItems,
   saveReadInboxItems,
   inboxStorageKey,
+  loadAckRuns,
+  saveAckRuns,
+  loadBandCollapsed,
+  saveBandCollapsed,
 } from "@/components/teams/shared/lib/inboxStorage";
 import { defaultIssueFilterState } from "@/components/teams/shared/lib/issueFilters";
 
@@ -228,5 +232,29 @@ describe("loadReadInboxItems / saveReadInboxItems", () => {
   test("namespaces by companyId — separate companies don't bleed state", () => {
     saveReadInboxItems("co_a", new Set(["iss_1"]));
     expect(loadReadInboxItems("co_b").size).toBe(0);
+  });
+});
+
+describe("triage storage helpers", () => {
+  beforeEach(() => localStorage.clear());
+
+  test("ack-runs round-trips a Set and isolates per company", () => {
+    saveAckRuns("co1", new Set(["r1", "r2"]));
+    expect(loadAckRuns("co1")).toEqual(new Set(["r1", "r2"]));
+    expect(loadAckRuns("co2")).toEqual(new Set()); // per-company isolation
+  });
+
+  test("ack-runs returns empty Set when missing or malformed", () => {
+    expect(loadAckRuns("missing")).toEqual(new Set());
+    localStorage.setItem("paperclip:inbox:bad:ack-runs", "{not json");
+    expect(loadAckRuns("bad")).toEqual(new Set());
+  });
+
+  test("band-collapsed round-trips a boolean, default false", () => {
+    expect(loadBandCollapsed("co1")).toBe(false);
+    saveBandCollapsed("co1", true);
+    expect(loadBandCollapsed("co1")).toBe(true);
+    saveBandCollapsed("co1", false);
+    expect(loadBandCollapsed("co1")).toBe(false);
   });
 });

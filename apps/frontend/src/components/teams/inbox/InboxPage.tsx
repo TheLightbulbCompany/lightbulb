@@ -13,6 +13,7 @@ import { Inbox as InboxIcon } from "lucide-react";
 
 import { InboxToolbar } from "@/components/teams/inbox/InboxToolbar";
 import { InboxList } from "@/components/teams/inbox/InboxList";
+import { NeedsAttentionBand } from "@/components/teams/inbox/NeedsAttentionBand";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { PanelEmptyState, PanelMasthead } from "@/components/teams/shell";
@@ -288,6 +289,7 @@ export function InboxPage({
   return (
     <div className="flex flex-col p-4 sm:p-6 editorial-page">
       <PanelMasthead overline="Inbox" title="Inbox" className="mb-4" />
+      <NeedsAttentionBand companyId={companyId} agents={agents} />
       <InboxToolbar
         tab={tab}
         onTabChange={setTab}

@@ -3,6 +3,8 @@
 import { useOrganization, useUser } from "@clerk/nextjs";
 
 import { InboxPage } from "@/components/teams/inbox/InboxPage";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import type { CompanyAgent } from "@/components/teams/shared/types";
 
 /**
  * Teams Inbox panel — thin shim that resolves Clerk identity (companyId =
@@ -20,6 +22,14 @@ export function InboxPanel() {
   const { organization, isLoaded: orgLoaded } = useOrganization();
   const { user, isLoaded: userLoaded } = useUser();
 
+  // Fetch the company roster so InboxPage can resolve agent names — the
+  // NeedsAttentionBand failed-run rows and the toolbar's agent filter both
+  // need it; without it they fall back to raw `agent_…` ids. `read` calls
+  // `useSWR` internally, so it must run unconditionally above the early
+  // return (rules of hooks).
+  const { read } = useTeamsApi();
+  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
+
   if (!orgLoaded || !userLoaded || !user) return null;
 
   // Owner-id convention: org membership uses the org id, personal accounts
@@ -27,5 +37,11 @@ export function InboxPanel() {
   const companyId = organization?.id ?? user.id;
   const currentUserId = user.id;
 
-  return <InboxPage companyId={companyId} currentUserId={currentUserId} />;
+  return (
+    <InboxPage
+      companyId={companyId}
+      currentUserId={currentUserId}
+      agents={agentsData?.agents ?? []}
+    />
+  );
 }

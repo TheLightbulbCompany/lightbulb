@@ -102,6 +102,7 @@ async def test_intercept_update_calls_paperclip_update_when_meta_present():
     mock_admin.update_agent = AsyncMock(return_value={"id": "agent-uuid"})
     mock_repo = MagicMock()
     mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co-1"))
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co-1"})
 
     rpc_params = {
         "agentId": "agent-uuid",
@@ -145,6 +146,44 @@ async def test_intercept_update_calls_paperclip_update_when_meta_present():
 
 
 @pytest.mark.asyncio
+async def test_intercept_update_skips_cross_company_agent():
+    """The Paperclip PATCH hits the unscoped /api/agents/{id} with the
+    bootstrap admin cookie, so the interceptor must confirm the target
+    belongs to the owner's company first. A client-supplied agent id
+    from another company must NOT be PATCHed."""
+    mock_admin = MagicMock()
+    mock_admin.update_agent = AsyncMock(return_value={"id": "foreign"})
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "other-co"})
+    mock_repo = MagicMock()
+    mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co-1"))
+
+    rpc_params = {
+        "agentId": "foreign-agent",
+        "params": {"paperclip": {"role": "engineer"}},
+    }
+
+    with (
+        patch("routers.websocket_chat.PaperclipAdminClient", return_value=mock_admin),
+        patch("routers.websocket_chat.PaperclipRepo", return_value=mock_repo),
+        patch(
+            "routers.websocket_chat.get_admin_session_cookie",
+            new=AsyncMock(return_value="sess=c"),
+        ),
+    ):
+        consumed = await _intercept_agents_update(
+            owner_id="user_owner",
+            params=rpc_params,
+        )
+
+    assert consumed is False
+    # Ownership check failed → the foreign agent is never PATCHed.
+    mock_admin.update_agent.assert_not_awaited()
+    # The Paperclip-only params block is still stripped so the OpenClaw
+    # forward stays schema-valid.
+    assert "params" not in rpc_params
+
+
+@pytest.mark.asyncio
 async def test_intercept_update_no_meta_is_noop():
     """A normal agents.update without params.paperclip (e.g. model
     change, identity emoji change) doesn't call Paperclip. Returns
@@ -176,6 +215,7 @@ async def test_intercept_update_swallows_paperclip_errors():
     )
     mock_repo = MagicMock()
     mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co"})
 
     with (
         patch("routers.websocket_chat.PaperclipAdminClient", return_value=mock_admin),
@@ -208,6 +248,7 @@ async def test_intercept_update_strips_paperclip_params_so_openclaw_doesnt_422()
     mock_admin.update_agent = AsyncMock(return_value={"id": "agent-uuid"})
     mock_repo = MagicMock()
     mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co-1"))
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co-1"})
 
     rpc_params = {
         "agentId": "agent-uuid",
@@ -245,6 +286,7 @@ async def test_intercept_update_strips_params_even_when_paperclip_mirror_fails()
     mock_admin.update_agent = AsyncMock(side_effect=PaperclipApiError("422", status_code=422, body={"error": "bad"}))
     mock_repo = MagicMock()
     mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co"})
 
     rpc_params = {
         "agentId": "a",
@@ -342,6 +384,7 @@ async def test_intercept_update_persists_paperclip_meta_to_openclaw_json():
     mock_admin.update_agent = AsyncMock(return_value={"id": "agent-uuid"})
     mock_repo = MagicMock()
     mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co"})
     apply_meta = AsyncMock(return_value=None)
 
     with (
@@ -375,6 +418,7 @@ async def test_intercept_update_swallows_efs_write_errors():
     OpenClaw for its allowed fields."""
     mock_admin = MagicMock()
     mock_admin.update_agent = AsyncMock(return_value={"id": "a"})
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co"})
     mock_repo = MagicMock()
     mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
     apply_meta = AsyncMock(side_effect=RuntimeError("EFS write failed"))

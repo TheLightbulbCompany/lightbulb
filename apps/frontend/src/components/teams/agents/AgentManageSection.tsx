@@ -47,7 +47,7 @@ export function AgentManageSection({
         <div className="flex items-center justify-between">
           <h3 className="font-editorial-serif text-lg">Profile</h3>
           <a
-            href={`/chat?agent=${agent.id}`}
+            href={`/chat?view=control&panel=agents&agent=${agent.id}`}
             className="text-sm hover:underline"
             style={{ color: "var(--forest)" }}
           >

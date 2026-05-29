@@ -47,11 +47,13 @@ def _org_admin_auth(
     )
 
 
-async def _noop_ensure_user_ready(auth):
+async def _noop_ensure_user_ready(auth, *, provision_container=True):
     """No-op stand-in with the real qualname so capture_task can verify
     we dispatched the right coroutine. Using AsyncMock here would yield
     coro.__qualname__ == 'AsyncMockMixin._execute_mock_call', which
-    defeats the contract assertion."""
+    defeats the contract assertion. Accepts ``provision_container`` to
+    mirror the real ensure_user_ready signature (the running-container
+    branch passes provision_container=False)."""
     return None
 
 
@@ -790,10 +792,12 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         assert captured == [], "owner path should not dispatch when container already exists"
 
     @pytest.mark.asyncio
-    async def test_status_container_exists_org_admin_does_not_dispatch(self):
-        """Org admin with an existing container must not dispatch either —
-        the dispatch is gated on (is_org_context AND NOT is_org_admin).
-        Org admins are owners and were already provisioned atomically."""
+    async def test_status_container_exists_org_admin_dispatches_ensure_user_ready(self):
+        """Org admin with an existing container MUST dispatch ensure_user_ready
+        too. The dispatch is now role-blind (is_org_context), not gated on
+        NOT is_org_admin. Excluding admins here was the /teams "team workspace
+        not provisioned" bug for multi-admin orgs: a co-admin who joins an
+        already-provisioned org never got their paperclip-membership-add."""
         from routers.container import container_status
 
         fake_container = {
@@ -816,12 +820,15 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
 
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
             patch("routers.container._safe_phase", return_value="ready"),
         ):
             await container_status(_org_admin_auth())
 
-        assert captured == [], "org admin path should not dispatch when container already exists"
+        assert captured == ["_noop_ensure_user_ready"], (
+            f"org admin on container-exists path must dispatch ensure_user_ready, got {captured}"
+        )
 
 
 class TestGatewayRestart:

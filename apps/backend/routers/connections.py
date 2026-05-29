@@ -34,7 +34,10 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
     headers = {p.validation.auth_header: value}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.request(p.validation.method, p.validation.url, headers=headers)
+            kwargs: dict = {"headers": headers}
+            if p.validation.body is not None:
+                kwargs["json"] = p.validation.body
+            resp = await client.request(p.validation.method, p.validation.url, **kwargs)
         return resp.status_code < 400
     except httpx.HTTPError:
         return False

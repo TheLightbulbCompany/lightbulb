@@ -14,10 +14,11 @@ import pytest
 
 class TestValidateToken:
     """``_validate_token`` builds the Authorization header from the per-provider
-    validate ``auth_scheme`` (Linear = bare key, Stripe = ``Bearer <key>``)."""
+    validate ``auth_scheme`` (Linear = bare key, Stripe = ``Bearer <key>``) and
+    sends the optional JSON ``body`` when the spec defines one (Linear GraphQL)."""
 
     @pytest.mark.asyncio
-    async def test_linear_sends_bare_authorization_header(self, monkeypatch):
+    async def test_linear_posts_graphql_query_with_bare_authorization_header(self, monkeypatch):
         from routers import connections
         from core.services.credentials import registry
 
@@ -27,32 +28,41 @@ class TestValidateToken:
             captured["method"] = method
             captured["url"] = url
             captured["headers"] = kwargs.get("headers")
+            captured["json"] = kwargs.get("json")
             return httpx.Response(200)
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
         ok = await connections._validate_token(registry.get_provider("linear"), "lin_api_KEY")
         assert ok is True
+        # Linear's GraphQL endpoint requires POST + a minimal query body.
+        assert captured["method"] == "POST"
+        assert captured["url"] == "https://api.linear.app/graphql"
+        assert captured["json"] == {"query": "{ viewer { id } }"}
         # Linear: bare key, no "Bearer " prefix.
         assert captured["headers"]["Authorization"] == "lin_api_KEY"
 
     @pytest.mark.asyncio
-    async def test_stripe_sends_bearer_authorization_header(self, monkeypatch):
+    async def test_stripe_gets_with_bearer_authorization_header_and_no_body(self, monkeypatch):
         from routers import connections
         from core.services.credentials import registry
 
         captured: dict = {}
 
         async def fake_request(self, method, url, **kwargs):
+            captured["method"] = method
             captured["headers"] = kwargs.get("headers")
+            captured["json"] = kwargs.get("json")
             return httpx.Response(200)
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
         ok = await connections._validate_token(registry.get_provider("stripe"), "sk_test_KEY")
         assert ok is True
-        # Stripe: default Bearer scheme.
+        # Stripe: GET, default Bearer scheme, no JSON body.
+        assert captured["method"] == "GET"
         assert captured["headers"]["Authorization"] == "Bearer sk_test_KEY"
+        assert captured["json"] is None
 
     @pytest.mark.asyncio
     async def test_non_2xx_status_fails_validation(self, monkeypatch):

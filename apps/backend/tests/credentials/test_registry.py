@@ -65,3 +65,13 @@ def test_direct_oauth_requires_oauth_block():
             refresh_owner="actor",
             wiring=Wiring(materializer="x"),
         )  # no oauth
+
+
+def test_registry_materializers_and_oauth_are_self_consistent():
+    from core.services.credentials.materializers import MATERIALIZERS
+
+    for key, p in registry.all_providers().items():
+        if p.acquisition == "direct_oauth":
+            assert p.oauth and p.oauth.scopes, f"{key}: direct_oauth missing oauth scopes"
+        if p.wiring.materializer:
+            assert p.wiring.materializer in MATERIALIZERS, f"{key}: unknown materializer {p.wiring.materializer!r}"

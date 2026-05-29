@@ -308,14 +308,28 @@ class PaperclipRepo:
         org_id: str,
         *,
         holder: str,
-        stale_after_seconds: int = 120,
+        stale_after_seconds: int = 600,
     ) -> bool:
         """Strongly-consistent "I am creating this org's company" claim.
 
         Returns True iff THIS caller now holds the claim — by winning a fresh
         claim, or by stealing one whose holder went silent for longer than
-        ``stale_after_seconds`` (e.g. an instance killed mid-create during a
-        deploy). Returns False when another caller holds a fresh claim.
+        ``stale_after_seconds``. Returns False when another caller holds a
+        non-stale claim.
+
+        Steal threshold rationale (why this is liveness evidence, not naive
+        wall-time): the only operation a holder performs while holding the
+        claim is ``provision_org``, a fixed sequence of ~9 awaited Paperclip
+        HTTP calls. Each call is bounded by the provisioning client's 15s
+        timeout (``build_paperclip_provisioning``), and any call that hits its
+        timeout RAISES — which propagates to ``ensure_user_ready`` and
+        RELEASES the claim. So a live create cannot stay held beyond roughly
+        ~135s (9 × 15s) without releasing. The default 600s is comfortably
+        past that ceiling, so a claim older than it cannot belong to a
+        still-running create — it can only be a holder that crashed hard
+        (SIGKILL, e.g. an ECS task replaced mid-deploy) before its except/
+        release ran. Stealing then is safe. (If the client timeout is ever
+        raised substantially, raise this in step.)
 
         This is a PK conditional write, so it is strongly consistent and
         cross-instance-safe — it closes the double-create window that the

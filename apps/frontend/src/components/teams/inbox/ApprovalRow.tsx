@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 import { ShieldQuestion } from "lucide-react";
-import { EditorialButton, EditorialInput } from "@/components/teams/shell";
+import { EditorialButton } from "@/components/teams/shell";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import type { Approval } from "@/components/teams/shared/types";
@@ -49,15 +49,29 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
         )}
       </div>
       {rejecting && (
-        <div className="flex items-end gap-2">
-          <EditorialInput
-            label="Reason for rejection"
+        <div className="flex items-center gap-2">
+          <input
             autoFocus
+            aria-label="Reason for rejection"
             placeholder="Reason for rejection"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setRejecting(false);
+                setReason("");
+              } else if (e.key === "Enter" && reason.trim() !== "") {
+                e.preventDefault();
+                void run(async () => { await reject(approval.id, reason.trim()); });
+              }
+            }}
             disabled={busy}
-            className="flex-1"
+            className="flex-1 min-w-0 bg-transparent outline-none"
+            style={{
+              borderBottom: "1px solid var(--edge)",
+              color: "var(--ink)",
+            }}
           />
           <EditorialButton
             variant="destructive"

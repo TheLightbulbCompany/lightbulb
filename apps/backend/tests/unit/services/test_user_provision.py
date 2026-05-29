@@ -114,6 +114,8 @@ async def test_org_admin_with_no_company_creates_it():
     fake_provisioning.release_org_create_claim = AsyncMock()
     fake_provisioning.provision_org = AsyncMock()
     fake_provisioning.provision_member = AsyncMock()
+    # Post-create verification sees the active row → claim kept.
+    fake_provisioning.get_company_row = AsyncMock(return_value=MagicMock(status="active"))
     captured: list[str] = []
 
     def capture_task(coro):
@@ -138,6 +140,34 @@ async def test_org_admin_with_no_company_creates_it():
     fake_provisioning.provision_member.assert_not_awaited()
     fake_provisioning.release_org_create_claim.assert_not_awaited()
     assert captured == ["background_provision"], f"admin-create should dispatch container, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_org_admin_create_without_active_row_releases_claim():
+    """If the create returns WITHOUT an active row (provision_org's
+    409-as-idempotent path after a prior crashed attempt burned the signup),
+    the per-org claim must be RELEASED so a retry / another admin can recover
+    — otherwise the org is stranded behind a held claim with no company."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.release_org_create_claim = AsyncMock()
+    # provision_org "succeeds" (no raise) but writes no row — simulate the
+    # swallowed-409 path by having get_company_row report nothing active.
+    fake_provisioning.provision_org = AsyncMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=None)
+    fake_provisioning.provision_member = AsyncMock()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
 
 
 @pytest.mark.asyncio

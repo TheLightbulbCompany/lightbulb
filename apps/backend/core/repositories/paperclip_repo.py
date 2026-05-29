@@ -142,10 +142,11 @@ class PaperclipRepo:
             item["scheduled_purge_at"] = company.scheduled_purge_at.isoformat()
         await run_in_thread(self._table().put_item, Item=item)
 
-    async def get(self, user_id: str) -> Optional[PaperclipCompany]:
+    async def get(self, user_id: str, *, consistent_read: bool = False) -> Optional[PaperclipCompany]:
         resp = await run_in_thread(
             self._table().get_item,
             Key={"user_id": user_id},
+            ConsistentRead=consistent_read,
         )
         if "Item" not in resp:
             return None

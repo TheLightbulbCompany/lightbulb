@@ -191,12 +191,36 @@ async def _ensure_paperclip_for_org(
                     )
                 except BaseException:
                     # Release the claim so the next poll (this instance or
-                    # another) can re-acquire and retry. On SUCCESS the claim
-                    # is intentionally left as a permanent "bootstrapped"
-                    # marker — by then find_org_owner returns the real
-                    # company and this branch is not re-entered.
+                    # another) can re-acquire and retry.
                     await provisioning.release_org_create_claim(org_id, holder=user_id)
                     raise
+
+                # Verify the create actually wrote an active row before
+                # leaving the claim in place. provision_org's
+                # 409-as-idempotent path can return WITHOUT writing one — e.g.
+                # a prior holder crashed (SIGKILL) after Better Auth signup
+                # but before the row was persisted: the random signup password
+                # is lost and Paperclip exposes no user-delete/reset, so this
+                # email's signup now 409s and _ensure_paperclip_for_owner
+                # swallows it as "already provisioned." Leaving the claim then
+                # would strand the org behind a held claim with no discoverable
+                # company. Releasing it lets the next poll retry — ideally
+                # another admin whose signup isn't burned — recover the org.
+                # Strongly-consistent read so we never false-release on our own
+                # just-written row. On genuine success the claim stays as a
+                # permanent "bootstrapped" marker (find_org_owner then returns
+                # the company and this branch is not re-entered).
+                row = await provisioning.get_company_row(user_id)
+                if row is None or row.status != "active":
+                    logger.warning(
+                        "ensure_user_ready (org): create for org=%s user=%s "
+                        "returned without an active paperclip row (likely a "
+                        "prior partial/crashed attempt); releasing create claim "
+                        "so a retry can recover",
+                        org_id,
+                        user_id,
+                    )
+                    await provisioning.release_org_create_claim(org_id, holder=user_id)
                 return
         finally:
             await close_paperclip_provisioning(provisioning)

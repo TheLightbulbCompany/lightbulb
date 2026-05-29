@@ -809,6 +809,16 @@ class PaperclipProvisioning:
         """Delegate to the repo: release the per-org create claim on failure."""
         await self._repo.release_org_create_claim(owner_id, holder=holder)
 
+    async def get_company_row(self, user_id: str) -> Optional[PaperclipCompany]:
+        """Strongly-consistent fetch of a user's row.
+
+        Used by ``ensure_user_ready`` to verify that a create actually wrote
+        an active row before leaving the per-org claim in place — a
+        strongly-consistent read so it never false-negatives on our own
+        just-written row.
+        """
+        return await self._repo.get(user_id, consistent_read=True)
+
     async def find_org_owner(self, owner_id: str) -> Optional[PaperclipCompany]:
         """Find the owner row (oldest ACTIVE ``created_at`` for this owner_id).
 

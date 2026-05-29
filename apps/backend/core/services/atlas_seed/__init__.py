@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 _ATLAS_AGENT_NAME = "Atlas"
 _FILES_DIR = Path(__file__).parent / "files"
 
+# Junk that must never be seeded into a user's workspace, even if it sneaks
+# into the vendored tree (mirrors agent_export's hygiene filter).
+_SKIP = {".DS_Store", "__pycache__", ".git"}
+
 
 async def pre_stage_atlas(
     *,
@@ -68,19 +72,18 @@ async def pre_stage_atlas(
         put_metric("atlas_seed.state_error")
         logger.warning("atlas_seed: workspace-state write failed owner=%s: %s", owner_id, exc)
 
-    # Junk that should never be seeded into a user's workspace, even if it
-    # sneaks into the vendored tree (mirrors agent_export's hygiene filter).
-    _SKIP = {".DS_Store", "__pycache__", ".git"}
-
     written = 0
     skipped = 0
     errored = 0
     for abs_path in sorted(_FILES_DIR.rglob("*")):
+        # The vendored tree is plain files (no symlinks); is_file() follows
+        # symlinks, so this assumes none are present.
         if not abs_path.is_file():
             continue
-        rel = abs_path.relative_to(_FILES_DIR).as_posix()
-        if any(part in _SKIP for part in abs_path.relative_to(_FILES_DIR).parts):
+        rel_path = abs_path.relative_to(_FILES_DIR)
+        if any(part in _SKIP for part in rel_path.parts):
             continue
+        rel = rel_path.as_posix()
         dest = f"workspaces/{atlas_uuid}/{rel}"
         try:
             # Text-only: Atlas's vendored tree is all text (.md/.js/.lobster/.json/

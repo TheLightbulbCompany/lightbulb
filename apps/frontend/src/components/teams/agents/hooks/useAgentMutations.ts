@@ -6,9 +6,11 @@ import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 
-// All /teams reads use keys prefixed "/teams"; the agents list key is
-// "/teams/agents". Invalidate it after every mutation so the org chart and
-// agents list re-render with fresh data (status dots also update via events).
+// All /teams reads use keys prefixed "/teams". The agents LIST key is
+// "/teams/agents" (org chart + agents list); the per-agent DETAIL key is
+// "/teams/agents/{id}" (AgentDetailPanel/AgentManageSection's status +
+// reportsTo). Every mutation invalidates BOTH so the detail view doesn't show
+// stale state after a change (status dots also update via events).
 const AGENTS_KEY = "/teams/agents";
 
 export function useAgentMutations() {
@@ -16,15 +18,19 @@ export function useAgentMutations() {
   const callRpc = useGatewayRpcMutation();
   const { mutate } = useSWRConfig();
 
-  const revalidate = useCallback(() => {
-    mutate(AGENTS_KEY);
-  }, [mutate]);
+  const revalidate = useCallback(
+    (agentId: string) => {
+      mutate(AGENTS_KEY);
+      mutate(`${AGENTS_KEY}/${agentId}`);
+    },
+    [mutate],
+  );
 
   const setReportsTo = useCallback(
     async (agentId: string, managerId: string | null) => {
       // Empty string clears the manager (root); BFF forwards it to Paperclip.
       await patch(`/agents/${agentId}`, { reportsTo: managerId ?? "" });
-      revalidate();
+      revalidate(agentId);
     },
     [patch, revalidate],
   );
@@ -32,7 +38,7 @@ export function useAgentMutations() {
   const pause = useCallback(
     async (agentId: string) => {
       await post(`/agents/${agentId}/pause`, {});
-      revalidate();
+      revalidate(agentId);
     },
     [post, revalidate],
   );
@@ -40,7 +46,7 @@ export function useAgentMutations() {
   const resume = useCallback(
     async (agentId: string) => {
       await post(`/agents/${agentId}/resume`, {});
-      revalidate();
+      revalidate(agentId);
     },
     [post, revalidate],
   );
@@ -51,7 +57,7 @@ export function useAgentMutations() {
   const remove = useCallback(
     async (agentId: string) => {
       await callRpc("agents.delete", { agentId, deleteFiles: true });
-      revalidate();
+      revalidate(agentId);
     },
     [callRpc, revalidate],
   );

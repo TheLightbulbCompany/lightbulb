@@ -164,8 +164,18 @@ async def _ensure_paperclip_for_org(
                 )
                 return
             # We win the create: become the org's company owner-of-record.
-            # Held under the lock so a racing poller re-checks find_org_owner
-            # AFTER we've written the active row and falls to the join path.
+            # The lock is held across the ENTIRE provision_org below (several
+            # seconds of sequential Paperclip HTTP calls), so a concurrent
+            # first-poller blocks here until we finish, then re-queries
+            # find_org_owner. Note find_org_owner reads the by-org-id GSI,
+            # which is eventually consistent — so this serializes-then-rechecks
+            # makes a double-create highly improbable (GSI propagation is
+            # sub-second vs the multi-second create) but not impossible across
+            # the propagation gap or across backend instances. A residual
+            # duplicate company is tolerated: the loser's row/company is
+            # handled by the existing failed/duplicate-row paths, and
+            # find_org_owner deterministically picks the oldest active row as
+            # owner-of-record thereafter.
             await _ensure_paperclip_for_owner(
                 owner_id=org_id,
                 owner_user_id=user_id,

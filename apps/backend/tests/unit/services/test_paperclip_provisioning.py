@@ -351,3 +351,50 @@ async def test_provision_member_does_not_short_circuit_on_other_org_row(monkeypa
             owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com"
         )
     repo.get_org_company_id.assert_awaited_once_with("org_xyz")  # proved it went past the short-circuit
+
+
+@pytest.mark.asyncio
+async def test_provision_member_adopts_existing_account_instead_of_resignup(monkeypatch):
+    """A user who already has a Paperclip account (e.g. a personal row) must
+    be ADOPTED via sign-in — NOT re-signed-up (which would 409 and corrupt
+    their row). The member row is then re-pointed at this org."""
+    from core.encryption import encrypt
+    from core.services import service_token
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    # Distinct return shapes so we can tell adopt-signin from owner-signin.
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_m"}, "_session_cookie": "member-session"})
+
+    existing_personal = _active_row(user_id="user_m", org_id="user_m")
+    existing_personal.paperclip_user_id = "pc_user_m"
+    existing_personal.paperclip_password_encrypted = encrypt("member-pw-plain")
+
+    owner_row = _active_row(user_id="user_owner", org_id="org_xyz")
+    owner_row.paperclip_password_encrypted = encrypt("owner-pw-plain")
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=existing_personal)
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+
+    import core.services.paperclip_provisioning as prov_mod
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+    monkeypatch.setattr(service_token, "mint", MagicMock(return_value="svc.tok"))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_member(owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com")
+
+    admin.sign_up_user.assert_not_awaited()  # adopted, not re-signed-up
+    # Signed in as the member with their stored password.
+    member_signins = [c for c in admin.sign_in_user.await_args_list if c.kwargs.get("email") == "m@example.com"]
+    assert member_signins, "expected a member sign-in (adoption)"
+    assert member_signins[0].kwargs["password"] == "member-pw-plain"
+    # Row re-pointed at the org.
+    put_row = repo.put.await_args.args[0]
+    assert put_row.org_id == "org_xyz"
+    assert put_row.paperclip_user_id == "pc_user_m"

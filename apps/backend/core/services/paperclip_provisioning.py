@@ -243,20 +243,33 @@ class PaperclipProvisioning:
         # bootstrap secret is missing (rather than failing 4 steps in).
         admin_cookie = await get_admin_session_cookie(self._admin._http)
 
-        password = secrets.token_urlsafe(32)
+        # Sign-up-or-ADOPT (same rationale as provision_member): a user who
+        # already has a Paperclip account — a personal row that the org-scoped
+        # idempotency check let fall through, or a prior ``failed`` row
+        # (``_mark_failed`` preserves paperclip_user_id + password) — is
+        # adopted by signing in with their stored password rather than
+        # re-signing-up (which would 409 and corrupt the row). We hold the
+        # password, and Paperclip has no user-delete/reset. The final
+        # ``repo.put`` re-points the row at this org.
+        adopting_existing = existing is not None and bool(existing.paperclip_user_id)
+        password = decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
         try:
-            # 1. Better Auth public signup — creates the new Paperclip
-            #    user. Doesn't require admin privileges (unless
-            #    ``disableSignUp`` is set, which it isn't on this
-            #    deployment). Returns a session token we'll use later
-            #    for the invite-accept and Main Agent steps.
-            signup = await self._admin.sign_up_user(
-                email=owner_email,
-                password=password,
-                name=owner_email,
-            )
-            paperclip_user_id = signup["user"]["id"]
-            new_user_session_cookie = signup["_session_cookie"]
+            # 1. Obtain the owner's Better Auth account + session — signup for
+            #    a brand-new user, sign-in to adopt an existing account. The
+            #    session is used later for the invite-accept and seed-agent
+            #    steps.
+            if adopting_existing:
+                signin = await self._admin.sign_in_user(email=owner_email, password=password)
+                paperclip_user_id = existing.paperclip_user_id
+                new_user_session_cookie = signin["_session_cookie"]
+            else:
+                signup = await self._admin.sign_up_user(
+                    email=owner_email,
+                    password=password,
+                    name=owner_email,
+                )
+                paperclip_user_id = signup["user"]["id"]
+                new_user_session_cookie = signup["_session_cookie"]
 
             # 2. ADMIN creates the company. Admin becomes the initial
             #    owner via Paperclip's auto-ensureMembership in
@@ -500,16 +513,35 @@ class PaperclipProvisioning:
             raise OrgNotProvisionedError(f"Owner {owner_id} has company {company_id} but no owner row found")
         owner_password = decrypt(owner_row.paperclip_password_encrypted)
 
-        member_password = secrets.token_urlsafe(32)
+        # Sign-up-or-ADOPT. A brand-new user signs up. A user who ALREADY has
+        # a Paperclip account — e.g. a personal workspace row, which the
+        # org-scoped idempotency check above intentionally let fall through,
+        # or a prior attempt that left a ``failed`` row (``_mark_failed``
+        # preserves paperclip_user_id + password) — is ADOPTED by signing in
+        # with their stored password. Re-signing-up would 409 (email already
+        # in Better Auth) and corrupt their existing row via ``_mark_failed``;
+        # Paperclip exposes no user-delete/reset, but we hold the account's
+        # password, so sign-in is the clean path and also recovers a
+        # previously-corrupted row. The final ``repo.put`` re-points the row
+        # at this org.
+        adopting_existing = existing is not None and bool(existing.paperclip_user_id)
+        member_password = (
+            decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
+        )
         try:
-            # 1. Sign up the new member (creates their Better Auth account).
-            member_signup = await self._admin.sign_up_user(
-                email=email,
-                password=member_password,
-                name=email,
-            )
-            member_paperclip_user_id = member_signup["user"]["id"]
-            member_session_cookie = member_signup["_session_cookie"]
+            # 1. Obtain the member's Better Auth account + session.
+            if adopting_existing:
+                member_signin = await self._admin.sign_in_user(email=email, password=member_password)
+                member_paperclip_user_id = existing.paperclip_user_id
+                member_session_cookie = member_signin["_session_cookie"]
+            else:
+                member_signup = await self._admin.sign_up_user(
+                    email=email,
+                    password=member_password,
+                    name=email,
+                )
+                member_paperclip_user_id = member_signup["user"]["id"]
+                member_session_cookie = member_signup["_session_cookie"]
 
             # 2. Sign in as the org owner so we can act on the company
             #    (create invite + approve join request).

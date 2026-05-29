@@ -229,3 +229,51 @@ def test_list_agents_strips_adapter_config_per_item(client, monkeypatch):
     for agent in r.json()["agents"]:
         assert "adapterConfig" not in agent
         assert "adapterType" not in agent
+
+
+def test_patch_agent_forwards_explicit_null_reports_to(client, monkeypatch):
+    """Clearing a manager sends {"reportsTo": null}; the BFF must forward the
+    null (exclude_unset, not exclude_none) so Paperclip makes the agent a root.
+    Paperclip rejects "" (uuid().nullable())."""
+    admin = MagicMock()
+    admin.patch_agent = AsyncMock(return_value={"id": "a1", "reportsTo": None})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/agents/a1",
+        json={"reportsTo": None},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    forwarded = admin.patch_agent.await_args.kwargs["body"]
+    assert forwarded == {"reportsTo": None}
+
+
+def test_delete_agent_rejects_seeded(client, monkeypatch):
+    """The REST delete path must refuse seeded agents (Friday/Atlas) — same
+    guard as the OpenClaw gateway path. 403, upstream delete NOT called."""
+    admin = MagicMock()
+    admin.delete_agent = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=True))
+
+    r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 403
+    admin.delete_agent.assert_not_awaited()
+
+
+def test_delete_agent_allows_non_seeded(client, monkeypatch):
+    admin = MagicMock()
+    admin.delete_agent = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=False))
+
+    r = client.delete("/api/v1/teams/agents/a_user", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    admin.delete_agent.assert_awaited_once()

@@ -29,8 +29,10 @@ export function useAgentMutations() {
 
   const setReportsTo = useCallback(
     async (agentId: string, managerId: string | null) => {
-      // Empty string clears the manager (root); BFF forwards it to Paperclip.
-      await patch(`/agents/${agentId}`, { reportsTo: managerId ?? "" });
+      // null clears the manager (root). Paperclip's updateAgentSchema is
+      // reportsTo: uuid().nullable() — it accepts null but rejects "" — and
+      // the BFF forwards the explicit null via exclude_unset.
+      await patch(`/agents/${agentId}`, { reportsTo: managerId });
       revalidate(agentId);
     },
     [patch, revalidate],

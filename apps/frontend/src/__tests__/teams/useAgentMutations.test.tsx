@@ -31,11 +31,12 @@ describe("useAgentMutations", () => {
     expect(swrMutate).toHaveBeenCalledWith("/teams/agents/a1");
   });
 
-  it("setReportsTo with null sends empty string (no-manager)", async () => {
+  it("setReportsTo with null clears the manager (sends null, not \"\")", async () => {
     patch.mockResolvedValue({});
     const { result } = renderHook(() => useAgentMutations());
     await act(async () => { await result.current.setReportsTo("a1", null); });
-    expect(patch).toHaveBeenCalledWith("/agents/a1", { reportsTo: "" });
+    // Paperclip rejects "" (uuid().nullable()); the clear must send null.
+    expect(patch).toHaveBeenCalledWith("/agents/a1", { reportsTo: null });
   });
 
   it("pause/resume POST to the right routes", async () => {

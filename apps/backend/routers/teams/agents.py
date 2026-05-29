@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings
@@ -30,7 +30,11 @@ from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_openclaw_pairing import get_seeded_agent_ids, pair_with_openclaw
+from core.services.paperclip_openclaw_pairing import (
+    get_seeded_agent_ids,
+    is_seeded_agent,
+    pair_with_openclaw,
+)
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 
@@ -427,7 +431,11 @@ async def patch_agent(
     a service token is an admin-side operation handled by the
     provisioning path, not user-facing PATCH.
     """
-    payload = body.model_dump(exclude_none=True, by_alias=True)
+    # exclude_unset (not exclude_none) so the frontend can CLEAR reportsTo by
+    # sending an explicit null (root agent). Paperclip's updateAgentSchema is
+    # `reportsTo: uuid().nullable()` — it accepts null but rejects "" — and
+    # exclude_none would drop the null entirely, so the clear would no-op.
+    payload = body.model_dump(exclude_unset=True, by_alias=True)
     upstream = await _admin().patch_agent(
         agent_id=agent_id,
         body=payload,
@@ -440,7 +448,16 @@ async def patch_agent(
 
 @router.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Delete an agent. Idempotent — 404 from upstream is swallowed."""
+    """Delete an agent. Idempotent — 404 from upstream is swallowed.
+
+    Seeded agents (Friday/Atlas) are part of the provisioning contract and
+    must not be deleted. The OpenClaw gateway delete path enforces this in
+    ``websocket_chat._guard_seeded_delete``; guard the REST path too
+    (defense in depth — the UI deletes via the gateway, but this endpoint
+    is still reachable directly).
+    """
+    if await is_seeded_agent(owner_id=_resolve_owner_id(ctx), agent_id=agent_id):
+        raise HTTPException(status_code=403, detail="Seeded agents (Friday/Atlas) cannot be deleted.")
     return await _admin().delete_agent(
         agent_id=agent_id,
         session_cookie=ctx.session_cookie,

@@ -104,28 +104,25 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_owner_org_admin_passes_org_id():
-    """Org admin → provision_org with owner_id == org_id, owner_user_id == user_id."""
+async def test_org_admin_with_no_company_creates_it():
+    """Org admin + org has NO active Paperclip company yet → provision_org
+    (create), and container provisioning is dispatched (admin owns the box).
+    Decided by company existence, not role."""
     fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock()
+    fake_provisioning.provision_member = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
     with (
-        patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning",
-            new=AsyncMock(return_value=fake_provisioning),
-        ),
-        patch(
-            "core.services.user_provision.close_paperclip_provisioning",
-            new=AsyncMock(),
-        ),
-        patch(
-            "core.services.user_provision.background_provision",
-            new=AsyncMock(),
-        ),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
     fake_provisioning.provision_org.assert_awaited_once_with(
@@ -133,6 +130,65 @@ async def test_ensure_paperclip_for_owner_org_admin_passes_org_id():
         owner_user_id="user_admin",
         owner_email="a@example.com",
     )
+    fake_provisioning.provision_member.assert_not_awaited()
+    assert captured == ["background_provision"], f"admin-create should dispatch container, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_org_admin_with_existing_company_joins_it():
+    """REGRESSION: org admin + org ALREADY has an active company →
+    provision_member (join), NOT provision_org. The multi-admin case that
+    previously 409'd on /teams."""
+    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.provision_org = AsyncMock()
+    fake_provisioning.provision_member = AsyncMock()
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="owner@example.com")),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_second_admin", "org_xyz", "b@example.com"))
+    fake_provisioning.provision_member.assert_awaited_once_with(
+        owner_id="org_xyz",
+        user_id="user_second_admin",
+        email="b@example.com",
+        owner_email="owner@example.com",
+    )
+    fake_provisioning.provision_org.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_org_member_with_no_company_waits_does_not_create():
+    """A non-admin member polling a not-yet-bootstrapped org must NOT create
+    the company (only admins bootstrap, mirroring who spins up the shared
+    container) and must NOT dispatch container provisioning. It returns
+    gracefully and joins on a later poll once an admin has created it.
+    Creating here would seed Friday/Atlas pointing at a container members
+    can't provision (a company-without-container window)."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.provision_org = AsyncMock()
+    fake_provisioning.provision_member = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_org_member_auth())
+    fake_provisioning.provision_org.assert_not_awaited()
+    fake_provisioning.provision_member.assert_not_awaited()
+    assert captured == [], f"member must not dispatch container when waiting, got {captured}"
 
 
 # ---------------------------------------------------------------------------
@@ -309,28 +365,17 @@ async def test_ensure_user_ready_dispatches_container_for_owner():
 
 @pytest.mark.asyncio
 async def test_ensure_user_ready_dispatches_container_for_org_admin():
-    """Org-admin owner path → background_provision dispatched with owner_id=org_id."""
+    """Org-admin (no company yet) → background_provision dispatched (admin owns the box)."""
     captured: list[str] = []
 
     def capture_task(coro):
-        # Snapshot the qualname BEFORE closing — coro.close() destroys the
-        # coroutine frame, after which __qualname__ inspection is unsafe.
         captured.append(coro.__qualname__)
         coro.close()
 
     with (
-        patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.user_provision._ensure_paperclip_for_owner",
-            new=AsyncMock(),
-        ),
-        patch(
-            "core.services.user_provision.asyncio.create_task",
-            side_effect=capture_task,
-        ),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
     assert captured == ["background_provision"], (
@@ -526,39 +571,54 @@ async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
 
 
 @pytest.mark.asyncio
-async def test_ensure_user_ready_does_not_dispatch_container_for_member():
-    """Member path → no container dispatch."""
+async def test_member_joins_company_but_does_not_dispatch_container():
+    """Org member → paperclip join runs, but NO container dispatch (members
+    ride the org admin's shared container; they never spin one up)."""
     fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
     fake_provisioning.provision_member = AsyncMock()
-    captured = []
+    captured: list[str] = []
 
     def capture_task(coro):
-        captured.append(coro)
+        captured.append(coro.__qualname__)
         coro.close()
 
     with (
-        patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.user_provision.lookup_owner_email",
-            new=AsyncMock(return_value="o@example.com"),
-        ),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning",
-            new=AsyncMock(return_value=fake_provisioning),
-        ),
-        patch(
-            "core.services.user_provision.close_paperclip_provisioning",
-            new=AsyncMock(),
-        ),
-        patch(
-            "core.services.user_provision.asyncio.create_task",
-            side_effect=capture_task,
-        ),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
         await ensure_user_ready(_org_member_auth())
-    assert captured == [], f"expected no create_task calls, got {len(captured)}"
+    fake_provisioning.provision_member.assert_awaited_once()
+    assert captured == [], f"members must not dispatch container, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_provision_container_false_skips_container_dispatch_for_admin():
+    """RUNNING-container poll path: ensure_user_ready(provision_container=False)
+    must run paperclip provisioning but NOT dispatch background_provision —
+    otherwise provision_user_container would force-restart the running
+    container on every ~3s poll."""
+    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.provision_member = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch("core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), provision_container=False)
+    fake_provisioning.provision_member.assert_awaited_once()
+    assert captured == [], f"provision_container=False must skip container dispatch, got {captured}"

@@ -4,7 +4,7 @@
 
 **Goal:** Make every member of a Clerk org get a Paperclip "team workspace" (a `paperclip-companies` row in the org's single shared company), regardless of their Clerk role, so `/teams` stops 409-ing for co-admins who joined an already-provisioned org.
 
-**Architecture:** Two independent concerns were tangled together via Clerk role. (1) **Paperclip workspace** — the create-vs-join decision must key on *company existence* (`find_org_owner(org_id)`), not role: first eligible poller creates the org's one shared company (seeding Friday/Atlas), everyone else joins it. An in-process per-org lock serializes concurrent first-pollers because Paperclip ignores `Idempotency-Key`. (2) **Container (ECS) provisioning** — stays gated to container-owners (personal user or org *admin*); members ride the shared box. This is "who spins up the box," unrelated to Teams access. The bug was using role for concern (1).
+**Architecture:** Two independent concerns were tangled together via Clerk role. (1) **Paperclip workspace** — the bug was deciding *create-vs-join* by role. The fix: **JOIN is role-blind** (any org member, admin or not, joins the org's one shared company via `find_org_owner(org_id)`); **CREATE is admin-gated** (only an admin bootstraps a fresh org's company — a non-admin member waits for one, mirroring who bootstraps the shared container). An in-process per-org lock serializes concurrent first-pollers because Paperclip ignores `Idempotency-Key`. (2) **Container (ECS) provisioning** — stays gated to container-owners (personal user or org *admin*); members ride the shared box. CREATE-company and CREATE-container are thus symmetric (both admin/personal), so a member never creates a company whose seeded Friday/Atlas point at a container no member can provision.
 
 **Tech Stack:** Python 3.12, FastAPI, pytest/pytest-asyncio, DynamoDB (boto3), `unittest.mock`.
 
@@ -229,14 +229,17 @@ Update its docstring's flow section to note: the org path is role-blind for pape
 
 ```python
     if auth.is_org_context:
-        # Role-blind: create the org's ONE shared Paperclip company if it
-        # doesn't exist yet, otherwise join it. The decision is company
-        # existence, never Clerk role — a co-admin joining an
-        # already-provisioned org must JOIN, not create a second company.
+        # JOIN is role-blind — a co-admin (or member) of an
+        # already-provisioned org joins the org's ONE shared company, never
+        # creates a second one. CREATE is admin-gated: bootstrapping the
+        # org's shared company mirrors who bootstraps the shared container
+        # (admins; members ride). A member polling a not-yet-bootstrapped
+        # org waits for an admin.
         await _ensure_paperclip_for_org(
             org_id=auth.org_id,
             user_id=auth.user_id,
             email=auth.email or "",
+            is_admin=auth.is_org_admin,
         )
     else:
         # Personal owner: always the sole owner of their own company.
@@ -271,15 +274,18 @@ async def _ensure_paperclip_for_org(
     org_id: str,
     user_id: str,
     email: str,
+    is_admin: bool,
 ) -> None:
     """Ensure this user has a row in the org's shared Paperclip company.
 
-    Role-blind. Decided by company existence:
-      - No active company for the org yet → create it (provision_org), under
-        a per-org lock so concurrent first-pollers can't double-create.
-      - Company exists → join it (provision_member), regardless of role.
+    Decided by company existence:
+      - Company exists → JOIN it (provision_member), regardless of role
+        (the role-blind fix).
+      - No active company yet → only an ADMIN creates it (provision_org),
+        under a per-org lock so concurrent first-pollers can't
+        double-create. A member returns gracefully and waits.
 
-    Both underlying helpers treat a duplicate-409 as idempotent success, so
+    The underlying helpers treat a duplicate-409 as idempotent success, so
     this is safe to call on every /container/status poll.
     """
     async with _org_provision_locks[org_id]:
@@ -290,6 +296,16 @@ async def _ensure_paperclip_for_org(
             await close_paperclip_provisioning(provisioning)
 
         if owner is None:
+            if not is_admin:
+                # Member polling a not-yet-bootstrapped org: wait for an
+                # admin to create the shared company. Resolves on next poll.
+                logger.info(
+                    "ensure_user_ready (org member): org=%s has no active "
+                    "paperclip company yet — waiting for an admin to "
+                    "bootstrap it; will retry on next /container/status poll",
+                    org_id,
+                )
+                return
             # We win the create: become the org's company owner-of-record.
             # Held under the lock so a racing poller re-checks find_org_owner
             # AFTER we've written the active row and falls to the join path.

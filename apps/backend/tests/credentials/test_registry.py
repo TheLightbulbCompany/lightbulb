@@ -35,8 +35,24 @@ def test_unknown_provider_raises():
 def test_validate_key_maps_to_validation_field():
     p = registry.get_provider("linear")
     assert p.validation is not None
-    assert p.validation.method == "GET"
+    # Linear's GraphQL endpoint requires POST + a query body — a bare GET rejects
+    # valid personal API keys.
+    assert p.validation.method == "POST"
     assert p.validation.url == "https://api.linear.app/graphql"
+    assert p.validation.body == {"query": "{ viewer { id } }"}
+
+
+def test_stripe_validate_has_no_body():
+    p = registry.get_provider("stripe")
+    assert p.validation.method == "GET"
+    assert p.validation.body is None
+
+
+def test_validate_auth_scheme_is_per_provider():
+    # Linear personal API keys are sent as a BARE Authorization header (no "Bearer").
+    assert registry.get_provider("linear").validation.auth_scheme == ""
+    # Stripe accepts the default Bearer scheme.
+    assert registry.get_provider("stripe").validation.auth_scheme == "Bearer"
 
 
 def test_wiring_rejects_neither_or_both():

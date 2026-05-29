@@ -61,6 +61,21 @@ schema = (
     .exclude(
         path_regex="^/api/v1/integrations/",
     )
+    # Credential connect routes hit the connections-vault DDB table + do live
+    # provider-validation HTTP calls (and the OAuth authorize path reaches
+    # Secrets Manager for the BYO client). None are mocked at the contract
+    # layer; covered end-to-end by tests/unit/routers/test_connections.py.
+    # Consistent with the /channels/ and /integrations/ exclusions.
+    .exclude(
+        path_regex="^/api/v1/connections",
+    )
+    # The OAuth callback reaches the oauth-state DDB table, Secrets Manager
+    # (BYO client), and a provider token exchange. Only the {provider}/callback
+    # redirect is excluded — the device-code /oauth/chatgpt/* endpoints stay
+    # (mocked by the autouse fixture in conftest). Covered by test_connections.py.
+    .exclude(
+        path_regex="^/api/v1/oauth/[^/]+/callback",
+    )
     .exclude(
         path_regex="^/api/v1/users/",
     )

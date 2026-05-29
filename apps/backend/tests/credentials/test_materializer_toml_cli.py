@@ -28,3 +28,25 @@ def test_omits_empty_fields(tmp_path, monkeypatch):
     p = Path(tmp_path) / "org_1" / ".config" / "x-pp-cli" / "config.toml"
     data = tomllib.loads(p.read_text())
     assert data == {"access_token": "a"}  # empty refresh/client fields omitted
+
+
+def test_remove_unlinks_config(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    cred = {"cli": "outlook-email-pp-cli", "access_token": "a"}
+    toml_cli.write("org_1", "outlook", cred)
+    p = Path(tmp_path) / "org_1" / ".config" / "outlook-email-pp-cli" / "config.toml"
+    assert p.exists()
+    toml_cli.remove("org_1", "outlook", cred)
+    assert not p.exists()
+
+
+def test_remove_is_idempotent_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    # No file written first — remove must not raise.
+    toml_cli.remove("org_1", "outlook", {"cli": "outlook-email-pp-cli"})
+
+
+def test_remove_no_cli_is_noop(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    # Missing "cli" key — guard prevents an exception.
+    toml_cli.remove("org_1", "outlook", {})

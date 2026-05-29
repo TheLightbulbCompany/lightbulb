@@ -33,6 +33,7 @@ from routers import (
     billing,
     channels,
     config,
+    connections,
     container,
     container_recover,
     container_rpc,
@@ -573,6 +574,11 @@ app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["
 
 # Integrations (MCP servers, ClawHub)
 app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
+
+# Connections (Bucket A paste-key integrations: list / connect / disconnect)
+app.include_router(connections.router, prefix="/api/v1", tags=["connections"])
+# Public OAuth callback surface (provider redirects the unauthenticated browser here)
+app.include_router(connections.oauth_router, prefix="/api/v1", tags=["connections"])
 
 # Workspace file browser (EFS agent workspace)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])

@@ -48,6 +48,13 @@ class ValidateSpec(BaseModel):
     method: str
     url: str
     auth_header: str = "Authorization"
+    # Auth scheme prefix for the validate header value (e.g. "Bearer"). Some
+    # providers (Linear personal API keys) require a bare key with no scheme —
+    # set auth_scheme: "" for those.
+    auth_scheme: str = "Bearer"
+    # Optional JSON request body. GraphQL endpoints (Linear) require a POST with
+    # a query body — a bare GET rejects otherwise-valid keys.
+    body: dict | None = None
 
 
 class Requires(BaseModel):

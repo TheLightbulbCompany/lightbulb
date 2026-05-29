@@ -621,16 +621,24 @@ async fn apply_update_manifest(
 
     let endpoint = serve_manifest_once(manifest_json)
         .await
-        .map_err(|e| format!("loopback manifest server: {e}"))?;
+        .map_err(|e| {
+            log(&format!("[updater] loopback manifest server failed: {}", e));
+            format!("loopback manifest server: {e}")
+        })?;
     log(&format!("[updater] loopback manifest endpoint: {}", endpoint));
 
-    let endpoint_url = Url::parse(&endpoint)
-        .map_err(|e| format!("loopback url parse: {e}"))?;
+    let endpoint_url = Url::parse(&endpoint).map_err(|e| {
+        log(&format!("[updater] loopback url parse failed: {}", e));
+        format!("loopback url parse: {e}")
+    })?;
 
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint_url])
-        .map_err(|e| format!("set endpoints: {e}"))?
+        .map_err(|e| {
+            log(&format!("[updater] set endpoints failed: {}", e));
+            format!("set endpoints: {e}")
+        })?
         // The plugin's default comparator does `release.version > current_version`.
         // Our backend route already gated on `isNewer(latestVersion, currentVersion)`
         // (returning 204 otherwise), so by the time we get here the webview has
@@ -638,13 +646,22 @@ async fn apply_update_manifest(
         // so any tag-format mismatch can't drop us into a silent no-op.
         .version_comparator(|_current, _release| true)
         .build()
-        .map_err(|e| format!("build updater: {e}"))?;
+        .map_err(|e| {
+            log(&format!("[updater] build updater failed: {}", e));
+            format!("build updater: {e}")
+        })?;
 
     let update = updater
         .check()
         .await
-        .map_err(|e| format!("updater check: {e}"))?
-        .ok_or_else(|| "updater returned no update for webview-supplied manifest".to_string())?;
+        .map_err(|e| {
+            log(&format!("[updater] check failed: {}", e));
+            format!("updater check: {e}")
+        })?
+        .ok_or_else(|| {
+            log("[updater] check returned None for webview-supplied manifest");
+            "updater returned no update for webview-supplied manifest".to_string()
+        })?;
 
     log(&format!(
         "[updater] installing {} -> {}",

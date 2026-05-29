@@ -42,6 +42,7 @@ const { baseListing } = vi.hoisted(() => ({
     install_count: 17,
     agent_id: "agent_abc123",
     created_at: "2026-05-23T00:00:00Z",
+    published_at: null,
   },
 }));
 

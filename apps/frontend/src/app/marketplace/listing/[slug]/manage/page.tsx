@@ -37,6 +37,9 @@ export default function ManagePage({
     if (!userId) {
       // Auth resolved but no signed-in user. Send them to the public listing
       // page rather than stranding them on an indefinite Loading… screen.
+      // Synchronizing Clerk's resolved auth into view state is the
+      // external-system→React sync the rule allows.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setForbidden(true);
       window.location.replace(`/marketplace/listing/${slug}`);
       return;

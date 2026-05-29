@@ -438,11 +438,16 @@ class PaperclipProvisioning:
             return row
 
         except Exception as e:
-            await self._mark_failed(
-                user_id=owner_user_id,
-                owner_id=owner_id,
-                reason=f"provision_org failed: {e}",
-            )
+            # Don't corrupt an ADOPTED row (see provision_member): re-pointing
+            # a user's existing active row at this org only lands on the
+            # successful repo.put above, so a transient failure must preserve
+            # that row. Only mark-failed for net-new owners.
+            if not adopting_existing:
+                await self._mark_failed(
+                    user_id=owner_user_id,
+                    owner_id=owner_id,
+                    reason=f"provision_org failed: {e}",
+                )
             # ``retryable`` is now set automatically:
             #   - PaperclipApiError sets it in __init__ (5xx/429 → True).
             #   - OrgNotProvisionedError carries the class attribute.
@@ -632,12 +637,20 @@ class PaperclipProvisioning:
             return row
 
         except Exception as e:  # noqa: F841 — kept for clarity in future logging
-            await self._mark_failed(
-                user_id=user_id,
-                owner_id=owner_id,
-                reason=f"provision_member failed: {e}",
-                company_id=company_id,
-            )
+            # Don't corrupt an ADOPTED row: when we're re-pointing a user's
+            # existing (e.g. personal) active row at this org, a transient
+            # join failure must NOT mark that unrelated workspace failed — the
+            # re-point only lands on the successful repo.put above, so on
+            # failure the existing row is still valid and the next poll
+            # retries. Only mark-failed for net-new users (their own
+            # placeholder).
+            if not adopting_existing:
+                await self._mark_failed(
+                    user_id=user_id,
+                    owner_id=owner_id,
+                    reason=f"provision_member failed: {e}",
+                    company_id=company_id,
+                )
             # ``retryable`` is set on the exception itself (see provision_org
             # for the full rationale).
             raise

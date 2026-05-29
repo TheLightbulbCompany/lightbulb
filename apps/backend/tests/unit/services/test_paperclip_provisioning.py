@@ -398,3 +398,48 @@ async def test_provision_member_adopts_existing_account_instead_of_resignup(monk
     put_row = repo.put.await_args.args[0]
     assert put_row.org_id == "org_xyz"
     assert put_row.paperclip_user_id == "pc_user_m"
+
+
+@pytest.mark.asyncio
+async def test_provision_member_adoption_failure_does_not_mark_existing_row_failed(monkeypatch):
+    """A transient join failure while ADOPTING an existing row must NOT
+    mark that (e.g. personal) row failed — the re-point only lands on the
+    successful put, so the existing workspace stays intact and the next poll
+    retries."""
+    from core.encryption import encrypt
+    from core.services.paperclip_admin_client import PaperclipApiError
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_m"}, "_session_cookie": "s"})
+    # Fail mid-join (after adoption sign-in), before the final put.
+    admin.create_invite = AsyncMock(side_effect=PaperclipApiError("invite boom", status_code=500, body="x"))
+
+    existing_personal = _active_row(user_id="user_m", org_id="user_m")
+    existing_personal.paperclip_user_id = "pc_user_m"
+    existing_personal.paperclip_password_encrypted = encrypt("member-pw-plain")
+    owner_row = _active_row(user_id="user_owner", org_id="org_xyz")
+    owner_row.paperclip_password_encrypted = encrypt("owner-pw-plain")
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=existing_personal)
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+
+    import core.services.paperclip_provisioning as prov_mod
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    svc._mark_failed = AsyncMock()  # spy
+
+    with pytest.raises(PaperclipApiError):
+        await svc.provision_member(
+            owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com"
+        )
+
+    svc._mark_failed.assert_not_awaited()  # adopted row preserved, not corrupted
+    repo.put.assert_not_awaited()  # never re-pointed (join failed)

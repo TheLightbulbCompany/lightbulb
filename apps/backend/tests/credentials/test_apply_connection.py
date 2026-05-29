@@ -24,22 +24,25 @@ def fake_table(monkeypatch):
     return store
 
 
-def test_roundtrip_encrypts_token(fake_table):
-    connection_repo.put("org_1", "linear", {"token": "lin_secret"}, status="connected")
-    rec = connection_repo.get("org_1", "linear")
+@pytest.mark.asyncio
+async def test_roundtrip_encrypts_token(fake_table):
+    await connection_repo.put("org_1", "linear", {"token": "lin_secret"}, status="connected")
+    rec = await connection_repo.get("org_1", "linear")
     assert rec["status"] == "connected"
     assert connection_repo.decrypt_credential(rec) == {"token": "lin_secret"}
     assert "lin_secret" not in rec["credential_enc"]  # stored ciphertext, not plaintext
 
 
-def test_delete(fake_table):
-    connection_repo.put("org_1", "linear", {"token": "x"})
-    connection_repo.delete("org_1", "linear")
-    assert connection_repo.get("org_1", "linear") is None
+@pytest.mark.asyncio
+async def test_delete(fake_table):
+    await connection_repo.put("org_1", "linear", {"token": "x"})
+    await connection_repo.delete("org_1", "linear")
+    assert await connection_repo.get("org_1", "linear") is None
 
 
-def test_list_for_owner(fake_table):
-    connection_repo.put("org_1", "linear", {"token": "a"})
-    connection_repo.put("org_1", "stripe", {"token": "b"})
-    rows = connection_repo.list_for_owner("org_1")
+@pytest.mark.asyncio
+async def test_list_for_owner(fake_table):
+    await connection_repo.put("org_1", "linear", {"token": "a"})
+    await connection_repo.put("org_1", "stripe", {"token": "b"})
+    rows = await connection_repo.list_for_owner("org_1")
     assert {r["provider"] for r in rows} == {"linear", "stripe"}

@@ -10,7 +10,7 @@ from typing import Any
 
 from boto3.dynamodb.conditions import Key
 
-from core.dynamodb import get_table
+from core.dynamodb import get_table, run_in_thread
 from core.encryption import get_fernet
 
 
@@ -18,7 +18,7 @@ def _table():
     return get_table("connections")  # short name; table prefix auto-applied
 
 
-def put(
+async def put(
     owner_id: str,
     provider: str,
     credential: dict[str, Any],
@@ -27,29 +27,44 @@ def put(
     meta: dict | None = None,
 ) -> None:
     enc = get_fernet().encrypt(json.dumps(credential).encode()).decode()
-    _table().put_item(
+    await run_in_thread(
+        _table().put_item,
         Item={
+            **(meta or {}),
             "owner_id": owner_id,
             "provider": provider,
             "credential_enc": enc,
             "status": status,
             "updated_at": int(time.time()),
-            **(meta or {}),
-        }
+        },
     )
 
 
-def get(owner_id: str, provider: str) -> dict | None:
-    return _table().get_item(Key={"owner_id": owner_id, "provider": provider}).get("Item")
+async def get(owner_id: str, provider: str) -> dict | None:
+    response = await run_in_thread(
+        _table().get_item,
+        Key={"owner_id": owner_id, "provider": provider},
+    )
+    return response.get("Item")
 
 
-def list_for_owner(owner_id: str) -> list[dict]:
-    return _table().query(KeyConditionExpression=Key("owner_id").eq(owner_id)).get("Items", [])
+async def list_for_owner(owner_id: str) -> list[dict]:
+    response = await run_in_thread(
+        _table().query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+    )
+    return response.get("Items", [])
 
 
-def delete(owner_id: str, provider: str) -> None:
-    _table().delete_item(Key={"owner_id": owner_id, "provider": provider})
+async def delete(owner_id: str, provider: str) -> None:
+    await run_in_thread(
+        _table().delete_item,
+        Key={"owner_id": owner_id, "provider": provider},
+    )
 
 
 def decrypt_credential(rec: dict) -> dict[str, Any]:
-    return json.loads(get_fernet().decrypt(rec["credential_enc"].encode()).decode())
+    enc = rec.get("credential_enc")
+    if not enc:
+        raise ValueError("connection record has no credential_enc")
+    return json.loads(get_fernet().decrypt(enc.encode()).decode())

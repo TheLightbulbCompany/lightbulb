@@ -31,7 +31,15 @@ from __future__ import annotations
 import re
 from typing import Final
 
+from core.crypto.operator_device import generate_operator_device, private_key_pem
+
 OPENCLAW_GATEWAY_TYPE: Final[str] = "openclaw_gateway"
+
+# clientId the synthesized adapter URL advertises so the WS gateway routes the
+# connection to the operator relay at $connect (the connect Lambda forwards
+# `?clientId=` as the `x-client-id` header ws_connect classifies on). Distinct
+# from the desktop node-host client ids.
+PAPERCLIP_OPERATOR_CLIENT_ID: Final[str] = "paperclip-operator"
 
 # Matches: wss://ws.isol8.co (prod), wss://ws-{env}.isol8.co (dev/staging),
 # ws://localhost:{port} (local). Anchored. No path component allowed.
@@ -55,12 +63,20 @@ def synthesize_openclaw_adapter(
     gateway_url: str,
     service_token: str,
     user_id: str,
+    device_private_key_pem: str | None = None,
 ) -> dict:
     """Return the canonical adapterConfig dict for openclaw_gateway.
 
     The shape mirrors the existing production payload at
     ``paperclip_provisioning.py:256-261`` so seeded agents and
     user-created agents have identical wire format.
+
+    ``device_private_key_pem``: Isol8 mints + owns the per-agent ed25519 device
+    keypair so the deviceId is stable and can be pre-registered in the
+    container's ``paired.json`` before the first connect (a remote operator
+    device that isn't pre-paired is rejected NOT_PAIRED). Pass the agent's
+    EXISTING PEM on update so the deviceId — and its seeded paired.json entry —
+    stay stable across edits; a fresh keypair is minted only when absent (create).
     """
     validate_gateway_url(gateway_url)
     if not service_token or not isinstance(service_token, str):
@@ -80,9 +96,16 @@ def synthesize_openclaw_adapter(
     # is URL-safe (JWT base64url uses only [A-Za-z0-9-_.]), so no escaping is
     # needed. The full adapterConfig (incl. this URL) is stripped by
     # `_redact_agent` before any agent record reaches the browser.
+    #
+    # `clientId` routes the connection to the operator relay at $connect — the WS
+    # connect Lambda forwards `?clientId=` as `x-client-id`. It is appended after
+    # `validate_gateway_url` (which checks the bare host), so the allowlist regex
+    # is untouched.
+    device_pem = device_private_key_pem or private_key_pem(generate_operator_device())
     return {
-        "url": f"{gateway_url}?token={service_token}",
+        "url": f"{gateway_url}?token={service_token}&clientId={PAPERCLIP_OPERATOR_CLIENT_ID}",
         "authToken": service_token,
         "sessionKeyStrategy": "issue",
         "sessionKey": user_id,
+        "devicePrivateKeyPem": device_pem,
     }

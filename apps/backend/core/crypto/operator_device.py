@@ -154,6 +154,40 @@ def _identity_from_private_key(priv: Ed25519PrivateKey) -> OperatorDeviceIdentit
     )
 
 
+def private_key_pem(identity: OperatorDeviceIdentity) -> str:
+    """PKCS8 PEM of the ed25519 private key.
+
+    The Paperclip ``openclaw_gateway`` adapter reads its signing key from
+    ``adapterConfig.devicePrivateKeyPem`` (a PKCS8 PEM) and derives its deviceId
+    as the hex SHA-256 of the raw public key — identical to ``device_id`` here.
+    We mint the keypair Isol8-side so the deviceId is stable and can be
+    pre-registered in the container's ``devices/paired.json`` before the agent's
+    first connect (a remote operator device that isn't pre-paired is rejected
+    NOT_PAIRED). The PEM is the half the adapter needs to sign; only the public
+    half goes into paired.json.
+    """
+    return (
+        identity.private_key()
+        .private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+        .decode("ascii")
+    )
+
+
+def device_identity_from_pem(pem: str) -> OperatorDeviceIdentity:
+    """Reconstruct an identity from a PKCS8 PEM (the inverse of `private_key_pem`).
+
+    Used at container-provision time to derive the public key + deviceId from an
+    agent's persisted ``adapterConfig.devicePrivateKeyPem`` so we can write the
+    matching ``paired.json`` operator entry.
+    """
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+    key = load_pem_private_key(pem.encode("utf-8"), password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError("devicePrivateKeyPem is not an Ed25519 private key")
+    return _identity_from_private_key(key)
+
+
 def build_v2_connect_payload(
     *,
     device_id: str,

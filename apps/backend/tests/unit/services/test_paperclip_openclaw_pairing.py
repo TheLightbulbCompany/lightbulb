@@ -8,6 +8,7 @@ import pytest
 from core.containers.config import build_device_paired_json
 from core.crypto.operator_device import generate_operator_device, private_key_pem
 from core.services.paperclip_openclaw_pairing import (
+    ensure_operator_device_paired,
     fetch_paperclip_agents_for_owner,
     pair_with_openclaw,
     register_paperclip_agent_devices,
@@ -417,3 +418,115 @@ async def test_pair_with_extra_update_fields_threads_into_update_rpc():
     assert params["identity"] == {"emoji": "🍃", "vibe": "calm"}
     assert params["skills"] == ["resy"]
     assert params["reasoningDefault"] == "balanced"
+
+
+# ---------------------------------------------------------------------------
+# ensure_operator_device_paired — live (post-provision) device pairing
+# ---------------------------------------------------------------------------
+
+
+def _mock_live_pairing_deps(monkeypatch):
+    """Patch the live-pairing function's self-constructed deps.
+
+    Returns (paired_store, admin) so tests can assert what landed in the
+    container's paired.json and whether the authToken rebind ran.
+    """
+    paired_store: dict = {}
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def mutate_paired_json(self, mutator):
+            mutator(paired_store)
+
+    monkeypatch.setattr("core.services.desktop_pair.EfsWorkspaceAdapter", _FakeAdapter)
+    monkeypatch.setattr("core.containers.get_workspace", lambda: MagicMock())
+
+    admin = MagicMock()
+    admin.patch_agent = AsyncMock()
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.PaperclipAdminClient",
+        lambda **kwargs: admin,
+    )
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
+        AsyncMock(return_value="cookie"),
+    )
+    return paired_store, admin
+
+
+@pytest.mark.asyncio
+async def test_ensure_operator_device_paired_merges_and_binds(monkeypatch):
+    """Happy path: the new agent's device lands in paired.json AND its
+    authToken is rebound to the container gateway token."""
+    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    ident = generate_operator_device()
+    agent = _gw_agent("agent_live", pem=private_key_pem(ident), auth_token="service-jwt")
+
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
+
+    # 1. Device merged into the container trust store as an operator entry.
+    assert ident.device_id in paired
+    entry = paired[ident.device_id]
+    assert entry["publicKey"] == ident.public_key_b64
+    assert entry["role"] == "operator"
+    assert entry["tokens"]["operator"]["token"] == "GW_TOKEN"
+    # 2. authToken rebound to the gateway token (signature is over auth.token).
+    admin.patch_agent.assert_awaited_once()
+    body = admin.patch_agent.await_args.kwargs["body"]
+    assert body["adapterConfig"]["authToken"] == "GW_TOKEN"
+    assert body["replaceAdapterConfig"] is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_operator_device_paired_is_idempotent(monkeypatch):
+    """A device already present with the same pubkey is left untouched (its
+    metadata/tokens preserved) and no duplicate write occurs."""
+    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    ident = generate_operator_device()
+    agent = _gw_agent("agent_live", pem=private_key_pem(ident), auth_token="GW_TOKEN")
+    sentinel = {"publicKey": ident.public_key_b64, "role": "operator", "_marker": "keep"}
+    paired[ident.device_id] = sentinel
+
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
+
+    # Existing entry preserved (not clobbered with a fresh entry).
+    assert paired[ident.device_id] is sentinel
+    # authToken already == gateway token → no rebind round-trip.
+    admin.patch_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_operator_device_paired_skips_non_gateway_adapter(monkeypatch):
+    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    ident = generate_operator_device()
+    agent = _gw_agent("a", pem=private_key_pem(ident), adapter_type="some_other")
+
+    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW")
+    assert paired == {}
+    admin.patch_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_operator_device_paired_skips_without_pem(monkeypatch):
+    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    agent = _gw_agent("a", pem=None)  # no devicePrivateKeyPem
+
+    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW")
+    assert paired == {}
+    admin.patch_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_operator_device_paired_token_bind_failure_is_swallowed(monkeypatch):
+    """A failing authToken patch must not raise — the device is still paired."""
+    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    admin.patch_agent = AsyncMock(side_effect=httpx.HTTPError("boom"))
+    ident = generate_operator_device()
+    agent = _gw_agent("a", pem=private_key_pem(ident), auth_token="service-jwt")
+
+    # Must not raise.
+    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW_TOKEN")
+    # Device still merged despite the token-bind failure.
+    assert ident.device_id in paired

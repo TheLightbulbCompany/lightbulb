@@ -31,6 +31,7 @@ from core.services.paperclip_adapter_config import (
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_openclaw_pairing import (
+    ensure_operator_device_paired,
     get_seeded_agent_ids,
     is_seeded_agent,
     pair_with_openclaw,
@@ -392,6 +393,15 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
                 gateway_pool=gateway_pool,
                 ip=ip,
                 token=token,
+            )
+            # Register the new agent's operator device into the running
+            # container's paired.json + bind its authToken to the gateway
+            # token, so its first relayed connect isn't rejected NOT_PAIRED.
+            # Provision-time pairing only covers agents that exist at provision.
+            await ensure_operator_device_paired(
+                owner_id=owner_id,
+                paperclip_agent=paperclip_agent,
+                gateway_token=token,
             )
         except Exception as exc:  # noqa: BLE001 — pairing failure is deferred.
             logger.warning(

@@ -48,6 +48,7 @@ from core.services.paperclip_agent_lifecycle import (
 )
 from core.services.paperclip_meta import PaperclipMeta, read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
+    ensure_operator_device_paired,
     is_seeded_agent,
     pair_with_openclaw,
     resolve_company_id_for_owner,
@@ -765,6 +766,17 @@ async def _intercept_agents_create(
         gateway_pool=get_gateway_pool(),
         ip=ip,
         token=token,
+    )
+
+    # Register the new agent's operator device into the RUNNING container's
+    # paired.json + bind its authToken to the gateway token, so its first
+    # relayed connect isn't rejected NOT_PAIRED. The provision-time
+    # register_paperclip_agent_devices only covers agents that exist at
+    # provision; this closes the gap for post-provision creates. Best-effort.
+    await ensure_operator_device_paired(
+        owner_id=owner_id,
+        paperclip_agent=paperclip_agent,
+        gateway_token=token,
     )
 
     # Persist the Paperclip meta into openclaw.json so the marketplace

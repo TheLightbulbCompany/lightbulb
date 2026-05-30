@@ -284,6 +284,117 @@ async def register_paperclip_agent_devices(
     return entries
 
 
+async def ensure_operator_device_paired(
+    *,
+    owner_id: str,
+    paperclip_agent: dict[str, Any],
+    gateway_token: str,
+) -> None:
+    """Pair ONE post-provision agent's operator device into the RUNNING
+    container's trust store, and bind its connect token to the gateway token.
+
+    ``register_paperclip_agent_devices`` only enumerates the agents that exist
+    AT container provision (it feeds the full ``paired.json`` write). An agent
+    created against an already-running container is registered in OpenClaw's
+    agent list by ``pair_with_openclaw`` but is NOT in ``devices/paired.json``
+    and still carries ``authToken`` = the service JWT. Its first relayed connect
+    is therefore rejected NOT_PAIRED (no device entry) with a token mismatch
+    (the device signature is computed *over* ``auth.token``, which the token-mode
+    gateway requires to equal the container's gateway token). This closes that
+    gap live + idempotently so a freshly-created agent can connect immediately,
+    without waiting for the next reprovision to enumerate it.
+
+    Best-effort: every failure is logged, not raised — device pairing must never
+    break the user-visible agent create. Callers invoke this right after
+    ``pair_with_openclaw`` when the container is reachable; ``gateway_token`` is
+    the same per-container token passed there.
+    """
+    from core.config import settings
+    from core.containers import get_workspace
+    from core.crypto.operator_device import (
+        BACKEND_OPERATOR_SCOPES,
+        build_paired_operator_entry,
+        device_identity_from_pem,
+    )
+    from core.repositories import container_repo as _container_repo
+    from core.services.desktop_pair import EfsWorkspaceAdapter
+    from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE
+
+    if paperclip_agent.get("adapterType") != OPENCLAW_GATEWAY_TYPE:
+        return
+    cfg = paperclip_agent.get("adapterConfig") or {}
+    pem = cfg.get("devicePrivateKeyPem")
+    if not pem:
+        # Legacy / ephemeral-key agent — no stable Isol8-minted device to pair.
+        return
+    agent_id = paperclip_agent.get("id")
+
+    try:
+        identity = device_identity_from_pem(pem)
+    except Exception as e:  # noqa: BLE001 — a bad PEM must not break the create
+        logger.warning(
+            "ensure_operator_device_paired: bad device PEM for agent=%s: %s",
+            agent_id,
+            e,
+        )
+        return
+
+    entry = build_paired_operator_entry(
+        identity,
+        gateway_token=gateway_token,
+        scopes=BACKEND_OPERATOR_SCOPES,
+        display_name=f"paperclip:{paperclip_agent.get('name') or agent_id}",
+    )
+
+    # 1. Live, locked, idempotent merge into the container's paired.json. The
+    #    same primitive the desktop-pair flow uses, so the in-container node's
+    #    self-registration and admin writers serialize on one lock.
+    def _mutate(paired: dict) -> bool:
+        existing = paired.get(entry["deviceId"])
+        if existing and existing.get("publicKey") == entry["publicKey"]:
+            return False  # already paired with this key — preserve metadata
+        paired[entry["deviceId"]] = entry
+        return True
+
+    try:
+        adapter = EfsWorkspaceAdapter(
+            owner_id=owner_id,
+            workspace=get_workspace(),
+            container_repo=_container_repo,
+            gateway_ws_url=settings.WS_GATEWAY_URL,
+        )
+        await adapter.mutate_paired_json(_mutate)
+    except Exception as e:  # noqa: BLE001 — best-effort; still try the token bind
+        logger.warning(
+            "ensure_operator_device_paired: paired.json merge failed for agent=%s: %s",
+            agent_id,
+            e,
+        )
+
+    # 2. Bind the agent's connect token to the container gateway token so the
+    #    device's signed auth.token authenticates against the token-mode gateway.
+    #    Idempotent: skip the round-trip if already bound.
+    if cfg.get("authToken") != gateway_token:
+        try:
+            async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+                admin = PaperclipAdminClient(http_client=http)
+                cookie = await get_admin_session_cookie(http)
+                await admin.patch_agent(
+                    session_cookie=cookie,
+                    agent_id=agent_id,
+                    body={
+                        "adapterConfig": {**cfg, "authToken": gateway_token},
+                        "replaceAdapterConfig": True,
+                    },
+                )
+        except (PaperclipApiError, httpx.HTTPError, RuntimeError) as e:
+            logger.warning(
+                "ensure_operator_device_paired: authToken bind failed for agent=%s: %s",
+                agent_id,
+                e,
+            )
+
+
 async def pair_with_openclaw(
     *,
     owner_id: str,

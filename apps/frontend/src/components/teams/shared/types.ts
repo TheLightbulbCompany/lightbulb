@@ -185,6 +185,19 @@ export interface IssueRun {
   createdAt?: string | null;
 }
 
+/** A document attached to an issue (upstream IssueDocument subset). `body` is inline markdown. */
+export interface IssueDocument {
+  id: string;
+  key: string;
+  title?: string | null;
+  format?: string | null;
+  body?: string | null;
+  updatedByAgentId?: string | null;
+  updatedByUserId?: string | null;
+  updatedAt?: string | null;
+  createdAt?: string | null;
+}
+
 export interface CompanyMember {
   userId: string;
   name?: string | null;

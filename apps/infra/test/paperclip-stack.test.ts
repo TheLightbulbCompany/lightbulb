@@ -5,7 +5,18 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Match, Template } from "aws-cdk-lib/assertions";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { PaperclipStack } from "../lib/stacks/paperclip-stack";
+
+// The pinned upstream base image, read from the SAME single source the stack
+// reads (paperclip-version.json#upstream). In the default per-env `bootstrap`
+// state the stack deploys this pinned digest directly, so the task-def image
+// assertions below must track the JSON, not a hard-coded tag — otherwise a
+// digest re-pin silently desyncs the test from the stack.
+const PAPERCLIP_UPSTREAM: string = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "paperclip-version.json"), "utf8"),
+).upstream;
 
 /**
  * Builds a PaperclipStack against a synthetic Aurora cluster + Cloud Map
@@ -77,18 +88,19 @@ describe("PaperclipStack — Fargate service shape", () => {
   });
 
   test("creates the Paperclip task definition with upstream GHCR image and 0.5 vCPU / 1 GB", () => {
-    // Image MUST be the GHCR-prefixed name. A bare `paperclipai/paperclip`
-    // resolves to docker.io and fails task launch with
-    // CannotPullContainerError because Paperclip publishes to GHCR, not
-    // Docker Hub. Asserting the literal string here keeps that bug from
-    // sneaking back in.
+    // Image MUST be the GHCR-prefixed pinned digest from the version file. A
+    // bare `paperclipai/paperclip` resolves to docker.io and fails task launch
+    // with CannotPullContainerError because Paperclip publishes to GHCR, not
+    // Docker Hub; asserting the exact pinned value here keeps that bug from
+    // sneaking back in AND keeps the default bootstrap path pinned (no floating
+    // :latest).
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "isol8-dev-paperclip-server",
       Cpu: "512",
       Memory: "1024",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
-          Image: "ghcr.io/paperclipai/paperclip:latest",
+          Image: PAPERCLIP_UPSTREAM,
         }),
       ]),
     });
@@ -102,7 +114,7 @@ describe("PaperclipStack — Fargate service shape", () => {
       Family: "isol8-dev-paperclip-migrate",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
-          Image: "ghcr.io/paperclipai/paperclip:latest",
+          Image: PAPERCLIP_UPSTREAM,
         }),
       ]),
     });

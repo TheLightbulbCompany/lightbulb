@@ -137,8 +137,9 @@ export class LocalStage extends cdk.Stage {
       wsStage: api.wsStage,
     });
 
-    // PaperclipStack — runs upstream `paperclipai/paperclip:latest` as a
-    // single Fargate service. Reachable via Cloud Map under the existing
+    // PaperclipStack — runs the pinned Paperclip image (extended overlay,
+    // apps/infra/paperclip-extended/) as a single Fargate service. Reachable via
+    // Cloud Map under the existing
     // private namespace owned by ContainerStack.
     const paperclip = new PaperclipStack(this, `isol8-${env}-paperclip`, {
       stackName: `isol8-${env}-paperclip`,

@@ -5,7 +5,45 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Match, Template } from "aws-cdk-lib/assertions";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { PaperclipStack } from "../lib/stacks/paperclip-stack";
+
+// Read the version file the stack reads, and derive the expected task-def image
+// the SAME way the stack does: per-env `tag === "bootstrap"` deploys the pinned
+// upstream digest, otherwise the extended ECR image at that tag. Mirroring the
+// selection (rather than hard-coding a value) keeps both states green — the
+// current bootstrap default AND the one-line promotion PR that flips `tag` to a
+// built ECR tag — so neither a digest re-pin nor a cutover silently desyncs the
+// test from the stack.
+const PAPERCLIP_VERSION: {
+  upstream: string;
+  extendedImage: string;
+  dev?: { tag?: string };
+  prod?: { tag?: string };
+} = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "..", "..", "..", "paperclip-version.json"),
+    "utf8",
+  ),
+);
+
+function expectedPaperclipImage(env: "dev" | "prod") {
+  const tag = PAPERCLIP_VERSION[env]?.tag ?? "bootstrap";
+  if (tag === "bootstrap") {
+    // bootstrap → fromRegistry(upstream): the digest renders as a literal string.
+    return PAPERCLIP_VERSION.upstream;
+  }
+  // promoted → fromEcrRepository: CDK renders the image as an Fn::Join over the
+  // account-qualified ECR host (partition URLSuffix as a Ref) + "/<repo>:<tag>".
+  // Match the "/<repo>:<tag>" suffix and stay agnostic to how CDK tokenizes the
+  // host, so the assertion survives a partition/region change.
+  const repoPath =
+    "/" + PAPERCLIP_VERSION.extendedImage.split("/").slice(1).join("/");
+  return Match.objectLike({
+    "Fn::Join": Match.arrayWith([Match.arrayWith([`${repoPath}:${tag}`])]),
+  });
+}
 
 /**
  * Builds a PaperclipStack against a synthetic Aurora cluster + Cloud Map
@@ -77,18 +115,19 @@ describe("PaperclipStack — Fargate service shape", () => {
   });
 
   test("creates the Paperclip task definition with upstream GHCR image and 0.5 vCPU / 1 GB", () => {
-    // Image MUST be the GHCR-prefixed name. A bare `paperclipai/paperclip`
-    // resolves to docker.io and fails task launch with
-    // CannotPullContainerError because Paperclip publishes to GHCR, not
-    // Docker Hub. Asserting the literal string here keeps that bug from
-    // sneaking back in.
+    // Image MUST be the GHCR-prefixed pinned digest from the version file. A
+    // bare `paperclipai/paperclip` resolves to docker.io and fails task launch
+    // with CannotPullContainerError because Paperclip publishes to GHCR, not
+    // Docker Hub; asserting the exact pinned value here keeps that bug from
+    // sneaking back in AND keeps the default bootstrap path pinned (no floating
+    // :latest).
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "isol8-dev-paperclip-server",
       Cpu: "512",
       Memory: "1024",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
-          Image: "ghcr.io/paperclipai/paperclip:latest",
+          Image: expectedPaperclipImage("dev"),
         }),
       ]),
     });
@@ -102,7 +141,7 @@ describe("PaperclipStack — Fargate service shape", () => {
       Family: "isol8-dev-paperclip-migrate",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
-          Image: "ghcr.io/paperclipai/paperclip:latest",
+          Image: expectedPaperclipImage("dev"),
         }),
       ]),
     });
@@ -191,7 +230,10 @@ describe("PaperclipStack — Fargate service shape", () => {
       LaunchType: "FARGATE",
       DesiredCount: 1,
       DeploymentConfiguration: Match.objectLike({
-        DeploymentCircuitBreaker: Match.objectLike({ Enable: true, Rollback: true }),
+        DeploymentCircuitBreaker: Match.objectLike({
+          Enable: true,
+          Rollback: true,
+        }),
       }),
       NetworkConfiguration: Match.objectLike({
         AwsvpcConfiguration: Match.objectLike({
@@ -202,11 +244,14 @@ describe("PaperclipStack — Fargate service shape", () => {
   });
 
   test("autoscaling target is 1–4 and tracks CPU at 70%", () => {
-    template.hasResourceProperties("AWS::ApplicationAutoScaling::ScalableTarget", {
-      MinCapacity: 1,
-      MaxCapacity: 4,
-      ServiceNamespace: "ecs",
-    });
+    template.hasResourceProperties(
+      "AWS::ApplicationAutoScaling::ScalableTarget",
+      {
+        MinCapacity: 1,
+        MaxCapacity: 4,
+        ServiceNamespace: "ecs",
+      },
+    );
     template.hasResourceProperties(
       "AWS::ApplicationAutoScaling::ScalingPolicy",
       {
@@ -227,21 +272,16 @@ describe("PaperclipStack — Fargate service shape", () => {
     // servicediscovery.Service alongside it would collide on the
     // namespace Name and fail at first deploy — so we assert exactly one
     // such service exists.
-    const services = template.findResources(
-      "AWS::ServiceDiscovery::Service",
-      {
-        Properties: {
-          Name: "paperclip",
-        },
+    const services = template.findResources("AWS::ServiceDiscovery::Service", {
+      Properties: {
+        Name: "paperclip",
       },
-    );
+    });
     expect(Object.keys(services)).toHaveLength(1);
     const svc = Object.values(services)[0] as { Properties: any };
     const records = svc.Properties.DnsConfig?.DnsRecords ?? [];
     expect(records).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ Type: "A", TTL: 10 }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ Type: "A", TTL: 10 })]),
     );
   });
 

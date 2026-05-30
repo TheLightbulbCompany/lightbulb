@@ -6,11 +6,32 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as ecr from "aws-cdk-lib/aws-ecr";
 import { Construct } from "constructs";
+import * as fs from "fs";
+import * as path from "path";
+
+// Single source of truth for the pinned (extended) Paperclip image. Bump
+// paperclip-version.json at the repo root; the overlay it patches lives at
+// apps/infra/paperclip-extended/. Mirrors the openclaw-version.json pattern.
+type PaperclipVersionConfig = {
+  upstream: string;
+  extendedImage: string;
+  dev: { tag: string };
+  prod: { tag: string };
+  notes?: string;
+};
+const PAPERCLIP_VERSION: PaperclipVersionConfig = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "..", "..", "..", "..", "paperclip-version.json"),
+    "utf8",
+  ),
+);
 
 /**
- * PaperclipStack — runs the upstream `paperclipai/paperclip:latest` Docker
- * image as a single Fargate service inside the Isol8 VPC.
+ * PaperclipStack — runs the pinned Paperclip image (an extended overlay of the
+ * official image; see apps/infra/paperclip-extended/) as a single Fargate
+ * service inside the Isol8 VPC.
  *
  * Reachability: the FastAPI backend talks to Paperclip over Cloud Map
  * service discovery. The service registers as `paperclip` inside the
@@ -105,6 +126,27 @@ export class PaperclipStack extends cdk.Stack {
     super(scope, id, props);
 
     const env = props.environment;
+
+    // Extended Paperclip image (mirrors openclaw-extended): use the patched ECR
+    // image once the per-env tag is promoted past "bootstrap"; until then fall
+    // back to the pinned upstream image so the env keeps deploying. The overlay
+    // patches the openclaw-gateway adapter to gateway protocol v4 — see
+    // apps/infra/paperclip-extended/.
+    const paperclipExtendedRepo = ecr.Repository.fromRepositoryName(
+      this,
+      "PaperclipExtendedRepo",
+      "isol8/paperclip-extended",
+    );
+    const paperclipEnvCfg =
+      env === "dev" || env === "prod" ? PAPERCLIP_VERSION[env] : undefined;
+    const paperclipEnvTag = paperclipEnvCfg?.tag ?? "bootstrap";
+    const paperclipImage =
+      paperclipEnvTag === "bootstrap"
+        ? ecs.ContainerImage.fromRegistry(PAPERCLIP_VERSION.upstream)
+        : ecs.ContainerImage.fromEcrRepository(
+            paperclipExtendedRepo,
+            paperclipEnvTag,
+          );
 
     // ─────────────────────────────────────────────────────────────────
     // Log group
@@ -291,7 +333,7 @@ export class PaperclipStack extends cdk.Stack {
       // future rebuild flips visibility we'll wire a Secrets Manager
       // secret holding a GitHub PAT and reference it via
       // `repositoryCredentials.credentialsParameter`; not needed today.
-      image: ecs.ContainerImage.fromRegistry("ghcr.io/paperclipai/paperclip:latest"),
+      image: paperclipImage,
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "paperclip",
         logGroup,
@@ -528,7 +570,7 @@ export class PaperclipStack extends cdk.Stack {
 
     migrateTaskDef.addContainer("migrate", {
       // Same GHCR-vs-Docker-Hub fix as the main service container above.
-      image: ecs.ContainerImage.fromRegistry("ghcr.io/paperclipai/paperclip:latest"),
+      image: paperclipImage,
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "paperclip-migrate",
         logGroup: migrateLogGroup,

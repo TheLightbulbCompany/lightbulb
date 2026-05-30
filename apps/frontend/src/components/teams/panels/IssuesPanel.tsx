@@ -11,6 +11,7 @@ import {
   type PanelDataColumn,
 } from "@/components/teams/shell";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
+import { IssueStatusMenu } from "@/components/teams/issues/IssueStatusMenu";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   CompanyAgent,
@@ -75,6 +76,12 @@ export function IssuesPanel() {
           {i.priority ?? "—"}
         </span>
       ),
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      cell: (i) => <IssueStatusMenu issue={i} onChanged={mutate} />,
     },
     {
       key: "open",

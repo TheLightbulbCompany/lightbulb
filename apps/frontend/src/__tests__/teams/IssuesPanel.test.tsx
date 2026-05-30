@@ -7,16 +7,26 @@
 // guards the integration: clicking "New issue" mounts NewIssueDialog with
 // open=true. The actual POST /issues body shape is asserted in the
 // NewIssueDialog and useIssueMutations tests.
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import type { Issue } from "@/components/teams/shared/types";
 
+// Path-aware read mock shared across all tests. `seededIssues` is reset per
+// test so the empty-state cases stay green while the actions-column case can
+// seed a row. `/agents` + `/projects` always resolve to empty arrays (the
+// panel reads them only to populate NewIssueDialog's pickers).
+let seededIssues: Issue[] = [];
 const mockMutate = vi.fn();
-const mockRead = vi.fn(() => ({
-  data: { issues: [] },
-  isLoading: false,
-  error: null,
-  mutate: mockMutate,
-}));
+const mockRead = vi.fn((path: string) => {
+  if (path === "/issues")
+    return {
+      data: { issues: seededIssues },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    };
+  return { data: { agents: [], projects: [] }, isLoading: false, error: null, mutate: vi.fn() };
+});
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
@@ -25,6 +35,12 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     patch: vi.fn(),
     del: vi.fn(),
   }),
+}));
+
+// IssueStatusMenu (rendered per row in the actions column) pulls
+// useIssueMutations; stub it so the panel renders standalone.
+vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
+  useIssueMutations: () => ({ update: vi.fn(), create: vi.fn(), createChild: vi.fn(), addComment: vi.fn() }),
 }));
 
 const newIssueDialogStub = vi.fn();
@@ -40,6 +56,10 @@ vi.mock("@/components/teams/issues/NewIssueDialog", () => ({
 }));
 
 import { IssuesPanel } from "@/components/teams/panels/IssuesPanel";
+
+beforeEach(() => {
+  seededIssues = [];
+});
 
 describe("IssuesPanel", () => {
   it("renders the editorial empty state when there are no issues", () => {
@@ -58,5 +78,14 @@ describe("IssuesPanel", () => {
     const buttons = screen.getAllByRole("button", { name: /new issue/i });
     fireEvent.click(buttons[0]);
     expect(screen.getByTestId("new-issue-dialog-stub")).toBeInTheDocument();
+  });
+
+  it("renders an issue-actions menu trigger in each row", () => {
+    seededIssues = [
+      { id: "i1", title: "Fix the thing", status: "todo" } as Issue,
+    ];
+    render(<IssuesPanel />);
+    expect(screen.getByText("Fix the thing")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /issue actions/i })).toBeInTheDocument();
   });
 });

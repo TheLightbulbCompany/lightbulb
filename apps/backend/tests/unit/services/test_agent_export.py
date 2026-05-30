@@ -674,3 +674,87 @@ def test_enumerate_for_preview_carries_safety_flags(fake_efs, tmp_path):
     preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
     flags = preview["safety_flags"]
     assert any(f["pattern"] == "email-address" for f in flags)
+
+
+# ---------------------------------------------------------------------------
+# Slice credential-leak gate — export RAISES, preview SURFACES (never raises).
+#
+# The published openclaw-slice.json is a separate S3 artifact the tarball
+# safety scan never walks. If a credential survives catalog_slice's scrub,
+# export_agent_from_efs must abort BEFORE building the artifact; preview must
+# surface the same finding inline without raising so the seller fixes it first.
+# ---------------------------------------------------------------------------
+
+
+def _plant_leaking_mcp(tmp_path: Path, seller_id: str, *, env_value: str = "sk_live_LEAK"):
+    """Add an mcp server whose env carries a real (unscrubbed) secret to the
+    seller's openclaw.json. We force the leak by patching _scrub_secret_fields
+    to a no-op so we exercise the SAFETY gate, not the scrub itself.
+    """
+    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["mcp"] = {"servers": {"leaky": {"command": "node", "env": {"API_KEY": env_value}}}}
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+
+def test_export_raises_when_slice_credential_survives_scrub(fake_efs, tmp_path):
+    """A credential surviving the scrub in the published slice blocks publish:
+    export_agent_from_efs raises CredentialLeakError and no artifact is built.
+
+    We neutralize the scrub (no-op) so a non-empty secret reaches the gate —
+    this proves the gate catches what a missed/incomplete scrub would let
+    through. The raised message names the field PATH but never the secret.
+    """
+    seller_id, agent_id, _ = fake_efs
+    _plant_leaking_mcp(tmp_path, seller_id, env_value="sk_live_DO_NOT_LEAK_123")
+
+    # Force a scrub miss: scrub becomes identity so the secret survives.
+    with patch("core.services.catalog_slice._scrub_secret_fields", side_effect=lambda e: e):
+        with pytest.raises(agent_export.CredentialLeakError) as exc_info:
+            agent_export.export_agent_from_efs(
+                seller_id=seller_id,
+                agent_id=agent_id,
+                selected_mcps=["leaky"],
+            )
+
+    msg = str(exc_info.value)
+    # Path is named so the seller knows where to look...
+    assert "mcp.servers.leaky.env" in msg, msg
+    # ...but the raw secret never appears in the error.
+    assert "sk_live_DO_NOT_LEAK_123" not in msg, msg
+
+
+def test_export_clean_slice_does_not_raise(fake_efs, tmp_path):
+    """A properly-scrubbed slice (the normal path) builds the artifact with no
+    CredentialLeakError. The real scrub blanks env values to "".
+    """
+    seller_id, agent_id, _ = fake_efs
+    _plant_leaking_mcp(tmp_path, seller_id, env_value="sk_live_will_be_scrubbed")
+
+    # No scrub patch → the real _scrub_secret_fields runs and empties the env.
+    pkg = agent_export.export_agent_from_efs(
+        seller_id=seller_id,
+        agent_id=agent_id,
+        selected_mcps=["leaky"],
+    )
+    # Slice shipped, env blanked.
+    assert pkg.openclaw_slice["mcp"]["servers"]["leaky"]["env"] == {"API_KEY": ""}
+
+
+def test_preview_surfaces_slice_leak_without_raising(fake_efs, tmp_path):
+    """Preview must NOT raise on a leaking slice — it surfaces the finding
+    inline so the seller fixes it before submit (where export raises).
+    """
+    seller_id, agent_id, _ = fake_efs
+    _plant_leaking_mcp(tmp_path, seller_id, env_value="sk_live_PREVIEW_LEAK")
+
+    with patch("core.services.catalog_slice._scrub_secret_fields", side_effect=lambda e: e):
+        # Must NOT raise.
+        preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+
+    flags = preview["safety_flags"]
+    assert any(f["pattern"] == "unscrubbed-credential" for f in flags), flags
+    # Redaction holds in the preview surface too.
+    for f in flags:
+        if f["pattern"] == "unscrubbed-credential":
+            assert "sk_live_PREVIEW_LEAK" not in f["snippet"], f

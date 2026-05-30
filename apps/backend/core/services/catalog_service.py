@@ -33,9 +33,12 @@ Depends on injected collaborators so unit tests can mock them:
 from __future__ import annotations
 
 import copy
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
+
+logger = logging.getLogger(__name__)
 
 
 # Mirrors agent_export._AGENT_DIR_SENTINEL. Duplicated rather than
@@ -43,6 +46,195 @@ from typing import Any, Awaitable, Callable
 # need to depend on agent_export's symbol surface. If a third caller
 # emerges, move to a shared constants module.
 _AGENT_DIR_SENTINEL = "__AGENT_DIR__"
+
+
+class MissingCredentialsError(Exception):
+    """Raised when a deploy targets providers the buyer hasn't connected.
+
+    Plain typed exception (not HTTPException) so catalog_service stays
+    HTTP-agnostic — the router maps this to a 409. Carries the sorted list
+    of missing provider keys so the UI can route the buyer straight to the
+    integrations panel for exactly those providers.
+    """
+
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__(f"missing required credentials: {', '.join(missing)}")
+
+
+async def assert_credentials_satisfied(
+    owner_id: str,
+    manifest: dict,
+    slice_: dict | None = None,
+) -> None:
+    """Block a deploy when the agent needs providers the buyer hasn't connected.
+
+    The required set is the union of two sources:
+      1. Explicit ``manifest.requires.credentials`` entries whose ``optional``
+         flag is falsy — the seller's declared hard dependencies.
+      2. Providers *implied* by the slice's bundled MCP servers. A registry
+         MCP server's key equals its provider key (e.g. ``mcp.servers.stripe``
+         → provider ``stripe``), and catalog_slice scrubs the secret values
+         while keeping the keys, so an unconnected provider would otherwise
+         deploy an MCP that 401s on first use. We only count slice MCP keys
+         that are known registry providers — arbitrary/custom MCP servers
+         aren't credential-gated here.
+
+    A provider is "connected" when the owner has a connections row for it
+    whose status is ``connected`` (the default written by connection_repo.put).
+    Raises ``MissingCredentialsError`` (sorted, deduped) when any required
+    provider is unconnected; returns ``None`` when all are satisfied.
+    """
+    from core.repositories import connection_repo
+    from core.services.credentials import registry
+
+    known_providers = registry.all_providers()
+
+    required: set[str] = set()
+    # ``requires`` (and its ``credentials``) may be absent OR present-but-null —
+    # ``"requires": null`` is a common JSON encoding of an empty optional block.
+    # ``.get(key, default)`` only falls back on ABSENT keys, so use ``or`` to
+    # also normalize null/non-dict to empty and avoid an AttributeError -> 500.
+    requires = (manifest or {}).get("requires") or {}
+    for entry in (requires.get("credentials") if isinstance(requires, dict) else None) or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("optional"):
+            continue
+        provider = entry.get("provider")
+        if provider:
+            required.add(provider)
+
+    # The slice's MCP servers live under ``mcp.servers`` (nested dict — same
+    # path _substitute_agent_dir_sentinel reads). A server key that matches a
+    # registry provider key implies that credential is needed.
+    mcp_servers = ((slice_ or {}).get("mcp") or {}).get("servers") or {}
+    if isinstance(mcp_servers, dict):
+        required |= {key for key in mcp_servers if key in known_providers}
+
+    if not required:
+        return
+
+    connected = {
+        row["provider"]
+        for row in await connection_repo.list_for_owner(owner_id)
+        if row.get("provider") and row.get("status", "connected") == "connected"
+    }
+
+    missing = sorted(required - connected)
+    if missing:
+        raise MissingCredentialsError(missing)
+
+
+def _slice_exposes_canonical_key(server_entry: dict, provider: str, openclaw_paths) -> bool:
+    """True if the deployed MCP server entry exposes at least one of the registry's
+    canonical credential key paths for ``provider``.
+
+    ``apply_connection`` writes the buyer's token to the registry's canonical path
+    (e.g. ``mcp.servers.stripe.env.STRIPE_SECRET_KEY``). If a seller bundled the
+    server with the credential under a NON-canonical env/header key, the scrub
+    blanks that other key, and writing the canonical key would add one the MCP
+    never reads while leaving the real slot blank. We can't reliably tell which of
+    several blanked env keys is the secret, so we only fill when the deployed slot
+    actually exposes the canonical key; otherwise the buyer must set it manually.
+    """
+    prefix = ("mcp", "servers", provider)
+    for op in openclaw_paths or []:
+        parts = tuple(op.path.split("."))
+        sub = parts[3:]
+        if parts[:3] != prefix or not sub:
+            continue
+        node = server_entry
+        for key in sub:
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            else:
+                break
+        else:
+            return True
+    return False
+
+
+async def _fill_buyer_credential_slots(owner_id: str, slice_: dict) -> None:
+    """Re-apply the buyer's own connected credentials into the freshly-merged slice.
+
+    ``catalog_slice`` scrubs every credential value (``apiKey`` / ``env`` /
+    ``headers`` / ``webhookToken``) to "" before publishing, so a bundled MCP
+    server (e.g. ``mcp.servers.stripe.env.STRIPE_SECRET_KEY``) lands EMPTY in
+    the buyer's openclaw.json after the deep-merge. This step fills those slots
+    with the buyer's OWN token — but only for providers whose secret is actually
+    retained in the vault.
+
+    Retained-vs-scrubbed gate (do NOT just always re-apply):
+      - paste providers (linear, stripe): ``refresh_owner=none`` +
+        ``wiring.openclaw_paths`` → the vault keeps ``credential_enc``, and the
+        token lands in a per-agent openclaw.json path. These DO need filling.
+      - actor providers (google): ``refresh_owner=actor`` +
+        ``wiring.materializer`` → after connect the vault secret is SCRUBBED
+        (M6 non-retention), so the row has no ``credential_enc`` and
+        ``decrypt_credential`` RAISES. They also need NO slot-fill: the
+        credential is the owner-scoped EFS gog keyring written at connect time,
+        which every deployed agent reads regardless of the slice.
+
+    So we skip any provider that either has no ``openclaw_paths`` (materializer
+    rail — nothing to fill) or no ``credential_enc`` (scrubbed / non-retained —
+    nothing to re-apply). The ``credential_enc`` check mirrors the disconnect
+    path's guard and is what keeps us from ever calling ``decrypt_credential``
+    on a scrubbed actor row (which would raise).
+
+    Best-effort per provider: the agent is already deployed by the time this
+    runs, so a single fill failure is degraded (the buyer can re-connect the
+    integration), not fatal — log and continue rather than aborting the deploy.
+    """
+    from core.repositories import connection_repo
+    from core.services.credentials import apply_connection, registry
+
+    known_providers = registry.all_providers()
+    mcp_servers = ((slice_ or {}).get("mcp") or {}).get("servers") or {}
+    if not isinstance(mcp_servers, dict):
+        return
+    # Only registry providers carry a credential slot worth filling; arbitrary
+    # custom MCP servers are untouched (same scoping as the deploy gate).
+    candidates = [key for key in mcp_servers if key in known_providers]
+
+    for provider in candidates:
+        try:
+            row = await connection_repo.get(owner_id, provider)
+            # Mirror the deploy gate's default: a row with no explicit status is
+            # treated as connected. Diverging here would let the gate admit a
+            # legacy (status-less) connection while this fill skips it, leaving
+            # the just-merged slot blank.
+            if not row or row.get("status", "connected") != "connected":
+                continue
+            p = registry.get_provider(provider)
+            # Materializer/actor providers deliver via an owner-scoped keyring,
+            # not a per-agent openclaw.json path — there is no slot to fill.
+            if not p.wiring.openclaw_paths:
+                continue
+            # No retained ciphertext → scrubbed / non-retained credential.
+            # Mirrors connection_repo's disconnect guard and avoids calling
+            # decrypt_credential on a scrubbed row (which raises).
+            if not row.get("credential_enc"):
+                continue
+            # Only fill when the deployed slot exposes the registry's canonical
+            # key — otherwise the bundle scrubbed its credential under a
+            # non-canonical key and writing the canonical path would miss the
+            # slot the MCP actually reads (leave it for manual setup).
+            if not _slice_exposes_canonical_key(mcp_servers.get(provider) or {}, provider, p.wiring.openclaw_paths):
+                logger.warning(
+                    "deploy slot-fill: bundle for provider %s exposes no canonical credential key "
+                    "(owner %s); leaving it for manual setup",
+                    provider,
+                    owner_id,
+                )
+                continue
+            await apply_connection.apply_connection(owner_id, provider, connection_repo.decrypt_credential(row))
+        except Exception:
+            logger.exception(
+                "deploy slot-fill failed for provider %s (owner %s); continuing",
+                provider,
+                owner_id,
+            )
 
 
 def _substitute_agent_dir_sentinel(mcp_patch: dict | None, new_agent_id: str) -> dict | None:
@@ -197,6 +389,13 @@ class CatalogService:
         if new_agent_id is None:
             new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
 
+        # Credential gate — runs before any EFS / gateway side effect so a
+        # blocked deploy leaves no partial state. The buyer must have
+        # connected every provider the agent hard-depends on (declared in the
+        # manifest or implied by the bundled MCP servers); otherwise the agent
+        # would deploy and immediately fail on its first credentialed call.
+        await assert_credentials_satisfied(owner_id, manifest, slice_)
+
         self._workspace.extract_tarball_to_workspace(
             user_id=owner_id,
             agent_id=new_agent_id,
@@ -296,6 +495,17 @@ class CatalogService:
                 mcp_patch=mcp_patch,
                 skills_patch=skills_patch,
             )
+
+            # The deep-merge above lands the slice's MCP servers with their
+            # credential values scrubbed to "" (catalog_slice). Fill those
+            # slots with the buyer's OWN connected token — but only for
+            # providers whose secret is retained in the vault (paste rails);
+            # materializer/actor providers (e.g. google) deliver via an
+            # owner-scoped keyring and have no per-agent slot to fill, and
+            # their vault secret is gone, so they're skipped. Best-effort:
+            # a fill failure leaves a deployed-but-uncredentialed slot the
+            # buyer can re-connect, never aborts the deploy.
+            await _fill_buyer_credential_slots(owner_id, slice_)
 
         # ``manifest["version"]`` is sourced from the listing row's
         # ``manifest_json`` column (boto3 returns DDB Numbers as

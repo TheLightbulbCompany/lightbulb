@@ -148,3 +148,170 @@ def test_persona_clean_content_produces_no_flags():
         format="persona",
     )
     assert flags == []
+
+
+# ---------------------------------------------------------------------------
+# assert_slice_scrubbed — post-scrub credential-leak check on the PUBLISHED
+# openclaw-slice.json (a separate S3 artifact the tarball scan never walks).
+# ---------------------------------------------------------------------------
+
+
+def test_slice_scrubbed_clean_slice_returns_no_flags():
+    """A properly-scrubbed slice (env {API_KEY: ""}, apiKey "", headers {})
+    has no surviving secrets → no flags."""
+    slice_ = {
+        "mcp": {"servers": {"resy": {"command": "node", "env": {"API_KEY": "", "RESY_PASSWORD": ""}}}},
+        "skills": {"entries": {"jira": {"apiKey": "", "headers": {}}}, "allowBundled": ["search"]},
+    }
+    assert marketplace_safety.assert_slice_scrubbed(slice_) == []
+    assert (
+        marketplace_safety.has_blocking_credential_findings(marketplace_safety.assert_slice_scrubbed(slice_)) is False
+    )
+
+
+def test_slice_scrubbed_surviving_env_secret_flagged():
+    """env.API_KEY still carrying a value → blocking flag."""
+    slice_ = {"mcp": {"servers": {"resy": {"env": {"API_KEY": "sk_live_xxx"}}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert any(f.pattern == "unscrubbed-credential" and f.severity == "high" for f in flags)
+    assert marketplace_safety.has_blocking_credential_findings(flags) is True
+
+
+def test_slice_scrubbed_surviving_apikey_scalar_flagged():
+    """A scalar apiKey field that wasn't blanked → blocking flag."""
+    slice_ = {"skills": {"entries": {"jira": {"apiKey": "secret"}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert any(f.pattern == "unscrubbed-credential" and f.severity == "high" for f in flags)
+    assert marketplace_safety.has_blocking_credential_findings(flags) is True
+
+
+def test_slice_scrubbed_nested_secret_caught():
+    """The shallow one-level scrub only blanks the TOP level of env/headers.
+    A secret nested DEEPER than one level (a dict value, or a list element)
+    survives the scrub — the deep walk must still catch it.
+    """
+    # env value is a dict-of-dict: top-level key present (so scrub touched it)
+    # but the secret sits one level deeper inside.
+    slice_ = {
+        "mcp": {
+            "servers": {
+                "x": {
+                    "env": {"NESTED": {"inner": "super-secret-token"}},
+                }
+            }
+        }
+    }
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert any(f.pattern == "unscrubbed-credential" and f.severity == "high" for f in flags), flags
+    assert marketplace_safety.has_blocking_credential_findings(flags) is True
+
+
+def test_slice_scrubbed_nested_list_secret_caught():
+    """A secret-shaped field whose value is a list with a non-empty string
+    element survives a scrub that only empties list-typed fields to [] when
+    the field is dict/list-typed at the top — here headers carries a list of
+    strings one level down.
+    """
+    slice_ = {"skills": {"entries": {"jira": {"headers": {"Authorization": ["Bearer real-token"]}}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert any(f.pattern == "unscrubbed-credential" for f in flags), flags
+    assert marketplace_safety.has_blocking_credential_findings(flags) is True
+
+
+def test_slice_scrubbed_secret_key_nested_under_non_secret_object_caught():
+    """A secret-NAMED key (apiKey/headers) nested under a NON-secret object
+    (config/options) survives the shallow scrub AND a top-level-only field
+    check — the recursive walk must find the secret-named key at any depth.
+    """
+    slice_ = {
+        "mcp": {"servers": {"foo": {"config": {"apiKey": "sk_live_buried"}}}},
+        "skills": {"entries": {"bar": {"options": {"headers": {"Authorization": "Bearer real"}}}}},
+    }
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    snippets = [f.snippet for f in flags if f.pattern == "unscrubbed-credential"]
+    assert any("config.apiKey" in s for s in snippets), flags
+    assert any("options.headers" in s for s in snippets), flags
+    assert marketplace_safety.has_blocking_credential_findings(flags) is True
+    # Redaction holds even for the deeply-nested finds.
+    blob = " ".join(f.snippet for f in flags)
+    assert "sk_live_buried" not in blob and "Bearer real" not in blob
+
+
+def test_slice_scrubbed_clean_nested_non_secret_object_passes():
+    """A nested non-secret object with no surviving secret-named values is not
+    flagged — guards the deeper walk against false positives (region is config,
+    apiKey is properly blanked)."""
+    slice_ = {"mcp": {"servers": {"foo": {"config": {"region": "us-east-1", "apiKey": ""}}}}}
+    assert marketplace_safety.assert_slice_scrubbed(slice_) == []
+
+
+def test_slice_scrubbed_oauth_client_secret_literal_flagged():
+    """An OAuth client_secret literal buried anywhere in the slice → blocking
+    flag. The scrub keys on apiKey/env/headers/webhookToken, so a config that
+    stores client_secret under its own key rides straight through.
+    """
+    slice_ = {"mcp": {"servers": {"oauthy": {"oauth": {"client_id": "abc", "client_secret": "GOCSPX-xxx"}}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert any(f.pattern == "oauth-client-secret" and f.severity == "high" for f in flags), flags
+    assert marketplace_safety.has_blocking_credential_findings(flags) is True
+
+
+def test_slice_scrubbed_camelcase_client_secret_flagged():
+    """clientSecret (camelCase) is detected case-insensitively too."""
+    slice_ = {"skills": {"entries": {"s": {"config": {"clientSecret": "shh"}}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert any(f.pattern == "oauth-client-secret" for f in flags), flags
+
+
+def test_slice_scrubbed_empty_client_secret_not_flagged():
+    """A blanked clientSecret ("") is fine — only non-empty values leak."""
+    slice_ = {"skills": {"entries": {"s": {"config": {"client_secret": ""}}}}}
+    assert marketplace_safety.assert_slice_scrubbed(slice_) == []
+
+
+def test_slice_scrubbed_snippet_redacts_secret():
+    """The flag snippet must NOT contain the raw secret — it rides into the
+    manifest / admin UI / logs. Redaction shows length + a 2-char prefix only.
+    """
+    secret = "sk_live_super_secret_value_1234567890"
+    slice_ = {"mcp": {"servers": {"x": {"apiKey": secret}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert flags
+    for f in flags:
+        assert secret not in f.snippet, f"raw secret leaked into snippet: {f.snippet}"
+        # Path is surfaced so a reviewer knows WHERE to look.
+        assert "mcp.servers.x.apiKey" in f.snippet
+
+
+def test_slice_scrubbed_oauth_snippet_redacts_secret():
+    secret = "GOCSPX-do-not-leak-me"
+    slice_ = {"mcp": {"servers": {"o": {"client_secret": secret}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert flags
+    for f in flags:
+        assert secret not in f.snippet, f"raw secret leaked into snippet: {f.snippet}"
+
+
+def test_has_blocking_credential_findings_ignores_non_credential_flags():
+    """Tarball flags (email-address, curl-bash, etc.) are NOT slice-credential
+    leaks — has_blocking_credential_findings keys only off the new patterns.
+    """
+    flags = [
+        marketplace_safety.SafetyFlag(
+            pattern="email-address", severity="medium", file="USER.md", line=1, snippet="a@b.com"
+        ),
+        marketplace_safety.SafetyFlag(pattern="curl-bash", severity="high", file="x.sh", line=1, snippet="curl|bash"),
+    ]
+    assert marketplace_safety.has_blocking_credential_findings(flags) is False
+
+
+def test_slice_scrubbed_uses_catalog_slice_field_names():
+    """The field set is single-sourced from catalog_slice — webhookToken is in
+    that set, so a surviving webhookToken must flag without re-listing fields
+    here."""
+    from core.services.catalog_slice import _SECRET_FIELD_NAMES
+
+    assert "webhookToken" in _SECRET_FIELD_NAMES  # guard the source of truth
+    slice_ = {"mcp": {"servers": {"hook": {"webhookToken": "whsec_live"}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert any(f.pattern == "unscrubbed-credential" for f in flags), flags

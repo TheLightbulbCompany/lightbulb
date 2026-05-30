@@ -238,6 +238,192 @@ def scan(file_dict: dict[str, bytes], format: str) -> list[SafetyFlag]:
     return flags
 
 
+# ---------------------------------------------------------------------------
+# Post-scrub credential-leak check on the published openclaw-slice.json
+#
+# WHY this exists separately from scan(): the slice is a SEPARATE S3 artifact
+# (openclaw-slice.json) built by catalog_slice from the seller's
+# mcp.servers / skills.entries with secret-shaped fields scrubbed. The
+# tarball-only safety scan (scan() above) NEVER walks the slice — so a
+# credential that survives the scrub (because the scrub is shallow/one-level,
+# or the field is non-canonical, or an OAuth client-secret is buried in a
+# string) would ship in the published artifact undetected. These rules
+# re-inspect the scrubbed slice and block publish if anything leaked.
+#
+# Severity convention mirrors the credential patterns above (hardcoded-secret,
+# aws-secret-key): credential leaks are always "high".
+# ---------------------------------------------------------------------------
+
+# The filename surfaced on slice-derived flags. The slice is a distinct
+# artifact, so its flags don't share the tarball's file paths.
+_SLICE_FILE = "openclaw-slice.json"
+
+# Pattern names for the two slice-leak classes. has_blocking_credential_findings
+# keys off this set, so adding a new high-severity slice rule means adding its
+# name here too.
+_BLOCKING_CREDENTIAL_PATTERNS = frozenset({"unscrubbed-credential", "oauth-client-secret"})
+
+# OAuth client-secret literal keys. A scrub keyed on the canonical sensitive
+# field names (apiKey/env/headers/webhookToken) won't touch a config that
+# stores the OAuth client secret under its own key, so detect it by name.
+_CLIENT_SECRET_KEY_RE = re.compile(r"client[_-]?secret", re.IGNORECASE)
+
+
+def _redact(value: str) -> str:
+    """Redacted snippet for a leaked secret. NEVER echo the raw value — the
+    flag rides into the manifest / admin UI / logs. Show only the length and
+    a 2-char prefix so a reviewer can correlate without the secret leaking
+    again through the very mechanism meant to catch it.
+    """
+    prefix = value[:2]
+    return f"<redacted len={len(value)} prefix={prefix!r}>"
+
+
+def _first_nonempty_string(value: object) -> str | None:
+    """First non-empty string found by the same deep walk, for the snippet.
+    Returns None when nothing leaked.
+    """
+    if isinstance(value, str):
+        return value if value != "" else None
+    if isinstance(value, dict):
+        for v in value.values():
+            found = _first_nonempty_string(v)
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, (list, tuple)):
+        for v in value:
+            found = _first_nonempty_string(v)
+            if found is not None:
+                return found
+        return None
+    return None
+
+
+def _walk_slice_entries(slice_: dict) -> Iterable[tuple[str, dict]]:
+    """Yield (path, entry_dict) for each mcp.servers.* and skills.entries.*
+    entry in the slice. ``path`` is a human-readable dotted location used in
+    the flag snippet (no secret in it). Non-dict entries are skipped — the
+    scrub only ever produced dicts, and a stray non-dict can't carry a
+    secret-shaped field.
+    """
+    mcp_servers = (slice_.get("mcp") or {}).get("servers") or {}
+    if isinstance(mcp_servers, dict):
+        for name, entry in mcp_servers.items():
+            if isinstance(entry, dict):
+                yield f"mcp.servers.{name}", entry
+
+    skills = slice_.get("skills") or {}
+    entries = skills.get("entries") if isinstance(skills, dict) else None
+    if isinstance(entries, dict):
+        for name, entry in entries.items():
+            if isinstance(entry, dict):
+                yield f"skills.entries.{name}", entry
+
+
+def _walk_for_client_secret(value: object, path: str) -> list[tuple[str, str]]:
+    """Deep-walk ``value`` collecting (path, secret) pairs for every key that
+    matches ``client_secret`` / ``clientSecret`` (case-insensitive) with a
+    non-empty string value, ANYWHERE in the structure. The scrub never targets
+    these keys, so a literal OAuth client secret rides through untouched.
+    """
+    found: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child_path = f"{path}.{k}"
+            if isinstance(k, str) and _CLIENT_SECRET_KEY_RE.fullmatch(k) and isinstance(v, str) and v != "":
+                found.append((child_path, v))
+            found.extend(_walk_for_client_secret(v, child_path))
+    elif isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            found.extend(_walk_for_client_secret(v, f"{path}[{i}]"))
+    return found
+
+
+def _walk_for_secret_fields(value: object, path: str, field_names) -> list[tuple[str, str]]:
+    """Deep-walk ``value`` collecting (path, leaked_value) for every key in
+    ``field_names`` whose value contains a non-empty string ANYWHERE inside it.
+
+    Recurses through nested dicts/lists, so a secret-shaped key buried under a
+    non-secret object (e.g. ``mcp.servers.foo.config.apiKey`` or
+    ``skills.entries.bar.options.headers.Authorization``) is caught. The shallow
+    scrub only blanks these names at the TOP level of an entry, so a nested one
+    survives both the scrub and any top-level-only check.
+    """
+    found: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child_path = f"{path}.{k}"
+            if isinstance(k, str) and k in field_names:
+                leaked = _first_nonempty_string(v)
+                if leaked is not None:
+                    found.append((child_path, leaked))
+            found.extend(_walk_for_secret_fields(v, child_path, field_names))
+    elif isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            found.extend(_walk_for_secret_fields(v, f"{path}[{i}]", field_names))
+    return found
+
+
+def assert_slice_scrubbed(openclaw_slice: dict) -> list[SafetyFlag]:
+    """Re-check a (supposedly-scrubbed) openclaw-slice for surviving secrets.
+
+    Walks every ``mcp.servers.*`` and ``skills.entries.*`` entry and returns
+    a HIGH-severity flag for each credential that survived
+    ``catalog_slice._scrub_secret_fields``:
+
+      - ``unscrubbed-credential`` — a secret-shaped field (a key in
+        ``catalog_slice._SECRET_FIELD_NAMES``) whose value contains a
+        non-empty string ANYWHERE inside it. The deep walk catches nested
+        leaks the shallow one-level scrub misses.
+      - ``oauth-client-secret`` — any ``client_secret`` / ``clientSecret``
+        key (case-insensitive) with a non-empty value, anywhere in the slice.
+
+    Returns ``[]`` for a properly-scrubbed slice. The flag snippet is
+    REDACTED — the raw secret never appears in it (see ``_redact``).
+    """
+    # Import here (not module-top) to keep the field-name list single-sourced
+    # in catalog_slice without creating an import cycle at module load.
+    from core.services.catalog_slice import _SECRET_FIELD_NAMES
+
+    flags: list[SafetyFlag] = []
+
+    for path, entry in _walk_slice_entries(openclaw_slice):
+        # Walk the WHOLE entry, not just its top-level fields: a secret-named key
+        # (apiKey/env/headers/webhookToken) nested under a non-secret object
+        # survives the shallow scrub, so a top-level-only check would miss it.
+        for child_path, leaked in _walk_for_secret_fields(entry, path, _SECRET_FIELD_NAMES):
+            flags.append(
+                SafetyFlag(
+                    pattern="unscrubbed-credential",
+                    severity="high",
+                    file=_SLICE_FILE,
+                    line=None,
+                    snippet=f"{child_path} = {_redact(leaked)}",
+                )
+            )
+
+    for child_path, secret in _walk_for_client_secret(openclaw_slice, ""):
+        flags.append(
+            SafetyFlag(
+                pattern="oauth-client-secret",
+                severity="high",
+                file=_SLICE_FILE,
+                line=None,
+                snippet=f"{child_path.lstrip('.')} = {_redact(secret)}",
+            )
+        )
+
+    return flags
+
+
+def has_blocking_credential_findings(flags: Iterable[SafetyFlag]) -> bool:
+    """True if any flag is one of the high-severity slice-credential leak
+    types. Publish is blocked when this returns True.
+    """
+    return any(f.pattern in _BLOCKING_CREDENTIAL_PATTERNS and f.severity == "high" for f in flags)
+
+
 def to_rejection_notes(flags: Iterable[SafetyFlag]) -> str:
     """Format high-severity flags as rejection-note pre-fill copy."""
     high = [f for f in flags if f.severity == "high"]

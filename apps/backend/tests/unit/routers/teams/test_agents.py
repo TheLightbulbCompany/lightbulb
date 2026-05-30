@@ -104,8 +104,13 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     assert r.status_code == 200
     call = admin.create_agent.await_args
     assert call.kwargs["adapter_type"] == "openclaw_gateway"
-    assert call.kwargs["adapter_config"] == {
-        "url": "wss://ws-dev.isol8.co?token=freshly-minted-token",
+    adapter_cfg = dict(call.kwargs["adapter_config"])
+    # devicePrivateKeyPem is a freshly-minted ed25519 key (non-deterministic),
+    # so assert it's a valid PEM separately and compare the stable fields.
+    device_pem = adapter_cfg.pop("devicePrivateKeyPem")
+    assert device_pem.startswith("-----BEGIN PRIVATE KEY-----")
+    assert adapter_cfg == {
+        "url": "wss://ws-dev.isol8.co?token=freshly-minted-token&clientId=paperclip-operator",
         "authToken": "freshly-minted-token",
         "sessionKeyStrategy": "issue",
         "sessionKey": "u1",

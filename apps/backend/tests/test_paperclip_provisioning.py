@@ -221,7 +221,7 @@ async def test_provision_org_happy_path(repo):
     # silently fails on every provision.
     assert agent_kwargs["adapter_type"] == "openclaw_gateway"
     adapter_cfg = agent_kwargs["adapter_config"]
-    assert adapter_cfg["url"] == f"wss://ws-dev.isol8.co?token={adapter_cfg['authToken']}"
+    assert adapter_cfg["url"] == f"wss://ws-dev.isol8.co?token={adapter_cfg['authToken']}&clientId=paperclip-operator"
     assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
     assert agent_kwargs["adapter_config"]["sessionKeyStrategy"] == "issue"
     assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted

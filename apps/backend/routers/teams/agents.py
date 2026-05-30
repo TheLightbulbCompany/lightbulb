@@ -411,7 +411,13 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
                 exc,
             )
 
-    return paperclip_agent
+    # Redact adapterConfig/adapterType before returning, exactly like the read
+    # paths and the /chat websocket create path. Paperclip echoes the full
+    # adapterConfig on create — including the freshly-minted devicePrivateKeyPem
+    # (the operator device's SIGNING key) and authToken — and those must never
+    # reach the browser/DOM, or anyone with the response could impersonate the
+    # agent's operator device.
+    return _redact_agent(paperclip_agent)
 
 
 @router.get("/agents/{agent_id}")

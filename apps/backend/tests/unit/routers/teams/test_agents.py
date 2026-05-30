@@ -122,6 +122,49 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     mint_mock.assert_called_once_with("o1")
 
 
+def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
+    """The create response MUST NOT leak adapterConfig. Paperclip echoes the
+    full config back on create — including the freshly-minted devicePrivateKeyPem
+    (the operator device's signing key) and authToken — so anyone with the
+    response/DOM could otherwise impersonate the operator device. The create path
+    must redact like the read paths do."""
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.create_agent = AsyncMock(
+        return_value={
+            "id": "a_new",
+            "name": "Helper",
+            "adapterType": "openclaw_gateway",
+            "adapterConfig": {
+                "url": "wss://ws-dev.isol8.co?token=t&clientId=paperclip-operator",
+                "authToken": "SECRET-GATEWAY-TOKEN",
+                "devicePrivateKeyPem": "-----BEGIN PRIVATE KEY-----\nLEAKME\n-----END PRIVATE KEY-----\n",
+                "sessionKeyStrategy": "issue",
+                "sessionKey": "u1",
+            },
+        }
+    )
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod.service_token, "mint", MagicMock(return_value="tok"))
+    monkeypatch.setattr(agents_mod, "_gateway_url_for_env", lambda: "wss://ws-dev.isol8.co")
+
+    r = client.post(
+        "/api/v1/teams/agents",
+        json={"name": "Helper", "role": "engineer"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == "a_new"
+    # Sensitive adapter fields stripped from the response.
+    assert "adapterConfig" not in body
+    assert "adapterType" not in body
+    # Belt-and-suspenders: the private key / token text must not appear anywhere.
+    assert "LEAKME" not in r.text
+    assert "SECRET-GATEWAY-TOKEN" not in r.text
+
+
 def test_create_agent_rejects_client_supplied_adapter_type(client):
     r = client.post(
         "/api/v1/teams/agents",

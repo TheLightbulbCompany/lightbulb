@@ -451,17 +451,37 @@ async def ws_message(
         return Response(status_code=200)
 
     # Paperclip operator relay: forward every adapter frame verbatim to the
-    # upstream container. This is a transparent pipe, so it short-circuits
-    # BEFORE the frontend-pool lazy-register and RPC-proxy dispatch below —
-    # the adapter is not a chat client. The signed `connect` frame is the one
-    # exception: it must complete the pending upstream handshake (the relay
-    # already opened the upstream and is awaiting submit_operator_signed_connect),
-    # not be relayed as a steady-state frame.
-    if is_operator_connection(x_connection_id):
-        if msg_type == "req" and body.get("method") == "connect":
-            submit_operator_signed_connect(x_connection_id, body)
+    # upstream container. This is a transparent pipe, so it short-circuits BEFORE
+    # the frontend-pool lazy-register and RPC-proxy dispatch below — the adapter
+    # is not a chat client.
+    #
+    # Identify operator traffic by the PERSISTED connection_type (stored in
+    # DynamoDB at $connect), NOT just the in-process _operator_upstreams map.
+    # The client's WS lives on API Gateway and survives backend task rollovers,
+    # so a $default frame can land on a different task than $connect — where the
+    # relay upstream doesn't exist. Routing on the durable type keeps these
+    # frames out of the cosmetic operator hello-ok stub and the RPC proxy on
+    # EVERY task; without it a connect frame on the wrong task would get a fake
+    # hello-ok while the real upstream (on the $connect task) waits and times out.
+    if connection.get("connection_type") == "operator":
+        if is_operator_connection(x_connection_id):
+            # The relay upstream lives on THIS task: complete the handshake (the
+            # signed `connect` frame) or relay a steady-state frame verbatim.
+            if msg_type == "req" and body.get("method") == "connect":
+                submit_operator_signed_connect(x_connection_id, body)
+            else:
+                await handle_operator_message(x_connection_id, body)
         else:
-            await handle_operator_message(x_connection_id, body)
+            # Relay upstream isn't on this task (cross-task / post-rollover).
+            # Drop rather than fake a hello-ok or forward into the RPC path —
+            # the adapter's reconnect loop re-establishes the relay, and the
+            # next $connect kicks it off again on whichever task handles it.
+            logger.warning(
+                "operator frame for conn=%s (method=%s) with no relay upstream on this task — "
+                "dropping; adapter will retry",
+                x_connection_id[:12] if x_connection_id else "?",
+                body.get("method") if msg_type == "req" else msg_type,
+            )
         return Response(status_code=200)
 
     # Lazy-register the frontend connection with the gateway pool. The

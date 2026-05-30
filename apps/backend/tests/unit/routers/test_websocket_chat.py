@@ -772,7 +772,11 @@ class TestOperatorRelayRouting:
     ):
         """A signed connect frame on an operator relay connection must be routed
         into the pending handshake — NOT answered with the cosmetic hello-ok."""
-        mock_connection_service.get_connection.return_value = {"user_id": "owner-1", "org_id": None}
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "owner-1",
+            "org_id": None,
+            "connection_type": "operator",
+        }
 
         with (
             patch("routers.websocket_chat.is_operator_connection", return_value=True),
@@ -795,7 +799,11 @@ class TestOperatorRelayRouting:
         self, test_app, mock_connection_service, mock_management_api
     ):
         """Steady-state adapter frames (agent runs) relay verbatim upstream."""
-        mock_connection_service.get_connection.return_value = {"user_id": "owner-1", "org_id": None}
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "owner-1",
+            "org_id": None,
+            "connection_type": "operator",
+        }
 
         from unittest.mock import AsyncMock as _AM
 
@@ -812,6 +820,44 @@ class TestOperatorRelayRouting:
 
         assert response.status_code == 200
         mock_relay.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_operator_frame_on_wrong_task_is_dropped_not_stubbed(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """A $default frame can land on a backend task without the in-process
+        relay (cross-task / post-rollover). Identified by the PERSISTED
+        connection_type, it must be DROPPED — never answered with the cosmetic
+        hello-ok and never forwarded to the RPC proxy — so the real upstream on
+        the $connect task isn't stranded waiting on a signed connect it'll never
+        get."""
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "owner-1",
+            "org_id": None,
+            "connection_type": "operator",
+        }
+
+        from unittest.mock import AsyncMock as _AM
+
+        with (
+            patch("routers.websocket_chat.is_operator_connection", return_value=False),
+            patch("routers.websocket_chat.submit_operator_signed_connect") as mock_submit,
+            patch("routers.websocket_chat.handle_operator_message", new=_AM()) as mock_relay,
+            patch("routers.websocket_chat._process_rpc_background") as mock_rpc,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "conn-op"},
+                    json={"type": "req", "id": "c1", "method": "connect", "params": {"role": "operator"}},
+                )
+
+        assert response.status_code == 200
+        # Dropped: no submit, no relay, no RPC dispatch, no cosmetic hello-ok.
+        mock_submit.assert_not_called()
+        mock_relay.assert_not_awaited()
+        mock_rpc.assert_not_called()
+        mock_management_api.send_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_disconnect_tears_down_operator_relay(self, test_app, mock_connection_service, mock_management_api):

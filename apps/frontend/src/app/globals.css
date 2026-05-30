@@ -1066,6 +1066,11 @@ button:focus-visible { border-radius: 999px; }
 .footer-links a::after { content: ''; position: absolute; bottom: -2px; left: 0; width: 0; height: 1px; background: white; transition: width .3s ease; }
 .footer-links a:hover { color: white; }
 .footer-links a:hover::after { width: 100%; }
+.footer-legal-cluster { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; }
+.footer-legal-cluster a { color: rgba(255,255,255,.45); transition: color .15s; text-decoration: none; position: relative; display: inline-block; }
+.footer-legal-cluster a::after { content: ''; position: absolute; bottom: -2px; left: 0; width: 0; height: 1px; background: white; transition: width .3s ease; }
+.footer-legal-cluster a:hover { color: white; }
+.footer-legal-cluster a:hover::after { width: 100%; }
 .footer-copy { font-size: 12px; color: rgba(255,255,255,.4); }
 @media (max-width: 768px) {
   .landing-footer { padding: 32px 20px; }

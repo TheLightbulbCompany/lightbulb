@@ -262,7 +262,7 @@ Detailed, executable task breakdown: **`docs/superpowers/plans/2026-05-29-integr
 - **M3 — Materializer.** Interface + `toml_cli` (generalize `workspace.py:700-786`, for PP CLIs) + `gog_keyring` (for `gog`). Atomic 0600, EFS-chroot, chown 1000.
 - **M4 — Paste-key panel (Bucket A).** Connect/validate/inject API-key integrations behind the registry (unifies `key_service` + channels). Lowest-risk bucket ships the panel UX first.
 - **M5 — OAuth dance scaffolding (Buckets B/C).** Shared PKCE+state DDB store, registry-driven authorize-URL builder, generic `GET /oauth/{provider}/callback`, exchange → vault → `apply_connection`. The one genuinely new piece (~3 days).
-- **M6 — First OAuth integration end-to-end: Google via `gog` (CORRECTED — see the corrected-design section below).** Registry entry + `gog_exec` provisioner (run gog headlessly; the `gog_keyring` file-write materializer is retired) + `XDG_CONFIG_HOME` env (no symlink) + dance + `gog` self-refresh. Optional Task 6.5: central-push inbound Gmail. Smoke in a one-off task, then live in chat. No container restart.
+- **M6 — First OAuth integration end-to-end: Google via `gog` (CORRECTED — see the corrected-design section below).** Registry entry + `gog_cli` materializer (runs gog on the backend against the owner's EFS; the `gog_keyring` file-write materializer is retired) + `XDG_CONFIG_HOME` env (no symlink) + dance + `gog` self-refresh. Optional Task 6.5: central-push inbound Gmail. Smoke in a one-off task, then live in chat. No container restart.
 - **M7 — Connections panel UI.** Frontend list / connect / status / disconnect, modeled on `MyChannelsSection.tsx` + `useChatGPTOAuth.ts`.
 - **M8 — Marketplace `requires.credentials` seam.** Pre-deploy validator blocks deploy + surfaces Connect for missing providers; fill empty slots with the buyer's token on deploy; extend `marketplace_safety` with credential-leak rules.
 
@@ -295,7 +295,7 @@ Two M6 corrections and one resolved open question, all grounded this session (go
 
 ## Open questions
 
-1. **First-provider order** — a uniform PP-TOML CLI (simplest, file-write materializer) vs Google (high value, but a run-the-binary `gog_exec` provisioner, not a file write). The plan builds `toml_cli` first to validate the materialize rail, then the `gog_exec` Google slice (corrected M6).
+1. **First-provider order** — a uniform PP-TOML CLI (simplest, file-write materializer) vs Google (high value, but a run-the-binary `gog_cli` materializer, not a file write). The plan builds `toml_cli` first to validate the materialize rail, then the `gog_cli` Google slice (corrected M6).
 2. **OAuth-provider crossover** — re-run build-vs-Nango when we reach ~5 OAuth providers or accumulate many Actor-B live-token integrations.
 3. **`nango_proxy` trigger** — which (if any) provider is sensitive enough to require tokens-never-on-disk, forcing an early Nango Proxy.
 4. **Registry CI gate scope** — enforce every marketplace-manifest `requires.credentials` + every installed-skill `requires.config` provider has a registry entry.

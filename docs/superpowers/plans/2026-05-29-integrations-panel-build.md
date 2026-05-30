@@ -672,7 +672,7 @@ git commit -m "feat(credentials): materializer base + toml_cli (Printing Press C
 
 ### Task 3.3: `gog_keyring` materializer (Google)
 
-> **⚠️ SUPERSEDED (2026-05-29) — see M6.** This file-write materializer **cannot work**: gog's refresh token lives in a 99designs file-keyring **JWE blob** (PBES2-HS256+A128KW + AES-256-GCM), not a hand-writable `tokens.json`. Google is provisioned by **running gog headlessly in the container** (`gog auth credentials set -` + `gog auth tokens import -`), not by writing files. Build the materializer below if useful for non-keyring CLIs, but the `google` provider wiring uses the `gog_exec` provisioner from M6, and this `gog_keyring` materializer is retired. The original text is kept for history.
+> **⚠️ SUPERSEDED (2026-05-29) — see M6.** This file-write materializer **cannot work**: gog's refresh token lives in a 99designs file-keyring **JWE blob** (PBES2-HS256+A128KW + AES-256-GCM), not a hand-writable `tokens.json`. Google is provisioned by **running the gog binary on the backend against the owner's EFS** (`gog auth credentials set -` + `gog auth tokens import -`), not by hand-writing files. Build the materializer below if useful for non-keyring CLIs, but the `google` provider wiring uses the `gog_cli` materializer from M6, and this `gog_keyring` materializer is retired. The original text is kept for history.
 
 `gog` stores the OAuth **client** in `~/.config/gogcli/config.json` and the **refresh token** in a keyring; the file backend reads `GOG_KEYRING_PASSWORD`. We seed both and inject `GOG_KEYRING_BACKEND=file` + `GOG_KEYRING_PASSWORD` into the container env (per-owner, via `config_patcher` into the agent's run env or the ECS task — choose the EFS-file keyring path so no task redeploy is needed).
 

@@ -55,6 +55,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     environment,
     vpc: network.vpc,
     kmsKeyArn: kmsKey.keyArn,
+    gogKeyringPasswordSecretName: `isol8/${environment}/gog-keyring-password`,
   });
 
   const service = new ServiceStack(app, `Service-${environment}`, {
@@ -94,6 +95,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       encryptionKey: `isol8/${environment}/encryption_key`,
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
+      gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
     },
     kmsKeyArn: kmsKey.keyArn,
     container: {
@@ -211,6 +213,33 @@ describe("ServiceStack — marketplace S3 bucket", () => {
         IgnorePublicAcls: true,
         RestrictPublicBuckets: true,
       },
+    });
+  });
+});
+
+describe("ServiceStack — gog file-keyring password", () => {
+  const template = SERVICE_TEMPLATE_DEV;
+
+  test("backend task def injects GOG_KEYRING_PASSWORD from the shared secret", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Secrets: Match.arrayWith([
+            Match.objectLike({
+              Name: "GOG_KEYRING_PASSWORD",
+              // fromSecretNameV2 renders ValueFrom as a Fn::Join building the
+              // secret ARN; assert the secret name appears inside that join.
+              ValueFrom: Match.objectLike({
+                "Fn::Join": Match.arrayWith([
+                  Match.arrayWith([
+                    Match.stringLikeRegexp("isol8/dev/gog-keyring-password"),
+                  ]),
+                ]),
+              }),
+            }),
+          ]),
+        }),
+      ]),
     });
   });
 });

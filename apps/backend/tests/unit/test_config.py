@@ -37,6 +37,15 @@ def test_stripe_connect_refresh_url_loaded():
     assert settings.STRIPE_CONNECT_REFRESH_URL == "https://example.com/refresh"
 
 
+@patch.dict(os.environ, {"GOG_KEYRING_PASSWORD": "s3cr3t-keyring-pw"})
+def test_gog_keyring_password_env_var_loaded():
+    """The gog_cli materializer reads GOG_KEYRING_PASSWORD to encrypt the
+    owner's Google OAuth keyring with the same value the per-user containers
+    receive; must be loadable from the env CDK injects it through."""
+    settings = Settings()
+    assert settings.GOG_KEYRING_PASSWORD == "s3cr3t-keyring-pw"
+
+
 def test_ws_gateway_url_default_is_wss():
     """WS_GATEWAY_URL must default to a wss:// endpoint so desktop pair flow
     returns a usable URL even when the env var is unset."""

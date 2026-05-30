@@ -35,6 +35,14 @@ export interface SecretNames {
    * the existing `KmsDecryptForSecrets` policy already covers it.
    */
   paperclipServiceTokenKey: string;
+  /**
+   * Shared password for the gog CLI file-keyring backend. The backend
+   * materializes the owner's Google OAuth keyring on EFS by running gog with
+   * this password; the same secret is injected into every per-user OpenClaw
+   * container. Must match the secret name AuthStack creates in the same env
+   * and is encrypted under the same CMK, so `KmsDecryptForSecrets` covers it.
+   */
+  gogKeyringPassword: string;
 }
 
 export interface ServiceStackProps extends cdk.StackProps {
@@ -869,6 +877,19 @@ export class ServiceStack extends cdk.Stack {
             this,
             "ImportPaperclipServiceTokenKey",
             props.secretNames.paperclipServiceTokenKey,
+          ),
+        ),
+        // Shared password for the gog CLI file keyring. The backend's gog_cli
+        // materializer runs gog against the owner's EFS workspace to write the
+        // Google OAuth keyring, which the file-keyring backend encrypts with
+        // this password — the identical value every per-user OpenClaw container
+        // also receives. KMS decrypt is covered by `KmsDecryptForSecrets` below
+        // (same CMK as the other auth secrets).
+        GOG_KEYRING_PASSWORD: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportGogKeyringPassword",
+            props.secretNames.gogKeyringPassword,
           ),
         ),
       },

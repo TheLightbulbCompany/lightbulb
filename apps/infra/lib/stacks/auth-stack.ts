@@ -28,6 +28,7 @@ export class AuthStack extends cdk.Stack {
   public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
+  public readonly gogKeyringPassword: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -124,6 +125,26 @@ export class AuthStack extends cdk.Stack {
       // {"email": "<ADMIN_EMAIL>", "password": "<32-byte-random>"}.
       { passwordLength: 16, excludePunctuation: true },
       "Paperclip bootstrap admin Better Auth credentials (JSON: {email,password}). Populated by bootstrap_paperclip_admin.py — placeholder until then.",
+    );
+
+    // Password the gog CLI's file-keyring backend uses to encrypt/decrypt the
+    // owner's Google OAuth keyring on EFS (GOG_KEYRING_BACKEND=file +
+    // GOG_KEYRING_PASSWORD). The SAME value is injected into both the backend
+    // service (which materializes the keyring by running gog) and every
+    // per-user OpenClaw container (which reads it at runtime).
+    //
+    // CRITICAL: this value must be STABLE forever. If it ever changes, every
+    // keyring already written to EFS becomes undecryptable and owners would
+    // have to re-authorize Google. CDK generates the random string only on
+    // first create (CFN emits just GenerateSecretString and never re-runs it
+    // on stack updates), and we deliberately do NOT enable rotation. Punctuation
+    // is excluded because the value is passed through the container environment,
+    // where shell-special characters would be hazardous.
+    this.gogKeyringPassword = createSecret(
+      "GogKeyringPassword",
+      "gog-keyring-password",
+      { passwordLength: 64, excludePunctuation: true },
+      "Stable password for the gog CLI file-keyring backend (Google OAuth keyring on EFS). Never rotate — rotation orphans every existing keyring.",
     );
 
     // CDK's default GenerateSecretString produces a hex-ish placeholder that

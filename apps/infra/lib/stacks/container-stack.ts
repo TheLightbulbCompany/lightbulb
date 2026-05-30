@@ -169,6 +169,19 @@ export class ContainerStack extends cdk.Stack {
       }),
     );
 
+    // The gog file-keyring password secret is encrypted with the AuthStack CMK
+    // (unlike per-user BYOK secrets, which use the AWS-managed key that
+    // GetSecretValue covers implicitly). Injecting a CMK-encrypted secret needs
+    // an explicit kms:Decrypt on that key. Manual grant (not CDK auto-grant) to
+    // avoid a cross-stack KMS cycle, mirroring the backend service.
+    this.taskExecutionRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "KmsDecryptForSecrets",
+        actions: ["kms:Decrypt"],
+        resources: [props.kmsKeyArn],
+      }),
+    );
+
     // ECS task role (used by the container itself)
     this.taskRole = new iam.Role(this, "TaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
@@ -436,9 +449,10 @@ export class ContainerStack extends cdk.Stack {
         // Password for the gog CLI's file keyring (see XDG_CONFIG_HOME +
         // GOG_KEYRING_BACKEND above). Imported by name — NOT as a cross-stack
         // ISecret — so CDK doesn't auto-grant KMS decrypt on AuthStack's key,
-        // which would create a circular dependency between the stacks. The
-        // per-user execution role already grants secretsmanager:GetSecretValue
-        // on `*`, so no extra IAM is needed here.
+        // which would create a circular dependency between the stacks. Because
+        // this secret is CMK-encrypted, the execution role's explicit
+        // kms:Decrypt grant (KmsDecryptForSecrets above) is what lets ECS
+        // inject it — GetSecretValue alone is not enough for a CMK secret.
         GOG_KEYRING_PASSWORD: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(
             this,

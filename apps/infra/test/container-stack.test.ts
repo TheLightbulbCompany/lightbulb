@@ -189,6 +189,22 @@ describe("ContainerStack — dev", () => {
     });
   });
 
+  test("per-user execution role can kms:Decrypt the CMK to inject the gog secret", () => {
+    // GOG_KEYRING_PASSWORD is encrypted with AuthStack's CMK; without an
+    // explicit kms:Decrypt the ECS agent cannot inject it and every per-user
+    // container launch fails at secret injection. GetSecretValue is not enough.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "KmsDecryptForSecrets",
+            Action: "kms:Decrypt",
+          }),
+        ]),
+      }),
+    });
+  });
+
   test("openclaw container startup no longer runs `clawhub install markdown-converter`", () => {
     // Standalone assertion (independent of the symlink ordering) so
     // future refactors of the command can't accidentally re-introduce

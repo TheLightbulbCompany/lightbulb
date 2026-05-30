@@ -36,10 +36,15 @@ const markdownComponents: Components = {
   ul: ({ children }) => <ul className="list-disc pl-5 text-sm my-1">{children}</ul>,
   ol: ({ children }) => <ol className="list-decimal pl-5 text-sm my-1">{children}</ol>,
   li: ({ children }) => <li className="my-0.5">{children}</li>,
-  code: ({ children }) => (
-    <code className="rounded px-1 py-0.5 text-xs font-mono"
-          style={{ background: "var(--edge)" }}>{children}</code>
-  ),
+  code: ({ className, children }) => {
+    const isBlock = typeof className === "string" && className.includes("language-");
+    return isBlock ? (
+      <code className="font-mono">{children}</code>
+    ) : (
+      <code className="rounded px-1 py-0.5 text-xs font-mono"
+            style={{ background: "var(--edge)" }}>{children}</code>
+    );
+  },
   pre: ({ children }) => (
     <pre className="rounded p-2 text-xs font-mono overflow-x-auto my-2"
          style={{ background: "var(--edge)" }}>{children}</pre>
@@ -54,7 +59,7 @@ export function DocumentRow({ doc, agents }: { doc: IssueDocument; agents: Compa
   const [open, setOpen] = useState(false);
   const when = doc.updatedAt ?? doc.createdAt;
   const titleShown =
-    doc.title && doc.title.trim() && doc.title.trim() !== doc.key.trim()
+    doc.title && doc.title.trim() && doc.title.trim().toLowerCase() !== doc.key.trim().toLowerCase()
       ? doc.title.trim()
       : null;
   const agentName = doc.updatedByAgentId

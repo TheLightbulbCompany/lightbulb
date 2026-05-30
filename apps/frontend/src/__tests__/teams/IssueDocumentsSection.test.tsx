@@ -22,7 +22,7 @@ describe("IssueDocumentsSection", () => {
   it("renders documents newest-first with key badge + title + updated time, collapsed by default", () => {
     read.mockReturnValue({
       data: { documents: [
-        doc("d-old", "report", "# Old body heading", "2026-05-01T00:00:00Z", "Report"),
+        doc("d-old", "report", "# Old body heading", "2026-05-01T00:00:00Z", "Q2 Earnings"),
         doc("d-new", "plan", "## New body heading", "2026-05-03T00:00:00Z"),
       ] },
       isLoading: false, error: null, mutate: vi.fn(),
@@ -32,9 +32,21 @@ describe("IssueDocumentsSection", () => {
     const toggles = screen.getAllByRole("button");
     expect(toggles[0]).toHaveTextContent(/plan/i);   // newest first
     expect(toggles[1]).toHaveTextContent(/report/i);
-    expect(screen.getByText("Report")).toBeInTheDocument();   // title shown when present & != key
+    expect(screen.getByText("Q2 Earnings")).toBeInTheDocument();   // title shown when present & != key
     expect(screen.queryByText("New body heading")).toBeNull(); // collapsed → body not in DOM
     expect(screen.queryByText("Old body heading")).toBeNull();
+  });
+
+  it("hides the title when it case-insensitively matches the key", () => {
+    read.mockReturnValue({
+      data: { documents: [doc("d1", "report", "body", "2026-05-01T00:00:00Z", "Report")] },
+      isLoading: false, error: null, mutate: vi.fn(),
+    });
+    render(<IssueDocumentsSection issueId="iss1" agents={[]} />);
+    // the redundant title "Report" (≈ key "report") is hidden…
+    expect(screen.queryByText("Report")).toBeNull();
+    // …but the key badge ("report") still renders
+    expect(screen.getByRole("button")).toHaveTextContent(/report/i);
   });
 
   it("expands a document to render its markdown body", () => {

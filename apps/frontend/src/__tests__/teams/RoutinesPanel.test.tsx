@@ -49,6 +49,14 @@ describe("RoutinesPanel", () => {
     expect(screen.getByText(/0 9 \* \* \*/)).toBeInTheDocument();
   });
 
+  it("renders an Open link to the routine detail page", () => {
+    render(<RoutinesPanel />);
+    expect(screen.getByRole("link", { name: /open/i })).toHaveAttribute(
+      "href",
+      "/teams/routines/rt1",
+    );
+  });
+
   it("toggle posts PATCH with only {enabled: false}", async () => {
     mockPatch.mockResolvedValue({});
     render(<RoutinesPanel />);

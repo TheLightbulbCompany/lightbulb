@@ -198,6 +198,52 @@ export interface IssueRun {
   createdAt?: string | null;
 }
 
+/** Assignee summary on a routine (upstream RoutineAgentSummary subset). */
+export interface RoutineAgentSummary {
+  id: string;
+  name: string;
+  role?: string;
+  title?: string | null;
+}
+
+/** A routine trigger / schedule (upstream RoutineTrigger subset). */
+export interface RoutineTriggerSummary {
+  id: string;
+  kind: string;
+  label?: string | null;
+  enabled?: boolean;
+  cronExpression?: string | null;
+  timezone?: string | null;
+  nextRunAt?: string | null;
+}
+
+/** Single routine from GET /routines/{id} (upstream RoutineDetail subset). */
+export interface RoutineDetail {
+  id: string;
+  title: string;
+  status?: string | null;
+  description?: string | null;
+  assigneeAgentId?: string | null;
+  assignee?: RoutineAgentSummary | null;
+  triggers?: RoutineTriggerSummary[];
+}
+
+/** A routine run (upstream RoutineRunSummary subset). `status`/`source` are free strings. */
+export interface RoutineRun {
+  id: string;
+  source: string;
+  status: string;
+  triggeredAt?: string | null;
+  completedAt?: string | null;
+  failureReason?: string | null;
+  linkedIssue?: {
+    id: string;
+    identifier?: string | null;
+    title?: string | null;
+  } | null;
+  trigger?: { id: string; kind: string; label?: string | null } | null;
+}
+
 /** A document attached to an issue (upstream IssueDocument subset). `body` is inline markdown. */
 export interface IssueDocument {
   id: string;

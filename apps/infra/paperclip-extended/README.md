@@ -62,6 +62,31 @@ aws ecr create-repository --repository-name isol8/paperclip-extended \
   --profile isol8-admin --region us-east-1
 ```
 
+**Pre-grant the builder role's push at the same time.** The build workflow
+pushes as the `isol8-openclaw-image-builder` OIDC role. That role's push grant on
+this repo is added by `container-stack.ts` (`grantPullPush`) and only lands via the
+`deploy.yml` CDK pipeline. On the introducing merge, `build-paperclip-image`
+(triggered by the Dockerfile / version-file change) races that CDK deploy and the
+first push fails `AccessDenied` until the stack update has run once. Avoid the race
+by attaching a repository policy when you create the repo, so the first build can
+push regardless of CDK timing (the CDK identity grant then layers on as the durable
+source of truth):
+
+```
+aws ecr set-repository-policy --repository-name isol8/paperclip-extended \
+  --profile isol8-admin --region us-east-1 \
+  --policy-text '{"Version":"2012-10-17","Statement":[{"Sid":"BuilderPush",
+    "Effect":"Allow",
+    "Principal":{"AWS":"arn:aws:iam::877352799272:role/isol8-openclaw-image-builder"},
+    "Action":["ecr:BatchCheckLayerAvailability","ecr:InitiateLayerUpload",
+      "ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage"]}]}'
+```
+
+(`ecr:GetAuthorizationToken` is registry-level and the builder role already holds it
+from the `openclaw-extended` grant, so the repo policy only needs the push actions.)
+Alternatively, let the `deploy.yml` ContainerStack update land once before the first
+image build and skip the repo policy.
+
 ### Bumping the base image
 Re-pin `paperclip-version.json#upstream` to a newer digest — that's the only
 place the base digest lives; the workflow feeds it to the Dockerfile `FROM` via

@@ -31,6 +31,14 @@ from core.services.node_proxy import (
     is_node_connection,
     submit_signed_connect as submit_node_signed_connect,
 )
+from core.services.operator_proxy import (
+    handle_operator_connect,
+    handle_operator_message,
+    handle_operator_disconnect,
+    is_operator_connection,
+    submit_operator_signed_connect,
+)
+from core.services.paperclip_adapter_config import PAPERCLIP_OPERATOR_CLIENT_ID
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie
@@ -150,7 +158,10 @@ async def ws_connect(
     )
 
     is_node_host = x_client_id in NODE_HOST_CLIENT_IDS
+    is_operator_relay = x_client_id == PAPERCLIP_OPERATOR_CLIENT_ID
     # Route by owner_id: org_id for org members, user_id for personal.
+    # Paperclip service tokens resolve to userId=<owner_id>, orgId="" at the
+    # authorizer, so owner_id is the container owner either way.
     owner_id = x_org_id or x_user_id
 
     connection_service = await get_connection_service()
@@ -158,18 +169,24 @@ async def ws_connect(
         connection_id=x_connection_id,
         user_id=x_user_id,
         org_id=x_org_id,
-        connection_type="node" if is_node_host else "chat",
+        connection_type=("operator" if is_operator_relay else "node" if is_node_host else "chat"),
     )
 
-    try:
-        pool = get_gateway_pool()
-        # Pass member_id so the pool can route streaming events to the
-        # specific org member who initiated each chat, not broadcast to
-        # all members. For personal users member_id == owner_id so it's
-        # harmless (the filter matches all connections).
-        pool.add_frontend_connection(owner_id, x_connection_id, member_id=x_user_id)
-    except Exception as e:
-        logger.warning("Failed to register frontend connection with pool: %s", e)
+    # Operator-relay connections (Paperclip adapter) are NOT frontend chat
+    # connections: their frames flow through the dedicated upstream relay's
+    # push callback, never the pool's broadcast fanout. Keep them out of
+    # _frontend_connections so owner chat broadcasts don't bleed onto the
+    # adapter socket.
+    if not is_operator_relay:
+        try:
+            pool = get_gateway_pool()
+            # Pass member_id so the pool can route streaming events to the
+            # specific org member who initiated each chat, not broadcast to
+            # all members. For personal users member_id == owner_id so it's
+            # harmless (the filter matches all connections).
+            pool.add_frontend_connection(owner_id, x_connection_id, member_id=x_user_id)
+        except Exception as e:
+            logger.warning("Failed to register frontend connection with pool: %s", e)
 
     # Branch on client type:
     #
@@ -188,7 +205,21 @@ async def ws_connect(
     #   relay; we kick off `handle_node_connect` here on `$connect` and the
     #   subprocess's signed-connect frame is the FIRST and ONLY `connect`
     #   frame the `$default` handler sees.
-    if is_node_host:
+    #
+    # - paperclip-operator clients (the Paperclip agent adapter): same
+    #   upstream-relay shape as node-host, but a headless operator with no
+    #   local tool host. The adapter waits for the container's real
+    #   `connect.challenge` to compute its device signature, so a synthetic
+    #   nonce / cosmetic hello-ok would brick the handshake — kick off the
+    #   transparent operator relay here instead.
+    if is_operator_relay:
+        background_tasks.add_task(
+            _kick_off_operator_connect,
+            connection_id=x_connection_id,
+            owner_id=owner_id,
+            user_id=x_user_id,
+        )
+    elif is_node_host:
         background_tasks.add_task(
             _kick_off_node_connect,
             connection_id=x_connection_id,
@@ -244,6 +275,40 @@ async def _kick_off_node_connect(
         )
 
 
+async def _kick_off_operator_connect(
+    *,
+    connection_id: str,
+    owner_id: str,
+    user_id: str,
+) -> None:
+    """Start the Paperclip-operator upstream relay handshake on `$connect`.
+
+    Mirrors `_kick_off_node_connect`: the adapter (an OpenClaw gateway client)
+    blocks on the container's `connect.challenge` before it signs, so SOMETHING
+    must open the upstream container WS to surface that nonce. Errors are
+    swallowed (logged); the adapter retries via its own reconnect loop.
+    """
+    try:
+        management_api = await get_management_api_client()
+        await handle_operator_connect(
+            owner_id=owner_id,
+            user_id=user_id,
+            connection_id=connection_id,
+            connect_params={
+                "role": "operator",
+                "client": {"id": PAPERCLIP_OPERATOR_CLIENT_ID, "mode": "backend"},
+            },
+            management_api=management_api,
+        )
+    except Exception as e:
+        logger.warning(
+            "paperclip-operator connect failed for owner=%s conn=%s: %s",
+            owner_id,
+            connection_id[:12],
+            e,
+        )
+
+
 @router.post(
     "/disconnect",
     status_code=200,
@@ -294,9 +359,12 @@ async def ws_disconnect(
                     )
 
             # Additionally tear down the node upstream + per-user state
-            # if this was a node connection.
+            # if this was a node connection, or the operator relay upstream
+            # if this was a Paperclip adapter connection.
             if is_node_connection(x_connection_id):
                 await handle_node_disconnect(x_connection_id, owner_id, user_id)
+            elif is_operator_connection(x_connection_id):
+                await handle_operator_disconnect(x_connection_id)
     except Exception as e:
         logger.warning("Failed to unregister frontend connection from pool: %s", e)
 
@@ -379,6 +447,20 @@ async def ws_message(
                     "teams.dispatch",
                     dimensions={"type": msg_type, "outcome": "error"},
                 )
+        return Response(status_code=200)
+
+    # Paperclip operator relay: forward every adapter frame verbatim to the
+    # upstream container. This is a transparent pipe, so it short-circuits
+    # BEFORE the frontend-pool lazy-register and RPC-proxy dispatch below —
+    # the adapter is not a chat client. The signed `connect` frame is the one
+    # exception: it must complete the pending upstream handshake (the relay
+    # already opened the upstream and is awaiting submit_operator_signed_connect),
+    # not be relayed as a steady-state frame.
+    if is_operator_connection(x_connection_id):
+        if msg_type == "req" and body.get("method") == "connect":
+            submit_operator_signed_connect(x_connection_id, body)
+        else:
+            await handle_operator_message(x_connection_id, body)
         return Response(status_code=200)
 
     # Lazy-register the frontend connection with the gateway pool. The

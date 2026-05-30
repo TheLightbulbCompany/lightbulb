@@ -676,3 +676,159 @@ class TestSessionBindsToCliDevice:
         assert 'node_info["deviceId"]' in src or "node_info['deviceId']" in src, (
             "session-binding must read deviceId from the cli-node entry, not the transient nodeId alias."
         )
+
+
+class TestOperatorRelayRouting:
+    """Routing for the Paperclip operator relay (clientId=paperclip-operator).
+
+    The adapter runs a REAL device-auth handshake against the container, so it
+    must be wired to the transparent operator relay — NOT the cosmetic
+    operator hello-ok stub (which is for the control-UI / webchat SPA).
+    """
+
+    @pytest.mark.asyncio
+    async def test_connect_marks_operator_client_as_operator_type(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        with patch("routers.websocket_chat.handle_operator_connect"):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/connect",
+                    headers={
+                        "x-connection-id": "conn-op",
+                        "x-user-id": "owner-1",
+                        "x-client-id": "paperclip-operator",
+                    },
+                )
+
+        assert response.status_code == 200
+        mock_connection_service.store_connection.assert_called_once_with(
+            connection_id="conn-op",
+            user_id="owner-1",
+            org_id=None,
+            connection_type="operator",
+        )
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_synthetic_challenge_for_operator(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """No synthetic connect.challenge for the adapter — the real nonce
+        comes from the upstream container via the relay."""
+        with patch("routers.websocket_chat.handle_operator_connect"):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                await client.post(
+                    "/ws/connect",
+                    headers={
+                        "x-connection-id": "conn-op",
+                        "x-user-id": "owner-1",
+                        "x-client-id": "paperclip-operator",
+                    },
+                )
+        mock_management_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_pool_registration_for_operator(
+        self, test_app, mock_connection_service, mock_management_api, mock_gateway_pool
+    ):
+        """Operator relay connections must NOT join the frontend fanout pool —
+        their frames flow through the relay push callback, not pool broadcasts."""
+        with patch("routers.websocket_chat.handle_operator_connect"):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                await client.post(
+                    "/ws/connect",
+                    headers={
+                        "x-connection-id": "conn-op",
+                        "x-user-id": "owner-1",
+                        "x-client-id": "paperclip-operator",
+                    },
+                )
+        mock_gateway_pool.add_frontend_connection.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_kicks_off_operator_relay(self, test_app, mock_connection_service, mock_management_api):
+        with patch("routers.websocket_chat.handle_operator_connect") as mock_connect:
+            from unittest.mock import AsyncMock as _AM
+
+            mock_connect.side_effect = _AM(return_value=None)
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                await client.post(
+                    "/ws/connect",
+                    headers={
+                        "x-connection-id": "conn-op",
+                        "x-user-id": "owner-1",
+                        "x-client-id": "paperclip-operator",
+                    },
+                )
+        # Background task ran the relay kickoff against the owner's container.
+        mock_connect.assert_called_once()
+        kwargs = mock_connect.call_args.kwargs
+        assert kwargs["owner_id"] == "owner-1"
+        assert kwargs["connection_id"] == "conn-op"
+
+    @pytest.mark.asyncio
+    async def test_operator_connect_frame_routes_to_submit_not_stub(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """A signed connect frame on an operator relay connection must be routed
+        into the pending handshake — NOT answered with the cosmetic hello-ok."""
+        mock_connection_service.get_connection.return_value = {"user_id": "owner-1", "org_id": None}
+
+        with (
+            patch("routers.websocket_chat.is_operator_connection", return_value=True),
+            patch("routers.websocket_chat.submit_operator_signed_connect") as mock_submit,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "conn-op"},
+                    json={"type": "req", "id": "c1", "method": "connect", "params": {"role": "operator"}},
+                )
+
+        assert response.status_code == 200
+        mock_submit.assert_called_once()
+        # The cosmetic operator hello-ok stub must NOT have fired.
+        mock_management_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_operator_noncon_frame_relays_to_upstream(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """Steady-state adapter frames (agent runs) relay verbatim upstream."""
+        mock_connection_service.get_connection.return_value = {"user_id": "owner-1", "org_id": None}
+
+        from unittest.mock import AsyncMock as _AM
+
+        with (
+            patch("routers.websocket_chat.is_operator_connection", return_value=True),
+            patch("routers.websocket_chat.handle_operator_message", new=_AM()) as mock_relay,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "conn-op"},
+                    json={"type": "req", "id": "r1", "method": "agent", "params": {"message": "hi"}},
+                )
+
+        assert response.status_code == 200
+        mock_relay.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_tears_down_operator_relay(self, test_app, mock_connection_service, mock_management_api):
+        mock_connection_service.get_connection.return_value = {"user_id": "owner-1", "org_id": None}
+
+        from unittest.mock import AsyncMock as _AM
+
+        with (
+            patch("routers.websocket_chat.is_node_connection", return_value=False),
+            patch("routers.websocket_chat.is_operator_connection", return_value=True),
+            patch("routers.websocket_chat.handle_operator_disconnect", new=_AM()) as mock_td,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/disconnect",
+                    headers={"x-connection-id": "conn-op"},
+                )
+
+        assert response.status_code == 200
+        mock_td.assert_awaited_once_with("conn-op")

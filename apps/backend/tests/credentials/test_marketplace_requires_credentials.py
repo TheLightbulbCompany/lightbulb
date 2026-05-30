@@ -24,6 +24,7 @@ import pytest  # noqa: E402
 
 from core.services.catalog_service import (  # noqa: E402
     MissingCredentialsError,
+    _fill_buyer_credential_slots,
     assert_credentials_satisfied,
 )
 
@@ -223,3 +224,149 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
     # Orphan Paperclip agent rolled back.
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "agent_orphan_1"
+
+
+# ---------------------------------------------------------------------------
+# Buyer credential slot-fill (post-merge)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slot_fill_applies_retained_paste_credential(monkeypatch):
+    """A connected paste provider in the slice gets its slot filled.
+
+    Stripe is paste_token + openclaw_paths + refresh_owner=none, so the vault
+    RETAINS the token (the row carries credential_enc). The slice scrubs the
+    MCP env to "", so the buyer's own token must be re-applied into the freshly
+    deployed slot via apply_connection.
+    """
+    row = {"provider": "stripe", "status": "connected", "credential_enc": "enc-blob"}
+    decrypted = {"token": "sk_live_buyer"}
+    get_mock = AsyncMock(return_value=row)
+    decrypt_mock = MagicMock(return_value=decrypted)
+    apply_mock = AsyncMock()
+    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
+    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr(
+        "core.services.credentials.apply_connection.apply_connection",
+        apply_mock,
+    )
+
+    slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_SECRET_KEY": ""}}}}}
+
+    await _fill_buyer_credential_slots("owner_1", slice_)
+
+    decrypt_mock.assert_called_once_with(row)
+    apply_mock.assert_awaited_once_with("owner_1", "stripe", decrypted)
+
+
+@pytest.mark.asyncio
+async def test_slot_fill_skips_scrubbed_actor_provider(monkeypatch):
+    """An actor/materializer provider whose vault secret was scrubbed is skipped.
+
+    Google is direct_oauth + materializer + refresh_owner=actor. After connect
+    its vault secret is dropped (M6 non-retention), so the row has status
+    connected but NO credential_enc and decrypt_credential would RAISE. The
+    slot-fill must skip it WITHOUT calling decrypt_credential or apply_connection
+    — its credential is the owner-scoped EFS gog keyring, not a per-agent slot.
+    This is the load-bearing non-retention guard.
+    """
+    row = {"provider": "google", "status": "connected", "secret_retained": False}
+    get_mock = AsyncMock(return_value=row)
+    # decrypt_credential RAISES on a scrubbed row — if it's ever called the
+    # guard is broken, so wire it to blow up rather than return a sentinel.
+    decrypt_mock = MagicMock(side_effect=ValueError("connection record has no credential_enc"))
+    apply_mock = AsyncMock()
+    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
+    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr(
+        "core.services.credentials.apply_connection.apply_connection",
+        apply_mock,
+    )
+
+    slice_ = {"mcp": {"servers": {"google": {"command": "gog"}}}}
+
+    await _fill_buyer_credential_slots("owner_1", slice_)
+
+    decrypt_mock.assert_not_called()
+    apply_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slot_fill_skips_unconnected_provider(monkeypatch):
+    """A provider with no connection row (or non-connected status) is skipped."""
+    get_mock = AsyncMock(return_value=None)
+    decrypt_mock = MagicMock()
+    apply_mock = AsyncMock()
+    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
+    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr(
+        "core.services.credentials.apply_connection.apply_connection",
+        apply_mock,
+    )
+
+    slice_ = {"mcp": {"servers": {"stripe": {"env": {"STRIPE_SECRET_KEY": ""}}}}}
+
+    await _fill_buyer_credential_slots("owner_1", slice_)
+
+    decrypt_mock.assert_not_called()
+    apply_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slot_fill_skips_non_registry_mcp_server(monkeypatch):
+    """A custom/unknown MCP server (not a registry provider) is never touched."""
+    get_mock = AsyncMock(return_value={"provider": "x", "status": "connected", "credential_enc": "e"})
+    decrypt_mock = MagicMock()
+    apply_mock = AsyncMock()
+    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
+    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr(
+        "core.services.credentials.apply_connection.apply_connection",
+        apply_mock,
+    )
+
+    slice_ = {"mcp": {"servers": {"my-custom-mcp": {"command": "x"}}}}
+
+    await _fill_buyer_credential_slots("owner_1", slice_)
+
+    get_mock.assert_not_awaited()
+    apply_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slot_fill_one_provider_failure_does_not_abort_others(monkeypatch):
+    """A single provider's fill failure is logged + swallowed; others still fill.
+
+    The agent is already deployed by the time slot-fill runs, so a fill failure
+    is degraded (the buyer can re-connect) — not fatal. One provider raising must
+    not prevent another's slot from being filled.
+    """
+    rows = {
+        "stripe": {"provider": "stripe", "status": "connected", "credential_enc": "enc-s"},
+        "linear": {"provider": "linear", "status": "connected", "credential_enc": "enc-l"},
+    }
+    get_mock = AsyncMock(side_effect=lambda owner, prov: rows[prov])
+    decrypt_mock = MagicMock(side_effect=lambda r: {"token": f"tok-{r['provider']}"})
+
+    async def _apply(owner, prov, cred):
+        if prov == "stripe":
+            raise RuntimeError("boom")
+
+    apply_mock = AsyncMock(side_effect=_apply)
+    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
+    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr(
+        "core.services.credentials.apply_connection.apply_connection",
+        apply_mock,
+    )
+
+    slice_ = {"mcp": {"servers": {"stripe": {}, "linear": {}}}}
+
+    # Must not raise despite stripe blowing up.
+    await _fill_buyer_credential_slots("owner_1", slice_)
+
+    # Both were attempted; linear succeeded.
+    assert apply_mock.await_count == 2
+    applied_providers = {call.args[1] for call in apply_mock.await_args_list}
+    assert applied_providers == {"stripe", "linear"}

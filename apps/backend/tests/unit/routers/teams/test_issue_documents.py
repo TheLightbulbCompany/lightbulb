@@ -9,8 +9,9 @@ from routers.teams.deps import TeamsContext
 
 @pytest.fixture
 def teams_ctx():
-    return TeamsContext(user_id="u1", org_id="o1", owner_id="o1", company_id="co_abc",
-                        paperclip_user_id="pcu", session_cookie="cookie")
+    return TeamsContext(
+        user_id="u1", org_id="o1", owner_id="o1", company_id="co_abc", paperclip_user_id="pcu", session_cookie="cookie"
+    )
 
 
 @pytest.fixture
@@ -29,10 +30,9 @@ def client(teams_ctx):
 
 def test_list_issue_documents_forwards_and_envelopes(client, monkeypatch):
     admin = MagicMock()
-    admin.list_issue_documents = AsyncMock(
-        return_value=[{"id": "d1", "key": "plan"}, {"id": "d2", "key": "report"}]
-    )
+    admin.list_issue_documents = AsyncMock(return_value=[{"id": "d1", "key": "plan"}, {"id": "d2", "key": "report"}])
     from routers.teams import agents as agents_mod
+
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     r = client.get("/api/v1/teams/issues/iss1/documents", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200

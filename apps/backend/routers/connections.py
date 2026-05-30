@@ -118,7 +118,11 @@ async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user
     if p.wiring.materializer:
         row = await connection_repo.get(owner_id, provider)
         if row:
-            cred = connection_repo.decrypt_credential(row)
+            # A non-retention scrub (refresh_owner: actor) removes credential_enc
+            # but keeps the row. The materializer remover deletes the on-disk
+            # artifact by owner/provider and does not need the secret, so fall
+            # back to an empty credential instead of failing the disconnect.
+            cred = connection_repo.decrypt_credential(row) if row.get("credential_enc") else {}
             remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
             if remover:
                 remover(owner_id, provider, cred)

@@ -6,7 +6,7 @@ mode, owner_id == "user_test_123"). Async repo / apply calls are patched with
 ``AsyncMock`` so the awaits resolve.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -304,6 +304,32 @@ class TestDisconnect:
         mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
         # No openclaw_paths on a materializer provider -> nothing blanked.
         mock_patcher.set_openclaw_config_path.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.connection_repo")
+    async def test_disconnect_scrubbed_row_removes_without_decrypt(
+        self, mock_repo, mock_patcher, mock_removers, async_client
+    ):
+        # A non-retention scrub (refresh_owner: actor) left the row with no
+        # credential_enc. Disconnect must still clean up the on-disk artifact
+        # without trying to decrypt the absent secret (which would 500).
+        row = {"owner_id": "user_test_123", "provider": "google", "secret_retained": False}
+        mock_repo.get = AsyncMock(return_value=row)
+        mock_repo.decrypt_credential = MagicMock()
+        mock_repo.delete = AsyncMock()
+        remover = mock_removers.get.return_value
+        mock_patcher.set_openclaw_config_path = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google")
+        assert response.status_code == 200
+
+        # No secret on the row -> never decrypt; remover gets an empty credential.
+        mock_repo.decrypt_credential.assert_not_called()
+        mock_removers.get.assert_called_once_with("gog_cli")
+        remover.assert_called_once_with("user_test_123", "google", {})
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
 
     @pytest.mark.asyncio
     @patch("routers.connections.MATERIALIZER_REMOVERS")

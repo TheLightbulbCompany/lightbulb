@@ -45,6 +45,79 @@ from typing import Any, Awaitable, Callable
 _AGENT_DIR_SENTINEL = "__AGENT_DIR__"
 
 
+class MissingCredentialsError(Exception):
+    """Raised when a deploy targets providers the buyer hasn't connected.
+
+    Plain typed exception (not HTTPException) so catalog_service stays
+    HTTP-agnostic — the router maps this to a 409. Carries the sorted list
+    of missing provider keys so the UI can route the buyer straight to the
+    integrations panel for exactly those providers.
+    """
+
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__(f"missing required credentials: {', '.join(missing)}")
+
+
+async def assert_credentials_satisfied(
+    owner_id: str,
+    manifest: dict,
+    slice_: dict | None = None,
+) -> None:
+    """Block a deploy when the agent needs providers the buyer hasn't connected.
+
+    The required set is the union of two sources:
+      1. Explicit ``manifest.requires.credentials`` entries whose ``optional``
+         flag is falsy — the seller's declared hard dependencies.
+      2. Providers *implied* by the slice's bundled MCP servers. A registry
+         MCP server's key equals its provider key (e.g. ``mcp.servers.stripe``
+         → provider ``stripe``), and catalog_slice scrubs the secret values
+         while keeping the keys, so an unconnected provider would otherwise
+         deploy an MCP that 401s on first use. We only count slice MCP keys
+         that are known registry providers — arbitrary/custom MCP servers
+         aren't credential-gated here.
+
+    A provider is "connected" when the owner has a connections row for it
+    whose status is ``connected`` (the default written by connection_repo.put).
+    Raises ``MissingCredentialsError`` (sorted, deduped) when any required
+    provider is unconnected; returns ``None`` when all are satisfied.
+    """
+    from core.repositories import connection_repo
+    from core.services.credentials import registry
+
+    known_providers = registry.all_providers()
+
+    required: set[str] = set()
+    for entry in (manifest or {}).get("requires", {}).get("credentials", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("optional"):
+            continue
+        provider = entry.get("provider")
+        if provider:
+            required.add(provider)
+
+    # The slice's MCP servers live under ``mcp.servers`` (nested dict — same
+    # path _substitute_agent_dir_sentinel reads). A server key that matches a
+    # registry provider key implies that credential is needed.
+    mcp_servers = ((slice_ or {}).get("mcp") or {}).get("servers") or {}
+    if isinstance(mcp_servers, dict):
+        required |= {key for key in mcp_servers if key in known_providers}
+
+    if not required:
+        return
+
+    connected = {
+        row["provider"]
+        for row in await connection_repo.list_for_owner(owner_id)
+        if row.get("provider") and row.get("status", "connected") == "connected"
+    }
+
+    missing = sorted(required - connected)
+    if missing:
+        raise MissingCredentialsError(missing)
+
+
 def _substitute_agent_dir_sentinel(mcp_patch: dict | None, new_agent_id: str) -> dict | None:
     """In-place substitute ``__AGENT_DIR__`` → ``new_agent_id`` in any
     ``args`` entry of every mcp.servers.X dict. Returns the patch
@@ -196,6 +269,13 @@ class CatalogService:
         """
         if new_agent_id is None:
             new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
+
+        # Credential gate — runs before any EFS / gateway side effect so a
+        # blocked deploy leaves no partial state. The buyer must have
+        # connected every provider the agent hard-depends on (declared in the
+        # manifest or implied by the bundled MCP servers); otherwise the agent
+        # would deploy and immediately fail on its first credentialed call.
+        await assert_credentials_satisfied(owner_id, manifest, slice_)
 
         self._workspace.extract_tarball_to_workspace(
             user_id=owner_id,

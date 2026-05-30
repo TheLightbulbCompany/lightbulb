@@ -92,6 +92,29 @@ class ListingUpdate(BaseModel):
         return [t.lower().strip() for t in v if t.strip()]
 
 
+class CredentialRequirement(BaseModel):
+    """A single third-party provider a listing's agent needs connected.
+
+    ``provider`` is a credential-registry key (linear / stripe / google / …).
+    ``optional`` marks integrations the agent can run without — those never
+    block a deploy, they're surfaced as "nice to connect" hints only.
+    """
+
+    provider: str
+    optional: bool = False
+
+
+class Requires(BaseModel):
+    """The ``requires`` block a listing manifest may carry.
+
+    Declares which providers the buyer must connect before the agent will
+    function. Drives the pre-deploy credential gate (a deploy is blocked
+    with 409 when a non-optional provider here is unconnected).
+    """
+
+    credentials: list[CredentialRequirement] = Field(default_factory=list)
+
+
 class CheckoutRequest(BaseModel):
     listing_slug: str
     success_url: str

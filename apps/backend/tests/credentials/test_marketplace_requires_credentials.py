@@ -1,0 +1,225 @@
+"""Pre-deploy credential gate.
+
+A marketplace listing can declare third-party providers its agent needs
+(``manifest.requires.credentials``) or bundle registry MCP servers in its
+slice. Deploying into a buyer's container before those providers are
+connected lands an agent that 401s on first use, so the gate blocks the
+deploy with a 409 listing exactly which providers to connect.
+
+Covers:
+  - manifest-declared provider not connected -> MissingCredentialsError
+  - everything connected -> no raise
+  - optional provider unconnected -> no raise
+  - slice ``mcp.servers.stripe`` (registry provider) unconnected -> missing
+  - router maps the error to 409 AND rolls back the orphan Paperclip agent
+"""
+
+import os
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
+
+import pytest  # noqa: E402
+
+from core.services.catalog_service import (  # noqa: E402
+    MissingCredentialsError,
+    assert_credentials_satisfied,
+)
+
+
+def _connected_rows(*providers: str) -> list[dict]:
+    return [{"owner_id": "owner_1", "provider": p, "status": "connected"} for p in providers]
+
+
+# ---------------------------------------------------------------------------
+# Validator
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deploy_blocked_when_required_provider_not_connected(monkeypatch):
+    """Manifest declares a hard dependency the buyer hasn't connected."""
+    monkeypatch.setattr(
+        "core.repositories.connection_repo.list_for_owner",
+        AsyncMock(return_value=[]),
+    )
+    manifest = {"requires": {"credentials": [{"provider": "greenhouse"}]}}
+
+    with pytest.raises(MissingCredentialsError) as excinfo:
+        await assert_credentials_satisfied("owner_1", manifest, slice_=None)
+
+    assert "greenhouse" in excinfo.value.missing
+
+
+@pytest.mark.asyncio
+async def test_deploy_allowed_when_connected(monkeypatch):
+    """All required providers connected -> no raise."""
+    monkeypatch.setattr(
+        "core.repositories.connection_repo.list_for_owner",
+        AsyncMock(return_value=_connected_rows("greenhouse")),
+    )
+    manifest = {"requires": {"credentials": [{"provider": "greenhouse"}]}}
+
+    # Must not raise.
+    await assert_credentials_satisfied("owner_1", manifest, slice_=None)
+
+
+@pytest.mark.asyncio
+async def test_optional_provider_never_blocks(monkeypatch):
+    """An optional credential is a hint, not a gate — never blocks deploy."""
+    monkeypatch.setattr(
+        "core.repositories.connection_repo.list_for_owner",
+        AsyncMock(return_value=[]),
+    )
+    manifest = {"requires": {"credentials": [{"provider": "greenhouse", "optional": True}]}}
+
+    await assert_credentials_satisfied("owner_1", manifest, slice_=None)
+
+
+@pytest.mark.asyncio
+async def test_slice_mcp_server_derives_requirement(monkeypatch):
+    """A bundled registry MCP server (mcp.servers.stripe) implies its provider.
+
+    The seller bundled the Stripe MCP; its env secrets are scrubbed in the
+    slice. Without a connected ``stripe`` credential the deploy must block.
+    """
+    monkeypatch.setattr(
+        "core.repositories.connection_repo.list_for_owner",
+        AsyncMock(return_value=[]),
+    )
+    slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_API_KEY": ""}}}}}
+
+    with pytest.raises(MissingCredentialsError) as excinfo:
+        await assert_credentials_satisfied("owner_1", {}, slice_=slice_)
+
+    assert "stripe" in excinfo.value.missing
+
+
+@pytest.mark.asyncio
+async def test_slice_mcp_non_registry_server_not_gated(monkeypatch):
+    """Custom/unknown MCP servers aren't credential-gated by the registry path."""
+    monkeypatch.setattr(
+        "core.repositories.connection_repo.list_for_owner",
+        AsyncMock(return_value=[]),
+    )
+    slice_ = {"mcp": {"servers": {"my-custom-mcp": {"command": "x"}}}}
+
+    # No registry provider implied -> nothing required -> no raise.
+    await assert_credentials_satisfied("owner_1", {}, slice_=slice_)
+
+
+@pytest.mark.asyncio
+async def test_non_connected_status_does_not_satisfy(monkeypatch):
+    """A row whose status isn't 'connected' (e.g. pending/expired) doesn't count."""
+    monkeypatch.setattr(
+        "core.repositories.connection_repo.list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "expired"}]),
+    )
+    slice_ = {"mcp": {"servers": {"stripe": {}}}}
+
+    with pytest.raises(MissingCredentialsError) as excinfo:
+        await assert_credentials_satisfied("owner_1", {}, slice_=slice_)
+
+    assert excinfo.value.missing == ["stripe"]
+
+
+# ---------------------------------------------------------------------------
+# Router 409 + Paperclip rollback
+# ---------------------------------------------------------------------------
+
+
+def _published_listing() -> dict:
+    return {
+        "listing_id": "lst_1",
+        "seller_id": "seller_x",
+        "version": 1,
+        "slug": "demo-agent",
+        "name": "Demo Agent",
+        "status": "published",
+        "price_cents": 0,
+        "s3_prefix": "listings/lst_1/v1/",
+        "manifest_json": {
+            "name": "Demo Agent",
+            "format": "openclaw",
+            "requires": {"credentials": [{"provider": "stripe"}]},
+        },
+    }
+
+
+def _stub_s3_with_slice(slice_: dict) -> MagicMock:
+    import json as _json
+
+    s3 = MagicMock()
+
+    def _get_object(*, Bucket: str, Key: str):
+        body = MagicMock()
+        if Key.endswith("workspace.tar.gz"):
+            body.read.return_value = b"fake-tar"
+        else:
+            body.read.return_value = _json.dumps(slice_).encode("utf-8")
+        return {"Body": body}
+
+    s3.get_object.side_effect = _get_object
+    return s3
+
+
+def _stub_ecs():
+    mgr = MagicMock()
+    mgr.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-tok"}, "10.0.0.1"))
+    return mgr
+
+
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_deploy_returns_409_and_rolls_back_when_credential_missing(
+    mock_get_by_slug,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_delete_pc,
+    client,
+    monkeypatch,
+):
+    """Missing-credential deploy -> 409 with the missing list, orphan agent rolled back.
+
+    The real catalog service runs the gate; nothing is connected, so
+    deploy_from_artifact raises MissingCredentialsError. The router must map
+    that to 409 AND delete the pre-minted Paperclip agent (the gate runs
+    before any EFS/gateway side effect, so the agent is the only orphan).
+    """
+    mock_get_by_slug.return_value = _published_listing()
+    mock_create_pc.return_value = {"id": "agent_orphan_1", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs()
+    mock_boto.return_value = _stub_s3_with_slice({"agent": {"name": "Demo Agent"}})
+
+    # Real catalog service so the actual gate runs end to end. Nothing
+    # connected -> MissingCredentialsError on the ``stripe`` manifest dep.
+    monkeypatch.setattr(
+        "core.repositories.connection_repo.list_for_owner",
+        AsyncMock(return_value=[]),
+    )
+    from core.services.catalog_service import CatalogService
+
+    catalog = CatalogService(
+        workspace=MagicMock(),
+        apply_deploy_aux_mutations=AsyncMock(),
+        pair_fn=AsyncMock(),
+        gateway_pool_factory=lambda: MagicMock(),
+    )
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "missing_credentials"
+    assert "stripe" in detail["missing"]
+    # Orphan Paperclip agent rolled back.
+    mock_delete_pc.assert_awaited_once()
+    assert mock_delete_pc.await_args.kwargs["agent_id"] == "agent_orphan_1"

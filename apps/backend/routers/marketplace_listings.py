@@ -25,7 +25,7 @@ from core.services import (
     seller_display,
     seller_profile,
 )
-from core.services.catalog_service import get_catalog_service
+from core.services.catalog_service import MissingCredentialsError, get_catalog_service
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
@@ -511,6 +511,15 @@ async def deploy_listing(
         # mapped to 500.
         if isinstance(exc, HTTPException):
             raise
+        # Buyer hasn't connected a provider the agent hard-depends on. The
+        # gate runs first inside deploy_from_artifact, so the orphan
+        # Paperclip agent was already rolled back above. Surface the
+        # provider list so the UI can route to the integrations panel.
+        if isinstance(exc, MissingCredentialsError):
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "missing_credentials", "missing": exc.missing},
+            ) from exc
         raise HTTPException(
             status_code=500,
             detail="deploy failed",

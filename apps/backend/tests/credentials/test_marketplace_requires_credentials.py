@@ -361,7 +361,16 @@ async def test_slot_fill_one_provider_failure_does_not_abort_others(monkeypatch)
         apply_mock,
     )
 
-    slice_ = {"mcp": {"servers": {"stripe": {}, "linear": {}}}}
+    # Both servers expose their canonical credential key (blanked by the scrub),
+    # so both are fill candidates.
+    slice_ = {
+        "mcp": {
+            "servers": {
+                "stripe": {"env": {"STRIPE_SECRET_KEY": ""}},
+                "linear": {"env": {"LINEAR_API_KEY": ""}},
+            }
+        }
+    }
 
     # Must not raise despite stripe blowing up.
     await _fill_buyer_credential_slots("owner_1", slice_)
@@ -370,3 +379,33 @@ async def test_slot_fill_one_provider_failure_does_not_abort_others(monkeypatch)
     assert apply_mock.await_count == 2
     applied_providers = {call.args[1] for call in apply_mock.await_args_list}
     assert applied_providers == {"stripe", "linear"}
+
+
+@pytest.mark.asyncio
+async def test_slot_fill_skips_bundle_with_non_canonical_key(monkeypatch):
+    """A registry MCP scrubbed under a NON-canonical key is left for manual setup.
+
+    The Stripe registry wiring fills ``mcp.servers.stripe.env.STRIPE_SECRET_KEY``,
+    but this bundle exposes only ``STRIPE_API_KEY``. Writing the canonical key
+    would add one the MCP never reads while leaving the real slot blank, so the
+    fill is skipped (no apply_connection, no decrypt) rather than silently
+    mis-filling — the buyer configures it manually.
+    """
+    row = {"provider": "stripe", "status": "connected", "credential_enc": "enc-blob"}
+    get_mock = AsyncMock(return_value=row)
+    decrypt_mock = MagicMock(return_value={"token": "sk_live_buyer"})
+    apply_mock = AsyncMock()
+    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
+    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr(
+        "core.services.credentials.apply_connection.apply_connection",
+        apply_mock,
+    )
+
+    # Non-canonical env key — the registry writes STRIPE_SECRET_KEY, not this.
+    slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_API_KEY": ""}}}}}
+
+    await _fill_buyer_credential_slots("owner_1", slice_)
+
+    decrypt_mock.assert_not_called()
+    apply_mock.assert_not_awaited()

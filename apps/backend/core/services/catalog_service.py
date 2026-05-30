@@ -121,6 +121,35 @@ async def assert_credentials_satisfied(
         raise MissingCredentialsError(missing)
 
 
+def _slice_exposes_canonical_key(server_entry: dict, provider: str, openclaw_paths) -> bool:
+    """True if the deployed MCP server entry exposes at least one of the registry's
+    canonical credential key paths for ``provider``.
+
+    ``apply_connection`` writes the buyer's token to the registry's canonical path
+    (e.g. ``mcp.servers.stripe.env.STRIPE_SECRET_KEY``). If a seller bundled the
+    server with the credential under a NON-canonical env/header key, the scrub
+    blanks that other key, and writing the canonical key would add one the MCP
+    never reads while leaving the real slot blank. We can't reliably tell which of
+    several blanked env keys is the secret, so we only fill when the deployed slot
+    actually exposes the canonical key; otherwise the buyer must set it manually.
+    """
+    prefix = ("mcp", "servers", provider)
+    for op in openclaw_paths or []:
+        parts = tuple(op.path.split("."))
+        sub = parts[3:]
+        if parts[:3] != prefix or not sub:
+            continue
+        node = server_entry
+        for key in sub:
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            else:
+                break
+        else:
+            return True
+    return False
+
+
 async def _fill_buyer_credential_slots(owner_id: str, slice_: dict) -> None:
     """Re-apply the buyer's own connected credentials into the freshly-merged slice.
 
@@ -177,6 +206,18 @@ async def _fill_buyer_credential_slots(owner_id: str, slice_: dict) -> None:
             # Mirrors connection_repo's disconnect guard and avoids calling
             # decrypt_credential on a scrubbed row (which raises).
             if not row.get("credential_enc"):
+                continue
+            # Only fill when the deployed slot exposes the registry's canonical
+            # key — otherwise the bundle scrubbed its credential under a
+            # non-canonical key and writing the canonical path would miss the
+            # slot the MCP actually reads (leave it for manual setup).
+            if not _slice_exposes_canonical_key(mcp_servers.get(provider) or {}, provider, p.wiring.openclaw_paths):
+                logger.warning(
+                    "deploy slot-fill: bundle for provider %s exposes no canonical credential key "
+                    "(owner %s); leaving it for manual setup",
+                    provider,
+                    owner_id,
+                )
                 continue
             await apply_connection.apply_connection(owner_id, provider, connection_repo.decrypt_credential(row))
         except Exception:

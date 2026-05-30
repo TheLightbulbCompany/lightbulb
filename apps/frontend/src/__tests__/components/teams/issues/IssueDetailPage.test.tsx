@@ -22,8 +22,12 @@ const mockUpdate = vi.fn();
 const mockAddComment = vi.fn();
 const mockCreate = vi.fn();
 
-// Default read mock: returns empty agents/projects so existing tests are unaffected.
-const defaultRead = vi.fn().mockReturnValue({ data: undefined, isLoading: false, error: null });
+// Default read mock: returns an empty `{ issues: [] }` envelope so existing
+// tests are unaffected and SubIssuesSection (which reads
+// `/issues/{id}/children`) sees no children and renders its empty state.
+const defaultRead = vi
+  .fn()
+  .mockReturnValue({ data: { issues: [] }, isLoading: false, error: null, mutate: vi.fn() });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -32,7 +36,7 @@ beforeEach(() => {
     update: mockUpdate,
     addComment: mockAddComment,
   });
-  defaultRead.mockReturnValue({ data: undefined, isLoading: false, error: null });
+  defaultRead.mockReturnValue({ data: { issues: [] }, isLoading: false, error: null, mutate: vi.fn() });
   vi.mocked(useTeamsApi).mockReturnValue({
     read: defaultRead,
     post: vi.fn(),
@@ -184,7 +188,8 @@ describe("IssueDetailPage", () => {
         case "/projects":
           return { data: { projects: [] }, isLoading: false, error: null };
         default:
-          return { data: undefined, isLoading: false, error: null };
+          // e.g. `/issues/{id}/children` from SubIssuesSection — empty envelope.
+          return { data: { issues: [] }, isLoading: false, error: null, mutate: vi.fn() };
       }
     });
     vi.mocked(useTeamsApi).mockReturnValue({

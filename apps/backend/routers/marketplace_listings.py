@@ -31,6 +31,7 @@ from core.services.paperclip_agent_lifecycle import (
     delete_paperclip_for_marketplace,
 )
 from core.services.paperclip_meta import derive_from_listing, read_from_agent_entry
+from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
 from schemas import marketplace as schemas
 
 
@@ -485,6 +486,20 @@ async def deploy_listing(
             new_agent_id=new_agent_id,
             container_ip=container_ip,
             container_token=container_token,
+        )
+
+        # Register the deployed agent's operator device into the running
+        # container's paired.json + bind its authToken to the gateway token, so
+        # its first relayed connect isn't rejected NOT_PAIRED. catalog deploy
+        # only RPC-registers the agent (agents.create/update); without this a
+        # marketplace agent — which Paperclip wakes on events and runs through
+        # the operator relay — can't pass the device-auth handshake until the
+        # next reprovision. Mirrors the /teams and /chat create paths.
+        # ``paperclip_agent`` (not the slice) carries adapterConfig.devicePrivateKeyPem.
+        await ensure_operator_device_paired(
+            owner_id=owner_id,
+            paperclip_agent=paperclip_agent,
+            gateway_token=container_token,
         )
     except Exception as exc:
         # Catalog or container-resolution failed after Paperclip create

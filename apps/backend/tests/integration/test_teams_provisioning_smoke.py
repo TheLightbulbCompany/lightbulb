@@ -328,11 +328,18 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         f"got {upstream_body.get('adapterType')!r}"
     )
 
-    # 2. The adapterConfig dict carries exactly the canonical four fields.
+    # 2. The adapterConfig dict carries exactly the canonical five fields.
     adapter_config = upstream_body["adapterConfig"]
-    assert set(adapter_config.keys()) == {"url", "authToken", "sessionKeyStrategy", "sessionKey"}, (
-        f"adapterConfig must have exactly the canonical 4 keys; got {set(adapter_config.keys())}"
-    )
+    assert set(adapter_config.keys()) == {
+        "url",
+        "authToken",
+        "sessionKeyStrategy",
+        "sessionKey",
+        "devicePrivateKeyPem",
+    }, f"adapterConfig must have exactly the canonical 5 keys; got {set(adapter_config.keys())}"
+    # devicePrivateKeyPem is the per-agent ed25519 key the operator relay signs
+    # the gateway handshake with — minted at synth time as a PKCS8 PEM.
+    assert adapter_config["devicePrivateKeyPem"].startswith("-----BEGIN PRIVATE KEY-----")
 
     # 3. URL matches the gateway allowlist (env=dev -> wss://ws-dev.isol8.co).
     # The URL now carries the auth token in the query string (so the WS API

@@ -1,10 +1,12 @@
 import pytest
 
+from core.crypto.operator_device import device_identity_from_pem
 from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
     validate_gateway_url,
     AdapterConfigError,
     OPENCLAW_GATEWAY_TYPE,
+    PAPERCLIP_OPERATOR_CLIENT_ID,
 )
 
 
@@ -54,14 +56,21 @@ def test_synthesize_returns_canonical_shape():
         user_id="user_123",
     )
     # Token must live in the URL query string — the Isol8 WS API Gateway
-    # authorizer reads it from `route.request.querystring.token`, NOT from
-    # the Authorization header the upstream adapter would otherwise send.
-    assert cfg["url"] == "wss://ws-dev.isol8.co?token=JWT_TOKEN_HERE"
+    # authorizer reads it from `route.request.querystring.token`. clientId routes
+    # the connection to the operator relay at $connect.
+    assert cfg["url"] == "wss://ws-dev.isol8.co?token=JWT_TOKEN_HERE&clientId=paperclip-operator"
     # authToken retained for adapter compatibility (header is ignored by API GW).
     assert cfg["authToken"] == "JWT_TOKEN_HERE"
     assert cfg["sessionKeyStrategy"] == "issue"
     assert cfg["sessionKey"] == "user_123"
-    assert set(cfg.keys()) == {"url", "authToken", "sessionKeyStrategy", "sessionKey"}
+    assert cfg["devicePrivateKeyPem"].startswith("-----BEGIN PRIVATE KEY-----")
+    assert set(cfg.keys()) == {
+        "url",
+        "authToken",
+        "sessionKeyStrategy",
+        "sessionKey",
+        "devicePrivateKeyPem",
+    }
 
 
 def test_synthesize_rejects_bad_url():
@@ -103,5 +112,38 @@ def test_strategy_is_issue_for_per_issue_session_isolation():
     )
     assert cfg["sessionKeyStrategy"] == "issue"
     assert cfg["sessionKey"] == "user_abc"
-    assert cfg["url"] == "wss://ws.isol8.co?token=" + "t" * 100
+    assert cfg["url"] == "wss://ws.isol8.co?token=" + "t" * 100 + "&clientId=paperclip-operator"
     assert cfg["authToken"] == "t" * 100
+
+
+def test_url_routes_to_operator_relay_via_client_id():
+    cfg = synthesize_openclaw_adapter(gateway_url="wss://ws.isol8.co", service_token="tok", user_id="u")
+    assert f"clientId={PAPERCLIP_OPERATOR_CLIENT_ID}" in cfg["url"]
+    assert PAPERCLIP_OPERATOR_CLIENT_ID == "paperclip-operator"
+
+
+def test_mints_a_fresh_device_key_per_agent_when_absent():
+    # Each create with no existing PEM gets its OWN keypair (stable per agent,
+    # distinct across agents) — required so paired.json entries don't collide.
+    a = synthesize_openclaw_adapter(gateway_url="wss://ws.isol8.co", service_token="t", user_id="u")
+    b = synthesize_openclaw_adapter(gateway_url="wss://ws.isol8.co", service_token="t", user_id="u")
+    assert a["devicePrivateKeyPem"] != b["devicePrivateKeyPem"]
+    # The minted PEM is a usable ed25519 key whose deviceId derivation works.
+    ident = device_identity_from_pem(a["devicePrivateKeyPem"])
+    assert len(ident.device_id) == 64  # hex sha256
+    assert ident.public_key_b64
+
+
+def test_reuses_existing_device_key_on_update():
+    # On update we MUST pass the agent's existing PEM so the deviceId — and its
+    # already-seeded paired.json entry — stay stable. The synth returns it as-is.
+    existing = synthesize_openclaw_adapter(gateway_url="wss://ws.isol8.co", service_token="t", user_id="u")[
+        "devicePrivateKeyPem"
+    ]
+    updated = synthesize_openclaw_adapter(
+        gateway_url="wss://ws.isol8.co",
+        service_token="t2",
+        user_id="u",
+        device_private_key_pem=existing,
+    )
+    assert updated["devicePrivateKeyPem"] == existing

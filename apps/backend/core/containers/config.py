@@ -214,6 +214,7 @@ def build_device_paired_json(
     node_public_key_b64: str,
     *,
     operator_entry: dict | None = None,
+    extra_operator_entries: list[dict] | None = None,
 ) -> str:
     """Build the combined `devices/paired.json` content for a per-user container.
 
@@ -222,7 +223,7 @@ def build_device_paired_json(
     rejects any connect request whose signed device identity isn't in this
     file (see OpenClaw 4.5 `handshake-auth-helpers.ts:244-281`).
 
-    We write TWO entries per container by default:
+    Entries written:
     - **node** — the in-container agent's loopback identity (role: "node",
       no scopes — the node role has its own RPC surface, see
       `method-scopes.ts:NODE_ROLE_METHODS`).
@@ -230,17 +231,24 @@ def build_device_paired_json(
       scoped RPCs like `sessions.list` and `chat.send` against the gateway
       from outside the container. Required since OpenClaw 4.5; without it
       the backend's self-declared scopes are silently cleared.
+    - **extra operators** — one per Paperclip agent bound to this container, so
+      each agent's own device clears the remote-operator pairing wall on its
+      first relayed connect (it is otherwise rejected NOT_PAIRED). Built the same
+      way as the backend operator entry; the writer enumerates them at provision
+      so a reprovision (which overwrites paired.json) re-includes them.
 
-    The operator entry is passed in pre-built (from
-    `core.crypto.operator_device.build_paired_operator_entry`) so this
-    module doesn't need to import the crypto helpers. Pass `None` for
-    pre-4.5 behavior (node-only paired.json).
+    Operator entries are passed in pre-built (from
+    `core.crypto.operator_device.build_paired_operator_entry`) so this module
+    doesn't need to import the crypto helpers. Pass `None`/empty for pre-4.5
+    behavior (node-only paired.json).
     """
     entries = {
         node_device_id: _build_node_paired_entry(node_device_id, node_public_key_b64),
     }
     if operator_entry is not None:
         entries[operator_entry["deviceId"]] = operator_entry
+    for entry in extra_operator_entries or []:
+        entries[entry["deviceId"]] = entry
     return json.dumps(entries, indent=2)
 
 

@@ -20,12 +20,14 @@ would mostly verify mocks against mocks.
 
 from __future__ import annotations
 
+import json
 import time
 
 import httpx
 import pytest
 
 from routers.paperclip_proxy import (
+    _AGENT_ROUTE_RE,
     _BRAND_REWRITES,
     _FAILURE_THRESHOLD_PCT,
     _FAILURE_WINDOW_SECONDS,
@@ -35,9 +37,10 @@ from routers.paperclip_proxy import (
     _circuit_open,
     _filter_request_headers,
     _filter_response_headers,
-    _record_outcome,
     _recent_5xx,
     _recent_total,
+    _record_outcome,
+    _redact_agent_secrets_json,
     _rewrite_set_cookie_domain,
 )
 
@@ -937,3 +940,34 @@ def test_http_handoff_redirects_to_chat_when_no_container(monkeypatch):
     assert "need=container" in resp.headers["location"]
     # No session cookie should be set.
     assert "isol8_paperclip=" not in resp.headers.get("set-cookie", "")
+
+
+# ---------------------------------------------------------------------------
+# Agent-secret redaction — the proxy fronts the native Paperclip agent routes,
+# which echo the full record incl. the openclaw_gateway adapterConfig (device
+# signing key + gateway token). Those must be stripped before they hit the DOM.
+# ---------------------------------------------------------------------------
+
+
+def test_agent_route_regex_matches_only_agent_path_segments():
+    assert _AGENT_ROUTE_RE.search("api/agents")
+    assert _AGENT_ROUTE_RE.search("api/agents/abc123")
+    assert _AGENT_ROUTE_RE.search("api/companies/co_1/agents")
+    assert _AGENT_ROUTE_RE.search("api/companies/co_1/agents/abc")
+    # Non-agent routes don't match; "agents" must be a whole path segment.
+    assert not _AGENT_ROUTE_RE.search("api/companies/co_1/issues")
+    assert not _AGENT_ROUTE_RE.search("api/health")
+    assert not _AGENT_ROUTE_RE.search("api/agentschema")
+
+
+def test_redact_agent_secrets_json_strips_and_roundtrips():
+    body = json.dumps([{"id": "a1", "adapterConfig": {"devicePrivateKeyPem": "LEAK"}}]).encode()
+    out = _redact_agent_secrets_json(body)
+    assert b"LEAK" not in out
+    assert b"adapterConfig" not in out
+    assert json.loads(out) == [{"id": "a1"}]
+
+
+def test_redact_agent_secrets_json_passes_through_non_json():
+    body = b"<html>not json</html>"
+    assert _redact_agent_secrets_json(body) == body

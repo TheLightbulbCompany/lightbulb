@@ -30,7 +30,9 @@ from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
+from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
+    ensure_operator_device_paired,
     get_seeded_agent_ids,
     is_seeded_agent,
     pair_with_openclaw,
@@ -54,7 +56,8 @@ router = APIRouter()
 # frontend currently render ``JSON.stringify(<BFF response>)``, so a leak
 # at the BFF boundary becomes a token-in-DOM exposure. Strip on every
 # read path as defense in depth — the frontend should never need these.
-_AGENT_REDACTED_FIELDS = ("adapterConfig", "adapterType")
+# The field set + stripper are shared with the Paperclip proxy via
+# core.services.agent_redaction so neither surface can drift on what's secret.
 
 
 def _mark_seeded(agent, seeded_ids):
@@ -81,9 +84,7 @@ def _redact_agent(agent):
     Returns the input unchanged if it isn't a dict (so the function is
     safe to call on any upstream payload shape).
     """
-    if not isinstance(agent, dict):
-        return agent
-    return {k: v for k, v in agent.items() if k not in _AGENT_REDACTED_FIELDS}
+    return strip_agent_secrets(agent)
 
 
 # --- Indirection helpers (Tasks 7-12 import these) ---
@@ -393,6 +394,15 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
                 ip=ip,
                 token=token,
             )
+            # Register the new agent's operator device into the running
+            # container's paired.json + bind its authToken to the gateway
+            # token, so its first relayed connect isn't rejected NOT_PAIRED.
+            # Provision-time pairing only covers agents that exist at provision.
+            await ensure_operator_device_paired(
+                owner_id=owner_id,
+                paperclip_agent=paperclip_agent,
+                gateway_token=token,
+            )
         except Exception as exc:  # noqa: BLE001 — pairing failure is deferred.
             logger.warning(
                 "teams.create_agent: pair_with_openclaw failed for owner=%s agent=%s — deferring to next provision: %s",
@@ -401,7 +411,13 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
                 exc,
             )
 
-    return paperclip_agent
+    # Redact adapterConfig/adapterType before returning, exactly like the read
+    # paths and the /chat websocket create path. Paperclip echoes the full
+    # adapterConfig on create — including the freshly-minted devicePrivateKeyPem
+    # (the operator device's SIGNING key) and authToken — and those must never
+    # reach the browser/DOM, or anyone with the response could impersonate the
+    # agent's operator device.
+    return _redact_agent(paperclip_agent)
 
 
 @router.get("/agents/{agent_id}")

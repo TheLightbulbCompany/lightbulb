@@ -334,13 +334,14 @@ def _stub_s3_get_object(
     return s3
 
 
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_deploy_free_listing_succeeds(
-    mock_get_by_slug, mock_get_catalog, mock_boto, mock_create_pc, mock_get_ecs, client
+    mock_get_by_slug, mock_get_catalog, mock_boto, mock_create_pc, mock_get_ecs, mock_pair, client
 ):
     mock_get_by_slug.return_value = _published_listing(price_cents=0)
     mock_create_pc.return_value = {"id": "agent_abc123", "name": "Demo Agent"}
@@ -384,6 +385,13 @@ def test_deploy_free_listing_succeeds(
     # catalog so it can drive ``agents.create`` / ``agents.update`` RPCs.
     assert kwargs["container_ip"] == "10.0.0.1"
     assert kwargs["container_token"] == "gw-tok"
+    # The deployed agent's operator device is paired into the running container
+    # + its authToken bound, so Paperclip's first relayed wake isn't rejected
+    # NOT_PAIRED. catalog deploy only RPC-registers; pairing is the route's job.
+    mock_pair.assert_awaited_once()
+    pair_kwargs = mock_pair.await_args.kwargs
+    assert pair_kwargs["paperclip_agent"] == {"id": "agent_abc123", "name": "Demo Agent"}
+    assert pair_kwargs["gateway_token"] == "gw-tok"
 
 
 @patch("routers.marketplace_listings.get_ecs_manager")

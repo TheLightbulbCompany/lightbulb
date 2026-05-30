@@ -104,8 +104,13 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     assert r.status_code == 200
     call = admin.create_agent.await_args
     assert call.kwargs["adapter_type"] == "openclaw_gateway"
-    assert call.kwargs["adapter_config"] == {
-        "url": "wss://ws-dev.isol8.co?token=freshly-minted-token",
+    adapter_cfg = dict(call.kwargs["adapter_config"])
+    # devicePrivateKeyPem is a freshly-minted ed25519 key (non-deterministic),
+    # so assert it's a valid PEM separately and compare the stable fields.
+    device_pem = adapter_cfg.pop("devicePrivateKeyPem")
+    assert device_pem.startswith("-----BEGIN PRIVATE KEY-----")
+    assert adapter_cfg == {
+        "url": "wss://ws-dev.isol8.co?token=freshly-minted-token&clientId=paperclip-operator",
         "authToken": "freshly-minted-token",
         "sessionKeyStrategy": "issue",
         "sessionKey": "u1",
@@ -115,6 +120,49 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     # wakes to the org's shared container, not the member's personal
     # owner. The fixture's TeamsContext has org_id="o1" / owner_id="o1".
     mint_mock.assert_called_once_with("o1")
+
+
+def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
+    """The create response MUST NOT leak adapterConfig. Paperclip echoes the
+    full config back on create — including the freshly-minted devicePrivateKeyPem
+    (the operator device's signing key) and authToken — so anyone with the
+    response/DOM could otherwise impersonate the operator device. The create path
+    must redact like the read paths do."""
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.create_agent = AsyncMock(
+        return_value={
+            "id": "a_new",
+            "name": "Helper",
+            "adapterType": "openclaw_gateway",
+            "adapterConfig": {
+                "url": "wss://ws-dev.isol8.co?token=t&clientId=paperclip-operator",
+                "authToken": "SECRET-GATEWAY-TOKEN",
+                "devicePrivateKeyPem": "-----BEGIN PRIVATE KEY-----\nLEAKME\n-----END PRIVATE KEY-----\n",
+                "sessionKeyStrategy": "issue",
+                "sessionKey": "u1",
+            },
+        }
+    )
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod.service_token, "mint", MagicMock(return_value="tok"))
+    monkeypatch.setattr(agents_mod, "_gateway_url_for_env", lambda: "wss://ws-dev.isol8.co")
+
+    r = client.post(
+        "/api/v1/teams/agents",
+        json={"name": "Helper", "role": "engineer"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == "a_new"
+    # Sensitive adapter fields stripped from the response.
+    assert "adapterConfig" not in body
+    assert "adapterType" not in body
+    # Belt-and-suspenders: the private key / token text must not appear anywhere.
+    assert "LEAKME" not in r.text
+    assert "SECRET-GATEWAY-TOKEN" not in r.text
 
 
 def test_create_agent_rejects_client_supplied_adapter_type(client):

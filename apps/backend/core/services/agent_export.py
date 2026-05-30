@@ -186,6 +186,15 @@ def _looks_like_credential_file(name: str) -> bool:
     return False
 
 
+class CredentialLeakError(Exception):
+    """The synthesized openclaw-slice.json still carries a non-empty secret
+    after the scrub. The slice is a SEPARATE S3 artifact the tarball safety
+    scan never inspects, so this is the only gate standing between a missed
+    scrub and a published credential. Raising here aborts before any artifact
+    is created. The message names the leaking field PATH but never the secret.
+    """
+
+
 class AgentNotFoundError(Exception):
     """Seller has no agent workspace at workspaces/{agent_id} on EFS."""
 
@@ -444,6 +453,20 @@ def export_agent_from_efs(
     _rewrite_mcp_args_paths(slice_, seller_agent_id=agent_id)
     slice_["cron_jobs"] = filter_cron_jobs_for_agent(workspace.read_cron_jobs(seller_id), agent_id)
 
+    # Post-scrub credential-leak gate. The slice is a separate S3 artifact
+    # the tarball safety scan never walks, so re-inspect it here: if any
+    # secret-shaped field survived the scrub (the scrub is shallow one-level
+    # — a nested secret slips past) or an OAuth client-secret literal rode
+    # through, BLOCK the publish before the artifact exists. The error names
+    # the leaking field paths but never the secret value.
+    slice_leak_flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    if marketplace_safety.has_blocking_credential_findings(slice_leak_flags):
+        paths = ", ".join(f.snippet.split(" = ", 1)[0] for f in slice_leak_flags)
+        raise CredentialLeakError(
+            f"cannot publish: a credential survived scrubbing in the published slice ({paths}); "
+            "remove the secret from the agent's MCP/skill config and retry"
+        )
+
     safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
 
     summary = _summarize_openclaw_config(agent_dir)
@@ -560,6 +583,26 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     # tarball itself — just the flags.
     tarball_bytes, _ = _build_tarball(agent_dir)
     safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
+
+    # Surface (but do NOT block on) any credential that would survive the
+    # scrub in the published slice. Preview is informational — the wizard's
+    # Review step renders these inline so the seller fixes them BEFORE
+    # submit, where export_agent_from_efs raises CredentialLeakError. Build a
+    # slice over everything available so the preview flags match what the
+    # actual publish would catch. Best-effort: a slice-build failure here
+    # must never break the preview.
+    try:
+        preview_slice = extract_agent_slice(
+            config,
+            agent_id,
+            selected_mcps=available_mcps,
+            selected_skills=skill_names,
+            workspace_skill_names=workspace_skill_names,
+        )
+        slice_leak_flags = marketplace_safety.assert_slice_scrubbed(preview_slice)
+        safety_flags = safety_flags + [dataclasses.asdict(f) for f in slice_leak_flags]
+    except Exception as exc:  # noqa: BLE001 — preview must not raise
+        logger.warning("agent_export: preview slice-leak scan failed for agent=%s: %s", agent_id, exc)
 
     return {
         "agent_id": agent_id,

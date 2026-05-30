@@ -806,6 +806,11 @@ async def upload_artifact_from_agent(
         raise HTTPException(status_code=404, detail=str(e))
     except agent_export.AgentNotInConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.CredentialLeakError as e:
+        # A credential survived the slice scrub — block the upload with a clear
+        # 4xx naming the leaking field paths (never the secret) so the seller can
+        # fix it, rather than a generic 500.
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         result = await marketplace_service.replace_artifact(

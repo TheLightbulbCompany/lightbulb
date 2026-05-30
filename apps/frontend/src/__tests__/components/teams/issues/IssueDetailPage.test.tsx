@@ -33,6 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(useIssueMutations).mockReturnValue({
     create: mockCreate,
+    createChild: vi.fn(),
     update: mockUpdate,
     addComment: mockAddComment,
   });

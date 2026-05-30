@@ -18,6 +18,19 @@ function runTime(r: RoutineRun): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
+// A trigger's `nextRunAt` is a FUTURE timestamp, so the past-only `timeAgo`
+// would render every upcoming run as "just now". Format future-relative
+// ("in 8h") and only fall back to `timeAgo` for a past/overdue next-run.
+function nextRunLabel(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const diffSec = Math.round((then - Date.now()) / 1000);
+  if (diffSec < 60) return timeAgo(iso); // overdue / imminent → "X ago" / "just now"
+  if (diffSec < 3600) return `in ${Math.floor(diffSec / 60)}m`;
+  if (diffSec < 86400) return `in ${Math.floor(diffSec / 3600)}h`;
+  return `in ${Math.floor(diffSec / 86400)}d`;
+}
+
 export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   const { read } = useTeamsApi();
   const { data: routine, isLoading } = read<RoutineDetail>(`/routines/${routineId}`);
@@ -69,7 +82,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                 )}
                 {t.timezone && <span className="text-xs text-[var(--mute)]">{t.timezone}</span>}
                 {t.nextRunAt && (
-                  <span className="text-xs text-[var(--mute)]">· next {timeAgo(t.nextRunAt)}</span>
+                  <span className="text-xs text-[var(--mute)]">· next {nextRunLabel(t.nextRunAt)}</span>
                 )}
                 {t.enabled === false && <span className="text-xs text-[var(--mute)]">· paused</span>}
               </li>

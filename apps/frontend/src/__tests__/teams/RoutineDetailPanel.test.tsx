@@ -36,6 +36,7 @@ describe("RoutineDetailPanel", () => {
             cronExpression: "0 9 * * *",
             timezone: "UTC",
             enabled: true,
+            nextRunAt: "2099-01-01T00:00:00Z",
           },
         ],
       },
@@ -60,6 +61,8 @@ describe("RoutineDetailPanel", () => {
     expect(screen.getByText("Nightly digest")).toBeInTheDocument();
     expect(screen.getByText("active")).toBeInTheDocument();
     expect(screen.getByText("0 9 * * *")).toBeInTheDocument();
+    // a future nextRunAt renders future-relative ("in Nd"), never "just now"
+    expect(screen.getByText(/next in \d+d/i)).toBeInTheDocument();
     expect(screen.getByText("Atlas")).toBeInTheDocument();
     // run history present; failed run shows its reason + a linked-issue link
     expect(screen.getByText(/failed/i)).toBeInTheDocument();

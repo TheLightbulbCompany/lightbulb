@@ -166,6 +166,19 @@ export interface Approval {
   decidedAt?: string | null;
 }
 
+/** Full approval object from GET /approvals/{id} (upstream Approval subset). `status` is a free string (more values than the row union). */
+export interface ApprovalDetail {
+  id: string;
+  type?: string | null;
+  status: string;
+  requestedByAgentId?: string | null;
+  requestedByUserId?: string | null;
+  payload?: Record<string, unknown> | null;
+  decisionNote?: string | null;
+  decidedAt?: string | null;
+  createdAt?: string | null;
+}
+
 export interface HeartbeatRun {
   id: string;
   agentId?: string | null;
@@ -173,6 +186,29 @@ export interface HeartbeatRun {
   startedAt?: string | null;
   completedAt?: string | null;
   failureReason?: string | null;
+}
+
+/** A run for an issue (upstream RunForIssue subset). `status` is a free string. */
+export interface IssueRun {
+  runId: string;
+  status: string;
+  agentId?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  createdAt?: string | null;
+}
+
+/** A document attached to an issue (upstream IssueDocument subset). `body` is inline markdown. */
+export interface IssueDocument {
+  id: string;
+  key: string;
+  title?: string | null;
+  format?: string | null;
+  body?: string | null;
+  updatedByAgentId?: string | null;
+  updatedByUserId?: string | null;
+  updatedAt?: string | null;
+  createdAt?: string | null;
 }
 
 export interface CompanyMember {

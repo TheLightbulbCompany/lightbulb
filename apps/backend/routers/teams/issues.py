@@ -171,3 +171,68 @@ async def add_issue_comment(
         body=body.model_dump(by_alias=True),
         session_cookie=ctx.session_cookie,
     )
+
+
+@router.get("/issues/{issue_id}/children")
+async def list_issue_children(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List an issue's descendants (the Sub-issues section).
+
+    Forwards upstream's ``descendantOf`` filter on the issues-list route —
+    matches the upstream IssueDetail sub-issues section (all descendants,
+    flat). Wrapped ``{issues: [...]}`` like the other list surfaces.
+    """
+    rows = await _agents._admin().list_issues(
+        company_id=ctx.company_id,
+        session_cookie=ctx.session_cookie,
+        params={"descendantOf": issue_id},
+    )
+    return envelope_list(rows, "issues")
+
+
+@router.post("/issues/{issue_id}/children")
+async def create_issue_child(
+    issue_id: str,
+    body: CreateIssueBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Create a sub-issue under ``issue_id``.
+
+    Reuses ``CreateIssueBody`` (the same whitelist as top-level create);
+    routes to upstream's ``/children`` endpoint, which wires the
+    parent/child relation server-side.
+    """
+    return await _agents._admin().create_child_issue(
+        issue_id=issue_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/issues/{issue_id}/approvals")
+async def list_issue_approvals(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List the approvals linked to an issue (the issue-detail Approvals section)."""
+    rows = await _agents._admin().list_issue_approvals(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(rows, "approvals")
+
+
+@router.get("/issues/{issue_id}/runs")
+async def list_issue_runs(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List the agent runs for an issue (the issue-detail Runs section)."""
+    rows = await _agents._admin().list_issue_runs(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(rows, "runs")
+
+
+@router.get("/issues/{issue_id}/documents")
+async def list_issue_documents(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List the documents attached to an issue (the issue-detail Documents section)."""
+    rows = await _agents._admin().list_issue_documents(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+    )
+    return envelope_list(rows, "documents")

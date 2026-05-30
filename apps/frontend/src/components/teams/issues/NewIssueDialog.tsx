@@ -34,6 +34,10 @@ export interface NewIssueDialogProps {
   projects?: IssueProject[];
   /** Called with the created issue id on success. */
   onCreated?: (issueId: string) => void;
+  /** When set, the dialog creates a sub-issue under this parent. */
+  parentId?: string;
+  /** Display label for the parent (e.g. "ISO-12 Title"). */
+  parentLabel?: string;
 }
 
 export function NewIssueDialog({
@@ -42,8 +46,10 @@ export function NewIssueDialog({
   agents = [],
   projects = [],
   onCreated,
+  parentId,
+  parentLabel,
 }: NewIssueDialogProps) {
-  const { create } = useIssueMutations();
+  const { create, createChild } = useIssueMutations();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<IssuePriority>("medium");
@@ -72,13 +78,14 @@ export function NewIssueDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const issue = await create({
+      const payload = {
         title: trimmedTitle,
         description: description.trim() || undefined,
         priority,
         projectId: projectId || undefined,
         assigneeAgentId: assigneeAgentId || undefined,
-      });
+      };
+      const issue = parentId ? await createChild(parentId, payload) : await create(payload);
       onCreated?.(issue.id);
       reset();
       onOpenChange(false);
@@ -100,7 +107,7 @@ export function NewIssueDialog({
     <EditorialDialog
       open={open}
       onOpenChange={handleOpenChange}
-      title="New issue"
+      title={parentId ? "New sub-issue" : "New issue"}
       footer={
         <>
           <EditorialButton
@@ -123,6 +130,11 @@ export function NewIssueDialog({
       }
     >
       <div className="flex flex-col gap-3">
+        {parentId && (
+          <p className="text-sm" style={{ color: "var(--mute)" }}>
+            Parent: <span style={{ color: "var(--ink)" }}>{parentLabel ?? parentId}</span>
+          </p>
+        )}
         <div>
           <label
             htmlFor="new-issue-title"

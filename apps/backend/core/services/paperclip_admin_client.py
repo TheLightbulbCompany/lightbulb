@@ -1007,6 +1007,52 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_issue_approvals(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the approvals linked to an issue.
+
+        Maps to ``GET /api/issues/{issueId}/approvals`` (issue-scoped).
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/approvals",
+            session_cookie=session_cookie,
+        )
+
+    async def list_issue_runs(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the agent runs for an issue.
+
+        Maps to ``GET /api/issues/{issueId}/runs`` (issue-scoped).
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/runs",
+            session_cookie=session_cookie,
+        )
+
+    async def list_issue_documents(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the documents attached to an issue.
+
+        Maps to ``GET /api/issues/{issueId}/documents`` (issue-scoped).
+        The body is returned inline per document, so no fetch-by-key is needed.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/documents",
+            session_cookie=session_cookie,
+        )
+
     async def create_issue(
         self,
         *,
@@ -1020,6 +1066,23 @@ class PaperclipAdminClient:
         """
         return await self._post(
             f"/api/companies/{company_id}/issues",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def create_child_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a child (sub-)issue under ``issue_id``. Body whitelisted by the BFF.
+
+        Maps to ``POST /api/issues/{issueId}/children``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/children",
             json=body,
             session_cookie=session_cookie,
         )

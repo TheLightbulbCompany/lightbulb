@@ -22,16 +22,29 @@ import { Logo } from "@/components/Logo";
 
 type Panel = "profile" | "billing" | "channels" | "webhooks" | "desktop" | "marketplace";
 
-const NAV_SECTIONS = [
+// A nav item is either an in-page tab (sets activePanel) or an outbound
+// link to a sibling settings route (`href`). Connections lives on its own
+// route — /settings/connections — because OAuth providers redirect the
+// browser back to it after consent, so it can't be a ?panel= tab.
+type NavItem = {
+  id: string;
+  name: string;
+  icon: string;
+  panel?: Panel;
+  href?: string;
+};
+
+const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
   {
     label: "Account",
     items: [
-      { id: "profile" as Panel, name: "Profile", icon: "profile" },
-      { id: "billing" as Panel, name: "Billing", icon: "billing" },
-      { id: "channels" as Panel, name: "Channels", icon: "channels" },
-      { id: "webhooks" as Panel, name: "Webhooks", icon: "webhooks" },
-      { id: "desktop" as Panel, name: "Desktop", icon: "desktop" },
-      { id: "marketplace" as Panel, name: "Marketplace", icon: "marketplace" },
+      { id: "profile", name: "Profile", icon: "profile", panel: "profile" },
+      { id: "billing", name: "Billing", icon: "billing", panel: "billing" },
+      { id: "channels", name: "Channels", icon: "channels", panel: "channels" },
+      { id: "connections", name: "Connections", icon: "connections", href: "/settings/connections" },
+      { id: "webhooks", name: "Webhooks", icon: "webhooks", panel: "webhooks" },
+      { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
+      { id: "marketplace", name: "Marketplace", icon: "marketplace", panel: "marketplace" },
     ],
   },
 ];
@@ -88,6 +101,15 @@ function NavIcon({ icon }: { icon: string }) {
           <path d="M3 9l1-5h16l1 5" />
           <path d="M3 9v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9" />
           <path d="M8 13h8" />
+        </svg>
+      );
+    case "connections":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 22v-5" />
+          <path d="M9 8V2" />
+          <path d="M15 8V2" />
+          <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
         </svg>
       );
     default:
@@ -363,24 +385,32 @@ function SettingsPageInner() {
   const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 
-  const allNavItems = NAV_SECTIONS.flatMap((s) => s.items);
+  // Arrow-key roving focus operates only over the in-page tabs. Outbound
+  // links (e.g. Connections) are excluded so they don't try to set a panel
+  // that doesn't exist.
+  const tabNavItems = NAV_SECTIONS.flatMap((s) => s.items).filter(
+    (n): n is NavItem & { panel: Panel } => n.panel !== undefined,
+  );
 
-  function handleNavKeyDown(e: React.KeyboardEvent, item: (typeof allNavItems)[number]) {
-    const idx = allNavItems.findIndex((n) => n.id === item.id);
+  function handleNavKeyDown(
+    e: React.KeyboardEvent,
+    item: NavItem & { panel: Panel },
+  ) {
+    const idx = tabNavItems.findIndex((n) => n.id === item.id);
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      setActivePanel(item.id);
+      setActivePanel(item.panel);
     }
     if (e.key === "ArrowDown" || e.key === "ArrowRight") {
       e.preventDefault();
-      const next = allNavItems[(idx + 1) % allNavItems.length];
-      setActivePanel(next.id);
+      const next = tabNavItems[(idx + 1) % tabNavItems.length];
+      setActivePanel(next.panel);
       document.getElementById(`settings-nav-${next.id}`)?.focus();
     }
     if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
       e.preventDefault();
-      const prev = allNavItems[(idx - 1 + allNavItems.length) % allNavItems.length];
-      setActivePanel(prev.id);
+      const prev = tabNavItems[(idx - 1 + tabNavItems.length) % tabNavItems.length];
+      setActivePanel(prev.panel);
       document.getElementById(`settings-nav-${prev.id}`)?.focus();
     }
   }
@@ -419,22 +449,33 @@ function SettingsPageInner() {
             <div key={section.label}>
               <div className="settings-nav-section-label">{section.label}</div>
               <ul className="settings-nav-items" role="tablist">
-                {section.items.map((item) => (
-                  <li
-                    key={item.id}
-                    id={`settings-nav-${item.id}`}
-                    className={cn("settings-nav-item", activePanel === item.id && "active")}
-                    role="tab"
-                    tabIndex={activePanel === item.id ? 0 : -1}
-                    aria-selected={activePanel === item.id}
-                    aria-controls={`panel-${item.id}`}
-                    onClick={() => setActivePanel(item.id)}
-                    onKeyDown={(e) => handleNavKeyDown(e, item)}
-                  >
-                    <NavIcon icon={item.icon} />
-                    {item.name}
-                  </li>
-                ))}
+                {section.items.map((item) =>
+                  item.href ? (
+                    // Outbound link to a sibling settings route — rendered
+                    // as a plain link, not a tab, so it navigates away.
+                    <li key={item.id} role="none">
+                      <Link href={item.href} className="settings-nav-item" style={{ color: "inherit", textDecoration: "none" }}>
+                        <NavIcon icon={item.icon} />
+                        {item.name}
+                      </Link>
+                    </li>
+                  ) : (
+                    <li
+                      key={item.id}
+                      id={`settings-nav-${item.id}`}
+                      className={cn("settings-nav-item", activePanel === item.panel && "active")}
+                      role="tab"
+                      tabIndex={activePanel === item.panel ? 0 : -1}
+                      aria-selected={activePanel === item.panel}
+                      aria-controls={`panel-${item.panel}`}
+                      onClick={() => item.panel && setActivePanel(item.panel)}
+                      onKeyDown={(e) => item.panel && handleNavKeyDown(e, item as NavItem & { panel: Panel })}
+                    >
+                      <NavIcon icon={item.icon} />
+                      {item.name}
+                    </li>
+                  ),
+                )}
               </ul>
             </div>
           ))}

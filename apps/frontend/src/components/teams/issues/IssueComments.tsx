@@ -11,24 +11,27 @@
 import { useState } from "react";
 import { EditorialButton } from "@/components/teams/shell";
 import { Textarea } from "@/components/ui/textarea";
-import type { IssueComment } from "@/components/teams/shared/types";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import type { CompanyAgent, IssueComment } from "@/components/teams/shared/types";
 
 export interface IssueCommentsProps {
   comments: IssueComment[];
+  agents: CompanyAgent[];
   isLoading?: boolean;
   onSubmit: (body: string) => Promise<void>;
 }
 
-function authorLabel(c: IssueComment): string {
+function authorLabel(c: IssueComment, agents: CompanyAgent[]): string {
+  if (c.authorAgentId) return agents.find((a) => a.id === c.authorAgentId)?.name ?? "Agent";
   if (c.authorKind === "agent") return "Agent";
-  if (c.authorKind === "user") return "User";
-  if (c.authorAgentId) return "Agent";
-  if (c.authorUserId) return "User";
+  if (c.authorUserId || c.authorKind === "user") return "User";
   return "Comment";
 }
 
 export function IssueComments({
   comments,
+  agents,
   isLoading,
   onSubmit,
 }: IssueCommentsProps) {
@@ -86,17 +89,14 @@ export function IssueComments({
                 className="flex items-baseline gap-2 text-xs"
                 style={{ color: "var(--mute)" }}
               >
-                <span>{authorLabel(c)}</span>
+                <span>{authorLabel(c, agents)}</span>
                 <span aria-hidden="true">·</span>
-                <time dateTime={c.createdAt}>
-                  {new Date(c.createdAt).toLocaleString()}
+                <time dateTime={c.createdAt} title={new Date(c.createdAt).toLocaleString()}>
+                  {timeAgo(c.createdAt)}
                 </time>
               </div>
-              <div
-                className="text-sm whitespace-pre-wrap"
-                style={{ color: "var(--ink-soft)" }}
-              >
-                {c.body}
+              <div className="text-sm" style={{ color: "var(--ink-soft)" }}>
+                <MarkdownView>{c.body}</MarkdownView>
               </div>
             </li>
           ))}

@@ -11,6 +11,11 @@
 import { IssueHeader } from "./IssueHeader";
 import { IssueComments } from "./IssueComments";
 import { IssueProperties } from "./IssueProperties";
+import { SubIssuesSection } from "./SubIssuesSection";
+import { IssueApprovalsSection } from "./IssueApprovalsSection";
+import { IssueRunsSection } from "./IssueRunsSection";
+import { IssueDocumentsSection } from "./IssueDocumentsSection";
+import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
 import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -83,6 +88,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       style={{ background: "var(--cream)", color: "var(--ink)" }}
     >
       <main className="flex flex-col gap-6 min-w-0">
+        {issue.parentId && <IssueParentBreadcrumb parentId={issue.parentId} />}
         <IssueHeader
           issue={issue}
           agents={agents}
@@ -110,12 +116,22 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             {issue.description}
           </div>
         )}
+        <SubIssuesSection
+          issueId={issueId}
+          agents={agents}
+          projects={projects}
+          parentLabel={issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title}
+        />
+        <IssueApprovalsSection issueId={issueId} />
+        <IssueRunsSection issueId={issueId} agents={agents} />
+        <IssueDocumentsSection issueId={issueId} agents={agents} />
         <div className="pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
           <h2 className="section-label mb-3">
             <b>Conversation</b>
           </h2>
           <IssueComments
             comments={comments}
+            agents={agents}
             isLoading={isLoading}
             onSubmit={async (body) => {
               await mutations.addComment(issueId, body);

@@ -14,6 +14,7 @@ import { IssueProperties } from "./IssueProperties";
 import { SubIssuesSection } from "./SubIssuesSection";
 import { IssueApprovalsSection } from "./IssueApprovalsSection";
 import { IssueRunsSection } from "./IssueRunsSection";
+import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
 import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
@@ -123,6 +124,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         />
         <IssueApprovalsSection issueId={issueId} />
         <IssueRunsSection issueId={issueId} agents={agents} />
+        <IssueDocumentsSection issueId={issueId} agents={agents} />
         <div className="pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
           <h2 className="section-label mb-3">
             <b>Conversation</b>

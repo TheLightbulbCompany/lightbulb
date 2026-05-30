@@ -1037,6 +1037,22 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_issue_documents(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the documents attached to an issue.
+
+        Maps to ``GET /api/issues/{issueId}/documents`` (issue-scoped).
+        The body is returned inline per document, so no fetch-by-key is needed.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/documents",
+            session_cookie=session_cookie,
+        )
+
     async def create_issue(
         self,
         *,

@@ -226,3 +226,13 @@ async def list_issue_runs(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
         session_cookie=ctx.session_cookie,
     )
     return envelope_list(rows, "runs")
+
+
+@router.get("/issues/{issue_id}/documents")
+async def list_issue_documents(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List the documents attached to an issue (the issue-detail Documents section)."""
+    rows = await _agents._admin().list_issue_documents(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+    )
+    return envelope_list(rows, "documents")

@@ -185,6 +185,107 @@ async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
     return agent_id in ids
 
 
+async def register_paperclip_agent_devices(
+    *,
+    owner_id: str,
+    gateway_token: str,
+    repo: PaperclipRepo,
+    admin_client: PaperclipAdminClient,
+) -> list[dict[str, Any]]:
+    """Build ``paired.json`` operator entries for the owner's Paperclip agents,
+    and bind each agent's ``adapterConfig.authToken`` to the container gateway
+    token. Returns the entries to fold into ``build_device_paired_json``.
+
+    Called at container provision (the per-container ``gateway_token`` is only
+    known then). For each ``openclaw_gateway`` agent carrying an Isol8-minted
+    ``devicePrivateKeyPem``:
+
+    1. Derive its device identity (public key + deviceId) from the PEM.
+    2. Build a paired operator entry (operator.admin/read/write) bound to the
+       container ``gateway_token`` — so the agent's own device clears the
+       remote-operator pairing wall on its first relayed connect.
+    3. Rewrite ``adapterConfig.authToken`` to ``gateway_token`` so the adapter's
+       signed connect (the signature is computed *over* ``auth.token``)
+       authenticates against the container's token-mode gateway. The URL keeps
+       ``?token=<service JWT>`` for the API Gateway authorizer.
+
+    Best-effort: Paperclip availability / per-agent failures are logged and
+    skipped rather than failing container provision. Returns whatever entries
+    were built.
+    """
+    from core.crypto.operator_device import (
+        BACKEND_OPERATOR_SCOPES,
+        build_paired_operator_entry,
+        device_identity_from_pem,
+    )
+    from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE
+
+    agents = await fetch_paperclip_agents_for_owner(
+        owner_id=owner_id, repo=repo, admin_client=admin_client
+    )
+    if not agents:
+        return []
+
+    try:
+        cookie = await get_admin_session_cookie(admin_client._http)
+    except (RuntimeError, httpx.HTTPError) as e:
+        logger.warning(
+            "register_paperclip_agent_devices: admin cookie failed for owner=%s — skipping: %s",
+            owner_id,
+            e,
+        )
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for agent in agents:
+        if agent.get("adapterType") != OPENCLAW_GATEWAY_TYPE:
+            continue
+        cfg = agent.get("adapterConfig") or {}
+        pem = cfg.get("devicePrivateKeyPem")
+        if not pem:
+            # Legacy / ephemeral-key agent — no stable Isol8-minted device to pair.
+            continue
+        try:
+            identity = device_identity_from_pem(pem)
+        except Exception as e:  # noqa: BLE001 — one bad key must not drop the rest
+            logger.warning(
+                "register_paperclip_agent_devices: bad device PEM for agent=%s: %s",
+                agent.get("id"),
+                e,
+            )
+            continue
+
+        entries.append(
+            build_paired_operator_entry(
+                identity,
+                gateway_token=gateway_token,
+                scopes=BACKEND_OPERATOR_SCOPES,
+                display_name=f"paperclip:{agent.get('name') or agent.get('id')}",
+            )
+        )
+
+        # Bind the agent's connect token to the container gateway token.
+        # Idempotent: skip the round-trip if already bound.
+        if cfg.get("authToken") != gateway_token:
+            try:
+                await admin_client.patch_agent(
+                    session_cookie=cookie,
+                    agent_id=agent["id"],
+                    body={
+                        "adapterConfig": {**cfg, "authToken": gateway_token},
+                        "replaceAdapterConfig": True,
+                    },
+                )
+            except (PaperclipApiError, httpx.HTTPError) as e:
+                logger.warning(
+                    "register_paperclip_agent_devices: authToken bind failed for agent=%s: %s",
+                    agent["id"],
+                    e,
+                )
+
+    return entries
+
+
 async def pair_with_openclaw(
     *,
     owner_id: str,

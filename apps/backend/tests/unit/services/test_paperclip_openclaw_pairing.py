@@ -5,10 +5,95 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from core.containers.config import build_device_paired_json
+from core.crypto.operator_device import generate_operator_device, private_key_pem
 from core.services.paperclip_openclaw_pairing import (
     fetch_paperclip_agents_for_owner,
     pair_with_openclaw,
+    register_paperclip_agent_devices,
 )
+
+
+def _gw_agent(agent_id, *, pem=None, auth_token="svc", adapter_type="openclaw_gateway", name="Friday"):
+    cfg = {
+        "url": "wss://ws.isol8.co?token=svc&clientId=paperclip-operator",
+        "authToken": auth_token,
+        "sessionKeyStrategy": "issue",
+        "sessionKey": "user_1",
+    }
+    if pem is not None:
+        cfg["devicePrivateKeyPem"] = pem
+    return {"id": agent_id, "name": name, "adapterType": adapter_type, "adapterConfig": cfg}
+
+
+def _mock_admin_and_repo(agents, monkeypatch):
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(company_id="co_x"))
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value=agents)
+    admin.patch_agent = AsyncMock()
+    admin._http = MagicMock()
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
+        AsyncMock(return_value="cookie"),
+    )
+    return admin, repo
+
+
+@pytest.mark.asyncio
+async def test_register_builds_entry_and_binds_auth_token(monkeypatch):
+    ident = generate_operator_device()
+    agent = _gw_agent("agent_1", pem=private_key_pem(ident))
+    admin, repo = _mock_admin_and_repo([agent], monkeypatch)
+
+    entries = await register_paperclip_agent_devices(
+        owner_id="user_1", gateway_token="GW_TOKEN", repo=repo, admin_client=admin
+    )
+
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["deviceId"] == ident.device_id
+    assert e["publicKey"] == ident.public_key_b64
+    assert e["role"] == "operator"
+    assert "operator.admin" in e["approvedScopes"]
+    assert e["tokens"]["operator"]["token"] == "GW_TOKEN"
+    # authToken rebound to the container gateway token; the URL ?token= (service
+    # JWT, for the API Gateway authorizer) is untouched.
+    admin.patch_agent.assert_awaited_once()
+    body = admin.patch_agent.await_args.kwargs["body"]
+    assert body["replaceAdapterConfig"] is True
+    assert body["adapterConfig"]["authToken"] == "GW_TOKEN"
+    assert body["adapterConfig"]["url"] == agent["adapterConfig"]["url"]
+    # The paired entry seeds into build_device_paired_json alongside node+operator.
+    paired = build_device_paired_json("node_id", "node_pub", operator_entry={"deviceId": "op"}, extra_operator_entries=entries)
+    import json as _json
+
+    assert ident.device_id in _json.loads(paired)
+
+
+@pytest.mark.asyncio
+async def test_register_skips_agents_without_minted_key_or_wrong_type(monkeypatch):
+    agents = [
+        _gw_agent("a1", pem=None),  # no minted device key
+        _gw_agent("a2", pem="x", adapter_type="claude_local"),  # not openclaw_gateway
+    ]
+    admin, repo = _mock_admin_and_repo(agents, monkeypatch)
+    entries = await register_paperclip_agent_devices(
+        owner_id="user_1", gateway_token="GW", repo=repo, admin_client=admin
+    )
+    assert entries == []
+    admin.patch_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_register_is_idempotent_when_token_already_bound(monkeypatch):
+    agent = _gw_agent("a1", pem=private_key_pem(generate_operator_device()), auth_token="GW")
+    admin, repo = _mock_admin_and_repo([agent], monkeypatch)
+    entries = await register_paperclip_agent_devices(
+        owner_id="user_1", gateway_token="GW", repo=repo, admin_client=admin
+    )
+    assert len(entries) == 1  # still produces the paired entry
+    admin.patch_agent.assert_not_called()  # but no rewrite round-trip
 
 
 @pytest.mark.asyncio

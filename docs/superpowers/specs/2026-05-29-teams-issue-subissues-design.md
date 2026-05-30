@@ -40,7 +40,7 @@ Add a **Sub-issues section** to the `/teams` issue-detail page: list an issue's 
 
 ### admin client (`core/services/paperclip_admin_client.py`)
 
-- New `create_child_issue(*, session_cookie, company_id, issue_id, body)` → `POST /api/companies/{company_id}/issues/{issue_id}/children` (mirrors `create_issue`'s path/shape).
+- New `create_child_issue(*, session_cookie, issue_id, body)` → `POST /api/issues/{issue_id}/children` (**issue-scoped**, like `get_issue`/`patch_issue` — NOT company-scoped; upstream derives the company from the parent).
 - Children listing reuses the existing `list_issues(params=…)` (no new list method).
 
 ### Schemas (`routers/teams/schemas.py`)

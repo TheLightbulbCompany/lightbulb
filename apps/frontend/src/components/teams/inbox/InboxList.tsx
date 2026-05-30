@@ -15,6 +15,7 @@ import type {
   InboxWorkItem,
 } from "@/components/teams/shared/lib/inbox";
 import { IssueRow } from "@/components/teams/inbox/IssueRow";
+import { IssueStatusMenu } from "@/components/teams/issues/IssueStatusMenu";
 import { SwipeToArchive } from "@/components/teams/inbox/SwipeToArchive";
 import { cn } from "@/lib/utils";
 
@@ -94,6 +95,7 @@ export function InboxList({
                     unreadState={item.issue.unread ? "visible" : "hidden"}
                     onMarkRead={() => onMarkRead(id)}
                     onArchive={() => onArchive(id)}
+                    desktopTrailing={<IssueStatusMenu issue={item.issue} />}
                   />
                 );
                 return (

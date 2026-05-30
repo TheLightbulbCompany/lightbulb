@@ -279,6 +279,16 @@ export class ContainerStack extends cdk.Stack {
         }),
       );
       this.openclawExtendedRepo.grantPullPush(builderRole);
+
+      // The build-paperclip-image workflow uses this same OIDC role to push the
+      // extended Paperclip image (apps/infra/paperclip-extended/). Grant it
+      // pull+push on that account-scoped repo too.
+      const paperclipExtendedRepo = ecr.Repository.fromRepositoryName(
+        this,
+        "PaperclipExtendedRepoForBuilder",
+        "isol8/paperclip-extended",
+      );
+      paperclipExtendedRepo.grantPullPush(builderRole);
     }
 
     // Base OpenClaw task definition — the backend clones this per user,

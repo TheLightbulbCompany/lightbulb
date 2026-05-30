@@ -129,8 +129,9 @@ export class Isol8Stage extends cdk.Stage {
       wsStage: api.wsStage,
     });
 
-    // PaperclipStack — runs upstream `paperclipai/paperclip:latest` as a
-    // single Fargate service. Reachable from FastAPI via Cloud Map at
+    // PaperclipStack — runs the pinned Paperclip image (extended overlay,
+    // apps/infra/paperclip-extended/) as a single Fargate service. Reachable from
+    // FastAPI via Cloud Map at
     // `http://paperclip.isol8-${env}.local:3100/`. T6 wires the public
     // host route on the existing ALB; T14 wires the FastAPI proxy router.
     const paperclip = new PaperclipStack(this, `isol8-${env}-paperclip`, {

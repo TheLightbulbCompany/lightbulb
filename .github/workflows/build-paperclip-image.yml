@@ -1,0 +1,100 @@
+name: build-paperclip-image
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/infra/paperclip-extended/Dockerfile"
+      - "paperclip-version.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-push:
+    name: Build and push extended Paperclip image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read version metadata
+        id: meta
+        run: |
+          IMAGE=$(node -p "require('./paperclip-version.json').extendedImage")
+          # Base is pinned by digest, so derive a human tag from the upstream
+          # commit + our repo commit (the upstream `:tag` scheme used by
+          # openclaw-version.json doesn't apply to a digest pin).
+          UPSTREAM_COMMIT=$(node -p "require('./paperclip-version.json').upstreamCommit.slice(0,8)")
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          TAG="${UPSTREAM_COMMIT}-${SHORT_SHA}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}:${TAG}"
+
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-openclaw-image-builder
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        run: |
+          docker build \
+            -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
+            apps/infra/paperclip-extended/
+
+      # We deliberately do NOT `docker push` here. The ECR repo has tag
+      # immutability enabled and the SOCI v2 step below pushes the SOCI-enabled
+      # manifest under the same tag — a single ECR push, no immutability conflict
+      # (same rationale as build-openclaw-image.yml).
+
+      - name: Set up containerd
+        uses: crazy-max/ghaction-setup-containerd@v3
+
+      - name: Convert image to SOCI v2 and push
+        env:
+          SOCI_VERSION: "0.13.0"
+          NERDCTL_VERSION: "2.2.2"
+          IMAGE_REF: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+        # Fargate refuses SOCI Index Manifest v1 for accounts new to SOCI, so we
+        # build a v2 SOCI-enabled image and push that as the only push for the tag.
+        run: |
+          set -euo pipefail
+          curl -sSL "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-amd64-static.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin/ soci
+          sudo chmod +x /usr/local/bin/soci
+
+          curl -sSL "https://github.com/containerd/nerdctl/releases/download/v${NERDCTL_VERSION}/nerdctl-${NERDCTL_VERSION}-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin/ nerdctl
+          sudo chmod +x /usr/local/bin/nerdctl
+
+          ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
+          REGISTRY="$(echo "${IMAGE_REF}" | cut -d/ -f1)"
+          echo "${ECR_PASSWORD}" | sudo nerdctl login --username AWS --password-stdin "${REGISTRY}"
+
+          docker save "${IMAGE_REF}" | sudo nerdctl image load
+
+          sudo soci convert --platform linux/amd64 "${IMAGE_REF}" "${IMAGE_REF}-soci-staging"
+          sudo nerdctl rmi "${IMAGE_REF}" || true
+          sudo nerdctl tag "${IMAGE_REF}-soci-staging" "${IMAGE_REF}"
+
+          sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
+
+      - name: Summary
+        run: |
+          echo "## Built image" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Bump \`paperclip-version.json#dev.tag\` to \`${{ steps.meta.outputs.tag }}\` in a PR to deploy to dev." >> "$GITHUB_STEP_SUMMARY"

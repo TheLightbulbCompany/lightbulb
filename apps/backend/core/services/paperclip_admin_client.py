@@ -1345,6 +1345,21 @@ class PaperclipAdminClient:
         )
         return result if isinstance(result, list) else []
 
+    async def get_routine(
+        self,
+        *,
+        session_cookie: str,
+        routine_id: str,
+    ) -> dict:
+        """Fetch a single routine by id (the rich RoutineDetail).
+
+        Maps to ``GET /api/routines/{routineId}``.
+        """
+        return await self._get(
+            f"/api/routines/{routine_id}",
+            session_cookie=session_cookie,
+        )
+
     # ------------------------------------------------------------------
     # Goals
     # ------------------------------------------------------------------

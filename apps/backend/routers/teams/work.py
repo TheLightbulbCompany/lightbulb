@@ -108,6 +108,15 @@ async def list_routine_runs(
     return envelope_list(upstream, "runs")
 
 
+@router.get("/routines/{routine_id}")
+async def get_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Fetch a single routine by id (the routine detail page)."""
+    return await _agents._admin().get_routine(
+        routine_id=routine_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
 # ---- Goals ------------------------------------------------------------
 
 

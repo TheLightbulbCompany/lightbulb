@@ -19,6 +19,7 @@ const swrKey = (path: string) => `${SWR_PREFIX}${path}`;
 
 export interface UseIssueMutationsResult {
   create: (input: IssueCreateInput) => Promise<Issue>;
+  createChild: (parentId: string, input: IssueCreateInput) => Promise<Issue>;
   update: (issueId: string, input: IssueUpdateInput) => Promise<Issue>;
   addComment: (issueId: string, body: string) => Promise<IssueComment>;
 }
@@ -36,6 +37,18 @@ export function useIssueMutations(): UseIssueMutationsResult {
     mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));
     return created;
   }, [post, mutate]);
+
+  const createChild = useCallback(
+    async (parentId: string, input: IssueCreateInput): Promise<Issue> => {
+      // Routes to the upstream children endpoint (parent/child wired server-side),
+      // not the plain create. Revalidate the parent's children list so the new
+      // sub-issue appears.
+      const created = await post<Issue>(`/issues/${parentId}/children`, input);
+      mutate(swrKey(`/issues/${parentId}/children`));
+      return created;
+    },
+    [post, mutate],
+  );
 
   const update = useCallback(
     async (issueId: string, input: IssueUpdateInput): Promise<Issue> => {
@@ -57,5 +70,5 @@ export function useIssueMutations(): UseIssueMutationsResult {
     [post, mutate],
   );
 
-  return { create, update, addComment };
+  return { create, createChild, update, addComment };
 }

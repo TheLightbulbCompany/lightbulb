@@ -1024,6 +1024,23 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def create_child_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a child (sub-)issue under ``issue_id``. Body whitelisted by the BFF.
+
+        Maps to ``POST /api/issues/{issueId}/children``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/children",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     async def patch_issue(
         self,
         *,

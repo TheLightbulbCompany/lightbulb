@@ -1,0 +1,24 @@
+// apps/frontend/src/components/teams/issues/IssueParentBreadcrumb.tsx
+"use client";
+
+import Link from "next/link";
+import { ChevronUp } from "lucide-react";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import type { Issue } from "@/components/teams/shared/types";
+
+/** Rendered only when the issue has a parent (caller guards on parentId). */
+export function IssueParentBreadcrumb({ parentId }: { parentId: string }) {
+  const { read } = useTeamsApi();
+  const { data: parent } = read<Issue>(`/issues/${parentId}`);
+  const label = parent?.title?.trim() ? parent.title : "Parent issue";
+  return (
+    <Link
+      href={`/teams/issues/${parentId}`}
+      className="inline-flex items-center gap-1 text-sm hover:underline"
+      style={{ color: "var(--forest)" }}
+    >
+      <ChevronUp className="h-3.5 w-3.5" />
+      {label}
+    </Link>
+  );
+}

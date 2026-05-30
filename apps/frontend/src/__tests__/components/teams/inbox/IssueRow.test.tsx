@@ -22,11 +22,26 @@ test("renders the issue title + identifier", () => {
   expect(getByText(/PAP-1/)).toBeInTheDocument();
 });
 
-test("link points at the teams issue detail path", () => {
-  const { container } = render(<IssueRow issue={issue} />);
+test("links by internal id, not the human-readable identifier", () => {
+  // The detail route /teams/issues/{id} resolves upstream by the internal id
+  // ONLY, so a row with identifier "PAP-1" must still link to its id "iss_1".
+  // The identifier stays the visible label.
+  const { container, getByText } = render(<IssueRow issue={issue} />);
   const link = container.querySelector("a[data-inbox-issue-link]");
   expect(link).not.toBeNull();
-  expect(link?.getAttribute("href")).toBe("/teams/issues/PAP-1");
+  expect(link?.getAttribute("href")).toBe("/teams/issues/iss_1");
+  expect(getByText("PAP-1")).toBeInTheDocument();
+});
+
+test("renders identifier label while linking by id", () => {
+  const { container, getByText } = render(
+    <IssueRow
+      issue={{ id: "uuid-1", identifier: "ENG-42", title: "T", status: "todo" }}
+    />,
+  );
+  const link = container.querySelector("a[data-inbox-issue-link]");
+  expect(link?.getAttribute("href")).toBe("/teams/issues/uuid-1");
+  expect(getByText("ENG-42")).toBeInTheDocument();
 });
 
 test("unread issue surfaces a mark-as-read button", () => {

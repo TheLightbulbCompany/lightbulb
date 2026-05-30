@@ -65,7 +65,11 @@ export function IssueRow({
   archiveDisabled,
   className,
 }: IssueRowProps) {
-  const issuePathId = issue.identifier ?? issue.id;
+  // The detail route /teams/issues/{id} forwards through the BFF to upstream
+  // /api/issues/{id}, which resolves by the internal id ONLY — never the
+  // human-readable identifier (e.g. ENG-42). So link by id; the identifier is
+  // display-only (see `identifier` below).
+  const issuePathId = issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";

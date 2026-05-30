@@ -188,6 +188,39 @@ async def test_create_agent_passes_adapter_type_and_config(client_factory):
     assert body["role"] == "ceo"
 
 
+async def test_create_child_issue_posts_to_issue_scoped_path(client_factory):
+    """``create_child_issue`` POSTs to the ISSUE-scoped
+    ``/api/issues/{issueId}/children`` — NOT a company-scoped path.
+
+    Upstream's child-create route is mounted issue-scoped
+    (``router.post("/issues/:id/children")``); company is derived
+    server-side from the parent. A company-scoped path 404s. The
+    router test mocks this admin method, so this is the only place the
+    exact wire path is exercised — pinning it here prevents a silent
+    regression back to ``/api/companies/{id}/issues/{id}/children``.
+    """
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["method"] = req.method
+        captured["url"] = str(req.url)
+        captured["body"] = req.read().decode()
+        return httpx.Response(201, json={"id": "child1", "title": "x"})
+
+    client = client_factory(handler)
+    out = await client.create_child_issue(
+        session_cookie="sess_owner",
+        issue_id="iss1",
+        body={"title": "x"},
+    )
+    assert captured["method"] == "POST"
+    assert "/api/issues/iss1/children" in captured["url"]
+    assert "/companies/" not in captured["url"]
+    body = _json.loads(captured["body"])
+    assert body == {"title": "x"}
+    assert out["id"] == "child1"
+
+
 async def test_delete_company_swallows_404(client_factory):
     """404 on DELETE means already gone — must not raise so cleanup
     cron retries are idempotent.

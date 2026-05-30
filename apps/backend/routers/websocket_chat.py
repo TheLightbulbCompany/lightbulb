@@ -482,14 +482,28 @@ async def ws_message(
                 await handle_operator_message(x_connection_id, body)
         else:
             # Relay upstream isn't on this task (cross-task / post-rollover).
-            # Drop rather than fake a hello-ok or forward into the RPC path —
-            # the adapter's reconnect loop re-establishes the relay, and the
-            # next $connect kicks it off again on whichever task handles it.
+            # Don't silently blackhole the frame — that hangs the adapter's
+            # request for the full connect timeout. Reply with an explicit error
+            # res keyed to the frame's request id so the adapter fails FAST and
+            # retries on its next wake (which re-runs $connect). At our
+            # single-task steady state $connect + $default co-locate, so this
+            # only bites during a brief deploy-overlap window. We still never
+            # fake a hello-ok or forward into the RPC path.
             logger.warning(
                 "operator frame for conn=%s (method=%s) with no relay upstream on this task — "
-                "dropping; adapter will retry",
+                "returning explicit error so the adapter retries",
                 x_connection_id[:12] if x_connection_id else "?",
                 body.get("method") if msg_type == "req" else msg_type,
+            )
+            management_api = await get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {
+                    "type": "res",
+                    "id": body.get("id"),
+                    "ok": False,
+                    "error": {"message": "operator relay unavailable on this node — reconnect"},
+                },
             )
         return Response(status_code=200)
 

@@ -822,15 +822,15 @@ class TestOperatorRelayRouting:
         mock_relay.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_operator_frame_on_wrong_task_is_dropped_not_stubbed(
+    async def test_operator_frame_on_wrong_task_gets_explicit_error_not_stub(
         self, test_app, mock_connection_service, mock_management_api
     ):
         """A $default frame can land on a backend task without the in-process
         relay (cross-task / post-rollover). Identified by the PERSISTED
-        connection_type, it must be DROPPED — never answered with the cosmetic
-        hello-ok and never forwarded to the RPC proxy — so the real upstream on
-        the $connect task isn't stranded waiting on a signed connect it'll never
-        get."""
+        connection_type, it must get an EXPLICIT error res (keyed to the frame's
+        request id) so the adapter fails fast and retries — never the cosmetic
+        hello-ok, never silently blackholed, and never forwarded to the RPC
+        proxy (which would strand the real upstream on the $connect task)."""
         mock_connection_service.get_connection.return_value = {
             "user_id": "owner-1",
             "org_id": None,
@@ -853,11 +853,17 @@ class TestOperatorRelayRouting:
                 )
 
         assert response.status_code == 200
-        # Dropped: no submit, no relay, no RPC dispatch, no cosmetic hello-ok.
+        # No relay submit/forward, no RPC dispatch.
         mock_submit.assert_not_called()
         mock_relay.assert_not_awaited()
         mock_rpc.assert_not_called()
-        mock_management_api.send_message.assert_not_called()
+        # An explicit error res — keyed to the frame's id, NOT a fake hello-ok.
+        mock_management_api.send_message.assert_called_once()
+        sent = mock_management_api.send_message.call_args[0][1]
+        assert sent["type"] == "res"
+        assert sent["id"] == "c1"
+        assert sent["ok"] is False
+        assert "payload" not in sent  # not the cosmetic hello-ok stub
 
     @pytest.mark.asyncio
     async def test_disconnect_tears_down_operator_relay_by_persisted_type(

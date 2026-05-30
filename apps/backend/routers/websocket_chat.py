@@ -362,9 +362,18 @@ async def ws_disconnect(
             # Additionally tear down the node upstream + per-user state
             # if this was a node connection, or the operator relay upstream
             # if this was a Paperclip adapter connection.
+            #
+            # Operator teardown routes on the PERSISTED connection_type (not the
+            # in-process _operator_upstreams map): a $disconnect can land on a
+            # different backend task than the one that ran $connect, where the
+            # in-process check is False. handle_operator_disconnect is idempotent
+            # (atomic pop), so it tears down on the task that holds the upstream
+            # and is a harmless no-op elsewhere. (A cross-task orphan — the
+            # upstream stranded on the $connect task — is reaped by the
+            # failed-push path in operator_proxy.on_upstream_message.)
             if is_node_connection(x_connection_id):
                 await handle_node_disconnect(x_connection_id, owner_id, user_id)
-            elif is_operator_connection(x_connection_id):
+            elif connection.get("connection_type") == "operator":
                 await handle_operator_disconnect(x_connection_id)
     except Exception as e:
         logger.warning("Failed to unregister frontend connection from pool: %s", e)

@@ -36,6 +36,7 @@ exec/execNode session pinning, ``node_status`` UI broadcasts, ref-counted
 not a user's local tool host.
 """
 
+import asyncio
 import logging
 
 from core.containers import get_ecs_manager
@@ -74,7 +75,20 @@ async def handle_operator_connect(
     )
 
     async def on_upstream_message(data: dict):
-        management_api.send_message(connection_id, data)
+        # send_message returns False when the Management API raises GoneException
+        # — the downstream adapter WS is gone. This is the load-bearing reaper
+        # for the cross-task disconnect case: API Gateway can route $disconnect
+        # to a different backend task than the one holding this upstream, so the
+        # explicit teardown is skipped there; the next container->adapter push
+        # is what reveals the loss here. Defer the teardown via create_task so
+        # we don't cancel the reader loop from inside its own push callback.
+        delivered = management_api.send_message(connection_id, data)
+        if delivered is False:
+            logger.info(
+                "Operator adapter gone for conn=%s; reaping orphaned relay upstream",
+                connection_id,
+            )
+            asyncio.create_task(handle_operator_disconnect(connection_id))
 
     # Deliver upstream frames DOWN to the adapter: the container's
     # connect.challenge during the handshake, then res/event frames once the

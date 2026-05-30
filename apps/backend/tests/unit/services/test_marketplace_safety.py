@@ -218,6 +218,33 @@ def test_slice_scrubbed_nested_list_secret_caught():
     assert marketplace_safety.has_blocking_credential_findings(flags) is True
 
 
+def test_slice_scrubbed_secret_key_nested_under_non_secret_object_caught():
+    """A secret-NAMED key (apiKey/headers) nested under a NON-secret object
+    (config/options) survives the shallow scrub AND a top-level-only field
+    check — the recursive walk must find the secret-named key at any depth.
+    """
+    slice_ = {
+        "mcp": {"servers": {"foo": {"config": {"apiKey": "sk_live_buried"}}}},
+        "skills": {"entries": {"bar": {"options": {"headers": {"Authorization": "Bearer real"}}}}},
+    }
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    snippets = [f.snippet for f in flags if f.pattern == "unscrubbed-credential"]
+    assert any("config.apiKey" in s for s in snippets), flags
+    assert any("options.headers" in s for s in snippets), flags
+    assert marketplace_safety.has_blocking_credential_findings(flags) is True
+    # Redaction holds even for the deeply-nested finds.
+    blob = " ".join(f.snippet for f in flags)
+    assert "sk_live_buried" not in blob and "Bearer real" not in blob
+
+
+def test_slice_scrubbed_clean_nested_non_secret_object_passes():
+    """A nested non-secret object with no surviving secret-named values is not
+    flagged — guards the deeper walk against false positives (region is config,
+    apiKey is properly blanked)."""
+    slice_ = {"mcp": {"servers": {"foo": {"config": {"region": "us-east-1", "apiKey": ""}}}}}
+    assert marketplace_safety.assert_slice_scrubbed(slice_) == []
+
+
 def test_slice_scrubbed_oauth_client_secret_literal_flagged():
     """An OAuth client_secret literal buried anywhere in the slice → blocking
     flag. The scrub keys on apiKey/env/headers/webhookToken, so a config that

@@ -279,26 +279,6 @@ def _redact(value: str) -> str:
     return f"<redacted len={len(value)} prefix={prefix!r}>"
 
 
-def _walk_for_nonempty_string(value: object) -> bool:
-    """True if ``value`` contains any non-empty string anywhere inside it.
-
-    Recurses through dicts (values) and lists/tuples (elements) to arbitrary
-    depth. This is what catches what the one-level scrub misses: the scrub
-    turns ``env`` from ``{API_KEY: "sk"}`` into ``{API_KEY: ""}`` only at the
-    top level — a secret nested a level deeper (a dict/list value, or a list
-    of strings) slips past. A properly-scrubbed field is all-empty-strings /
-    empty-containers, so this returns False for it.
-    """
-    if isinstance(value, str):
-        return value != ""
-    if isinstance(value, dict):
-        return any(_walk_for_nonempty_string(v) for v in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_walk_for_nonempty_string(v) for v in value)
-    # Non-string scalars (bool/int/float/None) are never a credential leak.
-    return False
-
-
 def _first_nonempty_string(value: object) -> str | None:
     """First non-empty string found by the same deep walk, for the snippet.
     Returns None when nothing leaked.
@@ -360,6 +340,31 @@ def _walk_for_client_secret(value: object, path: str) -> list[tuple[str, str]]:
     return found
 
 
+def _walk_for_secret_fields(value: object, path: str, field_names) -> list[tuple[str, str]]:
+    """Deep-walk ``value`` collecting (path, leaked_value) for every key in
+    ``field_names`` whose value contains a non-empty string ANYWHERE inside it.
+
+    Recurses through nested dicts/lists, so a secret-shaped key buried under a
+    non-secret object (e.g. ``mcp.servers.foo.config.apiKey`` or
+    ``skills.entries.bar.options.headers.Authorization``) is caught. The shallow
+    scrub only blanks these names at the TOP level of an entry, so a nested one
+    survives both the scrub and any top-level-only check.
+    """
+    found: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child_path = f"{path}.{k}"
+            if isinstance(k, str) and k in field_names:
+                leaked = _first_nonempty_string(v)
+                if leaked is not None:
+                    found.append((child_path, leaked))
+            found.extend(_walk_for_secret_fields(v, child_path, field_names))
+    elif isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            found.extend(_walk_for_secret_fields(v, f"{path}[{i}]", field_names))
+    return found
+
+
 def assert_slice_scrubbed(openclaw_slice: dict) -> list[SafetyFlag]:
     """Re-check a (supposedly-scrubbed) openclaw-slice for surviving secrets.
 
@@ -384,21 +389,19 @@ def assert_slice_scrubbed(openclaw_slice: dict) -> list[SafetyFlag]:
     flags: list[SafetyFlag] = []
 
     for path, entry in _walk_slice_entries(openclaw_slice):
-        for field in _SECRET_FIELD_NAMES:
-            if field not in entry:
-                continue
-            value = entry[field]
-            if _walk_for_nonempty_string(value):
-                leaked = _first_nonempty_string(value) or ""
-                flags.append(
-                    SafetyFlag(
-                        pattern="unscrubbed-credential",
-                        severity="high",
-                        file=_SLICE_FILE,
-                        line=None,
-                        snippet=f"{path}.{field} = {_redact(leaked)}",
-                    )
+        # Walk the WHOLE entry, not just its top-level fields: a secret-named key
+        # (apiKey/env/headers/webhookToken) nested under a non-secret object
+        # survives the shallow scrub, so a top-level-only check would miss it.
+        for child_path, leaked in _walk_for_secret_fields(entry, path, _SECRET_FIELD_NAMES):
+            flags.append(
+                SafetyFlag(
+                    pattern="unscrubbed-credential",
+                    severity="high",
+                    file=_SLICE_FILE,
+                    line=None,
+                    snippet=f"{child_path} = {_redact(leaked)}",
                 )
+            )
 
     for child_path, secret in _walk_for_client_secret(openclaw_slice, ""):
         flags.append(

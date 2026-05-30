@@ -35,7 +35,7 @@ A second gap audit (full upstream surface sweep) produced this batch. Grounded i
 | E | Inbox mixed triage — a "Needs attention" band above the inbox surfacing pending approvals + failed runs with inline actions; standalone Approvals panel retired. (Joins excluded — Isol8 auto-handles member joins server-side, so there's no pending-joins queue.) Extends #3. | L | In progress | [2026-05-29-teams-inbox-mixed-triage-design.md](./2026-05-29-teams-inbox-mixed-triage-design.md) | [2026-05-29-teams-inbox-mixed-triage.md](../plans/2026-05-29-teams-inbox-mixed-triage.md) | TBD |
 | F | Costs depth (budgets/providers/billers/finance tabs + policies) | L | Pending | — | — | — |
 | G | Skills CRUD (create/edit/delete/version-install) | M–L | Pending | — | — | — |
-| H | Polish (routine run-history tab, goal edit, approval detail, activity filters, dashboard date-range) | S | Pending | — | — | — |
+| H | Polish — **clean trio**: goal edit + approval-detail page + activity type-filter (all frontend-only; BFF already wired). Dashboard date-range **dropped** (14d hardcoded upstream too); routine run-history **deferred** (needs a routine detail surface first). | S | Done | [H](./2026-05-30-teams-polish-design.md) | [H](../plans/2026-05-30-teams-polish.md) | [#771](https://github.com/Isol8AI/isol8/pull/771) |
 | I | (latent fix, low pri) `params.paperclip` full-wipe restore — `_build_agents_list` re-seeds agent meta from the Paperclip master so a full EFS wipe reconstructs role/title/capabilities/icon. Pre-existing edge; split out of B by the single-editor decision. | S | Pending | — | — | — |
 
 ## Dependency graph

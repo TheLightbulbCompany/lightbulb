@@ -195,7 +195,11 @@ async def _fill_buyer_credential_slots(owner_id: str, slice_: dict) -> None:
     for provider in candidates:
         try:
             row = await connection_repo.get(owner_id, provider)
-            if not row or row.get("status") != "connected":
+            # Mirror the deploy gate's default: a row with no explicit status is
+            # treated as connected. Diverging here would let the gate admit a
+            # legacy (status-less) connection while this fill skips it, leaving
+            # the just-merged slot blank.
+            if not row or row.get("status", "connected") != "connected":
                 continue
             p = registry.get_provider(provider)
             # Materializer/actor providers deliver via an owner-scoped keyring,

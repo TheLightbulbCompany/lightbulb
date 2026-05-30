@@ -409,3 +409,28 @@ async def test_slot_fill_skips_bundle_with_non_canonical_key(monkeypatch):
 
     decrypt_mock.assert_not_called()
     apply_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slot_fill_treats_missing_status_as_connected(monkeypatch):
+    """A legacy row with no explicit status is filled — matching the deploy gate,
+    which also defaults a status-less row to connected. If they diverged, the gate
+    would admit the deploy while this fill skipped it, leaving the slot blank.
+    """
+    row = {"provider": "stripe", "credential_enc": "enc-blob"}  # no "status" key
+    decrypted = {"token": "sk_live_buyer"}
+    get_mock = AsyncMock(return_value=row)
+    decrypt_mock = MagicMock(return_value=decrypted)
+    apply_mock = AsyncMock()
+    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
+    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr(
+        "core.services.credentials.apply_connection.apply_connection",
+        apply_mock,
+    )
+
+    slice_ = {"mcp": {"servers": {"stripe": {"env": {"STRIPE_SECRET_KEY": ""}}}}}
+
+    await _fill_buyer_credential_slots("owner_1", slice_)
+
+    apply_mock.assert_awaited_once_with("owner_1", "stripe", decrypted)

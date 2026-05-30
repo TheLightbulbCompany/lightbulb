@@ -175,6 +175,16 @@ export interface HeartbeatRun {
   failureReason?: string | null;
 }
 
+/** A run for an issue (upstream RunForIssue subset). `status` is a free string. */
+export interface IssueRun {
+  runId: string;
+  status: string;
+  agentId?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  createdAt?: string | null;
+}
+
 export interface CompanyMember {
   userId: string;
   name?: string | null;

@@ -3,6 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { remarkSoftBreaks } from "@/components/teams/shared/lib/remark-soft-breaks";
 
 function safeHref(href?: string): string | undefined {
   if (!href) return undefined;
@@ -54,7 +55,7 @@ const markdownComponents: Components = {
 /** Shared read-only markdown renderer (gfm, no raw HTML, link-guarded, CSS-var themed). */
 export function MarkdownView({ children }: { children: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkSoftBreaks]} components={markdownComponents}>
       {children}
     </ReactMarkdown>
   );

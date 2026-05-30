@@ -21,4 +21,9 @@ describe("MarkdownView", () => {
     const link = screen.getByRole("link", { name: "docs" });
     expect(link).toHaveAttribute("href", "https://example.com");
   });
+
+  it("preserves single newlines as line breaks (soft breaks)", () => {
+    const { container } = render(<MarkdownView>{"line one\nline two"}</MarkdownView>);
+    expect(container.querySelector("br")).not.toBeNull();
+  });
 });

@@ -158,7 +158,7 @@ google:
   refresh_owner: actor               # gog self-refreshes after one-time seed
   requires: { bins: [gog] }
   wiring:
-    materializer: gog_keyring         # writes config.json + keyring on EFS
+    materializer: gog_cli             # runs the gog binary on the backend to seed creds+tokens onto EFS; the keyring is a JWE blob, not a writable file (see M6)
 
 # Bucket C — true OAuth dance, MCP delivery (refresh owned by us)
 outlook:
@@ -262,7 +262,7 @@ Detailed, executable task breakdown: **`docs/superpowers/plans/2026-05-29-integr
 - **M3 — Materializer.** Interface + `toml_cli` (generalize `workspace.py:700-786`, for PP CLIs) + `gog_keyring` (for `gog`). Atomic 0600, EFS-chroot, chown 1000.
 - **M4 — Paste-key panel (Bucket A).** Connect/validate/inject API-key integrations behind the registry (unifies `key_service` + channels). Lowest-risk bucket ships the panel UX first.
 - **M5 — OAuth dance scaffolding (Buckets B/C).** Shared PKCE+state DDB store, registry-driven authorize-URL builder, generic `GET /oauth/{provider}/callback`, exchange → vault → `apply_connection`. The one genuinely new piece (~3 days).
-- **M6 — First OAuth integration end-to-end: Google via `gog`.** Registry entry + `gog_keyring` materializer + dance + `gog` self-refresh. Smoke in a one-off task, then live in chat. No container restart.
+- **M6 — First OAuth integration end-to-end: Google via `gog` (CORRECTED — see the corrected-design section below).** Registry entry + `gog_cli` materializer (runs gog on the backend against the owner's EFS; the `gog_keyring` file-write materializer is retired) + `XDG_CONFIG_HOME` env (no symlink) + dance + `gog` self-refresh. Optional Task 6.5: central-push inbound Gmail. Smoke in a one-off task, then live in chat. No container restart.
 - **M7 — Connections panel UI.** Frontend list / connect / status / disconnect, modeled on `MyChannelsSection.tsx` + `useChatGPTOAuth.ts`.
 - **M8 — Marketplace `requires.credentials` seam.** Pre-deploy validator blocks deploy + surfaces Connect for missing providers; fill empty slots with the buyer's token on deploy; extend `marketplace_safety` with credential-leak rules.
 
@@ -274,9 +274,28 @@ Detailed, executable task breakdown: **`docs/superpowers/plans/2026-05-29-integr
 
 ---
 
+## M6 + inbound Gmail — corrected design (2026-05-29, verified)
+
+Two M6 corrections and one resolved open question, all grounded this session (gog-assessment + gmail-push workflows). Detailed task breakdown in the build plan's M6.
+
+**1. Keep `gog` (don't switch to ADC / a generic Printing-Press CLI).** gog is steipete's — OpenClaw's own author — and OpenClaw hardcodes it by binary name: the gateway auto-spawns `gog gmail watch serve` as the inbound-mail sidecar, ships a bundled gog skill, and relies on gog's 280 Workspace commands + a stable agent exit-code contract. A generic `google-auth`/ADC tool can't match that without reimplementing OpenClaw internals.
+
+**2. No symlink — set `XDG_CONFIG_HOME`.** An earlier note claimed OpenClaw strips `XDG_CONFIG_HOME` from bash-tool inheritance (which would have forced a symlink). That was a **misread**: `XDG_CONFIG_HOME` is in `allowedInheritedOverrideOnlyKeys` (`host-env-security-policy.json:281`) — only request-scoped *overrides* are blocked; an **inherited** value passes to bash-tool children. So set `XDG_CONFIG_HOME=/home/node/.openclaw/.config` in the per-user ECS task def → Go's `os.UserConfigDir` honors it → gog persists its config + keyring on EFS. One declarative line, like `HOME`.
+
+**3. Provision gog by running the binary ON THE BACKEND against the owner's EFS — the `gog_keyring` file-write materializer is RETIRED.** gog's refresh token is a 99designs file-keyring **JWE blob** (PBES2-HS256+A128KW + AES-256-GCM); the backend cannot fabricate a valid `tokens.json`. So the `google` wiring uses a `gog_cli` materializer that, after the M5 dance exchange, runs `gog auth credentials set -` + `gog auth tokens import -` (stdin) **on the backend** with `XDG_CONFIG_HOME` pointed at `EFS_MOUNT_PATH/{owner}/.config` + `GOG_KEYRING_BACKEND=file` + a shared `GOG_KEYRING_PASSWORD`. gog writes its real keyring exactly where the container reads it (the per-user EFS access point mounts at `/home/node/.openclaw`); the keyring is a portable password-derived JWE, so it decrypts in the container under the same password. **No ECS-Exec/SSM channel** — chosen over in-container exec (decided 2026-05-30, "Option 2") because gog's native `--remote` flow forces a paste-the-URL UX and a full session-manager client; the seamless one-click path runs the exchange in the backend. The container's gog stays the runtime actor + self-refresher (`refresh_owner: actor`); the backend touches the token only during the exchange. The M3 `gog_keyring` materializer is superseded (banner in the build plan).
+
+**3a. Non-retention for `refresh_owner: actor`.** Because the durable credential lives in the container's EFS keyring (gog self-refreshes there), the backend **scrubs the refresh token from the connections vault after a successful seed** — it keeps the connection *record* (for the UI + disconnect) but not the secret value. So the backend holds the token only transiently during the exchange; the container is the sole durable custodian. This gives the "container owns its credential" property without the in-container-exec machinery.
+
+**4. RESOLVED — inbound Gmail does NOT need per-tenant Pub/Sub or Tailscale.** The OpenClaw single-operator shape (a per-tenant GCP Pub/Sub topic + a Tailscale Funnel exposing the in-container `watch serve`) is **not** required multi-tenant. Tailscale exists only to make the in-container watch-serve publicly reachable and defaults to off; Isol8 already has a public edge. Design: **central Pub/Sub PUSH, thin backend, container owns the Gmail work.**
+- **Backend (thin):** ONE shared topic + ONE push subscription → a new public `/api/v1/webhooks/gmail` route. The API edge is the public **API Gateway HTTP API**; Clerk is a per-route dependency, not an edge gate (`webhooks.py` + the OAuth callback are already public, Clerk-free) — so this is the Stripe-webhook pattern, auth'd by Google's **OIDC JWT**. On push: verify OIDC → decode `emailAddress` → `owner_id` → forward the raw push to that owner's container's `gog gmail watch serve` (in-VPC, like the `:18789` hook port).
+- **Container (native gog, no new code):** set `hooks.gmail.{account, topic, tailscale.mode=off}` + add `"presets": ["gmail"]` to the hooks block in `config.py` (**a one-line gap** — today `/hooks/gmail` 404s). The gateway auto-starts `gog gmail watch start` (register + 12h renew) and `gog gmail watch serve`, which does `history.list` + message fetch + the `/hooks/gmail` POST → agent run. We reimplement none of gog's Gmail logic.
+- **Push over pull (long-term):** Isol8 already runs a public webhook surface, so pull's "no public endpoint" advantage is moot; push is lower-ops (Google owns delivery/retries/fan-out). Pursue only when "agent reacts to new mail" is a product requirement (build plan Task 6.5).
+
+---
+
 ## Open questions
 
-1. **First-provider materializer order** — `gog`'s keyring (high value, fiddlier) vs a uniform PP-TOML CLI (simplest). The plan builds `toml_cli` first to validate the rail, then `gog_keyring` for the Google slice.
+1. **First-provider order** — a uniform PP-TOML CLI (simplest, file-write materializer) vs Google (high value, but a run-the-binary `gog_cli` materializer, not a file write). The plan builds `toml_cli` first to validate the materialize rail, then the `gog_cli` Google slice (corrected M6).
 2. **OAuth-provider crossover** — re-run build-vs-Nango when we reach ~5 OAuth providers or accumulate many Actor-B live-token integrations.
 3. **`nango_proxy` trigger** — which (if any) provider is sensitive enough to require tokens-never-on-disk, forcing an early Nango Proxy.
 4. **Registry CI gate scope** — enforce every marketplace-manifest `requires.credentials` + every installed-skill `requires.config` provider has a registry entry.

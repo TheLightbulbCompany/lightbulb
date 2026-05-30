@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
 
+    # Shared password for the gog CLI file-keyring backend. The gog_cli
+    # materializer runs gog with GOG_KEYRING_BACKEND=file and this password to
+    # encrypt the owner's Google OAuth keyring on EFS; the identical value is
+    # injected into every per-user OpenClaw container so it can read the keyring
+    # at runtime. Provisioned by CDK from the `isol8/{env}/gog-keyring-password`
+    # secret — must stay stable forever or existing keyrings become unreadable.
+    GOG_KEYRING_PASSWORD: str = os.getenv("GOG_KEYRING_PASSWORD", "")
+
     # KMS CMK ARN/alias for per-container secrets (operator device private keys,
     # gateway tokens). Provisioned by CDK as `alias/isol8-{env}-container-secrets`.
     # Backend calls kms:Encrypt at provision time and kms:Decrypt at handshake

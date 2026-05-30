@@ -10,6 +10,7 @@ import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 
@@ -34,6 +35,13 @@ export interface ContainerStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
   /** Pass as string ARN to avoid cross-stack dependency cycle. */
   kmsKeyArn: string;
+  /**
+   * Name (NOT ISecret) of the shared gog file-keyring password secret created
+   * in AuthStack. Imported locally via fromSecretNameV2 and injected into the
+   * per-user OpenClaw task def as GOG_KEYRING_PASSWORD — same secret-name
+   * plumbing the ServiceStack uses to avoid cross-stack KMS auto-grant cycles.
+   */
+  gogKeyringPasswordSecretName: string;
 }
 
 const ENV_CONFIG: Record<
@@ -158,6 +166,19 @@ export class ContainerStack extends cdk.Stack {
           "secretsmanager:GetSecretValue",
         ],
         resources: ["*"],
+      }),
+    );
+
+    // The gog file-keyring password secret is encrypted with the AuthStack CMK
+    // (unlike per-user BYOK secrets, which use the AWS-managed key that
+    // GetSecretValue covers implicitly). Injecting a CMK-encrypted secret needs
+    // an explicit kms:Decrypt on that key. Manual grant (not CDK auto-grant) to
+    // avoid a cross-stack KMS cycle, mirroring the backend service.
+    this.taskExecutionRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "KmsDecryptForSecrets",
+        actions: ["kms:Decrypt"],
+        resources: [props.kmsKeyArn],
       }),
     );
 
@@ -402,6 +423,14 @@ export class ContainerStack extends cdk.Stack {
         // this, clawhub falls through to agents.defaults.workspace and lands
         // at /home/node/.openclaw/workspaces/skills — a path no scanner checks.
         CLAWHUB_WORKDIR: "/home/node/.openclaw",
+        // Point the gog CLI's config discovery (and thus its file keyring) at a
+        // path under the EFS-backed .openclaw mount so the owner's Google OAuth
+        // keyring persists across task restarts. gog reads XDG_CONFIG_HOME to
+        // locate its config dir; GOG_KEYRING_BACKEND=file selects the
+        // password-encrypted file keyring (the password comes in via the
+        // GOG_KEYRING_PASSWORD secret below).
+        XDG_CONFIG_HOME: "/home/node/.openclaw/.config",
+        GOG_KEYRING_BACKEND: "file",
         // Skip mDNS/bonjour service advertising. OpenClaw advertises itself
         // on the LAN via bonjour for desktop auto-discovery; in Fargate
         // there's no LAN multicast peer, so the announce gets stuck and
@@ -415,6 +444,22 @@ export class ContainerStack extends cdk.Stack {
         // gateway logs `startup trace: <name> <ms>ms total=<ms>ms` per step
         // (src/gateway/server.impl.ts:136). Cheap to leave on permanently.
         OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+      },
+      secrets: {
+        // Password for the gog CLI's file keyring (see XDG_CONFIG_HOME +
+        // GOG_KEYRING_BACKEND above). Imported by name — NOT as a cross-stack
+        // ISecret — so CDK doesn't auto-grant KMS decrypt on AuthStack's key,
+        // which would create a circular dependency between the stacks. Because
+        // this secret is CMK-encrypted, the execution role's explicit
+        // kms:Decrypt grant (KmsDecryptForSecrets above) is what lets ECS
+        // inject it — GetSecretValue alone is not enough for a CMK secret.
+        GOG_KEYRING_PASSWORD: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportGogKeyringPassword",
+            props.gogKeyringPasswordSecretName,
+          ),
+        ),
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({

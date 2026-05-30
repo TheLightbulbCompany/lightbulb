@@ -24,7 +24,7 @@ def test_direct_oauth_provider_shape():
     assert p.refresh_owner == "actor"
     assert p.oauth.token_url == "https://oauth2.googleapis.com/token"
     assert "https://www.googleapis.com/auth/gmail.modify" in p.oauth.scopes
-    assert p.wiring.materializer == "gog_keyring"
+    assert p.wiring.materializer == "gog_cli"
 
 
 def test_unknown_provider_raises():
@@ -84,10 +84,15 @@ def test_direct_oauth_requires_oauth_block():
 
 
 def test_registry_materializers_and_oauth_are_self_consistent():
-    from core.services.credentials.materializers import MATERIALIZERS
+    from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 
     for key, p in registry.all_providers().items():
         if p.acquisition == "direct_oauth":
             assert p.oauth and p.oauth.scopes, f"{key}: direct_oauth missing oauth scopes"
         if p.wiring.materializer:
             assert p.wiring.materializer in MATERIALIZERS, f"{key}: unknown materializer {p.wiring.materializer!r}"
+            # A materializer without a matching remover would silently skip
+            # on-disk cleanup at disconnect, leaving credential residue on EFS.
+            assert p.wiring.materializer in MATERIALIZER_REMOVERS, (
+                f"{key}: materializer {p.wiring.materializer!r} has no remover"
+            )

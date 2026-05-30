@@ -15,6 +15,7 @@ function buildStack(environment: "dev" | "prod"): Template {
     environment,
     vpc,
     kmsKeyArn: kmsKey.keyArn,
+    gogKeyringPasswordSecretName: `isol8/${environment}/gog-keyring-password`,
   });
   return Template.fromStack(containerStack);
 }
@@ -141,6 +142,66 @@ describe("ContainerStack — dev", () => {
           ],
         }),
       ]),
+    });
+  });
+
+  test("openclaw container sets XDG_CONFIG_HOME + GOG_KEYRING_BACKEND for the gog file keyring", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Environment: Match.arrayWith([
+            {
+              Name: "XDG_CONFIG_HOME",
+              Value: "/home/node/.openclaw/.config",
+            },
+            { Name: "GOG_KEYRING_BACKEND", Value: "file" },
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw container injects GOG_KEYRING_PASSWORD from the shared secret", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Secrets: Match.arrayWith([
+            Match.objectLike({
+              Name: "GOG_KEYRING_PASSWORD",
+              // fromSecretNameV2 renders the ValueFrom as a Fn::Join that
+              // builds the secret ARN from the partition/region/account and
+              // the secret name. Assert the secret name appears in that join.
+              ValueFrom: Match.objectLike({
+                "Fn::Join": Match.arrayWith([
+                  Match.arrayWith([
+                    Match.stringLikeRegexp("isol8/dev/gog-keyring-password"),
+                  ]),
+                ]),
+              }),
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("per-user execution role can kms:Decrypt the CMK to inject the gog secret", () => {
+    // GOG_KEYRING_PASSWORD is encrypted with AuthStack's CMK; without an
+    // explicit kms:Decrypt the ECS agent cannot inject it and every per-user
+    // container launch fails at secret injection. GetSecretValue is not enough.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "KmsDecryptForSecrets",
+            Action: "kms:Decrypt",
+          }),
+        ]),
+      }),
     });
   });
 

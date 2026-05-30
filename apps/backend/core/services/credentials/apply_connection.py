@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.dynamodb import run_in_thread
 from core.services import config_patcher
 from core.services.credentials import registry
 from core.services.credentials.materializers import MATERIALIZERS
@@ -30,6 +31,8 @@ async def apply_connection(owner_id: str, provider_key: str, credential: dict[st
             await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), value)
         return
     if w.materializer:
-        MATERIALIZERS[w.materializer](owner_id, provider_key, credential)  # materializers are sync file writes
+        # Materializers are sync; gog_cli blocks on subprocess + HTTP, so offload to a
+        # thread to avoid stalling the event loop.
+        await run_in_thread(MATERIALIZERS[w.materializer], owner_id, provider_key, credential)
         return
     raise RuntimeError(f"{provider_key}: registry wiring has no deliverable target")

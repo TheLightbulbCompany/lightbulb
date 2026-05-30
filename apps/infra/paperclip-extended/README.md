@@ -42,7 +42,10 @@ adapter.
   image, by digest), `extendedImage` (our ECR repo), and per-env `dev.tag`/`prod.tag`.
 - **Build:** `.github/workflows/build-paperclip-image.yml` builds this Dockerfile
   and pushes to ECR `isol8/paperclip-extended` on changes to the Dockerfile or the
-  version file. Tag = `<upstream-commit-short>-<repo-commit-short>`.
+  version file. Tag = `<upstream-commit-short>-<repo-commit-short>`. The workflow
+  reads `upstream` from the version file and passes it to the Dockerfile as the
+  `UPSTREAM_IMAGE` build-arg, so the base `FROM` is sourced from the same single
+  field the tag and CDK deploy derive from — it can't drift.
 - **Deploy:** `paperclip-stack.ts` reads `paperclip-version.json` and uses the
   extended ECR image once the per-env tag is promoted past `bootstrap`; while it's
   `bootstrap` it falls back to the unpatched `upstream` image (so the env keeps
@@ -60,8 +63,10 @@ aws ecr create-repository --repository-name isol8/paperclip-extended \
 ```
 
 ### Bumping the base image
-Re-pin `paperclip-version.json#upstream` to a newer digest (and the Dockerfile
-`FROM`), let CI build, then bump `dev.tag`/`prod.tag` to the built tag in a PR.
+Re-pin `paperclip-version.json#upstream` to a newer digest — that's the only
+place the base digest lives; the workflow feeds it to the Dockerfile `FROM` via
+the `UPSTREAM_IMAGE` build-arg. Let CI build, then bump `dev.tag`/`prod.tag` to
+the built tag in a PR.
 
 ## Reverting
 

@@ -12,8 +12,14 @@
 #
 # The base is pinned BY DIGEST in `paperclip-version.json#upstream` (upstream
 # publishes only :latest + sha- tags, so a digest is the only reproducible pin).
-# Keep the FROM below in sync with that field.
-FROM ghcr.io/paperclipai/paperclip@sha256:35a7fe10065ab0bf141cdd46d90bdc1a23683afbdbd2e67a359d72d2999d868e
+# That field is the SINGLE SOURCE: the build workflow passes it as the
+# UPSTREAM_IMAGE build-arg, so this FROM cannot drift from the digest the
+# workflow tags and the CDK deploys against. There is deliberately NO default —
+# a `docker build` that forgets the arg fails closed instead of silently using a
+# stale hard-coded pin. Manual builds must pass it explicitly:
+#   docker build --build-arg UPSTREAM_IMAGE="$(node -p "require('./paperclip-version.json').upstream")" apps/infra/paperclip-extended/
+ARG UPSTREAM_IMAGE
+FROM ${UPSTREAM_IMAGE}
 
 # The adapter is loaded from TypeScript SOURCE via the tsx loader (the image has
 # no compiled dist for it — its package `exports` point at ./src/server/*.ts), so

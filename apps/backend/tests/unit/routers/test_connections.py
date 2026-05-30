@@ -150,11 +150,12 @@ class TestConnectPaste:
         mock_apply.apply_connection.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.connection_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_connect_paste_rolls_back_row_when_wiring_fails(
-        self, mock_validate, mock_repo, mock_apply, async_client
+        self, mock_validate, mock_repo, mock_apply, mock_removers, async_client
     ):
         mock_validate.return_value = True
         mock_repo.put = AsyncMock()
@@ -168,6 +169,8 @@ class TestConnectPaste:
         # The just-persisted row was rolled back.
         mock_repo.put.assert_awaited_once()
         mock_repo.delete.assert_awaited_once_with("user_test_123", "linear")
+        # linear is openclaw_paths (no materializer) -> the EFS-artifact rollback is a no-op.
+        mock_removers.get.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_connect_non_paste_provider_returns_400(self, async_client):
@@ -442,15 +445,23 @@ class TestOAuthCallback:
         mock_repo.delete.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.connection_repo")
     @patch("routers.connections.oauth_dance")
-    async def test_callback_rolls_back_row_when_wiring_fails(self, mock_dance, mock_repo, mock_apply, async_client):
+    async def test_callback_rolls_back_row_and_removes_efs_when_wiring_fails(
+        self, mock_dance, mock_repo, mock_apply, mock_removers, async_client
+    ):
+        # google is materializer-backed (gog_cli). If apply fails after the
+        # materializer already wrote a partial keyring/client file, the rollback
+        # must remove the on-disk artifact too — not just the row — so a failed
+        # connect leaves no durable credential residue on EFS.
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
         mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
         mock_repo.put = AsyncMock()
         mock_repo.delete = AsyncMock()
         mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
+        remover = mock_removers.get.return_value
 
         response = await async_client.get(
             "/api/v1/oauth/google/callback?code=abc&state=st1",
@@ -460,7 +471,9 @@ class TestOAuthCallback:
         # Redirect surfaces the apply failure rather than a false "connected".
         assert "error=apply_failed" in response.headers["location"]
 
-        # The just-persisted row was rolled back.
+        # EFS artifact removed (gog_cli remover) BEFORE the row is dropped.
+        mock_removers.get.assert_called_once_with("gog_cli")
+        remover.assert_called_once_with("org_1", "google", cred)
         mock_repo.put.assert_awaited_once()
         mock_repo.delete.assert_awaited_once_with("org_1", "google")
 

@@ -39,6 +39,29 @@ async def _scrub_if_actor_refresh(owner_id: str, p: registry.Provider) -> None:
         )
 
 
+def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
+    """On a FAILED apply, remove any partially-materialized on-disk artifacts so a
+    failed connect leaves no durable credential residue on EFS (the row is deleted
+    separately). A materializer can write one file before a later step raises — e.g.
+    gog's `credentials set` succeeds but `tokens import` fails — and without this the
+    artifact lingers while the UI shows disconnected and no row remains to clean it up
+    on a later disconnect. No-op for openclaw_paths/paste providers (no materializer)."""
+    if not p.wiring.materializer:
+        return
+    remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
+    if not remover:
+        return
+    try:
+        remover(owner_id, p.key, credential)
+    except Exception:
+        logger.warning(
+            "failed to remove materialized artifacts for owner=%s provider=%s during rollback",
+            owner_id,
+            p.key,
+            exc_info=True,
+        )
+
+
 class PasteBody(BaseModel):
     token: str
 
@@ -99,6 +122,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     try:
         await apply_connection.apply_connection(owner_id, provider, {"token": body.token})
     except Exception:
+        _remove_materialized_artifacts(owner_id, p, {"token": body.token})
         await connection_repo.delete(owner_id, provider)
         raise HTTPException(
             status_code=502,
@@ -168,6 +192,7 @@ async def oauth_callback(provider: str, code: str, state: str):
     try:
         await apply_connection.apply_connection(owner_id, prov, credential)
     except Exception:
+        _remove_materialized_artifacts(owner_id, registry.get_provider(prov), credential)
         await connection_repo.delete(owner_id, prov)
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
     await _scrub_if_actor_refresh(owner_id, registry.get_provider(prov))

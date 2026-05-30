@@ -1007,6 +1007,21 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_issue_approvals(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the approvals linked to an issue.
+
+        Maps to ``GET /api/issues/{issueId}/approvals`` (issue-scoped).
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/approvals",
+            session_cookie=session_cookie,
+        )
+
     async def create_issue(
         self,
         *,

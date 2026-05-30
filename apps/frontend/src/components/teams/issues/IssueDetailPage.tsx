@@ -131,6 +131,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           </h2>
           <IssueComments
             comments={comments}
+            agents={agents}
             isLoading={isLoading}
             onSubmit={async (body) => {
               await mutations.addComment(issueId, body);

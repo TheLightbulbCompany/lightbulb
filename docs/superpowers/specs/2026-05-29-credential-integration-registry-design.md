@@ -158,7 +158,7 @@ google:
   refresh_owner: actor               # gog self-refreshes after one-time seed
   requires: { bins: [gog] }
   wiring:
-    provisioner: gog_exec             # CORRECTED (see M6): run gog headlessly to seed creds+tokens; the keyring is a JWE blob, not a writable file
+    materializer: gog_cli             # runs the gog binary on the backend to seed creds+tokens onto EFS; the keyring is a JWE blob, not a writable file (see M6)
 
 # Bucket C — true OAuth dance, MCP delivery (refresh owned by us)
 outlook:

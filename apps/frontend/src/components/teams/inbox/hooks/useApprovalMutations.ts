@@ -22,6 +22,9 @@ export function useApprovalMutations() {
   const revalidate = useCallback(() => {
     mutate(APPROVALS_KEY);
     mutate(DASHBOARD_KEY);
+    // Also refresh any per-issue linked-approvals lists (sub-project D2) so a
+    // reused ApprovalRow on an issue-detail page updates after approve/reject.
+    mutate((key) => typeof key === "string" && /^\/teams\/issues\/.+\/approvals$/.test(key));
   }, [mutate]);
 
   const approve = useCallback(

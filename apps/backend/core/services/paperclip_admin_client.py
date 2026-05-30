@@ -1337,7 +1337,9 @@ class PaperclipAdminClient:
 
         Maps to ``GET /api/routines/{routineId}/runs`` upstream
         (paperclip/server/src/routes/routines.ts:150). Returns a list of
-        run objects (id, status, startedAt, completedAt, etc.).
+        run objects matching upstream ``RoutineRunSummary`` (id, status,
+        source, triggeredAt, completedAt, failureReason, linkedIssue,
+        trigger). Note: upstream uses ``triggeredAt`` (not ``startedAt``).
         """
         result = await self._get(
             f"/api/routines/{routine_id}/runs",

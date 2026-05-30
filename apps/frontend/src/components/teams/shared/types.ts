@@ -234,6 +234,8 @@ export interface RoutineRun {
   source: string;
   status: string;
   triggeredAt?: string | null;
+  startedAt?: string | null;
+  createdAt?: string | null;
   completedAt?: string | null;
   failureReason?: string | null;
   linkedIssue?: {

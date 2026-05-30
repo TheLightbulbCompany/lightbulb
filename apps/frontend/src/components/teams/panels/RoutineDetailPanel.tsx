@@ -13,7 +13,8 @@ function runStatusColor(status: string): string {
 }
 
 function runTime(r: RoutineRun): number {
-  const t = r.triggeredAt ? new Date(r.triggeredAt).getTime() : 0;
+  const v = r.triggeredAt ?? r.startedAt ?? r.createdAt ?? null;
+  const t = v ? new Date(v).getTime() : 0;
   return Number.isNaN(t) ? 0 : t;
 }
 
@@ -83,7 +84,9 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           <p className="text-sm text-[var(--mute)]">No runs yet.</p>
         ) : (
           <ul className="flex flex-col">
-            {runs.map((r) => (
+            {runs.map((r) => {
+              const when = r.triggeredAt ?? r.startedAt ?? r.createdAt;
+              return (
               <li key={r.id} className="flex flex-col gap-0.5 px-3 py-2"
                   style={{ borderBottom: "1px solid var(--edge)" }}>
                 <div className="flex items-center gap-2">
@@ -106,15 +109,16 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                     </a>
                   )}
                   <span className="flex-1" />
-                  {r.triggeredAt && (
-                    <span className="text-xs text-[var(--mute)] flex-shrink-0">{timeAgo(r.triggeredAt)}</span>
+                  {when && (
+                    <span className="text-xs text-[var(--mute)] flex-shrink-0">{timeAgo(when)}</span>
                   )}
                 </div>
                 {r.failureReason && (
                   <div className="text-xs pl-1" style={{ color: "var(--danger)" }}>{r.failureReason}</div>
                 )}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </section>

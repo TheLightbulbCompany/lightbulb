@@ -70,6 +70,15 @@ describe("RoutineDetailPanel", () => {
     );
   });
 
+  it("falls back to startedAt when triggeredAt is absent", () => {
+    mockReads(
+      { id: "r1", title: "T", status: "active", triggers: [] },
+      [{ id: "run-s", source: "schedule", status: "succeeded", startedAt: "2020-01-01T00:00:00Z" }],
+    );
+    render(<RoutineDetailPanel routineId="r1" />);
+    expect(screen.getByText(/ago/i)).toBeInTheDocument(); // timeAgo of a past date renders
+  });
+
   it("shows 'No runs yet.' when there are no runs", () => {
     mockReads(
       { id: "r1", title: "Empty routine", status: "active", triggers: [] },

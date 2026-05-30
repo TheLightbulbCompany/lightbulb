@@ -1022,6 +1022,21 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_issue_runs(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the agent runs for an issue.
+
+        Maps to ``GET /api/issues/{issueId}/runs`` (issue-scoped).
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/runs",
+            session_cookie=session_cookie,
+        )
+
     async def create_issue(
         self,
         *,

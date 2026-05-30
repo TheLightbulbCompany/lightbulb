@@ -14,10 +14,12 @@ export function SubIssuesSection({
   issueId,
   agents,
   projects,
+  parentLabel,
 }: {
   issueId: string;
   agents: CompanyAgent[];
   projects: IssueProject[];
+  parentLabel?: string;
 }) {
   const { read } = useTeamsApi();
   const { data, error } = read<{ issues: Issue[] }>(`/issues/${issueId}/children`);
@@ -70,6 +72,7 @@ export function SubIssuesSection({
         agents={agents}
         projects={projects}
         parentId={issueId}
+        parentLabel={parentLabel}
         onCreated={() => setDialogOpen(false)}
       />
     </section>

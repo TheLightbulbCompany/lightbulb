@@ -113,7 +113,12 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             {issue.description}
           </div>
         )}
-        <SubIssuesSection issueId={issueId} agents={agents} projects={projects} />
+        <SubIssuesSection
+          issueId={issueId}
+          agents={agents}
+          projects={projects}
+          parentLabel={issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title}
+        />
         <div className="pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
           <h2 className="section-label mb-3">
             <b>Conversation</b>

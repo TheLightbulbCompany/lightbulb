@@ -325,6 +325,21 @@ async def ws_disconnect(
 
     logger.info("WebSocket disconnect: connection_id=%s", x_connection_id)
 
+    # Tear down the operator relay upstream FIRST — independent of the
+    # connection row. The $disconnect lambda (apps/infra/lambda/ws-disconnect)
+    # DELETES the DynamoDB connection row BEFORE it POSTs here, so the
+    # get_connection() lookup below can return None and skip the row-gated
+    # cleanup. handle_operator_disconnect needs only the connection_id and is
+    # idempotent, so key it off the in-process relay map instead. (A cross-task
+    # orphan — the upstream stranded on the $connect task while $disconnect
+    # lands on a different task — is reaped by the failed-push path in
+    # operator_proxy.on_upstream_message.)
+    if is_operator_connection(x_connection_id):
+        try:
+            await handle_operator_disconnect(x_connection_id)
+        except Exception as e:  # noqa: BLE001 — best-effort relay teardown
+            logger.warning("operator relay teardown failed for %s: %s", x_connection_id, e)
+
     # Unregister from gateway connection pool
     try:
         connection_service = await get_connection_service()
@@ -359,22 +374,12 @@ async def ws_disconnect(
                         x_connection_id[:12] if x_connection_id else "?",
                     )
 
-            # Additionally tear down the node upstream + per-user state
-            # if this was a node connection, or the operator relay upstream
-            # if this was a Paperclip adapter connection.
-            #
-            # Operator teardown routes on the PERSISTED connection_type (not the
-            # in-process _operator_upstreams map): a $disconnect can land on a
-            # different backend task than the one that ran $connect, where the
-            # in-process check is False. handle_operator_disconnect is idempotent
-            # (atomic pop), so it tears down on the task that holds the upstream
-            # and is a harmless no-op elsewhere. (A cross-task orphan — the
-            # upstream stranded on the $connect task — is reaped by the
-            # failed-push path in operator_proxy.on_upstream_message.)
+            # Additionally tear down the node upstream + per-user state if this
+            # was a node connection. (Operator relay teardown happened above,
+            # row-independent — the $disconnect lambda may already have deleted
+            # the row, so it must not be gated on this lookup.)
             if is_node_connection(x_connection_id):
                 await handle_node_disconnect(x_connection_id, owner_id, user_id)
-            elif connection.get("connection_type") == "operator":
-                await handle_operator_disconnect(x_connection_id)
     except Exception as e:
         logger.warning("Failed to unregister frontend connection from pool: %s", e)
 

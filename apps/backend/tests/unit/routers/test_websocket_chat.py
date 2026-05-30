@@ -866,26 +866,20 @@ class TestOperatorRelayRouting:
         assert "payload" not in sent  # not the cosmetic hello-ok stub
 
     @pytest.mark.asyncio
-    async def test_disconnect_tears_down_operator_relay_by_persisted_type(
+    async def test_disconnect_tears_down_operator_relay_row_independent(
         self, test_app, mock_connection_service, mock_management_api
     ):
-        """$disconnect tears down the operator relay based on the PERSISTED
-        connection_type, NOT the in-process map — so it still fires when the
-        disconnect lands on a different task (is_operator_connection False).
-        handle_operator_disconnect is idempotent, so a wrong-task call is a
-        harmless no-op and the right-task call tears the upstream down."""
-        mock_connection_service.get_connection.return_value = {
-            "user_id": "owner-1",
-            "org_id": None,
-            "connection_type": "operator",
-        }
+        """$disconnect tears down the operator relay from the IN-PROCESS map,
+        independent of the connection row. The $disconnect lambda deletes the
+        DynamoDB row BEFORE POSTing here, so get_connection() returns None — the
+        teardown must still run (keyed off the relay map, not the row)."""
+        # Row already deleted by the lambda → get_connection returns None.
+        mock_connection_service.get_connection.return_value = None
 
         from unittest.mock import AsyncMock as _AM
 
         with (
-            patch("routers.websocket_chat.is_node_connection", return_value=False),
-            # Cross-task: the in-process relay map does NOT know this connection.
-            patch("routers.websocket_chat.is_operator_connection", return_value=False),
+            patch("routers.websocket_chat.is_operator_connection", return_value=True),
             patch("routers.websocket_chat.handle_operator_disconnect", new=_AM()) as mock_td,
         ):
             async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
@@ -895,4 +889,5 @@ class TestOperatorRelayRouting:
                 )
 
         assert response.status_code == 200
+        # Torn down despite the row being gone.
         mock_td.assert_awaited_once_with("conn-op")

@@ -73,6 +73,7 @@ import asyncio
 import base64
 import binascii
 import html
+import json
 import logging
 import re
 import time
@@ -90,6 +91,7 @@ from core.config import settings
 from core.encryption import decrypt
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
 logger = logging.getLogger(__name__)
@@ -377,6 +379,29 @@ def _brand_rewrite_html(body: bytes) -> bytes:
     for pattern, replacement in _BRAND_REWRITES:
         out = pattern.sub(replacement, out)
     return out
+
+
+# This proxy fronts the NATIVE Paperclip agent routes, which echo the full
+# agent record verbatim — including the openclaw_gateway adapterConfig (the
+# operator device's signing private key + the container gateway token). Without
+# stripping, that signing key reaches the browser/DOM. Reuse the SAME field set
+# + stripper the /teams BFF uses (core.services.agent_redaction) so the two
+# surfaces can never diverge on what's secret; the proxy only adds the route
+# gate + the bytes<->JSON round-trip below.
+_AGENT_ROUTE_RE = re.compile(r"(?:^|/)agents(?:/|$)")
+
+
+def _redact_agent_secrets_json(body: bytes) -> bytes:
+    """Strip the agent secret fields from an agent-route JSON response body.
+
+    Best-effort: a non-JSON / malformed body passes through unchanged so a
+    parsing hiccup never breaks the page.
+    """
+    try:
+        data = json.loads(body)
+    except Exception:  # noqa: BLE001 — not JSON / malformed: pass through
+        return body
+    return json.dumps(strip_agent_secrets(data)).encode("utf-8")
 
 
 def _rewrite_set_cookie_domain(set_cookie: str, target_domain: str = ".isol8.co") -> str:
@@ -1216,6 +1241,18 @@ async def proxy(path: str, request: Request) -> Response:
         except Exception as e:  # noqa: BLE001 - never break the page
             logger.warning(
                 "paperclip_proxy: brand-rewrite raised (passing through): %s",
+                e,
+            )
+    elif response_body and "application/json" in content_type and _AGENT_ROUTE_RE.search(path):
+        # Agent-route JSON echoes the full record incl. the openclaw_gateway
+        # adapterConfig (device signing key + gateway token). Strip it before it
+        # reaches the browser — Content-Length is dropped by
+        # _filter_response_headers, so a length change here is safe.
+        try:
+            response_body = _redact_agent_secrets_json(response_body)
+        except Exception as e:  # noqa: BLE001 - never break the page
+            logger.warning(
+                "paperclip_proxy: agent-secret redaction raised (passing through): %s",
                 e,
             )
 

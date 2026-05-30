@@ -30,6 +30,7 @@ from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
+from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
     get_seeded_agent_ids,
@@ -55,7 +56,8 @@ router = APIRouter()
 # frontend currently render ``JSON.stringify(<BFF response>)``, so a leak
 # at the BFF boundary becomes a token-in-DOM exposure. Strip on every
 # read path as defense in depth — the frontend should never need these.
-_AGENT_REDACTED_FIELDS = ("adapterConfig", "adapterType")
+# The field set + stripper are shared with the Paperclip proxy via
+# core.services.agent_redaction so neither surface can drift on what's secret.
 
 
 def _mark_seeded(agent, seeded_ids):
@@ -82,9 +84,7 @@ def _redact_agent(agent):
     Returns the input unchanged if it isn't a dict (so the function is
     safe to call on any upstream payload shape).
     """
-    if not isinstance(agent, dict):
-        return agent
-    return {k: v for k, v in agent.items() if k not in _AGENT_REDACTED_FIELDS}
+    return strip_agent_secrets(agent)
 
 
 # --- Indirection helpers (Tasks 7-12 import these) ---

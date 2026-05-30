@@ -24,7 +24,7 @@ def test_direct_oauth_provider_shape():
     assert p.refresh_owner == "actor"
     assert p.oauth.token_url == "https://oauth2.googleapis.com/token"
     assert "https://www.googleapis.com/auth/gmail.modify" in p.oauth.scopes
-    assert p.wiring.materializer == "gog_keyring"
+    assert p.wiring.materializer == "gog_cli"
 
 
 def test_unknown_provider_raises():

@@ -279,7 +279,7 @@ class TestDisconnect:
     async def test_disconnect_materializer_provider_removes_materialized_creds(
         self, mock_repo, mock_patcher, mock_removers, async_client
     ):
-        # google is a materializer-backed (gog_keyring) provider.
+        # google is a materializer-backed (gog_cli) provider.
         row = {"owner_id": "user_test_123", "provider": "google", "credential_enc": "enc"}
         cred = {"cli": "gogcli", "refresh_token": "r"}
         mock_repo.get = AsyncMock(return_value=row)
@@ -294,7 +294,7 @@ class TestDisconnect:
 
         # Materialized credential files cleaned up BEFORE the row is deleted.
         mock_repo.get.assert_awaited_once_with("user_test_123", "google")
-        mock_removers.get.assert_called_once_with("gog_keyring")
+        mock_removers.get.assert_called_once_with("gog_cli")
         remover.assert_called_once_with("user_test_123", "google", cred)
         mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
         # No openclaw_paths on a materializer provider -> nothing blanked.

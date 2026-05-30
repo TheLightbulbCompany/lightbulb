@@ -63,7 +63,9 @@ async def test_apply_openclaw_paths_injects_literal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_apply_materializer_dispatch(monkeypatch):
+async def test_apply_materializer_dispatch_via_thread(monkeypatch):
+    # google wiring dispatches to the gog_cli materializer, run off the event loop
+    # via run_in_thread (so the blocking subprocess/HTTP doesn't stall the loop).
     from core.services.credentials import apply_connection as ac
 
     seen = {}
@@ -71,6 +73,14 @@ async def test_apply_materializer_dispatch(monkeypatch):
     def _fake_mat(owner, provider, cred):
         seen.update(owner=owner, provider=provider, cred=cred)
 
-    monkeypatch.setitem(ac.MATERIALIZERS, "gog_keyring", _fake_mat)
+    threaded = {}
+
+    async def _fake_run_in_thread(fn, *args, **kwargs):
+        threaded["called"] = True
+        return fn(*args, **kwargs)
+
+    monkeypatch.setitem(ac.MATERIALIZERS, "gog_cli", _fake_mat)
+    monkeypatch.setattr(ac, "run_in_thread", _fake_run_in_thread)
     await ac.apply_connection("org_1", "google", {"access_token": "a", "refresh_token": "r"})
+    assert threaded.get("called") is True
     assert seen["owner"] == "org_1" and seen["cred"]["refresh_token"] == "r"

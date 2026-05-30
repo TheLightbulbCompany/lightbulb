@@ -1976,9 +1976,42 @@ class EcsManager:
             scopes=BACKEND_OPERATOR_SCOPES,
         )
 
+        # Pre-pair each Paperclip agent's device so its relayed operator connect
+        # clears the remote-pairing wall, and bind each agent's adapterConfig
+        # authToken to this container's gateway_token. Best-effort and enumerated
+        # at provision so a reprovision (which overwrites paired.json) re-includes
+        # them. Paperclip unavailability must never block container provision.
+        paperclip_entries: list[dict] = []
+        try:
+            import httpx
+
+            from core.repositories.paperclip_repo import PaperclipRepo
+            from core.services.paperclip_admin_client import PaperclipAdminClient
+            from core.services.paperclip_openclaw_pairing import (
+                register_paperclip_agent_devices,
+            )
+
+            http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+            try:
+                paperclip_entries = await register_paperclip_agent_devices(
+                    owner_id=user_id,
+                    gateway_token=gateway_token,
+                    repo=PaperclipRepo(table_name="paperclip-companies"),
+                    admin_client=PaperclipAdminClient(http_client=http),
+                )
+            finally:
+                await http.aclose()
+        except Exception as exc:  # noqa: BLE001 — pairing must not block provision
+            logger.warning(
+                "ensure_device_identities: Paperclip device pairing failed for owner=%s: %s",
+                user_id,
+                exc,
+            )
+
         paired_json = build_device_paired_json(
             node_identity["device_id"],
             node_identity["public_key_b64"],
             operator_entry=operator_entry,
+            extra_operator_entries=paperclip_entries,
         )
         workspace.write_file(user_id, "devices/paired.json", paired_json)

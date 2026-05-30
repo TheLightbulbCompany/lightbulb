@@ -38,6 +38,12 @@ describe("ApprovalRow", () => {
     expect(screen.getByText(/approval requested/i)).toBeInTheDocument();
   });
 
+  it("renders a View link to the approval-detail page", () => {
+    render(<ApprovalRow approval={A} />);
+    const link = screen.getByRole("link", { name: /view/i });
+    expect(link).toHaveAttribute("href", "/teams/approvals/a1");
+  });
+
   it("on approve failure shows an error and keeps the row", async () => {
     approve.mockRejectedValueOnce(new Error("boom"));
     render(<ApprovalRow approval={A} />);

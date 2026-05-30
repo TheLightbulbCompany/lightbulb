@@ -166,6 +166,19 @@ export interface Approval {
   decidedAt?: string | null;
 }
 
+/** Full approval object from GET /approvals/{id} (upstream Approval subset). `status` is a free string (more values than the row union). */
+export interface ApprovalDetail {
+  id: string;
+  type?: string | null;
+  status: string;
+  requestedByAgentId?: string | null;
+  requestedByUserId?: string | null;
+  payload?: Record<string, unknown> | null;
+  decisionNote?: string | null;
+  decidedAt?: string | null;
+  createdAt?: string | null;
+}
+
 export interface HeartbeatRun {
   id: string;
   agentId?: string | null;

@@ -16,6 +16,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
   const [error, setError] = useState<string | null>(null);
 
   const title = approval.title?.trim() ? approval.title : "Approval requested";
+  const isPending = approval.status === "pending";
 
   async function run(fn: () => Promise<void>) {
     setBusy(true);
@@ -37,7 +38,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
         {approval.createdAt && (
           <span className="text-xs text-[var(--mute)]">{timeAgo(approval.createdAt)}</span>
         )}
-        {!rejecting && (
+        {isPending && !rejecting && (
           <div className="flex gap-2">
             <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
               Approve
@@ -46,6 +47,9 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
               Reject
             </EditorialButton>
           </div>
+        )}
+        {!isPending && (
+          <span className="text-xs capitalize text-[var(--mute)]">{approval.status}</span>
         )}
       </div>
       {rejecting && (

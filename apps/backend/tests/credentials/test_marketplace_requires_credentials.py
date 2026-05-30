@@ -79,6 +79,29 @@ async def test_optional_provider_never_blocks(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        {"requires": None},  # present-but-null (a common JSON encoding of absent)
+        {"requires": {"credentials": None}},  # null credentials list
+        {"requires": "nope"},  # non-dict junk
+        {},  # absent
+    ],
+)
+async def test_null_or_malformed_requires_does_not_crash(manifest, monkeypatch):
+    """A null/non-dict ``requires`` must read as "no requirements", not raise.
+
+    ``.get("requires", {})`` only defaults on an ABSENT key; ``"requires": null``
+    would otherwise yield ``None.get(...)`` -> AttributeError -> 500.
+    """
+    monkeypatch.setattr(
+        "core.repositories.connection_repo.list_for_owner",
+        AsyncMock(return_value=[]),
+    )
+    await assert_credentials_satisfied("owner_1", manifest, slice_=None)
+
+
+@pytest.mark.asyncio
 async def test_slice_mcp_server_derives_requirement(monkeypatch):
     """A bundled registry MCP server (mcp.servers.stripe) implies its provider.
 

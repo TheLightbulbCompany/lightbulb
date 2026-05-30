@@ -91,7 +91,12 @@ async def assert_credentials_satisfied(
     known_providers = registry.all_providers()
 
     required: set[str] = set()
-    for entry in (manifest or {}).get("requires", {}).get("credentials", []) or []:
+    # ``requires`` (and its ``credentials``) may be absent OR present-but-null —
+    # ``"requires": null`` is a common JSON encoding of an empty optional block.
+    # ``.get(key, default)`` only falls back on ABSENT keys, so use ``or`` to
+    # also normalize null/non-dict to empty and avoid an AttributeError -> 500.
+    requires = (manifest or {}).get("requires") or {}
+    for entry in (requires.get("credentials") if isinstance(requires, dict) else None) or []:
         if not isinstance(entry, dict):
             continue
         if entry.get("optional"):

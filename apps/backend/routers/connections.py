@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -12,7 +14,29 @@ from core.services import config_patcher
 from core.services.credentials import apply_connection, oauth_dance, registry
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/connections", tags=["connections"])
+
+
+async def _scrub_if_actor_refresh(owner_id: str, p: registry.Provider) -> None:
+    """For actor-refresh providers the container self-refreshes its own token and
+    is the sole durable custodian, so the backend keeps nothing once the
+    credential has been applied. Called only AFTER a successful apply — the
+    connection is already wired, so a scrub failure must never turn a successful
+    connect into a failure; log and proceed (the secret can be re-scrubbed on a
+    later reconnect, and worst case is over-retention, never a broken connect)."""
+    if p.refresh_owner != "actor":
+        return
+    try:
+        await connection_repo.scrub_secret(owner_id, p.key)
+    except Exception:
+        logger.warning(
+            "failed to scrub retained secret for owner=%s provider=%s after apply; connection stays connected",
+            owner_id,
+            p.key,
+            exc_info=True,
+        )
 
 
 class PasteBody(BaseModel):
@@ -80,6 +104,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
             status_code=502,
             detail="failed to apply the connection to your container; please retry",
         )
+    await _scrub_if_actor_refresh(owner_id, p)
     return {"status": "connected", "provider": provider}
 
 
@@ -141,4 +166,5 @@ async def oauth_callback(provider: str, code: str, state: str):
     except Exception:
         await connection_repo.delete(owner_id, prov)
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
+    await _scrub_if_actor_refresh(owner_id, registry.get_provider(prov))
     return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?connected={prov}")

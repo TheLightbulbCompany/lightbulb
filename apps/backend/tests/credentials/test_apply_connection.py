@@ -2,11 +2,22 @@ import pytest
 from core.repositories import connection_repo
 
 
+class _ConditionalCheckFailed(Exception):
+    pass
+
+
 @pytest.fixture
 def fake_table(monkeypatch):
     store = {}
 
     class _T:
+        # Mirror boto3's table.meta.client.exceptions.ConditionalCheckFailedException
+        # so the repo's conditional-write guard can be exercised under test.
+        class meta:
+            class client:
+                class exceptions:
+                    ConditionalCheckFailedException = _ConditionalCheckFailed
+
         def put_item(self, Item):
             store[(Item["owner_id"], Item["provider"])] = Item
 
@@ -19,6 +30,16 @@ def fake_table(monkeypatch):
 
         def query(self, **kw):
             return {"Items": list(store.values())}
+
+        def update_item(self, Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression):
+            item = store.get((Key["owner_id"], Key["provider"]))
+            # ConditionExpression="attribute_exists(owner_id)" — fail when the row is gone.
+            if item is None:
+                raise _ConditionalCheckFailed("ConditionalCheckFailedException")
+            # Apply the REMOVE credential_enc SET secret_retained/updated_at expression.
+            item.pop("credential_enc", None)
+            item["secret_retained"] = ExpressionAttributeValues[":f"]
+            item["updated_at"] = ExpressionAttributeValues[":t"]
 
     monkeypatch.setattr(connection_repo, "_table", lambda: _T())
     return store
@@ -46,6 +67,37 @@ async def test_list_for_owner(fake_table):
     await connection_repo.put("org_1", "stripe", {"token": "b"})
     rows = await connection_repo.list_for_owner("org_1")
     assert {r["provider"] for r in rows} == {"linear", "stripe"}
+
+
+@pytest.mark.asyncio
+async def test_scrub_secret_drops_ciphertext_keeps_record(fake_table):
+    # The container becomes the sole durable custodian for actor-refresh providers,
+    # so the backend drops the ciphertext but keeps the connected record.
+    await connection_repo.put("org_1", "google", {"refresh_token": "r"}, status="connected")
+    await connection_repo.scrub_secret("org_1", "google")
+
+    rec = await connection_repo.get("org_1", "google")
+    assert rec is not None  # record preserved -> still lists as connected
+    assert rec["status"] == "connected"
+    assert "credential_enc" not in rec  # secret gone
+    assert rec["secret_retained"] is False  # intentional non-retention flag
+
+
+@pytest.mark.asyncio
+async def test_scrub_secret_still_listed_for_owner(fake_table):
+    # A scrubbed row must still surface in the owner's connection list.
+    await connection_repo.put("org_1", "google", {"refresh_token": "r"}, status="connected")
+    await connection_repo.scrub_secret("org_1", "google")
+    rows = await connection_repo.list_for_owner("org_1")
+    assert {r["provider"] for r in rows} == {"google"}
+
+
+@pytest.mark.asyncio
+async def test_scrub_secret_missing_row_is_noop(fake_table):
+    # No row (e.g. raced with disconnect) -> conditional write fails -> swallowed,
+    # and the scrub must not resurrect a deleted record.
+    await connection_repo.scrub_secret("org_1", "google")
+    assert await connection_repo.get("org_1", "google") is None
 
 
 @pytest.mark.asyncio

@@ -111,6 +111,7 @@ class TestConnectPaste:
     async def test_connect_paste_happy_path(self, mock_validate, mock_repo, mock_apply, async_client):
         mock_validate.return_value = True
         mock_repo.put = AsyncMock()
+        mock_repo.scrub_secret = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
         response = await async_client.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
@@ -126,6 +127,10 @@ class TestConnectPaste:
 
         # Wiring engine invoked with (owner, provider, credential).
         mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "linear", {"token": "lin_api_abc123"})
+
+        # linear is refresh_owner=none: its secret IS the durable wired value, so it
+        # must be retained — the actor-refresh scrub gate must not fire here.
+        mock_repo.scrub_secret.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
@@ -361,6 +366,7 @@ class TestOAuthCallback:
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
         mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
         mock_repo.put = AsyncMock()
+        mock_repo.scrub_secret = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
         response = await async_client.get(
@@ -379,6 +385,35 @@ class TestOAuthCallback:
 
         mock_repo.put.assert_awaited_once()
         mock_apply.apply_connection.assert_awaited_once_with("org_1", "google", cred)
+        # google is refresh_owner=actor: the container self-refreshes + owns the
+        # durable credential, so the backend scrubs the secret after a clean apply.
+        mock_repo.scrub_secret.assert_awaited_once_with("org_1", "google")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_actor_refresh_scrub_failure_still_redirects_connected(
+        self, mock_dance, mock_repo, mock_apply, async_client
+    ):
+        # The connection is already applied; a cleanup-write failure must NOT
+        # roll it back or turn the connect into a failure — log + proceed.
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_repo.put = AsyncMock()
+        mock_repo.delete = AsyncMock()
+        mock_repo.scrub_secret = AsyncMock(side_effect=RuntimeError("ddb update failed"))
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        # Scrub failed but the connection stays connected — no rollback.
+        assert "/settings/connections?connected=google" in response.headers["location"]
+        mock_repo.scrub_secret.assert_awaited_once_with("org_1", "google")
+        mock_repo.delete.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")

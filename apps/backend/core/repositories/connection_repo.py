@@ -56,6 +56,33 @@ async def list_for_owner(owner_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
+async def scrub_secret(owner_id: str, provider: str) -> None:
+    """Drop the encrypted secret from a connection row while keeping the record.
+
+    For actor-refresh providers the container self-refreshes its own token and
+    becomes the sole durable custodian of the credential, so the vault has no
+    reason to retain the secret once it has been delivered. Removing the
+    ciphertext (not the row) preserves owner/provider/status/meta — list still
+    reports the integration as connected and disconnect still resolves — while
+    leaving the backend holding nothing. `secret_retained=False` flags that the
+    absence of `credential_enc` is intentional non-retention, not corruption.
+
+    Conditional on the row existing so a lost race with disconnect cannot
+    resurrect a deleted record."""
+    table = _table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id, "provider": provider},
+            UpdateExpression="REMOVE credential_enc SET secret_retained = :f, updated_at = :t",
+            ExpressionAttributeValues={":f": False, ":t": int(time.time())},
+            ConditionExpression="attribute_exists(owner_id)",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        # Row already gone (e.g. concurrent disconnect) — nothing to scrub.
+        return
+
+
 async def delete(owner_id: str, provider: str) -> None:
     await run_in_thread(
         _table().delete_item,

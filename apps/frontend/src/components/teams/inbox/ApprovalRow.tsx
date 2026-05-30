@@ -52,7 +52,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
           <span className="text-xs capitalize text-[var(--mute)]">{approval.status}</span>
         )}
       </div>
-      {rejecting && (
+      {isPending && rejecting && (
         <div className="flex items-center gap-2">
           <input
             autoFocus

@@ -53,4 +53,16 @@ describe("ApprovalRow", () => {
     expect(screen.queryByRole("button", { name: /^reject$/i })).toBeNull();
     expect(screen.getByText(/approved/i)).toBeInTheDocument();
   });
+
+  it("hides the reject form when a mid-reject approval becomes resolved", () => {
+    const pending = { id: "a7", title: "Mid", status: "pending" as const };
+    const { rerender } = render(<ApprovalRow approval={pending} />);
+    // Enter reject mode -> the reason input appears.
+    fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
+    expect(screen.getByPlaceholderText(/reason/i)).toBeInTheDocument();
+    // The approval resolves (e.g. revalidation): form must disappear, chip shows.
+    rerender(<ApprovalRow approval={{ ...pending, status: "rejected" }} />);
+    expect(screen.queryByPlaceholderText(/reason/i)).toBeNull();
+    expect(screen.getByText(/rejected/i)).toBeInTheDocument();
+  });
 });

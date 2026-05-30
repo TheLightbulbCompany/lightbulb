@@ -202,7 +202,6 @@ async def create_issue_child(
     parent/child relation server-side.
     """
     return await _agents._admin().create_child_issue(
-        company_id=ctx.company_id,
         issue_id=issue_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,

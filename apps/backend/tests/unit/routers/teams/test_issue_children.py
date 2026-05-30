@@ -62,9 +62,9 @@ def test_create_child_whitelists_and_calls_admin(client, monkeypatch):
     assert r.status_code == 200
     assert r.json()["id"] == "child1"
     call = admin.create_child_issue.await_args
-    assert call.kwargs["company_id"] == "co_abc"
     assert call.kwargs["issue_id"] == "iss1"
     assert call.kwargs["body"] == {"title": "Sub", "assigneeAgentId": "ag1"}
+    assert "company_id" not in call.kwargs
 
 
 def test_create_child_rejects_extra_keys(client, monkeypatch):

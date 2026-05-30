@@ -206,3 +206,13 @@ async def create_issue_child(
         body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
+
+
+@router.get("/issues/{issue_id}/approvals")
+async def list_issue_approvals(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List the approvals linked to an issue (the issue-detail Approvals section)."""
+    rows = await _agents._admin().list_issue_approvals(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(rows, "approvals")

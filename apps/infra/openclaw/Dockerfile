@@ -196,6 +196,33 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
     chown -R node:node /home/node/.cache/ms-playwright && \
     ln -sf /home/node/.cache/ms-playwright/chromium-*/chrome-linux64/chrome /usr/bin/chromium
 
+# ---- Layer 10: externalized channel plugins (Slack, Discord) ----
+# Upstream OpenClaw externalized these channel plugins out of the core image
+# (@openclaw/slack and @openclaw/discord are pruned from the published ghcr
+# image, which keeps only the still-bundled channels like telegram). Without
+# the plugin present on a discovery root, the gateway hard-throws
+# "Channel is unavailable: <id>" at send time for the channels we enable in
+# openclaw.json. We bake them into the stock plugin root /app/dist/extensions/<id>
+# so they are root-owned (the loader rejects any plugin dir not owned by uid 0)
+# and auto-activate from the existing channels.<id>.enabled config. A runtime
+# `openclaw plugins install` cannot be used: the per-user EFS mount forces
+# uid 1000, which the loader blocks. Each plugin's runtime deps are co-located
+# under its own node_modules so node resolution finds them. Versions are pinned
+# to the host OpenClaw version; bump them in lockstep with the FROM tag /
+# openclaw-version.json#upstream.
+RUN set -eux; \
+    for P in slack discord; do \
+      mkdir -p "/opt/stage-$P"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.5.12"; \
+      mkdir -p "/app/dist/extensions/$P"; \
+      cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
+      mkdir -p "/app/dist/extensions/$P/node_modules"; \
+      cp -R /opt/stage-$P/node_modules/. "/app/dist/extensions/$P/node_modules/"; \
+      rm -rf "/app/dist/extensions/$P/node_modules/@openclaw/$P"; \
+      rm -rf "/opt/stage-$P"; \
+    done; \
+    chown -R root:root /app/dist/extensions/slack /app/dist/extensions/discord
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node

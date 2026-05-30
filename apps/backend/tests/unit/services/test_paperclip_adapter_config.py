@@ -117,9 +117,7 @@ def test_strategy_is_issue_for_per_issue_session_isolation():
 
 
 def test_url_routes_to_operator_relay_via_client_id():
-    cfg = synthesize_openclaw_adapter(
-        gateway_url="wss://ws.isol8.co", service_token="tok", user_id="u"
-    )
+    cfg = synthesize_openclaw_adapter(gateway_url="wss://ws.isol8.co", service_token="tok", user_id="u")
     assert f"clientId={PAPERCLIP_OPERATOR_CLIENT_ID}" in cfg["url"]
     assert PAPERCLIP_OPERATOR_CLIENT_ID == "paperclip-operator"
 
@@ -127,12 +125,8 @@ def test_url_routes_to_operator_relay_via_client_id():
 def test_mints_a_fresh_device_key_per_agent_when_absent():
     # Each create with no existing PEM gets its OWN keypair (stable per agent,
     # distinct across agents) — required so paired.json entries don't collide.
-    a = synthesize_openclaw_adapter(
-        gateway_url="wss://ws.isol8.co", service_token="t", user_id="u"
-    )
-    b = synthesize_openclaw_adapter(
-        gateway_url="wss://ws.isol8.co", service_token="t", user_id="u"
-    )
+    a = synthesize_openclaw_adapter(gateway_url="wss://ws.isol8.co", service_token="t", user_id="u")
+    b = synthesize_openclaw_adapter(gateway_url="wss://ws.isol8.co", service_token="t", user_id="u")
     assert a["devicePrivateKeyPem"] != b["devicePrivateKeyPem"]
     # The minted PEM is a usable ed25519 key whose deviceId derivation works.
     ident = device_identity_from_pem(a["devicePrivateKeyPem"])
@@ -143,9 +137,9 @@ def test_mints_a_fresh_device_key_per_agent_when_absent():
 def test_reuses_existing_device_key_on_update():
     # On update we MUST pass the agent's existing PEM so the deviceId — and its
     # already-seeded paired.json entry — stay stable. The synth returns it as-is.
-    existing = synthesize_openclaw_adapter(
-        gateway_url="wss://ws.isol8.co", service_token="t", user_id="u"
-    )["devicePrivateKeyPem"]
+    existing = synthesize_openclaw_adapter(gateway_url="wss://ws.isol8.co", service_token="t", user_id="u")[
+        "devicePrivateKeyPem"
+    ]
     updated = synthesize_openclaw_adapter(
         gateway_url="wss://ws.isol8.co",
         service_token="t2",

@@ -220,9 +220,7 @@ async def register_paperclip_agent_devices(
     )
     from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE
 
-    agents = await fetch_paperclip_agents_for_owner(
-        owner_id=owner_id, repo=repo, admin_client=admin_client
-    )
+    agents = await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
     if not agents:
         return []
 

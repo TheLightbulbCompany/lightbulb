@@ -65,7 +65,9 @@ async def test_register_builds_entry_and_binds_auth_token(monkeypatch):
     assert body["adapterConfig"]["authToken"] == "GW_TOKEN"
     assert body["adapterConfig"]["url"] == agent["adapterConfig"]["url"]
     # The paired entry seeds into build_device_paired_json alongside node+operator.
-    paired = build_device_paired_json("node_id", "node_pub", operator_entry={"deviceId": "op"}, extra_operator_entries=entries)
+    paired = build_device_paired_json(
+        "node_id", "node_pub", operator_entry={"deviceId": "op"}, extra_operator_entries=entries
+    )
     import json as _json
 
     assert ident.device_id in _json.loads(paired)

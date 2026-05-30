@@ -166,11 +166,7 @@ def private_key_pem(identity: OperatorDeviceIdentity) -> str:
     NOT_PAIRED). The PEM is the half the adapter needs to sign; only the public
     half goes into paired.json.
     """
-    return (
-        identity.private_key()
-        .private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-        .decode("ascii")
-    )
+    return identity.private_key().private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode("ascii")
 
 
 def device_identity_from_pem(pem: str) -> OperatorDeviceIdentity:

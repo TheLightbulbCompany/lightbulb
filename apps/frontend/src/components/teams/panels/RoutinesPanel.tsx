@@ -132,6 +132,19 @@ export function RoutinesPanel() {
         </div>
       ),
     },
+    {
+      key: "open",
+      header: "",
+      align: "right",
+      cell: (r) => (
+        <a
+          href={`/teams/routines/${r.id}`}
+          className="text-sm text-[var(--forest)] hover:underline"
+        >
+          Open →
+        </a>
+      ),
+    },
   ];
 
   return (

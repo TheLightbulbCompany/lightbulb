@@ -1337,13 +1337,30 @@ class PaperclipAdminClient:
 
         Maps to ``GET /api/routines/{routineId}/runs`` upstream
         (paperclip/server/src/routes/routines.ts:150). Returns a list of
-        run objects (id, status, startedAt, completedAt, etc.).
+        run objects matching upstream ``RoutineRunSummary`` (id, status,
+        source, triggeredAt, completedAt, failureReason, linkedIssue,
+        trigger). Note: upstream uses ``triggeredAt`` (not ``startedAt``).
         """
         result = await self._get(
             f"/api/routines/{routine_id}/runs",
             session_cookie=session_cookie,
         )
         return result if isinstance(result, list) else []
+
+    async def get_routine(
+        self,
+        *,
+        session_cookie: str,
+        routine_id: str,
+    ) -> dict:
+        """Fetch a single routine by id (the rich RoutineDetail).
+
+        Maps to ``GET /api/routines/{routineId}``.
+        """
+        return await self._get(
+            f"/api/routines/{routine_id}",
+            session_cookie=session_cookie,
+        )
 
     # ------------------------------------------------------------------
     # Goals

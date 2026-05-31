@@ -37,6 +37,7 @@ A second gap audit (full upstream surface sweep) produced this batch. Grounded i
 | G | Skills CRUD (create/edit/delete/version-install) | M–L | Pending | — | — | — |
 | H | Polish — **clean trio**: goal edit + approval-detail page + activity type-filter (all frontend-only; BFF already wired). Dashboard date-range **dropped** (14d hardcoded upstream too); routine run-history **deferred** (needs a routine detail surface first). | S | Done | [H](./2026-05-30-teams-polish-design.md) | [H](../plans/2026-05-30-teams-polish.md) | [#771](https://github.com/Isol8AI/isol8/pull/771) |
 | I | (latent fix, low pri) `params.paperclip` full-wipe restore — `_build_agents_list` re-seeds agent meta from the Paperclip master so a full EFS wipe reconstructs role/title/capabilities/icon. Pre-existing edge; split out of B by the single-editor decision. | S | Pending | — | — | — |
+| J | Routine detail + run-history (the deferred H item) — new `/teams/routines/{id}` route + `RoutineDetailPanel` (rich header: title/status/schedule/assignee + run-history list); new BFF `GET /routines/{id}` passthrough (mirrors `get_project`); `RoutinesPanel` rows gain "Open →". | S–M | Done | [J](./2026-05-30-teams-routine-detail-design.md) | [J](../plans/2026-05-30-teams-routine-detail.md) | [#775](https://github.com/Isol8AI/isol8/pull/775) |
 
 ## Dependency graph
 

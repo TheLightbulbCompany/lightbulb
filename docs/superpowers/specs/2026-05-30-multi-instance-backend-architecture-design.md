@@ -294,10 +294,14 @@ way.
   connection and the desktop node-host connection resolve to the same owner → same lease holder;
   separate per-connection registries don't collide. ✅
 - **C3 — no regression to current flows.** Web chat, desktop/node-host, exec approvals, Teams events,
-  operator relay all continue. The Teams broker is explicitly unchanged (§3.1). Node-host/operator
-  connections co-locate with the owner because they resolve by `owner_id` through the same chokepoint
-  (§3.3), not by per-request hashing — so they are never stranded (the affinity failure mode in §4 is
-  avoided precisely because we do *not* use affinity). ✅
+  operator relay all continue. The Teams broker is explicitly unchanged (§3.1). **At N=1 (our current
+  and only deployment) all of these co-locate trivially on the single task — so there is no
+  regression now.** ✅ **Caveat for N>1 (Codex P1 — see §6.1):** the chat path is what this rev makes
+  N>1-correct. The **node-host and operator-relay connection types are NOT yet covered at N>1** — they
+  are transparent bidirectional pipes opened per-`$connect` on whatever task received it, routed by
+  per-connection in-process maps; the §3.3 chokepoint governs only the *chat container WS open*, and
+  `/internal/rpc-forward` is a *unary chat RPC* path, not a streaming relay forward. So this is **not
+  a silent gap but a recorded open item**, deferred while we stay at N=1.
 - **C4 — identical at N=1, scalable to N>1 with no flag.** At one instance the lone task wins every
   lease and `query_by_owner` returns its own registered connections — bit-for-bit today's behavior.
   The same code is correct at N>1. ✅
@@ -323,10 +327,32 @@ container. Also exclude `/internal/*` from the public API path at the gateway as
 Without this, an internet client (or a leaked agent token) could invoke arbitrary container RPCs for
 any owner with no user token.
 
-**Paperclip:** orthogonal. Paperclip is a separate per-tenant REST BFF with its own per-user
-accounts/sessions; it is not part of container-WS ownership. Its only WebSocket touchpoint is the
-operator-relay connection type, which co-locates with the owner like any other connection (C3) —
-the per-user Paperclip account model does not affect the lease.
+**Paperclip:** orthogonal at the account level. Paperclip is a separate per-tenant REST BFF with its
+own per-user accounts/sessions; that account model does not affect the lease. Its WebSocket
+touchpoint — the operator-relay connection type — is, however, subject to the §6.1 open item below.
+
+### 6.1 Open item — relay connection routing at N>1 (node-host + operator-relay)
+
+The **chat** path is fully specified for N>1 above. The **transparent relay** connection types are
+not yet, and this rev does **not** claim to make them N>1-correct:
+
+- **What they are:** the desktop **node-host** connection and the Paperclip **operator-relay** are
+  bidirectional pipes the backend relays between an external client and the container. In the current
+  code they are opened directly from `$connect` (`_kick_off_node_connect` / `_kick_off_operator_connect`
+  in `websocket_chat.py`) on whichever task received `$connect`, with subsequent `$default` frames
+  routed by **per-connection in-process upstream maps**.
+- **Why the lease/chokepoint doesn't cover them:** their connection point is fixed by where `$connect`
+  lands (not by `owner_id`), and frames are per-request load-balanced — so at N>1 a relay frame can
+  arrive on a non-owner task that has no upstream map for it. `/internal/rpc-forward` is a *unary*
+  chat-RPC path and does not carry streaming relay frames.
+- **At N=1:** no issue — `$connect`, every `$default` frame, the relay upstream, and the container WS
+  all live on the one task. No regression today.
+- **For N>1 (to design when pursued):** the relays need either (a) a **streaming relay-frame forward**
+  to the owner task (a relay analogue of `/internal/rpc-forward`), or (b) a **separate ownership
+  treatment** for relay upstreams (e.g. the owner also holds the relay upstream and frames are
+  forwarded to it), or (c) pinning a relay's whole session to one task. This is explicitly **out of
+  scope for this rev** and gated behind the same "before flipping to N>1" checklist — flagged so it's
+  a conscious decision, not a surprise.
 
 ---
 

@@ -1144,9 +1144,10 @@ class EcsManager:
     ) -> list[dict]:
         """Build the ECS task ``secrets:`` block for a BYOK provisioning.
 
-        Looks up the api-keys row populated by ``key_service`` for
-        ``{user_id, byo_provider}`` and turns its ``secret_arn`` into a single
-        ``secrets:`` entry that the per-user task definition references.
+        Resolves the per-user LLM-key secret ARN from Secrets Manager (via
+        ``key_service.get_secret_arn``, keyed deterministically on
+        ``{user_id, byo_provider}``) and turns it into a single ``secrets:``
+        entry that the per-user task definition references.
         ``service-stack.ts`` already grants the backend
         ``secretsmanager:GetSecretValue`` for ``isol8/{env}/user-keys/*``, so
         the per-user ARN is reachable from the task IAM role.
@@ -1156,17 +1157,17 @@ class EcsManager:
                 f"byo_provider must be 'openai' or 'anthropic' for byo_key, got {byo_provider!r}",
                 user_id,
             )
-        from core.repositories import api_key_repo
+        from core.services.key_service import get_secret_arn
 
-        key_row = await api_key_repo.get_key(user_id, byo_provider)
-        if not key_row or not key_row.get("secret_arn"):
+        secret_arn = await get_secret_arn(user_id, byo_provider)
+        if not secret_arn:
             raise EcsManagerError(
                 f"No saved {byo_provider} key for user {user_id} - caller should "
                 "block provisioning until the user adds their key",
                 user_id,
             )
         env_var_name = "OPENAI_API_KEY" if byo_provider == "openai" else "ANTHROPIC_API_KEY"
-        return [{"name": env_var_name, "valueFrom": key_row["secret_arn"]}]
+        return [{"name": env_var_name, "valueFrom": secret_arn}]
 
     async def _pre_stage_oauth_for_user(self, user_id: str) -> None:
         """Pre-stage the auth-profiles.json for a chatgpt_oauth user.
@@ -1797,10 +1798,11 @@ class EcsManager:
             # Mint (or read) Friday's Paperclip API key so the MCP server
             # inside her container can call Paperclip's REST API as her
             # rather than as the global admin service account.
-            # Self-healing: if the key isn't in api_keys yet, ensure_…
-            # mints + stores. If Paperclip is unreachable this run, returns
-            # None and write_openclaw_config simply omits the mcp.servers
-            # block — the next reprovision picks it up.
+            # Self-healing: if the key isn't in Secrets Manager yet,
+            # ensure_paperclip_api_key mints + stores it. If Paperclip is
+            # unreachable this run, returns None and write_openclaw_config
+            # simply omits the mcp.servers block — the next reprovision picks
+            # it up.
             friday = next(
                 (a for a in paperclip_agents if a.get("role") == "ceo"),
                 None,

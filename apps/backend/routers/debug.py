@@ -16,7 +16,6 @@ from core.observability.metrics import put_metric
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import EcsManagerError
 from core.repositories import (
-    api_key_repo,
     billing_repo,
     channel_link_repo,
     container_repo,
@@ -289,13 +288,25 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             await integration_secret_store.delete(owner_id, provider)
             await integrations_repo.delete(owner_id, provider)
 
+    async def _wipe_byo_llm_keys() -> None:
+        # BYO LLM keys live in Secrets Manager (user-keys/<owner>/<provider>),
+        # keyed by the owner id key_service.set_key used. Force-delete both
+        # providers' secrets (no-op if absent). Paperclip per-agent keys also
+        # live in Secrets Manager but are not enumerable here without the agent
+        # ids; they are re-mintable and swept by the clean-slate Paperclip reset.
+        from core.services.key_service import KeyService
+
+        svc = KeyService()
+        for provider in ("openai", "anthropic"):
+            await svc.delete_key(owner_id, provider)
+
     ddb_steps = []
     if ecs_succeeded:
         ddb_steps.append(("containers", lambda: container_repo.delete(owner_id)))
     ddb_steps.extend(
         [
             ("billing-accounts", lambda: billing_repo.delete(owner_id)),
-            ("api-keys", lambda: api_key_repo.delete_all_for_owner(owner_id)),
+            ("byo-llm-keys", _wipe_byo_llm_keys),
             ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
             ("pending-updates", lambda: update_repo.delete_all_for_owner(owner_id)),
             ("channel-links", lambda: channel_link_repo.delete_all_for_owner(owner_id)),
@@ -401,7 +412,6 @@ async def ddb_rows(
     user = await user_repo.get_by_user_id(effective_user_id)
     container = await container_repo.get_by_owner_id(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
-    api_keys = await api_key_repo.count_for_owner(owner_id)
     usage = await usage_repo.count_for_owner(owner_id)
     updates = await update_repo.count_for_owner(owner_id)
     channels = await channel_link_repo.count_for_owner(owner_id)
@@ -412,7 +422,6 @@ async def ddb_rows(
             "users": 1 if user else 0,
             "containers": 1 if container else 0,
             "billing-accounts": 1 if billing else 0,
-            "api-keys": api_keys,
             "usage-counters": usage,
             "pending-updates": updates,
             "channel-links": channels,

@@ -73,7 +73,6 @@ function build(environment: "dev" | "prod"): {
       usersTable: database.usersTable,
       containersTable: database.containersTable,
       billingTable: database.billingTable,
-      apiKeysTable: database.apiKeysTable,
       usageCountersTable: database.usageCountersTable,
       pendingUpdatesTable: database.pendingUpdatesTable,
       channelLinksTable: database.channelLinksTable,

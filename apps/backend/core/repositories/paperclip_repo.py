@@ -7,7 +7,7 @@ same Isol8 org share the same ``company_id`` value across multiple
 rows.
 
 Async repository following the same pattern as peer repos in
-``core/repositories/`` (api_key_repo, channel_link_repo, etc.): every
+``core/repositories/`` (channel_link_repo, usage_repo, etc.): every
 DynamoDB call is wrapped in ``run_in_thread`` and exposed as ``async def``
 so future async callers (paperclip_provisioning, cleanup cron) can
 ``await`` directly without ``asyncio.to_thread`` at each call site.
@@ -436,7 +436,7 @@ class PaperclipRepo:
         Paginates through ``LastEvaluatedKey`` so larger result sets past
         the DynamoDB single-page Query limit (~1MB) are not silently
         dropped (mirrors the pagination pattern in
-        ``api_key_repo.delete_all_for_owner``).
+        ``channel_link_repo.delete_all_for_owner``).
         """
         out: list[PaperclipCompany] = []
         last_evaluated_key: dict | None = None

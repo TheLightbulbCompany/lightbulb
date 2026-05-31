@@ -582,10 +582,9 @@ async def change_provider(
                 "byo_provider must be 'openai' or 'anthropic' when switching to BYO key.",
                 status_code=422,
             )
-        from core.repositories import api_key_repo
+        from core.services.key_service import get_secret_arn
 
-        key_row = await api_key_repo.get_key(clerk_user_id, byo_provider)
-        if not key_row or not key_row.get("secret_arn"):
+        if not await get_secret_arn(clerk_user_id, byo_provider):
             raise ChangeProviderError(
                 "byo_key_missing",
                 f"Save your {byo_provider.title()} API key before switching to BYO key.",

@@ -357,6 +357,19 @@ export class DatabaseStack extends cdk.Stack {
     this.exportValue(this.oauthStateTable.tableArn, {
       name: `${this.stackName}:ExportsOutputFnGetAttOauthStateTable1D8479B9Arn3B610B82`,
     });
+    // Pass-1 of the api-keys export retirement (credential-layer redesign
+    // Phase 3). The backend no longer uses this table — secrets moved to
+    // Secrets Manager. Two stacks imported it: the service stack (Arn, via
+    // grantReadWriteData) and the observability stack (Ref, the table name).
+    // Pin BOTH exports under their existing names so removing those imports
+    // does not try to delete an in-use export. Removed with the table in the
+    // deferred Pass-2 deploy.
+    this.exportValue(this.apiKeysTable.tableArn, {
+      name: `${this.stackName}:ExportsOutputFnGetAttApiKeysTable9F4DC7E7ArnE84F3BB0`,
+    });
+    this.exportValue(this.apiKeysTable.tableName, {
+      name: `${this.stackName}:ExportsOutputRefApiKeysTable9F4DC7E79648F444`,
+    });
     new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
       value: this.paperclipCompaniesTable.tableName,
       exportName: `${this.stackName}-paperclip-companies-table`,

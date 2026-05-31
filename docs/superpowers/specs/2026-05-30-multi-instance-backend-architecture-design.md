@@ -157,12 +157,18 @@ Exactly one backend holds an owner's container WebSocket at a time.
   The winner is the **owner**: the sole task that opens the container WS, runs the reader loop, and
   calls `sessions.subscribe`.
 - **Renew (heartbeat):** every ~10s, conditional update *"set `expires_at_epoch_s = :now+30`, bump
-  `version`, IF `version = :held`."* If it fails, ownership was lost.
+  `version`, IF `version = :held` **AND `expires_at_epoch_s > :now`**."* If it fails, ownership was
+  lost — do **not** blind-renew. An expired-but-unstolen lease (version unchanged because no
+  successor acquired yet) must **fall through to a fresh acquire**, never a renew, so a paused owner
+  can't resurrect an elapsed lease.
 - **Fencing (REQUIRED — a lease is not a lock):** the owner tracks its held `version`; **before every
-  container interaction** (reader-loop iteration, `send_rpc`, `mark_run_active`) it must still hold
-  that version. On mismatch (another task stole the lease), **immediately close the WS, cancel the
-  reader, stop fan-out.** This is what prevents two simultaneous owners. Without it, a stalled/paused
-  owner that resumes after its lease was stolen would double-deliver.
+  container interaction** (reader-loop iteration, `send_rpc`, `mark_run_active`) it must verify it
+  **still holds a non-expired lease — both `version = :held` AND `expires_at_epoch_s > now` AND
+  `holder_task_id == me`.** On any mismatch (stolen *or* elapsed), **immediately close the WS, cancel
+  the reader, stop fan-out.** Version-match alone is insufficient: after a GC pause/stall **≥ TTL**
+  the lease can have *expired without yet being stolen* (version still matches), and a second task
+  could acquire concurrently — so the not-expired check is what actually prevents two simultaneous
+  owners. (Codex P2.)
 - **`expires_at_epoch_s` is NOT DynamoDB native TTL.** Lease expiry is enforced by the
   **ConditionExpression** above (strongly consistent). Native DDB TTL is best-effort (can lag hours)
   and is used **only as a GC backstop** to delete abandoned rows — never as the correctness gate.
@@ -170,8 +176,10 @@ Exactly one backend holds an owner's container WebSocket at a time.
   WS, the owner deletes its lease row (conditional on `version`) so a successor acquires in <1s
   instead of waiting a full TTL. (Piece 3's bounded shutdown already provides the drain window.)
 - **Outbound RPC from a non-owner** (a message that landed on a non-owner via per-request LB): read
-  the lease, forward to `owner_addr` over a backend-internal **`POST /internal/rpc-forward`**; the
-  owner executes it on its container WS and returns the result. **`mark_run_active` is owner-only** —
+  the lease, forward to `owner_addr` over a backend-internal **`POST /internal/rpc-forward`** (which
+  **must require service-to-service auth + owner-scope check — see §6; do NOT rely on the security
+  group, the route is reachable from the public API path**); the owner executes it on its container
+  WS and returns the result. **`mark_run_active` is owner-only** —
   a non-owner must include its parameters in the forward payload so the *owner* records the run (else
   parked-vs-dead detection breaks at N>1). The original `req_id` threads through all hops for
   end-to-end idempotency. Contract in §6.
@@ -245,11 +253,22 @@ way.
   lease and `query_by_owner` returns its own registered connections — bit-for-bit today's behavior.
   The same code is correct at N>1. ✅
 
-**`/internal/rpc-forward` contract:** request `{ method, params, req_id, mark_run_active?: {session_key, agent_id}, sessionKey? }`;
+**`/internal/rpc-forward` contract:** request `{ method, params, req_id, owner_id, mark_run_active?: {session_key, agent_id}, sessionKey? }`;
 response `{ type: "res", req_id, result }` or `{ type: "error", req_id, code, message }`; HTTP 200 /
-400 (malformed) / 503 (owner draining) / 408 (timeout) / 500 (owner exception); HTTP timeout 35s
-(> the 30s RPC timeout); auth: none required (VPC-internal SG rule restricts to backend tasks); the
+400 (malformed) / 401 (bad/absent service auth) / 403 (caller not scoped to `owner_id`) / 503 (owner
+draining) / 408 (timeout) / 500 (owner exception); HTTP timeout 35s (> the 30s RPC timeout); the
 non-owner awaits the response before replying to the frontend (not fire-and-forget).
+
+**Auth on this route is mandatory — the security group is NOT sufficient (Codex P1).** `api-stack.ts`
+defines a `$default` HTTP_PROXY route forwarding *any* public HTTP API path to the ALB → the single
+backend FastAPI app. So a route added to that app is reachable **from the public internet** via API
+Gateway; the SG only blocks *direct* task IP access, not the public path. Therefore `/internal/rpc-forward`
+**must** authenticate at the application layer: require a short-lived internal **service token**
+(mint/verify via the existing `core/services/service_token.py`) or an HMAC-signed header, reject
+unauthenticated calls (401), and verify the caller is acting for the claimed `owner_id` (403
+otherwise) so it can't be used to drive *another* owner's container. Optionally also exclude
+`/internal/*` from the public API path at the gateway as defense-in-depth. Without this, an internet
+client could invoke arbitrary container RPCs for any owner with no user token.
 
 **Paperclip:** orthogonal. Paperclip is a separate per-tenant REST BFF with its own per-user
 accounts/sessions; it is not part of container-WS ownership. Its only WebSocket touchpoint is the
@@ -260,10 +279,12 @@ the per-user Paperclip account model does not affect the lease.
 
 ## 7. Risks & mitigations
 
-- **Split-brain (two owners):** prevented by strongly-consistent conditional acquire + `version`
-  fencing checked before every container op (§3.2). A GC-paused owner that resumes after a steal
-  fails its next fenced check and tears down. (A pause **≥ TTL** could yield a brief double-deliver
-  window before the fence catches it; mitigated by TTL ≥ renew×3 and idempotent event handling.)
+- **Split-brain (two owners):** prevented by strongly-consistent conditional acquire + fencing on
+  **`version` AND `expires_at_epoch_s > now` AND `holder_task_id`** checked before every container op,
+  plus renew refusing to extend an already-expired row (§3.2). A GC-paused owner that resumes after a
+  steal *or after its lease merely elapsed* fails its next fenced check (version moved or
+  now-expired) and tears down before touching the container — so even a pause ≥ TTL cannot
+  double-deliver. Idempotent event handling remains a belt-and-suspenders backstop.
 - **DynamoDB native-TTL misuse:** explicitly avoided — expiry is conditional-expression-enforced;
   native TTL is GC-only (§3.2).
 - **Fan-out coherence (cross-task `$connect`):** short cache TTL + lazy `/ws/message` registration +

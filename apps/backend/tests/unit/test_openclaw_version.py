@@ -51,3 +51,12 @@ def test_env_var_takes_precedence(monkeypatch):
     assert openclaw_version.upstream_version() == "9999.9.9"
     assert openclaw_version.dev_tag() == "9999.9.9-devsha"
     assert openclaw_version.prod_tag() == "9999.9.9-prodsha"
+
+
+def test_upstream_version_falls_back_when_no_env_and_no_json(monkeypatch):
+    """Non-CDK docker run: no env vars AND repo JSON unreachable -> a non-empty
+    hardcoded fallback, so meta.lastTouchedVersion never ends up empty (which
+    would reintroduce OpenClaw's auto-restore/version warning)."""
+    monkeypatch.setattr(openclaw_version, "_load_pinned", lambda: {})
+    assert openclaw_version.upstream_version() == openclaw_version._FALLBACK_UPSTREAM_VERSION
+    assert openclaw_version.upstream_version()  # non-empty

@@ -23,6 +23,17 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+# Last-resort default for the upstream version ONLY. The deploy path never uses
+# it (CDK injects OPENCLAW_UPSTREAM_VERSION from openclaw-version.json) and local
+# dev / CI read the repo JSON. It exists solely so a non-CDK runner of the
+# backend image (the Dockerfile's documented `docker run --env-file .env` flow,
+# where the JSON is outside the build context and the env var may be unset) still
+# gets a valid, non-empty meta.lastTouchedVersion — otherwise an empty string
+# reintroduces OpenClaw's auto-restore/"config from the future" warning. Keep it
+# roughly current on upstream bumps; it is a safety floor, not a drift-checked
+# mirror, so exact lockstep is not required.
+_FALLBACK_UPSTREAM_VERSION = "2026.5.12"
+
 
 @lru_cache(maxsize=1)
 def _load_pinned() -> dict:
@@ -46,8 +57,11 @@ def upstream_version() -> str:
 
     Used by the meta shim in ``core/containers/config.py`` that records
     ``meta.lastTouchedVersion`` so OpenClaw's auto-restore does not fire.
+    Resolution order: CDK-injected env var → repo JSON → hardcoded fallback.
+    The fallback guarantees a non-empty version even on a non-CDK
+    ``docker run`` of the backend image where neither source is available.
     """
-    return os.getenv("OPENCLAW_UPSTREAM_VERSION") or _load_pinned().get("tag", "")
+    return os.getenv("OPENCLAW_UPSTREAM_VERSION") or _load_pinned().get("tag") or _FALLBACK_UPSTREAM_VERSION
 
 
 def dev_tag() -> str:

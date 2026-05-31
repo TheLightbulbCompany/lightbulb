@@ -2,9 +2,9 @@
 
 core/openclaw_version.py resolves the pinned tags from env vars (injected by
 CDK in deployed containers) with a fallback to reading openclaw-version.json
-directly (local dev / CI). These tests verify both paths plus that the JSON
-fallback matches the actual repo file — the check the old per-constant drift
-tests used to provide, now in one place.
+directly (local dev / CI), then a hardcoded last-resort default. These tests
+cover all three paths plus that the JSON fallback matches the actual repo file
+— the check the old per-constant drift tests used to provide, now in one place.
 """
 
 import json
@@ -69,3 +69,20 @@ def test_upstream_version_falls_back_when_no_env_and_no_json(monkeypatch):
     monkeypatch.setattr(openclaw_version, "_load_pinned", lambda: {})
     assert openclaw_version.upstream_version() == openclaw_version._FALLBACK_UPSTREAM_VERSION
     assert openclaw_version.upstream_version()  # non-empty
+
+
+def test_load_pinned_no_crash_for_shallow_image_path(monkeypatch, tmp_path):
+    """In the deployed backend image __file__ is /app/core/openclaw_version.py
+    (only 3 ancestors) and no openclaw-version.json exists above it. The upward
+    walk must return {} without IndexError — the old hardcoded parents[3]
+    crashed here, defeating the very fallback this module adds."""
+    fake_file = tmp_path / "app" / "core" / "openclaw_version.py"
+    fake_file.parent.mkdir(parents=True)
+    fake_file.write_text("")
+    monkeypatch.setattr(openclaw_version, "__file__", str(fake_file))
+    _clear_pinned_cache()
+
+    assert openclaw_version._load_pinned() == {}  # must not raise
+    # With no JSON found and no env var, upstream_version still yields the
+    # non-empty hardcoded fallback.
+    assert openclaw_version.upstream_version() == openclaw_version._FALLBACK_UPSTREAM_VERSION

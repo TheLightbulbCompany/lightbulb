@@ -37,18 +37,24 @@ _FALLBACK_UPSTREAM_VERSION = "2026.5.12"
 
 @lru_cache(maxsize=1)
 def _load_pinned() -> dict:
-    """Read openclaw-version.json from the repo root if it is reachable.
+    """Read openclaw-version.json by searching upward from this file.
 
-    Returns ``{}`` when the file is absent (the normal case inside the deployed
-    backend image, where the injected env vars are authoritative instead).
+    Returns ``{}`` when the file is not found (the normal case inside the
+    deployed backend image, whose Docker build context is ``apps/backend/`` so
+    the repo-root JSON is absent — the injected env vars are authoritative
+    there). We walk ancestors instead of assuming a fixed depth: in the image
+    ``__file__`` is ``/app/core/openclaw_version.py`` (only 3 ancestors), so a
+    hardcoded ``parents[3]`` would raise IndexError and crash this function
+    before the env/fallback resolution downstream could take over.
     """
-    # apps/backend/core/openclaw_version.py -> repo root is parents[3].
-    candidate = Path(__file__).resolve().parents[3] / "openclaw-version.json"
-    if candidate.exists():
-        try:
-            return json.loads(candidate.read_text())
-        except (OSError, ValueError):
-            return {}
+    here = Path(__file__).resolve()
+    for ancestor in here.parents:
+        candidate = ancestor / "openclaw-version.json"
+        if candidate.exists():
+            try:
+                return json.loads(candidate.read_text())
+            except (OSError, ValueError):
+                return {}
     return {}
 
 

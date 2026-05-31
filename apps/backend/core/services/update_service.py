@@ -37,6 +37,25 @@ PAPERCLIP_RETRY_KIND = "paperclip_provision"
 # Daily purge pass cadence, in seconds.
 _PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60
 
+# Inter-iteration wait for run_scheduled_worker, in seconds.
+_WORKER_INTERVAL_S = 60
+
+# Cooperative stop signal for run_scheduled_worker. Lets a graceful
+# shutdown ask the worker to finish its current iteration and exit
+# instead of hard-cancelling mid-pass (which could abort an in-flight
+# config patch or provision retry).
+_worker_stop = asyncio.Event()
+
+
+def request_worker_stop() -> None:
+    """Ask run_scheduled_worker to finish its current iteration and exit."""
+    _worker_stop.set()
+
+
+def reset_worker_stop() -> None:
+    """Reset the stop signal (start-of-run / test isolation)."""
+    _worker_stop.clear()
+
 
 async def queue_image_update(owner_id: str, new_image: str, description: str | None = None) -> dict:
     """Queue a container image update for a single owner."""
@@ -371,8 +390,9 @@ async def run_scheduled_worker() -> None:
     (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h).
     """
     logger.info("Scheduled update worker started")
+    reset_worker_stop()
     last_purge_pass_at: float = 0.0  # epoch seconds; 0 forces a run on first iteration
-    while True:
+    while not _worker_stop.is_set():
         try:
             put_metric("update.scheduled_worker.heartbeat")
             due_updates = await update_repo.get_due_scheduled()
@@ -409,4 +429,8 @@ async def run_scheduled_worker() -> None:
             put_metric("update.scheduled_worker.error")
             logger.exception("Error in scheduled update worker loop")
 
-        await asyncio.sleep(60)
+        # Interruptible inter-iteration wait: wakes immediately on stop request.
+        try:
+            await asyncio.wait_for(_worker_stop.wait(), timeout=_WORKER_INTERVAL_S)
+        except asyncio.TimeoutError:
+            pass

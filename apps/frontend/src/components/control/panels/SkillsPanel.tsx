@@ -9,8 +9,6 @@ import {
   Search,
   AlertTriangle,
   Download,
-  Eye,
-  EyeOff,
   ExternalLink,
   Wrench,
   Server,
@@ -18,19 +16,10 @@ import {
   Monitor,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
-import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { McpServersTab } from "./McpServersTab";
-
-// Map OpenClaw primaryEnv → backend tool_id for BYOK persistence
-const ENV_TO_TOOL_ID: Record<string, string> = {
-  ELEVENLABS_API_KEY: "elevenlabs",
-  OPENAI_API_KEY: "openai_tts",
-  PERPLEXITY_API_KEY: "perplexity",
-  FIRECRAWL_API_KEY: "firecrawl",
-};
 
 type SkillsPanelTab = "skills" | "mcp";
 
@@ -221,7 +210,6 @@ function SkillsTab({ agentId }: { agentId?: string }) {
     params,
   );
   const callRpc = useGatewayRpcMutation();
-  const api = useApi();
   const [filter, setFilter] = useState("");
   const [activeCategory, setActiveCategory] = useState<Category>("All");
   const [unsupportedCollapsed, setUnsupportedCollapsed] = useState(true);
@@ -340,7 +328,6 @@ function SkillsTab({ agentId }: { agentId?: string }) {
                   key={skill.skillKey || skill.name}
                   skill={skill}
                   callRpc={callRpc}
-                  api={api}
                   onRefresh={mutate}
                   variant="installed"
                 />
@@ -357,7 +344,6 @@ function SkillsTab({ agentId }: { agentId?: string }) {
                 key={skill.skillKey || skill.name}
                 skill={skill}
                 callRpc={callRpc}
-                api={api}
                 onRefresh={mutate}
                 variant="installed"
               />
@@ -380,7 +366,6 @@ function SkillsTab({ agentId }: { agentId?: string }) {
                   key={skill.skillKey || skill.name}
                   skill={skill}
                   callRpc={callRpc}
-                  api={api}
                   onRefresh={mutate}
                   variant="available"
                 />
@@ -476,23 +461,16 @@ function SkillsTab({ agentId }: { agentId?: string }) {
 function SkillCard({
   skill,
   callRpc,
-  api,
   onRefresh,
   variant,
 }: {
   skill: SkillStatusEntry;
   callRpc: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;
-  api: ReturnType<typeof useApi>;
   onRefresh: () => void;
   variant: "installed" | "available";
 }) {
   const [toggleLoading, setToggleLoading] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [apiKeyVisible, setApiKeyVisible] = useState(false);
-  const [saveLoading, setSaveLoading] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
   const [installLoading, setInstallLoading] = useState<string | null>(null);
-  const [configExpanded, setConfigExpanded] = useState(false);
 
   const hasMissing =
     (skill.missing?.bins?.length ?? 0) > 0 ||
@@ -512,40 +490,6 @@ function SkillCard({
       console.error("Failed to toggle skill:", err);
     } finally {
       setToggleLoading(false);
-    }
-  };
-
-  const handleSaveKey = async () => {
-    if (!apiKey.trim()) return;
-    setSaveLoading(true);
-    setSaveStatus("idle");
-    try {
-      await callRpc("skills.update", {
-        skillKey: skill.skillKey || skill.name,
-        apiKey: apiKey.trim(),
-      });
-
-      // Persist key in backend for BYOK billing tracking
-      const toolId = skill.primaryEnv ? ENV_TO_TOOL_ID[skill.primaryEnv] : null;
-      if (toolId) {
-        try {
-          await api.put(`/settings/keys/${toolId}`, { api_key: apiKey.trim() });
-        } catch (err) {
-          console.warn("BYOK key persistence failed (non-critical):", err);
-        }
-      }
-
-      capture("skill_api_key_saved", { skill: skill.name });
-      setSaveStatus("success");
-      setApiKey("");
-      onRefresh();
-      setTimeout(() => setSaveStatus("idle"), 3000);
-    } catch (err) {
-      console.error("Failed to save API key:", err);
-      setSaveStatus("error");
-      setTimeout(() => setSaveStatus("idle"), 3000);
-    } finally {
-      setSaveLoading(false);
     }
   };
 
@@ -597,20 +541,6 @@ function SkillCard({
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0">
-            {skill.primaryEnv && (
-              <button
-                onClick={() => setConfigExpanded(!configExpanded)}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border",
-                  configExpanded
-                    ? "bg-[#f3efe6] border-[#d5d0c7] text-[#1a1a1a]"
-                    : "bg-white border-[#e0dbd0] text-[#5a5549] hover:border-[#c5c0b6]",
-                )}
-                style={{ fontFamily: "'DM Sans', sans-serif" }}
-              >
-                Configure
-              </button>
-            )}
             {!skill.always && (
               <button
                 onClick={handleToggle}
@@ -670,59 +600,6 @@ function SkillCard({
                   {spec.label || `Install via ${spec.kind}`}
                 </Button>
               ))}
-          </div>
-        )}
-
-        {/* Expandable configure panel with API key */}
-        {configExpanded && skill.primaryEnv && (
-          <div className="border-t border-[#e0dbd0] pt-3 space-y-2">
-            <label
-              className="text-xs font-medium text-[#5a5549]"
-              style={{ fontFamily: "'DM Sans', sans-serif" }}
-            >
-              API Key ({skill.primaryEnv})
-            </label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Input
-                  type={apiKeyVisible ? "text" : "password"}
-                  placeholder={`Enter your ${skill.primaryEnv}`}
-                  className="h-9 text-xs pr-8 font-mono bg-[#faf7f2] border-[#e0dbd0] rounded-lg"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSaveKey();
-                  }}
-                />
-                <button
-                  type="button"
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8a8578] hover:text-[#1a1a1a]"
-                  onClick={() => setApiKeyVisible(!apiKeyVisible)}
-                >
-                  {apiKeyVisible ? (
-                    <EyeOff className="h-3.5 w-3.5" />
-                  ) : (
-                    <Eye className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              </div>
-              <Button
-                size="sm"
-                className="text-xs flex-shrink-0 rounded-lg bg-[#06402B] hover:bg-[#053d28] text-white"
-                onClick={handleSaveKey}
-                disabled={saveLoading || !apiKey.trim()}
-              >
-                {saveLoading ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : saveStatus === "success" ? (
-                  "Saved!"
-                ) : saveStatus === "error" ? (
-                  "Failed"
-                ) : (
-                  "Save"
-                )}
-              </Button>
-            </div>
           </div>
         )}
       </div>

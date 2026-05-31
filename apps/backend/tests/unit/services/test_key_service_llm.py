@@ -1,14 +1,15 @@
-"""Tests for the LLM-key extension of key_service (OpenAI / Anthropic).
+"""Tests for the LLM-key BYOK flow in key_service (OpenAI / Anthropic).
 
-These cover the Card-2 BYO-LLM-key flow:
+OpenAI and Anthropic are the only supported BYOK keys. These cover:
 - save validates with a 1-call ping to the provider's /models endpoint
 - bad keys raise before anything is written
 - valid keys are encrypted to DDB AND mirrored into Secrets Manager
 - the secret ARN is persisted on the DDB row via api_key_repo.set_secret_arn
 - delete clears the Secrets Manager secret with no recovery window
+- delete of a non-LLM id never touches Secrets Manager
 
-The existing tool-key paths (Perplexity, Firecrawl, etc.) are covered in
-``test_key_service.py`` and intentionally not re-tested here.
+The generic set/get/delete/list surface (including the unsupported-id guard)
+is covered in ``test_key_service.py`` and intentionally not re-tested here.
 """
 
 import os
@@ -219,8 +220,13 @@ async def test_delete_llm_key_force_deletes_secret():
 
 
 @pytest.mark.asyncio
-async def test_delete_tool_key_does_not_touch_secrets_manager():
-    """Deleting a tool (Perplexity etc.) key must NOT call Secrets Manager."""
+async def test_delete_non_llm_id_does_not_touch_secrets_manager():
+    """Deleting a non-LLM id must NOT call Secrets Manager.
+
+    delete_key is intentionally lenient (it does not gate on supported ids), so
+    a stray non-LLM id only removes the DDB row and never reaches Secrets
+    Manager — only ``_is_llm_provider`` ids do.
+    """
     sm = _make_sm_mock("arn:noop")
 
     with (

@@ -1,16 +1,10 @@
-"""Service for managing user-provided API keys (BYOK).
+"""Service for managing user-provided LLM API keys (BYOK).
 
-Two flavours of keys live here:
-
-1. Tool keys (Perplexity, Firecrawl, ElevenLabs, OpenAI TTS) — encrypted-at-rest
-   in DynamoDB and read by the backend at chat time. Never exposed to the
-   per-user container as an environment variable.
-
-2. LLM provider keys (OpenAI, Anthropic) — same encrypted-at-rest DDB row
-   PLUS the plaintext is mirrored into AWS Secrets Manager so the per-user
-   ECS task definition can reference it via ``secrets:[{name, valueFrom}]``.
-   Saving an LLM key first validates it against the provider's API; bad
-   keys are rejected at save-time, not at chat-time.
+Only LLM provider keys (OpenAI, Anthropic) live here. The plaintext is mirrored
+into AWS Secrets Manager so the per-user ECS task definition can reference it
+via ``secrets:[{name, valueFrom}]``, alongside an encrypted-at-rest copy in
+DynamoDB. Saving a key first validates it against the provider's API, so bad
+keys are rejected at save-time, not at chat-time.
 """
 
 import logging
@@ -25,27 +19,8 @@ from core.repositories import api_key_repo
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_TOOLS = {
-    "elevenlabs": {
-        "display_name": "ElevenLabs TTS",
-        "config_path": "tts.elevenlabs.apiKey",
-    },
-    "openai_tts": {
-        "display_name": "OpenAI TTS",
-        "config_path": "tts.openai.apiKey",
-    },
-    "perplexity": {
-        "display_name": "Perplexity Search",
-        "config_path": "tools.web.search.perplexity.apiKey",
-    },
-    "firecrawl": {
-        "display_name": "Firecrawl",
-        "config_path": "tools.web.fetch.firecrawl.apiKey",
-    },
-}
-
-# LLM provider keys are different: validated against the provider, and the
-# plaintext is mirrored into Secrets Manager for ECS env-var injection.
+# LLM provider keys: validated against the provider, and the plaintext is
+# mirrored into Secrets Manager for ECS env-var injection.
 SUPPORTED_LLM_PROVIDERS = {
     "openai": {"display_name": "OpenAI"},
     "anthropic": {"display_name": "Anthropic"},
@@ -53,7 +28,7 @@ SUPPORTED_LLM_PROVIDERS = {
 
 
 def _allowed_ids() -> set[str]:
-    return set(SUPPORTED_TOOLS) | set(SUPPORTED_LLM_PROVIDERS)
+    return set(SUPPORTED_LLM_PROVIDERS)
 
 
 def _is_llm_provider(tool_id: str) -> bool:
@@ -215,8 +190,6 @@ class KeyService:
         items = await api_key_repo.list_keys(user_id)
 
         def _display_for(tool_id: str) -> str:
-            if tool_id in SUPPORTED_TOOLS:
-                return SUPPORTED_TOOLS[tool_id]["display_name"]
             if tool_id in SUPPORTED_LLM_PROVIDERS:
                 return SUPPORTED_LLM_PROVIDERS[tool_id]["display_name"]
             return tool_id

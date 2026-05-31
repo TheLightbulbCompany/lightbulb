@@ -283,10 +283,18 @@ class TeamsEventBroker:
         clients = list(self._clients.values())
         self._clients.clear()
         self._subscribers.clear()
-        for client in clients:
+
+        async def _close_one(client) -> None:
             try:
                 await asyncio.wait_for(client.close(), timeout=_CLIENT_CLOSE_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.warning("teams broker shutdown: client.close() timed out, abandoning")
             except Exception:
                 logger.exception("teams broker shutdown: close() failed")
+
+        # Close clients CONCURRENTLY so total wall-clock stays ~_CLIENT_CLOSE_TIMEOUT
+        # regardless of how many Teams users are connected. Serial closes would be
+        # ~timeout * N and could starve the rest of the bounded lifespan shutdown
+        # (e.g. the gateway-pool drain) when an upstream is wedged.
+        if clients:
+            await asyncio.gather(*(_close_one(c) for c in clients))

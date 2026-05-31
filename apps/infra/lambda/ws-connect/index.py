@@ -23,6 +23,7 @@ def handler(event, context):
         "connectionId": connection_id,
         "userId": user_id,
         "orgId": org_id or "",
+        "ownerId": org_id or user_id,  # owner = org for org members, else the user
         "connectedAt": str(event["requestContext"].get("connectedAt", "")),
     })
 

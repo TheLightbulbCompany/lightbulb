@@ -85,6 +85,7 @@ class ConnectionService:
             "connectionId": {"S": connection_id},
             "userId": {"S": user_id},
             "orgId": {"S": org_id or ""},  # Empty string for None
+            "ownerId": {"S": (org_id or user_id)},  # owner = org for org members, else the user
             "connectedAt": {"S": connected_at},
             "connectionType": {"S": connection_type},
         }

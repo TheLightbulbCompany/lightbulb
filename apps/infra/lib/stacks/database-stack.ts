@@ -248,9 +248,7 @@ export class DatabaseStack extends cdk.Stack {
 
     // Credential vault — mirrors oauthTokensTable (CMK at rest) + a `provider` sort key.
     // Stored payloads are ALSO Fernet-encrypted app-side; KMS-at-rest is the separate snapshot layer.
-    // Construct id is `CredentialConnectionsTable` (not `ConnectionsTable`) to avoid
-    // colliding with api-stack's `ConnectionsTable` (the WebSocket connectionId table).
-    this.connectionsTable = new dynamodb.Table(this, "CredentialConnectionsTable", {
+    this.connectionsTable = new dynamodb.Table(this, "ConnectionsTable", {
       tableName: `isol8-${env}-connections`,
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },

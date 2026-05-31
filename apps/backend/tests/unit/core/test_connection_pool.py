@@ -89,6 +89,48 @@ class TestGatewayConnection:
         assert "req-timeout" not in connection._pending_rpcs
 
 
+class TestGatewayConnectionOwnerId:
+    """GatewayConnection exposes the owner key it is pooled under.
+
+    The pool's `_connections` dict is keyed by owner_id (org_id or user_id)
+    and `_create_connection` passes that key in as `user_id`. The explicit
+    `owner_id` attribute makes that key unambiguous for the owner-keyed
+    DDB fan-out (it calls `query_by_owner(self.owner_id)`).
+    """
+
+    def test_owner_id_defaults_to_user_id(self):
+        """Direct constructors (no owner_id) fall back to user_id."""
+        conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
+            user_id="user-personal",
+            ip="10.0.0.1",
+            token="tok",
+            management_api=MagicMock(),
+        )
+        assert conn.owner_id == "user-personal"
+
+    @pytest.mark.asyncio
+    async def test_create_connection_sets_owner_id_to_pool_key(self):
+        """The pool creates connections under an owner key (org_id or
+        user_id) and that key is exposed as `owner_id`."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        created = {}
+
+        original_init = GatewayConnection.__init__
+
+        def _capturing_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            created["conn"] = self
+
+        # Skip the real WS connect — we only assert the constructed attribute.
+        with patch.object(GatewayConnection, "connect", new=AsyncMock()):
+            with patch.object(GatewayConnection, "__init__", new=_capturing_init):
+                await pool._create_connection("org_456", "10.0.0.2", "tok")
+
+        assert created["conn"].owner_id == "org_456"
+
+
 class TestGatewayConnectionPool:
     @pytest.fixture
     def pool(self):

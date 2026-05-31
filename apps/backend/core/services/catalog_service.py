@@ -80,12 +80,12 @@ async def assert_credentials_satisfied(
          that are known registry providers — arbitrary/custom MCP servers
          aren't credential-gated here.
 
-    A provider is "connected" when the owner has a connections row for it
-    whose status is ``connected`` (the default written by connection_repo.put).
+    A provider is "connected" when the owner has an integrations row for it
+    whose status is ``connected`` (the default written by integrations_repo).
     Raises ``MissingCredentialsError`` (sorted, deduped) when any required
     provider is unconnected; returns ``None`` when all are satisfied.
     """
-    from core.repositories import connection_repo
+    from core.repositories import integrations_repo
     from core.services.credentials import registry
 
     known_providers = registry.all_providers()
@@ -117,7 +117,7 @@ async def assert_credentials_satisfied(
 
     connected = {
         row["provider"]
-        for row in await connection_repo.list_for_owner(owner_id)
+        for row in await integrations_repo.list_for_owner(owner_id)
         if row.get("provider") and row.get("status", "connected") == "connected"
     }
 
@@ -165,29 +165,31 @@ async def _fill_buyer_credential_slots(owner_id: str, slice_: dict) -> None:
     with the buyer's OWN token — but only for providers whose secret is actually
     retained in the vault.
 
-    Retained-vs-scrubbed gate (do NOT just always re-apply):
+    Retained-vs-non-retained gate (do NOT just always re-apply):
       - paste providers (linear, stripe): ``refresh_owner=none`` +
-        ``wiring.openclaw_paths`` → the vault keeps ``credential_enc``, and the
-        token lands in a per-agent openclaw.json path. These DO need filling.
+        ``wiring.openclaw_paths`` → the credential is retained in Secrets
+        Manager and the token lands in a per-agent openclaw.json path. These DO
+        need filling.
       - actor providers (google): ``refresh_owner=actor`` +
-        ``wiring.materializer`` → after connect the vault secret is SCRUBBED
-        (M6 non-retention), so the row has no ``credential_enc`` and
-        ``decrypt_credential`` RAISES. They also need NO slot-fill: the
-        credential is the owner-scoped EFS gog keyring written at connect time,
-        which every deployed agent reads regardless of the slice.
+        ``wiring.materializer`` → the backend retains nothing (M6
+        non-retention); the credential is the owner-scoped EFS gog keyring
+        written at connect time, which every deployed agent reads regardless of
+        the slice. These need NO slot-fill.
 
     So we skip any provider that either has no ``openclaw_paths`` (materializer
-    rail — nothing to fill) or no ``credential_enc`` (scrubbed / non-retained —
-    nothing to re-apply). The ``credential_enc`` check mirrors the disconnect
-    path's guard and is what keeps us from ever calling ``decrypt_credential``
-    on a scrubbed actor row (which would raise).
+    rail — nothing to fill) or has no retained Secrets Manager credential
+    (actor / non-retained — ``integration_secret_store.get`` returns None).
 
     Best-effort per provider: the agent is already deployed by the time this
     runs, so a single fill failure is degraded (the buyer can re-connect the
     integration), not fatal — log and continue rather than aborting the deploy.
     """
-    from core.repositories import connection_repo
-    from core.services.credentials import apply_connection, registry
+    from core.repositories import integrations_repo
+    from core.services.credentials import (
+        apply_connection,
+        integration_secret_store,
+        registry,
+    )
 
     known_providers = registry.all_providers()
     mcp_servers = ((slice_ or {}).get("mcp") or {}).get("servers") or {}
@@ -199,7 +201,7 @@ async def _fill_buyer_credential_slots(owner_id: str, slice_: dict) -> None:
 
     for provider in candidates:
         try:
-            row = await connection_repo.get(owner_id, provider)
+            row = await integrations_repo.get(owner_id, provider)
             # Mirror the deploy gate's default: a row with no explicit status is
             # treated as connected. Diverging here would let the gate admit a
             # legacy (status-less) connection while this fill skips it, leaving
@@ -211,10 +213,12 @@ async def _fill_buyer_credential_slots(owner_id: str, slice_: dict) -> None:
             # not a per-agent openclaw.json path — there is no slot to fill.
             if not p.wiring.openclaw_paths:
                 continue
-            # No retained ciphertext → scrubbed / non-retained credential.
-            # Mirrors connection_repo's disconnect guard and avoids calling
-            # decrypt_credential on a scrubbed row (which raises).
-            if not row.get("credential_enc"):
+            # The re-injectable credential lives in Secrets Manager only for
+            # backend-custodian providers. Actor-refresh providers (custodian =
+            # EFS keyring) never stored one, so get() returns None — skip them,
+            # mirroring the old "no retained ciphertext" guard.
+            credential = await integration_secret_store.get(owner_id, provider)
+            if not credential:
                 continue
             # Only fill when the deployed slot exposes the registry's canonical
             # key — otherwise the bundle scrubbed its credential under a
@@ -228,7 +232,7 @@ async def _fill_buyer_credential_slots(owner_id: str, slice_: dict) -> None:
                     owner_id,
                 )
                 continue
-            await apply_connection.apply_connection(owner_id, provider, connection_repo.decrypt_credential(row))
+            await apply_connection.apply_connection(owner_id, provider, credential)
         except Exception:
             logger.exception(
                 "deploy slot-fill failed for provider %s (owner %s); continuing",

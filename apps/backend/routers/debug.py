@@ -20,11 +20,13 @@ from core.repositories import (
     billing_repo,
     channel_link_repo,
     container_repo,
+    integrations_repo,
     update_repo,
     usage_repo,
     user_repo,
 )
 from core.services import connection_service
+from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +278,17 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # into an unrecoverable leak. On the happy path delete_user_service has
     # already removed the row, so the explicit delete here is just
     # belt-and-suspenders.
+    async def _wipe_integrations() -> None:
+        # Sweep both the secret-free status rows AND the per-provider Secrets
+        # Manager credentials. List the rows first so the SM secrets can be
+        # deleted by name without an account-wide secretsmanager:ListSecrets.
+        for row in await integrations_repo.list_for_owner(owner_id):
+            provider = row.get("provider")
+            if not provider:
+                continue
+            await integration_secret_store.delete(owner_id, provider)
+            await integrations_repo.delete(owner_id, provider)
+
     ddb_steps = []
     if ecs_succeeded:
         ddb_steps.append(("containers", lambda: container_repo.delete(owner_id)))
@@ -286,6 +299,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
             ("pending-updates", lambda: update_repo.delete_all_for_owner(owner_id)),
             ("channel-links", lambda: channel_link_repo.delete_all_for_owner(owner_id)),
+            ("integrations", _wipe_integrations),
             ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
             ("users", lambda: user_repo.delete(user_id)),
         ]

@@ -87,7 +87,7 @@ describe("ContainerStack — dev", () => {
             ],
             Interval: 30,
             Timeout: 5,
-            Retries: 3,
+            Retries: 5,
             StartPeriod: 120,
           },
         }),
@@ -157,6 +157,27 @@ describe("ContainerStack — dev", () => {
               Value: "/home/node/.openclaw/.config",
             },
             { Name: "GOG_KEYRING_BACKEND", Value: "file" },
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw container persists npx + uv package caches on the EFS-backed mount", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Environment: Match.arrayWith([
+            {
+              Name: "NPM_CONFIG_CACHE",
+              Value: "/home/node/.openclaw/.cache/npm",
+            },
+            {
+              Name: "UV_CACHE_DIR",
+              Value: "/home/node/.openclaw/.cache/uv",
+            },
           ]),
         }),
       ]),

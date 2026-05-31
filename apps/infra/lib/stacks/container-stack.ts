@@ -454,6 +454,21 @@ export class ContainerStack extends cdk.Stack {
         // gateway logs `startup trace: <name> <ms>ms total=<ms>ms` per step
         // (src/gateway/server.impl.ts:136). Cheap to leave on permanently.
         OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+        // Persist the npx and uv package caches on the EFS-backed .openclaw
+        // mount (same rationale as XDG_CONFIG_HOME above). MCP servers are
+        // launched per chat session via `npx -y <pkg>` / `uvx <pkg>`. With the
+        // caches on the container's ephemeral overlay, every task restart
+        // starts cold and re-downloads each package on the next session, so
+        // session startup pays the full download cost every time and pegs CPU
+        // on the small box — the dominant driver of the per-session startup
+        // blowout. Pointing the caches at EFS makes the download a one-time
+        // cost that survives restarts (warm starts measured ~11x faster).
+        // Unlike the chromium user-data dir we keep off NFS, a package cache
+        // is write-once-read-many with no long-held advisory locks, so it does
+        // not carry the NFS event-loop-wedge profile: verified on dev that
+        // /healthz stayed healthy throughout a cold install against this path.
+        NPM_CONFIG_CACHE: "/home/node/.openclaw/.cache/npm",
+        UV_CACHE_DIR: "/home/node/.openclaw/.cache/uv",
       },
       secrets: {
         // Password for the gog CLI's file keyring (see XDG_CONFIG_HOME +
@@ -492,7 +507,16 @@ export class ContainerStack extends cdk.Stack {
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
-        retries: 3,
+        // 5 retries (150s of tolerated unhealthiness) rather than 3 (90s).
+        // /healthz stays responsive during package installs (verified on
+        // dev — the install runs in a child process, not the gateway event
+        // loop), but a brand-new container's first session warms a cold
+        // npx/uv cache by downloading every MCP server package at once, which
+        // can saturate CPU on the small box long enough to drop a few probes.
+        // The wider margin lets that one-time warm-up complete and populate
+        // the EFS cache; every subsequent restart reads the warm cache and is
+        // fast, so this only ever matters on the very first cold boot.
+        retries: 5,
         // 120s start period covers EFS first-touch latency plus gateway
         // boot (~5s warm). Tunable if dev observes false positives
         // during cold provisioning.

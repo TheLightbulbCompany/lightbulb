@@ -702,6 +702,12 @@ export class ServiceStack extends cdk.Stack {
       environment: {
         ENVIRONMENT: env,
         AWS_REGION: "us-east-1",
+        // OpenClaw image versions — injected from openclaw-version.json (the
+        // single source of truth) so the backend never hand-mirrors them.
+        // Read at runtime by core/openclaw_version.py.
+        OPENCLAW_UPSTREAM_VERSION: OPENCLAW_VERSION.tag,
+        OPENCLAW_DEV_TAG: OPENCLAW_VERSION.dev.tag,
+        OPENCLAW_PROD_TAG: OPENCLAW_VERSION.prod.tag,
         WS_MANAGEMENT_API_URL: props.managementApiUrl,
         WS_GATEWAY_URL: props.webSocketUrl,
         WS_CONNECTIONS_TABLE: props.connectionsTableName,

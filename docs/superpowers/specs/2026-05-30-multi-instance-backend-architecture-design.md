@@ -125,6 +125,22 @@ any owner, and the loss of any single instance does not cause an outage.
 This is correct hygiene even at N=1 and is the foundation both blocks below rely on. It also covers
 the concurrent-multi-user constraint (see §6).
 
+**Migration safety — don't drop pre-deploy tabs (Codex P2).** Browser WebSockets terminate at API
+Gateway and survive backend rollovers, so when this ships there will be live `ws-connections` rows
+written by the *old* `store_connection` — they have `userId`/`orgId` but **no `ownerId`**, so they
+won't appear in the `by-owner-id` GSI. A passive tab that never sends another `/ws/message` would be
+silently omitted once fan-out switches to `query_by_owner` — even at `desiredCount=1`. Mitigations,
+in order:
+- **Union with the in-process set during fan-out.** The owner task already holds every connection it
+  registered this process-lifetime in the in-process cache; `_forward_to_frontends` unions that with
+  the `query_by_owner` result. **At N=1 (our current and only deployment) this fully covers every
+  live tab** — the single task registered them all — so the migration is safe to ship as-is today.
+- **Lazy `ownerId` backfill:** on the first `/ws/message` from a legacy connection, upsert `ownerId`
+  onto its row (chat-gated like the rest), so it joins the GSI and self-heals.
+- **Before ever flipping to N>1:** ensure rows are owner-stamped (backfill sweep or a brief
+  force-reconnect), since the in-process union only covers same-task connections — a cross-task
+  *legacy* row is the one case the union misses, and it only exists at N>1.
+
 ### 3.1 Owner-keyed DynamoDB fan-out
 
 Replace the in-memory recipient set with `query_by_owner(owner_id)` against `ws-connections`, then

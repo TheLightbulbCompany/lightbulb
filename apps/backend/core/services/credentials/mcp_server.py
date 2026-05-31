@@ -46,7 +46,12 @@ async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
         provider = row.get("provider")
         if not provider or row.get("status", "connected") != "connected":
             continue
-        spec = registry.get_provider(provider).wiring.mcp_server
+        try:
+            spec = registry.get_provider(provider).wiring.mcp_server
+        except KeyError:
+            # Orphan status row for a provider no longer in the registry (e.g. a
+            # since-removed integration). Skip it rather than failing the whole build.
+            continue
         if spec is None:
             continue
         cred = await integration_secret_store.get(owner_id, provider)

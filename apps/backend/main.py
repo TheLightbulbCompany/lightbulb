@@ -59,6 +59,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
+# Liveness gate for the ALB /health probe. Flipped True at the very end of the
+# lifespan startup block (just before ``yield``). While False, /health returns
+# 503 so the ALB does not route to a not-yet-ready task.
+_started = False
+
 
 # ---------------------------------------------------------------
 # Paperclip host dispatch
@@ -323,6 +328,10 @@ async def lifespan(app: FastAPI):
 
     system_health.BACKGROUND_TASKS["scheduled_worker"] = worker_task
     system_health.BACKGROUND_TASKS["running_gauges"] = gauge_task
+
+    # Startup complete — flip the liveness gate so /health returns 200.
+    global _started
+    _started = True
 
     yield
 
@@ -691,26 +700,24 @@ async def root():
     "/health",
     summary="Health check",
     description=(
-        "Validates DynamoDB connectivity. Returns HTTP 200 when healthy, HTTP 503 when unhealthy. "
-        "Used by ALB health checks to determine whether to route traffic to this instance."
+        "Cheap, local liveness check for the ALB. Returns HTTP 200 once startup has "
+        "completed, HTTP 503 while still booting. Deliberately does NOT call DynamoDB or "
+        "any upstream, so liveness is not tied to external availability."
     ),
     operation_id="health_check",
     tags=["health"],
     responses={
-        503: {"description": "DynamoDB connection failed"},
+        503: {"description": "Still starting up"},
     },
 )
 async def health_check():
-    """Health check for ALB — validates DynamoDB connectivity."""
-    try:
-        from core.dynamodb import get_table, run_in_thread
-
-        table = get_table("users")
-        await run_in_thread(table.load)  # DescribeTable API call
-        return {"status": "healthy", "database": "dynamodb"}
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return JSONResponse(status_code=503, content={"status": "unhealthy", "error": str(e)})
+    """ALB liveness — cheap + local. 200 once startup completed; 503 while still
+    booting so ALB doesn't route to a not-ready task. Deliberately does NOT call
+    DynamoDB or any upstream (that would tie liveness to external availability and
+    flap the task)."""
+    if not _started:
+        return JSONResponse(status_code=503, content={"status": "starting"})
+    return {"status": "healthy"}
 
 
 @app.get(

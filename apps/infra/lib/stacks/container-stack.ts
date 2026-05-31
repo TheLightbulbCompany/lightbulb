@@ -400,7 +400,30 @@ export class ContainerStack extends cdk.Stack {
       // Step B — symlink chromium user-data to ephemeral task storage.
       "mkdir -p /tmp/openclaw-browser || exit 1",
       "ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1",
-      // Step C — launch the gateway.
+      // Step C — persist the npx + uv package caches on the EFS-backed
+      // mount. MCP servers are launched per chat session as `npx -y <pkg>`
+      // / `uvx <pkg>` child processes. Those children inherit only the MCP
+      // SDK's getDefaultEnvironment() (HOME, PATH, USER, SHELL, …) merged
+      // with the per-server `mcp.servers[].env` — NOT the container env
+      // (upstream src/agents/mcp-stdio-transport.ts) — so a container-level
+      // NPM_CONFIG_CACHE / UV_CACHE_DIR can't relocate their cache. They
+      // fall back to $HOME/.npm and $HOME/.cache/uv, which sit on the
+      // container's ephemeral overlay, so every task restart re-downloads
+      // every MCP package on the next session — pegging CPU on the small
+      // box and blowing session startup out to minutes, which trips the
+      // health check and SIGKILLs the task (a self-reinforcing loop, since
+      // the restart wipes the cache again). HOME *is* inherited, so
+      // symlinking those default HOME-relative cache paths onto the
+      // EFS-backed .openclaw mount makes the download a one-time cost that
+      // survives restarts. Same migration guard as the chromium symlink:
+      // `ln -sfn` nests inside an existing real directory rather than
+      // replacing it, so move a legacy real dir aside first.
+      "mkdir -p /home/node/.openclaw/.cache/npm /home/node/.openclaw/.cache/uv /home/node/.cache || exit 1",
+      "[ -e /home/node/.npm ] && [ ! -L /home/node/.npm ] && { mv /home/node/.npm /home/node/.npm.efs-archive-$(date +%s) || exit 1; }",
+      "ln -sfn /home/node/.openclaw/.cache/npm /home/node/.npm || exit 1",
+      "[ -e /home/node/.cache/uv ] && [ ! -L /home/node/.cache/uv ] && { mv /home/node/.cache/uv /home/node/.cache/uv.efs-archive-$(date +%s) || exit 1; }",
+      "ln -sfn /home/node/.openclaw/.cache/uv /home/node/.cache/uv || exit 1",
+      // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");
 
@@ -492,7 +515,16 @@ export class ContainerStack extends cdk.Stack {
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
-        retries: 3,
+        // 5 retries (150s of tolerated unhealthiness) rather than 3 (90s).
+        // /healthz stays responsive during package installs (verified on
+        // dev — the install runs in a child process, not the gateway event
+        // loop), but a brand-new container's first session warms a cold
+        // npx/uv cache by downloading every MCP server package at once, which
+        // can saturate CPU on the small box long enough to drop a few probes.
+        // The wider margin lets that one-time warm-up complete and populate
+        // the EFS cache; every subsequent restart reads the warm cache and is
+        // fast, so this only ever matters on the very first cold boot.
+        retries: 5,
         // 120s start period covers EFS first-touch latency plus gateway
         // boot (~5s warm). Tunable if dev observes false positives
         // during cold provisioning.

@@ -87,7 +87,7 @@ describe("ContainerStack — dev", () => {
             ],
             Interval: 30,
             Timeout: 5,
-            Retries: 3,
+            Retries: 5,
             StartPeriod: 120,
           },
         }),
@@ -158,6 +158,28 @@ describe("ContainerStack — dev", () => {
             },
             { Name: "GOG_KEYRING_BACKEND", Value: "file" },
           ]),
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw container symlinks the npx + uv caches onto the EFS-backed mount", () => {
+    // MCP servers spawn as npx/uvx children that inherit only HOME (not the
+    // container env), so the cache must be relocated by symlinking the
+    // default $HOME-relative paths onto EFS, not via NPM_CONFIG_CACHE.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(
+              ".*ln -sfn /home/node/\\.openclaw/\\.cache/npm /home/node/\\.npm.*" +
+                "ln -sfn /home/node/\\.openclaw/\\.cache/uv /home/node/\\.cache/uv.*",
+            ),
+          ],
         }),
       ]),
     });

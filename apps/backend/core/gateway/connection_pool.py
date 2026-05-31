@@ -68,8 +68,15 @@ class GatewayConnection:
         frontend_connections: Set[str],
         conn_member_map: Dict[str, str],
         on_activity: Any = None,
+        owner_id: Optional[str] = None,
     ) -> None:
         self.user_id = user_id
+        # The owner key (org_id for org members, else user_id) this connection
+        # is pooled under — the same key `GatewayConnectionPool._connections` is
+        # keyed by. Explicit so the owner-keyed DDB fan-out can query
+        # `query_by_owner(self.owner_id)` without overloading `user_id`. Defaults
+        # to `user_id` for back-compat with direct test constructors.
+        self.owner_id = owner_id or user_id
         self.ip = ip
         self.token = token
         self._management_api = management_api
@@ -1509,6 +1516,9 @@ class GatewayConnectionPool:
             management_api=self._management_api,
             frontend_connections=self._frontend_connections[user_id],
             conn_member_map=self._conn_member_map,
+            # `user_id` here IS the pool's owner key (org_id or user_id);
+            # pass it explicitly as owner_id so the fan-out is unambiguous.
+            owner_id=user_id,
         )
         await conn.connect()
         self._connections[user_id] = conn

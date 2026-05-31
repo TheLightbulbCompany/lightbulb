@@ -135,11 +135,23 @@ push via the existing global Management API; demux per member with the projected
   `query_by_owner` per `owner_id` with a short TTL (~5s), refreshed on `$connect`/`$disconnect`
   events that the owning task observes. We do **not** query DynamoDB per chunk. The in-memory set
   becomes this cache (sourced from DynamoDB, not from "connections that happened to land on me").
-- **GSI eventual consistency (handled, not ignored):** the `by-owner-id` GSI is eventually
-  consistent; a just-connected tab may not appear for <~1s. Mitigation: **keep lazy
-  `add_frontend_connection` on `/ws/message`** — when a message lands, that connection is registered
-  in the cache immediately, so the next outbound event reaches it even before GSI replication. A
-  first-event miss on a brand-new tab self-heals on its next message.
+- **Cache coherence bound at N>1 (Codex P2 — explicit tradeoff, not "solved").** A `$connect` can
+  land on a non-owner task (per-request LB) while the *owner* holds a ≤5s cached `query_by_owner`
+  that predates the new connection, and the GSI may also still be replicating — so a **brand-new tab
+  that is passively waiting** (not yet sending) can miss outbound events for up to ~the cache TTL.
+  Policy: this **bounded staleness (≤ TTL) is acceptable**; do not claim lazy registration eliminates
+  it. To tighten if ever needed: shorten the TTL, query the GSI once per run-start instead of caching
+  across runs, or add owner-directed invalidation (DDB Stream / pub-sub) — deferred as over-machinery
+  for a ≤5s window on a new tab at N>1.
+- **GSI eventual consistency + lazy registration (gated to chat — Codex P1).** The `by-owner-id` GSI
+  is eventually consistent; a just-connected tab may not appear for <~1s. Mitigation: **keep lazy
+  `add_frontend_connection` on `/ws/message`** so a connection that sends a message is registered in
+  the owner's cache immediately. **This lazy path MUST apply the same `connectionType == "chat"` gate
+  as the GSI filter** — node-host frames also reach `add_frontend_connection` (only operator-relay
+  short-circuits earlier), so without the gate a desktop **node** socket would get registered into the
+  chat fan-out cache and receive `chunk`/`done` via the cache/fallback path, bypassing the DDB filter
+  and reintroducing the bleed-through. A first-event miss on a brand-new *chat* tab self-heals on its
+  next message (subject to the coherence bound above).
 - **Failure fallback (no silent drops):** if `query_by_owner` errors/times out, fall back to the
   in-process set rather than dropping the event.
 - **Stale-entry self-heal (already present):** a Management API push to a dead connection returns
@@ -196,6 +208,13 @@ Exactly one backend holds an owner's container WebSocket at a time.
   end-to-end idempotency. Contract in §6.
 - **Inbound events** stream into the owner's reader loop and fan out via §3.1 to all of the owner's
   connections on any task.
+- **Task-to-task connectivity (Codex P1 — resolves Open Decision A).** `owner_addr` is a backend
+  task's private `ip:port`, but the backend service SG today only allows inbound `:8000` from the ALB
+  (`service-stack.ts:163-168`) — peer tasks can't reach it, so at N>1 every forward would time out.
+  Add an explicit **backend-service-SG → itself ingress rule** on the internal forward port. (This is
+  *connectivity*; it does not replace the app-layer auth in §6 — the SG opens the path between
+  backend tasks, the service token authenticates the caller. Sticky/Cloud-Map routing remains
+  rejected per §4.)
 - **Failover:** owner dies → lease expires (≤ TTL) → the next task needing `owner_id` acquires it and
   lazily re-opens the WS + re-subscribes. Parked chats reconstruct run-active state by re-reading
   `sessions.list` (the same `hasActiveRun` signal #780 uses — they compose).
@@ -346,6 +365,8 @@ the per-user Paperclip account model does not affect the lease.
   `connectionType`); `container-connection-leases` table (PK `owner_id`, native TTL on
   `expires_at_epoch_s` as GC only).
 - The `ws-connect` Lambda — write `ownerId` on the connection row.
+- `service-stack.ts` — backend-service-SG **self-ingress** rule on the internal forward port (so
+  peer backend tasks can reach `/internal/rpc-forward` at N>1; §3.2).
 - **No** `desiredCount` change (stays 1). **No** N-gating flag, **no** guardrail.
 
 **Frontend:** none required.

@@ -15,16 +15,25 @@ import pytest
 from core import openclaw_version
 
 
+def _clear_pinned_cache():
+    # A test may monkeypatch _load_pinned with a plain function (no lru_cache).
+    # The autouse fixture's teardown runs before monkeypatch reverts, so guard
+    # the cache_clear via getattr to avoid AttributeError on the stand-in.
+    clear = getattr(openclaw_version._load_pinned, "cache_clear", None)
+    if clear is not None:
+        clear()
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache_and_env(monkeypatch):
     # The loader memoizes the repo JSON; clear it so each test sees a clean
     # state, and drop any ambient env vars so fallback behavior is testable.
-    openclaw_version._load_pinned.cache_clear()
+    _clear_pinned_cache()
     monkeypatch.delenv("OPENCLAW_UPSTREAM_VERSION", raising=False)
     monkeypatch.delenv("OPENCLAW_DEV_TAG", raising=False)
     monkeypatch.delenv("OPENCLAW_PROD_TAG", raising=False)
     yield
-    openclaw_version._load_pinned.cache_clear()
+    _clear_pinned_cache()
 
 
 def _pinned() -> dict:

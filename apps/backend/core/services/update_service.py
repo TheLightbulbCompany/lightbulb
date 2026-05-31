@@ -40,21 +40,27 @@ _PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60
 # Inter-iteration wait for run_scheduled_worker, in seconds.
 _WORKER_INTERVAL_S = 60
 
-# Cooperative stop signal for run_scheduled_worker. Lets a graceful
-# shutdown ask the worker to finish its current iteration and exit
-# instead of hard-cancelling mid-pass (which could abort an in-flight
-# config patch or provision retry).
-_worker_stop = asyncio.Event()
+# Cooperative stop signal for run_scheduled_worker. Created LAZILY inside
+# run_scheduled_worker so the Event binds to the loop that actually runs the
+# worker. A module-level asyncio.Event() binds to the import-time loop and
+# raises "bound to a different event loop" under anything that spins up a
+# fresh loop (e.g. the ASGI test client per contract test). request_worker_stop
+# lets a graceful shutdown ask the worker to finish its current iteration and
+# exit instead of hard-cancelling mid-pass.
+_worker_stop: asyncio.Event | None = None
 
 
 def request_worker_stop() -> None:
     """Ask run_scheduled_worker to finish its current iteration and exit."""
-    _worker_stop.set()
+    if _worker_stop is not None:
+        _worker_stop.set()
 
 
 def reset_worker_stop() -> None:
-    """Reset the stop signal (start-of-run / test isolation)."""
-    _worker_stop.clear()
+    """Clear the stop signal (test isolation). The next run_scheduled_worker
+    creates a fresh, loop-bound Event."""
+    global _worker_stop
+    _worker_stop = None
 
 
 async def queue_image_update(owner_id: str, new_image: str, description: str | None = None) -> dict:
@@ -390,7 +396,8 @@ async def run_scheduled_worker() -> None:
     (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h).
     """
     logger.info("Scheduled update worker started")
-    reset_worker_stop()
+    global _worker_stop
+    _worker_stop = asyncio.Event()  # bind to the loop running this worker
     last_purge_pass_at: float = 0.0  # epoch seconds; 0 forces a run on first iteration
     while not _worker_stop.is_set():
         try:

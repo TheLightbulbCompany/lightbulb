@@ -306,6 +306,11 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     logger.info("Starting application...")
+    # A starting app instance is not shutting down. Resetting here (not only at
+    # shutdown) keeps the flag scoped to this instance's lifecycle, so a reused-app
+    # lifespan (e.g. one ASGI test client per hypothesis example) never inherits a
+    # stale "shutting down" from a prior shutdown.
+    set_shutting_down(False)
     await startup_containers()
     await _resume_provisioning_transitions()
     worker_task = asyncio.create_task(run_scheduled_worker())

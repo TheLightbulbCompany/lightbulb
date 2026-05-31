@@ -23,6 +23,21 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from core.auth import AuthContext
+from core.middleware import shutdown_aware
+
+
+@pytest.fixture(autouse=True)
+def _reset_shutdown_flag():
+    """Reset the process-global shutdown flag around every test.
+
+    ``_shutting_down`` is module-global state. Tests that drive the lifespan
+    shutdown set it True; with ShutdownAwareMiddleware mounted on the app, a
+    leaked True would make every subsequent test get a 503. Reset before and
+    after each test so the flag never leaks across the session.
+    """
+    shutdown_aware.set_shutting_down(False)
+    yield
+    shutdown_aware.set_shutting_down(False)
 
 
 def parse_sse_events(response_text: str) -> list[dict]:

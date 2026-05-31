@@ -112,9 +112,15 @@ any owner, and the loss of any single instance does not cause an outage.
 **Fix (the org-correct registry):**
 - Add an explicit **`ownerId`** attribute to each connection row (= `orgId or userId`), written in
   `store_connection` (and by the `ws-connect` Lambda).
-- Add a **`by-owner-id` GSI** partitioned on `ownerId`, **projecting `userId`** (the member) so the
-  owning task can fan out to *all* of an owner's connections and demux per member.
-- `query_by_owner(owner_id)` returns `[(connectionId, member_userId)]`.
+- Add a **`by-owner-id` GSI** partitioned on `ownerId`, **projecting `userId`** (the member) **and
+  `connectionType`** (`chat` | `node` | operator-relay) so the owning task can fan out to the right
+  connections and demux per member.
+- `query_by_owner(owner_id)` returns `[(connectionId, member_userId, connectionType)]`.
+- **Filter by `connectionType` at fan-out (Codex P1).** Chat events (`chunk`/`done`/status) go ONLY
+  to `connectionType == "chat"` rows. `node` (desktop node-host) and operator-relay sockets are
+  transparent adapter pipes — broadcasting chat frames to them is bleed-through that today's
+  `websocket_chat.py` deliberately avoids. The owner-keyed fan-out MUST preserve that exclusion
+  (filter to chat rows, equivalently a frontend-chat-only view of the registry).
 
 This is correct hygiene even at N=1 and is the foundation both blocks below rely on. It also covers
 the concurrent-multi-user constraint (see §6).
@@ -172,9 +178,14 @@ Exactly one backend holds an owner's container WebSocket at a time.
 - **`expires_at_epoch_s` is NOT DynamoDB native TTL.** Lease expiry is enforced by the
   **ConditionExpression** above (strongly consistent). Native DDB TTL is best-effort (can lag hours)
   and is used **only as a GC backstop** to delete abandoned rows — never as the correctness gate.
-- **Release on shutdown:** on graceful shutdown, after draining in-flight RPCs and before closing the
-  WS, the owner deletes its lease row (conditional on `version`) so a successor acquires in <1s
-  instead of waiting a full TTL. (Piece 3's bounded shutdown already provides the drain window.)
+- **Release on shutdown — order matters (Codex P2):** on graceful shutdown, drain in-flight RPCs,
+  then **close the container WS and cancel the reader FIRST, and only then delete the lease row**
+  (conditional on `version`). Releasing the lease *before* the old subscription is gone would let a
+  successor acquire and open a *second* container connection while the draining reader is still
+  attached — reintroducing the duplicate subscription the lease exists to prevent. With
+  close-then-release, the row stays non-acquirable until the old WS is actually closed, and the
+  successor still acquires within the bounded drain window (seconds), not a full TTL. (Piece 3's
+  bounded shutdown provides the drain window.)
 - **Outbound RPC from a non-owner** (a message that landed on a non-owner via per-request LB): read
   the lease, forward to `owner_addr` over a backend-internal **`POST /internal/rpc-forward`** (which
   **must require service-to-service auth + owner-scope check — see §6; do NOT rely on the security
@@ -331,8 +342,9 @@ the per-user Paperclip account model does not affect the lease.
 - (Teams broker unchanged.)
 
 **Infra (CDK):**
-- `api-stack.ts` (or `database-stack.ts`) — `by-owner-id` GSI on `ws-connections` (project `userId`);
-  `container-connection-leases` table (PK `owner_id`, native TTL on `expires_at_epoch_s` as GC only).
+- `api-stack.ts` (or `database-stack.ts`) — `by-owner-id` GSI on `ws-connections` (project `userId` +
+  `connectionType`); `container-connection-leases` table (PK `owner_id`, native TTL on
+  `expires_at_epoch_s` as GC only).
 - The `ws-connect` Lambda — write `ownerId` on the connection row.
 - **No** `desiredCount` change (stays 1). **No** N-gating flag, **no** guardrail.
 

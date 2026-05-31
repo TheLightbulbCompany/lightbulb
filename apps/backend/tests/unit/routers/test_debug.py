@@ -14,15 +14,25 @@ class TestDeleteUserData:
         # credentials + the secret-free status rows) to the teardown. Stub it so
         # these tests don't hit real AWS; the empty-list case exercises the
         # happy path (nothing connected -> nothing to delete).
-        with patch("routers.debug.integrations_repo") as ir, patch("routers.debug.integration_secret_store") as iss:
+        #
+        # Phase 3 replaced the api-keys DDB sweep with a byo-llm-keys step that
+        # force-deletes the openai/anthropic secrets via KeyService().delete_key.
+        # KeyService is imported function-locally inside _wipe_byo_llm_keys, so
+        # patch it at its definition module. Stub delete_key as an AsyncMock so
+        # the sweep doesn't hit Secrets Manager.
+        with (
+            patch("routers.debug.integrations_repo") as ir,
+            patch("routers.debug.integration_secret_store") as iss,
+            patch("core.services.key_service.KeyService") as key_service_cls,
+        ):
             ir.list_for_owner = AsyncMock(return_value=[])
             ir.delete = AsyncMock()
             iss.delete = AsyncMock()
+            key_service_cls.return_value.delete_key = AsyncMock(return_value=True)
             yield
 
     @pytest.mark.asyncio
     @patch("routers.debug.container_repo")
-    @patch("routers.debug.api_key_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
@@ -41,7 +51,6 @@ class TestDeleteUserData:
         mock_usage_repo,
         mock_update_repo,
         mock_billing_repo,
-        mock_apikey_repo,
         mock_container_repo,
         async_client,
     ):
@@ -54,7 +63,6 @@ class TestDeleteUserData:
         }
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=mock_container)
         mock_container_repo.delete = AsyncMock()
-        mock_apikey_repo.delete_all_for_owner = AsyncMock(return_value=2)
         mock_billing_repo.delete = AsyncMock()
         mock_update_repo.delete_all_for_owner = AsyncMock(return_value=1)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=4)
@@ -80,7 +88,7 @@ class TestDeleteUserData:
         assert "users" in body["deleted"]["ddb"]
         assert "containers" in body["deleted"]["ddb"]
         assert "billing-accounts" in body["deleted"]["ddb"]
-        assert "api-keys" in body["deleted"]["ddb"]
+        assert "byo-llm-keys" in body["deleted"]["ddb"]
         assert "usage-counters" in body["deleted"]["ddb"]
         assert "pending-updates" in body["deleted"]["ddb"]
         assert "channel-links" in body["deleted"]["ddb"]
@@ -101,7 +109,6 @@ class TestDeleteUserData:
 
     @pytest.mark.asyncio
     @patch("routers.debug.container_repo")
-    @patch("routers.debug.api_key_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
@@ -120,7 +127,6 @@ class TestDeleteUserData:
         mock_usage_repo,
         mock_update_repo,
         mock_billing_repo,
-        mock_apikey_repo,
         mock_container_repo,
         app,
         mock_org_admin_user,
@@ -133,7 +139,6 @@ class TestDeleteUserData:
 
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_container_repo.delete = AsyncMock()
-        mock_apikey_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_billing_repo.delete = AsyncMock()
         mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
@@ -159,14 +164,12 @@ class TestDeleteUserData:
         # Owner-scoped: org_id (resolve_owner_id returns org when present)
         mock_container_repo.delete.assert_called_once_with("org_test_456")
         mock_billing_repo.delete.assert_called_once_with("org_test_456")
-        mock_apikey_repo.delete_all_for_owner.assert_called_once_with("org_test_456")
         # User-scoped: Clerk user_id, NOT org_id
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         mock_conn_svc.delete_all_for_user.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
     @patch("routers.debug.container_repo")
-    @patch("routers.debug.api_key_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
@@ -185,7 +188,6 @@ class TestDeleteUserData:
         mock_usage_repo,
         mock_update_repo,
         mock_billing_repo,
-        mock_apikey_repo,
         mock_container_repo,
         async_client,
     ):
@@ -199,7 +201,6 @@ class TestDeleteUserData:
         }
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=mock_container)
         mock_container_repo.delete = AsyncMock()
-        mock_apikey_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_billing_repo.delete = AsyncMock()
         mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
@@ -234,7 +235,6 @@ class TestDeleteUserData:
 
     @pytest.mark.asyncio
     @patch("routers.debug.container_repo")
-    @patch("routers.debug.api_key_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
@@ -253,7 +253,6 @@ class TestDeleteUserData:
         mock_usage_repo,
         mock_update_repo,
         mock_billing_repo,
-        mock_apikey_repo,
         mock_container_repo,
         async_client,
     ):
@@ -265,7 +264,6 @@ class TestDeleteUserData:
         # No container row — simulates the partial-cleanup state.
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_container_repo.delete = AsyncMock()
-        mock_apikey_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_billing_repo.delete = AsyncMock()
         mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
@@ -403,7 +401,6 @@ class TestDdbRows:
     @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
-    @patch("routers.debug.api_key_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.container_repo")
@@ -412,18 +409,17 @@ class TestDdbRows:
         mock_container,
         mock_user,
         mock_billing,
-        mock_apikey,
         mock_usage,
         mock_update,
         mock_chan,
         mock_conn,
         async_client,
     ):
-        """All 8 per-user tables are scanned; counts returned."""
+        """All per-user tables are scanned; counts returned. api-keys is gone
+        (BYO LLM keys now live in Secrets Manager, not DynamoDB)."""
         mock_user.get_by_user_id = AsyncMock(return_value=None)
         mock_container.get_by_owner_id = AsyncMock(return_value=None)
         mock_billing.get_by_owner_id = AsyncMock(return_value=None)
-        mock_apikey.count_for_owner = AsyncMock(return_value=0)
         mock_usage.count_for_owner = AsyncMock(return_value=0)
         mock_update.count_for_owner = AsyncMock(return_value=0)
         mock_chan.count_for_owner = AsyncMock(return_value=0)
@@ -440,7 +436,6 @@ class TestDdbRows:
             "users",
             "containers",
             "billing-accounts",
-            "api-keys",
             "usage-counters",
             "pending-updates",
             "channel-links",
@@ -448,13 +443,13 @@ class TestDdbRows:
         ):
             assert tbl in body["tables"]
             assert body["tables"][tbl] == 0
+        assert "api-keys" not in body["tables"]
 
     @pytest.mark.asyncio
     @patch("routers.debug.connection_service")
     @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
-    @patch("routers.debug.api_key_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.container_repo")
@@ -463,7 +458,6 @@ class TestDdbRows:
         mock_container,
         mock_user,
         mock_billing,
-        mock_apikey,
         mock_usage,
         mock_update,
         mock_chan,
@@ -474,7 +468,6 @@ class TestDdbRows:
         mock_user.get_by_user_id = AsyncMock(return_value={"user_id": "user_test_123"})
         mock_container.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123"})
         mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123"})
-        mock_apikey.count_for_owner = AsyncMock(return_value=2)
         mock_usage.count_for_owner = AsyncMock(return_value=4)
         mock_update.count_for_owner = AsyncMock(return_value=1)
         mock_chan.count_for_owner = AsyncMock(return_value=3)
@@ -489,7 +482,7 @@ class TestDdbRows:
         assert body["users"] == 1
         assert body["containers"] == 1
         assert body["billing-accounts"] == 1
-        assert body["api-keys"] == 2
+        assert "api-keys" not in body
         assert body["usage-counters"] == 4
         assert body["pending-updates"] == 1
         assert body["channel-links"] == 3
@@ -511,7 +504,6 @@ class TestDdbRows:
     @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
-    @patch("routers.debug.api_key_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.container_repo")
@@ -520,7 +512,6 @@ class TestDdbRows:
         mock_container,
         mock_user,
         mock_billing,
-        mock_apikey,
         mock_usage,
         mock_update,
         mock_chan,
@@ -537,7 +528,6 @@ class TestDdbRows:
         mock_user.get_by_user_id = AsyncMock(return_value=None)
         mock_container.get_by_owner_id = AsyncMock(return_value=None)
         mock_billing.get_by_owner_id = AsyncMock(return_value=None)
-        mock_apikey.count_for_owner = AsyncMock(return_value=0)
         mock_usage.count_for_owner = AsyncMock(return_value=0)
         mock_update.count_for_owner = AsyncMock(return_value=0)
         mock_chan.count_for_owner = AsyncMock(return_value=0)
@@ -558,7 +548,6 @@ class TestDdbRows:
         # Owner-scoped: org_id
         mock_container.get_by_owner_id.assert_called_once_with("org_test_456")
         mock_billing.get_by_owner_id.assert_called_once_with("org_test_456")
-        mock_apikey.count_for_owner.assert_called_once_with("org_test_456")
         # User-scoped: explicit user_id, NOT owner_id
         mock_user.get_by_user_id.assert_called_once_with("user_test_123")
         mock_conn.count_for_user.assert_called_once_with("user_test_123")

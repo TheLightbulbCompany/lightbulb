@@ -52,9 +52,9 @@ async def test_change_provider_bedrock_to_byo_key_happy_path(
             new=AsyncMock(return_value=None),
         ) as mock_set_pc,
         patch(
-            "core.repositories.api_key_repo.get_key",
-            new=AsyncMock(return_value={"secret_arn": "arn:aws:secretsmanager:...:key"}),
-        ) as mock_get_key,
+            "core.services.key_service.get_secret_arn",
+            new=AsyncMock(return_value="arn:aws:secretsmanager:...:key"),
+        ) as mock_get_secret_arn,
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
@@ -66,7 +66,7 @@ async def test_change_provider_bedrock_to_byo_key_happy_path(
     assert body["status"] == "ok"
     assert body["provider_choice"] == "byo_key"
     assert body["byo_provider"] == "anthropic"
-    mock_get_key.assert_awaited_once_with("user_test_123", "anthropic")
+    mock_get_secret_arn.assert_awaited_once_with("user_test_123", "anthropic")
     mock_set_pc.assert_awaited_once_with(
         "user_test_123",
         provider_choice="byo_key",
@@ -94,7 +94,7 @@ async def test_change_provider_byo_key_without_saved_key_returns_409(
             new=AsyncMock(return_value=None),
         ) as mock_set_pc,
         patch(
-            "core.repositories.api_key_repo.get_key",
+            "core.services.key_service.get_secret_arn",
             new=AsyncMock(return_value=None),
         ),
     ):
@@ -570,8 +570,8 @@ async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, pat
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "core.repositories.api_key_repo.get_key",
-            new=AsyncMock(return_value={"secret_arn": "arn:..."}),
+            "core.services.key_service.get_secret_arn",
+            new=AsyncMock(return_value="arn:..."),
         ),
         patch(
             "core.services.config_patcher.replace_provider_block",

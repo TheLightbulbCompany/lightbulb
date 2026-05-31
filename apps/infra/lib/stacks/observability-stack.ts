@@ -36,7 +36,6 @@ export interface ObservabilityStackProps extends cdk.StackProps {
     usersTable: dynamodb.ITable;
     containersTable: dynamodb.ITable;
     billingTable: dynamodb.ITable;
-    apiKeysTable: dynamodb.ITable;
     usageCountersTable: dynamodb.ITable;
     pendingUpdatesTable: dynamodb.ITable;
     channelLinksTable: dynamodb.ITable;
@@ -1270,7 +1269,6 @@ def handler(event, context):
       ["users", props.databaseTables.usersTable],
       ["containers", props.databaseTables.containersTable],
       ["billing", props.databaseTables.billingTable],
-      ["api-keys", props.databaseTables.apiKeysTable],
       ["usage-counters", props.databaseTables.usageCountersTable],
       ["pending-updates", props.databaseTables.pendingUpdatesTable],
       ["channel-links", props.databaseTables.channelLinksTable],

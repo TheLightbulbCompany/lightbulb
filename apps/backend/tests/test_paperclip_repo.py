@@ -54,8 +54,7 @@ def repo():
             ],
         )
         # Patch the shared dynamodb resource so the repo's get_table()
-        # call resolves to this moto-backed resource (mirrors the pattern
-        # used in tests/unit/repositories/test_api_key_repo.py).
+        # call resolves to this moto-backed resource.
         with (
             patch("core.dynamodb._table_prefix", ""),
             patch("core.dynamodb._dynamodb_resource", resource),

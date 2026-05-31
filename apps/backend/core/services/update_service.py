@@ -191,7 +191,7 @@ def _build_paperclip_provisioning():
     )
     admin = PaperclipAdminClient(http_client=http)
     # Short name only — ``core.dynamodb.get_table`` prepends the env
-    # prefix once. Mirrors ``api_key_repo`` and every other repo in
+    # prefix once. Mirrors ``channel_link_repo`` and every other repo in
     # ``core/repositories/``.
     repo = PaperclipRepo(table_name="paperclip-companies")
     provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)

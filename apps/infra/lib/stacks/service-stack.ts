@@ -75,7 +75,6 @@ export interface ServiceStackProps extends cdk.StackProps {
     usersTable: dynamodb.Table;
     containersTable: dynamodb.Table;
     billingTable: dynamodb.Table;
-    apiKeysTable: dynamodb.Table;
     usageCountersTable: dynamodb.Table;
     pendingUpdatesTable: dynamodb.Table;
     channelLinksTable: dynamodb.Table;
@@ -341,11 +340,32 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Per-agent Paperclip API keys (credential-layer redesign): minted by the
+    // backend and stored under isol8/{env}/paperclip-agent-keys/* so Friday's
+    // openclaw.json MCP block can authenticate to Paperclip. Replaces the old
+    // encrypted-in-DynamoDB api-keys storage. Same tight prefix scoping.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "PaperclipAgentKeysRW",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/paperclip-agent-keys/*`,
+        ],
+      }),
+    );
+
     // DynamoDB tables
     props.database.usersTable.grantReadWriteData(this.taskRole);
     props.database.containersTable.grantReadWriteData(this.taskRole);
     props.database.billingTable.grantReadWriteData(this.taskRole);
-    props.database.apiKeysTable.grantReadWriteData(this.taskRole);
     props.database.usageCountersTable.grantReadWriteData(this.taskRole);
     props.database.pendingUpdatesTable.grantReadWriteData(this.taskRole);
     props.database.channelLinksTable.grantReadWriteData(this.taskRole);

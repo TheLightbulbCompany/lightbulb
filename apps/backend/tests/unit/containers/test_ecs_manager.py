@@ -1989,8 +1989,8 @@ class TestProvisionUserContainerProviderChoice:
 
     @pytest.mark.asyncio
     async def test_provision_byo_key_attaches_secret_arn_to_task_def(self, manager, mock_ecs_client, mock_efs_client):
-        """For byo_key provider, the per-user Secrets Manager ARN saved by
-        key_service lands in the registered task def's secrets[]
+        """For byo_key provider, the per-user Secrets Manager ARN resolved by
+        key_service.get_secret_arn lands in the registered task def's secrets[]
         block under OPENAI_API_KEY. The first task that boots reads the key
         from Secrets Manager via the task IAM role grant — no plaintext on
         disk."""
@@ -1999,7 +1999,10 @@ class TestProvisionUserContainerProviderChoice:
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch(
+                "core.services.key_service.get_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_secret_arn,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),
         ):
@@ -2007,11 +2010,7 @@ class TestProvisionUserContainerProviderChoice:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_get_key.return_value = {
-                "user_id": "user_test_123",
-                "tool_id": "openai",
-                "secret_arn": secret_arn,
-            }
+            mock_get_secret_arn.return_value = secret_arn
 
             await manager.provision_user_container(
                 "user_test_123",
@@ -2031,6 +2030,9 @@ class TestProvisionUserContainerProviderChoice:
             entry = next(s for s in container_def["secrets"] if s["name"] == "OPENAI_API_KEY")
             assert entry["valueFrom"] == secret_arn
 
+            # The ARN was resolved from Secrets Manager keyed on (user, provider).
+            mock_get_secret_arn.assert_awaited_once_with("user_test_123", "openai")
+
     @pytest.mark.asyncio
     async def test_provision_byo_key_anthropic_uses_anthropic_env_var(self, manager, mock_ecs_client, mock_efs_client):
         """byo_provider=anthropic pivots the secrets[] env var name to
@@ -2040,7 +2042,10 @@ class TestProvisionUserContainerProviderChoice:
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch(
+                "core.services.key_service.get_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_secret_arn,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),
         ):
@@ -2048,11 +2053,7 @@ class TestProvisionUserContainerProviderChoice:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_get_key.return_value = {
-                "user_id": "user_test_123",
-                "tool_id": "anthropic",
-                "secret_arn": secret_arn,
-            }
+            mock_get_secret_arn.return_value = secret_arn
 
             await manager.provision_user_container(
                 "user_test_123",
@@ -2064,21 +2065,27 @@ class TestProvisionUserContainerProviderChoice:
             container_def = reg_kwargs["containerDefinitions"][0]
             secret_names = {s["name"] for s in container_def["secrets"]}
             assert "ANTHROPIC_API_KEY" in secret_names
+            entry = next(s for s in container_def["secrets"] if s["name"] == "ANTHROPIC_API_KEY")
+            assert entry["valueFrom"] == secret_arn
+            mock_get_secret_arn.assert_awaited_once_with("user_test_123", "anthropic")
 
     @pytest.mark.asyncio
     async def test_provision_byo_key_missing_secret_arn_raises_before_service_create(
         self, manager, mock_ecs_client, mock_efs_client
     ):
-        """If the api-keys row has no secret_arn (key never saved or save
-        rolled back), provisioning must abort BEFORE create_user_service so
-        we don't end up with a half-provisioned ECS service the user can't
-        use. Caller is expected to gate provisioning on a successful key
-        save."""
+        """If Secrets Manager has no per-user key (key never saved or deleted),
+        get_secret_arn returns None and provisioning must abort BEFORE
+        create_user_service so we don't end up with a half-provisioned ECS
+        service the user can't use. Caller is expected to gate provisioning on
+        a successful key save."""
         mock_ecs_client.describe_services.return_value = {"services": []}
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch(
+                "core.services.key_service.get_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_secret_arn,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),
         ):
@@ -2086,8 +2093,8 @@ class TestProvisionUserContainerProviderChoice:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            # No secret_arn set on the row.
-            mock_get_key.return_value = {"user_id": "user_test_123", "tool_id": "openai"}
+            # No per-user secret in Secrets Manager.
+            mock_get_secret_arn.return_value = None
 
             with pytest.raises(EcsManagerError):
                 await manager.provision_user_container(
@@ -2185,7 +2192,10 @@ class TestProvisionUserContainerProviderChoice:
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch(
+                "core.services.key_service.get_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_secret_arn,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),
         ):
@@ -2196,8 +2206,8 @@ class TestProvisionUserContainerProviderChoice:
 
             await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
 
-            # api_key_repo never queried for bedrock.
-            assert not mock_get_key.called
+            # Secrets Manager never queried for bedrock.
+            assert not mock_get_secret_arn.called
 
             reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
             container_def = reg_kwargs["containerDefinitions"][0]
@@ -2269,7 +2279,10 @@ class TestProvisionUserContainerProviderChoice:
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch(
+                "core.services.key_service.get_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_secret_arn,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),
         ):
@@ -2281,11 +2294,7 @@ class TestProvisionUserContainerProviderChoice:
                 )
             )
             mock_repo.update_fields = AsyncMock()
-            mock_get_key.return_value = {
-                "user_id": "user_test_123",
-                "tool_id": "openai",
-                "secret_arn": secret_arn,
-            }
+            mock_get_secret_arn.return_value = secret_arn
 
             await manager.provision_user_container(
                 "user_test_123",

@@ -76,7 +76,6 @@ describe("ObservabilityStack", () => {
         usersTable: makeTable("Users"),
         containersTable: makeTable("Containers"),
         billingTable: makeTable("Billing"),
-        apiKeysTable: makeTable("ApiKeys"),
         usageCountersTable: makeTable("Usage"),
         pendingUpdatesTable: makeTable("Pending"),
         channelLinksTable: makeTable("Channels"),

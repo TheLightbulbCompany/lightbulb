@@ -6,12 +6,29 @@ slice. Deploying into a buyer's container before those providers are
 connected lands an agent that 401s on first use, so the gate blocks the
 deploy with a 409 listing exactly which providers to connect.
 
+Post credential-redesign-phase-2 the secret vault moved to AWS Secrets
+Manager and the connection status moved to the secret-free ``integrations``
+index. So:
+  - the deploy gate's "connected" set comes from
+    ``integrations_repo.list_for_owner`` (rows carry ``status``, no secret)
+  - slot-fill keys "retained vs not" on
+    ``integration_secret_store.get(owner, provider)`` returning a dict
+    (backend-custodian/paste rails) vs None (actor-refresh providers whose
+    secret was never stored).
+
+``catalog_service`` lazy-imports both inside the functions
+(``from core.repositories import integrations_repo`` and
+``from core.services.credentials import apply_connection,
+integration_secret_store, registry``), so the patches target those modules'
+own attributes — where catalog_service looks them up at call time.
+
 Covers:
   - manifest-declared provider not connected -> MissingCredentialsError
   - everything connected -> no raise
   - optional provider unconnected -> no raise
   - slice ``mcp.servers.stripe`` (registry provider) unconnected -> missing
   - router maps the error to 409 AND rolls back the orphan Paperclip agent
+  - slot-fill applies the retained paste token, skips actor/non-retained
 """
 
 import os
@@ -34,7 +51,7 @@ def _connected_rows(*providers: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Validator
+# Validator — connected set sourced from integrations_repo
 # ---------------------------------------------------------------------------
 
 
@@ -42,7 +59,7 @@ def _connected_rows(*providers: str) -> list[dict]:
 async def test_deploy_blocked_when_required_provider_not_connected(monkeypatch):
     """Manifest declares a hard dependency the buyer hasn't connected."""
     monkeypatch.setattr(
-        "core.repositories.connection_repo.list_for_owner",
+        "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
     manifest = {"requires": {"credentials": [{"provider": "greenhouse"}]}}
@@ -57,7 +74,7 @@ async def test_deploy_blocked_when_required_provider_not_connected(monkeypatch):
 async def test_deploy_allowed_when_connected(monkeypatch):
     """All required providers connected -> no raise."""
     monkeypatch.setattr(
-        "core.repositories.connection_repo.list_for_owner",
+        "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=_connected_rows("greenhouse")),
     )
     manifest = {"requires": {"credentials": [{"provider": "greenhouse"}]}}
@@ -70,7 +87,7 @@ async def test_deploy_allowed_when_connected(monkeypatch):
 async def test_optional_provider_never_blocks(monkeypatch):
     """An optional credential is a hint, not a gate — never blocks deploy."""
     monkeypatch.setattr(
-        "core.repositories.connection_repo.list_for_owner",
+        "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
     manifest = {"requires": {"credentials": [{"provider": "greenhouse", "optional": True}]}}
@@ -95,7 +112,7 @@ async def test_null_or_malformed_requires_does_not_crash(manifest, monkeypatch):
     would otherwise yield ``None.get(...)`` -> AttributeError -> 500.
     """
     monkeypatch.setattr(
-        "core.repositories.connection_repo.list_for_owner",
+        "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
     await assert_credentials_satisfied("owner_1", manifest, slice_=None)
@@ -109,7 +126,7 @@ async def test_slice_mcp_server_derives_requirement(monkeypatch):
     slice. Without a connected ``stripe`` credential the deploy must block.
     """
     monkeypatch.setattr(
-        "core.repositories.connection_repo.list_for_owner",
+        "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
     slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_API_KEY": ""}}}}}
@@ -124,7 +141,7 @@ async def test_slice_mcp_server_derives_requirement(monkeypatch):
 async def test_slice_mcp_non_registry_server_not_gated(monkeypatch):
     """Custom/unknown MCP servers aren't credential-gated by the registry path."""
     monkeypatch.setattr(
-        "core.repositories.connection_repo.list_for_owner",
+        "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
     slice_ = {"mcp": {"servers": {"my-custom-mcp": {"command": "x"}}}}
@@ -135,9 +152,9 @@ async def test_slice_mcp_non_registry_server_not_gated(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_non_connected_status_does_not_satisfy(monkeypatch):
-    """A row whose status isn't 'connected' (e.g. pending/expired) doesn't count."""
+    """An integrations row whose status isn't 'connected' (e.g. expired) doesn't count."""
     monkeypatch.setattr(
-        "core.repositories.connection_repo.list_for_owner",
+        "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[{"provider": "stripe", "status": "expired"}]),
     )
     slice_ = {"mcp": {"servers": {"stripe": {}}}}
@@ -225,7 +242,7 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
     # Real catalog service so the actual gate runs end to end. Nothing
     # connected -> MissingCredentialsError on the ``stripe`` manifest dep.
     monkeypatch.setattr(
-        "core.repositories.connection_repo.list_for_owner",
+        "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
     from core.services.catalog_service import CatalogService
@@ -251,6 +268,12 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
 
 # ---------------------------------------------------------------------------
 # Buyer credential slot-fill (post-merge)
+#
+# Retained-vs-not now keys on integration_secret_store.get(owner, provider):
+#   - paste rails (linear, stripe): retains the token in Secrets Manager and
+#     has openclaw_paths -> get() returns the dict -> fill the slot.
+#   - actor rails (google): refresh_owner=actor + materializer (no
+#     openclaw_paths) -> nothing to fill AND get() returns None.
 # ---------------------------------------------------------------------------
 
 
@@ -258,18 +281,21 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
 async def test_slot_fill_applies_retained_paste_credential(monkeypatch):
     """A connected paste provider in the slice gets its slot filled.
 
-    Stripe is paste_token + openclaw_paths + refresh_owner=none, so the vault
-    RETAINS the token (the row carries credential_enc). The slice scrubs the
-    MCP env to "", so the buyer's own token must be re-applied into the freshly
-    deployed slot via apply_connection.
+    Stripe is paste_token + openclaw_paths + refresh_owner=none, so the secret
+    store RETAINS the token. The slice scrubs the MCP env to "", so the buyer's
+    own token must be re-applied into the freshly deployed slot via
+    apply_connection — sourced from integration_secret_store.get.
     """
-    row = {"provider": "stripe", "status": "connected", "credential_enc": "enc-blob"}
-    decrypted = {"token": "sk_live_buyer"}
-    get_mock = AsyncMock(return_value=row)
-    decrypt_mock = MagicMock(return_value=decrypted)
+    row = {"provider": "stripe", "status": "connected"}
+    credential = {"token": "sk_live_buyer"}
+    status_get = AsyncMock(return_value=row)
+    secret_get = AsyncMock(return_value=credential)
     apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
-    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
+    monkeypatch.setattr(
+        "core.services.credentials.integration_secret_store.get",
+        secret_get,
+    )
     monkeypatch.setattr(
         "core.services.credentials.apply_connection.apply_connection",
         apply_mock,
@@ -279,29 +305,30 @@ async def test_slot_fill_applies_retained_paste_credential(monkeypatch):
 
     await _fill_buyer_credential_slots("owner_1", slice_)
 
-    decrypt_mock.assert_called_once_with(row)
-    apply_mock.assert_awaited_once_with("owner_1", "stripe", decrypted)
+    secret_get.assert_awaited_once_with("owner_1", "stripe")
+    apply_mock.assert_awaited_once_with("owner_1", "stripe", credential)
 
 
 @pytest.mark.asyncio
 async def test_slot_fill_skips_scrubbed_actor_provider(monkeypatch):
-    """An actor/materializer provider whose vault secret was scrubbed is skipped.
+    """An actor/materializer provider whose secret was never retained is skipped.
 
-    Google is direct_oauth + materializer + refresh_owner=actor. After connect
-    its vault secret is dropped (M6 non-retention), so the row has status
-    connected but NO credential_enc and decrypt_credential would RAISE. The
-    slot-fill must skip it WITHOUT calling decrypt_credential or apply_connection
-    — its credential is the owner-scoped EFS gog keyring, not a per-agent slot.
-    This is the load-bearing non-retention guard.
+    Google is direct_oauth + materializer + refresh_owner=actor. The backend
+    retained nothing in Secrets Manager (M6 non-retention), so
+    integration_secret_store.get returns None. The slot-fill must skip it
+    WITHOUT calling apply_connection — its credential is the owner-scoped EFS
+    gog keyring, not a per-agent slot. This is the load-bearing non-retention
+    guard.
     """
-    row = {"provider": "google", "status": "connected", "secret_retained": False}
-    get_mock = AsyncMock(return_value=row)
-    # decrypt_credential RAISES on a scrubbed row — if it's ever called the
-    # guard is broken, so wire it to blow up rather than return a sentinel.
-    decrypt_mock = MagicMock(side_effect=ValueError("connection record has no credential_enc"))
+    row = {"provider": "google", "status": "connected"}
+    status_get = AsyncMock(return_value=row)
+    secret_get = AsyncMock(return_value=None)
     apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
-    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
+    monkeypatch.setattr(
+        "core.services.credentials.integration_secret_store.get",
+        secret_get,
+    )
     monkeypatch.setattr(
         "core.services.credentials.apply_connection.apply_connection",
         apply_mock,
@@ -311,18 +338,50 @@ async def test_slot_fill_skips_scrubbed_actor_provider(monkeypatch):
 
     await _fill_buyer_credential_slots("owner_1", slice_)
 
-    decrypt_mock.assert_not_called()
+    apply_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slot_fill_skips_provider_with_no_retained_secret(monkeypatch):
+    """A paste provider (has openclaw_paths) whose secret store returns None is skipped.
+
+    Mirrors the old "no retained ciphertext" guard: even for a provider WITH a
+    fillable slot, if integration_secret_store.get returns None there is nothing
+    to re-inject, so apply_connection is never called.
+    """
+    row = {"provider": "stripe", "status": "connected"}
+    status_get = AsyncMock(return_value=row)
+    secret_get = AsyncMock(return_value=None)
+    apply_mock = AsyncMock()
+    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
+    monkeypatch.setattr(
+        "core.services.credentials.integration_secret_store.get",
+        secret_get,
+    )
+    monkeypatch.setattr(
+        "core.services.credentials.apply_connection.apply_connection",
+        apply_mock,
+    )
+
+    slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_SECRET_KEY": ""}}}}}
+
+    await _fill_buyer_credential_slots("owner_1", slice_)
+
+    secret_get.assert_awaited_once_with("owner_1", "stripe")
     apply_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_slot_fill_skips_unconnected_provider(monkeypatch):
-    """A provider with no connection row (or non-connected status) is skipped."""
-    get_mock = AsyncMock(return_value=None)
-    decrypt_mock = MagicMock()
+    """A provider with no integrations row (or non-connected status) is skipped."""
+    status_get = AsyncMock(return_value=None)
+    secret_get = AsyncMock()
     apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
-    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
+    monkeypatch.setattr(
+        "core.services.credentials.integration_secret_store.get",
+        secret_get,
+    )
     monkeypatch.setattr(
         "core.services.credentials.apply_connection.apply_connection",
         apply_mock,
@@ -332,18 +391,21 @@ async def test_slot_fill_skips_unconnected_provider(monkeypatch):
 
     await _fill_buyer_credential_slots("owner_1", slice_)
 
-    decrypt_mock.assert_not_called()
+    secret_get.assert_not_awaited()
     apply_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_slot_fill_skips_non_registry_mcp_server(monkeypatch):
     """A custom/unknown MCP server (not a registry provider) is never touched."""
-    get_mock = AsyncMock(return_value={"provider": "x", "status": "connected", "credential_enc": "e"})
-    decrypt_mock = MagicMock()
+    status_get = AsyncMock(return_value={"provider": "x", "status": "connected"})
+    secret_get = AsyncMock()
     apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
-    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
+    monkeypatch.setattr(
+        "core.services.credentials.integration_secret_store.get",
+        secret_get,
+    )
     monkeypatch.setattr(
         "core.services.credentials.apply_connection.apply_connection",
         apply_mock,
@@ -353,7 +415,8 @@ async def test_slot_fill_skips_non_registry_mcp_server(monkeypatch):
 
     await _fill_buyer_credential_slots("owner_1", slice_)
 
-    get_mock.assert_not_awaited()
+    status_get.assert_not_awaited()
+    secret_get.assert_not_awaited()
     apply_mock.assert_not_awaited()
 
 
@@ -366,19 +429,22 @@ async def test_slot_fill_one_provider_failure_does_not_abort_others(monkeypatch)
     not prevent another's slot from being filled.
     """
     rows = {
-        "stripe": {"provider": "stripe", "status": "connected", "credential_enc": "enc-s"},
-        "linear": {"provider": "linear", "status": "connected", "credential_enc": "enc-l"},
+        "stripe": {"provider": "stripe", "status": "connected"},
+        "linear": {"provider": "linear", "status": "connected"},
     }
-    get_mock = AsyncMock(side_effect=lambda owner, prov: rows[prov])
-    decrypt_mock = MagicMock(side_effect=lambda r: {"token": f"tok-{r['provider']}"})
+    status_get = AsyncMock(side_effect=lambda owner, prov: rows[prov])
+    secret_get = AsyncMock(side_effect=lambda owner, prov: {"token": f"tok-{prov}"})
 
     async def _apply(owner, prov, cred):
         if prov == "stripe":
             raise RuntimeError("boom")
 
     apply_mock = AsyncMock(side_effect=_apply)
-    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
-    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
+    monkeypatch.setattr(
+        "core.services.credentials.integration_secret_store.get",
+        secret_get,
+    )
     monkeypatch.setattr(
         "core.services.credentials.apply_connection.apply_connection",
         apply_mock,
@@ -411,15 +477,18 @@ async def test_slot_fill_skips_bundle_with_non_canonical_key(monkeypatch):
     The Stripe registry wiring fills ``mcp.servers.stripe.env.STRIPE_SECRET_KEY``,
     but this bundle exposes only ``STRIPE_API_KEY``. Writing the canonical key
     would add one the MCP never reads while leaving the real slot blank, so the
-    fill is skipped (no apply_connection, no decrypt) rather than silently
-    mis-filling — the buyer configures it manually.
+    fill is skipped (no apply_connection) rather than silently mis-filling —
+    the buyer configures it manually.
     """
-    row = {"provider": "stripe", "status": "connected", "credential_enc": "enc-blob"}
-    get_mock = AsyncMock(return_value=row)
-    decrypt_mock = MagicMock(return_value={"token": "sk_live_buyer"})
+    row = {"provider": "stripe", "status": "connected"}
+    status_get = AsyncMock(return_value=row)
+    secret_get = AsyncMock(return_value={"token": "sk_live_buyer"})
     apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
-    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
+    monkeypatch.setattr(
+        "core.services.credentials.integration_secret_store.get",
+        secret_get,
+    )
     monkeypatch.setattr(
         "core.services.credentials.apply_connection.apply_connection",
         apply_mock,
@@ -430,7 +499,6 @@ async def test_slot_fill_skips_bundle_with_non_canonical_key(monkeypatch):
 
     await _fill_buyer_credential_slots("owner_1", slice_)
 
-    decrypt_mock.assert_not_called()
     apply_mock.assert_not_awaited()
 
 
@@ -440,13 +508,16 @@ async def test_slot_fill_treats_missing_status_as_connected(monkeypatch):
     which also defaults a status-less row to connected. If they diverged, the gate
     would admit the deploy while this fill skipped it, leaving the slot blank.
     """
-    row = {"provider": "stripe", "credential_enc": "enc-blob"}  # no "status" key
-    decrypted = {"token": "sk_live_buyer"}
-    get_mock = AsyncMock(return_value=row)
-    decrypt_mock = MagicMock(return_value=decrypted)
+    row = {"provider": "stripe"}  # no "status" key
+    credential = {"token": "sk_live_buyer"}
+    status_get = AsyncMock(return_value=row)
+    secret_get = AsyncMock(return_value=credential)
     apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.connection_repo.get", get_mock)
-    monkeypatch.setattr("core.repositories.connection_repo.decrypt_credential", decrypt_mock)
+    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
+    monkeypatch.setattr(
+        "core.services.credentials.integration_secret_store.get",
+        secret_get,
+    )
     monkeypatch.setattr(
         "core.services.credentials.apply_connection.apply_connection",
         apply_mock,
@@ -456,4 +527,4 @@ async def test_slot_fill_treats_missing_status_as_connected(monkeypatch):
 
     await _fill_buyer_credential_slots("owner_1", slice_)
 
-    apply_mock.assert_awaited_once_with("owner_1", "stripe", decrypted)
+    apply_mock.assert_awaited_once_with("owner_1", "stripe", credential)

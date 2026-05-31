@@ -36,6 +36,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly oauthTokensTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
   public readonly oauthStateTable: dynamodb.Table;
+  public readonly integrationsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
 
   // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
@@ -270,6 +271,22 @@ export class DatabaseStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // Secret-free integration STATUS index (credential-layer redesign). Holds
+    // which providers an owner has connected; the credential itself lives in
+    // Secrets Manager (backend-custodian providers) or the container EFS
+    // keyring (actor-refresh providers), never here. Same shape as the old
+    // connections vault (owner_id PK + provider SK) minus any credential payload.
+    this.integrationsTable = new dynamodb.Table(this, "IntegrationsTable", {
+      tableName: `isol8-${env}-integrations`,
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      pointInTimeRecovery: true,
+      removalPolicy: config.removalPolicy,
+    });
+
     // Paperclip companies — maps Isol8 user_id → their Paperclip company
     // record + encrypted credentials. GSI by-status-purge-at lets the
     // cleanup cron find disabled rows past their grace window. Per the
@@ -343,6 +360,10 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
       value: this.paperclipCompaniesTable.tableName,
       exportName: `${this.stackName}-paperclip-companies-table`,
+    });
+    new cdk.CfnOutput(this, "IntegrationsTableName", {
+      value: this.integrationsTable.tableName,
+      exportName: `${this.stackName}-integrations-table`,
     });
 
     this.marketplaceListingsTable = new dynamodb.Table(this, "MarketplaceListingsTable", {

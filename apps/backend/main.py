@@ -59,6 +59,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
+# Liveness gate for the ALB /health probe. Flipped True at the very end of the
+# lifespan startup block (just before ``yield``). While False, /health returns
+# 503 so the ALB does not route to a not-yet-ready task.
+_started = False
+
 
 # ---------------------------------------------------------------
 # Paperclip host dispatch
@@ -301,6 +306,11 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     logger.info("Starting application...")
+    # A starting app instance is not shutting down. Resetting here (not only at
+    # shutdown) keeps the flag scoped to this instance's lifecycle, so a reused-app
+    # lifespan (e.g. one ASGI test client per hypothesis example) never inherits a
+    # stale "shutting down" from a prior shutdown.
+    set_shutting_down(False)
     await startup_containers()
     await _resume_provisioning_transitions()
     worker_task = asyncio.create_task(run_scheduled_worker())
@@ -324,29 +334,43 @@ async def lifespan(app: FastAPI):
     system_health.BACKGROUND_TASKS["scheduled_worker"] = worker_task
     system_health.BACKGROUND_TASKS["running_gauges"] = gauge_task
 
+    # Startup complete — flip the liveness gate so /health returns 200.
+    global _started
+    _started = True
+
     yield
 
-    # Shutdown
+    # Shutdown — bounded so no step can ride into the ECS SIGKILL window.
+    # Ladder: this timeout(20) < uvicorn --timeout-graceful-shutdown 25 < ECS stopTimeout 30.
     logger.info("Shutting down application...")
-    system_health.BACKGROUND_TASKS.clear()
-    gauge_task.cancel()
-    worker_task.cancel()
+    set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
+    from core.services.update_service import request_worker_stop
+
     try:
-        await gauge_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await worker_task
-    except asyncio.CancelledError:
-        pass
+        async with asyncio.timeout(20):
+            system_health.BACKGROUND_TASKS.clear()
+            # Worker: graceful stop (finish current iteration); gauge: stateless hard-cancel.
+            request_worker_stop()
+            gauge_task.cancel()
+            try:
+                await gauge_task
+            except asyncio.CancelledError:
+                pass
+            # Give the worker a short window to honor the stop event and finish
+            # its current iteration cleanly. wait_for hard-cancels it on timeout,
+            # so a wedged iteration can't consume the whole shutdown budget.
+            try:
+                await asyncio.wait_for(worker_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            if broker is not None:
+                from core.services import teams_event_broker_singleton
 
-    if broker is not None:
-        from core.services import teams_event_broker_singleton
-
-        await broker.shutdown()
-        teams_event_broker_singleton.set_broker(None)
-
-    await shutdown_containers()
+                await broker.shutdown()
+                teams_event_broker_singleton.set_broker(None)
+            await shutdown_containers()
+    except asyncio.TimeoutError:
+        logger.error("Graceful shutdown exceeded 20s budget; exiting to let the platform reclaim the task")
 
 
 openapi_tags = [
@@ -439,6 +463,13 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
 from core.observability.middleware import RequestContextMiddleware
 
 app.add_middleware(RequestContextMiddleware)
+
+# Shutdown-aware middleware — returns 503 to new business requests once the
+# lifespan shutdown sets the process flag, while /health stays green for ALB
+# drain. See core/middleware/shutdown_aware.py.
+from core.middleware.shutdown_aware import ShutdownAwareMiddleware, set_shutting_down
+
+app.add_middleware(ShutdownAwareMiddleware)
 
 # Host-dispatch middleware (Paperclip) — rewrites the ASGI scope path to
 # the paperclip_proxy mount prefix when X-Isol8-Public-Host names a
@@ -674,26 +705,24 @@ async def root():
     "/health",
     summary="Health check",
     description=(
-        "Validates DynamoDB connectivity. Returns HTTP 200 when healthy, HTTP 503 when unhealthy. "
-        "Used by ALB health checks to determine whether to route traffic to this instance."
+        "Cheap, local liveness check for the ALB. Returns HTTP 200 once startup has "
+        "completed, HTTP 503 while still booting. Deliberately does NOT call DynamoDB or "
+        "any upstream, so liveness is not tied to external availability."
     ),
     operation_id="health_check",
     tags=["health"],
     responses={
-        503: {"description": "DynamoDB connection failed"},
+        503: {"description": "Still starting up"},
     },
 )
 async def health_check():
-    """Health check for ALB — validates DynamoDB connectivity."""
-    try:
-        from core.dynamodb import get_table, run_in_thread
-
-        table = get_table("users")
-        await run_in_thread(table.load)  # DescribeTable API call
-        return {"status": "healthy", "database": "dynamodb"}
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return JSONResponse(status_code=503, content={"status": "unhealthy", "error": str(e)})
+    """ALB liveness — cheap + local. 200 once startup completed; 503 while still
+    booting so ALB doesn't route to a not-ready task. Deliberately does NOT call
+    DynamoDB or any upstream (that would tie liveness to external availability and
+    flap the task)."""
+    if not _started:
+        return JSONResponse(status_code=503, content={"status": "starting"})
+    return {"status": "healthy"}
 
 
 @app.get(

@@ -326,8 +326,9 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
     """Single-iteration smoke test: the worker loop calls both passes
     on its first iteration.
 
-    We patch out ``asyncio.sleep`` to break the loop on the first call,
-    plus stub ``get_due_scheduled`` so the legacy path is a no-op.
+    We patch out the interruptible inter-iteration wait (``asyncio.wait_for``)
+    to break the loop on the first call, plus stub ``get_due_scheduled`` so
+    the legacy path is a no-op.
     """
     purge_calls = 0
     retry_calls = 0
@@ -343,7 +344,7 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
     class _StopLoop(Exception):
         pass
 
-    async def stop_after_first(_):
+    async def stop_after_first(*_args, **_kwargs):
         raise _StopLoop()
 
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", fake_purge)
@@ -353,7 +354,7 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
         "get_due_scheduled",
         AsyncMock(return_value=[]),
     )
-    monkeypatch.setattr(update_service.asyncio, "sleep", stop_after_first)
+    monkeypatch.setattr(update_service.asyncio, "wait_for", stop_after_first)
 
     with pytest.raises(_StopLoop):
         await update_service.run_scheduled_worker()
@@ -370,7 +371,7 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
     """
     purge_calls = 0
     retry_calls = 0
-    sleep_count = 0
+    wait_count = 0
 
     async def fake_purge():
         nonlocal purge_calls
@@ -383,10 +384,10 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
     class _StopLoop(Exception):
         pass
 
-    async def fake_sleep(_):
-        nonlocal sleep_count
-        sleep_count += 1
-        if sleep_count >= 2:
+    async def fake_wait(*_args, **_kwargs):
+        nonlocal wait_count
+        wait_count += 1
+        if wait_count >= 2:
             # Stop after second iteration completes.
             raise _StopLoop()
 
@@ -417,7 +418,7 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
         "get_due_scheduled",
         AsyncMock(return_value=[]),
     )
-    monkeypatch.setattr(update_service.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(update_service.asyncio, "wait_for", fake_wait)
     monkeypatch.setattr(update_service.time, "monotonic", fake_monotonic)
 
     with pytest.raises(_StopLoop):

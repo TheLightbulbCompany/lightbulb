@@ -88,6 +88,10 @@ export class NetworkStack extends cdk.Stack {
       port: 8000,
       protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP,
+      // Drain a deregistering task quickly so a rolling deploy / task stop
+      // finishes in-flight work and then exits. Kept <= the ECS container
+      // stopTimeout (30s) so the task is fully drained before SIGKILL.
+      deregistrationDelay: cdk.Duration.seconds(25),
       healthCheck: {
         path: "/health",
         interval: cdk.Duration.seconds(30),

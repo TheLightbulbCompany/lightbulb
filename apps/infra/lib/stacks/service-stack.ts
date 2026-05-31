@@ -997,6 +997,11 @@ export class ServiceStack extends cdk.Stack {
         streamPrefix: "backend",
         logGroup,
       }),
+      // SIGTERM->SIGKILL window for graceful shutdown. Sits at the top of the
+      // timing ladder: app asyncio budget (20s) < uvicorn --timeout-graceful-shutdown
+      // (25s) < this stopTimeout (30s), so the app + uvicorn drain in-flight work
+      // before ECS hard-kills the task.
+      stopTimeout: cdk.Duration.seconds(30),
     });
 
     // EFS mount point
@@ -1013,6 +1018,13 @@ export class ServiceStack extends cdk.Stack {
       cluster: props.container.cluster,
       taskDefinition: taskDef,
       desiredCount: 1,
+      // Rolling deploy as a clean handoff: at desiredCount=1, keeping 100%
+      // healthy forces ECS to bring the new task to healthy BEFORE stopping
+      // the old one, and 200% gives the headroom to run both at once. So a
+      // deploy has no outage window. Circuit breaker still rolls back a bad
+      // rollout.
+      minHealthyPercent: 100,
+      maxHealthyPercent: 200,
       circuitBreaker: { rollback: true },
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroups: [serviceSg],

@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_GRACE_SECONDS = 30.0
 
+_CLIENT_CLOSE_TIMEOUT = 3.0  # graceful-shutdown: bound each backing client.close()
+
 
 class _Client(Protocol):
     """The narrow surface of PaperclipEventClient the broker depends on."""
@@ -264,18 +266,35 @@ class TeamsEventBroker:
             await self.unsubscribe(user_id, conn_id)
 
     async def shutdown(self) -> None:
-        """Close every backing client + cancel grace tasks. Lifespan shutdown."""
+        """Close every backing client + cancel grace tasks, each bounded so a
+        stalled Paperclip upstream cannot block lifespan shutdown into SIGKILL."""
         grace_tasks = list(self._grace_tasks.values())
         for task in grace_tasks:
             task.cancel()
         self._grace_tasks.clear()
         if grace_tasks:
-            await asyncio.gather(*grace_tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*grace_tasks, return_exceptions=True),
+                    timeout=_CLIENT_CLOSE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("teams broker shutdown: grace-task cancellation timed out")
         clients = list(self._clients.values())
         self._clients.clear()
         self._subscribers.clear()
-        for client in clients:
+
+        async def _close_one(client) -> None:
             try:
-                await client.close()
+                await asyncio.wait_for(client.close(), timeout=_CLIENT_CLOSE_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning("teams broker shutdown: client.close() timed out, abandoning")
             except Exception:
                 logger.exception("teams broker shutdown: close() failed")
+
+        # Close clients CONCURRENTLY so total wall-clock stays ~_CLIENT_CLOSE_TIMEOUT
+        # regardless of how many Teams users are connected. Serial closes would be
+        # ~timeout * N and could starve the rest of the bounded lifespan shutdown
+        # (e.g. the gateway-pool drain) when an upstream is wedged.
+        if clients:
+            await asyncio.gather(*(_close_one(c) for c in clients))

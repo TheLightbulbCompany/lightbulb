@@ -51,3 +51,29 @@ async def test_apply_materializer_dispatch_via_thread(monkeypatch):
     await ac.apply_connection("org_1", "google", {"access_token": "a", "refresh_token": "r"})
     assert threaded.get("called") is True
     assert seen["owner"] == "org_1" and seen["cred"]["refresh_token"] == "r"
+
+
+@pytest.mark.asyncio
+async def test_apply_mcp_server_writes_full_block(monkeypatch):
+    # stripe's mcp_server wiring installs the full {command, args, env} server
+    # block at mcp.servers.stripe in one write — the integration OWNS that key.
+    from core.services.credentials import apply_connection as ac
+
+    calls = []
+
+    async def _set(owner, path, value):
+        calls.append((owner, path, value))
+
+    monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", _set)
+    await ac.apply_connection("org_1", "stripe", {"token": "sk_live_X"})
+    assert calls == [
+        (
+            "org_1",
+            ["mcp", "servers", "stripe"],
+            {
+                "command": "npx",
+                "args": ["-y", "@stripe/mcp", "--tools=all"],
+                "env": {"STRIPE_SECRET_KEY": "sk_live_X"},
+            },
+        )
+    ]

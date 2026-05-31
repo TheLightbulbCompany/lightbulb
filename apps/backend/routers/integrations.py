@@ -143,7 +143,11 @@ async def replace_mcp_servers(
         await reconcile_integrations(owner_id)
     except Exception:
         logger.exception("integration reconcile after manual MCP write failed for %s", owner_id)
-    return {"servers": body.servers}
+    # Re-read AFTER reconcile so the response reflects the final on-disk state.
+    # Returning body.servers would omit integration-owned keys reconcile just
+    # re-asserted (e.g. `stripe`) and misrepresent what's in openclaw.json.
+    servers = await _read_mcp_servers(owner_id)
+    return {"servers": servers}
 
 
 @router.patch(

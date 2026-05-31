@@ -120,6 +120,33 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
 
     @pytest.mark.asyncio
+    async def test_put_response_reflects_reconciled_on_disk_state(self, app, patched_router, auth_override):
+        """The PUT response must mirror the post-reconcile on-disk state, not the
+        submitted body. After reconcile re-asserts integration-owned keys (e.g.
+        `stripe`), returning `body.servers` would omit `stripe` and misrepresent
+        what's actually in openclaw.json. Re-read like PATCH does.
+        """
+        app.dependency_overrides[get_current_user] = auth_override
+        reread = {
+            "stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"], "env": {}},
+            "my-custom": {"command": "node", "args": ["x.js"], "env": {}},
+        }
+        with (
+            patch("routers.integrations.reconcile_integrations", AsyncMock()),
+            patch("routers.integrations._read_mcp_servers", AsyncMock(return_value=reread)),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"my-custom": {"command": "node", "args": ["x.js"], "env": {}}}},
+                )
+            assert resp.status_code == 200
+            body = resp.json()["servers"]
+            assert body == reread
+            assert "stripe" in body, "PUT response must include reconcile-reasserted integration keys"
+        app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
     async def test_put_wipes_removed_entries(self, app, patched_router, auth_override):
         """PUT semantics: keys not present in the new dict are deleted."""
         app.dependency_overrides[get_current_user] = auth_override

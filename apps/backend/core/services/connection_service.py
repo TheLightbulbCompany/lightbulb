@@ -229,6 +229,54 @@ class ConnectionService:
                 f"Failed to query connections for user {user_id}: {e.response['Error']['Message']}"
             ) from e
 
+    async def query_by_owner(self, owner_id: str) -> list[tuple[str, str, str]]:
+        """Return ``(connectionId, member_userId, connectionType)`` for every
+        active connection owned by ``owner_id``.
+
+        ``owner_id`` is the org id for org members and the user id for personal
+        accounts (written by ``store_connection`` as ``ownerId``). Uses the
+        ``by-owner-id`` GSI added in ``apps/infra/lib/stacks/api-stack.ts``,
+        whose INCLUDE projection carries ``userId`` + ``connectionType`` so the
+        gateway fan-out can demux per member and filter by connection type.
+        Paginates ``LastEvaluatedKey`` so the contract stays correct when an
+        org has more live connections than fit in one ~1MB Query page.
+
+        Returns an empty list if the owner has no live connections.
+        """
+
+        def _query() -> list[tuple[str, str, str]]:
+            paginator = self._client.get_paginator("query")
+            pages = paginator.paginate(
+                TableName=self.table_name,
+                IndexName="by-owner-id",
+                KeyConditionExpression="ownerId = :o",
+                ExpressionAttributeValues={":o": {"S": owner_id}},
+                ProjectionExpression="connectionId, userId, connectionType",
+            )
+            out: list[tuple[str, str, str]] = []
+            for page in pages:
+                for item in page.get("Items", []):
+                    out.append(
+                        (
+                            item["connectionId"]["S"],
+                            item.get("userId", {}).get("S", ""),
+                            item.get("connectionType", {}).get("S", "chat"),
+                        )
+                    )
+            return out
+
+        try:
+            return await asyncio.to_thread(_query)
+        except ClientError as e:
+            logger.error(
+                "Failed to query connections for owner %s: %s",
+                owner_id,
+                e.response["Error"]["Message"],
+            )
+            raise ConnectionServiceError(
+                f"Failed to query connections for owner {owner_id}: {e.response['Error']['Message']}"
+            ) from e
+
     async def delete_all_for_user(self, user_id: str) -> int:
         """Delete every WS connection row owned by ``user_id``.
 

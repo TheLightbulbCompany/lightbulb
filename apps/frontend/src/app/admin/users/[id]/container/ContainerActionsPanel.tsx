@@ -240,7 +240,10 @@ export function ContainerActionsPanel({
                 const date = formatPushedAt(img.pushed_at);
                 const isDev = currentDevTag != null && img.tag === currentDevTag;
                 const isProd = currentProdTag != null && img.tag === currentProdTag;
-                const badge = isDev ? "current dev" : isProd ? "current prod" : null;
+                const badges = [
+                  ...(isDev ? [{ label: "current dev", tone: "dev" as const }] : []),
+                  ...(isProd ? [{ label: "current prod", tone: "prod" as const }] : []),
+                ];
                 return (
                   <SelectItem
                     key={img.image_uri}
@@ -252,17 +255,18 @@ export function ContainerActionsPanel({
                         {img.tag}
                         {date ? `  ·  ${date}` : ""}
                       </span>
-                      {badge ? (
+                      {badges.map((b) => (
                         <span
+                          key={b.label}
                           className={
-                            isDev
+                            b.tone === "dev"
                               ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-emerald-300"
                               : "rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-amber-300"
                           }
                         >
-                          {badge}
+                          {b.label}
                         </span>
-                      ) : null}
+                      ))}
                     </span>
                   </SelectItem>
                 );

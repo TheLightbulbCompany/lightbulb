@@ -447,3 +447,22 @@ constraint the system must just work at one instance *or* more):
 - **#780 (run_active dead-air UX fix):** separate, ships independently.
 - Implementation will follow as its own plan (registry-correctness + fan-out, then the lease), built
   and verified at N=1.
+
+### Deferred to the implementation plan (captured from Codex review, not re-spun here)
+
+The design + correctness invariants above are settled. These finer, build-time completeness items
+are recorded so the implementation plan addresses them (where they get code-level review), rather
+than iterating the design doc further:
+- **Relay `$disconnect` routing (symmetric to the `$connect` forward, §6.1):** when a node-host/
+  operator relay client disconnects, the owner must tear down/clean the corresponding relay upstream;
+  a `$disconnect` landing on a non-owner forwards the close to the owner just like `$connect`.
+- **`connectionType` write + projection end-to-end:** ensure `connectionType` is persisted on the
+  `ws-connections` row (it is today) and projected on the `by-owner-id` GSI, so the chat fan-out
+  filter (§3.1) and the existing node/operator exclusion are preserved exactly.
+- **Strongly-consistent reads everywhere ownership is decided** (the fence read uses
+  `ConsistentRead=True`, §3.2) — carry the same discipline to any acquire/lease-read path the
+  implementation adds.
+
+(Standing decision, not an open item: **no N>1 guardrail** — declined per the product requirement
+that the system work at one instance *or* more; relay routing is specified in §6.1 so "safe at any N"
+holds. Codex re-flags this each round; it is intentional.)

@@ -129,17 +129,20 @@ the concurrent-multi-user constraint (see §6).
 Gateway and survive backend rollovers, so when this ships there will be live `ws-connections` rows
 written by the *old* `store_connection` — they have `userId`/`orgId` but **no `ownerId`**, so they
 won't appear in the `by-owner-id` GSI. A passive tab that never sends another `/ws/message` would be
-silently omitted once fan-out switches to `query_by_owner` — even at `desiredCount=1`. Mitigations,
-in order:
-- **Union with the in-process set during fan-out.** The owner task already holds every connection it
-  registered this process-lifetime in the in-process cache; `_forward_to_frontends` unions that with
-  the `query_by_owner` result. **At N=1 (our current and only deployment) this fully covers every
-  live tab** — the single task registered them all — so the migration is safe to ship as-is today.
-- **Lazy `ownerId` backfill:** on the first `/ws/message` from a legacy connection, upsert `ownerId`
-  onto its row (chat-gated like the rest), so it joins the GSI and self-heals.
-- **Before ever flipping to N>1:** ensure rows are owner-stamped (backfill sweep or a brief
-  force-reconnect), since the in-process union only covers same-task connections — a cross-task
-  *legacy* row is the one case the union misses, and it only exists at N>1.
+silently omitted once fan-out switches to `query_by_owner` — even at `desiredCount=1`. Mitigations:
+- **A pre-switch `ownerId` backfill sweep is REQUIRED — even at N=1 (Codex P1).** The in-process
+  union does **not** save us: after a deploy, API Gateway keeps existing browser sockets open but the
+  **new** task never receives `$connect` for them, so they are absent from its fresh
+  `_frontend_connections` set, *and* their DDB rows still lack `ownerId` → `query_by_owner ∪ local`
+  silently omits a **passive pre-deploy tab until it next sends a message**, at any N. So the rollout
+  order is: (1) deploy code that writes `ownerId` on new connects and lazily upserts it on the first
+  `/ws/message` from a legacy row; (2) run a one-time **backfill sweep** stamping `ownerId = orgId or
+  userId` onto all existing `ws-connections` rows (the fields are already present); (3) **only then**
+  switch `_forward_to_frontends` to `query_by_owner`. Until step 2 completes, keep reading the legacy
+  path (in-process set / `by-user-id`). A forced client reconnect is an acceptable alternative to the
+  sweep.
+- **Lazy `ownerId` backfill** (complements the sweep): on the first `/ws/message` from a legacy
+  connection, upsert `ownerId` onto its row (chat-gated), so active tabs self-heal immediately.
 
 ### 3.1 Owner-keyed DynamoDB fan-out
 
@@ -309,12 +312,16 @@ non-owner awaits the response before replying to the frontend (not fire-and-forg
 defines a `$default` HTTP_PROXY route forwarding *any* public HTTP API path to the ALB → the single
 backend FastAPI app. So a route added to that app is reachable **from the public internet** via API
 Gateway; the SG only blocks *direct* task IP access, not the public path. Therefore `/internal/rpc-forward`
-**must** authenticate at the application layer: require a short-lived internal **service token**
-(mint/verify via the existing `core/services/service_token.py`) or an HMAC-signed header, reject
-unauthenticated calls (401), and verify the caller is acting for the claimed `owner_id` (403
-otherwise) so it can't be used to drive *another* owner's container. Optionally also exclude
-`/internal/*` from the public API path at the gateway as defense-in-depth. Without this, an internet
-client could invoke arbitrary container RPCs for any owner with no user token.
+**must** authenticate at the application layer with a **dedicated task-to-task credential** — a
+distinct `kind`/audience or a separate shared secret that is **only ever held by backend tasks and
+NEVER minted for or distributed to agents.** **Do NOT reuse `core/services/service_token.py` as-is
+(Codex P1):** it mints long-TTL `paperclip_service` tokens that the WS authorizer already accepts for
+Paperclip agents, so verifying those here would let any agent token-holder hit this public-reachable
+path and drive an owner's container. Reject unauthenticated/wrong-audience calls (401), and verify
+the caller is scoped to the claimed `owner_id` (403 otherwise) so it can't drive *another* owner's
+container. Also exclude `/internal/*` from the public API path at the gateway as defense-in-depth.
+Without this, an internet client (or a leaked agent token) could invoke arbitrary container RPCs for
+any owner with no user token.
 
 **Paperclip:** orthogonal. Paperclip is a separate per-tenant REST BFF with its own per-user
 accounts/sessions; it is not part of container-WS ownership. Its only WebSocket touchpoint is the

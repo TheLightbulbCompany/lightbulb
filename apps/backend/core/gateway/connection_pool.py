@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
+_RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs to settle before closing the WS
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 
 # Application-level WebSocket keepalive tuned for long-running LLM turns.
@@ -1324,20 +1325,29 @@ class GatewayConnection:
         return len(self._frontend_connections) > 0
 
     async def close(self) -> None:
-        """Shut down: cancel reader, close WebSocket."""
+        """Shut down: drain in-flight RPCs, cancel reader, close WebSocket."""
         self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection closed")
         self._closed = True
-        # Wait for any in-flight billing-resolver tasks to finish writing
-        # so scale-to-zero teardown doesn't drop the last few usage events.
+        # Wait for in-flight billing-resolver tasks so teardown doesn't drop usage events.
         if self._billing_tasks:
             try:
-                await asyncio.wait(
-                    self._billing_tasks,
-                    timeout=5.0,
-                )
+                await asyncio.wait(self._billing_tasks, timeout=5.0)
             except Exception:
                 logger.exception(
-                    "Error waiting for in-flight billing tasks during close for user %s",
+                    "Error waiting for billing tasks during close for user %s",
+                    self.user_id,
+                )
+        # Graceful RPC drain: the reader loop is still alive here, so in-flight
+        # RPCs can still receive their `res` and resolve. Wait (bounded) for the
+        # pending set to settle BEFORE tearing down the transport, instead of
+        # rejecting them after WS close (which makes callers hang to _RPC_TIMEOUT).
+        pending = [f for f in self._pending_rpcs.values() if not f.done()]
+        if pending:
+            try:
+                await asyncio.wait(pending, timeout=_RPC_DRAIN_TIMEOUT)
+            except Exception:
+                logger.exception(
+                    "Error draining pending RPCs during close for user %s",
                     self.user_id,
                 )
         if self._grace_task and not self._grace_task.done():
@@ -1356,7 +1366,7 @@ class GatewayConnection:
                 pass
         if self._ws:
             await self._ws.close()
-        # Reject pending RPCs
+        # Reject any RPCs that did NOT settle during the drain window.
         for req_id, future in list(self._pending_rpcs.items()):
             if not future.done():
                 future.set_exception(RuntimeError("Connection closed"))
@@ -1671,9 +1681,11 @@ class GatewayConnectionPool:
             conn._frontend_connections.discard(conn_id)
 
     async def close_all(self) -> None:
-        """Shutdown: close all connections."""
-        for user_id in list(self._connections.keys()):
-            await self.close_user(user_id)
+        """Shutdown: close all connections concurrently."""
+        await asyncio.gather(
+            *(self.close_user(uid) for uid in list(self._connections.keys())),
+            return_exceptions=True,
+        )
 
     async def emit_running_gauges(self) -> None:
         """Emit gateway-running-count gauges. Called by the lifespan loop.

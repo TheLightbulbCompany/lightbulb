@@ -341,10 +341,17 @@ lease/ownership model as the chat path**, generalized from a unary RPC to stream
 are N>1-correct under this design, **no guardrail and no deferral** (which is required: per product
 constraint the system must just work at one instance *or* more):
 
-- **Owner holds the relay upstream.** The WS upstream to the container for a relay is opened **only by
-  the lease owner**, through the same §3.3 ownership chokepoint as the chat container WS. A relay
-  `$connect` landing on a non-owner does **not** open an upstream there; the owner holds it (opened
-  lazily on the first forwarded frame if needed). This is what prevents a second container connection.
+- **Owner holds the relay upstream, opened on `$connect` (not lazily — Codex P1).** The WS upstream
+  to the container for a relay is opened **only by the lease owner**, through the same §3.3 ownership
+  chokepoint as the chat container WS. **The relay `$connect` itself must be forwarded to the owner
+  to open/register the upstream immediately** — these handshakes are *server-initiated*: the
+  container pushes a `connect.challenge` *down* before the client sends its signed first frame (see
+  `_kick_off_node_connect` / `_kick_off_operator_connect`). Opening the upstream lazily on the first
+  forwarded `$default` frame would **deadlock** — the client waits for a challenge that never comes,
+  so no first frame is ever sent. So a relay `$connect` landing on a non-owner forwards an explicit
+  open request to the owner (over `/internal/relay-forward`); the owner opens the upstream and the
+  challenge flows back to the client via the global Management API. A non-owner never opens its own
+  upstream — that's what prevents a second container connection.
 - **Inbound (client→container) frames forward to the owner.** A relay `$default` frame landing on a
   non-owner is forwarded to `owner_addr` over an authenticated internal **streaming** endpoint
   (`/internal/relay-forward` — same dedicated **task-to-task** credential + owner-scope check as §6,

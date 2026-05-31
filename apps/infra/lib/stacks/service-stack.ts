@@ -1,4 +1,5 @@
 import * as path from "path";
+import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecr from "aws-cdk-lib/aws-ecr";
@@ -13,6 +14,26 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
+
+// openclaw-version.json is the single source of truth for the pinned OpenClaw
+// version + per-env extended-image tags. The backend image's Docker build
+// context is apps/backend/, so the file (at the repo root) can't be COPY-d into
+// the image; instead we read it here at synth time and inject the values as
+// container env vars, which core/openclaw_version.py reads at runtime. Mirrors
+// the read in container-stack.ts — bump openclaw-version.json only.
+interface OpenClawVersionConfig {
+  tag: string;
+  dev: { tag: string };
+  prod: { tag: string };
+  [key: string]: unknown;
+}
+
+const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "..", "..", "..", "..", "openclaw-version.json"),
+    "utf8",
+  ),
+);
 
 /**
  * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency

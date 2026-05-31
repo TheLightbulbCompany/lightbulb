@@ -24,6 +24,7 @@ import logging
 import uuid
 from typing import Any
 
+from core import openclaw_version
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.repositories import admin_actions_repo, billing_repo, container_repo, usage_repo
 from core.services import clerk_admin, cloudwatch_logs, cloudwatch_url, posthog_admin
@@ -497,14 +498,13 @@ async def get_actions_audit(
 _OPENCLAW_EXTENDED_REPO = "isol8/openclaw-extended"
 _OPENCLAW_EXTENDED_REGISTRY = "877352799272"
 
-# Mirrors of openclaw-version.json#dev.tag / #prod.tag. Surfaced to the admin
-# dropdown so each row can render "(current dev)" / "(current prod)" badges
-# without the frontend needing to read the JSON file (which isn't in the
-# Vercel build context). Drift test in test_admin_service.py keeps these
-# locked to the pinned values, mirroring the OPENCLAW_UPSTREAM_VERSION
-# pattern in core/containers/config.py.
-CURRENT_DEV_TAG = "2026.5.12-0654e00"
-CURRENT_PROD_TAG = "2026.5.12-0654e00"
+# Current dev/prod extended-image tags, surfaced to the admin image-update
+# dropdown so each row can render "(current dev)" / "(current prod)" badges.
+# Resolved from the single source of truth (openclaw-version.json) via
+# core.openclaw_version — the CDK-injected env vars in deployed containers, the
+# repo JSON in local dev / CI. No hand-sync; bump openclaw-version.json only.
+CURRENT_DEV_TAG = openclaw_version.dev_tag()
+CURRENT_PROD_TAG = openclaw_version.prod_tag()
 
 
 async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:

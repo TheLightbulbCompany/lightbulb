@@ -326,27 +326,37 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
+    # Shutdown — bounded so no step can ride into the ECS SIGKILL window.
+    # Ladder: this timeout(20) < uvicorn --timeout-graceful-shutdown 25 < ECS stopTimeout 30.
     logger.info("Shutting down application...")
-    system_health.BACKGROUND_TASKS.clear()
-    gauge_task.cancel()
-    worker_task.cancel()
+    set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
+    from core.services.update_service import request_worker_stop
+
     try:
-        await gauge_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await worker_task
-    except asyncio.CancelledError:
-        pass
+        async with asyncio.timeout(20):
+            system_health.BACKGROUND_TASKS.clear()
+            # Worker: graceful stop (finish current iteration); gauge: stateless hard-cancel.
+            request_worker_stop()
+            gauge_task.cancel()
+            try:
+                await gauge_task
+            except asyncio.CancelledError:
+                pass
+            # Give the worker a short window to honor the stop event and finish
+            # its current iteration cleanly. wait_for hard-cancels it on timeout,
+            # so a wedged iteration can't consume the whole shutdown budget.
+            try:
+                await asyncio.wait_for(worker_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            if broker is not None:
+                from core.services import teams_event_broker_singleton
 
-    if broker is not None:
-        from core.services import teams_event_broker_singleton
-
-        await broker.shutdown()
-        teams_event_broker_singleton.set_broker(None)
-
-    await shutdown_containers()
+                await broker.shutdown()
+                teams_event_broker_singleton.set_broker(None)
+            await shutdown_containers()
+    except asyncio.TimeoutError:
+        logger.error("Graceful shutdown exceeded 20s budget; exiting to let the platform reclaim the task")
 
 
 openapi_tags = [
@@ -439,6 +449,13 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
 from core.observability.middleware import RequestContextMiddleware
 
 app.add_middleware(RequestContextMiddleware)
+
+# Shutdown-aware middleware — returns 503 to new business requests once the
+# lifespan shutdown sets the process flag, while /health stays green for ALB
+# drain. See core/middleware/shutdown_aware.py.
+from core.middleware.shutdown_aware import ShutdownAwareMiddleware, set_shutting_down
+
+app.add_middleware(ShutdownAwareMiddleware)
 
 # Host-dispatch middleware (Paperclip) — rewrites the ASGI scope path to
 # the paperclip_proxy mount prefix when X-Isol8-Public-Host names a

@@ -22,6 +22,7 @@ import boto3
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.secrets_manager import create_or_update_secret
 
 
 def _secret_name(owner_id: str, provider: str) -> str:
@@ -43,10 +44,7 @@ async def put(owner_id: str, provider: str, credential: dict[str, Any]) -> str:
 
     def _put() -> str:
         sm = _client()
-        try:
-            sm.create_secret(Name=name, SecretString=payload)
-        except sm.exceptions.ResourceExistsException:
-            sm.put_secret_value(SecretId=name, SecretString=payload)
+        create_or_update_secret(sm, name, payload)
         return sm.describe_secret(SecretId=name)["ARN"]
 
     return await run_in_thread(_put)

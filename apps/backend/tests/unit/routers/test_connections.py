@@ -22,33 +22,8 @@ import pytest
 
 class TestValidateToken:
     """``_validate_token`` builds the Authorization header from the per-provider
-    validate ``auth_scheme`` (Linear = bare key, Stripe = ``Bearer <key>``) and
-    sends the optional JSON ``body`` when the spec defines one (Linear GraphQL)."""
-
-    @pytest.mark.asyncio
-    async def test_linear_posts_graphql_query_with_bare_authorization_header(self, monkeypatch):
-        from routers import connections
-        from core.services.credentials import registry
-
-        captured: dict = {}
-
-        async def fake_request(self, method, url, **kwargs):
-            captured["method"] = method
-            captured["url"] = url
-            captured["headers"] = kwargs.get("headers")
-            captured["json"] = kwargs.get("json")
-            return httpx.Response(200)
-
-        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
-
-        ok = await connections._validate_token(registry.get_provider("linear"), "lin_api_KEY")
-        assert ok is True
-        # Linear's GraphQL endpoint requires POST + a minimal query body.
-        assert captured["method"] == "POST"
-        assert captured["url"] == "https://api.linear.app/graphql"
-        assert captured["json"] == {"query": "{ viewer { id } }"}
-        # Linear: bare key, no "Bearer " prefix.
-        assert captured["headers"]["Authorization"] == "lin_api_KEY"
+    validate ``auth_scheme`` (Stripe = ``Bearer <key>``) and sends the optional
+    JSON ``body`` when the spec defines one."""
 
     @pytest.mark.asyncio
     async def test_stripe_gets_with_bearer_authorization_header_and_no_body(self, monkeypatch):
@@ -81,7 +56,7 @@ class TestValidateToken:
             return httpx.Response(401)
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
-        assert await connections._validate_token(registry.get_provider("linear"), "bad") is False
+        assert await connections._validate_token(registry.get_provider("stripe"), "bad") is False
 
 
 class TestListConnections:
@@ -90,20 +65,20 @@ class TestListConnections:
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     async def test_list_returns_catalog_with_status(self, mock_repo, async_client):
-        # linear is connected; google has no row -> disconnected.
-        mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "linear", "status": "connected"}])
+        # stripe is connected; google has no row -> disconnected.
+        mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}])
 
         response = await async_client.get("/api/v1/connections")
         assert response.status_code == 200
 
         by_key = {c["provider"]: c for c in response.json()["connections"]}
         # Every registry provider is represented.
-        assert {"linear", "stripe", "google"} <= set(by_key)
-        assert by_key["linear"]["status"] == "connected"
+        assert {"stripe", "google"} <= set(by_key)
+        assert by_key["stripe"]["status"] == "connected"
         assert by_key["google"]["status"] == "disconnected"
         # Catalog metadata surfaced from the registry.
-        assert by_key["linear"]["display_name"] == "Linear"
-        assert by_key["linear"]["acquisition"] == "paste_token"
+        assert by_key["stripe"]["display_name"] == "Stripe"
+        assert by_key["stripe"]["acquisition"] == "paste_token"
         assert by_key["google"]["acquisition"] == "direct_oauth"
 
         # Status now comes from the secret-free integrations index.
@@ -128,22 +103,22 @@ class TestConnectPaste:
         mock_repo.put_status = AsyncMock(side_effect=lambda *a, **k: call_order.append("put_status"))
         mock_apply.apply_connection = AsyncMock(side_effect=lambda *a, **k: call_order.append("apply"))
 
-        response = await async_client.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
+        response = await async_client.post("/api/v1/connections/stripe", json={"token": "sk_test_abc123"})
         assert response.status_code == 200
-        assert response.json() == {"status": "connected", "provider": "linear"}
+        assert response.json() == {"status": "connected", "provider": "stripe"}
 
         # Credential persisted to Secrets Manager with the pasted token.
         mock_store.put.assert_awaited_once()
         put_args = mock_store.put.await_args
         assert put_args.args[0] == "user_test_123"
-        assert put_args.args[1] == "linear"
-        assert put_args.args[2] == {"token": "lin_api_abc123"}
+        assert put_args.args[1] == "stripe"
+        assert put_args.args[2] == {"token": "sk_test_abc123"}
 
         # Wiring engine invoked with (owner, provider, credential).
-        mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "linear", {"token": "lin_api_abc123"})
+        mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "stripe", {"token": "sk_test_abc123"})
 
         # Status row written ONLY after a successful apply.
-        mock_repo.put_status.assert_awaited_once_with("user_test_123", "linear", "connected")
+        mock_repo.put_status.assert_awaited_once_with("user_test_123", "stripe", "connected")
 
         # Load-bearing ordering: store secret -> wire container -> mark connected.
         # A put_status written before apply would falsely report "connected"
@@ -166,7 +141,7 @@ class TestConnectPaste:
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
-        response = await async_client.post("/api/v1/connections/linear", json={"token": "bad"})
+        response = await async_client.post("/api/v1/connections/stripe", json={"token": "bad"})
         assert response.status_code == 422
         # Nothing persisted / wired / indexed when validation fails.
         mock_store.put.assert_not_called()
@@ -188,16 +163,16 @@ class TestConnectPaste:
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
 
-        response = await async_client.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
+        response = await async_client.post("/api/v1/connections/stripe", json={"token": "sk_test_abc123"})
         # Wiring failure surfaces as a 502 — the connection never reports a false "connected".
         assert response.status_code == 502
 
         # The secret was stored, then rolled back out of Secrets Manager.
         mock_store.put.assert_awaited_once()
-        mock_store.delete.assert_awaited_once_with("user_test_123", "linear")
+        mock_store.delete.assert_awaited_once_with("user_test_123", "stripe")
         # Status is written only after a clean apply -> never on the failure path.
         mock_repo.put_status.assert_not_called()
-        # linear is openclaw_paths (no materializer) -> the EFS-artifact rollback is a no-op.
+        # stripe is mcp_server (no materializer) -> the EFS-artifact rollback is a no-op.
         mock_removers.get.assert_not_called()
 
     @pytest.mark.asyncio
@@ -231,7 +206,7 @@ class TestConnectionWriteOrgAdminGate:
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
-        response = await async_client_org_member.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
+        response = await async_client_org_member.post("/api/v1/connections/stripe", json={"token": "sk_test_abc123"})
         assert response.status_code == 403
         # Gate fires before any persistence / wiring.
         mock_store.put.assert_not_called()
@@ -259,7 +234,7 @@ class TestConnectionWriteOrgAdminGate:
         mock_store.delete = AsyncMock()
         mock_patcher.set_openclaw_config_path = AsyncMock()
 
-        response = await async_client_org_member.delete("/api/v1/connections/linear")
+        response = await async_client_org_member.delete("/api/v1/connections/stripe")
         assert response.status_code == 403
         # Nothing deleted / unwired for a non-admin member.
         mock_repo.delete.assert_not_called()
@@ -279,20 +254,20 @@ class TestConnectionWriteOrgAdminGate:
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
-        response = await async_client_org_admin.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
+        response = await async_client_org_admin.post("/api/v1/connections/stripe", json={"token": "sk_test_abc123"})
         # Admin clears the gate; write targets the shared org workspace.
         assert response.status_code == 200
-        assert response.json() == {"status": "connected", "provider": "linear"}
+        assert response.json() == {"status": "connected", "provider": "stripe"}
         put_args = mock_store.put.await_args
         assert put_args.args[0] == "org_test_456"
-        mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "linear", {"token": "lin_api_abc123"})
-        mock_repo.put_status.assert_awaited_once_with("org_test_456", "linear", "connected")
+        mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "stripe", {"token": "sk_test_abc123"})
+        mock_repo.put_status.assert_awaited_once_with("org_test_456", "stripe", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     async def test_list_connections_not_gated_for_org_member(self, mock_repo, async_client_org_member):
         # GET returns only provider names + status (no secrets) -> members may read it.
-        mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "linear", "status": "connected"}])
+        mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}])
 
         response = await async_client_org_member.get("/api/v1/connections")
         assert response.status_code == 200
@@ -306,22 +281,41 @@ class TestDisconnect:
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
-    async def test_disconnect_deletes_and_blanks_openclaw_path(self, mock_repo, mock_store, mock_patcher, async_client):
+    async def test_disconnect_deletes_and_blanks_openclaw_path(
+        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch
+    ):
+        from routers import connections
+        from core.services.credentials.registry import OpenclawPath, Provider, Wiring
+
+        # No live provider uses the openclaw_paths rail anymore, so exercise the
+        # disconnect-time blanking of that rail via a synthetic provider.
+        synthetic = Provider(
+            key="synth",
+            display_name="Synthetic",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(
+                openclaw_paths=[OpenclawPath(path="mcp.servers.synth.env.SYNTH_API_KEY", source="input.token")]
+            ),
+        )
+        monkeypatch.setattr(connections.registry, "get_provider", lambda key: synthetic)
+
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_patcher.set_openclaw_config_path = AsyncMock()
 
-        response = await async_client.delete("/api/v1/connections/linear")
+        response = await async_client.delete("/api/v1/connections/synth")
         assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "linear"}
+        assert response.json() == {"status": "disconnected", "provider": "synth"}
 
         # Both the retained secret and the status row are removed.
-        mock_store.delete.assert_awaited_once_with("user_test_123", "linear")
-        mock_repo.delete.assert_awaited_once_with("user_test_123", "linear")
-        # linear wiring path: mcp.servers.linear.env.LINEAR_API_KEY -> blanked.
+        mock_store.delete.assert_awaited_once_with("user_test_123", "synth")
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "synth")
+        # openclaw_paths wiring: mcp.servers.synth.env.SYNTH_API_KEY -> blanked.
         mock_patcher.set_openclaw_config_path.assert_awaited_once_with(
             "user_test_123",
-            ["mcp", "servers", "linear", "env", "LINEAR_API_KEY"],
+            ["mcp", "servers", "synth", "env", "SYNTH_API_KEY"],
             "",
         )
 
@@ -412,8 +406,8 @@ class TestAuthorize:
 
     @pytest.mark.asyncio
     async def test_authorize_non_oauth_provider_returns_400(self, async_client):
-        # linear is paste_token, not an OAuth integration.
-        response = await async_client.get("/api/v1/connections/linear/authorize")
+        # stripe is paste_token, not an OAuth integration.
+        response = await async_client.get("/api/v1/connections/stripe/authorize")
         assert response.status_code == 400
 
     @pytest.mark.asyncio

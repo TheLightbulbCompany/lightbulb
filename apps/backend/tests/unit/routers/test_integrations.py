@@ -147,6 +147,27 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
 
     @pytest.mark.asyncio
+    async def test_delete_reasserts_connected_integration(self, app, patched_router, auth_override):
+        """Deleting an integration-owned key via the manual panel must not silently
+        break a still-connected integration. DELETE is a manual-panel write like
+        PUT/PATCH, so it re-asserts integration-owned keys and the response mirrors
+        the post-reconcile on-disk state (`stripe` still present).
+        """
+        app.dependency_overrides[get_current_user] = auth_override
+        reread = {"stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"], "env": {}}}
+        with (
+            patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile,
+            patch("routers.integrations._read_mcp_servers", AsyncMock(return_value=reread)),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.delete("/api/v1/integrations/mcp/servers/stripe")
+            assert resp.status_code == 200
+            reconcile.assert_awaited_once()
+            assert resp.json()["servers"] == reread
+            assert "stripe" in resp.json()["servers"], "DELETE must re-assert integration-owned keys"
+        app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
     async def test_put_wipes_removed_entries(self, app, patched_router, auth_override):
         """PUT semantics: keys not present in the new dict are deleted."""
         app.dependency_overrides[get_current_user] = auth_override

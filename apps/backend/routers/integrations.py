@@ -202,5 +202,13 @@ async def delete_mcp_server(
         await delete_openclaw_config_path(owner_id, ["mcp", "servers", name])
     except ConfigPatchError as exc:
         raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
+    # Deleting an integration-owned key (e.g. `stripe`) via the manual panel must
+    # not silently break a still-connected integration: re-assert integration-owned
+    # keys so ownership wins. A user-owned (non-provider) key stays deleted, since
+    # reconcile only touches connected integration providers. Best-effort; read after.
+    try:
+        await reconcile_integrations(owner_id)
+    except Exception:
+        logger.exception("integration reconcile after manual MCP delete failed for %s", owner_id)
     servers = await _read_mcp_servers(owner_id)
     return {"servers": servers}

@@ -135,10 +135,13 @@ describe.each(["dev", "prod"] as const)(
       ({ database, service } = build(environment));
     });
 
-    test("database stack retains the connections ARN export under its exact live name", () => {
+    test("database stack retains the connections ARN export under its exact live name (literal, not GetAtt — the table is gone)", () => {
+      // Pinned with a literal ARN (Fn::Join over region/account) rather than
+      // Fn::GetAtt, because the connections table was deleted out-of-band and a
+      // GetAtt would fail at deploy time. The literal must end in the table name.
       database.hasOutput("*", {
         Export: { Name: CONNECTIONS_ARN_EXPORT(environment) },
-        Value: { "Fn::GetAtt": ["ConnectionsTable8000B8A1", "Arn"] },
+        Value: `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${environment}-connections`,
       });
     });
 

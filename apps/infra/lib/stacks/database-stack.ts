@@ -324,12 +324,18 @@ export class DatabaseStack extends cdk.Stack {
     // import via grantReadWriteData. The service stack now grants these tables
     // by name, so it no longer imports the ARNs — but CloudFormation refuses to
     // delete an export while the not-yet-updated consumer still imports it.
-    // Pinning the exports under their existing names keeps them byte-identical
-    // this deploy (no delete attempted); a later deploy removes them once
-    // nothing imports them. The names below are the live export names this
-    // stack already publishes.
-    this.exportValue(this.connectionsTable.tableArn, {
-      name: `${this.stackName}:ExportsOutputFnGetAttConnectionsTable8000B8A1Arn6FD6777C`,
+    // Pinning the exports under their existing names keeps them this deploy (no
+    // delete attempted); a later deploy removes them once nothing imports them.
+    //
+    // connections is pinned with a LITERAL ARN, not Fn::GetAtt: the table was
+    // deleted out-of-band (the 2026-05-31 incident), so the resource is still in
+    // CFN state but GetAtt on it fails at deploy-time evaluation ("table does
+    // not exist") — which synth cannot catch. The literal equals the cached
+    // export value, so the service-import transition is unaffected. oauth-state
+    // still exists, so its ARN export is pinned the normal (GetAtt) way.
+    new cdk.CfnOutput(this, "ConnectionsArnExportPin", {
+      value: `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections`,
+      exportName: `${this.stackName}:ExportsOutputFnGetAttConnectionsTable8000B8A1Arn6FD6777C`,
     });
     this.exportValue(this.oauthStateTable.tableArn, {
       name: `${this.stackName}:ExportsOutputFnGetAttOauthStateTable1D8479B9Arn3B610B82`,

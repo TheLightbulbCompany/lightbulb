@@ -1,7 +1,7 @@
 """Tests for the MCP server integrations router."""
 
 import copy
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient, ASGITransport
@@ -95,6 +95,28 @@ class TestIntegrationsRouter:
 
             resp2 = await client.get("/api/v1/integrations/mcp/servers")
             assert resp2.json()["servers"]["github"]["command"] == "npx"
+        app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
+    async def test_put_servers_reasserts_connected_integration(self, app, patched_router, auth_override):
+        """A whole-dict PUT that omits an integration-owned key (e.g. `stripe`)
+        would drop it. The handler must re-assert integration-owned servers
+        after the user's write so a manual edit can't clobber a connected
+        integration's MCP block.
+        """
+        app.dependency_overrides[get_current_user] = auth_override
+        with patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={
+                        "servers": {
+                            "my-custom": {"command": "node", "args": ["x.js"], "env": {}},
+                        }
+                    },
+                )
+            assert resp.status_code == 200
+            reconcile.assert_awaited_once_with("user_integ_test")
         app.dependency_overrides.pop(get_current_user, None)
 
     @pytest.mark.asyncio

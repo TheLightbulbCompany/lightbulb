@@ -37,6 +37,7 @@ import httpx
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
+from core.secrets_manager import create_or_update_secret
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     PaperclipApiError,
@@ -166,10 +167,7 @@ async def _mint_and_store(
 
     def _put() -> None:
         sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        try:
-            sm.create_secret(Name=name, SecretString=plaintext)
-        except sm.exceptions.ResourceExistsException:
-            sm.put_secret_value(SecretId=name, SecretString=plaintext)
+        create_or_update_secret(sm, name, plaintext)
 
     try:
         await run_in_thread(_put)

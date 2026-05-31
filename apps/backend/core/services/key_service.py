@@ -17,6 +17,7 @@ import httpx
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.secrets_manager import create_or_update_secret
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +88,7 @@ def _put_user_secret(*, user_id: str, provider: str, api_key_plaintext: str) -> 
     """
     name = _secret_name(user_id, provider)
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-    try:
-        sm.create_secret(Name=name, SecretString=api_key_plaintext)
-    except sm.exceptions.ResourceExistsException:
-        sm.put_secret_value(SecretId=name, SecretString=api_key_plaintext)
+    create_or_update_secret(sm, name, api_key_plaintext)
     return sm.describe_secret(SecretId=name)["ARN"]
 
 

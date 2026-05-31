@@ -48,6 +48,7 @@ def _make_sm_mock(arn: str, *, present: set[str] | None = None) -> MagicMock:
     sm = MagicMock()
     sm.exceptions.ResourceExistsException = type("ResourceExistsException", (Exception,), {})
     sm.exceptions.ResourceNotFoundException = type("ResourceNotFoundException", (Exception,), {})
+    sm.exceptions.InvalidRequestException = type("InvalidRequestException", (Exception,), {})
     sm.create_secret.return_value = {"ARN": arn, "Name": "n", "VersionId": "v"}
     sm.put_secret_value.return_value = {"ARN": arn, "Name": "n", "VersionId": "v"}
     sm.delete_secret.return_value = {}

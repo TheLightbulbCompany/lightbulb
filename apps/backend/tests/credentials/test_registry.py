@@ -83,6 +83,45 @@ def test_direct_oauth_requires_oauth_block():
         )  # no oauth
 
 
+def test_mcp_server_wiring_parses():
+    from core.services.credentials.registry import Provider
+
+    p = Provider(
+        key="stripe",
+        display_name="Stripe",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring={
+            "mcp_server": {
+                "key": "stripe",
+                "command": "npx",
+                "args": ["-y", "@stripe/mcp", "--tools=all"],
+                "env": {"STRIPE_SECRET_KEY": "input.token"},
+            }
+        },
+    )
+    assert p.wiring.mcp_server.command == "npx"
+    assert p.wiring.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
+    assert p.wiring.openclaw_paths is None and p.wiring.materializer is None
+
+
+def test_wiring_accepts_exactly_one_of_three():
+    from pydantic import ValidationError
+
+    from core.services.credentials.registry import McpServer, Wiring
+
+    # zero set → reject
+    with pytest.raises(ValidationError):
+        Wiring()
+    # two set → reject (this is the case the OLD 2-way validator could not catch)
+    with pytest.raises(ValidationError):
+        Wiring(
+            materializer="gog_cli",
+            mcp_server=McpServer(key="x", command="npx", args=[], env={"K": "input.token"}),
+        )
+
+
 def test_registry_materializers_and_oauth_are_self_consistent():
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 

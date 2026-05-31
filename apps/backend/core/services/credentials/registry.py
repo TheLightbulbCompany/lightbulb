@@ -23,15 +23,25 @@ class OpenclawPath(BaseModel):
     source: str
 
 
+class McpServer(BaseModel):
+    key: str  # the mcp.servers.<key> this integration owns
+    command: str
+    args: list[str] = Field(default_factory=list)
+    # env var name -> credential source ("input.token", "credentials.access_token"),
+    # resolved at delivery time via the same _resolve_source the openclaw_paths rail uses.
+    env: dict[str, str] = Field(default_factory=dict)
+
+
 class Wiring(BaseModel):
     openclaw_paths: list[OpenclawPath] | None = None
     materializer: str | None = None
+    mcp_server: McpServer | None = None
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "Wiring":
-        # Truthiness XOR: an empty `openclaw_paths: []` is intentionally treated as "not set".
-        if bool(self.openclaw_paths) == bool(self.materializer):
-            raise ValueError("wiring must set exactly one of openclaw_paths | materializer")
+        # Truthiness check: an empty `openclaw_paths: []` is intentionally treated as "not set".
+        if sum(bool(x) for x in (self.openclaw_paths, self.materializer, self.mcp_server)) != 1:
+            raise ValueError("wiring must set exactly one of openclaw_paths | materializer | mcp_server")
         return self
 
 

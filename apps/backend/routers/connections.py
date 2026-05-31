@@ -156,6 +156,12 @@ async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:
             await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), "")
+    if p.wiring.mcp_server:
+        # The integration owns mcp.servers.<key> as a whole block, so remove the
+        # entire server entry — leaving only the env leaf would strand a
+        # command-less (invalid) server, and a blanked token would keep a dead
+        # entry around.
+        await config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", p.wiring.mcp_server.key])
     return {"status": "disconnected", "provider": provider}
 
 

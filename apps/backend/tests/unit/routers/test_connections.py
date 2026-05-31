@@ -379,6 +379,26 @@ class TestDisconnect:
         remover.assert_called_once_with("user_test_123", "google", retained)
 
     @pytest.mark.asyncio
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_removes_mcp_server_block(self, mock_repo, mock_store, mock_patcher, async_client):
+        # stripe is an mcp_server provider: disconnect removes the whole
+        # mcp.servers.stripe block so no live-token server block lingers on EFS.
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_patcher.delete_openclaw_config_path = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/stripe")
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "stripe"}
+
+        # Secret + status row dropped, and the integration-owned server removed.
+        mock_store.delete.assert_awaited_once_with("user_test_123", "stripe")
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "stripe")
+        mock_patcher.delete_openclaw_config_path.assert_awaited_once_with("user_test_123", ["mcp", "servers", "stripe"])
+
+    @pytest.mark.asyncio
     async def test_disconnect_unknown_provider_returns_404(self, async_client):
         response = await async_client.delete("/api/v1/connections/does-not-exist")
         assert response.status_code == 404

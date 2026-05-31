@@ -205,7 +205,10 @@ Exactly one backend holds an owner's container WebSocket at a time.
   the reader, stop fan-out.** Version-match alone is insufficient: after a GC pause/stall **≥ TTL**
   the lease can have *expired without yet being stolen* (version still matches), and a second task
   could acquire concurrently — so the not-expired check is what actually prevents two simultaneous
-  owners. (Codex P2.)
+  owners. (Codex P2.) **The fence read MUST be strongly consistent — `ConsistentRead=True` (or a
+  conditional write/transaction), never a default eventually-consistent `GetItem` (Codex P1):**
+  otherwise a GC-paused owner could read a *stale pre-steal* lease image, pass version/expiry/holder,
+  and keep using the old WS while the successor already owns the lease.
 - **`expires_at_epoch_s` is NOT DynamoDB native TTL.** Lease expiry is enforced by the
   **ConditionExpression** above (strongly consistent). Native DDB TTL is best-effort (can lag hours)
   and is used **only as a GC backstop** to delete abandoned rows — never as the correctness gate.
@@ -294,14 +297,11 @@ way.
   connection and the desktop node-host connection resolve to the same owner → same lease holder;
   separate per-connection registries don't collide. ✅
 - **C3 — no regression to current flows.** Web chat, desktop/node-host, exec approvals, Teams events,
-  operator relay all continue. The Teams broker is explicitly unchanged (§3.1). **At N=1 (our current
-  and only deployment) all of these co-locate trivially on the single task — so there is no
-  regression now.** ✅ **Caveat for N>1 (Codex P1 — see §6.1):** the chat path is what this rev makes
-  N>1-correct. The **node-host and operator-relay connection types are NOT yet covered at N>1** — they
-  are transparent bidirectional pipes opened per-`$connect` on whatever task received it, routed by
-  per-connection in-process maps; the §3.3 chokepoint governs only the *chat container WS open*, and
-  `/internal/rpc-forward` is a *unary chat RPC* path, not a streaming relay forward. So this is **not
-  a silent gap but a recorded open item**, deferred while we stay at N=1.
+  operator relay all continue. The Teams broker is explicitly unchanged (§3.1). At N=1 they co-locate
+  trivially on the single task; at N>1 the node-host and operator-relay connection types are made
+  correct by the **same lease/ownership model as chat, generalized to streaming frames — see §6.1**
+  (owner holds the relay upstream; non-owners forward inbound frames; outbound returns via the global
+  Management API). No guardrail, no deferral. ✅
 - **C4 — identical at N=1, scalable to N>1 with no flag.** At one instance the lone task wins every
   lease and `query_by_owner` returns its own registered connections — bit-for-bit today's behavior.
   The same code is correct at N>1. ✅
@@ -331,28 +331,35 @@ any owner with no user token.
 own per-user accounts/sessions; that account model does not affect the lease. Its WebSocket
 touchpoint — the operator-relay connection type — is, however, subject to the §6.1 open item below.
 
-### 6.1 Open item — relay connection routing at N>1 (node-host + operator-relay)
+### 6.1 Relay connection routing at N>1 (node-host + operator-relay)
 
-The **chat** path is fully specified for N>1 above. The **transparent relay** connection types are
-not yet, and this rev does **not** claim to make them N>1-correct:
+The desktop **node-host** connection and the Paperclip **operator-relay** are transparent
+bidirectional pipes the backend relays between an external client and the container (opened today
+from `$connect` via `_kick_off_node_connect` / `_kick_off_operator_connect` in `websocket_chat.py`,
+with `$default` frames routed by per-connection in-process upstream maps). They use the **same
+lease/ownership model as the chat path**, generalized from a unary RPC to streaming frames — so they
+are N>1-correct under this design, **no guardrail and no deferral** (which is required: per product
+constraint the system must just work at one instance *or* more):
 
-- **What they are:** the desktop **node-host** connection and the Paperclip **operator-relay** are
-  bidirectional pipes the backend relays between an external client and the container. In the current
-  code they are opened directly from `$connect` (`_kick_off_node_connect` / `_kick_off_operator_connect`
-  in `websocket_chat.py`) on whichever task received `$connect`, with subsequent `$default` frames
-  routed by **per-connection in-process upstream maps**.
-- **Why the lease/chokepoint doesn't cover them:** their connection point is fixed by where `$connect`
-  lands (not by `owner_id`), and frames are per-request load-balanced — so at N>1 a relay frame can
-  arrive on a non-owner task that has no upstream map for it. `/internal/rpc-forward` is a *unary*
-  chat-RPC path and does not carry streaming relay frames.
-- **At N=1:** no issue — `$connect`, every `$default` frame, the relay upstream, and the container WS
-  all live on the one task. No regression today.
-- **For N>1 (to design when pursued):** the relays need either (a) a **streaming relay-frame forward**
-  to the owner task (a relay analogue of `/internal/rpc-forward`), or (b) a **separate ownership
-  treatment** for relay upstreams (e.g. the owner also holds the relay upstream and frames are
-  forwarded to it), or (c) pinning a relay's whole session to one task. This is explicitly **out of
-  scope for this rev** and gated behind the same "before flipping to N>1" checklist — flagged so it's
-  a conscious decision, not a surprise.
+- **Owner holds the relay upstream.** The WS upstream to the container for a relay is opened **only by
+  the lease owner**, through the same §3.3 ownership chokepoint as the chat container WS. A relay
+  `$connect` landing on a non-owner does **not** open an upstream there; the owner holds it (opened
+  lazily on the first forwarded frame if needed). This is what prevents a second container connection.
+- **Inbound (client→container) frames forward to the owner.** A relay `$default` frame landing on a
+  non-owner is forwarded to `owner_addr` over an authenticated internal **streaming** endpoint
+  (`/internal/relay-forward` — same dedicated **task-to-task** credential + owner-scope check as §6,
+  *not* an agent token); the owner writes it to its upstream. This is the streaming analogue of
+  `/internal/rpc-forward`.
+- **Outbound (container→client) frames need no forward.** The owner reads from the upstream and pushes
+  to the client `connectionId` via the **global Management API** (any task → any connectionId), so the
+  return path needs no per-task affinity.
+- **Net:** under the lease, exactly one task holds each relay upstream, inbound frames always reach
+  it, and outbound always reaches the client — no second upstream, no stranded frames, no guardrail.
+  This is why the summary's "safe at any N" holds for **all** connection types, not just chat.
+
+> We explicitly **decline an N>1 guardrail** (Codex suggested one): it is unnecessary because relay
+> routing is *specified here*, not deferred — and a guardrail would violate the product requirement
+> that the system just work at one instance or more.
 
 ---
 
@@ -403,8 +410,10 @@ not yet, and this rev does **not** claim to make them N>1-correct:
 - `core/gateway/connection_pool.py` — `_forward_to_frontends` via `query_by_owner` + cache + failure
   fallback; the lease (acquire/renew/**fence**/release); owner-only reader/subscribe; non-owner RPC
   forward; one ownership chokepoint (§3.3).
-- `routers/websocket_chat.py` — write `ownerId` on connect; `POST /internal/rpc-forward`;
-  `mark_run_active` owner-gating + forward payload; keep lazy `add_frontend_connection`.
+- `routers/websocket_chat.py` — write `ownerId` on connect; `POST /internal/rpc-forward` (chat) +
+  `/internal/relay-forward` (streaming node-host/operator frames, §6.1); `mark_run_active`
+  owner-gating + forward payload; keep lazy `add_frontend_connection`; route relay-upstream opens
+  through the §3.3 ownership chokepoint (owner-held).
 - `core/services/lease_repo.py` *(new)* — acquire/renew/release via strongly-consistent conditional
   writes + `version` CAS.
 - (Teams broker unchanged.)

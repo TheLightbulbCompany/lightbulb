@@ -266,6 +266,20 @@ export class ApiStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.KEYS_ONLY,
     });
 
+    // GSI for owner-keyed WS event fan-out: given an ownerId (org_id for org
+    // members, user_id for personal owners), return every active connection
+    // for that owner so any backend instance can deliver to all of an owner's
+    // tabs/devices. INCLUDE (not KEYS_ONLY): the gateway fan-out needs the
+    // member userId for per-member demux and connectionType to filter to chat
+    // connections (excluding node/operator transparent pipes).
+    // Spec: docs/superpowers/specs/2026-05-30-multi-instance-backend-architecture-design.md
+    connectionsTable.addGlobalSecondaryIndex({
+      indexName: "by-owner-id",
+      partitionKey: { name: "ownerId", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.INCLUDE,
+      nonKeyAttributes: ["userId", "connectionType"],
+    });
+
     this.connectionsTableName = connectionsTable.tableName;
 
     // =========================================================================

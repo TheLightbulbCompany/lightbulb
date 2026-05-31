@@ -163,22 +163,23 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("openclaw container persists npx + uv package caches on the EFS-backed mount", () => {
+  test("openclaw container symlinks the npx + uv caches onto the EFS-backed mount", () => {
+    // MCP servers spawn as npx/uvx children that inherit only HOME (not the
+    // container env), so the cache must be relocated by symlinking the
+    // default $HOME-relative paths onto EFS, not via NPM_CONFIG_CACHE.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "isol8-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
-          Environment: Match.arrayWith([
-            {
-              Name: "NPM_CONFIG_CACHE",
-              Value: "/home/node/.openclaw/.cache/npm",
-            },
-            {
-              Name: "UV_CACHE_DIR",
-              Value: "/home/node/.openclaw/.cache/uv",
-            },
-          ]),
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(
+              ".*ln -sfn /home/node/\\.openclaw/\\.cache/npm /home/node/\\.npm.*" +
+                "ln -sfn /home/node/\\.openclaw/\\.cache/uv /home/node/\\.cache/uv.*",
+            ),
+          ],
         }),
       ]),
     });

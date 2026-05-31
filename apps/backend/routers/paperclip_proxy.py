@@ -93,6 +93,11 @@ from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
+from core.services.paperclip_session_cookie import (
+    binding_sub,
+    read_session_cookie,
+    set_session_on_response,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1096,35 +1101,23 @@ async def proxy(path: str, request: Request) -> Response:
             status_code=302,
         )
 
-    # Email comes from the Clerk JWT (``email`` claim). The Isol8
-    # ``users`` DynamoDB row only stores ``user_id`` + ``created_at``
-    # — there is no email column to fall back on, so if the JWT lacks
-    # the claim we cannot sign the user in.
-    email = (auth.email or "").strip()
-    if not email:
-        logger.warning(
-            "paperclip_proxy: user %s has no email claim on JWT; cannot sign in to Paperclip",
-            auth.user_id,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail="Email claim missing from auth token",
-        )
+    # ---- Resolve the upstream session cookie (reuse > mint) ----
+    # The browser already holds the Paperclip ``.session_token`` cookie
+    # (rewritten to ``.isol8.co`` on a prior sign-in) plus its
+    # ``isol8_pc_bind`` companion. If that cookie is present AND its
+    # binding cookie's ``sub`` matches the authenticated proxy user, we
+    # forward it as-is and SKIP the sign-in — that eliminates the
+    # per-request re-auth storm. Otherwise (cold start / cross-user /
+    # unbound) we sign in fresh and seed both cookies on the response.
+    # The binding check is the confused-deputy guard: a session cookie
+    # not provably bound to THIS user is never replayed on their behalf.
+    presented_cookie = read_session_cookie(request.cookies)
+    reused_cookie = (
+        presented_cookie
+        if presented_cookie is not None and binding_sub(request.cookies.get("isol8_pc_bind")) == auth.user_id
+        else None
+    )
 
-    try:
-        password = decrypt(company.paperclip_password_encrypted)
-    except ValueError as e:
-        # Encryption key rotated, or row was written under a different
-        # key. The user needs to be reprovisioned — surface a clear 500
-        # rather than a confusing upstream auth failure.
-        logger.error(
-            "paperclip_proxy: failed to decrypt password for user %s: %s",
-            auth.user_id,
-            e,
-        )
-        raise HTTPException(status_code=500, detail="Could not decrypt session credentials")
-
-    # ---- Sign in to Paperclip + forward the request ----
     # Per-request httpx.AsyncClient: simple lifecycle, no shared-state
     # gotchas. Cloud Map A-record TTL is 10s so DNS is re-resolved
     # often enough; v2 should hoist this into a long-lived shared
@@ -1134,87 +1127,139 @@ async def proxy(path: str, request: Request) -> Response:
         timeout=30.0,
     ) as client:
         admin = PaperclipAdminClient(http_client=client)
-        try:
-            signin = await admin.sign_in_user(email=email, password=password)
-        except PaperclipApiError as e:
-            logger.exception(
-                "paperclip_proxy: sign_in failed for user=%s status=%s body=%s",
-                auth.user_id,
-                e.status_code,
-                e.body,
-            )
-            _record_outcome(e.status_code)
-            raise HTTPException(status_code=502, detail="Could not authenticate to Paperclip")
 
-        session_cookie = signin.get("_session_cookie") or ""
-        if not session_cookie:
-            logger.error(
-                "paperclip_proxy: Better Auth response had no Set-Cookie for user %s",
-                auth.user_id,
-            )
-            raise HTTPException(status_code=502, detail="Paperclip auth response malformed")
+        async def _sign_in() -> str:
+            # Cold-mint a fresh Better Auth session cookie for this user.
+            # Email comes from the Clerk JWT (``email`` claim) — the Isol8
+            # ``users`` row has no email column to fall back on. The
+            # password is the per-user random one we encrypted at
+            # provisioning time.
+            email = (auth.email or "").strip()
+            if not email:
+                logger.warning(
+                    "paperclip_proxy: user %s has no email claim on JWT; cannot sign in to Paperclip",
+                    auth.user_id,
+                )
+                raise HTTPException(status_code=400, detail="Email claim missing from auth token")
+            try:
+                password = decrypt(company.paperclip_password_encrypted)
+            except ValueError as e:
+                # Encryption key rotated, or row was written under a
+                # different key. The user needs reprovisioning — surface a
+                # clear 500 rather than a confusing upstream auth failure.
+                logger.error(
+                    "paperclip_proxy: failed to decrypt password for user %s: %s",
+                    auth.user_id,
+                    e,
+                )
+                raise HTTPException(status_code=500, detail="Could not decrypt session credentials")
+            try:
+                signin = await admin.sign_in_user(email=email, password=password)
+            except PaperclipApiError as e:
+                logger.exception(
+                    "paperclip_proxy: sign_in failed for user=%s status=%s body=%s",
+                    auth.user_id,
+                    e.status_code,
+                    e.body,
+                )
+                _record_outcome(e.status_code)
+                raise HTTPException(status_code=502, detail="Could not authenticate to Paperclip")
+            fresh = signin.get("_session_cookie") or ""
+            if not fresh:
+                logger.error(
+                    "paperclip_proxy: Better Auth response had no Set-Cookie for user %s",
+                    auth.user_id,
+                )
+                raise HTTPException(status_code=502, detail="Paperclip auth response malformed")
+            return fresh
 
-        # Build forwarding headers. We add X-Forwarded-* so Paperclip's
-        # access logs reflect the real client identity (not the ALB IP).
-        # Source the public hostname Paperclip should use when emitting
-        # absolute callback/redirect URLs. Order matters:
-        #   1. X-Forwarded-Host — set by Vercel for hosts on its rewrite
-        #      path (dev.company.isol8.co, company.isol8.co). Holds the
-        #      real public host the user typed; the only header that
-        #      survives the Vercel→API-Gateway hop with the company host
-        #      intact.
-        #   2. X-Isol8-Public-Host — set by API Gateway parameter mapping
-        #      to ``$context.domainName``. For Vercel-routed traffic this
-        #      is the API Gateway hostname (``api-{env}.isol8.co``), NOT
-        #      the company host — useless for upstream URL shaping. Kept
-        #      as a fallback for legacy direct-to-API-Gateway paths.
-        #   3. Host — last-ditch fallback (post-ALB this is the ALB DNS).
-        forwarded_host_raw = (
-            request.headers.get("x-forwarded-host")
-            or request.headers.get("x-isol8-public-host")
-            or request.headers.get("host", "")
-        )
-        # Multi-hop proxies append to X-Forwarded-Host comma-separated
-        # ("hostA, hostB"); the LEFTMOST value is the original public
-        # host. Without splitting, Paperclip would see an invalid host
-        # token and emit malformed absolute URLs.
-        forwarded_host = forwarded_host_raw.split(",", 1)[0].strip()
-        client_host = request.client.host if request.client else ""
-        # Auth via Cookie, NOT Authorization: Bearer — Paperclip's
-        # Better Auth config does not enable the bearer() plugin, so a
-        # bearer header is silently ignored and the upstream sees the
-        # request as anonymous. session_cookie is the bare ``name=value``
-        # captured from Better Auth's Set-Cookie on sign-in.
-        upstream_headers: dict[str, str] = {
-            **_filter_request_headers(request),
-            "Cookie": session_cookie,
-            "X-Forwarded-Host": forwarded_host,
-            "X-Forwarded-Proto": "https",
-        }
-        # Origin fallback. Same-origin browser GET/HEAD requests often
-        # omit Origin entirely. Without it, Better Auth's internal
-        # getSession derives a non-https request URL and looks for the
-        # bare cookie name (no ``__Secure-`` prefix), so the session we
-        # just signed in for is invisible upstream and privileged routes
-        # run as anonymous → 401/403. Stamp PAPERCLIP_PUBLIC_URL when
-        # the inbound request didn't carry an Origin.
-        if "origin" not in {k.lower() for k in upstream_headers} and settings.PAPERCLIP_PUBLIC_URL:
-            upstream_headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
-        if client_host:
-            upstream_headers["X-Forwarded-For"] = client_host
+        def _upstream_headers(session_cookie: str) -> dict[str, str]:
+            # Build forwarding headers. We add X-Forwarded-* so Paperclip's
+            # access logs reflect the real client identity (not the ALB IP).
+            # Source the public hostname Paperclip should use when emitting
+            # absolute callback/redirect URLs. Order matters:
+            #   1. X-Forwarded-Host — set by Vercel for hosts on its rewrite
+            #      path (dev.company.isol8.co, company.isol8.co). Holds the
+            #      real public host the user typed; the only header that
+            #      survives the Vercel→API-Gateway hop with the company host
+            #      intact.
+            #   2. X-Isol8-Public-Host — set by API Gateway parameter mapping
+            #      to ``$context.domainName``. For Vercel-routed traffic this
+            #      is the API Gateway hostname (``api-{env}.isol8.co``), NOT
+            #      the company host — useless for upstream URL shaping. Kept
+            #      as a fallback for legacy direct-to-API-Gateway paths.
+            #   3. Host — last-ditch fallback (post-ALB this is the ALB DNS).
+            forwarded_host_raw = (
+                request.headers.get("x-forwarded-host")
+                or request.headers.get("x-isol8-public-host")
+                or request.headers.get("host", "")
+            )
+            # Multi-hop proxies append to X-Forwarded-Host comma-separated
+            # ("hostA, hostB"); the LEFTMOST value is the original public
+            # host. Without splitting, Paperclip would see an invalid host
+            # token and emit malformed absolute URLs.
+            forwarded_host = forwarded_host_raw.split(",", 1)[0].strip()
+            client_host = request.client.host if request.client else ""
+            # Auth via Cookie, NOT Authorization: Bearer — Paperclip's
+            # Better Auth config does not enable the bearer() plugin, so a
+            # bearer header is silently ignored and the upstream sees the
+            # request as anonymous. ``_filter_request_headers`` already
+            # stripped the inbound Cookie, so the only cookie reaching
+            # upstream is the one we set here (reused or freshly minted).
+            headers: dict[str, str] = {
+                **_filter_request_headers(request),
+                "Cookie": session_cookie,
+                "X-Forwarded-Host": forwarded_host,
+                "X-Forwarded-Proto": "https",
+            }
+            # Origin fallback. Same-origin browser GET/HEAD requests often
+            # omit Origin entirely. Without it, Better Auth's internal
+            # getSession derives a non-https request URL and looks for the
+            # bare cookie name (no ``__Secure-`` prefix), so the session
+            # is invisible upstream and privileged routes run as anonymous
+            # → 401/403. Stamp PAPERCLIP_PUBLIC_URL when the inbound
+            # request didn't carry an Origin.
+            if "origin" not in {k.lower() for k in headers} and settings.PAPERCLIP_PUBLIC_URL:
+                headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
+            if client_host:
+                headers["X-Forwarded-For"] = client_host
+            return headers
 
         # httpx accepts a leading ``/`` in the path even when base_url
         # already has a trailing ``/`` — it normalizes correctly.
         upstream_url = f"/{path}"
         body_bytes = await request.body()
-        try:
-            upstream = await client.request(
+
+        async def _forward(session_cookie: str) -> httpx.Response:
+            return await client.request(
                 method=request.method,
                 url=upstream_url,
                 params=request.query_params,
                 content=body_bytes,
-                headers=upstream_headers,
+                headers=_upstream_headers(session_cookie),
             )
+
+        # ``seed_cookie`` is set to the freshly-minted cookie whenever we
+        # sign in (cold start or 401 fallback); the response builder below
+        # then seeds both the rewritten Paperclip Set-Cookie AND the
+        # ``isol8_pc_bind`` companion. A reused cookie is already in the
+        # browser, so we leave ``seed_cookie`` None and reseed nothing.
+        seed_cookie: str | None = None
+        try:
+            if reused_cookie is not None:
+                upstream = await _forward(reused_cookie)
+                if upstream.status_code == 401:
+                    # The browser-held cookie expired/rotated upstream.
+                    # Sign in once, retry, and reseed the fresh cookie.
+                    logger.info(
+                        "paperclip_proxy: reused cookie 401 for user=%s; re-minting",
+                        auth.user_id,
+                    )
+                    seed_cookie = await _sign_in()
+                    upstream = await _forward(seed_cookie)
+            else:
+                seed_cookie = await _sign_in()
+                upstream = await _forward(seed_cookie)
         except httpx.HTTPError as e:
             logger.exception(
                 "paperclip_proxy: upstream request failed user=%s method=%s path=%s: %s",
@@ -1285,6 +1330,18 @@ async def proxy(path: str, request: Request) -> Response:
         # ``response.headers["set-cookie"] = ...`` would only retain
         # the last value.
         response.raw_headers.append((b"set-cookie", cookie.encode("latin-1")))
+
+    # If we cold-minted (or re-minted on 401) a session cookie this
+    # request, seed the browser with it (domain-broadened to .isol8.co)
+    # plus the ``isol8_pc_bind`` companion, so the NEXT request reuses it
+    # and we skip the sign-in. The minted cookie came from a separate
+    # ``sign_in_user`` call, not the forwarded request, so the upstream
+    # rotation Set-Cookies above don't necessarily carry it — we must set
+    # it explicitly here. On the reused-cookie path ``seed_cookie`` is
+    # None and the cookie already lives in the browser, so we touch
+    # nothing (rotation, if any, was relayed above).
+    if seed_cookie is not None:
+        set_session_on_response(response, seed_cookie, auth.user_id)
 
     return response
 

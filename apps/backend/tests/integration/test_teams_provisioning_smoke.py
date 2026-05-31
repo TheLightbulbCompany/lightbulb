@@ -191,6 +191,16 @@ def smoke_env(mocked_paperclip_transport):
             # _headers() helper doesn't add an Origin header. The test
             # doesn't assert on Origin (covered by dedicated unit tests).
             patch("core.config.settings.PAPERCLIP_PUBLIC_URL", ""),
+            # The Teams BFF cold cookie-mint sets an HttpOnly binding cookie
+            # (isol8_pc_bind) signed with PAPERCLIP_SERVICE_TOKEN_KEY read from
+            # the settings singleton (the same source the proxy's
+            # isol8_paperclip cookie uses). The module-level
+            # os.environ.setdefault above covers service_token (which reads
+            # os.environ); mirror it onto settings so the binding mint resolves.
+            patch(
+                "core.config.settings.PAPERCLIP_SERVICE_TOKEN_KEY",
+                os.environ["PAPERCLIP_SERVICE_TOKEN_KEY"],
+            ),
         ):
             yield {
                 "admin": admin,

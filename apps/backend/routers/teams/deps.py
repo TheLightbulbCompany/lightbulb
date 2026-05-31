@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from core.auth import AuthContext, resolve_owner_id
 from core.repositories.paperclip_repo import PaperclipCompany
+from core.services.paperclip_session_cookie import resolve_session_cookie
 
 
 def envelope_list(upstream: Any, key: str) -> dict[str, list[dict]]:
@@ -66,6 +67,8 @@ async def resolve_teams_context(
     auth: AuthContext,
     repo: _Repo,
     session_factory: SessionFactory,
+    cookies: dict[str, str],
+    response,
 ) -> TeamsContext:
     """Build a ``TeamsContext`` for the current request, or raise.
 
@@ -73,6 +76,17 @@ async def resolve_teams_context(
       - 409 if there's no DDB row at all (provisioning never started).
       - 202 if the row exists but ``status != "active"``. The UI polls.
       - 503 if the row is ``status="failed"`` (operator-resolved).
+
+    ``cookies`` is the request cookie jar (``request.cookies``) and
+    ``response`` is any object with ``.set_cookie(...)`` (the FastAPI
+    ``Response`` in production). They are threaded through so the
+    browser-held Paperclip session cookie is reused instead of minting a
+    fresh sign-in on every request: ``resolve_session_cookie`` forwards
+    the presented cookie when it is bound to this user, and only falls
+    back to ``session_factory`` (the per-user Better Auth sign-in) on a
+    cold start / expiry. The status gate runs FIRST, so a not-active
+    workspace still raises 409/202/503 before any mint can happen — the
+    provisioning fence is unchanged.
     """
     company = await repo.get(auth.user_id)
     if company is None:
@@ -84,7 +98,12 @@ async def resolve_teams_context(
     if company.status != "active":
         raise TeamsContextError(status_code=503, detail=f"team workspace status={company.status}")
 
-    cookie = await session_factory(auth.user_id)
+    cookie = await resolve_session_cookie(
+        cookies=cookies,
+        response=response,
+        user_id=auth.user_id,
+        mint=lambda: session_factory(auth.user_id),
+    )
 
     return TeamsContext(
         user_id=auth.user_id,

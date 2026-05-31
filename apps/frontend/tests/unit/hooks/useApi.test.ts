@@ -83,6 +83,105 @@ describe('useApi hook', () => {
     });
   });
 
+  describe('Teams cookie opt-ins (credentials + retry-on-401)', () => {
+    it('omits credentials by default (bearer-only callers)', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ ok: true }),
+      });
+
+      const { result } = renderHook(() => useApi());
+      await result.current.get('/agents');
+
+      const init = mockFetch.mock.calls[0][1];
+      expect(init.credentials).toBeUndefined();
+    });
+
+    it('sends credentials: "include" when opted in', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ ok: true }),
+      });
+
+      const { result } = renderHook(() => useApi());
+      await result.current.get('/teams/dashboard', { credentials: 'include' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/teams/dashboard'),
+        expect.objectContaining({ credentials: 'include' }),
+      );
+    });
+
+    it('retries exactly once on 401 when retryOn401 is set, then succeeds', async () => {
+      // First call: 401 (backend reseeds a fresh cookie on this response).
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: () => Promise.resolve({ detail: 'session refreshed, retry' }),
+      });
+      // Retry: succeeds with the freshly reseeded cookie.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: 'ok' }),
+      });
+
+      const { result } = renderHook(() => useApi());
+      const response = await result.current.get('/teams/dashboard', {
+        credentials: 'include',
+        retryOn401: true,
+      });
+
+      expect(response).toEqual({ data: 'ok' });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not loop: a second 401 surfaces the error after one retry', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 401,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: () => Promise.resolve({ detail: 'session refreshed, retry' }),
+      });
+
+      const { result } = renderHook(() => useApi());
+      await expect(
+        result.current.get('/teams/dashboard', { credentials: 'include', retryOn401: true }),
+      ).rejects.toMatchObject({ status: 401 });
+
+      // Exactly one retry: the original attempt + a single retry = 2 calls.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a 401 when retryOn401 is not set', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: () => Promise.resolve({ detail: 'nope' }),
+      });
+
+      const { result } = renderHook(() => useApi());
+      await expect(result.current.get('/agents')).rejects.toMatchObject({ status: 401 });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry non-401 errors even when retryOn401 is set', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: () => Promise.resolve({ detail: 'boom' }),
+      });
+
+      const { result } = renderHook(() => useApi());
+      await expect(
+        result.current.get('/teams/dashboard', { credentials: 'include', retryOn401: true }),
+      ).rejects.toMatchObject({ status: 500 });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('error handling', () => {
     it('throws error when no token available', async () => {
       mockGetToken.mockImplementation(() => Promise.resolve(null));

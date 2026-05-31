@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings
@@ -276,13 +276,37 @@ async def _resolve_user_email(user_id: str) -> str:
     raise RuntimeError(f"clerk user {user_id} has no email address")
 
 
-async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
+async def get_user_session_cookie_for(user_id: str) -> str:
+    """Mint a fresh per-user Better Auth session cookie (cold path only).
+
+    The per-user sign-in wired with the production repo / admin client /
+    email resolver. Factored to module scope so BOTH the normal context
+    builder (``_ctx`` via ``resolve_session_cookie``'s ``mint`` callback)
+    and the 401 self-heal handler use the exact same sign-in — they must
+    not drift on how a fresh cookie is obtained. Tests monkeypatch the
+    indirection helpers (``_repo`` / ``_admin`` / ``_resolve_user_email``)
+    rather than this function.
+    """
+    return await get_user_session_cookie(
+        user_id=user_id,
+        repo=_repo(),
+        admin_client=_admin(),
+        clerk_email_resolver=_resolve_user_email,
+    )
+
+
+async def _ctx(
+    request: Request,
+    response: Response,
+    auth: AuthContext = Depends(get_current_user),
+) -> TeamsContext:
     """Resolve the Teams BFF context for the current request.
 
     Wires together: Clerk auth -> paperclip-companies row lookup ->
-    per-user Better Auth sign-in -> ``TeamsContext`` for the handler.
-    Using ``deps_mod.resolve_teams_context`` (rather than a direct
-    import) so test code that monkeypatches the deps module Just Works.
+    browser-held Paperclip session cookie (reused; minted only on cold
+    start / 401) -> ``TeamsContext`` for the handler. Using
+    ``deps_mod.resolve_teams_context`` (rather than a direct import) so
+    test code that monkeypatches the deps module Just Works.
 
     The 409 / 202 / 503 status codes from ``resolve_teams_context``
     propagate as-is. This function does NOT autoprovision on the
@@ -290,20 +314,23 @@ async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
     ``/container/status`` trigger which polls every 3s during pre-ready
     state. A 409 here therefore indicates an operator-level error rather
     than a self-heal opportunity.
-    """
 
-    async def session_factory(user_id: str) -> str:
-        return await get_user_session_cookie(
-            user_id=user_id,
-            repo=_repo(),
-            admin_client=_admin(),
-            clerk_email_resolver=_resolve_user_email,
-        )
+    ``request.state.teams_user_id`` is stashed for the 401 self-heal
+    exception handler (registered in ``main.py``): when an upstream
+    PaperclipAdminClient call 401s, the handler re-mints + reseeds the
+    browser cookie for this user, and ``request.state`` is the only place
+    it can recover whose cookie to refresh.
+    """
+    # Recorded before any upstream call so the 401 handler can refresh
+    # THIS user's cookie even if the handler raised before ctx was built.
+    request.state.teams_user_id = auth.user_id
 
     return await deps_mod.resolve_teams_context(
         auth=auth,
         repo=_repo(),
-        session_factory=session_factory,
+        session_factory=get_user_session_cookie_for,
+        cookies=request.cookies,
+        response=response,
     )
 
 

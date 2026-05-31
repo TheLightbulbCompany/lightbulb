@@ -8,9 +8,11 @@ out as unhealthy. The flag is a module-level bool (process-global state), not
 a ContextVar (which is request-scoped).
 """
 
+from typing import Awaitable, Callable
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 _shutting_down = False
 
@@ -28,7 +30,7 @@ def is_shutting_down() -> bool:
 
 
 class ShutdownAwareMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if _shutting_down and request.url.path not in SHUTDOWN_WHITELIST:
+    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        if is_shutting_down() and request.url.path not in SHUTDOWN_WHITELIST:
             return JSONResponse(status_code=503, content={"detail": "Service shutting down"})
         return await call_next(request)

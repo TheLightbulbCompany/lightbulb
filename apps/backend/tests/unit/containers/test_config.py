@@ -1,7 +1,6 @@
 """Tests for OpenClaw container config generation."""
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,23 +13,6 @@ from core.containers.config import (
     merge_openclaw_config,
     _deep_merge,
 )
-
-
-def test_openclaw_upstream_version_matches_pinned_json():
-    """OPENCLAW_UPSTREAM_VERSION (used in the meta shim that defeats
-    openclaw's auto-restore) must stay in sync with openclaw-version.json#tag.
-    The shim works as long as the value is a non-empty string that parses
-    as a valid openclaw version, but drift would surface a "Config was last
-    written by a newer OpenClaw" warning at runtime — so we lock it down
-    here. Drift in either direction breaks CI."""
-    # apps/backend/tests/unit/containers/test_config.py -> repo root is parents[5]
-    repo_root = Path(__file__).resolve().parents[5]
-    pinned = json.loads((repo_root / "openclaw-version.json").read_text())
-    assert OPENCLAW_UPSTREAM_VERSION == pinned["tag"], (
-        f"core/containers/config.py::OPENCLAW_UPSTREAM_VERSION "
-        f"({OPENCLAW_UPSTREAM_VERSION!r}) is out of sync with "
-        f"openclaw-version.json#tag ({pinned['tag']!r}). Update both."
-    )
 
 
 def _cfg(provider_choice: str = "bedrock_claude", **kwargs) -> dict:

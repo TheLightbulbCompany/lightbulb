@@ -15,18 +15,20 @@ import secrets
 import time
 from pathlib import Path
 
+from core import openclaw_version
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Mirror of openclaw-version.json#tag at the repo root. Used as the
-# `meta.lastTouchedVersion` value openclaw expects in our generated
-# config (defeats `missing-meta-vs-last-good` auto-restore in
-# src/config/io.observe-recovery.ts:425). Must match what openclaw
-# itself self-writes (io.ts:879 uses `VERSION` from package.json).
-# A drift test in tests/unit/containers/test_config.py asserts this
-# stays in sync with openclaw-version.json on every CI run.
-OPENCLAW_UPSTREAM_VERSION = "2026.5.12"
+# Pinned upstream OpenClaw version, resolved from the single source of truth
+# (openclaw-version.json#tag) via core.openclaw_version — the CDK-injected env
+# var in deployed containers, the repo JSON in local dev / CI. Used as the
+# `meta.lastTouchedVersion` value openclaw expects in our generated config
+# (defeats `missing-meta-vs-last-good` auto-restore in
+# src/config/io.observe-recovery.ts:425). Must match what openclaw itself
+# self-writes (io.ts:879 uses `VERSION` from package.json). No hand-sync;
+# bump openclaw-version.json only.
+OPENCLAW_UPSTREAM_VERSION = openclaw_version.upstream_version()
 
 
 # =============================================================================

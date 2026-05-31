@@ -4,9 +4,17 @@ Mirrors the auth-override + async_client idiom from test_billing.py / conftest:
 ``get_current_user`` is overridden by the ``async_client`` fixture (personal
 mode, owner_id == "user_test_123"). Async repo / apply calls are patched with
 ``AsyncMock`` so the awaits resolve.
+
+Phase 2 of the credential redesign removed the DynamoDB credential vault: the
+router now persists retained credentials to AWS Secrets Manager
+(``integration_secret_store``) and writes only a secret-free status row to the
+``integrations`` table (``integrations_repo``). These tests patch those two
+collaborators (``routers.connections.integration_secret_store`` /
+``routers.connections.integrations_repo``) — there is no longer a
+``connection_repo`` or any ``scrub_secret`` / ``decrypt_credential`` path.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -80,7 +88,7 @@ class TestListConnections:
     """GET /api/v1/connections — catalog + per-provider status."""
 
     @pytest.mark.asyncio
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integrations_repo")
     async def test_list_returns_catalog_with_status(self, mock_repo, async_client):
         # linear is connected; google has no row -> disconnected.
         mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "linear", "status": "connected"}])
@@ -98,6 +106,7 @@ class TestListConnections:
         assert by_key["linear"]["acquisition"] == "paste_token"
         assert by_key["google"]["acquisition"] == "direct_oauth"
 
+        # Status now comes from the secret-free integrations index.
         mock_repo.list_for_owner.assert_awaited_once_with("user_test_123")
 
 
@@ -106,21 +115,26 @@ class TestConnectPaste:
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
-    async def test_connect_paste_happy_path(self, mock_validate, mock_repo, mock_apply, async_client):
+    async def test_connect_paste_happy_path(self, mock_validate, mock_repo, mock_store, mock_apply, async_client):
         mock_validate.return_value = True
-        mock_repo.put = AsyncMock()
-        mock_repo.scrub_secret = AsyncMock()
-        mock_apply.apply_connection = AsyncMock()
+        # Record relative call order — the rework's whole point is that the
+        # status row is written only AFTER wiring succeeds.
+        call_order: list[str] = []
+        mock_store.put = AsyncMock(side_effect=lambda *a, **k: call_order.append("sm_put"))
+        mock_store.delete = AsyncMock()
+        mock_repo.put_status = AsyncMock(side_effect=lambda *a, **k: call_order.append("put_status"))
+        mock_apply.apply_connection = AsyncMock(side_effect=lambda *a, **k: call_order.append("apply"))
 
         response = await async_client.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
         assert response.status_code == 200
         assert response.json() == {"status": "connected", "provider": "linear"}
 
-        # Credential persisted with the pasted token.
-        mock_repo.put.assert_awaited_once()
-        put_args = mock_repo.put.await_args
+        # Credential persisted to Secrets Manager with the pasted token.
+        mock_store.put.assert_awaited_once()
+        put_args = mock_store.put.await_args
         assert put_args.args[0] == "user_test_123"
         assert put_args.args[1] == "linear"
         assert put_args.args[2] == {"token": "lin_api_abc123"}
@@ -128,47 +142,61 @@ class TestConnectPaste:
         # Wiring engine invoked with (owner, provider, credential).
         mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "linear", {"token": "lin_api_abc123"})
 
-        # linear is refresh_owner=none: its secret IS the durable wired value, so it
-        # must be retained — the actor-refresh scrub gate must not fire here.
-        mock_repo.scrub_secret.assert_not_called()
+        # Status row written ONLY after a successful apply.
+        mock_repo.put_status.assert_awaited_once_with("user_test_123", "linear", "connected")
+
+        # Load-bearing ordering: store secret -> wire container -> mark connected.
+        # A put_status written before apply would falsely report "connected"
+        # mid-wiring; this catches that regression.
+        assert call_order == ["sm_put", "apply", "put_status"]
+
+        # Happy path never deletes the just-stored secret.
+        mock_store.delete.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_connect_paste_validation_failure_returns_422(
-        self, mock_validate, mock_repo, mock_apply, async_client
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client
     ):
         mock_validate.return_value = False
-        mock_repo.put = AsyncMock()
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
         response = await async_client.post("/api/v1/connections/linear", json={"token": "bad"})
         assert response.status_code == 422
-        # Nothing persisted / wired when validation fails.
-        mock_repo.put.assert_not_called()
+        # Nothing persisted / wired / indexed when validation fails.
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
-    async def test_connect_paste_rolls_back_row_when_wiring_fails(
-        self, mock_validate, mock_repo, mock_apply, mock_removers, async_client
+    async def test_connect_paste_rolls_back_secret_when_wiring_fails(
+        self, mock_validate, mock_repo, mock_store, mock_apply, mock_removers, async_client
     ):
         mock_validate.return_value = True
-        mock_repo.put = AsyncMock()
-        mock_repo.delete = AsyncMock()
+        mock_store.put = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
 
         response = await async_client.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
         # Wiring failure surfaces as a 502 — the connection never reports a false "connected".
         assert response.status_code == 502
 
-        # The just-persisted row was rolled back.
-        mock_repo.put.assert_awaited_once()
-        mock_repo.delete.assert_awaited_once_with("user_test_123", "linear")
+        # The secret was stored, then rolled back out of Secrets Manager.
+        mock_store.put.assert_awaited_once()
+        mock_store.delete.assert_awaited_once_with("user_test_123", "linear")
+        # Status is written only after a clean apply -> never on the failure path.
+        mock_repo.put_status.assert_not_called()
         # linear is openclaw_paths (no materializer) -> the EFS-artifact rollback is a no-op.
         mock_removers.get.assert_not_called()
 
@@ -192,20 +220,23 @@ class TestConnectionWriteOrgAdminGate:
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_connect_paste_non_admin_member_forbidden(
-        self, mock_validate, mock_repo, mock_apply, async_client_org_member
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client_org_member
     ):
         mock_validate.return_value = True
-        mock_repo.put = AsyncMock()
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
         response = await async_client_org_member.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
         assert response.status_code == 403
         # Gate fires before any persistence / wiring.
-        mock_repo.put.assert_not_called()
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
@@ -219,36 +250,46 @@ class TestConnectionWriteOrgAdminGate:
 
     @pytest.mark.asyncio
     @patch("routers.connections.config_patcher")
-    @patch("routers.connections.connection_repo")
-    async def test_disconnect_non_admin_member_forbidden(self, mock_repo, mock_patcher, async_client_org_member):
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_non_admin_member_forbidden(
+        self, mock_repo, mock_store, mock_patcher, async_client_org_member
+    ):
         mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
         mock_patcher.set_openclaw_config_path = AsyncMock()
 
         response = await async_client_org_member.delete("/api/v1/connections/linear")
         assert response.status_code == 403
         # Nothing deleted / unwired for a non-admin member.
         mock_repo.delete.assert_not_called()
+        mock_store.delete.assert_not_called()
         mock_patcher.set_openclaw_config_path.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
-    async def test_connect_paste_org_admin_allowed(self, mock_validate, mock_repo, mock_apply, async_client_org_admin):
+    async def test_connect_paste_org_admin_allowed(
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client_org_admin
+    ):
         mock_validate.return_value = True
-        mock_repo.put = AsyncMock()
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
         response = await async_client_org_admin.post("/api/v1/connections/linear", json={"token": "lin_api_abc123"})
         # Admin clears the gate; write targets the shared org workspace.
         assert response.status_code == 200
         assert response.json() == {"status": "connected", "provider": "linear"}
-        put_args = mock_repo.put.await_args
+        put_args = mock_store.put.await_args
         assert put_args.args[0] == "org_test_456"
         mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "linear", {"token": "lin_api_abc123"})
+        mock_repo.put_status.assert_awaited_once_with("org_test_456", "linear", "connected")
 
     @pytest.mark.asyncio
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integrations_repo")
     async def test_list_connections_not_gated_for_org_member(self, mock_repo, async_client_org_member):
         # GET returns only provider names + status (no secrets) -> members may read it.
         mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "linear", "status": "connected"}])
@@ -263,15 +304,19 @@ class TestDisconnect:
 
     @pytest.mark.asyncio
     @patch("routers.connections.config_patcher")
-    @patch("routers.connections.connection_repo")
-    async def test_disconnect_deletes_and_blanks_openclaw_path(self, mock_repo, mock_patcher, async_client):
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_deletes_and_blanks_openclaw_path(self, mock_repo, mock_store, mock_patcher, async_client):
         mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
         mock_patcher.set_openclaw_config_path = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/linear")
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "linear"}
 
+        # Both the retained secret and the status row are removed.
+        mock_store.delete.assert_awaited_once_with("user_test_123", "linear")
         mock_repo.delete.assert_awaited_once_with("user_test_123", "linear")
         # linear wiring path: mcp.servers.linear.env.LINEAR_API_KEY -> blanked.
         mock_patcher.set_openclaw_config_path.assert_awaited_once_with(
@@ -283,16 +328,18 @@ class TestDisconnect:
     @pytest.mark.asyncio
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.config_patcher")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     async def test_disconnect_materializer_provider_removes_materialized_creds(
-        self, mock_repo, mock_patcher, mock_removers, async_client
+        self, mock_repo, mock_store, mock_patcher, mock_removers, async_client
     ):
-        # google is a materializer-backed (gog_cli) provider.
-        row = {"owner_id": "user_test_123", "provider": "google", "credential_enc": "enc"}
-        cred = {"cli": "gogcli", "refresh_token": "r"}
-        mock_repo.get = AsyncMock(return_value=row)
-        mock_repo.decrypt_credential = lambda r: cred
+        # google is a materializer-backed (gog_cli) actor-refresh provider. It
+        # never stored a Secrets Manager credential, so get() returns None and
+        # the remover is called with an empty credential (gog's remover keys off
+        # owner/provider and ignores the credential anyway).
         mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_store.get = AsyncMock(return_value=None)
         remover = mock_removers.get.return_value
         mock_patcher.set_openclaw_config_path = AsyncMock()
 
@@ -300,10 +347,11 @@ class TestDisconnect:
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "google"}
 
-        # Materialized credential files cleaned up BEFORE the row is deleted.
-        mock_repo.get.assert_awaited_once_with("user_test_123", "google")
+        # Materialized credential files cleaned up; no SM secret -> empty cred.
         mock_removers.get.assert_called_once_with("gog_cli")
-        remover.assert_called_once_with("user_test_123", "google", cred)
+        remover.assert_called_once_with("user_test_123", "google", {})
+        # Secret + status row both dropped (actor provider stored no secret -> no-op delete).
+        mock_store.delete.assert_awaited_once_with("user_test_123", "google")
         mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
         # No openclaw_paths on a materializer provider -> nothing blanked.
         mock_patcher.set_openclaw_config_path.assert_not_called()
@@ -311,40 +359,30 @@ class TestDisconnect:
     @pytest.mark.asyncio
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.config_patcher")
-    @patch("routers.connections.connection_repo")
-    async def test_disconnect_scrubbed_row_removes_without_decrypt(
-        self, mock_repo, mock_patcher, mock_removers, async_client
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_materializer_passes_retained_secret_to_remover(
+        self, mock_repo, mock_store, mock_patcher, mock_removers, async_client
     ):
-        # A non-retention scrub (refresh_owner: actor) left the row with no
-        # credential_enc. Disconnect must still clean up the on-disk artifact
-        # without trying to decrypt the absent secret (which would 500).
-        row = {"owner_id": "user_test_123", "provider": "google", "secret_retained": False}
-        mock_repo.get = AsyncMock(return_value=row)
-        mock_repo.decrypt_credential = MagicMock()
+        # Regression guard: some removers locate the on-disk artifact by a
+        # credential field (e.g. toml_cli uses credential["cli"]). disconnect must
+        # fetch the retained Secrets Manager credential and hand it to the remover
+        # — passing an empty {} would leave the credential file on EFS. Uses the
+        # google/gog_cli wiring as a stand-in materializer provider; the assertion
+        # is that whatever get() returns is what the remover receives.
+        retained = {"cli": "outlook", "access_token": "tok", "refresh_token": "r"}
         mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_store.get = AsyncMock(return_value=retained)
         remover = mock_removers.get.return_value
         mock_patcher.set_openclaw_config_path = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/google")
         assert response.status_code == 200
 
-        # No secret on the row -> never decrypt; remover gets an empty credential.
-        mock_repo.decrypt_credential.assert_not_called()
-        mock_removers.get.assert_called_once_with("gog_cli")
-        remover.assert_called_once_with("user_test_123", "google", {})
-        mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.connection_repo")
-    async def test_disconnect_materializer_no_row_skips_remover(self, mock_repo, mock_removers, async_client):
-        mock_repo.get = AsyncMock(return_value=None)
-        mock_repo.delete = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/google")
-        assert response.status_code == 200
-        mock_removers.get.assert_not_called()
-        mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
+        mock_store.get.assert_awaited_once_with("user_test_123", "google")
+        # The retained credential — not {} — is handed to the remover.
+        remover.assert_called_once_with("user_test_123", "google", retained)
 
     @pytest.mark.asyncio
     async def test_disconnect_unknown_provider_returns_404(self, async_client):
@@ -389,13 +427,17 @@ class TestOAuthCallback:
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
-    async def test_callback_happy_path_persists_and_redirects(self, mock_dance, mock_repo, mock_apply, async_client):
+    async def test_callback_happy_path_persists_and_redirects(
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+    ):
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
         mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
-        mock_repo.put = AsyncMock()
-        mock_repo.scrub_secret = AsyncMock()
+        mock_store.put = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
         response = await async_client.get(
@@ -412,54 +454,32 @@ class TestOAuthCallback:
         assert ex_call.args[1] == "abc"
         assert ex_call.kwargs["redirect_uri"].endswith("/api/v1/oauth/google/callback")
 
-        mock_repo.put.assert_awaited_once()
-        mock_apply.apply_connection.assert_awaited_once_with("org_1", "google", cred)
         # google is refresh_owner=actor: the container self-refreshes + owns the
-        # durable credential, so the backend scrubs the secret after a clean apply.
-        mock_repo.scrub_secret.assert_awaited_once_with("org_1", "google")
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
-    @patch("routers.connections.oauth_dance")
-    async def test_callback_actor_refresh_scrub_failure_still_redirects_connected(
-        self, mock_dance, mock_repo, mock_apply, async_client
-    ):
-        # The connection is already applied; a cleanup-write failure must NOT
-        # roll it back or turn the connect into a failure — log + proceed.
-        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
-        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
-        mock_repo.put = AsyncMock()
-        mock_repo.delete = AsyncMock()
-        mock_repo.scrub_secret = AsyncMock(side_effect=RuntimeError("ddb update failed"))
-        mock_apply.apply_connection = AsyncMock()
-
-        response = await async_client.get(
-            "/api/v1/oauth/google/callback?code=abc&state=st1",
-            follow_redirects=False,
-        )
-        assert response.status_code in (302, 307)
-        # Scrub failed but the connection stays connected — no rollback.
-        assert "/settings/connections?connected=google" in response.headers["location"]
-        mock_repo.scrub_secret.assert_awaited_once_with("org_1", "google")
-        mock_repo.delete.assert_not_called()
+        # durable credential, so the backend retains NOTHING in Secrets Manager.
+        mock_store.put.assert_not_called()
+        mock_apply.apply_connection.assert_awaited_once_with("org_1", "google", cred)
+        # Status row written after a clean apply.
+        mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
-    async def test_callback_rolls_back_row_and_removes_efs_when_wiring_fails(
-        self, mock_dance, mock_repo, mock_apply, mock_removers, async_client
+    async def test_callback_rolls_back_and_removes_efs_when_wiring_fails(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_removers, async_client
     ):
         # google is materializer-backed (gog_cli). If apply fails after the
         # materializer already wrote a partial keyring/client file, the rollback
-        # must remove the on-disk artifact too — not just the row — so a failed
-        # connect leaves no durable credential residue on EFS.
+        # must remove the on-disk artifact — so a failed connect leaves no durable
+        # credential residue on EFS. google is actor-refresh -> no secret retained,
+        # so there is no Secrets Manager delete to make, and no status row written.
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
         mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
-        mock_repo.put = AsyncMock()
-        mock_repo.delete = AsyncMock()
+        mock_store.put = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
         remover = mock_removers.get.return_value
 
@@ -471,21 +491,26 @@ class TestOAuthCallback:
         # Redirect surfaces the apply failure rather than a false "connected".
         assert "error=apply_failed" in response.headers["location"]
 
-        # EFS artifact removed (gog_cli remover) BEFORE the row is dropped.
+        # EFS artifact removed (gog_cli remover) with the exchanged credential.
         mock_removers.get.assert_called_once_with("gog_cli")
         remover.assert_called_once_with("org_1", "google", cred)
-        mock_repo.put.assert_awaited_once()
-        mock_repo.delete.assert_awaited_once_with("org_1", "google")
+        # Actor-refresh provider never retained a secret -> nothing to put or delete.
+        mock_store.put.assert_not_called()
+        mock_store.delete.assert_not_called()
+        # No status row on the failure path.
+        mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
-    @patch("routers.connections.connection_repo")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
     async def test_callback_bad_state_redirects_with_error_and_no_writes(
-        self, mock_dance, mock_repo, mock_apply, async_client
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
     ):
         mock_dance.exchange = AsyncMock(side_effect=ValueError("invalid or expired OAuth state"))
-        mock_repo.put = AsyncMock()
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
         response = await async_client.get(
@@ -495,6 +520,7 @@ class TestOAuthCallback:
         assert response.status_code in (302, 307)
         assert "error=oauth_state" in response.headers["location"]
 
-        # Nothing persisted / wired when state validation fails.
-        mock_repo.put.assert_not_called()
+        # Nothing persisted / wired / indexed when state validation fails.
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()

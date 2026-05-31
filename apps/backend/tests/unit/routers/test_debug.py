@@ -8,6 +8,18 @@ import pytest
 class TestDeleteUserData:
     """Test DELETE /api/v1/debug/user-data — atomic per-owner teardown."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_integrations_teardown(self):
+        # Phase 2 added an integrations sweep (per-provider Secrets Manager
+        # credentials + the secret-free status rows) to the teardown. Stub it so
+        # these tests don't hit real AWS; the empty-list case exercises the
+        # happy path (nothing connected -> nothing to delete).
+        with patch("routers.debug.integrations_repo") as ir, patch("routers.debug.integration_secret_store") as iss:
+            ir.list_for_owner = AsyncMock(return_value=[])
+            ir.delete = AsyncMock()
+            iss.delete = AsyncMock()
+            yield
+
     @pytest.mark.asyncio
     @patch("routers.debug.container_repo")
     @patch("routers.debug.api_key_repo")
@@ -72,6 +84,7 @@ class TestDeleteUserData:
         assert "usage-counters" in body["deleted"]["ddb"]
         assert "pending-updates" in body["deleted"]["ddb"]
         assert "channel-links" in body["deleted"]["ddb"]
+        assert "integrations" in body["deleted"]["ddb"]
         assert "ws-connections" in body["deleted"]["ddb"]
 
         ecs_mgr.delete_user_service.assert_called_once_with("user_test_123")

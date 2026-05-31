@@ -9,9 +9,14 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.repositories import connection_repo
+from core.repositories import integrations_repo
 from core.services import config_patcher
-from core.services.credentials import apply_connection, oauth_dance, registry
+from core.services.credentials import (
+    apply_connection,
+    integration_secret_store,
+    oauth_dance,
+    registry,
+)
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
 
 logger = logging.getLogger(__name__)
@@ -19,24 +24,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/connections", tags=["connections"])
 
 
-async def _scrub_if_actor_refresh(owner_id: str, p: registry.Provider) -> None:
-    """For actor-refresh providers the container self-refreshes its own token and
-    is the sole durable custodian, so the backend keeps nothing once the
-    credential has been applied. Called only AFTER a successful apply — the
-    connection is already wired, so a scrub failure must never turn a successful
-    connect into a failure; log and proceed (the secret can be re-scrubbed on a
-    later reconnect, and worst case is over-retention, never a broken connect)."""
-    if p.refresh_owner != "actor":
-        return
-    try:
-        await connection_repo.scrub_secret(owner_id, p.key)
-    except Exception:
-        logger.warning(
-            "failed to scrub retained secret for owner=%s provider=%s after apply; connection stays connected",
-            owner_id,
-            p.key,
-            exc_info=True,
-        )
+def _retains_secret(p: registry.Provider) -> bool:
+    """Whether the backend keeps the credential (in Secrets Manager).
+
+    ``refresh_owner == "actor"`` means a CLI/keyring inside the container owns
+    and self-refreshes the token (e.g. gog), so the backend stores nothing
+    durable and the container EFS keyring is the sole custodian. Every other
+    provider is backend-custodian: the secret is retained so it can be
+    re-injected (marketplace slot-fill, reconnect)."""
+    return p.refresh_owner != "actor"
 
 
 def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
@@ -93,7 +89,7 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
 @router.get("")
 async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
-    rows = await connection_repo.list_for_owner(owner_id)
+    rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
     return {
         "connections": [
@@ -117,18 +113,22 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
         raise HTTPException(status_code=400, detail=f"{provider} is not a paste-key integration")
     if not await _validate_token(p, body.token):
         raise HTTPException(status_code=422, detail="token failed validation against the provider")
-    await connection_repo.put(owner_id, provider, {"token": body.token}, status="connected")
-    # Roll the row back if wiring fails, so status never reports a false "connected".
+    credential = {"token": body.token}
+    # Paste tokens are backend-custodian: store the credential in Secrets
+    # Manager (KMS-encrypted at rest) — never in DynamoDB — then deliver the
+    # literal into the container. Mark the integration connected only after
+    # wiring succeeds, so status never reports a false "connected".
+    await integration_secret_store.put(owner_id, provider, credential)
     try:
-        await apply_connection.apply_connection(owner_id, provider, {"token": body.token})
+        await apply_connection.apply_connection(owner_id, provider, credential)
     except Exception:
-        _remove_materialized_artifacts(owner_id, p, {"token": body.token})
-        await connection_repo.delete(owner_id, provider)
+        _remove_materialized_artifacts(owner_id, p, credential)
+        await integration_secret_store.delete(owner_id, provider)
         raise HTTPException(
             status_code=502,
             detail="failed to apply the connection to your container; please retry",
         )
-    await _scrub_if_actor_refresh(owner_id, p)
+    await integrations_repo.put_status(owner_id, provider, "connected")
     return {"status": "connected", "provider": provider}
 
 
@@ -138,19 +138,21 @@ async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
     # Materializer-backed providers wrote credential files onto EFS; remove
-    # those before dropping the row so disconnect leaves no on-disk residue.
+    # those first so disconnect leaves no on-disk residue. The remover deletes
+    # the artifact by owner/provider and does not need the secret value.
     if p.wiring.materializer:
-        row = await connection_repo.get(owner_id, provider)
-        if row:
-            # A non-retention scrub (refresh_owner: actor) removes credential_enc
-            # but keeps the row. The materializer remover deletes the on-disk
-            # artifact by owner/provider and does not need the secret, so fall
-            # back to an empty credential instead of failing the disconnect.
-            cred = connection_repo.decrypt_credential(row) if row.get("credential_enc") else {}
-            remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
-            if remover:
-                remover(owner_id, provider, cred)
-    await connection_repo.delete(owner_id, provider)
+        remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
+        if remover:
+            # Some removers locate the on-disk artifact by a credential field
+            # (e.g. toml_cli uses credential["cli"]), so fetch the retained
+            # secret before deleting it. Actor-refresh providers have none
+            # (get -> {}), and their removers (gog) ignore the credential.
+            cred = await integration_secret_store.get(owner_id, provider) or {}
+            remover(owner_id, provider, cred)
+    # Drop the retained secret (no-op for actor providers, which never stored
+    # one) and the status row, then blank any per-agent openclaw.json slots.
+    await integration_secret_store.delete(owner_id, provider)
+    await integrations_repo.delete(owner_id, provider)
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:
             await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), "")
@@ -187,13 +189,20 @@ async def oauth_callback(provider: str, code: str, state: str):
         owner_id, prov, credential = await oauth_dance.exchange(state, code, redirect_uri=_redirect_uri(provider))
     except ValueError:
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_state")
-    await connection_repo.put(owner_id, prov, credential, status="connected")
-    # Roll the row back if wiring fails, so status never reports a false "connected".
+    p = registry.get_provider(prov)
+    # Retain the credential in Secrets Manager only when the backend is the
+    # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
+    # container, so the backend stores nothing and the EFS keyring written by
+    # apply_connection is the sole durable copy. Mark connected only after
+    # wiring succeeds.
+    if _retains_secret(p):
+        await integration_secret_store.put(owner_id, prov, credential)
     try:
         await apply_connection.apply_connection(owner_id, prov, credential)
     except Exception:
-        _remove_materialized_artifacts(owner_id, registry.get_provider(prov), credential)
-        await connection_repo.delete(owner_id, prov)
+        _remove_materialized_artifacts(owner_id, p, credential)
+        if _retains_secret(p):
+            await integration_secret_store.delete(owner_id, prov)
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
-    await _scrub_if_actor_refresh(owner_id, registry.get_provider(prov))
+    await integrations_repo.put_status(owner_id, prov, "connected")
     return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?connected={prov}")

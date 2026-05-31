@@ -319,6 +319,28 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Per-owner integration credential secrets (credential-layer redesign):
+    // paste-key tokens and backend-custodian OAuth credentials live under
+    // isol8/{env}/integrations/*. The secret-free integrations DDB index points
+    // here. Same tight prefix scoping as the user-keys statement above.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "IntegrationSecretsRW",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/integrations/*`,
+        ],
+      }),
+    );
+
     // DynamoDB tables
     props.database.usersTable.grantReadWriteData(this.taskRole);
     props.database.containersTable.grantReadWriteData(this.taskRole);
@@ -331,13 +353,14 @@ export class ServiceStack extends cdk.Stack {
     props.database.creditsTable.grantReadWriteData(this.taskRole);
     props.database.creditTransactionsTable.grantReadWriteData(this.taskRole);
     props.database.oauthTokensTable.grantReadWriteData(this.taskRole);
-    // The credential-layer integration tables (connections + oauth-state) are
-    // granted by NAME, not via grantReadWriteData. grantReadWriteData would
-    // export each table's ARN from the database stack and import it here,
-    // creating a cross-stack export. An export that another stack imports
-    // cannot be deleted, which permanently blocks renaming or replacing the
-    // table. Granting by the table name avoids the export entirely. The action
-    // set matches what connection_repo and oauth_state_repo actually call.
+    // The credential-layer integration tables are granted by NAME, not via
+    // grantReadWriteData. grantReadWriteData would export each table's ARN from
+    // the database stack and import it here, creating a cross-stack export. An
+    // export that another stack imports cannot be deleted, which permanently
+    // blocks renaming or replacing the table. Granting by the table name avoids
+    // the export entirely. The action set matches what integrations_repo and
+    // oauth_state_repo actually call. (The connections table is being retired —
+    // its grant is removed when the table is dropped.)
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "DynamoDbIntegrations",
@@ -350,6 +373,8 @@ export class ServiceStack extends cdk.Stack {
           "dynamodb:Scan",
         ],
         resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-integrations`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-integrations/index/*`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections/index/*`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state`,

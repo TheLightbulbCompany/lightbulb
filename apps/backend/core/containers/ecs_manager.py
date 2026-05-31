@@ -1827,6 +1827,24 @@ class EcsManager:
         finally:
             await http.aclose()
 
+        # Re-inject the owner's connected integration MCP servers (Stripe, …)
+        # so this full openclaw.json overwrite doesn't drop them on a
+        # reprovision. Best-effort: a Secrets-Manager hiccup while building the
+        # blocks must not fail the whole provision — fall back to no integration
+        # servers and let the next reconcile/reprovision self-heal.
+        try:
+            from core.services.credentials.mcp_server import (
+                build_connected_integration_servers,
+            )
+
+            integration_mcp_servers = await build_connected_integration_servers(owner_id)
+        except Exception:  # noqa: BLE001 — best-effort.
+            logger.exception(
+                "build_connected_integration_servers failed for %s; provisioning without them",
+                owner_id,
+            )
+            integration_mcp_servers = {}
+
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
@@ -1840,6 +1858,7 @@ class EcsManager:
             paperclip_api_key=paperclip_api_key,
             paperclip_company_id=paperclip_company_id,
             paperclip_api_url=settings.PAPERCLIP_INTERNAL_URL or None,
+            integration_mcp_servers=integration_mcp_servers,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

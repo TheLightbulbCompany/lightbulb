@@ -177,6 +177,19 @@ export function InboxPage({
     [activeIssues, searchQuery],
   );
 
+  // 6b. The board renders a column per status, including the terminal ones
+  //     (done, cancelled). The inbox tabs (mine/recent/unread) deliberately
+  //     omit `cancelled` from their fetch, so feeding the board the tab set
+  //     leaves the Cancelled column un-fillable — a card dragged there
+  //     persists but vanishes on the next refetch. The board is a complete
+  //     kanban of every status, so source it from the unfiltered all-issues
+  //     set (search still applies) rather than the tab-filtered list.
+  const boardIssues = useMemo(
+    () =>
+      allIssues.filter((issue) => matchesInboxIssueSearch(issue, searchQuery)),
+    [allIssues, searchQuery],
+  );
+
   // 7. Build the today/earlier (or search) sections.
   const sections = useMemo(
     () =>
@@ -327,7 +340,7 @@ export function InboxPage({
         </div>
       ) : viewMode === "board" ? (
         <KanbanBoard
-          issues={filteredIssues}
+          issues={boardIssues}
           agents={agents}
           onUpdateIssue={onUpdateIssue}
         />

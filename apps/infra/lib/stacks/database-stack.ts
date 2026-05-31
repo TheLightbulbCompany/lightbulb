@@ -320,6 +320,20 @@ export class DatabaseStack extends cdk.Stack {
       value: this.oauthStateTable.tableName,
       exportName: `${this.stackName}-oauth-state-table`,
     });
+    // Retain the auto-generated ARN exports the backend service stack used to
+    // import via grantReadWriteData. The service stack now grants these tables
+    // by name, so it no longer imports the ARNs — but CloudFormation refuses to
+    // delete an export while the not-yet-updated consumer still imports it.
+    // Pinning the exports under their existing names keeps them byte-identical
+    // this deploy (no delete attempted); a later deploy removes them once
+    // nothing imports them. The names below are the live export names this
+    // stack already publishes.
+    this.exportValue(this.connectionsTable.tableArn, {
+      name: `${this.stackName}:ExportsOutputFnGetAttConnectionsTable8000B8A1Arn6FD6777C`,
+    });
+    this.exportValue(this.oauthStateTable.tableArn, {
+      name: `${this.stackName}:ExportsOutputFnGetAttOauthStateTable1D8479B9Arn3B610B82`,
+    });
     new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
       value: this.paperclipCompaniesTable.tableName,
       exportName: `${this.stackName}-paperclip-companies-table`,

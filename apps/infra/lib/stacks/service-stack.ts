@@ -62,8 +62,6 @@ export interface ServiceStackProps extends cdk.StackProps {
     creditsTable: dynamodb.Table;
     creditTransactionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
-    connectionsTable: dynamodb.Table;
-    oauthStateTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
     paperclipCompaniesTable: dynamodb.Table;
     marketplaceListingsTable: dynamodb.Table;
@@ -312,8 +310,32 @@ export class ServiceStack extends cdk.Stack {
     props.database.creditsTable.grantReadWriteData(this.taskRole);
     props.database.creditTransactionsTable.grantReadWriteData(this.taskRole);
     props.database.oauthTokensTable.grantReadWriteData(this.taskRole);
-    props.database.connectionsTable.grantReadWriteData(this.taskRole);
-    props.database.oauthStateTable.grantReadWriteData(this.taskRole);
+    // The credential-layer integration tables (connections + oauth-state) are
+    // granted by NAME, not via grantReadWriteData. grantReadWriteData would
+    // export each table's ARN from the database stack and import it here,
+    // creating a cross-stack export. An export that another stack imports
+    // cannot be deleted, which permanently blocks renaming or replacing the
+    // table. Granting by the table name avoids the export entirely. The action
+    // set matches what connection_repo and oauth_state_repo actually call.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "DynamoDbIntegrations",
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+        ],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections/index/*`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state/index/*`,
+        ],
+      }),
+    );
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
     // never reads. Write-only grant is sufficient.
     props.database.webhookDedupTable.grantWriteData(this.taskRole);

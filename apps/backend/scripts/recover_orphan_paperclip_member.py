@@ -58,16 +58,19 @@ def plan_recovery(
     Aurora side: delete exactly one orphan user, matched by email (refuse
     on zero or multiple matches).
 
-    DDB side — scoped to the ONE member being recovered, never the whole org:
-      - ``member_user_id`` given → delete only that member's failed row (the
-        DDB row is keyed by Clerk user_id; the orphan's empty
-        ``paperclip_user_id`` can't link it back to the Aurora user, so the
-        caller supplies the Clerk id explicitly). A no-op if that member has
-        no failed row.
-      - no ``member_user_id`` → only safe when there is exactly one failed
-        row (unambiguous single-orphan case). Refuse on >1 so recovering one
-        member can't wipe other members' failed rows (dropping their stored
-        paperclip_user_id/password and forcing a needless re-provision).
+    DDB side — only ever delete the explicitly named member's row:
+      The DDB ``paperclip-companies`` row is keyed by Clerk user_id and
+      carries no email; the orphan's empty ``paperclip_user_id`` can't link
+      it back to the email-matched Aurora user. So there is NO safe way to
+      correlate a failed DDB row to ``email`` — selecting "the lone failed
+      row" could delete an UNRELATED member's row (e.g. the target has only
+      an Aurora orphan while a different member is the sole failed row, or
+      ``--owner-id`` was mistyped). Therefore:
+      - any failed rows in scope → ``member_user_id`` is REQUIRED, and we
+        delete only the row whose user_id == member_user_id (a no-op if that
+        member has no failed row — Aurora-only recovery).
+      - no failed rows in scope → Aurora-only recovery, ``member_user_id``
+        not required.
     """
     if email in BOOTSTRAP_EMAILS:
         sys.exit(f"REFUSING: {email} is a bootstrap admin and must be preserved.")
@@ -78,16 +81,17 @@ def plan_recovery(
         sys.exit(f"REFUSING: {len(matches)} Aurora users share email {email}; resolve by hand.")
 
     failed = [r["user_id"] for r in ddb_failed_rows if r.get("status") == "failed"]
-    if member_user_id is not None:
-        ddb_user_ids = [uid for uid in failed if uid == member_user_id]
-    elif len(failed) > 1:
+    if failed and member_user_id is None:
+        # Refuse rather than guess: a failed DDB row can't be correlated to
+        # the email, so we never delete one without an explicit Clerk id.
         sys.exit(
-            f"REFUSING: {len(failed)} failed DDB rows in scope and no --user-id to "
-            "disambiguate. Pass the recovering member's Clerk user_id so other "
-            "members' rows are left intact."
+            f"REFUSING: {len(failed)} failed DDB row(s) in scope but no --user-id given. "
+            "A failed paperclip-companies row carries no email and can't be linked to "
+            f"{email}, so pass the recovering member's Clerk user_id explicitly. "
+            "(Aurora-only recovery, with no DDB delete, runs without --user-id only "
+            "when there are zero failed rows in scope.)"
         )
-    else:
-        ddb_user_ids = failed
+    ddb_user_ids = [uid for uid in failed if uid == member_user_id] if member_user_id is not None else []
 
     return RecoveryPlan(
         email=email,

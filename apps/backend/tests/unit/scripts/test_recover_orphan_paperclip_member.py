@@ -24,10 +24,13 @@ def test_refuses_bootstrap_admin():
 
 
 def test_plans_delete_for_single_orphan():
+    """Deleting a failed DDB row requires the explicit Clerk user_id (the row
+    can't be correlated to the email)."""
     plan = plan_recovery(
         email="member@example.com",
         aurora_rows=[{"id": "usr_orphan", "email": "member@example.com"}],
         ddb_failed_rows=[{"user_id": "user_clerk_x", "status": "failed"}],
+        member_user_id="user_clerk_x",
     )
     assert plan.aurora_user_id == "usr_orphan"
     assert plan.ddb_user_ids == ["user_clerk_x"]
@@ -53,7 +56,8 @@ def test_no_aurora_match_is_safe_exit():
 
 def test_only_failed_ddb_rows_are_planned_for_delete():
     """A member's recovery must not delete an active DDB row that happens to
-    share the email — only ``status="failed"`` rows are in scope."""
+    share the org — only ``status="failed"`` rows are in scope, and only the
+    named member's."""
     plan = plan_recovery(
         email="member@example.com",
         aurora_rows=[{"id": "usr_orphan", "email": "member@example.com"}],
@@ -61,14 +65,26 @@ def test_only_failed_ddb_rows_are_planned_for_delete():
             {"user_id": "user_failed", "status": "failed"},
             {"user_id": "user_active", "status": "active"},
         ],
+        member_user_id="user_failed",
     )
     assert plan.ddb_user_ids == ["user_failed"]
 
 
+def test_refuses_any_failed_row_without_member_user_id():
+    """A failed DDB row carries no email and can't be correlated to the target,
+    so deleting one ALWAYS requires --user-id — even when it's the only failed
+    row in scope (it might belong to an unrelated member; --owner-id could be
+    mistyped). Refuse rather than guess."""
+    with pytest.raises(SystemExit):
+        plan_recovery(
+            email="member@example.com",
+            aurora_rows=[{"id": "usr_orphan", "email": "member@example.com"}],
+            ddb_failed_rows=[{"user_id": "user_a", "status": "failed"}],
+        )
+
+
 def test_refuses_multiple_failed_rows_without_member_user_id():
-    """Recovering ONE member must not wipe other members' failed rows in the
-    same org. When more than one failed row is in scope and no member_user_id
-    is given to disambiguate, refuse rather than delete them all."""
+    """Same refusal with multiple failed rows in scope."""
     with pytest.raises(SystemExit):
         plan_recovery(
             email="member@example.com",

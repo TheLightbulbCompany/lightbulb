@@ -408,15 +408,21 @@ aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend 
 #     — re-signup 422s against the existing user). Org owners have ONE
 #     PaperclipCompany row PER MEMBER, all sharing the same ``company_id``;
 #     each row's ``paperclip_user_id`` is a separate Better Auth user.
+#     Pass BOTH --email (scopes the Aurora delete) AND --user-id (the
+#     member's Clerk user_id, scopes the DDB delete) so recovering one
+#     member never touches another member's failed row.
 cd apps/backend
-for email in member1@isol8.co member2@isol8.co member3@isol8.co; do
+# email:clerk_user_id pairs for each member being reprovisioned
+for pair in member1@isol8.co:user_xxx member2@isol8.co:user_yyy member3@isol8.co:user_zzz; do
+  email="${pair%%:*}"; uid="${pair##*:}"
   uv run python -m scripts.recover_orphan_paperclip_member \
-    --env prod --email "$email" --owner-id "$OWNER" --apply
+    --env prod --email "$email" --user-id "$uid" --owner-id "$OWNER" --apply
 done
 # Post-condition: SELECT email FROM "user" must show ONLY
 # admin+paperclip@isol8.co (the prod bootstrap). The script refuses to
-# delete it, and refuses ambiguous email matches, so cross-check the
-# remaining rows before declaring the org clean.
+# delete it, refuses ambiguous email matches, and refuses to delete more
+# than one failed DDB row without --user-id — so cross-check the remaining
+# rows before declaring the org clean.
 
 # 5c. Delete all PaperclipCompany DDB rows for the org's members.
 for uid in user_xxx user_yyy user_zzz; do

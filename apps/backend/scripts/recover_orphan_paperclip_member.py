@@ -47,13 +47,27 @@ def plan_recovery(
     email: str,
     aurora_rows: list[dict],
     ddb_failed_rows: list[dict],
+    member_user_id: str | None = None,
 ) -> RecoveryPlan:
     """Pure decision logic — no AWS. ``SystemExit`` on any unsafe shape.
 
     ``aurora_rows`` is ``[{"id", "email"}, ...]`` from the Better Auth
     ``user`` table; ``ddb_failed_rows`` is ``[{"user_id", "status"}, ...]``
-    pre-filtered to the org (caller scopes by owner_id). We delete exactly
-    one orphan Aurora user and the member's ``failed`` DDB rows.
+    pre-filtered to the org (caller scopes by owner_id).
+
+    Aurora side: delete exactly one orphan user, matched by email (refuse
+    on zero or multiple matches).
+
+    DDB side — scoped to the ONE member being recovered, never the whole org:
+      - ``member_user_id`` given → delete only that member's failed row (the
+        DDB row is keyed by Clerk user_id; the orphan's empty
+        ``paperclip_user_id`` can't link it back to the Aurora user, so the
+        caller supplies the Clerk id explicitly). A no-op if that member has
+        no failed row.
+      - no ``member_user_id`` → only safe when there is exactly one failed
+        row (unambiguous single-orphan case). Refuse on >1 so recovering one
+        member can't wipe other members' failed rows (dropping their stored
+        paperclip_user_id/password and forcing a needless re-provision).
     """
     if email in BOOTSTRAP_EMAILS:
         sys.exit(f"REFUSING: {email} is a bootstrap admin and must be preserved.")
@@ -62,10 +76,23 @@ def plan_recovery(
         sys.exit(f"No Aurora Better Auth user found for {email}; nothing to recover.")
     if len(matches) > 1:
         sys.exit(f"REFUSING: {len(matches)} Aurora users share email {email}; resolve by hand.")
+
+    failed = [r["user_id"] for r in ddb_failed_rows if r.get("status") == "failed"]
+    if member_user_id is not None:
+        ddb_user_ids = [uid for uid in failed if uid == member_user_id]
+    elif len(failed) > 1:
+        sys.exit(
+            f"REFUSING: {len(failed)} failed DDB rows in scope and no --user-id to "
+            "disambiguate. Pass the recovering member's Clerk user_id so other "
+            "members' rows are left intact."
+        )
+    else:
+        ddb_user_ids = failed
+
     return RecoveryPlan(
         email=email,
         aurora_user_id=matches[0]["id"],
-        ddb_user_ids=[r["user_id"] for r in ddb_failed_rows if r.get("status") == "failed"],
+        ddb_user_ids=ddb_user_ids,
     )
 
 
@@ -115,6 +142,12 @@ def main() -> None:
     ap.add_argument("--env", required=True, choices=["dev", "prod"])
     ap.add_argument("--email", required=True)
     ap.add_argument("--owner-id", default=None, help="owner id to scope the failed DDB rows")
+    ap.add_argument(
+        "--user-id",
+        default=None,
+        help="the recovering member's Clerk user_id; scopes the DDB deletion to that member "
+        "(required when the org has more than one failed row)",
+    )
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
 
@@ -123,6 +156,7 @@ def main() -> None:
         email=args.email,
         aurora_rows=_aurora_users(client, db_arn, secret_arn),
         ddb_failed_rows=_ddb_failed_rows(args.env, args.owner_id),
+        member_user_id=args.user_id,
     )
 
     print(f"Aurora user to DELETE    : {plan.aurora_user_id} ({plan.email})")

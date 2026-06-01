@@ -61,3 +61,45 @@ def test_only_failed_ddb_rows_are_planned_for_delete():
         ],
     )
     assert plan.ddb_user_ids == ["user_failed"]
+
+
+def test_refuses_multiple_failed_rows_without_member_user_id():
+    """Recovering ONE member must not wipe other members' failed rows in the
+    same org. When more than one failed row is in scope and no member_user_id
+    is given to disambiguate, refuse rather than delete them all."""
+    with pytest.raises(SystemExit):
+        plan_recovery(
+            email="member@example.com",
+            aurora_rows=[{"id": "usr_orphan", "email": "member@example.com"}],
+            ddb_failed_rows=[
+                {"user_id": "user_a", "status": "failed"},
+                {"user_id": "user_b", "status": "failed"},
+            ],
+        )
+
+
+def test_member_user_id_scopes_ddb_to_that_member():
+    """With member_user_id supplied, the DDB deletion targets exactly that
+    member's failed row — never the other failed rows in the org."""
+    plan = plan_recovery(
+        email="member@example.com",
+        aurora_rows=[{"id": "usr_orphan", "email": "member@example.com"}],
+        ddb_failed_rows=[
+            {"user_id": "user_a", "status": "failed"},
+            {"user_id": "user_b", "status": "failed"},
+        ],
+        member_user_id="user_b",
+    )
+    assert plan.ddb_user_ids == ["user_b"]
+
+
+def test_member_user_id_not_failed_yields_no_ddb_delete():
+    """If the named member has no failed row (e.g. already cleaned, or only an
+    active row), the DDB side is a no-op — Aurora-only recovery."""
+    plan = plan_recovery(
+        email="member@example.com",
+        aurora_rows=[{"id": "usr_orphan", "email": "member@example.com"}],
+        ddb_failed_rows=[{"user_id": "user_a", "status": "failed"}],
+        member_user_id="user_other",
+    )
+    assert plan.ddb_user_ids == []

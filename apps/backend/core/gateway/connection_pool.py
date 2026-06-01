@@ -699,14 +699,24 @@ class GatewayConnection:
                 self.owner_id,
             )
             return None
-        # Do NOT cache an empty result. The by-owner-id GSI is eventually
-        # consistent, so a tab that sends chat within ~1s of $connect may not be
-        # indexed yet and query_by_owner returns []. Caching that for the full
-        # TTL would drop the new tab's first chunks AND its `done` for up to
-        # _RECIPIENTS_TTL_S. Re-querying every event until recipients appear
-        # shrinks the miss window to the GSI propagation lag (sub-second) without
-        # an in-memory fallback (DynamoDB stays the single source of truth).
-        if recipients:
+        # Do NOT cache an EMPTY or PARTIAL result. The by-owner-id GSI is
+        # eventually consistent, so a tab that sends chat within ~1s of $connect
+        # may not be indexed yet:
+        #   - empty: query_by_owner returns [] (no tabs indexed);
+        #   - partial: another tab is already indexed, so the result is
+        #     non-empty but OMITS the just-connected tab.
+        # Caching either for the full TTL would drop the new tab's first chunks
+        # (and possibly `done`) for up to _RECIPIENTS_TTL_S. We detect partial by
+        # cross-checking against the locally-registered connection set (lazy-
+        # registered on the new tab's /ws/message): if a locally-known conn is
+        # absent from the GSI result, the index is still catching up — return the
+        # fresh result for THIS send but don't cache it, so the next event
+        # re-queries until the GSI is consistent. The local set is only a
+        # freshness signal here; delivery recipients still come from DynamoDB.
+        returned_ids = {conn_id for conn_id, _, _ in recipients}
+        local_ids = set(self._frontend_connections)
+        fully_propagated = bool(recipients) and local_ids.issubset(returned_ids)
+        if fully_propagated:
             self._recipients_cache = recipients
             self._recipients_cache_ts = now
         else:

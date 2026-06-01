@@ -166,6 +166,31 @@ async def test_forward_does_not_prune_on_transient_exception(make_conn):
 
 
 @pytest.mark.asyncio
+async def test_forward_does_not_cache_partial_result_missing_local_conn(make_conn):
+    """A non-empty-but-STALE GSI result that omits a locally-registered (just-
+    connected) tab must NOT be cached — otherwise the new tab misses its own
+    first chunks for the TTL. Detected by cross-checking _frontend_connections;
+    the next event must re-query until the GSI includes the new conn."""
+    conn = make_conn(owner_id="org_1")
+    # Tab A is indexed; tab B just lazy-registered locally but isn't in the GSI yet.
+    conn._frontend_connections.add("c_a")
+    conn._frontend_connections.add("c_b_new")
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_a", "m1", "chat")])
+    conn._management_api.send_message = MagicMock(return_value=True)
+
+    await conn._forward_to_frontends({"type": "chunk"})
+    # Partial (c_b_new missing) → not cached → next event re-queries.
+    await conn._forward_to_frontends({"type": "chunk"})
+    assert conn._conn_svc.query_by_owner.call_count == 2
+
+    # Once the GSI catches up (both present), it caches and stops re-querying.
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_a", "m1", "chat"), ("c_b_new", "m1", "chat")])
+    await conn._forward_to_frontends({"type": "chunk"})
+    await conn._forward_to_frontends({"type": "chunk"})
+    assert conn._conn_svc.query_by_owner.call_count == 1  # cached after first
+
+
+@pytest.mark.asyncio
 async def test_forward_prunes_on_gone_false(make_conn):
     """send_message returns False ONLY for a gone connection (GoneException) —
     prune it."""

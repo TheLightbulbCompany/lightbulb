@@ -19,20 +19,35 @@ def handler(event, context):
 
     logger.info("WebSocket connect: connection_id=%s user_id=%s", connection_id, user_id)
 
-    table.put_item(Item={
-        "connectionId": connection_id,
-        "userId": user_id,
-        "orgId": org_id or "",
-        "ownerId": org_id or user_id,  # owner = org for org members, else the user
-        "connectedAt": str(event["requestContext"].get("connectedAt", "")),
-    })
-
     # Forward clientId from query for FastAPI ws_connect to recognize node-host
     # vs operator/control-ui connections. Only known values (node-host,
     # openclaw-macos) trigger the synthetic-challenge skip downstream; unknown
     # values are forwarded verbatim and ignored.
     qs = event.get("queryStringParameters") or {}
     client_id = qs.get("clientId")
+
+    # Derive connectionType HERE (not only in the backend /ws/connect handler):
+    # this Lambda writes the row BEFORE notifying the backend, and the owner-keyed
+    # fan-out defaults a missing connectionType to "chat". Without this, a
+    # node-host or paperclip-operator socket would look like a chat recipient
+    # until the backend notification overwrites the row — and permanently if that
+    # notify fails. Keep these client-id sets in sync with NODE_HOST_CLIENT_IDS /
+    # PAPERCLIP_OPERATOR_CLIENT_ID in routers/websocket_chat.py.
+    if client_id == "paperclip-operator":
+        connection_type = "operator"
+    elif client_id in ("node-host", "openclaw-macos"):
+        connection_type = "node"
+    else:
+        connection_type = "chat"
+
+    table.put_item(Item={
+        "connectionId": connection_id,
+        "userId": user_id,
+        "orgId": org_id or "",
+        "ownerId": org_id or user_id,  # owner = org for org members, else the user
+        "connectionType": connection_type,
+        "connectedAt": str(event["requestContext"].get("connectedAt", "")),
+    })
 
     headers = {
         "x-connection-id": connection_id,

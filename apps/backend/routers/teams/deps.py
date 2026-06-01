@@ -7,8 +7,9 @@ as a class + a resolver so we can unit-test without a FastAPI request.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from fastapi import HTTPException
 
@@ -60,6 +61,7 @@ class _Repo(Protocol):
 
 
 SessionFactory = Callable[[str], Awaitable[str]]
+Reconcile = Callable[[], Awaitable[None]]
 
 
 async def resolve_teams_context(
@@ -69,13 +71,25 @@ async def resolve_teams_context(
     session_factory: SessionFactory,
     cookies: dict[str, str],
     response,
+    reconcile: Optional[Reconcile] = None,
 ) -> TeamsContext:
     """Build a ``TeamsContext`` for the current request, or raise.
 
     Status codes follow spec §9 error handling:
-      - 409 if there's no DDB row at all (provisioning never started).
-      - 202 if the row exists but ``status != "active"``. The UI polls.
+      - 202 if there's no DDB row yet, or the row exists but
+        ``status != "active"``. The UI polls until it goes active.
       - 503 if the row is ``status="failed"`` (operator-resolved).
+
+    **Self-healing provisioning.** ``/teams`` is a read surface — it never
+    polled ``GET /container/status`` — so historically a member whose
+    Paperclip row didn't exist yet was wedged on a 409 until they happened
+    to open ``/chat`` (whose poll is the only thing that drove
+    ``ensure_user_ready``). To make ``/teams`` reconcile like ``/chat``,
+    the caller passes a ``reconcile`` coroutine factory; on a missing row we
+    fire it (fire-and-forget, idempotent + gate-first) and return **202**
+    "provisioning" so the frontend keeps polling, and a subsequent poll
+    sees the now-active row. ``reconcile`` is optional: pure unit tests that
+    don't supply it keep the old 409 (no side effect).
 
     ``cookies`` is the request cookie jar (``request.cookies``) and
     ``response`` is any object with ``.set_cookie(...)`` (the FastAPI
@@ -85,11 +99,18 @@ async def resolve_teams_context(
     the presented cookie when it is bound to this user, and only falls
     back to ``session_factory`` (the per-user Better Auth sign-in) on a
     cold start / expiry. The status gate runs FIRST, so a not-active
-    workspace still raises 409/202/503 before any mint can happen — the
+    workspace still raises 202/503 before any mint can happen — the
     provisioning fence is unchanged.
     """
     company = await repo.get(auth.user_id)
     if company is None:
+        if reconcile is not None:
+            # Self-heal: kick off provisioning in the background and tell the
+            # UI to keep polling. ensure_user_ready is idempotent + gate-first,
+            # so this is safe to fire on every poll and no-ops when the org
+            # isn't ready yet (the poll just keeps returning 202).
+            asyncio.create_task(reconcile())
+            raise TeamsContextError(status_code=202, detail="team workspace provisioning")
         raise TeamsContextError(status_code=409, detail="team workspace not provisioned")
     if company.status == "provisioning":
         raise TeamsContextError(status_code=202, detail="team workspace provisioning")

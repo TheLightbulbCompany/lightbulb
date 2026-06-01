@@ -39,6 +39,7 @@ from core.services.paperclip_openclaw_pairing import (
 )
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
+from core.services.user_provision import ensure_user_ready
 
 from . import deps as deps_mod
 from .deps import TeamsContext, envelope_list
@@ -308,12 +309,13 @@ async def _ctx(
     ``deps_mod.resolve_teams_context`` (rather than a direct import) so
     test code that monkeypatches the deps module Just Works.
 
-    The 409 / 202 / 503 status codes from ``resolve_teams_context``
-    propagate as-is. This function does NOT autoprovision on the
-    no-DDB-row branch — provisioning is owned by the canonical
-    ``/container/status`` trigger which polls every 3s during pre-ready
-    state. A 409 here therefore indicates an operator-level error rather
-    than a self-heal opportunity.
+    Self-heal: a ``reconcile`` callback (``ensure_user_ready(auth)``) is
+    wired into ``resolve_teams_context`` so a missing Paperclip row drives
+    provisioning itself and returns 202 (the UI polls until active), instead
+    of wedging the member on a 409. ``/teams`` never polled
+    ``/container/status``, so without this a member could only get
+    provisioned by visiting ``/chat``. The 202 / 503 status codes from
+    ``resolve_teams_context`` otherwise propagate as-is.
 
     ``request.state.teams_user_id`` is stashed for the 401 self-heal
     exception handler (registered in ``main.py``): when an upstream
@@ -331,6 +333,12 @@ async def _ctx(
         session_factory=get_user_session_cookie_for,
         cookies=request.cookies,
         response=response,
+        # Self-heal: if this user has no Paperclip row yet, /teams drives
+        # reconciliation itself (it never polls /container/status). Fired in
+        # the background by resolve_teams_context; ensure_user_ready is
+        # idempotent + gate-first, so it no-ops when the org isn't ready and
+        # the frontend keeps polling the 202 until the row goes active.
+        reconcile=lambda: ensure_user_ready(auth),
     )
 
 

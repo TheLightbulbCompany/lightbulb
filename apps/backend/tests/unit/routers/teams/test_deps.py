@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timezone
@@ -128,6 +129,43 @@ async def test_resolve_raises_when_no_company(auth_ctx):
     assert exc.value.status_code == 409
     # Provisioning gate: no mint before the status check.
     session_factory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_self_heals_when_no_company_and_reconcile_given(auth_ctx, monkeypatch):
+    """When a reconcile callback is supplied, a missing row fires it (to drive
+    provisioning) and returns 202 'provisioning' instead of 409 — so /teams
+    self-heals like /chat instead of wedging the member on a terminal error."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)
+    session_factory = AsyncMock()
+
+    fired = {"n": 0}
+
+    async def _reconcile():
+        fired["n"] += 1
+
+    # Run the dispatched task inline so we can assert it fired.
+    captured = []
+    monkeypatch.setattr(
+        "routers.teams.deps.asyncio.create_task",
+        lambda coro: captured.append(asyncio.ensure_future(coro)),
+    )
+
+    with pytest.raises(TeamsContextError) as exc:
+        await resolve_teams_context(
+            auth=auth_ctx,
+            repo=repo,
+            session_factory=session_factory,
+            cookies={},
+            response=_FakeResponse(),
+            reconcile=_reconcile,
+        )
+    await asyncio.gather(*captured)
+
+    assert exc.value.status_code == 202  # not 409 — UI keeps polling
+    assert fired["n"] == 1  # reconcile (ensure_user_ready) was dispatched
+    session_factory.assert_not_awaited()  # no mint before the row is active
 
 
 @pytest.mark.asyncio

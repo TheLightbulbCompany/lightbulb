@@ -1,15 +1,15 @@
 """Tests for the BFF ``_ctx`` Depends helper.
 
 ``_ctx`` is a thin wrapper around ``deps.resolve_teams_context``: it
-builds the session_factory closure and propagates whatever the resolver
-returns or raises. The canonical ``/container/status`` provisioning
-trigger drives lazy autoprovision — every authenticated user already
-polls it during pre-ready state.
+builds the session_factory closure, wires a ``reconcile`` callback
+(``ensure_user_ready(auth)``), and propagates whatever the resolver
+returns or raises.
 
-The 409 / 202 / 503 status codes from ``resolve_teams_context``
-propagate as-is. A 409 indicates an operator-level error
-(missing paperclip-companies row despite a healthy container) rather
-than a self-heal opportunity.
+Self-heal: ``/teams`` never polls ``/container/status``, so a missing
+Paperclip row used to wedge the member on a terminal 409 until they
+opened ``/chat``. ``_ctx`` now passes ``reconcile`` so the resolver fires
+provisioning itself and returns 202 — the UI keeps polling until the row
+goes active. The 202 / 503 status codes still propagate as-is.
 """
 
 from __future__ import annotations
@@ -74,52 +74,64 @@ async def test_ctx_returns_context_when_resolve_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_ctx_does_not_autoprovision():
-    """_ctx does not autoprovision on the no-DDB-row branch. The
-    canonical /container/status trigger handles all provisioning. A 409
-    from ``resolve_teams_context`` propagates unchanged.
-    """
+async def test_ctx_passes_reconcile_to_resolver():
+    """_ctx wires a ``reconcile`` callback into ``resolve_teams_context`` so a
+    missing Paperclip row self-heals: /teams drives provisioning itself
+    instead of wedging the member on a 409 until they open /chat. The
+    callback fires ``ensure_user_ready(auth)`` (idempotent + gate-first)."""
     from routers.teams import agents as agents_mod
-    from routers.teams.deps import TeamsContextError
+    from routers.teams.deps import TeamsContext
 
-    raise_409 = TeamsContextError(status_code=409, detail="team workspace not provisioned")
+    fake_ctx = TeamsContext(
+        user_id="u1",
+        org_id=None,
+        owner_id="u1",
+        company_id="co",
+        paperclip_user_id="pcu",
+        session_cookie="cookie",
+    )
 
-    with patch.object(
-        agents_mod.deps_mod,
-        "resolve_teams_context",
-        new_callable=AsyncMock,
-        side_effect=raise_409,
+    auth = _auth()
+    with (
+        patch.object(
+            agents_mod.deps_mod,
+            "resolve_teams_context",
+            new_callable=AsyncMock,
+            return_value=fake_ctx,
+        ) as mock_resolve,
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
     ):
-        with pytest.raises(TeamsContextError) as exc:
-            await agents_mod._ctx(_req(), MagicMock(), auth=_auth())
+        await agents_mod._ctx(_req(), MagicMock(), auth=auth)
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail == "team workspace not provisioned"
-    # The autoprovision import is gone from agents.py — confirm.
-    assert not hasattr(agents_mod, "ensure_paperclip_workspace")
+        reconcile = mock_resolve.await_args.kwargs["reconcile"]
+        assert callable(reconcile)
+        # The callback dispatches ensure_user_ready for THIS auth context.
+        # Awaited inside the patch so the mock (not the real DDB-bound
+        # ensure_user_ready) is invoked.
+        await reconcile()
+        mock_fire.assert_awaited_once_with(auth)
 
 
 @pytest.mark.asyncio
-async def test_ctx_propagates_409_for_org_context():
-    """Org context: missing row stays 409. The Clerk webhook owned org
-    provisioning historically; with the canonical /container/status
-    trigger it owns it for everyone now. _ctx never branches on
-    is_org_context — it just propagates."""
+async def test_ctx_self_heal_202_propagates_for_org_context():
+    """Org context: a missing row now self-heals to 202 (the resolver fires
+    reconcile + returns 202). _ctx never branches on is_org_context — it just
+    propagates whatever the resolver raises."""
     from routers.teams import agents as agents_mod
     from routers.teams.deps import TeamsContextError
 
-    raise_409 = TeamsContextError(status_code=409, detail="team workspace not provisioned")
+    raise_202 = TeamsContextError(status_code=202, detail="team workspace provisioning")
 
     with patch.object(
         agents_mod.deps_mod,
         "resolve_teams_context",
         new_callable=AsyncMock,
-        side_effect=raise_409,
+        side_effect=raise_202,
     ):
         with pytest.raises(TeamsContextError) as exc:
             await agents_mod._ctx(_req(), MagicMock(), auth=_auth(org_id="org_x", is_org_context=True))
 
-    assert exc.value.status_code == 409
+    assert exc.value.status_code == 202
 
 
 @pytest.mark.asyncio

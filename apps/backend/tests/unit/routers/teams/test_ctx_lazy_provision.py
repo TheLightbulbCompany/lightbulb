@@ -1,15 +1,15 @@
 """Tests for the BFF ``_ctx`` Depends helper.
 
 ``_ctx`` is a thin wrapper around ``deps.resolve_teams_context``: it
-builds the session_factory closure and propagates whatever the resolver
-returns or raises. The canonical ``/container/status`` provisioning
-trigger drives lazy autoprovision — every authenticated user already
-polls it during pre-ready state.
+builds the session_factory closure, wires a ``reconcile`` callback
+(``ensure_user_ready(auth)``), and propagates whatever the resolver
+returns or raises.
 
-The 409 / 202 / 503 status codes from ``resolve_teams_context``
-propagate as-is. A 409 indicates an operator-level error
-(missing paperclip-companies row despite a healthy container) rather
-than a self-heal opportunity.
+Self-heal: ``/teams`` never polls ``/container/status``, so a missing
+Paperclip row used to wedge the member on a terminal 409 until they
+opened ``/chat``. ``_ctx`` now passes ``reconcile`` so the resolver fires
+provisioning itself and returns 202 — the UI keeps polling until the row
+goes active. The 202 / 503 status codes still propagate as-is.
 """
 
 from __future__ import annotations
@@ -74,52 +74,181 @@ async def test_ctx_returns_context_when_resolve_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_ctx_does_not_autoprovision():
-    """_ctx does not autoprovision on the no-DDB-row branch. The
-    canonical /container/status trigger handles all provisioning. A 409
-    from ``resolve_teams_context`` propagates unchanged.
-    """
+async def test_ctx_passes_reconcile_to_resolver():
+    """_ctx wires a ``reconcile`` callback into ``resolve_teams_context`` so a
+    missing Paperclip row self-heals: /teams drives provisioning itself
+    instead of wedging the member on a 409 until they open /chat."""
     from routers.teams import agents as agents_mod
-    from routers.teams.deps import TeamsContextError
+    from routers.teams.deps import TeamsContext
 
-    raise_409 = TeamsContextError(status_code=409, detail="team workspace not provisioned")
+    fake_ctx = TeamsContext(
+        user_id="u1",
+        org_id=None,
+        owner_id="u1",
+        company_id="co",
+        paperclip_user_id="pcu",
+        session_cookie="cookie",
+    )
 
     with patch.object(
         agents_mod.deps_mod,
         "resolve_teams_context",
         new_callable=AsyncMock,
-        side_effect=raise_409,
-    ):
-        with pytest.raises(TeamsContextError) as exc:
-            await agents_mod._ctx(_req(), MagicMock(), auth=_auth())
+        return_value=fake_ctx,
+    ) as mock_resolve:
+        await agents_mod._ctx(_req(), MagicMock(), auth=_auth())
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail == "team workspace not provisioned"
-    # The autoprovision import is gone from agents.py — confirm.
-    assert not hasattr(agents_mod, "ensure_paperclip_workspace")
+    reconcile = mock_resolve.await_args.kwargs["reconcile"]
+    assert callable(reconcile)
+
+
+def _ecs_mock(*, container):
+    """ECS manager double whose resolve_running_container returns
+    ``(container, ip)``. ``container=None`` => no running container."""
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=(container, None))
+    return ecs
 
 
 @pytest.mark.asyncio
-async def test_ctx_propagates_409_for_org_context():
-    """Org context: missing row stays 409. The Clerk webhook owned org
-    provisioning historically; with the canonical /container/status
-    trigger it owns it for everyone now. _ctx never branches on
-    is_org_context — it just propagates."""
+async def test_self_heal_reconcile_backgrounds_provision_when_gate_clear():
+    """Gate clear → return None (→ 202 keep-polling) and schedule the actual
+    provisioning OFF the request path. ensure_user_ready must NOT be awaited
+    inline: a transient failure would escape resolve_teams_context as a 500 and
+    strand the user (the Teams frontend only auto-retries the 202 sentinel)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
+        patch.object(agents_mod, "_provision_after_gate") as mock_bg,
+        patch.object(agents_mod.asyncio, "create_task") as mock_create,
+    ):
+        result = await agents_mod._self_heal_reconcile(auth)
+
+    assert result is None  # gate clear → 202 keep-polling
+    mock_bg.assert_called_once_with(auth, "owner1")  # scheduled, not awaited inline
+    mock_create.assert_called_once()  # dispatched as a background task
+
+
+@pytest.mark.asyncio
+async def test_self_heal_reconcile_returns_payload_and_skips_provision_when_gate_up():
+    """Gate is up (no subscription / credits / provider) → return the blocked
+    payload and schedule NO provisioning. Otherwise ensure_user_ready no-ops
+    forever and the UI spins on 202 instead of showing the subscribe CTA
+    (Codex P2)."""
+    from routers.teams import agents as agents_mod
+
+    gate = MagicMock()
+    gate.to_payload.return_value = {"blocked": {"code": "subscription_required"}}
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=gate),
+        patch.object(agents_mod, "_provision_after_gate") as mock_bg,
+        patch.object(agents_mod.asyncio, "create_task") as mock_create,
+    ):
+        result = await agents_mod._self_heal_reconcile(auth)
+
+    assert result == {"blocked": {"code": "subscription_required"}}
+    mock_bg.assert_not_called()  # blocked → never launch provisioning
+    mock_create.assert_not_called()  # no background task on a blocked gate
+
+
+@pytest.mark.asyncio
+async def test_provision_after_gate_starts_container_when_none_running():
+    """No running container (owner's first entry point is /teams) →
+    provision_container=True so the container actually gets created. Otherwise
+    the Paperclip row goes active, polling stops, and agents can't run until
+    the owner visits /chat (Codex P2)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        await agents_mod._provision_after_gate(auth, "owner1")
+
+    mock_fire.assert_awaited_once_with(auth, provision_container=True)
+
+
+@pytest.mark.asyncio
+async def test_provision_after_gate_does_not_restart_running_container():
+    """A container is already running (existing multi-admin/joined-org case) →
+    provision_container=False so /teams self-heal NEVER force-redeploys the
+    live shared container (Codex P1)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="admin1", org_id="org_x", is_org_context=True)
+    running = {"status": "running"}
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=running)),
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        await agents_mod._provision_after_gate(auth, "org_x")
+
+    mock_fire.assert_awaited_once_with(auth, provision_container=False)
+
+
+@pytest.mark.asyncio
+async def test_provision_after_gate_falls_back_to_no_restart_on_ecs_error():
+    """If container state can't be determined, fall back to the safe
+    no-restart path (Paperclip-only); the /chat poll backstops the container."""
+    from routers.teams import agents as agents_mod
+
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(side_effect=RuntimeError("ecs down"))
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=ecs),
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        await agents_mod._provision_after_gate(auth, "owner1")
+
+    mock_fire.assert_awaited_once_with(auth, provision_container=False)
+
+
+@pytest.mark.asyncio
+async def test_provision_after_gate_swallows_ensure_user_ready_failure():
+    """A transient ensure_user_ready failure in the background task is logged
+    and swallowed — it must NOT propagate (the request already returned 202;
+    the next /teams poll re-fires)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
+        patch.object(
+            agents_mod,
+            "ensure_user_ready",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("paperclip 503"),
+        ),
+    ):
+        # Does not raise.
+        await agents_mod._provision_after_gate(auth, "owner1")
+
+
+@pytest.mark.asyncio
+async def test_ctx_self_heal_202_propagates_for_org_context():
+    """Org context: a missing row now self-heals to 202 (the resolver fires
+    reconcile + returns 202). _ctx never branches on is_org_context — it just
+    propagates whatever the resolver raises."""
     from routers.teams import agents as agents_mod
     from routers.teams.deps import TeamsContextError
 
-    raise_409 = TeamsContextError(status_code=409, detail="team workspace not provisioned")
+    raise_202 = TeamsContextError(status_code=202, detail="team workspace provisioning")
 
     with patch.object(
         agents_mod.deps_mod,
         "resolve_teams_context",
         new_callable=AsyncMock,
-        side_effect=raise_409,
+        side_effect=raise_202,
     ):
         with pytest.raises(TeamsContextError) as exc:
             await agents_mod._ctx(_req(), MagicMock(), auth=_auth(org_id="org_x", is_org_context=True))
 
-    assert exc.value.status_code == 409
+    assert exc.value.status_code == 202
 
 
 @pytest.mark.asyncio

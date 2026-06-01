@@ -131,6 +131,65 @@ async def test_resolve_raises_when_no_company(auth_ctx):
 
 
 @pytest.mark.asyncio
+async def test_resolve_self_heals_to_202_when_reconcile_clear(auth_ctx):
+    """reconcile returning None (gate clear, provisioning launched) → 202
+    'provisioning' instead of 409, so /teams self-heals like /chat instead of
+    wedging the member on a terminal error."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)
+    session_factory = AsyncMock()
+
+    fired = {"n": 0}
+
+    async def _reconcile():
+        fired["n"] += 1
+        return None  # gate clear → keep polling
+
+    with pytest.raises(TeamsContextError) as exc:
+        await resolve_teams_context(
+            auth=auth_ctx,
+            repo=repo,
+            session_factory=session_factory,
+            cookies={},
+            response=_FakeResponse(),
+            reconcile=_reconcile,
+        )
+
+    assert exc.value.status_code == 202  # not 409 — UI keeps polling
+    assert fired["n"] == 1  # reconcile was awaited
+    session_factory.assert_not_awaited()  # no mint before the row is active
+
+
+@pytest.mark.asyncio
+async def test_resolve_returns_402_when_reconcile_reports_blocked(auth_ctx):
+    """reconcile returning a blocked-gate payload (no subscription/credits/
+    provider) → 402 with that payload, so the UI shows the subscribe/setup CTA
+    instead of spinning forever on a workspace that can never become active."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)
+    session_factory = AsyncMock()
+
+    blocked_payload = {"detail": "subscription required", "blocked": {"code": "subscription_required"}}
+
+    async def _reconcile():
+        return blocked_payload
+
+    with pytest.raises(TeamsContextError) as exc:
+        await resolve_teams_context(
+            auth=auth_ctx,
+            repo=repo,
+            session_factory=session_factory,
+            cookies={},
+            response=_FakeResponse(),
+            reconcile=_reconcile,
+        )
+
+    assert exc.value.status_code == 402
+    assert exc.value.detail == blocked_payload
+    session_factory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resolve_raises_202_when_provisioning(auth_ctx, active_company):
     active_company.status = "provisioning"
     repo = MagicMock()

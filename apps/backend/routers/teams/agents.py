@@ -14,12 +14,13 @@ the Teams BFF (Tasks 7-12) imports.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.encryption import decrypt  # noqa: F401 — re-exported for tests + downstream tasks.
@@ -39,6 +40,8 @@ from core.services.paperclip_openclaw_pairing import (
 )
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
+from core.services.provision_gate import evaluate_provision_gate
+from core.services.user_provision import ensure_user_ready
 
 from . import deps as deps_mod
 from .deps import TeamsContext, envelope_list
@@ -308,12 +311,13 @@ async def _ctx(
     ``deps_mod.resolve_teams_context`` (rather than a direct import) so
     test code that monkeypatches the deps module Just Works.
 
-    The 409 / 202 / 503 status codes from ``resolve_teams_context``
-    propagate as-is. This function does NOT autoprovision on the
-    no-DDB-row branch — provisioning is owned by the canonical
-    ``/container/status`` trigger which polls every 3s during pre-ready
-    state. A 409 here therefore indicates an operator-level error rather
-    than a self-heal opportunity.
+    Self-heal: a ``reconcile`` callback (``ensure_user_ready(auth)``) is
+    wired into ``resolve_teams_context`` so a missing Paperclip row drives
+    provisioning itself and returns 202 (the UI polls until active), instead
+    of wedging the member on a 409. ``/teams`` never polled
+    ``/container/status``, so without this a member could only get
+    provisioned by visiting ``/chat``. The 202 / 503 status codes from
+    ``resolve_teams_context`` otherwise propagate as-is.
 
     ``request.state.teams_user_id`` is stashed for the 401 self-heal
     exception handler (registered in ``main.py``): when an upstream
@@ -331,7 +335,89 @@ async def _ctx(
         session_factory=get_user_session_cookie_for,
         cookies=request.cookies,
         response=response,
+        # Self-heal: if this user has no Paperclip row yet, /teams drives
+        # reconciliation itself (it never polls /container/status). Fired in
+        # the background by resolve_teams_context; ensure_user_ready is
+        # idempotent + gate-first, so it no-ops when the org isn't ready and
+        # the frontend keeps polling the 202 until the row goes active.
+        reconcile=lambda: _self_heal_reconcile(auth),
     )
+
+
+async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
+    """Drive provisioning for a /teams visitor with no Paperclip row.
+
+    Returns the blocked-gate payload (-> 402 "subscribe required") when a
+    provision gate is up, else None (-> 202 "keep polling") after launching
+    provisioning in the background.
+
+    **Gate first (awaited).** If the visitor has no subscription / credits /
+    provider, ``ensure_user_ready`` would no-op forever and the UI would spin
+    on 202 indefinitely. So evaluate the same gate ``/container/status`` uses;
+    when it's up, surface its structured payload so the frontend renders the
+    subscribe/setup CTA (it maps 402 -> subscribe_required) instead of an
+    endless provisioning spinner. (Codex P2.)
+
+    **Provisioning in the background.** Once the gate clears, the actual
+    provisioning (``_provision_after_gate`` -> ``ensure_user_ready``) is fired
+    off the request path, mirroring ``/container/status``. ``ensure_user_ready``
+    can fail transiently (Paperclip admin 5xx/timeout, owner-email lookup), and
+    the Teams frontend only auto-retries the **202** sentinel — awaiting it
+    inline would let such a failure escape ``resolve_teams_context`` as a 500
+    and strand the user on the error overlay. Backgrounding it keeps these
+    failures retryable: the next /teams poll re-fires. (Codex P2.)
+    """
+    owner_id = resolve_owner_id(auth)
+    is_admin = auth.is_org_admin if auth.is_org_context else True
+
+    gate = await evaluate_provision_gate(
+        owner_id=owner_id,
+        clerk_user_id=auth.user_id,
+        is_admin=is_admin,
+    )
+    if gate is not None:
+        # Blocked — don't launch provisioning (it would no-op); tell the
+        # caller to return 402 so the UI shows the subscribe/setup CTA.
+        return gate.to_payload()
+
+    asyncio.create_task(_provision_after_gate(auth, owner_id))
+    return None
+
+
+async def _provision_after_gate(auth: AuthContext, owner_id: str) -> None:
+    """Background half of the self-heal (runs after the gate has cleared).
+
+    Decides the container flag from live ECS state, then runs
+    ``ensure_user_ready``. Off the request path so transient failures stay
+    retryable rather than 500-ing /teams (see ``_self_heal_reconcile``).
+
+    **Container flag from STATE**, mirroring ``/container/status`` — a static
+    flag can't be right for both cases:
+      - Container already running -> ``provision_container=False``. Calling
+        ``provision_user_container`` on a running service force-redeploys it
+        (``forceNewDeployment=True``); doing that on every /teams poll would
+        interrupt everyone in the org. (Codex P1.)
+      - No running container yet -> ``provision_container=True``. For an owner
+        whose FIRST entry point is /teams (never visited /chat), the container
+        must be created here, or the Paperclip row goes active, polling stops,
+        and agents can't run until they happen to open /chat. (Codex P2.)
+
+    Org members are excluded from container provisioning by ensure_user_ready
+    itself (the role guard at user_provision.py: members ride the owner's
+    shared container), so the flag only matters for personal owners / admins.
+    """
+    try:
+        container, _ip = await get_ecs_manager().resolve_running_container(owner_id)
+    except Exception:
+        # Container state indeterminate -> safe no-restart path (Paperclip
+        # only); the /chat poll remains the backstop for the container.
+        container = object()  # sentinel: treat as "exists", skip container start
+    try:
+        await ensure_user_ready(auth, provision_container=container is None)
+    except Exception:
+        # Background task: log and swallow so a transient failure doesn't
+        # surface as an unretrieved-task error. The next /teams poll re-fires.
+        logger.exception("teams self-heal: background provisioning failed for owner_id=%s", owner_id)
 
 
 # --- Routes ---

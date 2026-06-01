@@ -67,6 +67,42 @@ async def test_poll_returns_completed_status(async_client):
 
 
 @pytest.mark.asyncio
+async def test_poll_completion_dispatches_provisioning(async_client):
+    """Event-driven provisioning, Trigger B: when OAuth completes, the gate
+    clears (tokens now on file), so fire ensure_user_ready immediately instead
+    of waiting for the /container/status poll. ChatGPT OAuth is personal-only,
+    so this provisions the personal owner (provision_container default True)."""
+    with (
+        patch(
+            "routers.oauth.poll_device_code",
+            new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
+        ),
+        patch("routers.oauth.ensure_user_ready", new=AsyncMock()) as mock_fire,
+        patch("routers.oauth.asyncio.create_task", side_effect=lambda coro: coro.close()),
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+    assert resp.status_code == 200
+    mock_fire.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_poll_pending_does_not_dispatch_provisioning(async_client):
+    """While OAuth is still pending the gate is up — do NOT fire provisioning."""
+    with (
+        patch(
+            "routers.oauth.poll_device_code",
+            new=AsyncMock(return_value=DevicePollPending),
+        ),
+        patch("routers.oauth.ensure_user_ready", new=AsyncMock()) as mock_fire,
+        patch("routers.oauth.asyncio.create_task") as mock_task,
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+    assert resp.status_code == 200
+    mock_fire.assert_not_called()
+    mock_task.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_disconnect_revokes(async_client):
     with patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke:
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")

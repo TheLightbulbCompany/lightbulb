@@ -11,6 +11,8 @@ auth.json on EFS via the provision flow.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user
@@ -25,6 +27,7 @@ from core.services.oauth_service import (
     request_device_code,
     revoke_user_oauth,
 )
+from core.services.user_provision import ensure_user_ready
 
 
 router = APIRouter(prefix="/oauth/chatgpt", tags=["oauth"])
@@ -108,6 +111,14 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     if result is DevicePollPending:
         return {"status": "pending"}
     assert isinstance(result, DevicePollResult)
+
+    # Event-driven provisioning (Trigger B): OAuth just completed, so the
+    # provider gate clears (tokens are now on file). Provision off this event
+    # instead of waiting for the /container/status poll to win. ChatGPT OAuth
+    # is personal-only, so ctx is a personal owner. ensure_user_ready is
+    # gate-first + idempotent, so this dedups against the poll.
+    asyncio.create_task(ensure_user_ready(ctx))
+
     return {"status": "completed", "account_id": result.account_id}
 
 

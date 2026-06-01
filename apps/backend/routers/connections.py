@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -160,11 +161,47 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     return {"status": "connected", "provider": provider}
 
 
+async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, account: str) -> None:
+    """Disconnect a single Google account: drop its keyring token, its inventory
+    row, and any per-agent assignments pointing at it. The provider-level status
+    and other accounts are left intact — one provider holds many accounts.
+
+    Idempotent: a repeat disconnect of an already-gone account is a success. We
+    skip the keyring remove when the account isn't in the inventory, and also
+    tolerate the remover's not-found error (gog exits non-zero for an account it
+    can't find) for the case where the keyring drifted from the inventory."""
+    accounts = await google_accounts_repo.list_accounts(owner_id)
+    if any(a["email"] == account for a in accounts):
+        remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer) if p.wiring.materializer else None
+        if remover:
+            try:
+                remover(owner_id, p.key, {"email": account})
+            except subprocess.CalledProcessError:
+                # Account already absent from the keyring — treat as success so a
+                # double-disconnect doesn't surface a 500.
+                pass
+    await google_accounts_repo.remove_account(owner_id, account)
+    assignments = await google_accounts_repo.list_assignments(owner_id)
+    for agent_id, email in assignments.items():
+        if email == account:
+            await google_accounts_repo.remove_assignment(owner_id, agent_id)
+            # An agent stripped of its account falls back to the owner's default
+            # account at resolve time, so no explicit re-seed write is needed here.
+
+
 @router.delete("/{provider}")
-async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user)):
+async def disconnect(provider: str, account: str | None = None, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
+    # ?account= scopes the disconnect to one Google account. It is Google-specific
+    # (one provider, many accounts), so reject it on any other provider rather
+    # than silently honoring it.
+    if account is not None:
+        if provider != "google":
+            raise HTTPException(status_code=400, detail="the account parameter is only supported for google")
+        await _disconnect_one_google_account(owner_id, p, account)
+        return {"status": "disconnected", "provider": provider, "account": account}
     # Materializer-backed providers wrote credential files onto EFS; remove
     # those first so disconnect leaves no on-disk residue. The remover deletes
     # the artifact by owner/provider and does not need the secret value.
@@ -181,6 +218,14 @@ async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user
     # one) and the status row, then blank any per-agent openclaw.json slots.
     await integration_secret_store.delete(owner_id, provider)
     await integrations_repo.delete(owner_id, provider)
+    # Google holds a per-account inventory alongside the provider status row;
+    # a provider-level disconnect must clear every account + assignment so no
+    # stale record outlives the dropped keyring.
+    if provider == "google":
+        for acct in await google_accounts_repo.list_accounts(owner_id):
+            await google_accounts_repo.remove_account(owner_id, acct["email"])
+        for agent_id in await google_accounts_repo.list_assignments(owner_id):
+            await google_accounts_repo.remove_assignment(owner_id, agent_id)
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:
             await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), "")

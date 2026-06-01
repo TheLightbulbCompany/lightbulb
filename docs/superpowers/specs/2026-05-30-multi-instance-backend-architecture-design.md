@@ -76,6 +76,15 @@ any owner, and the loss of any single instance does not cause an outage.
   persistent event log — out of scope.
 - **Cross-region / multi-AZ active-active beyond standard ECS.** Out of scope.
 - **The dead-air `run_active` UX fix (#780).** Separate; ships independently; inherits this work.
+- **First-frame delivery during GSI propagation lag (accepted residual, decision 2026-05-31).**
+  Fan-out resolves recipients from the eventually-consistent `by-owner-id` GSI; GSIs cannot be read
+  strongly-consistently and fan-out is inherently a GSI-direction query. So a brand-new tab whose
+  **very first action is a single one-shot frame** (a slash command, or an immediate error/`done`)
+  sent within the sub-second propagation window can miss that one frame — there is no later event to
+  self-heal on. We **accept** this rather than merge the in-process connection set into the delivery
+  path, keeping DynamoDB the single source of truth for fan-out (no in-memory fallback). Exposure is
+  limited to a new tab's first one-shot message; ordinary multi-chunk chat self-heals on its next
+  frame (the cache refuses to retain empty/partial results — §3.1). Codex L725; won't-fix-by-design.
 
 ---
 

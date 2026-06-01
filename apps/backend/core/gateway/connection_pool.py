@@ -722,6 +722,19 @@ class GatewayConnection:
         else:
             self._recipients_cache = None
             self._recipients_cache_ts = 0.0
+        # Known, accepted residual (decision 2026-05-31): we return the GSI
+        # result for THIS send without merging the not-yet-propagated local
+        # connection. So a brand-new tab whose VERY FIRST action is a single
+        # one-shot frame (a slash command, or an immediate error/`done`) sent
+        # within the sub-second GSI-propagation window can miss that one frame —
+        # there's no later event to self-heal on. We accept this rather than read
+        # the in-process set in the delivery path: DynamoDB stays the single
+        # source of truth for fan-out recipients (no in-memory merge), and the
+        # exposure is limited to a new tab's first one-shot message; ordinary
+        # multi-chunk chat self-heals on its next frame once the GSI is consistent.
+        # Closing it fully would require merging locally-registered connections
+        # here — deliberately NOT done. A consistent read can't help: GSIs are
+        # always eventually consistent and fan-out is inherently a GSI query.
         return recipients
 
     def invalidate_recipients_cache(self) -> None:

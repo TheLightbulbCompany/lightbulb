@@ -11,6 +11,7 @@ import { AgentsPanel } from "./panels/AgentsPanel";
 import { SkillsPanel } from "./panels/SkillsPanel";
 import { LLMPanel } from "./panels/LLMPanel";
 import { CreditsPanel } from "./panels/CreditsPanel";
+import { IntegrationsPanel } from "./panels/IntegrationsPanel";
 
 
 interface ControlPanelRouterProps {
@@ -30,6 +31,7 @@ const PANELS: Record<string, React.ComponentType> = {
   agents: AgentsPanel,
   skills: SkillsPanel,
   llm: LLMPanel,
+  integrations: IntegrationsPanel,
   credits: CreditsPanel,
 };
 

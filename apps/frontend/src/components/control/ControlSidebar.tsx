@@ -8,6 +8,7 @@ import {
   Clock,
   BarChart3,
   Plug,
+  Blocks,
   Wallet,
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
@@ -36,6 +37,7 @@ const NAV_ITEMS = [
   { key: "cron", label: "Cron Jobs", icon: Clock },
   { key: "usage", label: "Usage", icon: BarChart3 },
   { key: "llm", label: "LLM Provider", icon: Plug },
+  { key: "integrations", label: "Integrations", icon: Blocks },
   { key: "credits", label: "Credits", icon: Wallet },
 ];
 

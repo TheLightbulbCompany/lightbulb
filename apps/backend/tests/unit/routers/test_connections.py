@@ -170,6 +170,30 @@ class TestValidateToken:
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
         assert await connections._validate_token(self._slack_provider(), "xoxb") is False
 
+    @pytest.mark.asyncio
+    async def test_token_prefix_rejects_wrong_type_without_http(self, monkeypatch):
+        # Slack requires an `xoxp-` user token; a bot `xoxb-` token is rejected
+        # pre-flight (no HTTP call), since auth.test would otherwise ok it.
+        from routers import connections
+        from core.services.credentials import registry
+
+        async def fake_request(self, method, url, **kwargs):
+            raise AssertionError("HTTP must not run for a wrong-prefix token")
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        assert await connections._validate_token(registry.get_provider("slack"), "xoxb-bot") is False
+
+    @pytest.mark.asyncio
+    async def test_token_prefix_allows_matching_type(self, monkeypatch):
+        from routers import connections
+        from core.services.credentials import registry
+
+        async def fake_request(self, method, url, **kwargs):
+            return httpx.Response(200, json={"ok": True})
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        assert await connections._validate_token(registry.get_provider("slack"), "xoxp-good") is True
+
 
 class TestListConnections:
     """GET /api/v1/connections — catalog + per-provider status."""

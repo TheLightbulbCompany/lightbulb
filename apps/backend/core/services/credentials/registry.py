@@ -74,6 +74,11 @@ class ValidateSpec(BaseModel):
     # validity only in the body (Slack `auth.test` -> {"ok": false}; Linear
     # GraphQL -> 200 with `errors`). A missing/falsy path means invalid.
     success_json_field: str | None = None
+    # Required token prefix, checked BEFORE the HTTP call. Some validate endpoints
+    # accept more token shapes than the wired env var can use — Slack's auth.test
+    # says `ok` for a bot `xoxb-` token, but the server is given the user-token
+    # slot, so only an `xoxp-` token actually works once spawned.
+    token_prefix: str | None = None
 
 
 class Requires(BaseModel):

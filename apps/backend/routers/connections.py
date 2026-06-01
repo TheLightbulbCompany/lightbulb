@@ -72,6 +72,11 @@ def _get_provider_or_404(provider: str) -> registry.Provider:
 async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
+    # Reject a token shape the wired server cannot use, before spending an HTTP
+    # call: some validate endpoints accept token types the env var doesn't (Slack
+    # auth.test oks a bot `xoxb-` token, but the server gets the user-token slot).
+    if p.validation.token_prefix and not token.startswith(p.validation.token_prefix):
+        return False
     scheme = p.validation.auth_scheme
     value = f"{scheme} {token}".strip() if scheme else token
     # Static spec headers first, then the auth header — the auth header wins on a

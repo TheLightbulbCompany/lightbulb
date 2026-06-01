@@ -69,6 +69,11 @@ class ValidateSpec(BaseModel):
     # require a fixed header on every call (e.g. Notion's `Notion-Version`) — a
     # request without it is rejected even with a valid token.
     headers: dict[str, str] = Field(default_factory=dict)
+    # Dotted JSON path that must resolve to a truthy value for the token to count
+    # as valid. Some providers answer HTTP 200 even for a bad token and signal
+    # validity only in the body (Slack `auth.test` -> {"ok": false}; Linear
+    # GraphQL -> 200 with `errors`). A missing/falsy path means invalid.
+    success_json_field: str | None = None
 
 
 class Requires(BaseModel):

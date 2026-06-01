@@ -83,9 +83,30 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
             if p.validation.body is not None:
                 kwargs["json"] = p.validation.body
             resp = await client.request(p.validation.method, p.validation.url, **kwargs)
-        return resp.status_code < 400
+        if resp.status_code >= 400:
+            return False
+        # Providers that answer 200 even for a bad token (Slack auth.test,
+        # Linear GraphQL) gate validity on a body field instead of the status.
+        if p.validation.success_json_field:
+            return _json_path_truthy(resp, p.validation.success_json_field)
+        return True
     except httpx.HTTPError:
         return False
+
+
+def _json_path_truthy(resp: httpx.Response, dotted_path: str) -> bool:
+    """Walk a dotted path into the response JSON and report whether it resolves
+    to a truthy value. A non-JSON body or a missing key means invalid (not an
+    error) — a malformed response is never a valid credential."""
+    try:
+        cur: object = resp.json()
+    except ValueError:
+        return False
+    for part in dotted_path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return False
+        cur = cur[part]
+    return bool(cur)
 
 
 @router.get("")

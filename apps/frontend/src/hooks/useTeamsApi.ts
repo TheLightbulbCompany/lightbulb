@@ -1,7 +1,22 @@
 "use client";
 
 import useSWR, { type SWRConfiguration, type SWRResponse } from "swr";
-import { useApi } from "@/lib/api";
+import { useApi, type ApiCallOptions } from "@/lib/api";
+
+/**
+ * Teams BFF cookie opt-ins, applied to every `/teams/*` call (decision D2 —
+ * least surface). `credentials: "include"` makes the browser attach the
+ * HttpOnly Paperclip session cookie (scoped to `.isol8.co`) on the
+ * cross-subdomain request to the api host; the Clerk bearer header still
+ * identifies the user. `retryOn401` re-issues the request once on a 401 —
+ * the backend reseeds a fresh cookie on that 401 (body
+ * `{"detail":"session refreshed, retry"}`), so the retry succeeds. Only Teams
+ * calls opt in; the rest of the app keeps the bearer-only behavior.
+ */
+const TEAMS_API_OPTS: ApiCallOptions = {
+  credentials: "include",
+  retryOn401: true,
+};
 
 /**
  * The BFF emits ``HTTPException(status_code=202, detail="team workspace
@@ -58,7 +73,7 @@ export function useTeamsApi() {
     return useSWR<T>(
       `/teams${path}`,
       async () => {
-        const body = (await api.get(`/teams${path}`)) as T | { detail?: string };
+        const body = (await api.get(`/teams${path}`, TEAMS_API_OPTS)) as T | { detail?: string };
         if (
           body &&
           typeof body === "object" &&
@@ -76,7 +91,7 @@ export function useTeamsApi() {
   }
 
   async function post<T = unknown>(path: string, body: unknown): Promise<T> {
-    return (await api.post(`/teams${path}`, body)) as T;
+    return (await api.post(`/teams${path}`, body, TEAMS_API_OPTS)) as T;
   }
 
   // The BFF defines `@router.patch(...)` handlers on settings/routines/
@@ -85,11 +100,11 @@ export function useTeamsApi() {
   // `api.patch` so the actual HTTP method matches what the backend
   // accepts.
   async function patch<T = unknown>(path: string, body: unknown): Promise<T> {
-    return (await api.patch(`/teams${path}`, body)) as T;
+    return (await api.patch(`/teams${path}`, body, TEAMS_API_OPTS)) as T;
   }
 
   async function del<T = unknown>(path: string): Promise<T> {
-    return (await api.del(`/teams${path}`)) as T;
+    return (await api.del(`/teams${path}`, TEAMS_API_OPTS)) as T;
   }
 
   return { read: useRead, post, patch, del };

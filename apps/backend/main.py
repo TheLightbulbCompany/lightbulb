@@ -451,6 +451,53 @@ app = FastAPI(
 # is exactly what an out-of-range upstream status implies.
 @app.exception_handler(PaperclipApiError)
 async def paperclip_api_error_handler(request, exc: PaperclipApiError):
+    # 401 self-heal (Teams BFF only). A Teams request forwards the browser's
+    # Paperclip session cookie upstream; once that cookie expires/rotates the
+    # upstream returns 401. Without intervention the stale cookie keeps being
+    # forwarded and the user loops 401 forever (the cookie is HttpOnly, so the
+    # frontend can't clear it). So: catch the upstream 401, FORCE a fresh
+    # per-user sign-in, overwrite the browser cookie on the response, and
+    # return a 401 with ``{"detail":"session refreshed, retry"}``.
+    #
+    # Contract with the frontend (wired in a later step): on a 401 from a
+    # Teams call, retry the request EXACTLY ONCE — the retry now carries the
+    # freshly reseeded cookie and succeeds. We do this here, in ONE exception
+    # handler, rather than wrapping each of the ~40 Teams handlers.
+    #
+    # ``request.state.teams_user_id`` is stamped by ``_ctx`` before any
+    # upstream call. Its presence is what scopes this self-heal to Teams BFF
+    # requests; the board proxy handles its own 401 fallback inline and never
+    # sets this, so it falls through to the faithful-status path below.
+    teams_user_id = getattr(request.state, "teams_user_id", None)
+    if exc.status_code == 401 and teams_user_id:
+        from core.services.paperclip_session_cookie import resolve_session_cookie
+        from routers.teams.agents import get_user_session_cookie_for
+
+        refresh = JSONResponse(
+            status_code=401,
+            content={"detail": "session refreshed, retry"},
+        )
+        try:
+            await resolve_session_cookie(
+                cookies=request.cookies,
+                response=refresh,
+                user_id=teams_user_id,
+                mint=lambda: get_user_session_cookie_for(teams_user_id),
+                force=True,
+            )
+        except Exception:
+            # The re-mint (a fresh per-user sign-in) can fail for many reasons:
+            # SessionCookieError (missing key), PaperclipApiError (sign-in 4xx/5xx),
+            # UserSessionError (workspace no longer active), Clerk lookup errors.
+            # Any of them must degrade to a plain 401 — never escape this handler
+            # (which would 500) or loop the client.
+            logger.warning("teams 401 self-heal: re-mint failed for user %s", teams_user_id, exc_info=True)
+            return JSONResponse(
+                status_code=401,
+                content={"detail": str(exc), "upstream_status": exc.status_code},
+            )
+        return refresh
+
     status = exc.status_code if 400 <= exc.status_code < 600 else 502
     return JSONResponse(
         status_code=status,

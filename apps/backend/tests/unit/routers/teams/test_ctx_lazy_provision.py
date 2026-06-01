@@ -30,6 +30,19 @@ def _auth(user_id: str = "u1", org_id: str | None = None, is_org_context: bool =
     return auth
 
 
+def _req() -> MagicMock:
+    """Minimal Request stand-in for ``_ctx``: a cookie jar + a writable
+    ``state`` for the 401-self-heal user-id stash."""
+
+    class _State:
+        pass
+
+    req = MagicMock()
+    req.cookies = {}
+    req.state = _State()
+    return req
+
+
 @pytest.mark.asyncio
 async def test_ctx_returns_context_when_resolve_succeeds():
     """Happy path — resolve_teams_context returned a context, _ctx
@@ -46,15 +59,18 @@ async def test_ctx_returns_context_when_resolve_succeeds():
         session_cookie="cookie",
     )
 
+    req = _req()
     with patch.object(
         agents_mod.deps_mod,
         "resolve_teams_context",
         new_callable=AsyncMock,
         return_value=fake_ctx,
     ):
-        result = await agents_mod._ctx(auth=_auth())
+        result = await agents_mod._ctx(req, MagicMock(), auth=_auth())
 
     assert result is fake_ctx
+    # _ctx stamps the user id for the 401 self-heal handler.
+    assert req.state.teams_user_id == "u1"
 
 
 @pytest.mark.asyncio
@@ -75,7 +91,7 @@ async def test_ctx_does_not_autoprovision():
         side_effect=raise_409,
     ):
         with pytest.raises(TeamsContextError) as exc:
-            await agents_mod._ctx(auth=_auth())
+            await agents_mod._ctx(_req(), MagicMock(), auth=_auth())
 
     assert exc.value.status_code == 409
     assert exc.value.detail == "team workspace not provisioned"
@@ -101,7 +117,7 @@ async def test_ctx_propagates_409_for_org_context():
         side_effect=raise_409,
     ):
         with pytest.raises(TeamsContextError) as exc:
-            await agents_mod._ctx(auth=_auth(org_id="org_x", is_org_context=True))
+            await agents_mod._ctx(_req(), MagicMock(), auth=_auth(org_id="org_x", is_org_context=True))
 
     assert exc.value.status_code == 409
 
@@ -122,6 +138,6 @@ async def test_ctx_propagates_other_status_codes_unchanged():
         side_effect=raise_503,
     ):
         with pytest.raises(TeamsContextError) as exc:
-            await agents_mod._ctx(auth=_auth())
+            await agents_mod._ctx(_req(), MagicMock(), auth=_auth())
 
     assert exc.value.status_code == 503

@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timezone
 
+import core.services.paperclip_session_cookie as sc
 from core.repositories.paperclip_repo import PaperclipCompany
 from routers.teams.deps import (
     TeamsContext,
@@ -9,6 +10,17 @@ from routers.teams.deps import (
     resolve_teams_context,
     TeamsContextError,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_key_and_singleflight(monkeypatch):
+    # resolve_session_cookie mints an HS256 binding cookie on the cold
+    # path, signed with PAPERCLIP_SERVICE_TOKEN_KEY.
+    monkeypatch.setattr(sc.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-bind-secret", raising=False)
+    yield
+    # Evict the cold-mint singleflight buffer so a buffered cookie from
+    # one test doesn't satisfy the next test's cold-mint.
+    sc._cold.evict("u1")
 
 
 # ─── envelope_list ────────────────────────────────────────────────────────
@@ -40,6 +52,16 @@ def test_envelope_list_handles_garbage_response():
     assert envelope_list(42, "x") == {"x": []}
 
 
+class _FakeResponse:
+    """Minimal ``.set_cookie`` recorder for resolve_session_cookie."""
+
+    def __init__(self):
+        self.cookies: list[dict] = []
+
+    def set_cookie(self, **kwargs):
+        self.cookies.append(kwargs)
+
+
 @pytest.fixture
 def auth_ctx():
     auth = MagicMock()
@@ -67,12 +89,18 @@ def active_company():
 async def test_resolve_returns_context_for_active_company(auth_ctx, active_company):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=active_company)
-    session_factory = AsyncMock(return_value="cookie-value")
+    # Mint returns Better Auth's bare ``name=value`` session-cookie line.
+    cookie_line = "__Secure-paperclip-default.session_token=cookie-value"
+    session_factory = AsyncMock(return_value=cookie_line)
 
+    # No cookie presented → cold-mint path: session_factory is awaited
+    # once for "u1" and its result becomes the context cookie.
     ctx = await resolve_teams_context(
         auth=auth_ctx,
         repo=repo,
         session_factory=session_factory,
+        cookies={},
+        response=_FakeResponse(),
     )
 
     assert isinstance(ctx, TeamsContext)
@@ -80,7 +108,7 @@ async def test_resolve_returns_context_for_active_company(auth_ctx, active_compa
     assert ctx.org_id == "o1"
     assert ctx.company_id == "co_abc"
     assert ctx.paperclip_user_id == "pcu_xyz"
-    assert ctx.session_cookie == "cookie-value"
+    assert ctx.session_cookie == cookie_line
     session_factory.assert_awaited_once_with("u1")
 
 
@@ -88,13 +116,18 @@ async def test_resolve_returns_context_for_active_company(auth_ctx, active_compa
 async def test_resolve_raises_when_no_company(auth_ctx):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
+    session_factory = AsyncMock()
     with pytest.raises(TeamsContextError) as exc:
         await resolve_teams_context(
             auth=auth_ctx,
             repo=repo,
-            session_factory=AsyncMock(),
+            session_factory=session_factory,
+            cookies={},
+            response=_FakeResponse(),
         )
     assert exc.value.status_code == 409
+    # Provisioning gate: no mint before the status check.
+    session_factory.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -102,10 +135,14 @@ async def test_resolve_raises_202_when_provisioning(auth_ctx, active_company):
     active_company.status = "provisioning"
     repo = MagicMock()
     repo.get = AsyncMock(return_value=active_company)
+    session_factory = AsyncMock()
     with pytest.raises(TeamsContextError) as exc:
         await resolve_teams_context(
             auth=auth_ctx,
             repo=repo,
-            session_factory=AsyncMock(),
+            session_factory=session_factory,
+            cookies={},
+            response=_FakeResponse(),
         )
     assert exc.value.status_code == 202
+    session_factory.assert_not_awaited()

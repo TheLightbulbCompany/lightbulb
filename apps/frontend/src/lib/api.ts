@@ -118,13 +118,34 @@ interface UploadResponse {
   uploaded: UploadedFile[];
 }
 
+/**
+ * Per-call opt-ins for the Teams BFF cookie flow.
+ *
+ * These default to "off" so the vast majority of callers (which authenticate
+ * purely via the Clerk bearer token) keep their existing behavior. Only the
+ * Teams data layer threads these through.
+ *
+ * - `credentials: "include"` makes the browser attach the HttpOnly Paperclip
+ *   session cookie (scoped to `.isol8.co`) on the cross-subdomain request to
+ *   the api host. The backend CORS already allows credentials for these
+ *   origins. We scope this to Teams calls only (decision D2 — least surface).
+ * - `retryOn401` retries the *same* request exactly once on a 401. The backend
+ *   reseeds a fresh cookie on the 401 it returns for an expired/rotated
+ *   session (body `{"detail":"session refreshed, retry"}`), so the single
+ *   retry carries the new cookie and succeeds.
+ */
+export interface ApiCallOptions {
+  credentials?: RequestCredentials;
+  retryOn401?: boolean;
+}
+
 interface ApiMethods {
   syncUser: () => Promise<unknown>;
-  get: (endpoint: string) => Promise<unknown>;
-  post: (endpoint: string, body: unknown) => Promise<unknown>;
-  put: (endpoint: string, body: unknown) => Promise<unknown>;
-  patch: (endpoint: string, body: unknown) => Promise<unknown>;
-  del: (endpoint: string) => Promise<unknown>;
+  get: (endpoint: string, opts?: ApiCallOptions) => Promise<unknown>;
+  post: (endpoint: string, body: unknown, opts?: ApiCallOptions) => Promise<unknown>;
+  put: (endpoint: string, body: unknown, opts?: ApiCallOptions) => Promise<unknown>;
+  patch: (endpoint: string, body: unknown, opts?: ApiCallOptions) => Promise<unknown>;
+  del: (endpoint: string, opts?: ApiCallOptions) => Promise<unknown>;
   patchConfig: (patch: Record<string, unknown>) => Promise<{ status: string; owner_id: string }>;
   uploadFiles: (files: File[], agentId: string) => Promise<UploadResponse>;
   saveWorkspaceFile: (agentId: string, path: string, content: string, tab: "workspace" | "config") => Promise<{ status: string; path: string }>;
@@ -134,7 +155,11 @@ export function useApi(): ApiMethods {
   const { getToken } = useAuth();
 
   const authenticatedFetch = useCallback(
-    async function (endpoint: string, options: RequestInit = {}): Promise<unknown> {
+    async function (
+      endpoint: string,
+      options: RequestInit = {},
+      apiOpts: ApiCallOptions = {},
+    ): Promise<unknown> {
       const token = await getToken();
 
       if (!token) {
@@ -151,34 +176,53 @@ export function useApi(): ApiMethods {
         ...(isFormData ? {} : { "Content-Type": "application/json" }),
       };
 
-      const response = await fetch(`${BACKEND_URL}${endpoint}`, {
-        ...options,
-        headers,
-      });
+      // `_attempt` distinguishes the first try (0) from the single retry (1)
+      // so the 401-retry below can never loop: we retry at most once, then
+      // surface the error like any other non-2xx.
+      const doFetch = async (_attempt: number): Promise<unknown> => {
+        const response = await fetch(`${BACKEND_URL}${endpoint}`, {
+          ...options,
+          headers,
+          // Opt-in only: Teams calls pass `credentials: "include"` so the
+          // browser attaches the `.isol8.co` Paperclip cookie. Every other
+          // caller omits this and keeps fetch's default (`same-origin`).
+          ...(apiOpts.credentials ? { credentials: apiOpts.credentials } : {}),
+        });
 
-      if (!response.ok) {
-        // Preserve the parsed body on non-2xx so callers can switch on
-        // structured error fields (e.g. `blocked` from /container/*
-        // endpoints). Falls back to `null` on empty / non-JSON / malformed
-        // bodies.
-        const ct = response.headers.get("Content-Type") ?? "";
-        let body: unknown = null;
-        if (ct.includes("application/json")) {
-          try {
-            body = await response.json();
-          } catch {
-            // empty/malformed JSON — leave body as null
+        if (!response.ok) {
+          // Retry-once on 401 for opted-in (Teams) calls. The backend reseeds
+          // a fresh session cookie on this 401, so re-issuing the identical
+          // request now carries the new cookie. Guarded to a single retry via
+          // `_attempt` — a second 401 falls through to the ApiError throw.
+          if (response.status === 401 && apiOpts.retryOn401 && _attempt === 0) {
+            return doFetch(1);
           }
-        }
-        const detail =
-          body && typeof body === "object" && "detail" in body
-            ? (body as { detail?: unknown }).detail
-            : undefined;
-        const message = typeof detail === "string" ? detail : undefined;
-        throw new ApiError(response.status, body, message);
-      }
 
-      return response.json();
+          // Preserve the parsed body on non-2xx so callers can switch on
+          // structured error fields (e.g. `blocked` from /container/*
+          // endpoints). Falls back to `null` on empty / non-JSON / malformed
+          // bodies.
+          const ct = response.headers.get("Content-Type") ?? "";
+          let body: unknown = null;
+          if (ct.includes("application/json")) {
+            try {
+              body = await response.json();
+            } catch {
+              // empty/malformed JSON — leave body as null
+            }
+          }
+          const detail =
+            body && typeof body === "object" && "detail" in body
+              ? (body as { detail?: unknown }).detail
+              : undefined;
+          const message = typeof detail === "string" ? detail : undefined;
+          throw new ApiError(response.status, body, message);
+        }
+
+        return response.json();
+      };
+
+      return doFetch(0);
     },
     [getToken]
   );
@@ -188,29 +232,29 @@ export function useApi(): ApiMethods {
       syncUser(): Promise<unknown> {
         return authenticatedFetch("/users/sync", { method: "POST" });
       },
-      get(endpoint: string): Promise<unknown> {
-        return authenticatedFetch(endpoint, { method: "GET" });
+      get(endpoint: string, opts?: ApiCallOptions): Promise<unknown> {
+        return authenticatedFetch(endpoint, { method: "GET" }, opts);
       },
-      post(endpoint: string, body: unknown): Promise<unknown> {
+      post(endpoint: string, body: unknown, opts?: ApiCallOptions): Promise<unknown> {
         return authenticatedFetch(endpoint, {
           method: "POST",
           body: JSON.stringify(body),
-        });
+        }, opts);
       },
-      put(endpoint: string, body: unknown): Promise<unknown> {
+      put(endpoint: string, body: unknown, opts?: ApiCallOptions): Promise<unknown> {
         return authenticatedFetch(endpoint, {
           method: "PUT",
           body: JSON.stringify(body),
-        });
+        }, opts);
       },
-      patch(endpoint: string, body: unknown): Promise<unknown> {
+      patch(endpoint: string, body: unknown, opts?: ApiCallOptions): Promise<unknown> {
         return authenticatedFetch(endpoint, {
           method: "PATCH",
           body: JSON.stringify(body),
-        });
+        }, opts);
       },
-      del(endpoint: string): Promise<unknown> {
-        return authenticatedFetch(endpoint, { method: "DELETE" });
+      del(endpoint: string, opts?: ApiCallOptions): Promise<unknown> {
+        return authenticatedFetch(endpoint, { method: "DELETE" }, opts);
       },
       patchConfig(patch: Record<string, unknown>): Promise<{ status: string; owner_id: string }> {
         return authenticatedFetch("/config", {

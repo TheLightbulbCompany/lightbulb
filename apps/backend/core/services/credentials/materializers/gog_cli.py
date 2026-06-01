@@ -103,4 +103,30 @@ def write(owner_id: str, provider_key: str, credential: dict) -> None:
 
 
 def remove(owner_id: str, provider_key: str, credential: dict) -> None:
+    email = credential.get("email")
+    if email:
+        # One gog keyring holds every Google account for the owner. Disconnecting a
+        # single account must remove only that account's stored token — rmtree of the
+        # whole gogcli dir would orphan every other connected account. gog's per-account
+        # removal needs BOTH --no-input (never prompt) and --force; without --force it
+        # refuses non-interactive removal and exits non-zero.
+        cfg = owner_efs_root(owner_id) / ".config"
+        env = {
+            **os.environ,
+            "XDG_CONFIG_HOME": str(cfg),
+            "GOG_KEYRING_BACKEND": "file",
+            "GOG_KEYRING_PASSWORD": settings.GOG_KEYRING_PASSWORD,
+        }
+        # Fixed argv; email is a validated address carried as an argv element, never a
+        # shell string. check=True so a failure surfaces to the caller.
+        subprocess.run(
+            ["gog", "auth", "remove", email, "--no-input", "--force"],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return
+
+    # No email means the caller intends to disconnect EVERY account — drop the keyring.
     shutil.rmtree(owner_efs_root(owner_id) / ".config" / "gogcli", ignore_errors=True)

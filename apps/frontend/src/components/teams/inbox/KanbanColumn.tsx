@@ -29,47 +29,38 @@ export function KanbanColumn({
   liveIssueIds,
 }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
-  const isEmpty = issues.length === 0;
 
+  // Every status column is always full-width with its label visible — empty
+  // workflow stages must not vanish (they're still valid drop targets, and
+  // hiding their names made the board unreadable). `flex-1` lets the columns
+  // grow to fill the board width (no dead space on the right); `min-w-[260px]`
+  // keeps them readable and lets the board scroll horizontally when narrow.
   return (
     <div
       data-kanban-column={status}
-      data-empty={isEmpty ? "true" : "false"}
-      className={cn(
-        "flex flex-col shrink-0 transition-[width,min-width]",
-        isEmpty && !isOver
-          ? "min-w-[48px] w-[48px]"
-          : "min-w-[260px] w-[260px]",
-      )}
+      className="flex h-full min-w-[260px] flex-1 flex-col"
     >
-      <div
-        className={cn(
-          "flex items-center gap-2 px-2 py-2 mb-1",
-          isEmpty && !isOver && "justify-center",
-        )}
-      >
+      {/* Header stays put above the scrolling card list, so column names +
+          counts remain visible while you scroll a tall column. */}
+      <div className="mb-1 flex shrink-0 items-center gap-2 px-2 py-2">
         <StatusIcon status={status} />
-        {(!isEmpty || isOver) && (
-          <>
-            <span
-              className="text-xs font-semibold uppercase tracking-wide"
-              style={{ color: "var(--mute)" }}
-            >
-              {statusLabel(status)}
-            </span>
-            <span
-              className="text-xs ml-auto tabular-nums"
-              style={{ color: "var(--mute-soft)" }}
-            >
-              {issues.length}
-            </span>
-          </>
-        )}
+        <span
+          className="text-xs font-semibold uppercase tracking-wide"
+          style={{ color: "var(--mute)" }}
+        >
+          {statusLabel(status)}
+        </span>
+        <span
+          className="text-xs ml-auto tabular-nums"
+          style={{ color: "var(--mute-soft)" }}
+        >
+          {issues.length}
+        </span>
       </div>
       <div
         ref={setNodeRef}
         className={cn(
-          "flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors",
+          "min-h-0 flex-1 space-y-1 overflow-y-auto rounded-md p-1 transition-colors",
         )}
         style={{
           backgroundColor: isOver ? "var(--edge)" : "var(--cream-deeper)",

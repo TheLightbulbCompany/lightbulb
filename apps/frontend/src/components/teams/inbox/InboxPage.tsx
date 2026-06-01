@@ -300,7 +300,7 @@ export function InboxPage({
   }, [tab, searchQuery]);
 
   return (
-    <div className="flex flex-col p-4 sm:p-6 editorial-page">
+    <div className="flex flex-col h-full min-h-0 p-4 sm:p-6 editorial-page">
       <PanelMasthead overline="Inbox" title="Inbox" className="mb-4" />
       <NeedsAttentionBand companyId={companyId} agents={agents} />
       <InboxToolbar
@@ -334,36 +334,38 @@ export function InboxPage({
           Failed to load inbox. Try refreshing.
         </div>
       )}
-      {isLoading && sections.length === 0 ? (
-        <div className="mt-4">
+      <div className="mt-4 flex flex-1 flex-col min-h-0">
+        {isLoading && sections.length === 0 ? (
           <PageSkeleton variant="inbox" />
-        </div>
-      ) : viewMode === "board" ? (
-        <KanbanBoard
-          issues={boardIssues}
-          agents={agents}
-          onUpdateIssue={onUpdateIssue}
-        />
-      ) : sections.length === 0 ? (
-        <PanelEmptyState
-          icon={InboxIcon}
-          headline={emptyState.headline}
-          supporting={emptyState.supporting}
-        />
-      ) : (
-        <InboxList
-          sections={sections}
-          selectedIssueId={selectedIssueId}
-          onSelect={setSelectedIssueId}
-          onArchive={(id) => void archiveStack.archive(id)}
-          onMarkRead={(id) => {
-            void archiveStack.markRead(id);
-            readItems.markRead(id);
-          }}
-          archivingIds={archiveStack.archivingIssueIds}
-          searchQuery={searchQuery}
-        />
-      )}
+        ) : viewMode === "board" ? (
+          <KanbanBoard
+            issues={boardIssues}
+            agents={agents}
+            onUpdateIssue={onUpdateIssue}
+          />
+        ) : sections.length === 0 ? (
+          <PanelEmptyState
+            icon={InboxIcon}
+            headline={emptyState.headline}
+            supporting={emptyState.supporting}
+          />
+        ) : (
+          <div className="h-full overflow-y-auto">
+            <InboxList
+              sections={sections}
+              selectedIssueId={selectedIssueId}
+              onSelect={setSelectedIssueId}
+              onArchive={(id) => void archiveStack.archive(id)}
+              onMarkRead={(id) => {
+                void archiveStack.markRead(id);
+                readItems.markRead(id);
+              }}
+              archivingIds={archiveStack.archivingIssueIds}
+              searchQuery={searchQuery}
+            />
+          </div>
+        )}
+      </div>
 
       <NewIssueDialog
         open={newIssueOpen}

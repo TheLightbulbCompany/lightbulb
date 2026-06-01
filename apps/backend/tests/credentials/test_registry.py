@@ -195,6 +195,25 @@ def test_curated_mcp_provider_shape(key):
     assert p.validation.auth_scheme == expected["auth_scheme"]
 
 
+def test_github_is_on_materializer_rail():
+    # GitHub uses the gh CLI (baked into the image) via the materializer rail —
+    # a paste-token PAT seeded into gh's hosts.yml, not an mcp_server.
+    p = registry.get_provider("github")
+    assert p.acquisition == "paste_token"
+    assert p.actor == "cli"
+    assert p.refresh_owner == "none"
+    assert p.requires.bins == ["gh"]
+    assert p.wiring.materializer == "gh_cli"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    # A bad PAT 401s, so status-based validate (no success_json_field) is enough;
+    # the pinned API-version header must still ride every call.
+    assert p.validation is not None
+    assert p.validation.url == "https://api.github.com/user"
+    assert p.validation.auth_scheme == "Bearer"
+    assert p.validation.success_json_field is None
+    assert p.validation.headers == {"X-GitHub-Api-Version": "2022-11-28"}
+
+
 def test_registry_materializers_and_oauth_are_self_consistent():
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 

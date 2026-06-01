@@ -101,10 +101,15 @@ def plan_recovery(
 
 
 def _secret_arn(env: str) -> str:
+    # Paginate: list_secrets returns one page + a NextToken. With enough
+    # secrets in the account, the target can be on a later page — a single
+    # call would falsely report "not found" and block the recovery runbook.
     sm = boto3.client("secretsmanager", region_name=REGION)
-    for s in sm.list_secrets()["SecretList"]:
-        if f"isol8-{env}-paperclip-db-credentials" in s["Name"]:
-            return s["ARN"]
+    needle = f"isol8-{env}-paperclip-db-credentials"
+    for page in sm.get_paginator("list_secrets").paginate():
+        for s in page.get("SecretList", []):
+            if needle in s["Name"]:
+                return s["ARN"]
     sys.exit(f"Could not find paperclip-db-credentials secret for env={env}")
 
 

@@ -11,7 +11,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scripts.recover_orphan_paperclip_member import BOOTSTRAP_EMAILS, _ddb_failed_rows, plan_recovery
+from scripts.recover_orphan_paperclip_member import (
+    BOOTSTRAP_EMAILS,
+    _ddb_failed_rows,
+    _secret_arn,
+    plan_recovery,
+)
 
 
 def test_refuses_bootstrap_admin():
@@ -144,3 +149,22 @@ def test_ddb_failed_rows_paginates_across_pages():
     # Second scan used the ExclusiveStartKey from page 1.
     assert fake_ddb.scan.call_count == 2
     assert fake_ddb.scan.call_args_list[1].kwargs.get("ExclusiveStartKey") == {"user_id": {"S": "user_a"}}
+
+
+def test_secret_arn_paginates_secrets_manager():
+    """The secret can be on a later list_secrets page — _secret_arn must use
+    the paginator, or a busy account falsely reports 'not found' and blocks
+    recovery (Codex P2)."""
+    paginator = MagicMock()
+    paginator.paginate.return_value = [
+        {"SecretList": [{"Name": "other/secret", "ARN": "arn:other"}]},
+        {"SecretList": [{"Name": "isol8-prod-paperclip-db-credentials-AbCd", "ARN": "arn:target"}]},
+    ]
+    fake_sm = MagicMock()
+    fake_sm.get_paginator.return_value = paginator
+
+    with patch("scripts.recover_orphan_paperclip_member.boto3.client", return_value=fake_sm):
+        arn = _secret_arn("prod")
+
+    assert arn == "arn:target"
+    fake_sm.get_paginator.assert_called_once_with("list_secrets")

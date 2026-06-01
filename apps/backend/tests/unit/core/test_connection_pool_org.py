@@ -1,6 +1,7 @@
 """Tests for org-aware gateway connection pool."""
 
 import os
+import time
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -191,6 +192,48 @@ async def test_forward_does_not_cache_partial_result_missing_local_conn(make_con
 
 
 @pytest.mark.asyncio
+async def test_stale_local_id_does_not_block_caching(make_conn):
+    """A local id registered longer ago than the GSI propagation window that is
+    still absent from the GSI is STALE (its $disconnect deleted the row before
+    we unregistered it). It must NOT permanently veto caching — otherwise one
+    missed disconnect pins the owner to a per-chunk DDB query forever (Codex
+    P2). A live tab IS in the GSI, so caching should kick in on the 2nd event."""
+    conn = make_conn(owner_id="org_1")
+    conn._frontend_connections.add("c_live")
+    conn._frontend_connections.add("c_stale")
+    # c_stale registered 100s ago (>> _GSI_PROPAGATION_WINDOW_S) and never made
+    # it into the GSI → treated as stale, ignored by the freshness gate.
+    conn._frontend_conn_registered_at["c_live"] = time.monotonic()
+    conn._frontend_conn_registered_at["c_stale"] = time.monotonic() - 100
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_live", "m1", "chat")])
+    conn._management_api.send_message = MagicMock(return_value=True)
+
+    await conn._forward_to_frontends({"type": "chunk"})
+    await conn._forward_to_frontends({"type": "chunk"})
+    # Cached after the first query despite c_stale's absence from the GSI.
+    assert conn._conn_svc.query_by_owner.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_recent_local_id_still_blocks_caching(make_conn):
+    """The freshness gate still protects a genuinely just-registered tab: a
+    local id registered within the propagation window that is absent from the
+    GSI suppresses caching so it isn't dropped from a cached partial set."""
+    conn = make_conn(owner_id="org_1")
+    conn._frontend_connections.add("c_a")
+    conn._frontend_connections.add("c_new")
+    conn._frontend_conn_registered_at["c_a"] = time.monotonic()
+    conn._frontend_conn_registered_at["c_new"] = time.monotonic()  # just now → pending
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_a", "m1", "chat")])
+    conn._management_api.send_message = MagicMock(return_value=True)
+
+    await conn._forward_to_frontends({"type": "chunk"})
+    await conn._forward_to_frontends({"type": "chunk"})
+    # c_new is recent + missing from GSI → not cached → re-queries each time.
+    assert conn._conn_svc.query_by_owner.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_forward_prunes_on_gone_false(make_conn):
     """send_message returns False ONLY for a gone connection (GoneException) —
     prune it."""
@@ -235,3 +278,60 @@ async def test_forward_prunes_dead_conn_and_invalidates_cache(make_conn):
     conn._management_api.send_message = MagicMock(return_value=True)
     await conn._forward_to_frontends({"type": "chunk"})
     assert conn._conn_svc.query_by_owner.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Registration-time tracking (feeds the stale-vs-pending freshness gate above)
+# ---------------------------------------------------------------------------
+
+
+def test_add_remove_tracks_registration_time():
+    pool = GatewayConnectionPool(management_api=MagicMock())
+    pool.add_frontend_connection("org_1", "c_1", member_id="m1")
+    assert "c_1" in pool._frontend_conn_registered_at
+    # Shared by reference into any GatewayConnection created for this owner.
+    assert pool._frontend_conn_registered_at is not None
+    pool.remove_frontend_connection("org_1", "c_1")
+    assert "c_1" not in pool._frontend_conn_registered_at
+
+
+# ---------------------------------------------------------------------------
+# broadcast_to_member routes through the owner-keyed DDB fan-out (Codex P2):
+# org member status pings must reach tabs on any backend instance, not just
+# the in-process set of the task that raised the broadcast.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_broadcast_to_member_org_routes_through_owner_keyed_fanout():
+    pool = GatewayConnectionPool(management_api=MagicMock())
+    fake_conn = MagicMock()
+    fake_conn._forward_to_frontends = AsyncMock()
+    pool._connections["org_1"] = fake_conn
+
+    msg = {"type": "event", "event": "node_status"}
+    await pool.broadcast_to_member("org_1", "user_member", msg)
+
+    # Routed through the owner-keyed fan-out, demuxed to the member — NOT the
+    # in-process _frontend_connections loop.
+    fake_conn._forward_to_frontends.assert_awaited_once_with(msg, target_member_id="user_member")
+
+
+@pytest.mark.asyncio
+async def test_broadcast_to_member_personal_broadcasts_all():
+    pool = GatewayConnectionPool(management_api=MagicMock())
+    fake_conn = MagicMock()
+    fake_conn._forward_to_frontends = AsyncMock()
+    pool._connections["user_1"] = fake_conn
+
+    msg = {"type": "event", "event": "node_status"}
+    # Personal account (owner == member) → plain broadcast, no member demux.
+    await pool.broadcast_to_member("user_1", "user_1", msg)
+    fake_conn._forward_to_frontends.assert_awaited_once_with(msg)
+
+
+@pytest.mark.asyncio
+async def test_broadcast_to_member_no_connection_is_noop():
+    pool = GatewayConnectionPool(management_api=MagicMock())
+    # No registered connection for this owner → silently returns.
+    await pool.broadcast_to_member("org_absent", "m1", {"type": "event"})

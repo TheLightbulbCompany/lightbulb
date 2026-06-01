@@ -468,16 +468,20 @@ than iterating the design doc further:
 - **Strongly-consistent reads everywhere ownership is decided** (the fence read uses
   `ConsistentRead=True`, §3.2) — carry the same discipline to any acquire/lease-read path the
   implementation adds.
-- **Two NON-chat delivery paths still read the in-process set — must move to owner-keyed DDB
-  fan-out before N>1.** Piece 1 migrated the *chat* path (`_forward_to_frontends` → `query_by_owner`),
-  but `GatewayConnection._emit_status_change` (GATEWAY_DOWN/health status pushes) and
-  `GatewayConnectionPool.broadcast_to_member` still iterate the per-task `_frontend_connections` /
-  `_conn_member_map`. Correct at N=1 (single task holds all of an owner's connections); at N>1 a
-  status/member-broadcast raised on task B would not reach a tab on task A — the exact cross-task gap
-  this design eliminates for chat. Until all three delivery paths are DDB-keyed, the in-process set is
-  retained for these + the grace/idle-teardown check (`_grace_close`). Migrate status + member
-  broadcast to `query_by_owner` (chat-filtered, per-member-demuxed) before flipping `desiredCount>1`;
-  the in-process set then reduces to the idle-teardown signal (or a DDB count).
+- **One NON-chat delivery path still reads the in-process set — must move to owner-keyed DDB
+  fan-out before N>1.** Piece 1 migrated the *chat* path (`_forward_to_frontends` → `query_by_owner`)
+  and `GatewayConnectionPool.broadcast_to_member` (the org branch now routes through
+  `_forward_to_frontends(message, target_member_id=…)`, so node-status member pings are owner-keyed
+  too). The remaining holdout is `GatewayConnection._emit_status_change` (GATEWAY_DOWN/health status
+  pushes), which still iterates the per-task `_frontend_connections`. Correct at N=1 (single task
+  holds all of an owner's connections); at N>1 a status push raised on task B would not reach a tab on
+  task A — the exact cross-task gap this design eliminates for chat. It is deferred rather than
+  migrated with the others because it is a **sync** method called from 5 sites (connect / reader-loop
+  exit / reopen), so routing it through the async `_forward_to_frontends` is a sync→async refactor of
+  its callers, and it carries lower-stakes UI status pings tied to Piece 2's single-owner connection
+  (where the lease decides which instance holds the GatewayConnection). Migrate it to `query_by_owner`
+  (chat-filtered) before flipping `desiredCount>1`; the in-process set then reduces to the
+  grace/idle-teardown signal (`_grace_close`) or a DDB count.
 
 (Standing decision, not an open item: **no N>1 guardrail** — declined per the product requirement
 that the system work at one instance *or* more; relay routing is specified in §6.1 so "safe at any N"

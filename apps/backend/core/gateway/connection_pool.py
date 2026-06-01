@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 # streaming run, so we query once per ~5s rather than once per chunk.
 _RECIPIENTS_TTL_S = 5.0
 
+# Grace window for a freshly-registered local connection to appear in the
+# eventually-consistent by-owner-id GSI. Only locally-registered connections
+# added within this window may suppress recipient caching (they may still be
+# propagating); a local id older than this that is still absent from the GSI is
+# treated as stale (its $disconnect deleted the row before we unregistered it)
+# and must NOT keep vetoing caching — see _cached_owner_recipients.
+_GSI_PROPAGATION_WINDOW_S = 10.0
+
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs to settle before closing the WS
@@ -76,6 +84,7 @@ class GatewayConnection:
         on_activity: Any = None,
         owner_id: Optional[str] = None,
         conn_svc: Optional[ConnectionService] = None,
+        frontend_conn_registered_at: Optional[Dict[str, float]] = None,
     ) -> None:
         self.user_id = user_id
         # The owner key (org_id for org members, else user_id) this connection
@@ -101,6 +110,16 @@ class GatewayConnection:
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
         # Shared reference to the pool's canonical set — NOT a copy.
         self._frontend_connections = frontend_connections
+        # Shared reference: connection_id → monotonic time it was registered.
+        # Lets the recipient-cache freshness check tell a still-propagating new
+        # connection (recent) apart from a stale id whose $disconnect deleted
+        # the ws-connections row before we could unregister it (old). Pool-owned
+        # so the timestamp survives even if the connection registers before this
+        # GatewayConnection exists. Defaults to a private dict for direct
+        # (test) construction.
+        self._frontend_conn_registered_at = (
+            frontend_conn_registered_at if frontend_conn_registered_at is not None else {}
+        )
         # Shared reference: connection_id → member_user_id. Used to route
         # streaming events to the specific org member who initiated the chat
         # instead of broadcasting to all members.
@@ -713,9 +732,24 @@ class GatewayConnection:
         # fresh result for THIS send but don't cache it, so the next event
         # re-queries until the GSI is consistent. The local set is only a
         # freshness signal here; delivery recipients still come from DynamoDB.
+        #
+        # BUT only a RECENTLY-registered local id may suppress caching. The
+        # $disconnect Lambda deletes the ws-connections row before notifying the
+        # backend, so a missed/failed unregister can leave a dead id in
+        # _frontend_connections forever. That stale id is never in the GSI
+        # result, so an unguarded ``issubset`` would be permanently false and
+        # this owner would NEVER cache — re-querying DynamoDB on every streamed
+        # token. So we ignore local ids registered longer ago than the GSI
+        # propagation window: a genuinely new tab is still protected, while a
+        # stale id no longer pins the owner to per-chunk queries.
         returned_ids = {conn_id for conn_id, _, _ in recipients}
-        local_ids = set(self._frontend_connections)
-        fully_propagated = bool(recipients) and local_ids.issubset(returned_ids)
+        pending_local = [
+            cid
+            for cid in self._frontend_connections
+            if cid not in returned_ids
+            and (now - self._frontend_conn_registered_at.get(cid, now)) < _GSI_PROPAGATION_WINDOW_S
+        ]
+        fully_propagated = bool(recipients) and not pending_local
         if fully_propagated:
             self._recipients_cache = recipients
             self._recipients_cache_ts = now
@@ -759,6 +793,7 @@ class GatewayConnection:
         # broadcast path, so leaving a pruned id there could keep an idle
         # gateway connection alive indefinitely or retry a stale id.
         self._frontend_connections.discard(conn_id)
+        self._frontend_conn_registered_at.pop(conn_id, None)
         # Invalidate so the next forward re-queries instead of re-sending to it.
         self._recipients_cache = None
         self._recipients_cache_ts = 0.0
@@ -1509,6 +1544,12 @@ class GatewayConnectionPool:
         self._connections: Dict[str, GatewayConnection] = {}
         self._frontend_connections: Dict[str, Set[str]] = {}  # owner_id -> set of conn_ids
         self._conn_member_map: Dict[str, str] = {}  # connection_id -> member_user_id
+        # connection_id → monotonic registration time. Owned here (not per
+        # GatewayConnection) so the timestamp exists even when a connection
+        # registers before its owner's GatewayConnection is created. Read by the
+        # recipient-cache freshness check to distinguish a propagating new
+        # connection from a stale never-unregistered one.
+        self._frontend_conn_registered_at: Dict[str, float] = {}
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
         # Per-user reconnect attempt timestamps for the `_RECONNECT_FLOOR_S`
@@ -1634,6 +1675,7 @@ class GatewayConnectionPool:
             # pass it explicitly as owner_id so the fan-out is unambiguous.
             owner_id=user_id,
             conn_svc=self._conn_svc,
+            frontend_conn_registered_at=self._frontend_conn_registered_at,
         )
         await conn.connect()
         self._connections[user_id] = conn
@@ -1729,6 +1771,10 @@ class GatewayConnectionPool:
         if user_id not in self._frontend_connections:
             self._frontend_connections[user_id] = set()
         self._frontend_connections[user_id].add(connection_id)
+        # Stamp the registration time unconditionally (even if the owner's
+        # GatewayConnection doesn't exist yet) so the recipient-cache freshness
+        # check can age this id out of the "still propagating" set later.
+        self._frontend_conn_registered_at[connection_id] = time.monotonic()
         if member_id:
             self._conn_member_map[connection_id] = member_id
 
@@ -1751,6 +1797,7 @@ class GatewayConnectionPool:
         if fcs:
             fcs.discard(connection_id)
         self._conn_member_map.pop(connection_id, None)
+        self._frontend_conn_registered_at.pop(connection_id, None)
 
         # Bust the recipient cache so a removed tab stops receiving events
         # promptly rather than lingering in a cached set for up to the TTL.
@@ -1778,7 +1825,8 @@ class GatewayConnectionPool:
         if conn:
             put_metric("gateway.connection", dimensions={"event": "disconnect"})
             await conn.close()
-        self._frontend_connections.pop(user_id, None)
+        for cid in self._frontend_connections.pop(user_id, set()):
+            self._frontend_conn_registered_at.pop(cid, None)
         self._grace_tasks.pop(user_id, None)
         # Drop the reconnect-floor entry so a fresh user (e.g. someone who
         # signed out and back in on the same backend task) doesn't inherit
@@ -1801,23 +1849,19 @@ class GatewayConnectionPool:
         conn = self._connections.get(owner_id)
         if not conn:
             return
-        # Personal account — no per-member filtering needed
+        # Personal account — no per-member filtering needed.
         if owner_id == member_user_id:
             await conn._forward_to_frontends(message)
             return
-        # Org account — filter to this member's connections only
-        gone: list[str] = []
-        for conn_id in list(conn._frontend_connections):
-            member = conn._conn_member_map.get(conn_id, "")
-            if member.lower() != member_user_id.lower():
-                continue
-            try:
-                if not self._management_api.send_message(conn_id, message):
-                    gone.append(conn_id)
-            except Exception:
-                gone.append(conn_id)
-        for conn_id in gone:
-            conn._frontend_connections.discard(conn_id)
+        # Org account — route through the owner-keyed DDB fan-out (same path as
+        # chat streaming) so the member's tabs are reached even when they're
+        # registered on a different backend instance than the node connection
+        # that triggered this broadcast. _forward_to_frontends sources recipients
+        # from the by-owner-id GSI, demuxes to this member, and applies the
+        # chat-only connectionType filter + prune-on-gone. The previous
+        # in-process _frontend_connections loop only saw connections that landed
+        # on THIS task, so org member status pings silently dropped at N>1.
+        await conn._forward_to_frontends(message, target_member_id=member_user_id)
 
     async def close_all(self) -> None:
         """Shutdown: close all connections concurrently."""

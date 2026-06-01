@@ -13,6 +13,7 @@ import { useSWRConfig } from "swr";
 
 const mockPost = vi.fn();
 const mockPatch = vi.fn();
+const mockDel = vi.fn();
 const mockMutate = vi.fn();
 
 beforeEach(() => {
@@ -21,7 +22,7 @@ beforeEach(() => {
     read: vi.fn(),
     post: mockPost,
     patch: mockPatch,
-    del: vi.fn(),
+    del: mockDel,
   } as unknown as ReturnType<typeof useTeamsApi>);
   vi.mocked(useSWRConfig).mockReturnValue({
     cache: { get: vi.fn(), set: vi.fn(), delete: vi.fn(), keys: vi.fn() },
@@ -76,6 +77,31 @@ describe("useIssueMutations", () => {
     // 2 mutate calls: detail key + inbox predicate
     expect(mockMutate).toHaveBeenCalledTimes(2);
     expect(mockMutate).toHaveBeenCalledWith("/teams/issues/iss_1");
+  });
+
+  test("update forwards the full blockedByIssueIds array (replace semantics)", async () => {
+    mockPatch.mockResolvedValue({ id: "iss_1", title: "x", status: "todo" });
+    const { result } = renderHook(() => useIssueMutations());
+    await act(async () => {
+      await result.current.update("iss_1", { blockedByIssueIds: ["iss_2", "iss_3"] });
+    });
+    expect(mockPatch).toHaveBeenCalledWith("/issues/iss_1", {
+      blockedByIssueIds: ["iss_2", "iss_3"],
+    });
+  });
+
+  test("remove deletes /issues/{id} + invalidates inbox keys", async () => {
+    mockDel.mockResolvedValue(undefined);
+    const { result } = renderHook(() => useIssueMutations());
+    await act(async () => {
+      await result.current.remove("iss_1");
+    });
+    expect(mockDel).toHaveBeenCalledWith("/issues/iss_1");
+    // Single predicate-based mutate() invalidating inbox lists.
+    expect(mockMutate).toHaveBeenCalledTimes(1);
+    const arg = mockMutate.mock.calls[0][0];
+    expect(typeof arg).toBe("function");
+    expect((arg as (k: unknown) => boolean)("/teams/inbox?tab=mine")).toBe(true);
   });
 
   test("addComment posts body + invalidates comments key", async () => {

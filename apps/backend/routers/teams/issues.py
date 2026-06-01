@@ -97,6 +97,20 @@ async def patch_issue(
     )
 
 
+@router.delete("/issues/{issue_id}")
+async def delete_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Delete an issue.
+
+    Maps to upstream ``DELETE /api/issues/{id}``. The admin client's
+    ``_delete`` helper treats a 404 as already-gone (idempotent), so a
+    double-delete from a stale UI is a no-op rather than an error.
+    """
+    return await _agents._admin().delete_issue(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
 @router.post("/issues/{issue_id}/archive")
 async def archive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Archive an issue from the inbox.

@@ -343,3 +343,83 @@ async def test_patch_issue_forwards_camelcase_assignee_to_paperclip():
 
     forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
     assert forwarded_body == {"assigneeAgentId": "agt_friday", "projectId": "proj_x"}
+
+
+@pytest.mark.asyncio
+async def test_patch_issue_forwards_blocked_by_as_camelcase_array():
+    """The "Blocked by" picker sends the FULL desired blocker set. The schema
+    attr is snake_case but the wire MUST be ``blockedByIssueIds`` (camelCase),
+    or Paperclip silently drops the unknown key and the relation never sticks."""
+    fake_admin = MagicMock()
+    fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    fake_agents_module = MagicMock()
+    fake_agents_module._admin.return_value = fake_admin
+    fake_ctx = MagicMock()
+    fake_ctx.session_cookie = "sess=abc"
+
+    body = PatchIssueBody(blocked_by_issue_ids=["iss_2", "iss_3"])
+
+    with patch("routers.teams.issues._agents", fake_agents_module):
+        await patch_issue(issue_id="iss_1", body=body, ctx=fake_ctx)
+
+    forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
+    assert forwarded_body == {"blockedByIssueIds": ["iss_2", "iss_3"]}
+
+
+@pytest.mark.asyncio
+async def test_patch_issue_forwards_empty_blocked_by_array_to_clear():
+    """An empty array must reach Paperclip (clears all blockers), not be
+    stripped — exclude_unset keeps explicitly-set keys, even ``[]``."""
+    fake_admin = MagicMock()
+    fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    fake_agents_module = MagicMock()
+    fake_agents_module._admin.return_value = fake_admin
+    fake_ctx = MagicMock()
+    fake_ctx.session_cookie = "sess=abc"
+
+    body = PatchIssueBody(blocked_by_issue_ids=[])
+
+    with patch("routers.teams.issues._agents", fake_agents_module):
+        await patch_issue(issue_id="iss_1", body=body, ctx=fake_ctx)
+
+    forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
+    assert forwarded_body == {"blockedByIssueIds": []}
+
+
+def test_patch_issue_accepts_blocked_by_issue_ids_alias(client, monkeypatch):
+    """The PATCH endpoint accepts the camelCase ``blockedByIssueIds`` body key
+    (alias_generator=to_camel) without 422'ing under extra='forbid'."""
+    admin = MagicMock()
+    admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/issues/iss_1",
+        json={"blockedByIssueIds": ["iss_2"]},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = admin.patch_issue.await_args.kwargs["body"]
+    assert body == {"blockedByIssueIds": ["iss_2"]}
+
+
+def test_delete_issue_proxies_with_session(client, monkeypatch):
+    """`DELETE /teams/issues/{id}` forwards to the admin client with the
+    caller's session cookie (no company_id — the route is issue-scoped)."""
+    admin = MagicMock()
+    admin.delete_issue = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.delete(
+        "/api/v1/teams/issues/iss_1",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.delete_issue.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )

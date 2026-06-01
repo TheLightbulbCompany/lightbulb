@@ -72,6 +72,11 @@ class PatchIssueBody(_Strict):
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
     status: Optional[str] = None
     column_id: Optional[str] = None
+    # Full desired blocker set (replace semantics) — the issue-detail "Blocked
+    # by" picker sends the complete array, matching upstream Paperclip. The
+    # ``_Strict`` alias_generator emits this as ``blockedByIssueIds`` on the
+    # wire (Paperclip's PATCH /api/issues/:id reads camelCase).
+    blocked_by_issue_ids: Optional[list[str]] = None
 
 
 class AddIssueCommentBody(_Strict):

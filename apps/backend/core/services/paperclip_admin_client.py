@@ -1104,6 +1104,22 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def delete_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Delete an issue.
+
+        Maps to ``DELETE /api/issues/{issueId}``. ``_delete`` treats 404 as
+        already-gone, so this is idempotent.
+        """
+        return await self._delete(
+            f"/api/issues/{issue_id}",
+            session_cookie=session_cookie,
+        )
+
     # ------------------------------------------------------------------
     # Issue inbox state
     # ------------------------------------------------------------------

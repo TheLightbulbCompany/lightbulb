@@ -1,0 +1,196 @@
+"""Tests for the per-agent Google account record store (google_accounts_repo).
+
+The repo is a single-table overlay on the existing ``integrations`` table
+(owner_id PK, provider SK). It namespaces two record families into the SK:
+
+  - ``google#account#<email>``  — inventory of a connected Google account.
+  - ``google#assign#<agent_id>`` — which account an agent is bound to.
+
+These tests pin the exact SK strings written, so the namespacing scheme is
+legible to a future reader straight from the assertions.
+"""
+
+import pytest
+
+from core.repositories import google_accounts_repo
+
+
+@pytest.fixture
+def fake_table(monkeypatch):
+    """In-memory stand-in for the ``integrations`` DynamoDB table.
+
+    Mirrors the fake_table fixture in tests/credentials/test_integrations_repo.py:
+    put_item / get_item / delete_item / query keyed by (owner_id, provider).
+    ``query`` is owner-scoped (filters by the KeyConditionExpression's owner_id)
+    so owner isolation can be exercised.
+    """
+    store = {}
+
+    class _T:
+        def put_item(self, Item):
+            store[(Item["owner_id"], Item["provider"])] = Item
+
+        def get_item(self, Key):
+            it = store.get((Key["owner_id"], Key["provider"]))
+            return {"Item": it} if it else {}
+
+        def delete_item(self, Key):
+            store.pop((Key["owner_id"], Key["provider"]), None)
+
+        def query(self, KeyConditionExpression=None, **kw):
+            # Extract the owner_id the repo queried on from the boto3
+            # Key("owner_id").eq(owner_id) condition so we can owner-scope.
+            owner_id = None
+            if KeyConditionExpression is not None:
+                values = getattr(KeyConditionExpression, "_values", None)
+                if values:
+                    owner_id = values[-1]
+            items = [it for (oid, _provider), it in store.items() if owner_id is None or oid == owner_id]
+            return {"Items": items}
+
+    monkeypatch.setattr(google_accounts_repo, "_table", lambda: _T())
+    return store
+
+
+# ---------------------------------------------------------------------------
+# Account inventory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_account_writes_namespaced_sk(fake_table):
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+
+    # Pin the exact SK so the namespacing scheme is legible from the test.
+    item = fake_table[("org_1", "google#account#alice@gmail.com")]
+    assert item["owner_id"] == "org_1"
+    assert item["provider"] == "google#account#alice@gmail.com"
+    assert isinstance(item["connected_at"], str)
+
+
+@pytest.mark.asyncio
+async def test_add_account_is_idempotent_overwrite(fake_table):
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+
+    # A second add must not create a second row.
+    keys = [k for k in fake_table if k[0] == "org_1"]
+    assert keys == [("org_1", "google#account#alice@gmail.com")]
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_returns_both_sorted_by_connected_at(fake_table):
+    # Write out of order to prove the sort, not insertion order.
+    await google_accounts_repo.add_account("org_1", "bob@gmail.com")
+    fake_table[("org_1", "google#account#bob@gmail.com")]["connected_at"] = "2026-01-02T00:00:00+00:00"
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    fake_table[("org_1", "google#account#alice@gmail.com")]["connected_at"] = "2026-01-01T00:00:00+00:00"
+
+    accounts = await google_accounts_repo.list_accounts("org_1")
+    assert [a["email"] for a in accounts] == ["alice@gmail.com", "bob@gmail.com"]
+    assert accounts[0]["connected_at"] == "2026-01-01T00:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_ignores_assignment_rows(fake_table):
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+
+    accounts = await google_accounts_repo.list_accounts("org_1")
+    assert [a["email"] for a in accounts] == ["alice@gmail.com"]
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_empty(fake_table):
+    assert await google_accounts_repo.list_accounts("org_nobody") == []
+
+
+@pytest.mark.asyncio
+async def test_remove_account_deletes_the_right_item(fake_table):
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    await google_accounts_repo.add_account("org_1", "bob@gmail.com")
+
+    await google_accounts_repo.remove_account("org_1", "alice@gmail.com")
+
+    assert ("org_1", "google#account#alice@gmail.com") not in fake_table
+    assert ("org_1", "google#account#bob@gmail.com") in fake_table
+
+
+# ---------------------------------------------------------------------------
+# Per-agent assignments
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_assignment_writes_namespaced_sk(fake_table):
+    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+
+    item = fake_table[("org_1", "google#assign#agent_x")]
+    assert item["owner_id"] == "org_1"
+    assert item["provider"] == "google#assign#agent_x"
+    assert item["email"] == "alice@gmail.com"
+
+
+@pytest.mark.asyncio
+async def test_list_assignments_returns_map(fake_table):
+    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+    await google_accounts_repo.set_assignment("org_1", "agent_y", "bob@gmail.com")
+
+    assert await google_accounts_repo.list_assignments("org_1") == {
+        "agent_x": "alice@gmail.com",
+        "agent_y": "bob@gmail.com",
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_assignments_ignores_account_rows(fake_table):
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+
+    assert await google_accounts_repo.list_assignments("org_1") == {"agent_x": "alice@gmail.com"}
+
+
+@pytest.mark.asyncio
+async def test_list_assignments_empty(fake_table):
+    assert await google_accounts_repo.list_assignments("org_nobody") == {}
+
+
+@pytest.mark.asyncio
+async def test_remove_assignment_deletes_the_right_item(fake_table):
+    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+    await google_accounts_repo.set_assignment("org_1", "agent_y", "bob@gmail.com")
+
+    await google_accounts_repo.remove_assignment("org_1", "agent_x")
+
+    assert ("org_1", "google#assign#agent_x") not in fake_table
+    assert ("org_1", "google#assign#agent_y") in fake_table
+
+
+# ---------------------------------------------------------------------------
+# Resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_returns_assigned_email_when_assigned(fake_table):
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    await google_accounts_repo.add_account("org_1", "bob@gmail.com")
+    await google_accounts_repo.set_assignment("org_1", "agent_x", "bob@gmail.com")
+
+    assert await google_accounts_repo.resolve_account_for_agent("org_1", "agent_x") == "bob@gmail.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_falls_back_to_oldest_account_when_unassigned(fake_table):
+    await google_accounts_repo.add_account("org_1", "bob@gmail.com")
+    fake_table[("org_1", "google#account#bob@gmail.com")]["connected_at"] = "2026-01-02T00:00:00+00:00"
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    fake_table[("org_1", "google#account#alice@gmail.com")]["connected_at"] = "2026-01-01T00:00:00+00:00"
+
+    # No assignment for agent_x → default is the oldest (earliest connected_at).
+    assert await google_accounts_repo.resolve_account_for_agent("org_1", "agent_x") == "alice@gmail.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_returns_none_when_no_accounts(fake_table):
+    assert await google_accounts_repo.resolve_account_for_agent("org_1", "agent_x") is None

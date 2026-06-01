@@ -1,0 +1,136 @@
+"""Per-agent Google account record store.
+
+Two record families, both stored on the existing ``integrations`` table
+(owner_id PK, provider SK) — no new table, no schema change. The SK is
+namespaced so both families coexist under one owner partition:
+
+  - ``google#account#<email>``  — inventory of a connected Google account
+                                  (carries ``connected_at``).
+  - ``google#assign#<agent_id>`` — which account an agent is bound to
+                                   (carries ``email``).
+
+A Google email address never contains ``#``, so splitting the SK on ``#``
+recovers the email / agent_id cleanly — the prefix is unambiguous and the
+final segment is the value verbatim.
+"""
+
+from __future__ import annotations
+
+from boto3.dynamodb.conditions import Key
+
+from core.dynamodb import get_table, run_in_thread, utc_now_iso
+
+_ACCOUNT_PREFIX = "google#account#"
+_ASSIGN_PREFIX = "google#assign#"
+
+
+def _table():
+    return get_table("integrations")  # short name; table prefix auto-applied
+
+
+# ---------------------------------------------------------------------------
+# Account inventory
+# ---------------------------------------------------------------------------
+
+
+async def add_account(owner_id: str, email: str) -> None:
+    """Record that ``owner_id`` has connected the Google account ``email``.
+
+    Idempotent: re-adding the same email overwrites the existing row rather
+    than creating a duplicate, since the email is part of the SK.
+    """
+    await run_in_thread(
+        _table().put_item,
+        Item={
+            "owner_id": owner_id,
+            "provider": f"{_ACCOUNT_PREFIX}{email}",
+            "connected_at": utc_now_iso(),
+        },
+    )
+
+
+async def remove_account(owner_id: str, email: str) -> None:
+    await run_in_thread(
+        _table().delete_item,
+        Key={"owner_id": owner_id, "provider": f"{_ACCOUNT_PREFIX}{email}"},
+    )
+
+
+async def list_accounts(owner_id: str) -> list[dict]:
+    """Owner's connected Google accounts, oldest first.
+
+    Sorted by ``connected_at`` so the head of the list is the default
+    account used when an agent has no explicit assignment.
+    """
+    response = await run_in_thread(
+        _table().query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+    )
+    accounts = [
+        {
+            "email": item["provider"][len(_ACCOUNT_PREFIX) :],
+            "connected_at": item.get("connected_at"),
+        }
+        for item in response.get("Items", [])
+        if item["provider"].startswith(_ACCOUNT_PREFIX)
+    ]
+    accounts.sort(key=lambda a: a["connected_at"] or "")
+    return accounts
+
+
+# ---------------------------------------------------------------------------
+# Per-agent assignments
+# ---------------------------------------------------------------------------
+
+
+async def set_assignment(owner_id: str, agent_id: str, email: str) -> None:
+    await run_in_thread(
+        _table().put_item,
+        Item={
+            "owner_id": owner_id,
+            "provider": f"{_ASSIGN_PREFIX}{agent_id}",
+            "email": email,
+        },
+    )
+
+
+async def remove_assignment(owner_id: str, agent_id: str) -> None:
+    await run_in_thread(
+        _table().delete_item,
+        Key={"owner_id": owner_id, "provider": f"{_ASSIGN_PREFIX}{agent_id}"},
+    )
+
+
+async def list_assignments(owner_id: str) -> dict[str, str]:
+    """Map of agent_id → assigned account email for ``owner_id``."""
+    response = await run_in_thread(
+        _table().query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+    )
+    return {
+        item["provider"][len(_ASSIGN_PREFIX) :]: item["email"]
+        for item in response.get("Items", [])
+        if item["provider"].startswith(_ASSIGN_PREFIX)
+    }
+
+
+# ---------------------------------------------------------------------------
+# Resolution
+# ---------------------------------------------------------------------------
+
+
+async def resolve_account_for_agent(owner_id: str, agent_id: str) -> str | None:
+    """Which Google account an agent should act as.
+
+    Precedence: the agent's explicit assignment, else the owner's default
+    (oldest connected account), else None when the owner has no accounts.
+    """
+    assignments = await list_assignments(owner_id)
+    assigned = assignments.get(agent_id)
+    if assigned is not None:
+        return assigned
+
+    accounts = await list_accounts(owner_id)
+    if accounts:
+        return accounts[0]["email"]
+    return None

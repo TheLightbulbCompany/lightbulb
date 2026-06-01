@@ -47,17 +47,13 @@ describe("KanbanColumn", () => {
     expect(getByText("ENG-2")).toBeInTheDocument();
   });
 
-  it("collapses to compact width when empty", () => {
-    const { container } = render(wrap(<KanbanColumn status="done" issues={[]} />));
-    const col = container.querySelector("[data-kanban-column]");
-    expect(col).toHaveAttribute("data-empty", "true");
-  });
-
-  it("does not collapse when populated", () => {
-    const { container } = render(
-      wrap(<KanbanColumn status="done" issues={[issue]} />),
+  it("keeps an empty column readable — shows its label and a 0 count", () => {
+    // Empty workflow stages must NOT collapse to a label-less sliver:
+    // that hid the column name and broke dragging cards into it.
+    const { getByText } = render(
+      wrap(<KanbanColumn status="in_review" issues={[]} />),
     );
-    const col = container.querySelector("[data-kanban-column]");
-    expect(col).toHaveAttribute("data-empty", "false");
+    expect(getByText(/In Review/i)).toBeInTheDocument();
+    expect(getByText("0")).toBeInTheDocument();
   });
 });

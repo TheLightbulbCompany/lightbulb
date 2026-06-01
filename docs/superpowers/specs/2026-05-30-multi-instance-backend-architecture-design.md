@@ -462,6 +462,16 @@ than iterating the design doc further:
 - **Strongly-consistent reads everywhere ownership is decided** (the fence read uses
   `ConsistentRead=True`, §3.2) — carry the same discipline to any acquire/lease-read path the
   implementation adds.
+- **Two NON-chat delivery paths still read the in-process set — must move to owner-keyed DDB
+  fan-out before N>1.** Piece 1 migrated the *chat* path (`_forward_to_frontends` → `query_by_owner`),
+  but `GatewayConnection._emit_status_change` (GATEWAY_DOWN/health status pushes) and
+  `GatewayConnectionPool.broadcast_to_member` still iterate the per-task `_frontend_connections` /
+  `_conn_member_map`. Correct at N=1 (single task holds all of an owner's connections); at N>1 a
+  status/member-broadcast raised on task B would not reach a tab on task A — the exact cross-task gap
+  this design eliminates for chat. Until all three delivery paths are DDB-keyed, the in-process set is
+  retained for these + the grace/idle-teardown check (`_grace_close`). Migrate status + member
+  broadcast to `query_by_owner` (chat-filtered, per-member-demuxed) before flipping `desiredCount>1`;
+  the in-process set then reduces to the idle-teardown signal (or a DDB count).
 
 (Standing decision, not an open item: **no N>1 guardrail** — declined per the product requirement
 that the system work at one instance *or* more; relay routing is specified in §6.1 so "safe at any N"

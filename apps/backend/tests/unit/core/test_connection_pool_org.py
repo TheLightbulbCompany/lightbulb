@@ -131,6 +131,27 @@ async def test_forward_caches_recipients_within_ttl(make_conn):
 
 
 @pytest.mark.asyncio
+async def test_forward_does_not_cache_empty_recipients(make_conn):
+    """An empty query result (e.g. a tab that sent chat before the by-owner-id
+    GSI propagated its $connect row) must NOT be cached — otherwise the new
+    tab's first chunks + done are dropped for the whole TTL. The next event
+    must re-query so it self-heals once the GSI catches up."""
+    conn = make_conn(owner_id="org_1")
+    # First forward: GSI hasn't indexed the new tab yet → empty.
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[])
+    await conn._forward_to_frontends({"type": "chunk"})
+    assert conn._conn_svc.query_by_owner.call_count == 1
+
+    # GSI now propagated; the very next event must re-query (no stale empty cache)
+    # and deliver to the now-visible connection.
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_chat", "m1", "chat")])
+    conn._management_api.send_message = MagicMock(return_value=True)
+    await conn._forward_to_frontends({"type": "chunk", "content": "hi"})
+    conn._conn_svc.query_by_owner.assert_awaited_once_with("org_1")
+    conn._management_api.send_message.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_forward_prunes_dead_conn_and_invalidates_cache(make_conn):
     """A send failure prunes the dead conn via delete_connection and busts the
     cache so the next forward re-queries."""

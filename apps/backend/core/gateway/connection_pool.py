@@ -694,8 +694,19 @@ class GatewayConnection:
                 self.owner_id,
             )
             return None
-        self._recipients_cache = recipients
-        self._recipients_cache_ts = now
+        # Do NOT cache an empty result. The by-owner-id GSI is eventually
+        # consistent, so a tab that sends chat within ~1s of $connect may not be
+        # indexed yet and query_by_owner returns []. Caching that for the full
+        # TTL would drop the new tab's first chunks AND its `done` for up to
+        # _RECIPIENTS_TTL_S. Re-querying every event until recipients appear
+        # shrinks the miss window to the GSI propagation lag (sub-second) without
+        # an in-memory fallback (DynamoDB stays the single source of truth).
+        if recipients:
+            self._recipients_cache = recipients
+            self._recipients_cache_ts = now
+        else:
+            self._recipients_cache = None
+            self._recipients_cache_ts = 0.0
         return recipients
 
     async def _prune_dead_conn(self, conn_id: str) -> None:

@@ -125,6 +125,29 @@ async def test_update_status_records_last_error(repo):
     assert retrieved.last_error == "api timeout"
 
 
+async def test_update_status_not_if_status_skips_when_guarded(repo):
+    """``not_if_status`` must SKIP the write (return False) when the row is
+    already in that status — used so a losing concurrent provision attempt
+    can't downgrade an already-``active`` row to ``failed``."""
+    await repo.put(_make_company(user_id="user_active", status="active"))
+    landed = await repo.update_status("user_active", status="failed", last_error="late error", not_if_status="active")
+    assert landed is False
+    retrieved = await repo.get("user_active")
+    assert retrieved.status == "active"  # NOT downgraded
+    assert retrieved.last_error is None
+
+
+async def test_update_status_not_if_status_applies_when_not_guarded(repo):
+    """``not_if_status`` allows the write (return True) when the row is in any
+    OTHER status — e.g. a genuinely ``provisioning`` row may still fail."""
+    await repo.put(_make_company(user_id="user_prov", status="provisioning"))
+    landed = await repo.update_status("user_prov", status="failed", last_error="boom", not_if_status="active")
+    assert landed is True
+    retrieved = await repo.get("user_prov")
+    assert retrieved.status == "failed"
+    assert retrieved.last_error == "boom"
+
+
 async def test_delete_removes_row(repo):
     await repo.put(_make_company(user_id="user_789"))
     await repo.delete("user_789")

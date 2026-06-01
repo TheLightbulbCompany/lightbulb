@@ -1017,11 +1017,25 @@ class PaperclipProvisioning:
         truncated = reason[:1000]
         existing = await self._repo.get(user_id)
         if existing is not None:
-            await self._repo.update_status(
+            # Never downgrade a row that a concurrent provision attempt has
+            # already completed to ``active``. Two overlapping attempts for one
+            # member can race: the early adoptable row this PR persists lets a
+            # second poll sign in and write the final ``active`` row while the
+            # first poll is still running; if that first poll then hits a late
+            # transient error, this failure path must NOT clobber the active
+            # row. The conditional write skips (no-ops) in that case.
+            landed = await self._repo.update_status(
                 user_id,
                 status="failed",
                 last_error=truncated,
+                not_if_status="active",
             )
+            if not landed:
+                logger.info(
+                    "paperclip_provisioning._mark_failed: skipped downgrade of "
+                    "user %s — row already active (concurrent provision won)",
+                    user_id,
+                )
             return
 
         now = datetime.now(timezone.utc)

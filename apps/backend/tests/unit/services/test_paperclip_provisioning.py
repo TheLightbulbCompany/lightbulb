@@ -649,13 +649,52 @@ class _StatefulRepo:
     async def put(self, row):
         self._rows[row.user_id] = row
 
-    async def update_status(self, user_id: str, *, status: str, last_error: str = ""):
+    async def update_status(self, user_id: str, *, status: str, last_error: str = "", not_if_status: str | None = None):
         row = self._rows[user_id]
+        if not_if_status is not None and row.status == not_if_status:
+            return False  # guarded — skip (e.g. don't downgrade an active row)
         row.status = status
         row.last_error = last_error
+        return True
 
     async def get_org_company_id(self, _owner_id: str):
         return self._company_id
+
+
+@pytest.mark.asyncio
+async def test_mark_failed_does_not_downgrade_active_row(monkeypatch):
+    """A concurrent provision that already completed the row to ``active`` must
+    not be clobbered by a losing attempt's failure path: _mark_failed uses a
+    guarded update that skips when the row is already active."""
+    from datetime import datetime, timezone
+
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    repo = _StatefulRepo(company_id="co_xyz")
+    now = datetime.now(timezone.utc)
+    # The winning concurrent attempt already wrote an active row.
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_m",
+            org_id="org_xyz",
+            company_id="co_xyz",
+            paperclip_user_id="pc_user_m",
+            paperclip_password_encrypted="enc",
+            service_token_encrypted="enc_tok",
+            status="active",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    svc = PaperclipProvisioning(admin_client=MagicMock(), repo=repo, env_name="dev")
+    await svc._mark_failed(user_id="user_m", owner_id="org_xyz", reason="late transient error")
+
+    # The active row survives — NOT downgraded to failed.
+    row = await repo.get("user_m")
+    assert row.status == "active"
+    assert row.last_error is None
 
 
 @pytest.mark.asyncio

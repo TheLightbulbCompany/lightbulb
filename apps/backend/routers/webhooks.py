@@ -29,6 +29,7 @@ and swallowed; returning 5xx would just have Clerk retry the same
 permanently-broken event.
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -48,6 +49,7 @@ from core.services.paperclip_provisioning import (
     close_paperclip_provisioning,
 )
 from core.services.update_service import PAPERCLIP_RETRY_KIND
+from core.services.user_provision import ensure_user_ready_for
 
 logger = logging.getLogger(__name__)
 
@@ -283,18 +285,19 @@ async def _handle_organization_created(data: dict) -> None:
 
 
 async def _handle_organization_membership_created(data: dict) -> None:
-    """Record-keeping for member acceptance + dual-tenancy invariant probe.
+    """Provision the new member (event-driven) + dual-tenancy invariant probe.
 
-    Provisioning is intentionally NOT done here. The new member's
-    paperclip-membership row will be added by their first
-    ``/container/status`` poll, which calls ``ensure_user_ready`` and
-    routes to ``_ensure_paperclip_for_member``. That helper:
+    Event-driven provisioning: dispatch ``ensure_user_ready_for`` as a
+    background task so a member joining an already-ready org is provisioned
+    immediately — their first ``/teams`` visit is then already active instead
+    of racing the ``/container/status`` poll. ``ensure_user_ready`` is
+    gate-first and idempotent: if the org isn't ready yet it no-ops (the
+    member still provisions later on their own poll), and firing it
+    concurrently with the poll yields exactly one company.
 
-      * adds the member if the owner's company is active
-      * logs and returns gracefully if the owner's company isn't ready
-
-    Either way, the webhook has nothing useful to do besides logging
-    + enforcing the dual-tenancy invariant.
+    ``provision_container=False`` — an org member rides the org's shared
+    container, which the owner provisions separately; we only ensure the
+    member's Paperclip membership row here, never spin up (or restart) a box.
     """
     org = data.get("organization") or {}
     org_id = org.get("id", "")
@@ -302,6 +305,9 @@ async def _handle_organization_membership_created(data: dict) -> None:
     pud = data.get("public_user_data") or {}
     user_id = pud.get("user_id", "") or data.get("user_id", "")
     email = _extract_org_member_email(data)
+    # Clerk packages the membership role as e.g. "org:member" / "org:admin".
+    # Default to member (the least-privileged, join-only routing) when absent.
+    role = data.get("role") or "org:member"
 
     if not org_id or not user_id or not email:
         logger.warning(
@@ -337,9 +343,21 @@ async def _handle_organization_membership_created(data: dict) -> None:
         # Never let an observability check break a real provisioning path.
         logger.exception("tenancy invariant probe failed for user=%s org=%s", user_id, org_id)
 
+    # Fire provisioning in the background so the webhook stays fast (we ack
+    # Clerk immediately). ensure_user_ready_for no-ops if the org's gate is
+    # still up; the /container/status poll remains the backstop.
+    asyncio.create_task(
+        ensure_user_ready_for(
+            user_id=user_id,
+            org_id=org_id,
+            org_role=role,
+            email=email,
+            provision_container=False,
+        )
+    )
+
     logger.info(
-        "membership.created: org=%s member=%s owner=%s recorded; "
-        "paperclip-membership will be added by first /container/status poll",
+        "membership.created: org=%s member=%s owner=%s recorded; dispatched provisioning",
         org_id,
         user_id,
         owner_user_id,

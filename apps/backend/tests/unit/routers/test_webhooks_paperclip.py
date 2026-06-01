@@ -72,17 +72,24 @@ async def test_organization_created_does_not_provision():
 
 
 @pytest.mark.asyncio
-async def test_membership_created_does_not_provision():
-    """The membership webhook is record-keeping + dual-tenancy invariant
-    probe only. Should NOT call provision_member,
-    build_paperclip_provisioning, or _enqueue_paperclip_retry. The new
-    member's paperclip-membership row will be added by the first
-    /container/status poll on their session via ensure_user_ready."""
+async def test_membership_created_dispatches_provisioning():
+    """Event-driven provisioning: the membership webhook fires
+    ensure_user_ready_for (as a background task) so a member joining an
+    already-ready org is provisioned without opening /chat. The gate check
+    inside ensure_user_ready no-ops if the org isn't ready yet. Container
+    provisioning is NOT requested here — an org member rides the shared
+    container. The dual-tenancy invariant probe still runs."""
     from routers.webhooks import _handle_organization_membership_created
 
+    def _capture(coro):
+        # Close the dispatched coroutine (no "never awaited" warning). The
+        # assertion checks ensure_user_ready_for was CALLED with the right
+        # args (i.e. the handler constructed the coroutine correctly).
+        coro.close()
+
     with (
-        patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
-        patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
+        patch("routers.webhooks.ensure_user_ready_for", new=AsyncMock()) as mock_fire,
+        patch("routers.webhooks.asyncio.create_task", side_effect=_capture),
         patch(
             "routers.webhooks.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value=None),  # no personal billing row -> invariant clean
@@ -95,13 +102,36 @@ async def test_membership_created_does_not_provision():
                     "user_id": "user_member",
                     "identifier": "m@example.com",
                 },
+                "role": "org:member",
             }
         )
 
-    mock_factory.assert_not_called()
-    mock_retry.assert_not_awaited()
+    mock_fire.assert_called_once_with(
+        user_id="user_member",
+        org_id="org_x",
+        org_role="org:member",
+        email="m@example.com",
+        provision_container=False,
+    )
     # Invariant probe still runs.
     mock_billing.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_membership_created_missing_fields_skips_dispatch():
+    """A payload missing org/user/email logs a warning and does NOT dispatch
+    provisioning (nothing to provision)."""
+    from routers.webhooks import _handle_organization_membership_created
+
+    with (
+        patch("routers.webhooks.ensure_user_ready_for", new=AsyncMock()) as mock_fire,
+        patch("routers.webhooks.asyncio.create_task") as mock_create,
+        patch("routers.webhooks.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+    ):
+        await _handle_organization_membership_created({"organization": {"id": "org_x"}, "public_user_data": {}})
+
+    mock_fire.assert_not_called()
+    mock_create.assert_not_called()
 
 
 # ----------------------------------------------------------------------

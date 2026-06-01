@@ -70,6 +70,51 @@ _RECONNECT_FLOOR_S = 5
 _RUN_LONG_IDLE_S = 300
 
 
+def _deliver_to_recipients(
+    recipients: list[tuple[str, str, str]],
+    message: dict,
+    target_member_id: Optional[str],
+    management_api: Any,
+) -> tuple[int, int, list[str]]:
+    """Send *message* to the chat connections among *recipients* (the
+    ``(connectionId, member_userId, connectionType)`` rows from the by-owner-id
+    GSI), returning ``(delivered, skipped, gone)``.
+
+    - Filters to ``connectionType == "chat"`` so node/operator transparent pipes
+      never receive chat frames.
+    - Demuxes to *target_member_id* when set (case-insensitive — OpenClaw
+      lowercases sessionKeys, so the parsed member id is lowercase while DDB
+      stores the original Clerk user_id); broadcasts to every chat connection
+      when it is ``None``.
+    - ``gone`` holds ids whose ``send_message`` returned ``False`` (GoneException
+      → safe to prune). A transient send *exception* is logged and skipped, never
+      treated as gone — a blip must not delete a live socket's row.
+
+    Pure (no I/O beyond the injected ``management_api``) so both the cached chat
+    path (``GatewayConnection._forward_to_frontends``) and the connection-less
+    pool broadcast (``GatewayConnectionPool._fanout_to_owner``) share one
+    chat-filter/demux/send definition.
+    """
+    gone: list[str] = []
+    delivered = 0
+    skipped = 0
+    for conn_id, member_id, conn_type in recipients:
+        if conn_type != "chat":
+            skipped += 1
+            continue
+        if target_member_id is not None and (member_id or "").lower() != target_member_id.lower():
+            skipped += 1
+            continue
+        try:
+            if not management_api.send_message(conn_id, message):
+                gone.append(conn_id)
+            else:
+                delivered += 1
+        except Exception:
+            logger.warning("Transient forward failure to %s (not pruning)", conn_id)
+    return delivered, skipped, gone
+
+
 class GatewayConnection:
     """Single persistent WebSocket to a user's OpenClaw gateway."""
 
@@ -659,31 +704,7 @@ class GatewayConnection:
             # query failed; logged in the helper. No in-process fallback.
             return
 
-        gone: list[str] = []
-        delivered = 0
-        skipped = 0
-        for conn_id, member_id, conn_type in recipients:
-            if conn_type != "chat":
-                # Exclude node/operator transparent pipes from chat fan-out.
-                skipped += 1
-                continue
-            if target_member_id is not None:
-                if member_id is None or member_id.lower() != target_member_id.lower():
-                    skipped += 1
-                    continue
-            try:
-                if not self._management_api.send_message(conn_id, message):
-                    # send_message returns False ONLY for GoneException (the
-                    # connection is genuinely dead) — safe to prune.
-                    gone.append(conn_id)
-                else:
-                    delivered += 1
-            except Exception:
-                # An exception is a TRANSIENT failure (throttling, payload, API
-                # Gateway hiccup), NOT a gone connection — do NOT prune, or a
-                # temporary blip would delete a live socket's row and 401 its
-                # next message. Log and skip; it'll be retried on the next event.
-                logger.warning("Transient forward failure to %s (not pruning)", conn_id)
+        delivered, skipped, gone = _deliver_to_recipients(recipients, message, target_member_id, self._management_api)
         for conn_id in gone:
             await self._prune_dead_conn(conn_id)
         # Log delivery summary for non-chunk messages (chunks are too frequent)
@@ -1840,28 +1861,61 @@ class GatewayConnectionPool:
             await conn._forward_to_frontends(message)
 
     async def broadcast_to_member(self, owner_id: str, member_user_id: str, message: dict) -> None:
-        """Send a message to frontend connections for a specific org member.
+        """Send a message to the owner's chat tabs, demuxed to one org member.
 
-        For personal accounts (owner_id == member_user_id), this behaves
-        identically to broadcast_to_user. For org accounts, it filters to
-        only the connections belonging to *member_user_id*.
+        For personal accounts (``owner_id == member_user_id``) it broadcasts to
+        all of the owner's chat connections; for org accounts it demuxes to
+        *member_user_id*'s connections only.
+
+        Routes through the pool-level owner-keyed fan-out (``query_by_owner`` on
+        the by-owner-id GSI), NOT through a ``GatewayConnection``. The node-status
+        path that calls this (``node_proxy.handle_node_connect``/disconnect)
+        creates a ``NodeUpstreamConnection``, not a chat ``GatewayConnection`` —
+        so requiring one here meant a status ping landing on a task with no
+        active chat for the owner silently dropped (and at N>1 it would miss the
+        member's tab on another task entirely). The pool path needs no
+        per-owner ``GatewayConnection`` to exist.
         """
+        target = None if owner_id == member_user_id else member_user_id
+        await self._fanout_to_owner(owner_id, message, target_member_id=target)
+
+    async def _fanout_to_owner(self, owner_id: str, message: dict, target_member_id: Optional[str] = None) -> None:
+        """Owner-keyed fan-out reachable WITHOUT a ``GatewayConnection``.
+
+        Queries the by-owner-id GSI directly via the pool's ``ConnectionService``
+        and delivers through the shared chat-filter/demux helper, so any backend
+        instance can push to an owner's tabs even when no chat gateway connection
+        exists on this task. On a query failure we log and drop (DynamoDB is the
+        single source of truth — no in-process fallback).
+        """
+        try:
+            recipients = await self._conn_svc.query_by_owner(owner_id)
+        except Exception:
+            logger.exception(
+                "owner fan-out query failed for owner=%s — dropping broadcast",
+                owner_id,
+            )
+            return
+        _delivered, _skipped, gone = _deliver_to_recipients(recipients, message, target_member_id, self._management_api)
+        for conn_id in gone:
+            await self._prune_owner_connection(owner_id, conn_id)
+
+    async def _prune_owner_connection(self, owner_id: str, conn_id: str) -> None:
+        """Best-effort prune of a gone connection seen during a pool-level
+        broadcast: delete the ws-connections row and, if a ``GatewayConnection``
+        exists for this owner on this task, drop the id from its in-process set +
+        bust its recipient cache so a subsequent chat stream re-queries."""
+        try:
+            await asyncio.to_thread(self._conn_svc.delete_connection, conn_id)
+        except Exception:
+            logger.warning("failed to prune dead conn %s", conn_id, exc_info=True)
+        self._frontend_conn_registered_at.pop(conn_id, None)
+        fcs = self._frontend_connections.get(owner_id)
+        if fcs:
+            fcs.discard(conn_id)
         conn = self._connections.get(owner_id)
-        if not conn:
-            return
-        # Personal account — no per-member filtering needed.
-        if owner_id == member_user_id:
-            await conn._forward_to_frontends(message)
-            return
-        # Org account — route through the owner-keyed DDB fan-out (same path as
-        # chat streaming) so the member's tabs are reached even when they're
-        # registered on a different backend instance than the node connection
-        # that triggered this broadcast. _forward_to_frontends sources recipients
-        # from the by-owner-id GSI, demuxes to this member, and applies the
-        # chat-only connectionType filter + prune-on-gone. The previous
-        # in-process _frontend_connections loop only saw connections that landed
-        # on THIS task, so org member status pings silently dropped at N>1.
-        await conn._forward_to_frontends(message, target_member_id=member_user_id)
+        if conn is not None:
+            conn.invalidate_recipients_cache()
 
     async def close_all(self) -> None:
         """Shutdown: close all connections concurrently."""

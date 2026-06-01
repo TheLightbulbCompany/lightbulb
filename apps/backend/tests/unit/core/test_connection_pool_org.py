@@ -296,42 +296,76 @@ def test_add_remove_tracks_registration_time():
 
 
 # ---------------------------------------------------------------------------
-# broadcast_to_member routes through the owner-keyed DDB fan-out (Codex P2):
-# org member status pings must reach tabs on any backend instance, not just
-# the in-process set of the task that raised the broadcast.
+# broadcast_to_member goes through the POOL-level owner-keyed fan-out
+# (query_by_owner on the by-owner-id GSI), reachable WITHOUT a GatewayConnection
+# (Codex P2) — the node-status path creates a NodeUpstreamConnection, not a
+# chat GatewayConnection, so requiring one dropped status pings.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_broadcast_to_member_org_routes_through_owner_keyed_fanout():
-    pool = GatewayConnectionPool(management_api=MagicMock())
-    fake_conn = MagicMock()
-    fake_conn._forward_to_frontends = AsyncMock()
-    pool._connections["org_1"] = fake_conn
-
-    msg = {"type": "event", "event": "node_status"}
-    await pool.broadcast_to_member("org_1", "user_member", msg)
-
-    # Routed through the owner-keyed fan-out, demuxed to the member — NOT the
-    # in-process _frontend_connections loop.
-    fake_conn._forward_to_frontends.assert_awaited_once_with(msg, target_member_id="user_member")
+def _capture_sends(pool):
+    sent = []
+    pool._management_api.send_message = MagicMock(side_effect=lambda cid, msg: sent.append(cid) or True)
+    return sent
 
 
 @pytest.mark.asyncio
-async def test_broadcast_to_member_personal_broadcasts_all():
+async def test_broadcast_to_member_org_demuxes_via_owner_keyed_query():
     pool = GatewayConnectionPool(management_api=MagicMock())
-    fake_conn = MagicMock()
-    fake_conn._forward_to_frontends = AsyncMock()
-    pool._connections["user_1"] = fake_conn
+    pool._conn_svc = MagicMock()
+    pool._conn_svc.query_by_owner = AsyncMock(
+        return_value=[
+            ("c_target", "m_target", "chat"),
+            ("c_other", "m_other", "chat"),  # different member — excluded
+            ("c_node", "m_target", "node"),  # transparent pipe — excluded
+        ]
+    )
+    sent = _capture_sends(pool)
 
-    msg = {"type": "event", "event": "node_status"}
-    # Personal account (owner == member) → plain broadcast, no member demux.
-    await pool.broadcast_to_member("user_1", "user_1", msg)
-    fake_conn._forward_to_frontends.assert_awaited_once_with(msg)
+    await pool.broadcast_to_member("org_1", "m_target", {"type": "event", "event": "node_status"})
+
+    pool._conn_svc.query_by_owner.assert_awaited_once_with("org_1")
+    assert sent == ["c_target"]  # only the target member's chat tab
 
 
 @pytest.mark.asyncio
-async def test_broadcast_to_member_no_connection_is_noop():
+async def test_broadcast_to_member_works_without_gateway_connection():
+    """The fan-out must reach the owner's tabs purely via the GSI — no chat
+    GatewayConnection exists on the task handling a node-status broadcast."""
     pool = GatewayConnectionPool(management_api=MagicMock())
-    # No registered connection for this owner → silently returns.
-    await pool.broadcast_to_member("org_absent", "m1", {"type": "event"})
+    assert "org_1" not in pool._connections  # no chat gateway connection
+    pool._conn_svc = MagicMock()
+    pool._conn_svc.query_by_owner = AsyncMock(return_value=[("c_target", "m_target", "chat")])
+    sent = _capture_sends(pool)
+
+    await pool.broadcast_to_member("org_1", "m_target", {"type": "event"})
+    assert sent == ["c_target"]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_to_member_personal_broadcasts_all_chat():
+    pool = GatewayConnectionPool(management_api=MagicMock())
+    pool._conn_svc = MagicMock()
+    pool._conn_svc.query_by_owner = AsyncMock(
+        return_value=[
+            ("c_1", "user_1", "chat"),
+            ("c_2", "user_1", "chat"),
+            ("c_node", "user_1", "node"),  # excluded
+        ]
+    )
+    sent = _capture_sends(pool)
+
+    # Personal (owner == member) → no demux, all chat conns; node pipe excluded.
+    await pool.broadcast_to_member("user_1", "user_1", {"type": "event"})
+    assert set(sent) == {"c_1", "c_2"}
+
+
+@pytest.mark.asyncio
+async def test_broadcast_to_member_query_failure_drops_silently():
+    pool = GatewayConnectionPool(management_api=MagicMock())
+    pool._conn_svc = MagicMock()
+    pool._conn_svc.query_by_owner = AsyncMock(side_effect=RuntimeError("ddb down"))
+    pool._management_api.send_message = MagicMock(return_value=True)
+
+    await pool.broadcast_to_member("org_1", "m1", {"type": "event"})  # must not raise
+    pool._management_api.send_message.assert_not_called()

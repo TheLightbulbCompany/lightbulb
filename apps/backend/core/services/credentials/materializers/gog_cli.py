@@ -54,7 +54,12 @@ def _chown_tree_to_node(path) -> None:
             os.chown(os.path.join(dirpath, name), NODE_UID, NODE_GID)
 
 
-def write(owner_id: str, provider_key: str, credential: dict) -> None:
+def write(owner_id: str, provider_key: str, credential: dict) -> str:
+    """Seed the owner's gog keyring and return the connected account's email.
+
+    The email is the natural identity of a Google account and is derived here
+    anyway; returning it lets the connect path record the account in the
+    per-owner inventory without a redundant Gmail profile fetch."""
     email = _fetch_account_email(credential["access_token"])
 
     # gog rejects a flat client object — the OAuth client must be wrapped under "web".
@@ -100,6 +105,7 @@ def write(owner_id: str, provider_key: str, credential: dict) -> None:
     )
 
     _chown_tree_to_node(cfg / "gogcli")
+    return email
 
 
 def remove(owner_id: str, provider_key: str, credential: dict) -> None:

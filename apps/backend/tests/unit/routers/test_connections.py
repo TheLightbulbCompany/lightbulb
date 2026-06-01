@@ -576,19 +576,21 @@ class TestOAuthCallback:
     """GET /api/v1/oauth/{provider}/callback — PUBLIC; identity from state record."""
 
     @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
     async def test_callback_happy_path_persists_and_redirects(
-        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
     ):
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
         mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_repo.put_status = AsyncMock()
-        mock_apply.apply_connection = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value="user@example.com")
+        mock_accounts.add_account = AsyncMock()
 
         response = await async_client.get(
             "/api/v1/oauth/google/callback?code=abc&state=st1",
@@ -649,6 +651,106 @@ class TestOAuthCallback:
         mock_store.delete.assert_not_called()
         # No status row on the failure path.
         mock_repo.put_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_google_callback_records_connected_account(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
+    ):
+        # A successful Google connect must record the connected account's email in
+        # the per-owner inventory, on top of the provider-level "connected" status.
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_repo.put_status = AsyncMock()
+        # apply_connection surfaces the connected account email (gog_cli rail).
+        mock_apply.apply_connection = AsyncMock(return_value="alice@example.com")
+        mock_accounts.add_account = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "/settings/connections?connected=google" in response.headers["location"]
+
+        # Provider-level status row still written.
+        mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected")
+        # The connected account is added to the owner's inventory.
+        mock_accounts.add_account.assert_awaited_once_with("org_1", "alice@example.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_two_google_callbacks_record_two_accounts(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
+    ):
+        # Connecting two different Google accounts yields two inventory records —
+        # the keyring holds both, so the inventory must too.
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_repo.put_status = AsyncMock()
+        mock_accounts.add_account = AsyncMock()
+
+        mock_apply.apply_connection = AsyncMock(return_value="alice@example.com")
+        await async_client.get("/api/v1/oauth/google/callback?code=a1&state=s1", follow_redirects=False)
+        mock_apply.apply_connection = AsyncMock(return_value="bob@example.com")
+        await async_client.get("/api/v1/oauth/google/callback?code=a2&state=s2", follow_redirects=False)
+
+        emails = [c.args[1] for c in mock_accounts.add_account.await_args_list]
+        assert emails == ["alice@example.com", "bob@example.com"]
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_non_google_callback_does_not_touch_account_inventory(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client, monkeypatch
+    ):
+        # The Google inventory is provider-specific — a different OAuth provider's
+        # callback must not record any Google account. Uses a synthetic OAuth,
+        # backend-custodian provider so the generic path runs unchanged.
+        from routers import connections
+        from core.services.credentials.registry import OAuthSpec, Provider, Wiring
+
+        synthetic = Provider(
+            key="acme",
+            display_name="Acme",
+            acquisition="direct_oauth",
+            actor="mcp",
+            refresh_owner="none",
+            oauth=OAuthSpec(
+                authorization_url="https://acme.test/authorize",
+                token_url="https://acme.test/token",
+                scopes=["read"],
+            ),
+            wiring=Wiring(mcp_server={"key": "acme", "command": "npx", "env": {"TOKEN": "credentials.access_token"}}),
+        )
+        monkeypatch.setattr(connections.registry, "get_provider", lambda key: synthetic)
+
+        cred = {"access_token": "a", "refresh_token": "r"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "acme", cred))
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value=None)
+        mock_accounts.add_account = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/acme/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        # Generic flow unchanged: status written, Google inventory untouched.
+        mock_repo.put_status.assert_awaited_once_with("org_1", "acme", "connected")
+        mock_accounts.add_account.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")

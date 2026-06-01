@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.repositories import integrations_repo
+from core.repositories import google_accounts_repo, integrations_repo
 from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
@@ -232,11 +232,17 @@ async def oauth_callback(provider: str, code: str, state: str):
     if _retains_secret(p):
         await integration_secret_store.put(owner_id, prov, credential)
     try:
-        await apply_connection.apply_connection(owner_id, prov, credential)
+        connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
     except Exception:
         _remove_materialized_artifacts(owner_id, p, credential)
         if _retains_secret(p):
             await integration_secret_store.delete(owner_id, prov)
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
     await integrations_repo.put_status(owner_id, prov, "connected")
+    # Google supports multiple accounts under one provider-level "connected"
+    # status: each connect adds a distinct account to the owner's inventory so an
+    # agent can later be bound to a specific one. The account identity is the
+    # email that apply_connection surfaced from the gog keyring seed.
+    if prov == "google" and connection_identity:
+        await google_accounts_repo.add_account(owner_id, connection_identity)
     return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?connected={prov}")

@@ -60,7 +60,9 @@ def test_write_seeds_client_and_token_via_gog(monkeypatch, tmp_path, cred):
     # Force the non-root path so chown is skipped under test.
     monkeypatch.setattr(gog_cli.os, "geteuid", lambda: 1000)
 
-    gog_cli.write("org_1", "google", cred)
+    # write returns the derived account email so the connect path can record it
+    # in the per-owner Google inventory without a second profile fetch.
+    assert gog_cli.write("org_1", "google", cred) == "user@example.com"
 
     # getProfile called with the Bearer access token.
     assert profile_calls == [

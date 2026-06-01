@@ -105,11 +105,12 @@ async def test_ctx_passes_reconcile_to_resolver():
 
         reconcile = mock_resolve.await_args.kwargs["reconcile"]
         assert callable(reconcile)
-        # The callback dispatches ensure_user_ready for THIS auth context.
-        # Awaited inside the patch so the mock (not the real DDB-bound
-        # ensure_user_ready) is invoked.
+        # The callback dispatches ensure_user_ready for THIS auth context,
+        # PAPERCLIP-ONLY (provision_container=False) — /teams self-heal must
+        # never restart the org's running shared container. Awaited inside the
+        # patch so the mock (not the real DDB-bound ensure_user_ready) runs.
         await reconcile()
-        mock_fire.assert_awaited_once_with(auth)
+        mock_fire.assert_awaited_once_with(auth, provision_container=False)
 
 
 @pytest.mark.asyncio

@@ -338,7 +338,15 @@ async def _ctx(
         # the background by resolve_teams_context; ensure_user_ready is
         # idempotent + gate-first, so it no-ops when the org isn't ready and
         # the frontend keeps polling the 202 until the row goes active.
-        reconcile=lambda: ensure_user_ready(auth),
+        #
+        # provision_container=False — /teams self-heal only ensures the
+        # Paperclip WORKSPACE (the thing /teams reads). Container (ECS)
+        # provisioning stays owned by /chat's /container/status poll. Without
+        # this, an org admin/co-admin with a missing row but an already-running
+        # shared container would dispatch background_provision, which
+        # force-redeploys the live container (forceNewDeployment=True) on
+        # EVERY /teams poll — interrupting everyone in the org.
+        reconcile=lambda: ensure_user_ready(auth, provision_container=False),
     )
 
 

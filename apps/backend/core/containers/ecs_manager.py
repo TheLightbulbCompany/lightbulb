@@ -1903,28 +1903,12 @@ class EcsManager:
                 exc,
             )
 
-        # Seed each agent's Google-account instruction into its IDENTITY.md so
-        # it knows which account to act as (`gog -a <email>`). Runs AFTER the
-        # friday/atlas pre-stage so the base IDENTITY.md exists first; the
-        # seeder rewrites only its delimited managed block. Per-agent
-        # best-effort: one agent's failure (or an empty roster) must not block
-        # the rest of provision.
-        from core.services.google_identity import seed_agent_google_identity
-
-        for agent in paperclip_agents:
-            agent_id = agent.get("id")
-            if not agent_id:
-                continue
-            try:
-                await seed_agent_google_identity(owner_id, agent_id, workspace=get_workspace())
-            except Exception as exc:  # noqa: BLE001 — best-effort, per-agent.
-                put_metric("google_identity.seed.invoke_error")
-                logger.warning(
-                    "write_user_configs: seed_agent_google_identity failed for owner=%s agent=%s: %s",
-                    owner_id,
-                    agent_id,
-                    exc,
-                )
+        # NOTE: the per-agent Google-account instruction (`gog -a <email>`) is
+        # deliberately NOT seeded here. That managed-block edit to IDENTITY.md
+        # is user-action-driven — the assign API and the disconnect path own
+        # it. IDENTITY.md is a workspace file that survives a config-rewrite
+        # reprovision, so a seeded agent stays seeded with no provision-time
+        # re-seed; an unassigned agent needs nothing.
 
         await self.ensure_device_identities(owner_id, gateway_token)
 

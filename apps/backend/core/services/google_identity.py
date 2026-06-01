@@ -18,9 +18,14 @@ region in place:
     ...instruction...
     <!-- END gog-account -->
 
-This is the single hook for both (re)provision — ``write_user_configs`` loops
-every Paperclip agent and calls this — and the assign API, which calls it for
-one agent when its account changes.
+Seeding is **user-action-driven**: the only callers are the assign API (which
+seeds one agent when its account changes) and the disconnect path (which
+re-seeds affected agents when an account goes away). It is NOT wired into
+provisioning — IDENTITY.md is a workspace file that survives a config-rewrite
+reprovision, so a seeded agent stays seeded with no provision-time re-seed.
+That is also why a missing IDENTITY.md is a no-op here rather than a create:
+first-write of IDENTITY.md belongs to the friday/atlas pre-stage, and an
+agent without a base file simply isn't seeded yet.
 """
 
 from __future__ import annotations
@@ -110,13 +115,13 @@ async def seed_agent_google_identity(
     - account absent → block removed entirely.
 
     Idempotent: re-running with the same account produces byte-identical
-    content; re-running with a different account replaces the block in place
-    rather than duplicating it.
+    content (and skips the write entirely); re-running with a different
+    account replaces the block in place rather than duplicating it.
 
-    If IDENTITY.md doesn't exist yet (this normally runs *after* the
-    friday/atlas pre-stage, but an arbitrary agent may have no base file), we
-    create a minimal file holding just the block when an account exists. With
-    no account *and* no file there's nothing to do, so we skip the write.
+    If IDENTITY.md doesn't exist yet this is a no-op. First-write of
+    IDENTITY.md belongs to the friday/atlas pre-stage; the seeder only ever
+    edits an existing file, never creates one — so an agent with no base file
+    simply isn't seeded.
     """
     ws = workspace or get_workspace()
     rel_path = f"workspaces/{agent_id}/IDENTITY.md"
@@ -126,26 +131,16 @@ async def seed_agent_google_identity(
     try:
         existing = ws.read_file(owner_id, rel_path)
     except WorkspaceError:
-        # IDENTITY.md not seeded yet. With an account, create a minimal file
-        # so the instruction is present; without one, there's nothing to do.
-        existing = None
-
-    if email is None:
-        if existing is None:
-            return
-        updated = _strip_block(existing)
-        if updated == existing:
-            return  # No block to remove — avoid a no-op write.
-        ws.write_file(owner_id, rel_path, updated)
-        put_metric("google_identity.seed.cleared")
+        # IDENTITY.md not seeded yet — nothing to edit and we never create it.
         return
 
-    block = _render_block(email)
-    if existing is None:
-        updated = block + "\n"
+    if email is None:
+        updated = _strip_block(existing)
     else:
-        updated = _replace_or_append_block(existing, block)
-        if updated == existing:
-            return  # Same account already present — byte-stable, skip write.
+        updated = _replace_or_append_block(existing, _render_block(email))
+
+    if updated == existing:
+        return  # No change (block already absent / already current) — skip write.
+
     ws.write_file(owner_id, rel_path, updated)
-    put_metric("google_identity.seed.applied")
+    put_metric("google_identity.seed.cleared" if email is None else "google_identity.seed.applied")

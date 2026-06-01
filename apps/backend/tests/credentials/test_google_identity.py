@@ -6,6 +6,11 @@ agent's IDENTITY.md telling it which Google account to act as (``gog -a
 otherwise seeded write-once; the managed-block markers let the seed rewrite
 only its own region and leave the surrounding persona untouched.
 
+Seeding is user-action-driven — only the assign API and the disconnect path
+call it. It is deliberately a no-op when IDENTITY.md does not exist yet: the
+agent simply isn't seeded, and the seeder never creates the file (the
+friday/atlas pre-stage owns first-write of IDENTITY.md).
+
 These tests mock the repo resolution + the workspace read/write so no EFS or
 DynamoDB is touched.
 """
@@ -77,6 +82,10 @@ async def test_appends_managed_block_with_resolved_email(patch_resolver):
     assert END_MARKER in written
     assert "alice@gmail.com" in written
     assert "gog -a alice@gmail.com" in written
+    # The email sits inside the markers, not loose elsewhere in the file.
+    begin = written.index(BEGIN_MARKER)
+    end = written.index(END_MARKER)
+    assert begin < written.index("alice@gmail.com") < end
 
 
 @pytest.mark.asyncio
@@ -104,17 +113,22 @@ async def test_rerun_with_different_email_replaces_block_in_place(patch_resolver
 
 
 @pytest.mark.asyncio
-async def test_rerun_same_email_is_content_stable(patch_resolver):
+async def test_rerun_same_email_writes_nothing(patch_resolver):
+    """Re-running with the same account is idempotent: no second write."""
     patch_resolver("alice@gmail.com")
     base = "# IDENTITY.md\n\n- **Name:** Friday\n"
     ws = _make_workspace(base)
 
     await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
     first = ws._state["content"]
+    assert ws.write_file.call_count == 1
+
     await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
     second = ws._state["content"]
 
     assert first == second
+    # No churn: the second run detected no change and skipped the write.
+    assert ws.write_file.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -139,9 +153,13 @@ async def test_none_email_removes_the_block(patch_resolver):
 
 
 @pytest.mark.asyncio
-async def test_none_email_on_unseeded_file_is_noop(patch_resolver):
-    """No account + no IDENTITY.md yet → nothing to write, no write attempted."""
-    patch_resolver(None)
+async def test_missing_identity_with_email_is_noop(patch_resolver):
+    """IDENTITY.md not seeded yet → no write even when an account exists.
+
+    The seeder never creates IDENTITY.md; first-write belongs to the
+    friday/atlas pre-stage. An agent with no base file simply isn't seeded.
+    """
+    patch_resolver("alice@gmail.com")
     ws = _make_workspace(None)  # read_file raises (file missing)
 
     await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
@@ -150,20 +168,11 @@ async def test_none_email_on_unseeded_file_is_noop(patch_resolver):
 
 
 @pytest.mark.asyncio
-async def test_missing_identity_with_email_creates_minimal_file(patch_resolver):
-    """IDENTITY.md not seeded yet but an account exists → write a minimal file.
-
-    The friday/atlas pre-stage normally lands IDENTITY.md first and this runs
-    after; but for an arbitrary agent that has no base IDENTITY yet, we still
-    want the gog instruction present, so we create a minimal file holding just
-    the managed block.
-    """
-    patch_resolver("alice@gmail.com")
-    ws = _make_workspace(None)
+async def test_missing_identity_without_email_is_noop(patch_resolver):
+    """No account + no IDENTITY.md yet → nothing to write, no write attempted."""
+    patch_resolver(None)
+    ws = _make_workspace(None)  # read_file raises (file missing)
 
     await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
 
-    written = ws._state["content"]
-    assert written is not None
-    assert BEGIN_MARKER in written
-    assert "gog -a alice@gmail.com" in written
+    ws.write_file.assert_not_called()

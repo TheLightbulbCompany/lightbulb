@@ -654,12 +654,17 @@ class GatewayConnection:
                     continue
             try:
                 if not self._management_api.send_message(conn_id, message):
+                    # send_message returns False ONLY for GoneException (the
+                    # connection is genuinely dead) — safe to prune.
                     gone.append(conn_id)
                 else:
                     delivered += 1
             except Exception:
-                logger.warning("Failed to forward message to %s", conn_id)
-                gone.append(conn_id)
+                # An exception is a TRANSIENT failure (throttling, payload, API
+                # Gateway hiccup), NOT a gone connection — do NOT prune, or a
+                # temporary blip would delete a live socket's row and 401 its
+                # next message. Log and skip; it'll be retried on the next event.
+                logger.warning("Transient forward failure to %s (not pruning)", conn_id)
         for conn_id in gone:
             await self._prune_dead_conn(conn_id)
         # Log delivery summary for non-chunk messages (chunks are too frequent)
@@ -718,6 +723,11 @@ class GatewayConnection:
             await asyncio.to_thread(self._conn_svc.delete_connection, conn_id)
         except Exception:
             logger.warning("failed to prune dead conn %s", conn_id, exc_info=True)
+        # Also drop it from the in-process set: that set still backs the
+        # grace/idle-teardown check (_grace_close) and the per-member local
+        # broadcast path, so leaving a pruned id there could keep an idle
+        # gateway connection alive indefinitely or retry a stale id.
+        self._frontend_connections.discard(conn_id)
         # Invalidate so the next forward re-queries instead of re-sending to it.
         self._recipients_cache = None
         self._recipients_cache_ts = 0.0

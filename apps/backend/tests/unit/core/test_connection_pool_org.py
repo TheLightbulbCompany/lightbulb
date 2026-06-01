@@ -152,13 +152,55 @@ async def test_forward_does_not_cache_empty_recipients(make_conn):
 
 
 @pytest.mark.asyncio
+async def test_forward_does_not_prune_on_transient_exception(make_conn):
+    """An EXCEPTION from send_message is transient (throttle/payload/API-GW
+    blip), NOT a gone connection — it must NOT prune, or a temporary blip
+    deletes a live socket's row."""
+    conn = make_conn(owner_id="org_1")
+    conn._conn_svc.delete_connection = MagicMock()
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_live", "m1", "chat")])
+    conn._management_api.send_message = MagicMock(side_effect=Exception("throttled"))
+
+    await conn._forward_to_frontends({"type": "chunk"})
+    conn._conn_svc.delete_connection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_forward_prunes_on_gone_false(make_conn):
+    """send_message returns False ONLY for a gone connection (GoneException) —
+    prune it."""
+    conn = make_conn(owner_id="org_1")
+    conn._conn_svc.delete_connection = MagicMock()
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_dead", "m1", "chat")])
+    conn._management_api.send_message = MagicMock(return_value=False)
+
+    await conn._forward_to_frontends({"type": "chunk"})
+    conn._conn_svc.delete_connection.assert_called_once_with("c_dead")
+
+
+@pytest.mark.asyncio
+async def test_prune_discards_from_in_process_set(make_conn):
+    """Pruning a gone conn must also remove it from the in-process
+    _frontend_connections set (which still backs grace/idle teardown +
+    member broadcast), not just delete the DDB row."""
+    conn = make_conn(owner_id="org_1")
+    conn._frontend_connections.add("c_dead")
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_dead", "m1", "chat")])
+    conn._conn_svc.delete_connection = MagicMock()
+    conn._management_api.send_message = MagicMock(return_value=False)
+
+    await conn._forward_to_frontends({"type": "chunk"})
+    assert "c_dead" not in conn._frontend_connections
+
+
+@pytest.mark.asyncio
 async def test_forward_prunes_dead_conn_and_invalidates_cache(make_conn):
-    """A send failure prunes the dead conn via delete_connection and busts the
-    cache so the next forward re-queries."""
+    """A gone connection (send_message → False) is pruned via delete_connection
+    and busts the cache so the next forward re-queries."""
     conn = make_conn(owner_id="org_1")
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_dead", "m1", "chat")])
     conn._conn_svc.delete_connection = MagicMock()
-    conn._management_api.send_message = MagicMock(side_effect=Exception("gone"))
+    conn._management_api.send_message = MagicMock(return_value=False)
 
     await conn._forward_to_frontends({"type": "chunk"})
     conn._conn_svc.delete_connection.assert_called_once_with("c_dead")

@@ -12,7 +12,11 @@ from core.services.credentials.materializers import MATERIALIZERS
 
 
 def _resolve_source(source: str, credential: dict[str, Any], raw_input: dict[str, Any]) -> Any:
+    # "literal:true" -> "true" (a static env value, no credential dependency);
     # "input.token" -> raw_input["token"]; "credentials.access_token" -> credential["access_token"]; dotted = nested.
+    if source.startswith("literal:"):
+        # Split once so a value may itself contain a colon (e.g. literal:a:b).
+        return source.split(":", 1)[1]
     root, *rest = source.split(".")
     cur: Any = raw_input if root == "input" else credential
     for part in rest:

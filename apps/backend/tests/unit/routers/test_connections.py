@@ -58,6 +58,41 @@ class TestValidateToken:
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
         assert await connections._validate_token(registry.get_provider("stripe"), "bad") is False
 
+    @pytest.mark.asyncio
+    async def test_static_validate_headers_are_sent(self, monkeypatch):
+        # Some providers require a static request header on validate (e.g. Notion's
+        # `Notion-Version`). The spec's `headers` must be merged in alongside the
+        # auth header so the request the provider expects actually goes out.
+        from routers import connections
+        from core.services.credentials.registry import Provider, ValidateSpec, Wiring
+
+        captured: dict = {}
+
+        async def fake_request(self, method, url, **kwargs):
+            captured["headers"] = kwargs.get("headers")
+            return httpx.Response(200)
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        provider = Provider(
+            key="notion",
+            display_name="Notion",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(mcp_server={"key": "notion", "command": "npx", "env": {"TOKEN": "input.token"}}),
+            validate=ValidateSpec(
+                method="GET",
+                url="https://api.notion.com/v1/users/me",
+                headers={"Notion-Version": "2022-06-28"},
+            ),
+        )
+        ok = await connections._validate_token(provider, "secret_token")
+        assert ok is True
+        # Both the auth header and the static spec header reach the provider.
+        assert captured["headers"]["Authorization"] == "Bearer secret_token"
+        assert captured["headers"]["Notion-Version"] == "2022-06-28"
+
 
 class TestListConnections:
     """GET /api/v1/connections — catalog + per-provider status."""

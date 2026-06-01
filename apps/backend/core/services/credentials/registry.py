@@ -65,6 +65,10 @@ class ValidateSpec(BaseModel):
     # Optional JSON request body. GraphQL endpoints (Linear) require a POST with
     # a query body — a bare GET rejects otherwise-valid keys.
     body: dict | None = None
+    # Static request headers merged in alongside the auth header. Some providers
+    # require a fixed header on every call (e.g. Notion's `Notion-Version`) — a
+    # request without it is rejected even with a valid token.
+    headers: dict[str, str] = Field(default_factory=dict)
 
 
 class Requires(BaseModel):

@@ -74,7 +74,9 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
         return True
     scheme = p.validation.auth_scheme
     value = f"{scheme} {token}".strip() if scheme else token
-    headers = {p.validation.auth_header: value}
+    # Static spec headers first, then the auth header — the auth header wins on a
+    # name collision so a misconfigured static header can't clobber the credential.
+    headers = {**p.validation.headers, p.validation.auth_header: value}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             kwargs: dict = {"headers": headers}

@@ -1,12 +1,28 @@
-import { describe, test, expect, vi } from "vitest";
+import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+// IssueProperties now renders <IssueRelations>, which reads `GET /teams/issues`
+// for blocker candidates. Mock the Teams API so the relation rows mount with an
+// empty candidate list and never hit the network.
+vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
+
 import { IssueProperties } from "@/components/teams/issues/IssueProperties";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   Issue,
   CompanyAgent,
   IssueProject,
 } from "@/components/teams/shared/types";
+
+beforeEach(() => {
+  vi.mocked(useTeamsApi).mockReturnValue({
+    read: vi.fn().mockReturnValue({ data: { issues: [] } }),
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  } as unknown as ReturnType<typeof useTeamsApi>);
+});
 
 const baseIssue: Issue = {
   id: "iss_1",
@@ -19,7 +35,7 @@ const baseIssue: Issue = {
 
 describe("IssueProperties", () => {
   test("renders all 7 property rows", () => {
-    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
+    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} onBlockedByChange={vi.fn()} />);
     expect(screen.getByText("Status")).toBeInTheDocument();
     expect(screen.getByText("Priority")).toBeInTheDocument();
     expect(screen.getByText("Assignee")).toBeInTheDocument();
@@ -30,7 +46,7 @@ describe("IssueProperties", () => {
   });
 
   test("Assignee row renders an interactive picker trigger labeled 'Unassigned'", () => {
-    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
+    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} onBlockedByChange={vi.fn()} />);
     expect(screen.getByRole("button", { name: /Unassigned/i })).toBeInTheDocument();
   });
 
@@ -43,6 +59,7 @@ describe("IssueProperties", () => {
         agents={agents}
         onAssigneeChange={vi.fn()}
         onProjectChange={vi.fn()}
+        onBlockedByChange={vi.fn()}
       />,
     );
     expect(screen.getByRole("button", { name: /Friday/ })).toBeInTheDocument();
@@ -58,6 +75,7 @@ describe("IssueProperties", () => {
         agents={agents}
         onAssigneeChange={onAssigneeChange}
         onProjectChange={vi.fn()}
+        onBlockedByChange={vi.fn()}
       />,
     );
     await user.click(screen.getByRole("button", { name: /Unassigned/i }));
@@ -66,7 +84,7 @@ describe("IssueProperties", () => {
   });
 
   test("Project row renders an interactive picker trigger", () => {
-    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
+    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} onBlockedByChange={vi.fn()} />);
     expect(screen.getByRole("button", { name: /No project/i })).toBeInTheDocument();
   });
 
@@ -80,6 +98,7 @@ describe("IssueProperties", () => {
         projects={projects}
         onAssigneeChange={vi.fn()}
         onProjectChange={onProjectChange}
+        onBlockedByChange={vi.fn()}
       />,
     );
     await user.click(screen.getByRole("button", { name: /No project/i }));
@@ -88,14 +107,14 @@ describe("IssueProperties", () => {
   });
 
   test("renders priority icon + label", () => {
-    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
+    render(<IssueProperties issue={baseIssue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} onBlockedByChange={vi.fn()} />);
     expect(screen.getByText("high")).toBeInTheDocument();
   });
 
   test("renders '—' for null priority", () => {
     const issue: Issue = { ...baseIssue, priority: null };
     const { container } = render(
-      <IssueProperties issue={issue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />,
+      <IssueProperties issue={issue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} onBlockedByChange={vi.fn()} />,
     );
     const dashes = container.querySelectorAll('[data-empty="true"]');
     expect(Array.from(dashes).some((el) => el.textContent === "—")).toBe(true);
@@ -103,7 +122,7 @@ describe("IssueProperties", () => {
 
   test("renders project name from issue.project when projects prop empty", () => {
     const issue: Issue = { ...baseIssue, project: { id: "p1", name: "Inbox v1" } };
-    render(<IssueProperties issue={issue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} />);
+    render(<IssueProperties issue={issue} onAssigneeChange={vi.fn()} onProjectChange={vi.fn()} onBlockedByChange={vi.fn()} />);
     // Trigger should label with the denormalized project name even when the
     // projects prop is empty (e.g. SWR not yet loaded).
     expect(screen.getByRole("button", { name: /Inbox v1/ })).toBeInTheDocument();

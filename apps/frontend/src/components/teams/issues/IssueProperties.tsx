@@ -20,6 +20,7 @@ import type {
 } from "@/components/teams/shared/types";
 import { AssigneePicker } from "./pickers/AssigneePicker";
 import { ProjectPicker } from "./pickers/ProjectPicker";
+import { IssueRelations } from "./IssueRelations";
 
 export interface IssuePropertiesProps {
   issue: Issue;
@@ -28,6 +29,8 @@ export interface IssuePropertiesProps {
   projects?: IssueProject[];
   onAssigneeChange: (agentId: string | null) => void;
   onProjectChange: (projectId: string | null) => void;
+  /** Receives the FULL desired blocker-id set (replace semantics). */
+  onBlockedByChange: (ids: string[]) => void;
   className?: string;
 }
 
@@ -62,6 +65,7 @@ export function IssueProperties({
   projects = [],
   onAssigneeChange,
   onProjectChange,
+  onBlockedByChange,
   className,
 }: IssuePropertiesProps) {
   // Merge denormalized issue.project into the projects list so the trigger
@@ -111,6 +115,7 @@ export function IssueProperties({
           onChange={onProjectChange}
         />
       </PropertyRow>
+      <IssueRelations issue={issue} onBlockedByChange={onBlockedByChange} />
       <PropertyRow label="Labels">
         {labels.length > 0 ? (
           <span className="flex flex-wrap gap-1">

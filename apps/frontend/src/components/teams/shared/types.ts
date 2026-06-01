@@ -132,6 +132,24 @@ export interface IssueUpdateInput {
   /** ``null`` explicitly unassigns (sent as ``assigneeAgentId: null`` in the
    * PATCH body). ``undefined`` leaves the assignee unchanged. */
   assigneeAgentId?: string | null;
+  /** Full desired set of blocker issue ids (replace semantics — the whole
+   * array is sent, matching upstream Paperclip's "Blocked by" picker). The
+   * BFF aliases this to ``blockedByIssueIds`` on the wire. ``undefined``
+   * leaves the relations unchanged. */
+  blockedByIssueIds?: string[];
+}
+
+/** A slim issue summary used by the "Blocked by" / "Blocking" relation rows.
+ *
+ * Ported from upstream Paperclip's ``IssueRelationIssueSummary``
+ * (packages/shared/src/types/issue.ts) (MIT, © 2025 Paperclip AI). Trimmed to
+ * the fields the Teams relation chips render — upstream's recovery/terminal-
+ * blocker fields are deferred. */
+export interface IssueRelationIssueSummary {
+  id: string;
+  identifier?: string | null;
+  title: string;
+  status: IssueStatus;
 }
 
 export interface Issue {
@@ -152,6 +170,10 @@ export interface Issue {
   lastActivityAt?: string | null;
   lastExternalCommentAt?: string | null;
   blockerAttention?: boolean | IssueBlockerAttention | null;
+  /** Issues that block this one (the editable "Blocked by" relation row). */
+  blockedBy?: IssueRelationIssueSummary[] | null;
+  /** Issues blocked by this one (the read-only "Blocking" relation row). */
+  blocks?: IssueRelationIssueSummary[] | null;
   productivityReview?: IssueProductivityReview | null;
   unread?: boolean | null;
   archivedAt?: string | null;

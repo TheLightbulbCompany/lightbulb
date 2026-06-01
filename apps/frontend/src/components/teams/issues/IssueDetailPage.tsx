@@ -8,6 +8,9 @@
 
 "use client";
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { MoreHorizontal, Trash2 } from "lucide-react";
 import { IssueHeader } from "./IssueHeader";
 import { IssueComments } from "./IssueComments";
 import { IssueProperties } from "./IssueProperties";
@@ -19,6 +22,22 @@ import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
 import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader as DialogHeaderUi,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import type {
   CompanyAgent,
   IssueProject,
@@ -31,11 +50,27 @@ export interface IssueDetailPageProps {
 export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { issue, comments, isLoading, isError, error } = useIssueDetail(issueId);
   const mutations = useIssueMutations();
+  const router = useRouter();
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
   const agents = agentsResp?.agents ?? [];
   const projects = projectsResp?.projects ?? [];
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const confirmDelete = async () => {
+    setDeleting(true);
+    try {
+      await mutations.remove(issueId);
+      setDeleteOpen(false);
+      // The issue is gone — leave the now-dead detail route for the inbox.
+      router.push("/teams");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   if (isLoading && !issue) {
     return (
@@ -89,22 +124,50 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
     >
       <main className="flex flex-col gap-6 min-w-0">
         {issue.parentId && <IssueParentBreadcrumb parentId={issue.parentId} />}
-        <IssueHeader
-          issue={issue}
-          agents={agents}
-          onTitleSave={async (title) => {
-            await mutations.update(issueId, { title });
-          }}
-          onStatusChange={async (status) => {
-            await mutations.update(issueId, { status });
-          }}
-          onPriorityChange={async (priority) => {
-            await mutations.update(issueId, { priority });
-          }}
-          onAssigneeChange={async (assigneeAgentId) => {
-            await mutations.update(issueId, { assigneeAgentId });
-          }}
-        />
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <IssueHeader
+              issue={issue}
+              agents={agents}
+              onTitleSave={async (title) => {
+                await mutations.update(issueId, { title });
+              }}
+              onStatusChange={async (status) => {
+                await mutations.update(issueId, { status });
+              }}
+              onPriorityChange={async (priority) => {
+                await mutations.update(issueId, { priority });
+              }}
+              onAssigneeChange={async (assigneeAgentId) => {
+                await mutations.update(issueId, { assigneeAgentId });
+              }}
+            />
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deeper)]"
+                style={{ color: "var(--mute)" }}
+                aria-label="Issue actions"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setDeleteOpen(true);
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete issue
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
         {issue.description && (
           <div
             className="text-sm whitespace-pre-wrap pl-3"
@@ -150,8 +213,38 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           onProjectChange={(projectId) => {
             void mutations.update(issueId, { projectId });
           }}
+          onBlockedByChange={(blockedByIssueIds) => {
+            void mutations.update(issueId, { blockedByIssueIds });
+          }}
         />
       </aside>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeaderUi>
+            <DialogTitle>Delete issue?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes {issue.identifier ? `${issue.identifier}: ` : ""}
+              {issue.title}. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeaderUi>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={deleting}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => void confirmDelete()}
+            >
+              {deleting ? "Deleting…" : "Delete issue"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

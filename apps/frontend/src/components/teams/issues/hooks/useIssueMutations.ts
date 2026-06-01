@@ -21,11 +21,12 @@ export interface UseIssueMutationsResult {
   create: (input: IssueCreateInput) => Promise<Issue>;
   createChild: (parentId: string, input: IssueCreateInput) => Promise<Issue>;
   update: (issueId: string, input: IssueUpdateInput) => Promise<Issue>;
+  remove: (issueId: string) => Promise<void>;
   addComment: (issueId: string, body: string) => Promise<IssueComment>;
 }
 
 export function useIssueMutations(): UseIssueMutationsResult {
-  const { post, patch } = useTeamsApi();
+  const { post, patch, del } = useTeamsApi();
   const { mutate } = useSWRConfig();
 
   const create = useCallback(async (input: IssueCreateInput): Promise<Issue> => {
@@ -61,6 +62,17 @@ export function useIssueMutations(): UseIssueMutationsResult {
     [patch, mutate],
   );
 
+  const remove = useCallback(
+    async (issueId: string): Promise<void> => {
+      await del(`/issues/${issueId}`);
+      // Invalidate inbox lists (any tab) so the deleted issue drops out — the
+      // detail key for this id is intentionally not revalidated since the
+      // caller navigates away from the now-gone issue.
+      mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));
+    },
+    [del, mutate],
+  );
+
   const addComment = useCallback(
     async (issueId: string, body: string): Promise<IssueComment> => {
       const created = await post<IssueComment>(`/issues/${issueId}/comments`, { body });
@@ -70,5 +82,5 @@ export function useIssueMutations(): UseIssueMutationsResult {
     [post, mutate],
   );
 
-  return { create, createChild, update, addComment };
+  return { create, createChild, update, remove, addComment };
 }

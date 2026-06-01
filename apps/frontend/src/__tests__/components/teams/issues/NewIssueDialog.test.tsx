@@ -18,6 +18,7 @@ beforeEach(() => {
     createChild: vi.fn(),
     update: vi.fn(),
     addComment: vi.fn(),
+    remove: vi.fn(),
   });
 });
 

@@ -13,12 +13,18 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: vi.fn(),
 }));
 
+const mockRouterPush = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockRouterPush }),
+}));
+
 import { IssueDetailPage } from "@/components/teams/issues/IssueDetailPage";
 import { useIssueDetail } from "@/components/teams/issues/hooks/useIssueDetail";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 const mockUpdate = vi.fn();
+const mockRemove = vi.fn();
 const mockAddComment = vi.fn();
 const mockCreate = vi.fn();
 
@@ -35,6 +41,7 @@ beforeEach(() => {
     create: mockCreate,
     createChild: vi.fn(),
     update: mockUpdate,
+    remove: mockRemove,
     addComment: mockAddComment,
   });
   defaultRead.mockReturnValue({ data: { issues: [] }, isLoading: false, error: null, mutate: vi.fn() });
@@ -213,5 +220,30 @@ describe("IssueDetailPage", () => {
     await user.click(screen.getAllByRole("button", { name: /Unassigned/i })[0]);
     await user.click(await screen.findByText("Friday"));
     expect(mockUpdate).toHaveBeenCalledWith("iss_1", { assigneeAgentId: "ag_1" });
+  });
+
+  test("Delete issue action confirms then removes + navigates back to /teams", async () => {
+    const user = userEvent.setup();
+    mockRemove.mockResolvedValue(undefined);
+    vi.mocked(useIssueDetail).mockReturnValue({
+      issue: { id: "iss_1", identifier: "PAP-1", title: "Fix the inbox", status: "todo" },
+      comments: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+
+    render(<IssueDetailPage issueId="iss_1" />);
+
+    // Open the header actions menu, click "Delete issue" -> confirm dialog.
+    await user.click(screen.getByRole("button", { name: /issue actions/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /delete issue/i }));
+
+    // Confirm in the dialog (the destructive button, not the menu item).
+    const confirm = await screen.findByRole("button", { name: /^delete issue$/i });
+    await user.click(confirm);
+
+    await waitFor(() => expect(mockRemove).toHaveBeenCalledWith("iss_1"));
+    await waitFor(() => expect(mockRouterPush).toHaveBeenCalledWith("/teams"));
   });
 });

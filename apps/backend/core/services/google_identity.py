@@ -1,0 +1,151 @@
+"""Seed each agent's Google-account identity into its IDENTITY.md.
+
+An agent that acts on Gmail / Calendar / Drive must do so as a *specific*
+Google account, invoked via ``gog -a <email>``. Which account an agent uses
+is resolved per-agent (explicit assignment, else the owner's default) by
+``google_accounts_repo.resolve_account_for_agent``.
+
+The instruction lives in IDENTITY.md because OpenClaw auto-loads IDENTITY.md
+into the agent's chat context — so the agent reads "use this account" without
+us threading it through a tool. But IDENTITY.md is otherwise seeded
+write-once (``pre_stage_friday_identity`` / ``pre_stage_atlas`` use
+write-if-missing so an evolved persona is never clobbered). To keep the
+account instruction *updateable* on reassignment without disturbing the rest
+of the file, we carve out a delimited managed block and rewrite only that
+region in place:
+
+    <!-- BEGIN gog-account -->
+    ...instruction...
+    <!-- END gog-account -->
+
+This is the single hook for both (re)provision — ``write_user_configs`` loops
+every Paperclip agent and calls this — and the assign API, which calls it for
+one agent when its account changes.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from core.containers.workspace import Workspace, WorkspaceError, get_workspace
+from core.observability.metrics import put_metric
+from core.repositories import google_accounts_repo
+
+logger = logging.getLogger(__name__)
+
+# Markers delimiting the managed region inside IDENTITY.md. HTML comments so
+# they render invisibly when the markdown is viewed, yet are trivially
+# greppable for the in-place rewrite. The agent never needs to see them.
+BEGIN_MARKER = "<!-- BEGIN gog-account -->"
+END_MARKER = "<!-- END gog-account -->"
+
+
+def _render_block(email: str) -> str:
+    """The managed-block body for a resolved account.
+
+    Imperative + scoped: the agent must always pass ``-a <email>`` for any
+    Google action so it never acts as the wrong account (its own default or,
+    worse, another agent's).
+    """
+    return (
+        f"{BEGIN_MARKER}\n"
+        "## Google account\n"
+        f"Your Google account is `{email}`. For any Gmail / Calendar / Drive "
+        f"action, ALWAYS run `gog -a {email} …` — never bare `gog`, and never "
+        "another agent's account.\n"
+        f"{END_MARKER}"
+    )
+
+
+def _replace_or_append_block(existing: str, block: str) -> str:
+    """Return ``existing`` with the managed block updated in place or appended.
+
+    If both markers are present, the region between them (inclusive) is
+    replaced — leaving every other byte of IDENTITY.md untouched. Otherwise
+    the block is appended to the end, separated by a blank line so it reads
+    as its own section.
+    """
+    begin = existing.find(BEGIN_MARKER)
+    end = existing.find(END_MARKER)
+    if begin != -1 and end != -1 and end > begin:
+        end_close = end + len(END_MARKER)
+        return existing[:begin] + block + existing[end_close:]
+    # No existing block: append. Normalize trailing whitespace to a single
+    # newline so the appended section is cleanly separated and re-runs with
+    # the same email are byte-stable.
+    return existing.rstrip("\n") + "\n\n" + block + "\n"
+
+
+def _strip_block(existing: str) -> str:
+    """Return ``existing`` with the managed block removed (markers included).
+
+    Used when the agent has no Google account — no account means no
+    instruction. Collapses the blank-line separator left behind so removing
+    and re-adding the block is content-stable.
+    """
+    begin = existing.find(BEGIN_MARKER)
+    end = existing.find(END_MARKER)
+    if begin == -1 or end == -1 or end <= begin:
+        return existing
+    end_close = end + len(END_MARKER)
+    before = existing[:begin].rstrip("\n")
+    after = existing[end_close:].lstrip("\n")
+    if before and after:
+        return before + "\n\n" + after
+    return before + after
+
+
+async def seed_agent_google_identity(
+    owner_id: str,
+    agent_id: str,
+    *,
+    workspace: Workspace | None = None,
+) -> None:
+    """Seed (or clear) the agent's Google-account instruction in IDENTITY.md.
+
+    Resolves the account via ``resolve_account_for_agent`` and rewrites the
+    managed block:
+
+    - account present → block holds the ``gog -a <email>`` instruction.
+    - account absent → block removed entirely.
+
+    Idempotent: re-running with the same account produces byte-identical
+    content; re-running with a different account replaces the block in place
+    rather than duplicating it.
+
+    If IDENTITY.md doesn't exist yet (this normally runs *after* the
+    friday/atlas pre-stage, but an arbitrary agent may have no base file), we
+    create a minimal file holding just the block when an account exists. With
+    no account *and* no file there's nothing to do, so we skip the write.
+    """
+    ws = workspace or get_workspace()
+    rel_path = f"workspaces/{agent_id}/IDENTITY.md"
+
+    email = await google_accounts_repo.resolve_account_for_agent(owner_id, agent_id)
+
+    try:
+        existing = ws.read_file(owner_id, rel_path)
+    except WorkspaceError:
+        # IDENTITY.md not seeded yet. With an account, create a minimal file
+        # so the instruction is present; without one, there's nothing to do.
+        existing = None
+
+    if email is None:
+        if existing is None:
+            return
+        updated = _strip_block(existing)
+        if updated == existing:
+            return  # No block to remove — avoid a no-op write.
+        ws.write_file(owner_id, rel_path, updated)
+        put_metric("google_identity.seed.cleared")
+        return
+
+    block = _render_block(email)
+    if existing is None:
+        updated = block + "\n"
+    else:
+        updated = _replace_or_append_block(existing, block)
+        if updated == existing:
+            return  # Same account already present — byte-stable, skip write.
+    ws.write_file(owner_id, rel_path, updated)
+    put_metric("google_identity.seed.applied")

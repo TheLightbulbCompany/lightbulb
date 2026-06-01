@@ -65,6 +65,20 @@ class ValidateSpec(BaseModel):
     # Optional JSON request body. GraphQL endpoints (Linear) require a POST with
     # a query body — a bare GET rejects otherwise-valid keys.
     body: dict | None = None
+    # Static request headers merged in alongside the auth header. Some providers
+    # require a fixed header on every call (e.g. Notion's `Notion-Version`) — a
+    # request without it is rejected even with a valid token.
+    headers: dict[str, str] = Field(default_factory=dict)
+    # Dotted JSON path that must resolve to a truthy value for the token to count
+    # as valid. Some providers answer HTTP 200 even for a bad token and signal
+    # validity only in the body (Slack `auth.test` -> {"ok": false}; Linear
+    # GraphQL -> 200 with `errors`). A missing/falsy path means invalid.
+    success_json_field: str | None = None
+    # Required token prefix, checked BEFORE the HTTP call. Some validate endpoints
+    # accept more token shapes than the wired env var can use — Slack's auth.test
+    # says `ok` for a bot `xoxb-` token, but the server is given the user-token
+    # slot, so only an `xoxp-` token actually works once spawned.
+    token_prefix: str | None = None
 
 
 class Requires(BaseModel):

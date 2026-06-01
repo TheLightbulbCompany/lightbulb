@@ -72,18 +72,46 @@ def _get_provider_or_404(provider: str) -> registry.Provider:
 async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
+    # Reject a token shape the wired server cannot use, before spending an HTTP
+    # call: some validate endpoints accept token types the env var doesn't (Slack
+    # auth.test oks a bot `xoxb-` token, but the server gets the user-token slot).
+    if p.validation.token_prefix and not token.startswith(p.validation.token_prefix):
+        return False
     scheme = p.validation.auth_scheme
     value = f"{scheme} {token}".strip() if scheme else token
-    headers = {p.validation.auth_header: value}
+    # Static spec headers first, then the auth header — the auth header wins on a
+    # name collision so a misconfigured static header can't clobber the credential.
+    headers = {**p.validation.headers, p.validation.auth_header: value}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             kwargs: dict = {"headers": headers}
             if p.validation.body is not None:
                 kwargs["json"] = p.validation.body
             resp = await client.request(p.validation.method, p.validation.url, **kwargs)
-        return resp.status_code < 400
+        if resp.status_code >= 400:
+            return False
+        # Providers that answer 200 even for a bad token (Slack auth.test,
+        # Linear GraphQL) gate validity on a body field instead of the status.
+        if p.validation.success_json_field:
+            return _json_path_truthy(resp, p.validation.success_json_field)
+        return True
     except httpx.HTTPError:
         return False
+
+
+def _json_path_truthy(resp: httpx.Response, dotted_path: str) -> bool:
+    """Walk a dotted path into the response JSON and report whether it resolves
+    to a truthy value. A non-JSON body or a missing key means invalid (not an
+    error) — a malformed response is never a valid credential."""
+    try:
+        cur: object = resp.json()
+    except ValueError:
+        return False
+    for part in dotted_path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return False
+        cur = cur[part]
+    return bool(cur)
 
 
 @router.get("")

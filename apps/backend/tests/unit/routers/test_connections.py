@@ -58,6 +58,142 @@ class TestValidateToken:
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
         assert await connections._validate_token(registry.get_provider("stripe"), "bad") is False
 
+    @pytest.mark.asyncio
+    async def test_static_validate_headers_are_sent(self, monkeypatch):
+        # Some providers require a static request header on validate (e.g. Notion's
+        # `Notion-Version`). The spec's `headers` must be merged in alongside the
+        # auth header so the request the provider expects actually goes out.
+        from routers import connections
+        from core.services.credentials.registry import Provider, ValidateSpec, Wiring
+
+        captured: dict = {}
+
+        async def fake_request(self, method, url, **kwargs):
+            captured["headers"] = kwargs.get("headers")
+            return httpx.Response(200)
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        provider = Provider(
+            key="notion",
+            display_name="Notion",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(mcp_server={"key": "notion", "command": "npx", "env": {"TOKEN": "input.token"}}),
+            validate=ValidateSpec(
+                method="GET",
+                url="https://api.notion.com/v1/users/me",
+                headers={"Notion-Version": "2022-06-28"},
+            ),
+        )
+        ok = await connections._validate_token(provider, "secret_token")
+        assert ok is True
+        # Both the auth header and the static spec header reach the provider.
+        assert captured["headers"]["Authorization"] == "Bearer secret_token"
+        assert captured["headers"]["Notion-Version"] == "2022-06-28"
+
+    def _slack_provider(self):
+        # Slack's auth.test returns HTTP 200 even for a bad token, signalling
+        # validity only via the JSON `ok` field.
+        from core.services.credentials.registry import Provider, ValidateSpec, Wiring
+
+        return Provider(
+            key="slack",
+            display_name="Slack",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(mcp_server={"key": "slack", "command": "npx", "env": {"TOKEN": "input.token"}}),
+            validate=ValidateSpec(
+                method="POST",
+                url="https://slack.com/api/auth.test",
+                success_json_field="ok",
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_success_json_field_false_fails_despite_200(self, monkeypatch):
+        from routers import connections
+
+        async def fake_request(self, method, url, **kwargs):
+            return httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        assert await connections._validate_token(self._slack_provider(), "xoxb-bad") is False
+
+    @pytest.mark.asyncio
+    async def test_success_json_field_true_passes(self, monkeypatch):
+        from routers import connections
+
+        async def fake_request(self, method, url, **kwargs):
+            return httpx.Response(200, json={"ok": True, "user": "bot"})
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        assert await connections._validate_token(self._slack_provider(), "xoxb-good") is True
+
+    @pytest.mark.asyncio
+    async def test_success_json_field_missing_nested_path_fails(self, monkeypatch):
+        # A dotted path that doesn't resolve (Linear GraphQL returned `errors`
+        # instead of `data.viewer.id`) is treated as invalid, not an exception.
+        from routers import connections
+        from core.services.credentials.registry import Provider, ValidateSpec, Wiring
+
+        async def fake_request(self, method, url, **kwargs):
+            return httpx.Response(200, json={"errors": [{"message": "auth"}]})
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        provider = Provider(
+            key="linear",
+            display_name="Linear",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(mcp_server={"key": "linear", "command": "npx", "env": {"TOKEN": "input.token"}}),
+            validate=ValidateSpec(
+                method="POST",
+                url="https://api.linear.app/graphql",
+                success_json_field="data.viewer.id",
+            ),
+        )
+        assert await connections._validate_token(provider, "lin_bad") is False
+
+    @pytest.mark.asyncio
+    async def test_success_json_field_non_json_body_fails(self, monkeypatch):
+        # A 200 with a non-JSON body must be treated as invalid, not raise.
+        from routers import connections
+
+        async def fake_request(self, method, url, **kwargs):
+            return httpx.Response(200, text="not json")
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        assert await connections._validate_token(self._slack_provider(), "xoxb") is False
+
+    @pytest.mark.asyncio
+    async def test_token_prefix_rejects_wrong_type_without_http(self, monkeypatch):
+        # Slack requires an `xoxp-` user token; a bot `xoxb-` token is rejected
+        # pre-flight (no HTTP call), since auth.test would otherwise ok it.
+        from routers import connections
+        from core.services.credentials import registry
+
+        async def fake_request(self, method, url, **kwargs):
+            raise AssertionError("HTTP must not run for a wrong-prefix token")
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        assert await connections._validate_token(registry.get_provider("slack"), "xoxb-bot") is False
+
+    @pytest.mark.asyncio
+    async def test_token_prefix_allows_matching_type(self, monkeypatch):
+        from routers import connections
+        from core.services.credentials import registry
+
+        async def fake_request(self, method, url, **kwargs):
+            return httpx.Response(200, json={"ok": True})
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        assert await connections._validate_token(registry.get_provider("slack"), "xoxp-good") is True
+
 
 class TestListConnections:
     """GET /api/v1/connections — catalog + per-provider status."""

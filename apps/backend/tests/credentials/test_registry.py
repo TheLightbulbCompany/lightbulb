@@ -78,13 +78,25 @@ def test_direct_oauth_requires_oauth_block():
         )  # no oauth
 
 
-def test_stripe_is_mcp_server_and_linear_is_gone():
-    from core.services.credentials.registry import all_providers, get_provider
+def test_stripe_is_mcp_server():
+    from core.services.credentials.registry import get_provider
 
     w = get_provider("stripe").wiring
     assert w.mcp_server is not None and w.mcp_server.key == "stripe"
     assert w.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
-    assert "linear" not in all_providers()  # Linear removed (D1)
+
+
+# Linear re-enters the registry on the mcp_server rail with a real command, so
+# the previous "Linear is gone" expectation no longer holds — it must load and
+# carry the bare-key (no-Bearer) validate scheme its personal API tokens need.
+def test_linear_is_back_on_mcp_server_rail():
+    from core.services.credentials.registry import all_providers, get_provider
+
+    assert "linear" in all_providers()
+    p = get_provider("linear")
+    assert p.wiring.mcp_server is not None
+    assert p.wiring.mcp_server.command == "npx"
+    assert p.validation.auth_scheme == ""
 
 
 def test_mcp_server_wiring_parses():
@@ -124,6 +136,82 @@ def test_wiring_accepts_exactly_one_of_three():
             materializer="gog_cli",
             mcp_server=McpServer(key="x", command="npx", args=[], env={"K": "input.token"}),
         )
+
+
+# The four curated mcp_server integrations share a shape: paste-token / mcp /
+# no-refresh, one mcp.servers.<key> they own, and a validate spec. The per-row
+# expectations below pin the bits that are unique per provider (env keys, the
+# success-field/header/scheme that a wrong value would silently break).
+_CURATED_MCP = {
+    "slack": {
+        "mcp_key": "slack",
+        "env_keys": {
+            "SLACK_MCP_XOXP_TOKEN",
+            "SLACK_MCP_ADD_MESSAGE_TOOL",
+            "SLACK_MCP_REACTION_TOOL",
+            "SLACK_MCP_MARK_TOOL",
+        },
+        "success_json_field": "ok",
+        "headers": {},
+        "auth_scheme": "Bearer",
+    },
+    "notion": {
+        "mcp_key": "notion",
+        "env_keys": {"NOTION_TOKEN"},
+        "success_json_field": None,
+        "headers": {"Notion-Version": "2022-06-28"},
+        "auth_scheme": "Bearer",
+    },
+    "sentry": {
+        "mcp_key": "sentry",
+        "env_keys": {"SENTRY_ACCESS_TOKEN"},
+        "success_json_field": None,
+        "headers": {},
+        "auth_scheme": "Bearer",
+    },
+    "linear": {
+        "mcp_key": "linear",
+        "env_keys": {"LINEAR_API_TOKEN"},
+        "success_json_field": "data.viewer.id",
+        "headers": {},
+        "auth_scheme": "",
+    },
+}
+
+
+@pytest.mark.parametrize("key", sorted(_CURATED_MCP))
+def test_curated_mcp_provider_shape(key):
+    expected = _CURATED_MCP[key]
+    p = registry.get_provider(key)
+    assert p.acquisition == "paste_token"
+    assert p.actor == "mcp"
+    assert p.refresh_owner == "none"
+    assert p.wiring.mcp_server is not None
+    assert p.wiring.mcp_server.key == expected["mcp_key"]
+    assert set(p.wiring.mcp_server.env) == expected["env_keys"]
+    assert p.validation is not None
+    assert p.validation.success_json_field == expected["success_json_field"]
+    assert p.validation.headers == expected["headers"]
+    assert p.validation.auth_scheme == expected["auth_scheme"]
+
+
+def test_github_is_on_materializer_rail():
+    # GitHub uses the gh CLI (baked into the image) via the materializer rail —
+    # a paste-token PAT seeded into gh's hosts.yml, not an mcp_server.
+    p = registry.get_provider("github")
+    assert p.acquisition == "paste_token"
+    assert p.actor == "cli"
+    assert p.refresh_owner == "none"
+    assert p.requires.bins == ["gh"]
+    assert p.wiring.materializer == "gh_cli"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    # A bad PAT 401s, so status-based validate (no success_json_field) is enough;
+    # the pinned API-version header must still ride every call.
+    assert p.validation is not None
+    assert p.validation.url == "https://api.github.com/user"
+    assert p.validation.auth_scheme == "Bearer"
+    assert p.validation.success_json_field is None
+    assert p.validation.headers == {"X-GitHub-Api-Version": "2022-11-28"}
 
 
 def test_registry_materializers_and_oauth_are_self_consistent():

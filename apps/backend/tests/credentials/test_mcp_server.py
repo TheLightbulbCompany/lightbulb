@@ -12,6 +12,55 @@ def test_build_block_from_paste_credential():
     }
 
 
+def test_resolve_source_literal_returns_static_string():
+    # `literal:` lets a provider set a static env value (e.g. a feature flag)
+    # with no dependence on the credential or raw input.
+    from core.services.credentials.apply_connection import _resolve_source
+
+    assert _resolve_source("literal:true", {}, {}) == "true"
+    # Everything after the prefix is the value verbatim, including a colon.
+    assert _resolve_source("literal:a:b", {}, {}) == "a:b"
+
+
+def test_build_block_mixes_literal_and_credential_env(monkeypatch):
+    # A provider can set a static flag alongside a credential-derived value; both
+    # resolve through the same _resolve_source the env source-map already uses.
+    import core.services.credentials.mcp_server as m
+    from core.services.credentials.registry import McpServer, Provider, Wiring
+
+    provider = Provider(
+        key="slack",
+        display_name="Slack",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=Wiring(
+            mcp_server=McpServer(
+                key="slack",
+                command="npx",
+                env={"FLAG": "literal:true", "TOKEN": "input.token"},
+            )
+        ),
+    )
+    monkeypatch.setattr(m.registry, "get_provider", lambda key: provider)
+
+    block = build_mcp_server_block("slack", {"token": "xoxb-123"})
+    assert block["env"] == {"FLAG": "true", "TOKEN": "xoxb-123"}
+
+
+def test_build_block_slack_resolves_literals_and_token():
+    # Slack's three write-tool flags ship as `literal:true` so they resolve to
+    # the static string "true" regardless of the credential, while the token
+    # resolves from the pasted credential — the curated full-access default.
+    block = build_mcp_server_block("slack", {"token": "xoxp-abc"})
+    assert block["env"] == {
+        "SLACK_MCP_XOXP_TOKEN": "xoxp-abc",
+        "SLACK_MCP_ADD_MESSAGE_TOOL": "true",
+        "SLACK_MCP_REACTION_TOOL": "true",
+        "SLACK_MCP_MARK_TOOL": "true",
+    }
+
+
 def test_build_block_none_for_non_mcp_provider():
     assert build_mcp_server_block("google", {"access_token": "a"}) is None  # materializer, not mcp_server
 

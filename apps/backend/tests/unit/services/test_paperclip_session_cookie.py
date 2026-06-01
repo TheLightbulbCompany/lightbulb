@@ -67,7 +67,7 @@ async def test_warm_path_reuses_bound_cookie_without_minting():
     mint, calls = _mint_factory("should-not-be-used")
     cookies = {
         _SESSION_NAME: "abc123",
-        "isol8_pc_bind": mint_binding("u1"),
+        "isol8_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=abc123"),
     }
     resp = _FakeResponse()
 
@@ -130,7 +130,7 @@ async def test_mismatched_binding_is_rejected():
     # Binding cookie is for a DIFFERENT user -> confused-deputy guard fires.
     cookies = {
         _SESSION_NAME: "u2s-cookie",
-        "isol8_pc_bind": mint_binding("u2"),
+        "isol8_pc_bind": mint_binding("u2", f"{_SESSION_NAME}=u2s-cookie"),
     }
     resp = _FakeResponse()
 
@@ -141,11 +141,31 @@ async def test_mismatched_binding_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_right_user_wrong_session_token_is_rejected():
+    """The binding is for the correct user but was minted for a DIFFERENT
+    session token, so its ``sth`` won't match an injected ``.session_token``.
+    A caller authenticated as u1 must NOT be able to ride a different token
+    just because the binding's ``sub`` matches (confused-deputy guard)."""
+    mint, calls = _mint_factory(f"{_SESSION_NAME}=minted")
+    cookies = {
+        _SESSION_NAME: "injected-different-token",
+        "isol8_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=the-real-token"),
+    }
+    resp = _FakeResponse()
+
+    result = await resolve_session_cookie(cookies=cookies, response=resp, user_id="u1", mint=mint)
+
+    # sth mismatch -> not trusted -> falls through to a fresh mint.
+    assert result == f"{_SESSION_NAME}=minted"
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
 async def test_force_evicts_and_remints_even_with_bound_cookie():
     mint, calls = _mint_factory(f"{_SESSION_NAME}=re-minted")
     cookies = {
         _SESSION_NAME: "old-value",
-        "isol8_pc_bind": mint_binding("u1"),
+        "isol8_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=old-value"),
     }
     resp = _FakeResponse()
 

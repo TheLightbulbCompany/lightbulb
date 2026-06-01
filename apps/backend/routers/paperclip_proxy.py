@@ -94,8 +94,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_session_cookie import (
-    binding_sub,
-    read_session_cookie,
+    is_trusted,
     set_session_on_response,
 )
 
@@ -1109,14 +1108,11 @@ async def proxy(path: str, request: Request) -> Response:
     # forward it as-is and SKIP the sign-in — that eliminates the
     # per-request re-auth storm. Otherwise (cold start / cross-user /
     # unbound) we sign in fresh and seed both cookies on the response.
-    # The binding check is the confused-deputy guard: a session cookie
-    # not provably bound to THIS user is never replayed on their behalf.
-    presented_cookie = read_session_cookie(request.cookies)
-    reused_cookie = (
-        presented_cookie
-        if presented_cookie is not None and binding_sub(request.cookies.get("isol8_pc_bind")) == auth.user_id
-        else None
-    )
+    # The binding check is the confused-deputy guard: ``is_trusted`` returns
+    # the cookie only when its binding is for THIS user AND for THIS exact
+    # session token, so a session cookie not provably bound to the caller is
+    # never replayed on their behalf.
+    reused_cookie = is_trusted(request.cookies, auth.user_id)
 
     # Per-request httpx.AsyncClient: simple lifecycle, no shared-state
     # gotchas. Cloud Map A-record TTL is 10s so DNS is re-resolved

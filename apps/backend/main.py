@@ -470,10 +470,7 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
     # sets this, so it falls through to the faithful-status path below.
     teams_user_id = getattr(request.state, "teams_user_id", None)
     if exc.status_code == 401 and teams_user_id:
-        from core.services.paperclip_session_cookie import (
-            SessionCookieError,
-            resolve_session_cookie,
-        )
+        from core.services.paperclip_session_cookie import resolve_session_cookie
         from routers.teams.agents import get_user_session_cookie_for
 
         refresh = JSONResponse(
@@ -488,9 +485,12 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
                 mint=lambda: get_user_session_cookie_for(teams_user_id),
                 force=True,
             )
-        except SessionCookieError:
-            # Re-mint itself failed (e.g. workspace no longer active). Fall
-            # back to a plain 401 so the client doesn't retry into a loop.
+        except Exception:
+            # The re-mint (a fresh per-user sign-in) can fail for many reasons:
+            # SessionCookieError (missing key), PaperclipApiError (sign-in 4xx/5xx),
+            # UserSessionError (workspace no longer active), Clerk lookup errors.
+            # Any of them must degrade to a plain 401 — never escape this handler
+            # (which would 500) or loop the client.
             logger.warning("teams 401 self-heal: re-mint failed for user %s", teams_user_id, exc_info=True)
             return JSONResponse(
                 status_code=401,

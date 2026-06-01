@@ -33,6 +33,7 @@ JS-readable token.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -90,12 +91,30 @@ def _bind_secret() -> str:
     return key
 
 
-def mint_binding(user_id: str) -> str:
-    """HS256 JWT binding the Paperclip session cookie to an Isol8 user."""
+def _session_hash(session_cookie_line: str) -> str:
+    """SHA-256 of the session-cookie VALUE. The binding carries this so it ties
+    to THIS exact session token, not merely to a user id — without it, a caller
+    authenticated as user X whose binding says ``sub=X`` could inject a
+    different user's ``.session_token`` and have us forward it (confused
+    deputy). Hash, not the raw value, so the binding cookie never re-exposes
+    the bearer-equivalent session token."""
+    eq = session_cookie_line.find("=")
+    value = session_cookie_line[eq + 1 :] if eq > 0 else session_cookie_line
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def mint_binding(user_id: str, session_cookie_line: str) -> str:
+    """HS256 JWT binding a SPECIFIC Paperclip session cookie to an Isol8 user.
+
+    Carries the user id AND a hash of the session-token value, so on reuse we
+    can verify the presented ``.session_token`` is the exact one this binding
+    was minted for — not just that the binding belongs to the right user.
+    """
     now = datetime.now(timezone.utc)
     return pyjwt.encode(
         {
             "sub": user_id,
+            "sth": _session_hash(session_cookie_line),
             "kind": _BIND_KIND,
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(seconds=_SESSION_MAX_AGE_SECONDS)).timestamp()),
@@ -105,9 +124,8 @@ def mint_binding(user_id: str) -> str:
     )
 
 
-def binding_sub(token: str | None) -> str | None:
-    """Return the bound user id from a binding cookie, or ``None`` if absent
-    or invalid (expired/tampered/wrong-kind)."""
+def _binding_claims(token: str | None) -> dict | None:
+    """Decode + validate a binding cookie; ``None`` if absent/invalid/wrong-kind."""
     if not token:
         return None
     try:
@@ -116,8 +134,7 @@ def binding_sub(token: str | None) -> str | None:
         return None
     if claims.get("kind") != _BIND_KIND:
         return None
-    sub = claims.get("sub")
-    return sub if isinstance(sub, str) and sub else None
+    return claims
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +158,16 @@ def is_trusted(cookies: dict[str, str], user_id: str) -> str | None:
     presented = read_session_cookie(cookies)
     if presented is None:
         return None
-    if binding_sub(cookies.get(_BIND_COOKIE)) != user_id:
-        # Present but unbound / bound to someone else -> never forward it.
+    claims = _binding_claims(cookies.get(_BIND_COOKIE))
+    if claims is None:
+        return None
+    # Trust only when the binding is for THIS user AND for THIS exact session
+    # token (sub + sth). The sth check is what actually stops the confused
+    # deputy: an injected different-user .session_token won't match the
+    # binding's hash even if its sub matches the caller.
+    if claims.get("sub") != user_id:
+        return None
+    if claims.get("sth") != _session_hash(presented):
         return None
     return presented
 
@@ -175,7 +200,7 @@ def set_session_on_response(response, session_cookie_line: str, user_id: str) ->
     )
     response.set_cookie(
         key=_BIND_COOKIE,
-        value=mint_binding(user_id),
+        value=mint_binding(user_id, session_cookie_line),
         max_age=_SESSION_MAX_AGE_SECONDS,
         domain=_COOKIE_DOMAIN,
         path="/",

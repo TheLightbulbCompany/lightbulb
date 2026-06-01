@@ -120,6 +120,39 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
         asyncio.create_task(background_provision(owner_id, auth.user_id))
 
 
+async def ensure_user_ready_for(
+    *,
+    user_id: str,
+    org_id: str | None = None,
+    org_role: str | None = None,
+    email: str | None = None,
+    provision_container: bool = True,
+) -> None:
+    """Fire ``ensure_user_ready`` from a non-request context.
+
+    The canonical ``ensure_user_ready`` takes an ``AuthContext`` assembled
+    from a Clerk JWT. Event-driven triggers (Stripe / Clerk webhooks, which
+    have no JWT) call this helper with the same identity fields instead, so
+    owner-vs-member routing matches the request path exactly.
+
+    Same gate-first, idempotent semantics — safe to call repeatedly and
+    concurrently with the ``/container/status`` poll; a no-op while the
+    readiness gate is up.
+
+    ``provision_container`` is forwarded unchanged: membership-created fires
+    it ``False`` (an org member rides the shared container that already
+    exists), while owner-side triggers (subscription active, provider
+    configured) leave it ``True``.
+    """
+    auth = AuthContext(
+        user_id=user_id,
+        org_id=org_id,
+        org_role=org_role,
+        email=email,
+    )
+    await ensure_user_ready(auth, provision_container=provision_container)
+
+
 async def _ensure_paperclip_for_org(
     *,
     org_id: str,

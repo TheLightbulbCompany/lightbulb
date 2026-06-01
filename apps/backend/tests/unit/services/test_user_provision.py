@@ -759,3 +759,75 @@ async def test_provision_container_false_skips_container_dispatch_for_admin():
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), provision_container=False)
     fake_provisioning.provision_member.assert_awaited_once()
     assert captured == [], f"provision_container=False must skip container dispatch, got {captured}"
+
+
+# ----------------------------------------------------------------------
+# ensure_user_ready_for — non-request fire helper (event-driven triggers)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_user_ready_for_routes_member_to_org_join():
+    """The fire helper builds a member AuthContext from kwargs and routes
+    through ensure_user_ready to the org path with is_admin=False (the
+    member-join branch). Used by the membership.created webhook so a member
+    of an already-ready org provisions without opening /chat."""
+    from core.services.user_provision import ensure_user_ready_for
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=AsyncMock()) as mock_org,
+        patch("core.services.user_provision.background_provision", new=AsyncMock()) as mock_bg,
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready_for(
+            user_id="user_m",
+            org_id="org_1",
+            org_role="org:member",
+            email="m@example.com",
+            provision_container=False,
+        )
+    mock_org.assert_awaited_once()
+    assert mock_org.await_args.kwargs["is_admin"] is False
+    mock_bg.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_user_ready_for_is_noop_when_gate_blocks():
+    """When the gate is up, the fire helper no-ops — so a webhook firing into
+    a not-yet-ready org is harmless."""
+    from core.services.user_provision import ensure_user_ready_for
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=MagicMock())),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=AsyncMock()) as mock_org,
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=AsyncMock()) as mock_owner,
+    ):
+        await ensure_user_ready_for(user_id="user_m", org_id="org_1", org_role="org:member", email="m@example.com")
+    mock_org.assert_not_awaited()
+    mock_owner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_user_ready_for_personal_owner_dispatches_container():
+    """A personal-owner fire (no org_id) with the default provision_container=True
+    dispatches background_provision — used by the provider-configured triggers."""
+    from core.services.user_provision import ensure_user_ready_for
+
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    # Don't patch background_provision — capture_task closes the real
+    # coroutine unexecuted, and its __qualname__ is what we assert on (an
+    # AsyncMock would report its own mixin qualname instead).
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=AsyncMock()) as mock_owner,
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready_for(user_id="user_p", email="p@example.com")
+    mock_owner.assert_awaited_once()
+    assert captured == ["background_provision"], f"personal owner should dispatch container, got {captured}"

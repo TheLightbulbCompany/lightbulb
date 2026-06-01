@@ -7,9 +7,11 @@ bootstrap admins, refuse ambiguous email matches, refuse when there's
 nothing to recover.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from scripts.recover_orphan_paperclip_member import BOOTSTRAP_EMAILS, plan_recovery
+from scripts.recover_orphan_paperclip_member import BOOTSTRAP_EMAILS, _ddb_failed_rows, plan_recovery
 
 
 def test_refuses_bootstrap_admin():
@@ -103,3 +105,26 @@ def test_member_user_id_not_failed_yields_no_ddb_delete():
         member_user_id="user_other",
     )
     assert plan.ddb_user_ids == []
+
+
+def test_ddb_failed_rows_paginates_across_pages():
+    """The DDB scan MUST follow LastEvaluatedKey — a failed row on page 2 must
+    be seen, or the disambiguation guard could be bypassed (Codex P2)."""
+
+    def _item(uid, status, org):
+        return {"user_id": {"S": uid}, "status": {"S": status}, "org_id": {"S": org}}
+
+    fake_ddb = MagicMock()
+    fake_ddb.scan.side_effect = [
+        {"Items": [_item("user_a", "failed", "org_x")], "LastEvaluatedKey": {"user_id": {"S": "user_a"}}},
+        {"Items": [_item("user_b", "failed", "org_x"), _item("user_c", "active", "org_x")]},
+    ]
+
+    with patch("scripts.recover_orphan_paperclip_member.boto3.client", return_value=fake_ddb):
+        rows = _ddb_failed_rows("prod", owner_id="org_x")
+
+    # Both failed rows across both pages are returned; the active row is dropped.
+    assert {r["user_id"] for r in rows} == {"user_a", "user_b"}
+    # Second scan used the ExclusiveStartKey from page 1.
+    assert fake_ddb.scan.call_count == 2
+    assert fake_ddb.scan.call_args_list[1].kwargs.get("ExclusiveStartKey") == {"user_id": {"S": "user_a"}}

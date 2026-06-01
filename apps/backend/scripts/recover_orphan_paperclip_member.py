@@ -124,16 +124,27 @@ def _aurora_users(client, db_arn, secret_arn) -> list[dict]:
 
 def _ddb_failed_rows(env: str, owner_id: str | None) -> list[dict]:
     ddb = boto3.client("dynamodb", region_name=REGION)
-    resp = ddb.scan(TableName=f"isol8-{env}-paperclip-companies")
+    table = f"isol8-{env}-paperclip-companies"
     out = []
-    for it in resp.get("Items", []):
-        row = {
-            "user_id": it["user_id"]["S"],
-            "status": it.get("status", {}).get("S"),
-            "org_id": it.get("org_id", {}).get("S"),
-        }
-        if row["status"] == "failed" and (owner_id is None or row["org_id"] == owner_id):
-            out.append(row)
+    # Paginate: scan returns one page + a LastEvaluatedKey. The disambiguation
+    # guard in plan_recovery depends on seeing EVERY failed row, so a partial
+    # first page could make a multi-failed-row env look single and bypass the
+    # --user-id refusal.
+    scan_kwargs: dict = {"TableName": table}
+    while True:
+        resp = ddb.scan(**scan_kwargs)
+        for it in resp.get("Items", []):
+            row = {
+                "user_id": it["user_id"]["S"],
+                "status": it.get("status", {}).get("S"),
+                "org_id": it.get("org_id", {}).get("S"),
+            }
+            if row["status"] == "failed" and (owner_id is None or row["org_id"] == owner_id):
+                out.append(row)
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_key
     return out
 
 

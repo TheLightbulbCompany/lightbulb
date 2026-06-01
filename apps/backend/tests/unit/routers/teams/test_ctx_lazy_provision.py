@@ -77,8 +77,7 @@ async def test_ctx_returns_context_when_resolve_succeeds():
 async def test_ctx_passes_reconcile_to_resolver():
     """_ctx wires a ``reconcile`` callback into ``resolve_teams_context`` so a
     missing Paperclip row self-heals: /teams drives provisioning itself
-    instead of wedging the member on a 409 until they open /chat. The
-    callback fires ``ensure_user_ready(auth)`` (idempotent + gate-first)."""
+    instead of wedging the member on a 409 until they open /chat."""
     from routers.teams import agents as agents_mod
     from routers.teams.deps import TeamsContext
 
@@ -91,26 +90,78 @@ async def test_ctx_passes_reconcile_to_resolver():
         session_cookie="cookie",
     )
 
-    auth = _auth()
+    with patch.object(
+        agents_mod.deps_mod,
+        "resolve_teams_context",
+        new_callable=AsyncMock,
+        return_value=fake_ctx,
+    ) as mock_resolve:
+        await agents_mod._ctx(_req(), MagicMock(), auth=_auth())
+
+    reconcile = mock_resolve.await_args.kwargs["reconcile"]
+    assert callable(reconcile)
+
+
+def _ecs_mock(*, container):
+    """ECS manager double whose resolve_running_container returns
+    ``(container, ip)``. ``container=None`` => no running container."""
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=(container, None))
+    return ecs
+
+
+@pytest.mark.asyncio
+async def test_self_heal_reconcile_starts_container_when_none_running():
+    """No running container (owner's first entry point is /teams) →
+    provision_container=True so the container actually gets created. Otherwise
+    the Paperclip row goes active, polling stops, and agents can't run until
+    the owner visits /chat (Codex P2)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="owner1")
     with (
-        patch.object(
-            agents_mod.deps_mod,
-            "resolve_teams_context",
-            new_callable=AsyncMock,
-            return_value=fake_ctx,
-        ) as mock_resolve,
+        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
         patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
     ):
-        await agents_mod._ctx(_req(), MagicMock(), auth=auth)
+        await agents_mod._self_heal_reconcile(auth)
 
-        reconcile = mock_resolve.await_args.kwargs["reconcile"]
-        assert callable(reconcile)
-        # The callback dispatches ensure_user_ready for THIS auth context,
-        # PAPERCLIP-ONLY (provision_container=False) — /teams self-heal must
-        # never restart the org's running shared container. Awaited inside the
-        # patch so the mock (not the real DDB-bound ensure_user_ready) runs.
-        await reconcile()
-        mock_fire.assert_awaited_once_with(auth, provision_container=False)
+    mock_fire.assert_awaited_once_with(auth, provision_container=True)
+
+
+@pytest.mark.asyncio
+async def test_self_heal_reconcile_does_not_restart_running_container():
+    """A container is already running (existing multi-admin/joined-org case) →
+    provision_container=False so /teams self-heal NEVER force-redeploys the
+    live shared container (Codex P1)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="admin1", org_id="org_x", is_org_context=True)
+    running = {"status": "running"}
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=running)),
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        await agents_mod._self_heal_reconcile(auth)
+
+    mock_fire.assert_awaited_once_with(auth, provision_container=False)
+
+
+@pytest.mark.asyncio
+async def test_self_heal_reconcile_falls_back_to_no_restart_on_ecs_error():
+    """If container state can't be determined, fall back to the safe
+    no-restart path (Paperclip-only); the /chat poll backstops the container."""
+    from routers.teams import agents as agents_mod
+
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(side_effect=RuntimeError("ecs down"))
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=ecs),
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        await agents_mod._self_heal_reconcile(auth)
+
+    mock_fire.assert_awaited_once_with(auth, provision_container=False)
 
 
 @pytest.mark.asyncio

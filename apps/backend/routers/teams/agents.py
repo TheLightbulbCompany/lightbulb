@@ -19,7 +19,7 @@ import logging
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.encryption import decrypt  # noqa: F401 — re-exported for tests + downstream tasks.
@@ -338,16 +338,38 @@ async def _ctx(
         # the background by resolve_teams_context; ensure_user_ready is
         # idempotent + gate-first, so it no-ops when the org isn't ready and
         # the frontend keeps polling the 202 until the row goes active.
-        #
-        # provision_container=False — /teams self-heal only ensures the
-        # Paperclip WORKSPACE (the thing /teams reads). Container (ECS)
-        # provisioning stays owned by /chat's /container/status poll. Without
-        # this, an org admin/co-admin with a missing row but an already-running
-        # shared container would dispatch background_provision, which
-        # force-redeploys the live container (forceNewDeployment=True) on
-        # EVERY /teams poll — interrupting everyone in the org.
-        reconcile=lambda: ensure_user_ready(auth, provision_container=False),
+        reconcile=lambda: _self_heal_reconcile(auth),
     )
+
+
+async def _self_heal_reconcile(auth: AuthContext) -> None:
+    """Drive provisioning for a /teams visitor with no Paperclip row.
+
+    Picks ``provision_container`` from CONTAINER STATE, mirroring what
+    ``/container/status`` does — a static flag can't be right for both cases:
+
+      - Container already running → ``provision_container=False``. Calling
+        ``provision_user_container`` on a running service force-redeploys it
+        (``forceNewDeployment=True``); doing that on every /teams poll would
+        interrupt everyone in the org. (Codex P1.)
+      - No running container yet → ``provision_container=True``. For an owner
+        whose FIRST entry point is /teams (never visited /chat), the container
+        must be created here, or the Paperclip row goes active, polling stops,
+        and agents can't run until they happen to open /chat. (Codex P2.)
+
+    Org members are excluded from container provisioning by ensure_user_ready
+    itself (the role guard at user_provision.py: members ride the owner's
+    shared container), so the flag only matters for personal owners / admins.
+    """
+    owner_id = resolve_owner_id(auth)
+    try:
+        container, _ip = await get_ecs_manager().resolve_running_container(owner_id)
+    except Exception:
+        # If we can't determine container state, fall back to the safe
+        # no-restart path (Paperclip-only); the /chat poll remains the
+        # backstop for the container.
+        container = object()  # sentinel: treat as "exists", skip container
+    await ensure_user_ready(auth, provision_container=container is None)
 
 
 # --- Routes ---

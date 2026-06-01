@@ -701,7 +701,10 @@ class GatewayConnection:
     async def _prune_dead_conn(self, conn_id: str) -> None:
         """Best-effort prune of a dead connection row + recipient-cache bust."""
         try:
-            self._conn_svc.delete_connection(conn_id)
+            # delete_connection is a blocking boto3 call; offload it so it doesn't
+            # stall the event loop (and all concurrent chat streaming) during
+            # fan-out. Mirrors query_by_owner's to_thread offload.
+            await asyncio.to_thread(self._conn_svc.delete_connection, conn_id)
         except Exception:
             logger.warning("failed to prune dead conn %s", conn_id, exc_info=True)
         # Invalidate so the next forward re-queries instead of re-sending to it.

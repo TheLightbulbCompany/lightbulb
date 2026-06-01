@@ -92,10 +92,7 @@ def _aurora_users(client, db_arn, secret_arn) -> list[dict]:
         database="paperclip",
         sql='SELECT id, email FROM "user" ORDER BY email',
     )
-    return [
-        {"id": rec[0].get("stringValue"), "email": rec[1].get("stringValue")}
-        for rec in resp.get("records", [])
-    ]
+    return [{"id": rec[0].get("stringValue"), "email": rec[1].get("stringValue")} for rec in resp.get("records", [])]
 
 
 def _ddb_failed_rows(env: str, owner_id: str | None) -> list[dict]:

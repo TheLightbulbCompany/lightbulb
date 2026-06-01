@@ -39,6 +39,7 @@ from core.services.paperclip_openclaw_pairing import (
 )
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
+from core.services.provision_gate import evaluate_provision_gate
 from core.services.user_provision import ensure_user_ready
 
 from . import deps as deps_mod
@@ -342,17 +343,27 @@ async def _ctx(
     )
 
 
-async def _self_heal_reconcile(auth: AuthContext) -> None:
+async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
     """Drive provisioning for a /teams visitor with no Paperclip row.
 
-    Picks ``provision_container`` from CONTAINER STATE, mirroring what
-    ``/container/status`` does — a static flag can't be right for both cases:
+    Returns the blocked-gate payload (-> 402 "subscribe required") when a
+    provision gate is up, else None (-> 202 "keep polling") after launching
+    provisioning in the background.
 
-      - Container already running → ``provision_container=False``. Calling
+    **Gate first.** If the visitor has no subscription / credits / provider,
+    ``ensure_user_ready`` would no-op forever and the UI would spin on 202
+    indefinitely. So evaluate the same gate ``/container/status`` uses; when
+    it's up, surface its structured payload so the frontend renders the
+    subscribe/setup CTA (it maps 402 -> subscribe_required) instead of an
+    endless provisioning spinner. (Codex P2.)
+
+    **Container flag from STATE**, mirroring ``/container/status`` — a static
+    flag can't be right for both cases:
+      - Container already running -> ``provision_container=False``. Calling
         ``provision_user_container`` on a running service force-redeploys it
         (``forceNewDeployment=True``); doing that on every /teams poll would
         interrupt everyone in the org. (Codex P1.)
-      - No running container yet → ``provision_container=True``. For an owner
+      - No running container yet -> ``provision_container=True``. For an owner
         whose FIRST entry point is /teams (never visited /chat), the container
         must be created here, or the Paperclip row goes active, polling stops,
         and agents can't run until they happen to open /chat. (Codex P2.)
@@ -362,6 +373,18 @@ async def _self_heal_reconcile(auth: AuthContext) -> None:
     shared container), so the flag only matters for personal owners / admins.
     """
     owner_id = resolve_owner_id(auth)
+    is_admin = auth.is_org_admin if auth.is_org_context else True
+
+    gate = await evaluate_provision_gate(
+        owner_id=owner_id,
+        clerk_user_id=auth.user_id,
+        is_admin=is_admin,
+    )
+    if gate is not None:
+        # Blocked — don't launch provisioning (it would no-op); tell the
+        # caller to return 402 so the UI shows the subscribe/setup CTA.
+        return gate.to_payload()
+
     try:
         container, _ip = await get_ecs_manager().resolve_running_container(owner_id)
     except Exception:
@@ -370,6 +393,7 @@ async def _self_heal_reconcile(auth: AuthContext) -> None:
         # backstop for the container.
         container = object()  # sentinel: treat as "exists", skip container
     await ensure_user_ready(auth, provision_container=container is None)
+    return None
 
 
 # --- Routes ---

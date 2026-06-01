@@ -7,7 +7,6 @@ as a class + a resolver so we can unit-test without a FastAPI request.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
@@ -61,7 +60,12 @@ class _Repo(Protocol):
 
 
 SessionFactory = Callable[[str], Awaitable[str]]
-Reconcile = Callable[[], Awaitable[None]]
+# Reconcile drives provisioning for a visitor with no Paperclip row yet.
+# Returns None when provisioning was (re)launched and the UI should keep
+# polling (202); returns a blocked-gate payload dict when a provision gate is
+# up (no subscription / credits / provider) so the caller can surface 402
+# "subscribe required" instead of an infinite provisioning spinner.
+Reconcile = Callable[[], Awaitable[Optional[dict]]]
 
 
 async def resolve_teams_context(
@@ -105,11 +109,15 @@ async def resolve_teams_context(
     company = await repo.get(auth.user_id)
     if company is None:
         if reconcile is not None:
-            # Self-heal: kick off provisioning in the background and tell the
-            # UI to keep polling. ensure_user_ready is idempotent + gate-first,
-            # so this is safe to fire on every poll and no-ops when the org
-            # isn't ready yet (the poll just keeps returning 202).
-            asyncio.create_task(reconcile())
+            # Self-heal: drive provisioning. reconcile() evaluates the provision
+            # gate and, if clear, launches ensure_user_ready (idempotent +
+            # gate-first) and returns None → 202 "keep polling". If a gate is
+            # UP (no subscription / credits / provider) it returns the blocked
+            # payload → 402 so the UI shows the subscribe/setup CTA instead of
+            # spinning forever on a workspace that can never become active.
+            blocked = await reconcile()
+            if blocked is not None:
+                raise TeamsContextError(status_code=402, detail=blocked)
             raise TeamsContextError(status_code=202, detail="team workspace provisioning")
         raise TeamsContextError(status_code=409, detail="team workspace not provisioned")
     if company.status == "provisioning":

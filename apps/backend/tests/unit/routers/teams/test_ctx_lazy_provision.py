@@ -120,11 +120,13 @@ async def test_self_heal_reconcile_starts_container_when_none_running():
 
     auth = _auth(user_id="owner1")
     with (
+        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
         patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
         patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
     ):
-        await agents_mod._self_heal_reconcile(auth)
+        result = await agents_mod._self_heal_reconcile(auth)
 
+    assert result is None  # gate clear → 202 keep-polling
     mock_fire.assert_awaited_once_with(auth, provision_container=True)
 
 
@@ -138,6 +140,7 @@ async def test_self_heal_reconcile_does_not_restart_running_container():
     auth = _auth(user_id="admin1", org_id="org_x", is_org_context=True)
     running = {"status": "running"}
     with (
+        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
         patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=running)),
         patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
     ):
@@ -156,12 +159,36 @@ async def test_self_heal_reconcile_falls_back_to_no_restart_on_ecs_error():
     ecs.resolve_running_container = AsyncMock(side_effect=RuntimeError("ecs down"))
     auth = _auth(user_id="owner1")
     with (
+        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
         patch.object(agents_mod, "get_ecs_manager", return_value=ecs),
         patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
     ):
         await agents_mod._self_heal_reconcile(auth)
 
     mock_fire.assert_awaited_once_with(auth, provision_container=False)
+
+
+@pytest.mark.asyncio
+async def test_self_heal_reconcile_returns_payload_and_skips_provision_when_gate_up():
+    """Gate is up (no subscription / credits / provider) → return the blocked
+    payload and do NOT launch provisioning. Otherwise ensure_user_ready no-ops
+    forever and the UI spins on 202 instead of showing the subscribe CTA
+    (Codex P2)."""
+    from routers.teams import agents as agents_mod
+
+    gate = MagicMock()
+    gate.to_payload.return_value = {"blocked": {"code": "subscription_required"}}
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=gate),
+        patch.object(agents_mod, "get_ecs_manager") as mock_ecs,
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        result = await agents_mod._self_heal_reconcile(auth)
+
+    assert result == {"blocked": {"code": "subscription_required"}}
+    mock_fire.assert_not_awaited()  # blocked → never launch provisioning
+    mock_ecs.assert_not_called()  # never inspect container state on a blocked gate
 
 
 @pytest.mark.asyncio

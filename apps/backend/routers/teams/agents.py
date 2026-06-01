@@ -14,6 +14,7 @@ the Teams BFF (Tasks 7-12) imports.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -350,12 +351,45 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
     provision gate is up, else None (-> 202 "keep polling") after launching
     provisioning in the background.
 
-    **Gate first.** If the visitor has no subscription / credits / provider,
-    ``ensure_user_ready`` would no-op forever and the UI would spin on 202
-    indefinitely. So evaluate the same gate ``/container/status`` uses; when
-    it's up, surface its structured payload so the frontend renders the
+    **Gate first (awaited).** If the visitor has no subscription / credits /
+    provider, ``ensure_user_ready`` would no-op forever and the UI would spin
+    on 202 indefinitely. So evaluate the same gate ``/container/status`` uses;
+    when it's up, surface its structured payload so the frontend renders the
     subscribe/setup CTA (it maps 402 -> subscribe_required) instead of an
     endless provisioning spinner. (Codex P2.)
+
+    **Provisioning in the background.** Once the gate clears, the actual
+    provisioning (``_provision_after_gate`` -> ``ensure_user_ready``) is fired
+    off the request path, mirroring ``/container/status``. ``ensure_user_ready``
+    can fail transiently (Paperclip admin 5xx/timeout, owner-email lookup), and
+    the Teams frontend only auto-retries the **202** sentinel — awaiting it
+    inline would let such a failure escape ``resolve_teams_context`` as a 500
+    and strand the user on the error overlay. Backgrounding it keeps these
+    failures retryable: the next /teams poll re-fires. (Codex P2.)
+    """
+    owner_id = resolve_owner_id(auth)
+    is_admin = auth.is_org_admin if auth.is_org_context else True
+
+    gate = await evaluate_provision_gate(
+        owner_id=owner_id,
+        clerk_user_id=auth.user_id,
+        is_admin=is_admin,
+    )
+    if gate is not None:
+        # Blocked — don't launch provisioning (it would no-op); tell the
+        # caller to return 402 so the UI shows the subscribe/setup CTA.
+        return gate.to_payload()
+
+    asyncio.create_task(_provision_after_gate(auth, owner_id))
+    return None
+
+
+async def _provision_after_gate(auth: AuthContext, owner_id: str) -> None:
+    """Background half of the self-heal (runs after the gate has cleared).
+
+    Decides the container flag from live ECS state, then runs
+    ``ensure_user_ready``. Off the request path so transient failures stay
+    retryable rather than 500-ing /teams (see ``_self_heal_reconcile``).
 
     **Container flag from STATE**, mirroring ``/container/status`` — a static
     flag can't be right for both cases:
@@ -372,28 +406,18 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
     itself (the role guard at user_provision.py: members ride the owner's
     shared container), so the flag only matters for personal owners / admins.
     """
-    owner_id = resolve_owner_id(auth)
-    is_admin = auth.is_org_admin if auth.is_org_context else True
-
-    gate = await evaluate_provision_gate(
-        owner_id=owner_id,
-        clerk_user_id=auth.user_id,
-        is_admin=is_admin,
-    )
-    if gate is not None:
-        # Blocked — don't launch provisioning (it would no-op); tell the
-        # caller to return 402 so the UI shows the subscribe/setup CTA.
-        return gate.to_payload()
-
     try:
         container, _ip = await get_ecs_manager().resolve_running_container(owner_id)
     except Exception:
-        # If we can't determine container state, fall back to the safe
-        # no-restart path (Paperclip-only); the /chat poll remains the
-        # backstop for the container.
-        container = object()  # sentinel: treat as "exists", skip container
-    await ensure_user_ready(auth, provision_container=container is None)
-    return None
+        # Container state indeterminate -> safe no-restart path (Paperclip
+        # only); the /chat poll remains the backstop for the container.
+        container = object()  # sentinel: treat as "exists", skip container start
+    try:
+        await ensure_user_ready(auth, provision_container=container is None)
+    except Exception:
+        # Background task: log and swallow so a transient failure doesn't
+        # surface as an unretrieved-task error. The next /teams poll re-fires.
+        logger.exception("teams self-heal: background provisioning failed for owner_id=%s", owner_id)
 
 
 # --- Routes ---

@@ -111,67 +111,30 @@ def _ecs_mock(*, container):
 
 
 @pytest.mark.asyncio
-async def test_self_heal_reconcile_starts_container_when_none_running():
-    """No running container (owner's first entry point is /teams) →
-    provision_container=True so the container actually gets created. Otherwise
-    the Paperclip row goes active, polling stops, and agents can't run until
-    the owner visits /chat (Codex P2)."""
+async def test_self_heal_reconcile_backgrounds_provision_when_gate_clear():
+    """Gate clear → return None (→ 202 keep-polling) and schedule the actual
+    provisioning OFF the request path. ensure_user_ready must NOT be awaited
+    inline: a transient failure would escape resolve_teams_context as a 500 and
+    strand the user (the Teams frontend only auto-retries the 202 sentinel)."""
     from routers.teams import agents as agents_mod
 
     auth = _auth(user_id="owner1")
     with (
         patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
-        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
-        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+        patch.object(agents_mod, "_provision_after_gate") as mock_bg,
+        patch.object(agents_mod.asyncio, "create_task") as mock_create,
     ):
         result = await agents_mod._self_heal_reconcile(auth)
 
     assert result is None  # gate clear → 202 keep-polling
-    mock_fire.assert_awaited_once_with(auth, provision_container=True)
-
-
-@pytest.mark.asyncio
-async def test_self_heal_reconcile_does_not_restart_running_container():
-    """A container is already running (existing multi-admin/joined-org case) →
-    provision_container=False so /teams self-heal NEVER force-redeploys the
-    live shared container (Codex P1)."""
-    from routers.teams import agents as agents_mod
-
-    auth = _auth(user_id="admin1", org_id="org_x", is_org_context=True)
-    running = {"status": "running"}
-    with (
-        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
-        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=running)),
-        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
-    ):
-        await agents_mod._self_heal_reconcile(auth)
-
-    mock_fire.assert_awaited_once_with(auth, provision_container=False)
-
-
-@pytest.mark.asyncio
-async def test_self_heal_reconcile_falls_back_to_no_restart_on_ecs_error():
-    """If container state can't be determined, fall back to the safe
-    no-restart path (Paperclip-only); the /chat poll backstops the container."""
-    from routers.teams import agents as agents_mod
-
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(side_effect=RuntimeError("ecs down"))
-    auth = _auth(user_id="owner1")
-    with (
-        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
-        patch.object(agents_mod, "get_ecs_manager", return_value=ecs),
-        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
-    ):
-        await agents_mod._self_heal_reconcile(auth)
-
-    mock_fire.assert_awaited_once_with(auth, provision_container=False)
+    mock_bg.assert_called_once_with(auth, "owner1")  # scheduled, not awaited inline
+    mock_create.assert_called_once()  # dispatched as a background task
 
 
 @pytest.mark.asyncio
 async def test_self_heal_reconcile_returns_payload_and_skips_provision_when_gate_up():
     """Gate is up (no subscription / credits / provider) → return the blocked
-    payload and do NOT launch provisioning. Otherwise ensure_user_ready no-ops
+    payload and schedule NO provisioning. Otherwise ensure_user_ready no-ops
     forever and the UI spins on 202 instead of showing the subscribe CTA
     (Codex P2)."""
     from routers.teams import agents as agents_mod
@@ -181,14 +144,89 @@ async def test_self_heal_reconcile_returns_payload_and_skips_provision_when_gate
     auth = _auth(user_id="owner1")
     with (
         patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=gate),
-        patch.object(agents_mod, "get_ecs_manager") as mock_ecs,
-        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+        patch.object(agents_mod, "_provision_after_gate") as mock_bg,
+        patch.object(agents_mod.asyncio, "create_task") as mock_create,
     ):
         result = await agents_mod._self_heal_reconcile(auth)
 
     assert result == {"blocked": {"code": "subscription_required"}}
-    mock_fire.assert_not_awaited()  # blocked → never launch provisioning
-    mock_ecs.assert_not_called()  # never inspect container state on a blocked gate
+    mock_bg.assert_not_called()  # blocked → never launch provisioning
+    mock_create.assert_not_called()  # no background task on a blocked gate
+
+
+@pytest.mark.asyncio
+async def test_provision_after_gate_starts_container_when_none_running():
+    """No running container (owner's first entry point is /teams) →
+    provision_container=True so the container actually gets created. Otherwise
+    the Paperclip row goes active, polling stops, and agents can't run until
+    the owner visits /chat (Codex P2)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        await agents_mod._provision_after_gate(auth, "owner1")
+
+    mock_fire.assert_awaited_once_with(auth, provision_container=True)
+
+
+@pytest.mark.asyncio
+async def test_provision_after_gate_does_not_restart_running_container():
+    """A container is already running (existing multi-admin/joined-org case) →
+    provision_container=False so /teams self-heal NEVER force-redeploys the
+    live shared container (Codex P1)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="admin1", org_id="org_x", is_org_context=True)
+    running = {"status": "running"}
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=running)),
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        await agents_mod._provision_after_gate(auth, "org_x")
+
+    mock_fire.assert_awaited_once_with(auth, provision_container=False)
+
+
+@pytest.mark.asyncio
+async def test_provision_after_gate_falls_back_to_no_restart_on_ecs_error():
+    """If container state can't be determined, fall back to the safe
+    no-restart path (Paperclip-only); the /chat poll backstops the container."""
+    from routers.teams import agents as agents_mod
+
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(side_effect=RuntimeError("ecs down"))
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=ecs),
+        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
+    ):
+        await agents_mod._provision_after_gate(auth, "owner1")
+
+    mock_fire.assert_awaited_once_with(auth, provision_container=False)
+
+
+@pytest.mark.asyncio
+async def test_provision_after_gate_swallows_ensure_user_ready_failure():
+    """A transient ensure_user_ready failure in the background task is logged
+    and swallowed — it must NOT propagate (the request already returned 202;
+    the next /teams poll re-fires)."""
+    from routers.teams import agents as agents_mod
+
+    auth = _auth(user_id="owner1")
+    with (
+        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
+        patch.object(
+            agents_mod,
+            "ensure_user_ready",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("paperclip 503"),
+        ),
+    ):
+        # Does not raise.
+        await agents_mod._provision_after_gate(auth, "owner1")
 
 
 @pytest.mark.asyncio

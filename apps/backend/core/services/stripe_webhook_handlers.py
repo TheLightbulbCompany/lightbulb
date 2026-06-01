@@ -167,10 +167,16 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             )
 
     # Event-driven provisioning (Trigger A): once the subscription gate
-    # clears, provision off this event instead of waiting for the user to
-    # sit on /chat for the /container/status poll to win. ensure_user_ready
-    # is gate-first + idempotent, so this no-ops if another gate is still up
-    # (e.g. no provider configured) and dedups against the poll.
+    # clears, set up the owner's Paperclip workspace off this event instead
+    # of waiting for the /container/status poll. ensure_user_ready is
+    # gate-first + idempotent, so this no-ops if another gate is still up
+    # (e.g. no provider configured yet) and dedups against the poll.
+    #
+    # provision_container=False — this trigger only ensures the Paperclip
+    # workspace. Container (ECS) provisioning stays owned by the canonical
+    # /container/status poll (and the billing provider-change flow); firing
+    # background_provision here would just restart an already-running box and
+    # duplicate work the poll already drives.
     #
     # clerk_user_id is threaded into subscription metadata at checkout
     # (create_flat_fee_checkout). Without it we can't build the owner's
@@ -185,6 +191,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 user_id=clerk_user_id,
                 org_id=owner_id if is_org else None,
                 org_role="org:admin" if is_org else None,
+                provision_container=False,
             )
         )
 

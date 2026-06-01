@@ -59,13 +59,14 @@ async def test_subscription_active_dispatches_provisioning_personal(monkeypatch)
             MagicMock(),
         )
 
-    mock_fire.assert_called_once_with(user_id="user_x", org_id=None, org_role=None)
+    # Paperclip-only: container provisioning stays owned by the poll.
+    mock_fire.assert_called_once_with(user_id="user_x", org_id=None, org_role=None, provision_container=False)
 
 
 @pytest.mark.asyncio
 async def test_subscription_trialing_dispatches_provisioning_org(monkeypatch):
     """An org owner's subscription going trialing fires with org context so the
-    admin path (create/join + container) runs."""
+    org Paperclip workspace path runs. Container stays on the poll."""
     repo = MagicMock()
     repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_x", "owner_type": "org"})
     repo.set_subscription = AsyncMock()
@@ -81,7 +82,9 @@ async def test_subscription_trialing_dispatches_provisioning_org(monkeypatch):
             MagicMock(),
         )
 
-    mock_fire.assert_called_once_with(user_id="user_admin", org_id="org_x", org_role="org:admin")
+    mock_fire.assert_called_once_with(
+        user_id="user_admin", org_id="org_x", org_role="org:admin", provision_container=False
+    )
 
 
 @pytest.mark.asyncio

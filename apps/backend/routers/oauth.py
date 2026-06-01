@@ -113,11 +113,23 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     assert isinstance(result, DevicePollResult)
 
     # Event-driven provisioning (Trigger B): OAuth just completed, so the
-    # provider gate clears (tokens are now on file). Provision off this event
-    # instead of waiting for the /container/status poll to win. ChatGPT OAuth
-    # is personal-only, so ctx is a personal owner. ensure_user_ready is
-    # gate-first + idempotent, so this dedups against the poll.
-    asyncio.create_task(ensure_user_ready(ctx))
+    # provider gate clears (tokens are now on file). Set up the Paperclip
+    # workspace off this event instead of waiting for the /container/status
+    # poll. ensure_user_ready is gate-first + idempotent, so it dedups
+    # against the poll.
+    #
+    # ChatGPT OAuth is personal-only (org callers are rejected at /start).
+    # We build a PERSONAL AuthContext from ctx.user_id rather than passing
+    # ctx directly: the device session is keyed only by user_id, so if the
+    # user happens to have an org selected by the time /poll completes,
+    # passing ctx would drive org provisioning for an unrelated org. The
+    # personal context keeps this OAuth completion in the personal lane.
+    #
+    # provision_container=False — Paperclip workspace only; container (ECS)
+    # provisioning stays owned by the /container/status poll, so this never
+    # restarts a running box.
+    personal_ctx = AuthContext(user_id=ctx.user_id, email=ctx.email)
+    asyncio.create_task(ensure_user_ready(personal_ctx, provision_container=False))
 
     return {"status": "completed", "account_id": result.account_id}
 

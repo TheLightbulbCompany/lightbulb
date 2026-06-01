@@ -67,11 +67,13 @@ async def test_poll_returns_completed_status(async_client):
 
 
 @pytest.mark.asyncio
-async def test_poll_completion_dispatches_provisioning(async_client):
+async def test_poll_completion_dispatches_paperclip_only_personal(async_client):
     """Event-driven provisioning, Trigger B: when OAuth completes, the gate
-    clears (tokens now on file), so fire ensure_user_ready immediately instead
-    of waiting for the /container/status poll. ChatGPT OAuth is personal-only,
-    so this provisions the personal owner (provision_container default True)."""
+    clears (tokens now on file), so set up the Paperclip workspace immediately
+    instead of waiting for the /container/status poll. The dispatched
+    AuthContext is PERSONAL (org_id None) and provision_container=False —
+    container stays owned by the poll, and a personal-only OAuth completion
+    can never drive org provisioning even if an org is selected."""
     with (
         patch(
             "routers.oauth.poll_device_code",
@@ -83,6 +85,10 @@ async def test_poll_completion_dispatches_provisioning(async_client):
         resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
     assert resp.status_code == 200
     mock_fire.assert_called_once()
+    passed_ctx = mock_fire.call_args.args[0]
+    assert passed_ctx.org_id is None, "OAuth completion must dispatch a PERSONAL context"
+    assert passed_ctx.is_org_context is False
+    assert mock_fire.call_args.kwargs.get("provision_container") is False
 
 
 @pytest.mark.asyncio
@@ -100,6 +106,35 @@ async def test_poll_pending_does_not_dispatch_provisioning(async_client):
     assert resp.status_code == 200
     mock_fire.assert_not_called()
     mock_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poll_completion_org_context_still_dispatches_personal(async_client, app, mock_org_admin_user):
+    """Codex P2 guard: /poll has no org-context guard (unlike /start), so an
+    org-selected user CAN reach it. The dispatched context must still be
+    personal — a personal-only OAuth completion must never drive org
+    provisioning for an unrelated org."""
+    from core.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = mock_org_admin_user
+    try:
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
+            ),
+            patch("routers.oauth.ensure_user_ready", new=AsyncMock()) as mock_fire,
+            patch("routers.oauth.asyncio.create_task", side_effect=lambda coro: coro.close()),
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    mock_fire.assert_called_once()
+    passed_ctx = mock_fire.call_args.args[0]
+    assert passed_ctx.org_id is None, "org-context /poll must STILL dispatch a personal context"
+    assert mock_fire.call_args.kwargs.get("provision_container") is False
 
 
 @pytest.mark.asyncio

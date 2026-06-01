@@ -191,6 +191,47 @@ async def test_retry_pass_dispatches_archive_member_on_success():
     http.aclose.assert_awaited_once()
 
 
+async def test_retry_pass_dispatches_provision_member_on_success():
+    """The provision_member op (enqueued by membership.created when its inline
+    attempt hit a retryable 5xx) re-fires ensure_user_ready_for with the stored
+    identity, Paperclip-only (provision_container=False)."""
+    prov = _make_provisioning_mock()
+    http = _make_http_mock()
+    rows = [
+        {
+            "owner_id": "org_x",
+            "update_id": "u_provision",
+            "changes": {
+                "op": "provision_member",
+                "user_id": "user_member",
+                "org_id": "org_x",
+                "org_role": "org:member",
+                "email": "m@example.com",
+            },
+        }
+    ]
+
+    with (
+        patch.object(update_service.update_repo, "list_pending_by_type", new=AsyncMock(return_value=rows)),
+        patch.object(update_service.update_repo, "mark_applied", new=AsyncMock(return_value=True)) as mark_applied,
+        patch.object(update_service.update_repo, "mark_failed", new=AsyncMock(return_value=True)) as mark_failed,
+        patch.object(update_service, "_build_paperclip_provisioning", return_value=(prov, http, MagicMock())),
+        patch("core.services.user_provision.ensure_user_ready_for", new=AsyncMock()) as mock_fire,
+    ):
+        await update_service._paperclip_provision_retry_pass()
+
+    mock_fire.assert_awaited_once_with(
+        user_id="user_member",
+        org_id="org_x",
+        org_role="org:member",
+        email="m@example.com",
+        provision_container=False,
+    )
+    mark_applied.assert_awaited_once_with("org_x", "u_provision")
+    mark_failed.assert_not_awaited()
+    http.aclose.assert_awaited_once()
+
+
 async def test_retry_pass_unknown_op_marks_failed():
     prov = _make_provisioning_mock()
     http = _make_http_mock()

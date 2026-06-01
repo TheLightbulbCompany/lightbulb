@@ -12,6 +12,7 @@ existing ``test_webhooks_clerk_email_sync.py``.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -81,15 +82,19 @@ async def test_membership_created_dispatches_provisioning():
     container. The dual-tenancy invariant probe still runs."""
     from routers.webhooks import _handle_organization_membership_created
 
-    def _capture(coro):
-        # Close the dispatched coroutine (no "never awaited" warning). The
-        # assertion checks ensure_user_ready_for was CALLED with the right
-        # args (i.e. the handler constructed the coroutine correctly).
-        coro.close()
+    # The handler wraps the dispatch in an inner coroutine; run it inline so
+    # we observe ensure_user_ready_for being called with the right identity.
+    captured: list = []
+
+    def _run_inline(coro):
+        task = asyncio.ensure_future(coro)
+        captured.append(task)
+        return task
 
     with (
         patch("routers.webhooks.ensure_user_ready_for", new=AsyncMock()) as mock_fire,
-        patch("routers.webhooks.asyncio.create_task", side_effect=_capture),
+        patch("routers.webhooks.asyncio.create_task", side_effect=_run_inline),
+        patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
         patch(
             "routers.webhooks.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value=None),  # no personal billing row -> invariant clean
@@ -105,16 +110,98 @@ async def test_membership_created_dispatches_provisioning():
                 "role": "org:member",
             }
         )
+        await asyncio.gather(*captured)  # let the background task finish
 
-    mock_fire.assert_called_once_with(
+    mock_fire.assert_awaited_once_with(
         user_id="user_member",
         org_id="org_x",
         org_role="org:member",
         email="m@example.com",
         provision_container=False,
     )
+    mock_retry.assert_not_awaited()  # success → no retry enqueued
     # Invariant probe still runs.
     mock_billing.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_membership_created_retryable_failure_enqueues_retry():
+    """If the background provision hits a retryable Paperclip 5xx/429 AFTER the
+    webhook returned 200, it must enqueue a provision_member retry (Teams never
+    polls /container/status, so otherwise the member is silently lost)."""
+    import asyncio
+
+    from routers.webhooks import _handle_organization_membership_created
+
+    err = PaperclipApiError("paperclip down", 503, "")
+
+    captured: list = []
+
+    def _run_inline(coro):
+        task = asyncio.ensure_future(coro)
+        captured.append(task)
+        return task
+
+    with (
+        patch("routers.webhooks.ensure_user_ready_for", new=AsyncMock(side_effect=err)),
+        patch("routers.webhooks.asyncio.create_task", side_effect=_run_inline),
+        patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
+        patch("routers.webhooks.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+    ):
+        await _handle_organization_membership_created(
+            {
+                "organization": {"id": "org_x", "created_by": "user_owner"},
+                "public_user_data": {"user_id": "user_member", "identifier": "m@example.com"},
+                "role": "org:member",
+            }
+        )
+        await asyncio.gather(*captured)
+
+    mock_retry.assert_awaited_once_with(
+        op="provision_member",
+        payload={
+            "user_id": "user_member",
+            "org_id": "org_x",
+            "org_role": "org:member",
+            "email": "m@example.com",
+        },
+        owner_id="org_x",
+    )
+
+
+@pytest.mark.asyncio
+async def test_membership_created_nonretryable_failure_does_not_enqueue():
+    """A non-retryable (4xx) provisioning failure won't succeed on retry — log
+    and drop, don't enqueue."""
+    import asyncio
+
+    from routers.webhooks import _handle_organization_membership_created
+
+    err = PaperclipApiError("bad request", 400, "")
+
+    captured: list = []
+
+    def _run_inline(coro):
+        task = asyncio.ensure_future(coro)
+        captured.append(task)
+        return task
+
+    with (
+        patch("routers.webhooks.ensure_user_ready_for", new=AsyncMock(side_effect=err)),
+        patch("routers.webhooks.asyncio.create_task", side_effect=_run_inline),
+        patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
+        patch("routers.webhooks.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+    ):
+        await _handle_organization_membership_created(
+            {
+                "organization": {"id": "org_x", "created_by": "user_owner"},
+                "public_user_data": {"user_id": "user_member", "identifier": "m@example.com"},
+                "role": "org:member",
+            }
+        )
+        await asyncio.gather(*captured)
+
+    mock_retry.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -346,15 +346,46 @@ async def _handle_organization_membership_created(data: dict) -> None:
     # Fire provisioning in the background so the webhook stays fast (we ack
     # Clerk immediately). ensure_user_ready_for no-ops if the org's gate is
     # still up; the /container/status poll remains the backstop.
-    asyncio.create_task(
-        ensure_user_ready_for(
-            user_id=user_id,
-            org_id=org_id,
-            org_role=role,
-            email=email,
-            provision_container=False,
-        )
-    )
+    #
+    # Because the task runs AFTER we've returned 200, a retryable Paperclip
+    # 5xx/429 raised inside it can't be surfaced to Clerk (and Teams never
+    # triggers /container/status, so the member would stay silently
+    # unprovisioned until they happen to open Chat). Catch a retryable
+    # failure here and enqueue a pending-updates retry — the T13 worker
+    # re-drives op="provision_member". A non-retryable failure (4xx) won't
+    # succeed on retry, so it's logged and dropped (the poll is still a
+    # last-resort backstop).
+    async def _provision_member_bg() -> None:
+        try:
+            await ensure_user_ready_for(
+                user_id=user_id,
+                org_id=org_id,
+                org_role=role,
+                email=email,
+                provision_container=False,
+            )
+        except Exception as e:  # noqa: BLE001
+            retryable = _is_retryable(e)
+            logger.warning(
+                "membership.created provisioning failed for member=%s org=%s retryable=%s err=%s",
+                user_id,
+                org_id,
+                retryable,
+                e,
+            )
+            if retryable:
+                await _enqueue_paperclip_retry(
+                    op="provision_member",
+                    payload={
+                        "user_id": user_id,
+                        "org_id": org_id,
+                        "org_role": role,
+                        "email": email,
+                    },
+                    owner_id=org_id,
+                )
+
+    asyncio.create_task(_provision_member_bg())
 
     logger.info(
         "membership.created: org=%s member=%s owner=%s recorded; dispatched provisioning",

@@ -279,17 +279,18 @@ async def _paperclip_provision_retry_pass() -> None:
 
     Dispatch on ``changes["op"]``:
 
-      * ``archive_member`` -> ``PaperclipProvisioning.archive_member``
+      * ``archive_member``   -> ``PaperclipProvisioning.archive_member``
+        (enqueued by ``_handle_organization_membership_deleted``).
+      * ``provision_member`` -> ``ensure_user_ready_for`` (enqueued by
+        ``_handle_organization_membership_created`` when its inline
+        event-driven attempt hit a retryable Paperclip 5xx/429).
 
-    Historical note: this pass also serviced ``provision_org``,
-    ``provision_member`` and ``disable`` ops back when sign-up /
-    membership-created webhooks eagerly provisioned Paperclip rows.
-    Those eager-provision paths were removed (see Tasks 6 + 7 of the
-    paperclip-openclaw-agent-pairing plan) so nothing enqueues those
-    ops anymore. The ``disable`` branch was always dead — no enqueue
-    site existed. Only ``archive_member`` (enqueued by
-    ``_handle_organization_membership_deleted`` in
-    ``routers/webhooks.py``) remains live.
+    Historical note: this pass also serviced ``provision_org`` and
+    ``disable`` ops. The ``disable`` branch was always dead — no enqueue
+    site existed. ``provision_member`` was dropped when membership-created
+    stopped eager-provisioning, then re-added when event-driven
+    provisioning landed (it can now fail in the background after the
+    webhook returns 200, so it needs a retry path again).
 
     On success, mark the row applied (``mark_applied``). On a
     non-retryable failure (or unknown op), mark failed
@@ -326,6 +327,21 @@ async def _paperclip_provision_retry_pass() -> None:
             try:
                 if op == "archive_member":
                     await provisioning.archive_member(user_id=changes["user_id"])
+                elif op == "provision_member":
+                    # Re-drive event-driven member provisioning enqueued by
+                    # _handle_organization_membership_created when its inline
+                    # attempt hit a retryable Paperclip 5xx/429. Re-fire the
+                    # same idempotent entry point; it resolves owner_email
+                    # itself and no-ops if the member is already active.
+                    from core.services.user_provision import ensure_user_ready_for
+
+                    await ensure_user_ready_for(
+                        user_id=changes["user_id"],
+                        org_id=changes.get("org_id"),
+                        org_role=changes.get("org_role"),
+                        email=changes.get("email"),
+                        provision_container=False,
+                    )
                 else:
                     logger.error(
                         "paperclip_provision_retry_pass: unknown op=%r (owner=%s, update=%s)",

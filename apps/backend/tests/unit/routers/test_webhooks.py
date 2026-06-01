@@ -35,6 +35,9 @@ async def test_membership_created_with_active_personal_logs_violation(caplog):
     with (
         patch("routers.webhooks.billing_repo") as mock_billing,
         patch("routers.webhooks.put_metric") as mock_metric,
+        # Stub the event-driven provisioning fire so its background task
+        # completes instantly instead of leaking a real Paperclip-bound task.
+        patch("routers.webhooks.ensure_user_ready_for", new=AsyncMock()),
     ):
         mock_billing.get_by_owner_id = AsyncMock(
             return_value={
@@ -70,6 +73,9 @@ async def test_membership_created_without_personal_billing_emits_no_violation(ca
     with (
         patch("routers.webhooks.billing_repo") as mock_billing,
         patch("routers.webhooks.put_metric") as mock_metric,
+        # Stub the event-driven provisioning fire so its background task
+        # completes instantly instead of leaking a real Paperclip-bound task.
+        patch("routers.webhooks.ensure_user_ready_for", new=AsyncMock()),
     ):
         mock_billing.get_by_owner_id = AsyncMock(return_value=None)
 
@@ -97,7 +103,12 @@ async def test_membership_created_invariant_probe_failure_does_not_raise(caplog)
         },
     }
 
-    with patch("routers.webhooks.billing_repo") as mock_billing:
+    with (
+        patch("routers.webhooks.billing_repo") as mock_billing,
+        # Stub the event-driven provisioning fire so its background task
+        # completes instantly instead of leaking a real Paperclip-bound task.
+        patch("routers.webhooks.ensure_user_ready_for", new=AsyncMock()),
+    ):
         mock_billing.get_by_owner_id = AsyncMock(side_effect=RuntimeError("ddb boom"))
 
         with caplog.at_level(logging.ERROR, logger="routers.webhooks"):

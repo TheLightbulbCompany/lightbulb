@@ -321,34 +321,6 @@ class ConnectionService:
                 f"Failed to delete connections for user {user_id}: {e.response['Error']['Message']}"
             ) from e
 
-    def ensure_owner_id(self, connection_id: str, owner_id: str) -> None:
-        """Best-effort: stamp ``ownerId`` on an existing connection row if absent.
-
-        Self-heals rows written before the owner-keyed fan-out shipped (which
-        have ``userId``/``orgId`` but no ``ownerId`` and so never appear in the
-        ``by-owner-id`` GSI). Called on ``/ws/message`` lazy-registration so a
-        still-open pre-deploy tab repairs itself on its next message — no
-        backfill migration. Idempotent: the ``attribute_not_exists`` condition
-        means it only writes when ``ownerId`` is missing and never clobbers a
-        correct value; a no-op (ConditionalCheckFailed) is swallowed.
-        """
-        try:
-            self._client.update_item(
-                TableName=self.table_name,
-                Key={"connectionId": {"S": connection_id}},
-                UpdateExpression="SET ownerId = :o",
-                ConditionExpression="attribute_not_exists(ownerId)",
-                ExpressionAttributeValues={":o": {"S": owner_id}},
-            )
-        except ClientError as e:
-            # ConditionalCheckFailed = ownerId already set (the common case) — fine.
-            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                logger.warning(
-                    "ensure_owner_id failed for %s: %s",
-                    connection_id,
-                    e.response["Error"]["Message"],
-                )
-
     def delete_connection(self, connection_id: str) -> None:
         """
         Delete a WebSocket connection mapping.

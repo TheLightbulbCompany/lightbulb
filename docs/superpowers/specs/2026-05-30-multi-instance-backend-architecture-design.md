@@ -134,24 +134,18 @@ any owner, and the loss of any single instance does not cause an outage.
 This is correct hygiene even at N=1 and is the foundation both blocks below rely on. It also covers
 the concurrent-multi-user constraint (see §6).
 
-**Migration safety — don't drop pre-deploy tabs (Codex P2).** Browser WebSockets terminate at API
-Gateway and survive backend rollovers, so when this ships there will be live `ws-connections` rows
-written by the *old* `store_connection` — they have `userId`/`orgId` but **no `ownerId`**, so they
-won't appear in the `by-owner-id` GSI. A passive tab that never sends another `/ws/message` would be
-silently omitted once fan-out switches to `query_by_owner` — even at `desiredCount=1`. Mitigations:
-- **A pre-switch `ownerId` backfill sweep is REQUIRED — even at N=1 (Codex P1).** The in-process
-  union does **not** save us: after a deploy, API Gateway keeps existing browser sockets open but the
-  **new** task never receives `$connect` for them, so they are absent from its fresh
-  `_frontend_connections` set, *and* their DDB rows still lack `ownerId` → `query_by_owner ∪ local`
-  silently omits a **passive pre-deploy tab until it next sends a message**, at any N. So the rollout
-  order is: (1) deploy code that writes `ownerId` on new connects and lazily upserts it on the first
-  `/ws/message` from a legacy row; (2) run a one-time **backfill sweep** stamping `ownerId = orgId or
-  userId` onto all existing `ws-connections` rows (the fields are already present); (3) **only then**
-  switch `_forward_to_frontends` to `query_by_owner`. Until step 2 completes, keep reading the legacy
-  path (in-process set / `by-user-id`). A forced client reconnect is an acceptable alternative to the
-  sweep.
-- **Lazy `ownerId` backfill** (complements the sweep): on the first `/ws/message` from a legacy
-  connection, upsert `ownerId` onto its row (chat-gated), so active tabs self-heal immediately.
+**Migration posture — no backfill, reconnect IS the migration (decision 2026-06-01).** Browser
+WebSockets terminate at API Gateway and survive backend rollovers, so when this ships there can be
+live `ws-connections` rows written by the *old* `store_connection` — they have `userId`/`orgId` but
+**no `ownerId`**, so they won't appear in the `by-owner-id` GSI. An earlier revision of this spec
+called for a one-time `ownerId` backfill sweep plus a lazy `ownerId` self-heal on the first
+`/ws/message`. **We do neither.** The deployed footprint is one prod container and two dev
+containers; a passively-waiting pre-deploy tab simply does not appear in the GSI until its socket
+reconnects (a deploy cycles the backend, and clients reconnect shortly after regardless), at which
+point both the `ws-connect` Lambda and `store_connection` write `ownerId` on the fresh row. That
+bounded, self-correcting gap is acceptable at this scale and keeps the system from carrying
+migration/self-heal machinery it would never need again. Rollout is therefore a plain deploy: every
+new connect is owner-correct from its first frame, and no code path reads a legacy fallback.
 
 ### 3.1 Owner-keyed DynamoDB fan-out
 
@@ -180,8 +174,10 @@ push via the existing global Management API; demux per member with the projected
   chat fan-out cache and receive `chunk`/`done` via the cache/fallback path, bypassing the DDB filter
   and reintroducing the bleed-through. A first-event miss on a brand-new *chat* tab self-heals on its
   next message (subject to the coherence bound above).
-- **Failure fallback (no silent drops):** if `query_by_owner` errors/times out, fall back to the
-  in-process set rather than dropping the event.
+- **Failure handling (DynamoDB is the only source):** if `query_by_owner` errors/times out, log and
+  drop the event for that push — there is **no** in-process fallback (per the Non-Goals, DynamoDB is
+  the single source of truth for fan-out). A transient query failure costs at most the current frame;
+  the next event re-queries.
 - **Stale-entry self-heal (already present):** a Management API push to a dead connection returns
   410/GoneException; discard it (`connection_pool.py:634`) and best-effort delete the row.
 - **Teams broker is NOT migrated.** It keeps its subscription-based `_subscribers` filtering — node
@@ -390,7 +386,8 @@ constraint the system must just work at one instance *or* more):
 - **DynamoDB native-TTL misuse:** explicitly avoided — expiry is conditional-expression-enforced;
   native TTL is GC-only (§3.2).
 - **Fan-out coherence (cross-task `$connect`):** short cache TTL + lazy `/ws/message` registration +
-  GSI eventual consistency handling (§3.1); failure falls back to the in-process set.
+  GSI eventual consistency handling (§3.1); a recipient-query failure logs and drops the current
+  frame (no in-process fallback — DynamoDB is the only source).
 - **Forwarding hop latency:** in-VPC HTTP, low single-digit ms; negligible vs OpenClaw RPC cost.
 - **DDB write hotspots (lease renew):** PK is `owner_id` (well-distributed); renew is a no-op unless
   near expiry; on-demand billing.

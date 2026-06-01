@@ -20,10 +20,16 @@ from websockets import connect as ws_connect
 
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
+from core.services.connection_service import ConnectionService
 
 GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with containers/)
 
 logger = logging.getLogger(__name__)
+
+# How long a connection caches its owner's recipient set (from the
+# by-owner-id GSI) before re-querying. The recipient set is stable across a
+# streaming run, so we query once per ~5s rather than once per chunk.
+_RECIPIENTS_TTL_S = 5.0
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
@@ -69,6 +75,7 @@ class GatewayConnection:
         conn_member_map: Dict[str, str],
         on_activity: Any = None,
         owner_id: Optional[str] = None,
+        conn_svc: Optional[ConnectionService] = None,
     ) -> None:
         self.user_id = user_id
         # The owner key (org_id for org members, else user_id) this connection
@@ -80,6 +87,14 @@ class GatewayConnection:
         self.ip = ip
         self.token = token
         self._management_api = management_api
+        # Owner-keyed fan-out reads recipients from the ws-connections
+        # by-owner-id GSI via this service — so any backend instance can deliver
+        # to all of an owner's tabs/devices. Defaults to the module singleton.
+        self._conn_svc = conn_svc or ConnectionService()
+        # Short-TTL cache of the owner's recipient set so we don't query DDB
+        # per streamed chunk. Invalidated on a dead-conn prune.
+        self._recipients_cache: Optional[list[tuple[str, str, str]]] = None
+        self._recipients_cache_ts: float = 0.0
         self._on_activity = on_activity  # callback(user_id) for idle tracking
         self._ws: Any = None
         self._reader_task: Optional[asyncio.Task] = None
@@ -600,34 +615,41 @@ class GatewayConnection:
                     text_parts.append(text)
         return "".join(text_parts) if text_parts else None
 
-    def _forward_to_frontends(self, message: dict, target_member_id: str | None = None) -> None:
-        """Send a message to registered frontend connections.
+    async def _forward_to_frontends(self, message: dict, target_member_id: str | None = None) -> None:
+        """Send a message to the owner's frontend chat clients.
 
-        When *target_member_id* is set, only connections belonging to that
-        member receive the message (per-member event routing for orgs).
-        When ``None``, broadcast to all connections (status changes, etc.).
+        Recipients are sourced from the ws-connections ``by-owner-id`` GSI (the
+        single source of truth for fan-out, so any backend instance can reach
+        all of an owner's tabs/devices) via a short-TTL cache, then:
+
+        - filtered to ``connectionType == "chat"`` so node/operator transparent
+          pipes never receive chat ``chunk``/``done`` events;
+        - demuxed per member when *target_member_id* is set (case-insensitive,
+          because OpenClaw lowercases sessionKeys so the member_id parsed from
+          the event is lowercase while DDB stores the original Clerk user_id);
+        - broadcast to every chat connection when *target_member_id* is ``None``
+          (status changes, SWR revalidation, etc.).
+
+        On a recipient-query failure we log and drop the event — there is no
+        in-process fallback (DynamoDB is the single source of truth). On a
+        send failure we prune the dead row (best-effort) so the GSI stops
+        returning it.
         """
-        all_conns = list(self._frontend_connections)
-        if not all_conns:
-            msg_type = message.get("type", "?")
-            logger.warning(
-                "[%s] forward: no frontend connections for msg type=%s target=%s",
-                self.user_id,
-                msg_type,
-                target_member_id or "broadcast",
-            )
+        recipients = await self._cached_owner_recipients()
+        if recipients is None:
+            # query failed; logged in the helper. No in-process fallback.
             return
+
         gone: list[str] = []
         delivered = 0
         skipped = 0
-        for conn_id in all_conns:
+        for conn_id, member_id, conn_type in recipients:
+            if conn_type != "chat":
+                # Exclude node/operator transparent pipes from chat fan-out.
+                skipped += 1
+                continue
             if target_member_id is not None:
-                # Case-insensitive: OpenClaw lowercases sessionKeys
-                # internally, so the member_id parsed from the event is
-                # lowercase, but conn_member_map stores the original
-                # Clerk user_id (mixed case).
-                member = self._conn_member_map.get(conn_id, "")
-                if member.lower() != target_member_id.lower():
+                if member_id is None or member_id.lower() != target_member_id.lower():
                     skipped += 1
                     continue
             try:
@@ -639,9 +661,7 @@ class GatewayConnection:
                 logger.warning("Failed to forward message to %s", conn_id)
                 gone.append(conn_id)
         for conn_id in gone:
-            self._frontend_connections.discard(conn_id)
-            put_metric("gateway.frontend.prune")
-            logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
+            await self._prune_dead_conn(conn_id)
         # Log delivery summary for non-chunk messages (chunks are too frequent)
         msg_type = message.get("type", "?")
         if msg_type not in ("chunk",):
@@ -653,8 +673,42 @@ class GatewayConnection:
                 delivered,
                 skipped,
                 len(gone),
-                len(all_conns),
+                len(recipients),
             )
+
+    async def _cached_owner_recipients(self) -> Optional[list[tuple[str, str, str]]]:
+        """Return cached ``(connectionId, member_userId, connectionType)`` rows
+        for ``self.owner_id``, refreshing from the by-owner-id GSI on a TTL.
+
+        Returns ``None`` on query failure so the caller aborts the forward
+        rather than falling back to the in-process set.
+        """
+        now = time.monotonic()
+        if self._recipients_cache is not None and (now - self._recipients_cache_ts) < _RECIPIENTS_TTL_S:
+            return self._recipients_cache
+        try:
+            recipients = await self._conn_svc.query_by_owner(self.owner_id)
+        except Exception:
+            logger.exception(
+                "owner-keyed fan-out query failed for owner=%s — dropping event",
+                self.owner_id,
+            )
+            return None
+        self._recipients_cache = recipients
+        self._recipients_cache_ts = now
+        return recipients
+
+    async def _prune_dead_conn(self, conn_id: str) -> None:
+        """Best-effort prune of a dead connection row + recipient-cache bust."""
+        try:
+            self._conn_svc.delete_connection(conn_id)
+        except Exception:
+            logger.warning("failed to prune dead conn %s", conn_id, exc_info=True)
+        # Invalidate so the next forward re-queries instead of re-sending to it.
+        self._recipients_cache = None
+        self._recipients_cache_ts = 0.0
+        put_metric("gateway.frontend.prune")
+        logger.info("Pruned gone frontend connection %s for owner %s", conn_id, self.owner_id)
 
     def _record_usage_from_session(self, payload: dict) -> None:
         """Record usage after a billable event by resolving the session key
@@ -923,7 +977,7 @@ class GatewayConnection:
             bare_model,
         )
 
-    def _handle_message(self, data: dict) -> None:
+    async def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.
 
         Event routing:
@@ -1044,7 +1098,7 @@ class GatewayConnection:
                     event_agent_id = parsed_key.get("agent_id")
                     if event_agent_id:
                         transformed["agent_id"] = event_agent_id
-                    self._forward_to_frontends(transformed, target_member)
+                    await self._forward_to_frontends(transformed, target_member)
 
             elif event_name == "chat":
                 # Skip forwarding channel and cron chat events to the web UI.
@@ -1082,7 +1136,7 @@ class GatewayConnection:
                         if event_agent_id:
                             fwd["agent_id"] = event_agent_id
                         fwd["runId"] = run_id
-                        self._forward_to_frontends(fwd, target_member)
+                        await self._forward_to_frontends(fwd, target_member)
                     # Forward the assistant text from chat.final. For agent
                     # runs the streamed chunks already painted the same text
                     # (chunks use cumulative replacement), so this is a visual
@@ -1095,12 +1149,12 @@ class GatewayConnection:
                         if event_agent_id:
                             fwd["agent_id"] = event_agent_id
                         fwd["runId"] = run_id
-                        self._forward_to_frontends(fwd, target_member)
+                        await self._forward_to_frontends(fwd, target_member)
                     fwd = {"type": "done"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
-                    self._forward_to_frontends(fwd, target_member)
+                    await self._forward_to_frontends(fwd, target_member)
                 elif state == "error":
                     # OpenClaw's `chat` terminal error event carries the
                     # human-readable text in `errorMessage` and a coarse,
@@ -1133,18 +1187,18 @@ class GatewayConnection:
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
-                    self._forward_to_frontends(fwd, target_member)
+                    await self._forward_to_frontends(fwd, target_member)
                 elif state == "aborted":
                     put_metric("chat.error", dimensions={"reason": "aborted"})
                     fwd = {"type": "error", "message": "Agent run was cancelled"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
-                    self._forward_to_frontends(fwd, target_member)
+                    await self._forward_to_frontends(fwd, target_member)
 
             else:
                 # Forward other events as-is for SWR revalidation (broadcast to all)
-                self._forward_to_frontends(data)
+                await self._forward_to_frontends(data)
             return
 
     async def _reader_loop(self) -> None:
@@ -1153,7 +1207,7 @@ class GatewayConnection:
             async for raw in self._ws:
                 try:
                     data = json.loads(raw)
-                    self._handle_message(data)
+                    await self._handle_message(data)
                 except json.JSONDecodeError:
                     logger.warning("Non-JSON message from gateway for user %s", self.user_id)
         except asyncio.CancelledError:
@@ -1390,8 +1444,13 @@ class GatewayConnectionPool:
     def __init__(
         self,
         management_api: Any,
+        conn_svc: Optional[ConnectionService] = None,
     ) -> None:
         self._management_api = management_api
+        # Shared ConnectionService used by every GatewayConnection's owner-keyed
+        # fan-out (query_by_owner on the by-owner-id GSI). Defaults to a fresh
+        # instance — the same wiring as the module singleton elsewhere.
+        self._conn_svc = conn_svc or ConnectionService()
         self._connections: Dict[str, GatewayConnection] = {}
         self._frontend_connections: Dict[str, Set[str]] = {}  # owner_id -> set of conn_ids
         self._conn_member_map: Dict[str, str] = {}  # connection_id -> member_user_id
@@ -1519,6 +1578,7 @@ class GatewayConnectionPool:
             # `user_id` here IS the pool's owner key (org_id or user_id);
             # pass it explicitly as owner_id so the fan-out is unambiguous.
             owner_id=user_id,
+            conn_svc=self._conn_svc,
         )
         await conn.connect()
         self._connections[user_id] = conn
@@ -1660,7 +1720,7 @@ class GatewayConnectionPool:
         """Send a message to all frontend connections for a user."""
         conn = self._connections.get(user_id)
         if conn:
-            conn._forward_to_frontends(message)
+            await conn._forward_to_frontends(message)
 
     async def broadcast_to_member(self, owner_id: str, member_user_id: str, message: dict) -> None:
         """Send a message to frontend connections for a specific org member.
@@ -1674,7 +1734,7 @@ class GatewayConnectionPool:
             return
         # Personal account — no per-member filtering needed
         if owner_id == member_user_id:
-            conn._forward_to_frontends(message)
+            await conn._forward_to_frontends(message)
             return
         # Org account — filter to this member's connections only
         gone: list[str] = []

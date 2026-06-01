@@ -42,7 +42,7 @@ class TestGatewayConnection:
         """_handle_message with type=res should resolve the matching Future."""
         future = asyncio.get_event_loop().create_future()
         connection._pending_rpcs["req-456"] = future
-        connection._handle_message({"type": "res", "id": "req-456", "ok": True, "payload": {"uptime": 3600}})
+        await connection._handle_message({"type": "res", "id": "req-456", "ok": True, "payload": {"uptime": 3600}})
         result = await asyncio.wait_for(future, timeout=1)
         assert result == {"uptime": 3600}
 
@@ -51,16 +51,21 @@ class TestGatewayConnection:
         """_handle_message with type=res ok=false should reject the Future."""
         future = asyncio.get_event_loop().create_future()
         connection._pending_rpcs["req-789"] = future
-        connection._handle_message({"type": "res", "id": "req-789", "ok": False, "error": {"message": "not found"}})
+        await connection._handle_message(
+            {"type": "res", "id": "req-789", "ok": False, "error": {"message": "not found"}}
+        )
         with pytest.raises(RuntimeError, match="not found"):
             await asyncio.wait_for(future, timeout=1)
 
-    def test_handle_event_forwards_to_frontend(self, connection, mock_management_api):
-        """_handle_message with type=event should forward to all frontend connections."""
-        connection._frontend_connections.add("conn-abc")
-        connection._frontend_connections.add("conn-def")
+    @pytest.mark.asyncio
+    async def test_handle_event_forwards_to_frontend(self, connection, mock_management_api):
+        """_handle_message with type=event fans out to the owner's chat connections
+        sourced from the by-owner-id GSI."""
+        connection._conn_svc.query_by_owner = AsyncMock(
+            return_value=[("conn-abc", None, "chat"), ("conn-def", None, "chat")]
+        )
         # Use sessions.updated — health/tick events are now intentionally dropped.
-        connection._handle_message({"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}})
+        await connection._handle_message({"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}})
         assert mock_management_api.send_message.call_count == 2
 
     def test_shared_frontend_connections(self, connection):
@@ -553,13 +558,15 @@ class TestHandleMessageChatEvents:
             token="tok",
             management_api=mgmt,
         )
-        conn._frontend_connections.add("frontend-1")
+        # Owner-keyed fan-out reads recipients from the by-owner-id GSI.
+        conn._conn_svc.query_by_owner = AsyncMock(return_value=[("frontend-1", None, "chat")])
         return conn, mgmt
 
-    def test_chat_final_sends_done(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_final_sends_done(self, connection):
         """chat state=final forwards a done message to frontends."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -569,7 +576,8 @@ class TestHandleMessageChatEvents:
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert {"type": "done", "runId": "run-1"} in calls
 
-    def test_chat_final_emits_text_chunk_then_done(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_final_emits_text_chunk_then_done(self, connection):
         """chat state=final forwards the assistant text as a chunk before the
         done signal. For agent runs the streamed chunks already painted the
         same text (cumulative replace ⇒ visual no-op). For slash commands
@@ -577,7 +585,7 @@ class TestHandleMessageChatEvents:
         response text to the frontend — without it, slash-command replies
         are silently dropped."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -596,10 +604,11 @@ class TestHandleMessageChatEvents:
             {"type": "done", "runId": "run-1"}
         )
 
-    def test_chat_error_sends_error_message(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_error_sends_error_message(self, connection):
         """chat state=error forwards an error type message."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -610,10 +619,11 @@ class TestHandleMessageChatEvents:
         assert any(c.get("type") == "error" for c in calls)
         assert any("timeout" in c.get("message", "") for c in calls)
 
-    def test_chat_aborted_sends_error_message(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_aborted_sends_error_message(self, connection):
         """chat state=aborted forwards a cancellation error."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -623,10 +633,11 @@ class TestHandleMessageChatEvents:
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert any(c.get("type") == "error" for c in calls)
 
-    def test_chat_delta_is_ignored(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_delta_is_ignored(self, connection):
         """chat state=delta is silently ignored (agent events handle streaming)."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -635,11 +646,12 @@ class TestHandleMessageChatEvents:
         )
         mgmt.send_message.assert_not_called()
 
-    def test_other_events_forwarded_as_is(self, connection):
+    @pytest.mark.asyncio
+    async def test_other_events_forwarded_as_is(self, connection):
         """Non-chat, non-agent events are forwarded unchanged for SWR revalidation."""
         conn, mgmt = connection
         msg = {"type": "event", "event": "sessions.updated", "payload": {}}
-        conn._handle_message(msg)
+        await conn._handle_message(msg)
         mgmt.send_message.assert_called_once_with("frontend-1", msg)
 
 
@@ -819,10 +831,15 @@ class TestChatEventForwarding:
             token="t",
             management_api=mock_management_api,
         )
+        # Owner-keyed fan-out reads recipients from the by-owner-id GSI. The
+        # session is "agent:main:user-1" → target_member "user-1", so the
+        # chat row must carry that member id to receive the demuxed event.
+        c._conn_svc.query_by_owner = AsyncMock(return_value=[("conn-1", "user-1", "chat")])
         return c
 
-    def test_done_event_carries_run_id(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_done_event_carries_run_id(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -839,8 +856,9 @@ class TestChatEventForwarding:
         assert len(done_msgs) == 1
         assert done_msgs[0]["runId"] == "run-done-1"
 
-    def test_error_event_carries_run_id(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_error_event_carries_run_id(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -859,8 +877,9 @@ class TestChatEventForwarding:
         assert error_msgs[0]["runId"] == "run-err-1"
         assert error_msgs[0]["message"] == "model unavailable"
 
-    def test_aborted_event_carries_run_id(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_aborted_event_carries_run_id(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -877,12 +896,13 @@ class TestChatEventForwarding:
         assert len(error_msgs) == 1
         assert error_msgs[0]["runId"] == "run-abort-1"
 
-    def test_done_without_run_id_raises(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_done_without_run_id_raises(self, connection, mock_management_api):
         """runId is required on chat-terminal events. Missing runId is a
         protocol violation — fail loudly rather than silently forwarding
         without it (frontend multi-bubble routing would break)."""
         with pytest.raises(KeyError):
-            connection._handle_message(
+            await connection._handle_message(
                 {
                     "type": "event",
                     "event": "chat",
@@ -904,7 +924,7 @@ class TestActiveRunTracking:
 
     @pytest.fixture
     def connection(self):
-        return GatewayConnection(
+        conn = GatewayConnection(
             frontend_connections=set(),
             conn_member_map={},
             user_id="user-active-run",
@@ -912,6 +932,10 @@ class TestActiveRunTracking:
             token="tok",
             management_api=MagicMock(),
         )
+        # _handle_message now awaits owner-keyed fan-out; stub the GSI query so
+        # these active-run-lifecycle assertions don't touch DDB.
+        conn._conn_svc.query_by_owner = AsyncMock(return_value=[])
+        return conn
 
     def test_mark_run_active_records_session(self, connection):
         connection.mark_run_active("agent:main:user-active-run", agent_id="main")
@@ -922,13 +946,13 @@ class TestActiveRunTracking:
         assert run["last_event_at"] == run["started_at"]
         assert connection.has_active_runs is True
 
-    def test_chat_final_clears_active_run(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_final_clears_active_run(self, connection):
         """chat.final on the matching sessionKey clears the active run."""
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
-        connection._frontend_connections.add("conn-1")
 
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -944,12 +968,12 @@ class TestActiveRunTracking:
         assert connection.has_active_runs is False
         assert session_key not in connection._active_runs
 
-    def test_chat_error_clears_active_run(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_error_clears_active_run(self, connection):
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
-        connection._frontend_connections.add("conn-1")
 
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -965,12 +989,12 @@ class TestActiveRunTracking:
 
         assert connection.has_active_runs is False
 
-    def test_chat_aborted_clears_active_run(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_aborted_clears_active_run(self, connection):
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
-        connection._frontend_connections.add("conn-1")
 
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -984,7 +1008,8 @@ class TestActiveRunTracking:
 
         assert connection.has_active_runs is False
 
-    def test_touch_run_updates_last_event_at(self, connection):
+    @pytest.mark.asyncio
+    async def test_touch_run_updates_last_event_at(self, connection):
         """Any inbound event tagged with the sessionKey bumps last_event_at —
         signal the deadlock watchdog uses to distinguish a stuck container
         from a slow turn."""
@@ -998,7 +1023,7 @@ class TestActiveRunTracking:
         _t.sleep(0.01)
 
         # Agent stream event for the same session
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -1014,9 +1039,10 @@ class TestActiveRunTracking:
         bumped = connection._active_runs[session_key]["last_event_at"]
         assert bumped > original
 
-    def test_touch_run_noop_for_unknown_session(self, connection):
+    @pytest.mark.asyncio
+    async def test_touch_run_noop_for_unknown_session(self, connection):
         """Untracked sessionKeys (cron / channel) must not create entries."""
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",

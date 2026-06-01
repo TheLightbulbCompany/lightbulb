@@ -402,19 +402,27 @@ aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend 
   --interactive --command "/bin/sh -c 'cd /app && echo $SCRIPT_B64 | base64 -d | uv run python -'" \
   --profile isol8-admin --region us-east-1
 
-# 5b. Delete the orphan Aurora ``user`` rows for each org member. Use the
-#     Data API path documented above. Org owners have ONE PaperclipCompany
-#     row PER MEMBER, all sharing the same ``company_id``; each row's
-#     ``paperclip_user_id`` is a separate Better Auth user.
-SECRET=$(aws secretsmanager list-secrets --profile isol8-admin --region us-east-1 \
-  --query "SecretList[?contains(Name,\`isol8-prod-paperclip-db-credentials\`)].ARN" \
-  --output text)
-DB=arn:aws:rds:us-east-1:877352799272:cluster:isol8-prod-paperclip-db
-aws rds-data execute-statement --resource-arn "$DB" --secret-arn "$SECRET" \
-  --database paperclip \
-  --sql "DELETE FROM \"user\" WHERE id IN ('<member1_pcuid>','<member2_pcuid>','<member3_pcuid>')" \
-  --profile isol8-admin --region us-east-1
-# Verify only ``admin+paperclip@isol8.co`` (the prod bootstrap) remains.
+# 5b. Delete each org member's orphan Aurora ``user`` row via the recovery
+#     script so no member is missed (a surviving member row leaves an orphan
+#     Better Auth user that wedges that member's /teams on their next visit
+#     — re-signup 422s against the existing user). Org owners have ONE
+#     PaperclipCompany row PER MEMBER, all sharing the same ``company_id``;
+#     each row's ``paperclip_user_id`` is a separate Better Auth user.
+#     Pass BOTH --email (scopes the Aurora delete) AND --user-id (the
+#     member's Clerk user_id, scopes the DDB delete) so recovering one
+#     member never touches another member's failed row.
+cd apps/backend
+# email:clerk_user_id pairs for each member being reprovisioned
+for pair in member1@isol8.co:user_xxx member2@isol8.co:user_yyy member3@isol8.co:user_zzz; do
+  email="${pair%%:*}"; uid="${pair##*:}"
+  uv run python -m scripts.recover_orphan_paperclip_member \
+    --env prod --email "$email" --user-id "$uid" --owner-id "$OWNER" --apply
+done
+# Post-condition: SELECT email FROM "user" must show ONLY
+# admin+paperclip@isol8.co (the prod bootstrap). The script refuses to
+# delete it, refuses ambiguous email matches, and refuses to delete more
+# than one failed DDB row without --user-id — so cross-check the remaining
+# rows before declaring the org clean.
 
 # 5c. Delete all PaperclipCompany DDB rows for the org's members.
 for uid in user_xxx user_yyy user_zzz; do

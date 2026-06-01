@@ -560,6 +560,30 @@ class PaperclipProvisioning:
                 member_paperclip_user_id = member_signup["user"]["id"]
                 member_session_cookie = member_signup["_session_cookie"]
 
+                # Persist the freshly created credential BEFORE the rest of
+                # the join chain. If a later step fails, this row lets the
+                # next attempt ADOPT (sign-in) instead of re-signing-up —
+                # re-signup would 422 against the now-existing Better Auth
+                # user and strand it as an orphan (the failure path's
+                # _mark_failed updates this row in place, preserving the
+                # paperclip_user_id + password). Only for net-new members:
+                # an adopted row already carries its credential and must not
+                # be overwritten to "provisioning".
+                now = datetime.now(timezone.utc)
+                await self._repo.put(
+                    PaperclipCompany(
+                        user_id=user_id,
+                        org_id=owner_id,
+                        company_id=company_id,
+                        paperclip_user_id=member_paperclip_user_id,
+                        paperclip_password_encrypted=encrypt(member_password),
+                        service_token_encrypted="",
+                        status="provisioning",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+
             # 2. Sign in as the org owner so we can act on the company
             #    (create invite + approve join request).
             owner_signin = await self._admin.sign_in_user(
@@ -588,13 +612,10 @@ class PaperclipProvisioning:
                 session_cookie=member_session_cookie,
                 invite_token=invite_token,
             )
-            # Paperclip's accept_invite response shape verified against
-            # ``server/src/routes/access.ts:3604-3630``:
-            # ``toJoinRequestResponse(created)`` spreads the joinRequests
-            # row into a flat object with a top-level ``id`` field. No
-            # wrapping, no alternate casing — strict access here so any
-            # future shape change fails loud instead of silently dropping
-            # the approve_join_request step.
+            # Paperclip's accept_invite response is the join request row
+            # flattened by ``toJoinRequestResponse`` — a top-level ``id`` plus
+            # a ``status`` field. Strict access on ``id`` so a shape change
+            # fails loud instead of silently dropping the approve step.
             try:
                 request_id = accept["id"]
             except (KeyError, TypeError) as e:
@@ -604,13 +625,22 @@ class PaperclipProvisioning:
                     body=accept,
                 ) from e
 
-            # 5. Owner approves the pending join request — flips the
-            #    membership from pending_approval to active.
-            await self._admin.approve_join_request(
-                session_cookie=owner_session_cookie,
-                company_id=company_id,
-                request_id=request_id,
-            )
+            # 5. Approve the join request — UNLESS accept already approved it.
+            #    Human-invite accept auto-approves on the Paperclip side (the
+            #    accept handler ensures membership + grants and flips the row
+            #    to ``approved`` in the same request), so the response comes
+            #    back ``status="approved"``. Calling the standalone approve
+            #    endpoint on an already-approved request returns 409
+            #    ("Join request is not pending"). We always mint a fresh
+            #    invite, so accept reliably reports status. Only approve a
+            #    still-pending request — this also self-heals if Paperclip
+            #    ever stops auto-approving.
+            if accept.get("status") != "approved":
+                await self._admin.approve_join_request(
+                    session_cookie=owner_session_cookie,
+                    company_id=company_id,
+                    request_id=request_id,
+                )
 
             # 6. Mint the member's OpenClaw service-token JWT.
             #
@@ -987,11 +1017,25 @@ class PaperclipProvisioning:
         truncated = reason[:1000]
         existing = await self._repo.get(user_id)
         if existing is not None:
-            await self._repo.update_status(
+            # Never downgrade a row that a concurrent provision attempt has
+            # already completed to ``active``. Two overlapping attempts for one
+            # member can race: the early adoptable row this PR persists lets a
+            # second poll sign in and write the final ``active`` row while the
+            # first poll is still running; if that first poll then hits a late
+            # transient error, this failure path must NOT clobber the active
+            # row. The conditional write skips (no-ops) in that case.
+            landed = await self._repo.update_status(
                 user_id,
                 status="failed",
                 last_error=truncated,
+                not_if_status="active",
             )
+            if not landed:
+                logger.info(
+                    "paperclip_provisioning._mark_failed: skipped downgrade of "
+                    "user %s — row already active (concurrent provision won)",
+                    user_id,
+                )
             return
 
         now = datetime.now(timezone.utc)

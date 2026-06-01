@@ -543,3 +543,200 @@ async def test_provision_member_adoption_failure_does_not_mark_existing_row_fail
 
     svc._mark_failed.assert_not_awaited()  # adopted row preserved, not corrupted
     repo.put.assert_not_awaited()  # never re-pointed (join failed)
+
+
+@pytest.mark.asyncio
+async def test_provision_member_skips_approve_when_accept_auto_approved(monkeypatch):
+    """Paperclip auto-approves human invites at accept time — the accept
+    response comes back ``status="approved"`` and the membership is already
+    created. Calling the standalone approve endpoint on an already-approved
+    request returns 409 "Join request is not pending". The member-join must
+    NOT make that redundant call; it should read the accept status and skip
+    approve, completing to an active row.
+    """
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services import service_token
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    # Accept returns the auto-approved join request.
+    admin.accept_invite = AsyncMock(return_value={"id": "req_1", "status": "approved"})
+
+    owner_row = _active_row(user_id="user_owner", org_id="org_xyz")
+    owner_row.paperclip_password_encrypted = encrypt("owner-pw-plain")
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)  # brand-new member
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+
+    import core.services.paperclip_provisioning as prov_mod
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+    monkeypatch.setattr(service_token, "mint", MagicMock(return_value="svc.tok"))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_member(
+        owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com"
+    )
+
+    # The redundant approve call is skipped...
+    admin.approve_join_request.assert_not_awaited()
+    # ...and provisioning still completes to an active member row.
+    assert isinstance(row, PaperclipCompany)
+    assert row.status == "active"
+    assert row.org_id == "org_xyz"
+    repo.put.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provision_member_approves_when_accept_left_pending(monkeypatch):
+    """Defensive fallback: if Paperclip ever returns the join request still
+    ``pending_approval`` from accept (older behavior, or a non-auto-approving
+    flow), the owner must still approve it so the membership goes active.
+    """
+    from core.encryption import encrypt
+    from core.services import service_token
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    # Accept leaves the request pending — approve is required.
+    admin.accept_invite = AsyncMock(return_value={"id": "req_1", "status": "pending_approval"})
+
+    owner_row = _active_row(user_id="user_owner", org_id="org_xyz")
+    owner_row.paperclip_password_encrypted = encrypt("owner-pw-plain")
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+
+    import core.services.paperclip_provisioning as prov_mod
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+    monkeypatch.setattr(service_token, "mint", MagicMock(return_value="svc.tok"))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_member(owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com")
+
+    admin.approve_join_request.assert_awaited_once()
+
+
+class _StatefulRepo:
+    """Minimal in-memory stand-in for paperclip_repo, keyed by user_id.
+
+    Models the bits provision_member + _mark_failed touch: ``get`` returns
+    the stored row, ``put`` stores it, ``update_status`` mutates status +
+    last_error in place (preserving immutables like paperclip_user_id), and
+    ``get_org_company_id`` is a fixed stub. Real enough to verify that a
+    post-sign-up failure leaves an ADOPTABLE row.
+    """
+
+    def __init__(self, *, company_id: str):
+        self._rows: dict[str, object] = {}
+        self._company_id = company_id
+
+    async def get(self, user_id: str):
+        return self._rows.get(user_id)
+
+    async def put(self, row):
+        self._rows[row.user_id] = row
+
+    async def update_status(self, user_id: str, *, status: str, last_error: str = "", not_if_status: str | None = None):
+        row = self._rows[user_id]
+        if not_if_status is not None and row.status == not_if_status:
+            return False  # guarded — skip (e.g. don't downgrade an active row)
+        row.status = status
+        row.last_error = last_error
+        return True
+
+    async def get_org_company_id(self, _owner_id: str):
+        return self._company_id
+
+
+@pytest.mark.asyncio
+async def test_mark_failed_does_not_downgrade_active_row(monkeypatch):
+    """A concurrent provision that already completed the row to ``active`` must
+    not be clobbered by a losing attempt's failure path: _mark_failed uses a
+    guarded update that skips when the row is already active."""
+    from datetime import datetime, timezone
+
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    repo = _StatefulRepo(company_id="co_xyz")
+    now = datetime.now(timezone.utc)
+    # The winning concurrent attempt already wrote an active row.
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_m",
+            org_id="org_xyz",
+            company_id="co_xyz",
+            paperclip_user_id="pc_user_m",
+            paperclip_password_encrypted="enc",
+            service_token_encrypted="enc_tok",
+            status="active",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    svc = PaperclipProvisioning(admin_client=MagicMock(), repo=repo, env_name="dev")
+    await svc._mark_failed(user_id="user_m", owner_id="org_xyz", reason="late transient error")
+
+    # The active row survives — NOT downgraded to failed.
+    row = await repo.get("user_m")
+    assert row.status == "active"
+    assert row.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_partial_failure_after_signup_leaves_adoptable_row(monkeypatch):
+    """A brand-new member whose join fails AFTER sign-up (before completion)
+    must leave a stored row carrying the freshly created paperclip_user_id +
+    password, so the next attempt ADOPTS via sign-in instead of re-signing-up
+    (which would 422 against the now-existing Better Auth user and orphan it).
+    """
+    from core.encryption import decrypt, encrypt
+    from core.services.paperclip_admin_client import PaperclipApiError
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "_session_cookie": "member-session"})
+    # Fail mid-join AFTER the member sign-up, before the final put.
+    admin.create_invite = AsyncMock(side_effect=PaperclipApiError("invite boom", status_code=500, body="x"))
+
+    owner_row = _active_row(user_id="user_owner", org_id="org_xyz")
+    owner_row.paperclip_password_encrypted = encrypt("owner-pw-plain")
+
+    repo = _StatefulRepo(company_id="co_xyz")
+
+    import core.services.paperclip_provisioning as prov_mod
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    with pytest.raises(PaperclipApiError):
+        await svc.provision_member(
+            owner_id="org_xyz", user_id="user_m", email="m@example.com", owner_email="o@example.com"
+        )
+
+    # The stored row must be adoptable: real paperclip_user_id + a password
+    # that round-trips through decrypt — NOT the empty placeholder that
+    # orphaned the Better Auth user.
+    stored = await repo.get("user_m")
+    assert stored is not None
+    assert stored.paperclip_user_id == "pc_user_member"
+    assert stored.paperclip_password_encrypted, "password must be persisted for adoption"
+    assert decrypt(stored.paperclip_password_encrypted)  # decrypts cleanly

@@ -290,7 +290,17 @@ class PaperclipRepo:
         status: PaperclipCompanyStatus,
         last_error: Optional[str] = None,
         scheduled_purge_at: Optional[datetime] = None,
-    ) -> None:
+        not_if_status: Optional[PaperclipCompanyStatus] = None,
+    ) -> bool:
+        """Update a row's status. Returns True iff the write landed.
+
+        ``not_if_status`` guards the write with a ConditionExpression so the
+        update is SKIPPED (returns False) when the row is currently in that
+        status. Used so a losing concurrent provision attempt can't downgrade
+        an already-``active`` row to ``failed``: two overlapping ``provision_member``
+        attempts for one member can race (e.g. /teams + /chat both reconciling),
+        and the loser's failure path must not clobber the winner's active row.
+        """
         update_expr = "SET #s = :s, updated_at = :u"
         expr_names = {"#s": "status"}
         expr_values: dict = {
@@ -303,13 +313,25 @@ class PaperclipRepo:
         if scheduled_purge_at is not None:
             update_expr += ", scheduled_purge_at = :p"
             expr_values[":p"] = scheduled_purge_at.isoformat()
-        await run_in_thread(
-            self._table().update_item,
-            Key={"user_id": user_id},
-            UpdateExpression=update_expr,
-            ExpressionAttributeNames=expr_names,
-            ExpressionAttributeValues=expr_values,
-        )
+
+        kwargs: dict = {
+            "Key": {"user_id": user_id},
+            "UpdateExpression": update_expr,
+            "ExpressionAttributeNames": expr_names,
+            "ExpressionAttributeValues": expr_values,
+        }
+        if not_if_status is not None:
+            # #s already maps to "status"; reuse it for the guard. Also require
+            # the row to still exist (a deleted row shouldn't be re-created here).
+            kwargs["ConditionExpression"] = "attribute_exists(user_id) AND #s <> :guard"
+            expr_values[":guard"] = not_if_status
+
+        table = self._table()
+        try:
+            await run_in_thread(table.update_item, **kwargs)
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
 
     async def delete(self, user_id: str) -> None:
         await run_in_thread(

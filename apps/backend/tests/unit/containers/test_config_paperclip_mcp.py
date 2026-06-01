@@ -130,6 +130,57 @@ def test_mcp_block_omitted_when_paperclip_agents_empty():
     assert "mcp" not in cfg
 
 
+def test_integration_mcp_servers_merged_alongside_paperclip():
+    """Connected integration servers (Stripe etc.) are merged into
+    config["mcp"]["servers"] at provision time so a reprovision's full
+    overwrite no longer drops them — and the paperclip block survives
+    alongside them."""
+    cfg = build_openclaw_config_dict(
+        user_id="user_x",
+        gateway_token="t" * 32,
+        provider_choice="bedrock_claude",
+        paperclip_agents=[_ceo_agent("friday-uuid")],
+        paperclip_api_key="pcli_live_abc",
+        paperclip_company_id="comp-1",
+        paperclip_api_url="http://paperclip.internal:3100",
+        integration_mcp_servers={
+            "stripe": {
+                "command": "npx",
+                "args": ["-y", "@stripe/mcp"],
+                "env": {"STRIPE_SECRET_KEY": "sk_X"},
+            },
+        },
+    )
+
+    servers = cfg["mcp"]["servers"]
+    assert servers["stripe"]["command"] == "npx"
+    assert servers["stripe"]["env"]["STRIPE_SECRET_KEY"] == "sk_X"
+    # The paperclip block is preserved alongside the integration server.
+    assert servers["paperclip"]["command"] == "npx"
+    assert servers["paperclip"]["env"]["PAPERCLIP_AGENT_ID"] == "friday-uuid"
+
+
+def test_integration_mcp_servers_merged_when_paperclip_absent():
+    """When no paperclip block is emitted (config["mcp"] absent), the
+    integration servers still land — the merge creates mcp/servers."""
+    cfg = build_openclaw_config_dict(
+        user_id="user_x",
+        gateway_token="t" * 32,
+        provider_choice="bedrock_claude",
+        paperclip_agents=[],
+        integration_mcp_servers={
+            "stripe": {
+                "command": "npx",
+                "args": ["-y", "@stripe/mcp"],
+                "env": {"STRIPE_SECRET_KEY": "sk_X"},
+            },
+        },
+    )
+
+    assert cfg["mcp"]["servers"]["stripe"]["command"] == "npx"
+    assert "paperclip" not in cfg["mcp"]["servers"]
+
+
 def test_defaults_heartbeat_is_explicit_30m():
     cfg = build_openclaw_config_dict(
         user_id="user_x",

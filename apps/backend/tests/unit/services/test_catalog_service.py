@@ -463,3 +463,81 @@ async def test_deploy_coerces_decimal_version_in_sidecar():
     content = ws.write_template_sidecar.call_args.kwargs["content"]
     assert isinstance(content["template_version"], int)
     assert content["template_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_deploy_reconciles_integration_servers(monkeypatch):
+    """The deep-merge lands the seller's bundled integration servers with their
+    credentials scrubbed blank. After it, deploy re-asserts the buyer's own
+    connected integrations from the durable sources so the hired agent gets a
+    canonical, credentialed server block — not the empty slot the slice carried.
+
+    The obsolete per-slice slot-fill helper + its canonical-key guard are gone;
+    a single owner-scoped reconcile replaces them.
+    """
+    import core.services.catalog_service as cs
+
+    assert not hasattr(cs, "_fill_buyer_credential_slots")
+    assert not hasattr(cs, "_slice_exposes_canonical_key")
+
+    called: dict[str, str] = {}
+
+    async def _reconcile(owner_id):
+        called["owner"] = owner_id
+
+    monkeypatch.setattr(cs, "reconcile_integrations", _reconcile)
+    # The pre-deploy gate reads the owner's connected set; the bundled stripe
+    # server derives a stripe requirement, so mark it connected to clear the gate
+    # (the reconcile, not the gate, is under test here).
+    monkeypatch.setattr(
+        "core.repositories.integrations_repo.list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+    )
+
+    svc, _ws, _aux, _pair, _gw = _make_service()
+    # The slice bundles the Stripe registry server with its credential scrubbed
+    # blank (catalog_slice) — the realistic hire path the reconcile re-credentials.
+    slice_ = _slice_with_agent(mcp={"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_SECRET_KEY": ""}}}})
+
+    await svc.deploy_from_artifact(
+        owner_id="org_1",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=slice_,
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    assert called["owner"] == "org_1"
+
+
+@pytest.mark.asyncio
+async def test_deploy_reconcile_failure_does_not_abort(monkeypatch):
+    """A reconcile hiccup at deploy time (e.g. a Secrets-Manager blip) must not
+    unwind an already-deployed agent. The slot is left uncredentialed for the
+    buyer to re-connect; the deploy still completes and writes its sidecar.
+    """
+    import core.services.catalog_service as cs
+
+    async def _boom(owner_id):
+        raise RuntimeError("secrets manager unavailable")
+
+    monkeypatch.setattr(cs, "reconcile_integrations", _boom)
+
+    svc, ws, _aux, _pair, _gw = _make_service()
+
+    await svc.deploy_from_artifact(
+        owner_id="org_1",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    # Deploy completed despite the reconcile failure.
+    ws.write_template_sidecar.assert_called_once()

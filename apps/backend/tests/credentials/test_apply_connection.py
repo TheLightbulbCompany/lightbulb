@@ -4,6 +4,20 @@ import pytest
 @pytest.mark.asyncio
 async def test_apply_openclaw_paths_injects_literal(monkeypatch):
     from core.services.credentials import apply_connection as ac
+    from core.services.credentials.registry import OpenclawPath, Provider, Wiring
+
+    # No live provider uses the openclaw_paths rail anymore (MCP providers moved
+    # to mcp_server), so exercise the rail itself via a synthetic provider rather
+    # than a registry entry.
+    synthetic = Provider(
+        key="synth",
+        display_name="Synthetic",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=Wiring(openclaw_paths=[OpenclawPath(path="a.b.c", source="input.token")]),
+    )
+    monkeypatch.setattr(ac.registry, "get_provider", lambda key: synthetic)
 
     calls = []
 
@@ -11,8 +25,8 @@ async def test_apply_openclaw_paths_injects_literal(monkeypatch):
         calls.append((owner, path, value))
 
     monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", _fake_set)
-    await ac.apply_connection("org_1", "linear", {"token": "lin_secret"})
-    assert calls == [("org_1", ["mcp", "servers", "linear", "env", "LINEAR_API_KEY"], "lin_secret")]
+    await ac.apply_connection("org_1", "synth", {"token": "lin_secret"})
+    assert calls == [("org_1", ["a", "b", "c"], "lin_secret")]
 
 
 @pytest.mark.asyncio
@@ -37,3 +51,29 @@ async def test_apply_materializer_dispatch_via_thread(monkeypatch):
     await ac.apply_connection("org_1", "google", {"access_token": "a", "refresh_token": "r"})
     assert threaded.get("called") is True
     assert seen["owner"] == "org_1" and seen["cred"]["refresh_token"] == "r"
+
+
+@pytest.mark.asyncio
+async def test_apply_mcp_server_writes_full_block(monkeypatch):
+    # stripe's mcp_server wiring installs the full {command, args, env} server
+    # block at mcp.servers.stripe in one write — the integration OWNS that key.
+    from core.services.credentials import apply_connection as ac
+
+    calls = []
+
+    async def _set(owner, path, value):
+        calls.append((owner, path, value))
+
+    monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", _set)
+    await ac.apply_connection("org_1", "stripe", {"token": "sk_live_X"})
+    assert calls == [
+        (
+            "org_1",
+            ["mcp", "servers", "stripe"],
+            {
+                "command": "npx",
+                "args": ["-y", "@stripe/mcp", "--tools=all"],
+                "env": {"STRIPE_SECRET_KEY": "sk_live_X"},
+            },
+        )
+    ]

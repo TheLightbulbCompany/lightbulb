@@ -499,6 +499,7 @@ def build_openclaw_config_dict(
     paperclip_api_key: str | None = None,
     paperclip_company_id: str | None = None,
     paperclip_api_url: str | None = None,
+    integration_mcp_servers: dict | None = None,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -923,6 +924,17 @@ def build_openclaw_config_dict(
                 },
             }
 
+    # Merge the owner's connected integration MCP servers (Stripe, …) into the
+    # same servers map. A reprovision does a full overwrite of openclaw.json, so
+    # unless these are re-injected here the connection is dropped. Each value is
+    # a full {command, args, env} block; integration keys win for their own key
+    # while the paperclip block (and any servers map shape it created) is
+    # preserved. setdefault handles the paperclip-absent case where no mcp block
+    # was emitted above.
+    if integration_mcp_servers:
+        servers = config.setdefault("mcp", {}).setdefault("servers", {})
+        servers.update(integration_mcp_servers)
+
     return config
 
 
@@ -939,6 +951,7 @@ async def write_openclaw_config(
     paperclip_api_key: str | None = None,
     paperclip_company_id: str | None = None,
     paperclip_api_url: str | None = None,
+    integration_mcp_servers: dict | None = None,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -986,6 +999,7 @@ async def write_openclaw_config(
         paperclip_api_key=paperclip_api_key,
         paperclip_company_id=paperclip_company_id,
         paperclip_api_url=paperclip_api_url,
+        integration_mcp_servers=integration_mcp_servers,
     )
 
     def _write() -> None:

@@ -11,6 +11,7 @@ patch triggers OpenClaw's chokidar-based hot reload, so changes take effect
 without a container restart.
 """
 
+import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,6 +24,9 @@ from core.services.config_patcher import (
     delete_openclaw_config_path,
     set_openclaw_config_path,
 )
+from core.services.credentials.mcp_server import reconcile_integrations
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -130,7 +134,20 @@ async def replace_mcp_servers(
         await set_openclaw_config_path(owner_id, ["mcp", "servers"], body.servers)
     except ConfigPatchError as exc:
         raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
-    return {"servers": body.servers}
+    # The whole-dict replace drops any integration-owned key the user's body
+    # omits (e.g. a connected integration's `stripe` server). Re-assert those
+    # keys so a manual edit can't clobber a live integration. Best-effort: the
+    # user's write already committed, so a Secrets-Manager/reconcile hiccup must
+    # not 500 a successful write — the next reconcile/reprovision self-heals.
+    try:
+        await reconcile_integrations(owner_id)
+    except Exception:
+        logger.exception("integration reconcile after manual MCP write failed for %s", owner_id)
+    # Re-read AFTER reconcile so the response reflects the final on-disk state.
+    # Returning body.servers would omit integration-owned keys reconcile just
+    # re-asserted (e.g. `stripe`) and misrepresent what's in openclaw.json.
+    servers = await _read_mcp_servers(owner_id)
+    return {"servers": servers}
 
 
 @router.patch(
@@ -154,6 +171,14 @@ async def upsert_mcp_server(
         await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
     except ConfigPatchError as exc:
         raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
+    # An upsert whose name collides with an integration-owned key (e.g. `stripe`)
+    # would overwrite it with the user's value. Re-assert integration-owned keys
+    # so integration ownership always wins. Best-effort for the same reason as
+    # the PUT path — read AFTER reconcile so the response reflects the final state.
+    try:
+        await reconcile_integrations(owner_id)
+    except Exception:
+        logger.exception("integration reconcile after manual MCP write failed for %s", owner_id)
     servers = await _read_mcp_servers(owner_id)
     return {"servers": servers}
 
@@ -177,5 +202,13 @@ async def delete_mcp_server(
         await delete_openclaw_config_path(owner_id, ["mcp", "servers", name])
     except ConfigPatchError as exc:
         raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
+    # Deleting an integration-owned key (e.g. `stripe`) via the manual panel must
+    # not silently break a still-connected integration: re-assert integration-owned
+    # keys so ownership wins. A user-owned (non-provider) key stays deleted, since
+    # reconcile only touches connected integration providers. Best-effort; read after.
+    try:
+        await reconcile_integrations(owner_id)
+    except Exception:
+        logger.exception("integration reconcile after manual MCP delete failed for %s", owner_id)
     servers = await _read_mcp_servers(owner_id)
     return {"servers": servers}

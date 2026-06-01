@@ -8,19 +8,18 @@ deploy with a 409 listing exactly which providers to connect.
 
 Post credential-redesign-phase-2 the secret vault moved to AWS Secrets
 Manager and the connection status moved to the secret-free ``integrations``
-index. So:
-  - the deploy gate's "connected" set comes from
-    ``integrations_repo.list_for_owner`` (rows carry ``status``, no secret)
-  - slot-fill keys "retained vs not" on
-    ``integration_secret_store.get(owner, provider)`` returning a dict
-    (backend-custodian/paste rails) vs None (actor-refresh providers whose
-    secret was never stored).
+index, so the deploy gate's "connected" set comes from
+``integrations_repo.list_for_owner`` (rows carry ``status``, no secret).
 
-``catalog_service`` lazy-imports both inside the functions
-(``from core.repositories import integrations_repo`` and
-``from core.services.credentials import apply_connection,
-integration_secret_store, registry``), so the patches target those modules'
-own attributes — where catalog_service looks them up at call time.
+``catalog_service`` lazy-imports ``integrations_repo`` inside the gate
+(``from core.repositories import integrations_repo``), so the patch targets
+that module's own attribute — where catalog_service looks it up at call time.
+
+Re-credentialing the buyer's own bundled integration servers after the slice
+merge is the reconcile path (``reconcile_integrations``), covered by
+``tests/unit/services/test_catalog_service.py`` and
+``tests/credentials/test_mcp_server.py``; this file only pins the pre-deploy
+gate.
 
 Covers:
   - manifest-declared provider not connected -> MissingCredentialsError
@@ -28,7 +27,6 @@ Covers:
   - optional provider unconnected -> no raise
   - slice ``mcp.servers.stripe`` (registry provider) unconnected -> missing
   - router maps the error to 409 AND rolls back the orphan Paperclip agent
-  - slot-fill applies the retained paste token, skips actor/non-retained
 """
 
 import os
@@ -41,7 +39,6 @@ import pytest  # noqa: E402
 
 from core.services.catalog_service import (  # noqa: E402
     MissingCredentialsError,
-    _fill_buyer_credential_slots,
     assert_credentials_satisfied,
 )
 
@@ -264,267 +261,3 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
     # Orphan Paperclip agent rolled back.
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "agent_orphan_1"
-
-
-# ---------------------------------------------------------------------------
-# Buyer credential slot-fill (post-merge)
-#
-# Retained-vs-not now keys on integration_secret_store.get(owner, provider):
-#   - paste rails (linear, stripe): retains the token in Secrets Manager and
-#     has openclaw_paths -> get() returns the dict -> fill the slot.
-#   - actor rails (google): refresh_owner=actor + materializer (no
-#     openclaw_paths) -> nothing to fill AND get() returns None.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_slot_fill_applies_retained_paste_credential(monkeypatch):
-    """A connected paste provider in the slice gets its slot filled.
-
-    Stripe is paste_token + openclaw_paths + refresh_owner=none, so the secret
-    store RETAINS the token. The slice scrubs the MCP env to "", so the buyer's
-    own token must be re-applied into the freshly deployed slot via
-    apply_connection — sourced from integration_secret_store.get.
-    """
-    row = {"provider": "stripe", "status": "connected"}
-    credential = {"token": "sk_live_buyer"}
-    status_get = AsyncMock(return_value=row)
-    secret_get = AsyncMock(return_value=credential)
-    apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
-    monkeypatch.setattr(
-        "core.services.credentials.integration_secret_store.get",
-        secret_get,
-    )
-    monkeypatch.setattr(
-        "core.services.credentials.apply_connection.apply_connection",
-        apply_mock,
-    )
-
-    slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_SECRET_KEY": ""}}}}}
-
-    await _fill_buyer_credential_slots("owner_1", slice_)
-
-    secret_get.assert_awaited_once_with("owner_1", "stripe")
-    apply_mock.assert_awaited_once_with("owner_1", "stripe", credential)
-
-
-@pytest.mark.asyncio
-async def test_slot_fill_skips_scrubbed_actor_provider(monkeypatch):
-    """An actor/materializer provider whose secret was never retained is skipped.
-
-    Google is direct_oauth + materializer + refresh_owner=actor. The backend
-    retained nothing in Secrets Manager (M6 non-retention), so
-    integration_secret_store.get returns None. The slot-fill must skip it
-    WITHOUT calling apply_connection — its credential is the owner-scoped EFS
-    gog keyring, not a per-agent slot. This is the load-bearing non-retention
-    guard.
-    """
-    row = {"provider": "google", "status": "connected"}
-    status_get = AsyncMock(return_value=row)
-    secret_get = AsyncMock(return_value=None)
-    apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
-    monkeypatch.setattr(
-        "core.services.credentials.integration_secret_store.get",
-        secret_get,
-    )
-    monkeypatch.setattr(
-        "core.services.credentials.apply_connection.apply_connection",
-        apply_mock,
-    )
-
-    slice_ = {"mcp": {"servers": {"google": {"command": "gog"}}}}
-
-    await _fill_buyer_credential_slots("owner_1", slice_)
-
-    apply_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_slot_fill_skips_provider_with_no_retained_secret(monkeypatch):
-    """A paste provider (has openclaw_paths) whose secret store returns None is skipped.
-
-    Mirrors the old "no retained ciphertext" guard: even for a provider WITH a
-    fillable slot, if integration_secret_store.get returns None there is nothing
-    to re-inject, so apply_connection is never called.
-    """
-    row = {"provider": "stripe", "status": "connected"}
-    status_get = AsyncMock(return_value=row)
-    secret_get = AsyncMock(return_value=None)
-    apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
-    monkeypatch.setattr(
-        "core.services.credentials.integration_secret_store.get",
-        secret_get,
-    )
-    monkeypatch.setattr(
-        "core.services.credentials.apply_connection.apply_connection",
-        apply_mock,
-    )
-
-    slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_SECRET_KEY": ""}}}}}
-
-    await _fill_buyer_credential_slots("owner_1", slice_)
-
-    secret_get.assert_awaited_once_with("owner_1", "stripe")
-    apply_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_slot_fill_skips_unconnected_provider(monkeypatch):
-    """A provider with no integrations row (or non-connected status) is skipped."""
-    status_get = AsyncMock(return_value=None)
-    secret_get = AsyncMock()
-    apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
-    monkeypatch.setattr(
-        "core.services.credentials.integration_secret_store.get",
-        secret_get,
-    )
-    monkeypatch.setattr(
-        "core.services.credentials.apply_connection.apply_connection",
-        apply_mock,
-    )
-
-    slice_ = {"mcp": {"servers": {"stripe": {"env": {"STRIPE_SECRET_KEY": ""}}}}}
-
-    await _fill_buyer_credential_slots("owner_1", slice_)
-
-    secret_get.assert_not_awaited()
-    apply_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_slot_fill_skips_non_registry_mcp_server(monkeypatch):
-    """A custom/unknown MCP server (not a registry provider) is never touched."""
-    status_get = AsyncMock(return_value={"provider": "x", "status": "connected"})
-    secret_get = AsyncMock()
-    apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
-    monkeypatch.setattr(
-        "core.services.credentials.integration_secret_store.get",
-        secret_get,
-    )
-    monkeypatch.setattr(
-        "core.services.credentials.apply_connection.apply_connection",
-        apply_mock,
-    )
-
-    slice_ = {"mcp": {"servers": {"my-custom-mcp": {"command": "x"}}}}
-
-    await _fill_buyer_credential_slots("owner_1", slice_)
-
-    status_get.assert_not_awaited()
-    secret_get.assert_not_awaited()
-    apply_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_slot_fill_one_provider_failure_does_not_abort_others(monkeypatch):
-    """A single provider's fill failure is logged + swallowed; others still fill.
-
-    The agent is already deployed by the time slot-fill runs, so a fill failure
-    is degraded (the buyer can re-connect) — not fatal. One provider raising must
-    not prevent another's slot from being filled.
-    """
-    rows = {
-        "stripe": {"provider": "stripe", "status": "connected"},
-        "linear": {"provider": "linear", "status": "connected"},
-    }
-    status_get = AsyncMock(side_effect=lambda owner, prov: rows[prov])
-    secret_get = AsyncMock(side_effect=lambda owner, prov: {"token": f"tok-{prov}"})
-
-    async def _apply(owner, prov, cred):
-        if prov == "stripe":
-            raise RuntimeError("boom")
-
-    apply_mock = AsyncMock(side_effect=_apply)
-    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
-    monkeypatch.setattr(
-        "core.services.credentials.integration_secret_store.get",
-        secret_get,
-    )
-    monkeypatch.setattr(
-        "core.services.credentials.apply_connection.apply_connection",
-        apply_mock,
-    )
-
-    # Both servers expose their canonical credential key (blanked by the scrub),
-    # so both are fill candidates.
-    slice_ = {
-        "mcp": {
-            "servers": {
-                "stripe": {"env": {"STRIPE_SECRET_KEY": ""}},
-                "linear": {"env": {"LINEAR_API_KEY": ""}},
-            }
-        }
-    }
-
-    # Must not raise despite stripe blowing up.
-    await _fill_buyer_credential_slots("owner_1", slice_)
-
-    # Both were attempted; linear succeeded.
-    assert apply_mock.await_count == 2
-    applied_providers = {call.args[1] for call in apply_mock.await_args_list}
-    assert applied_providers == {"stripe", "linear"}
-
-
-@pytest.mark.asyncio
-async def test_slot_fill_skips_bundle_with_non_canonical_key(monkeypatch):
-    """A registry MCP scrubbed under a NON-canonical key is left for manual setup.
-
-    The Stripe registry wiring fills ``mcp.servers.stripe.env.STRIPE_SECRET_KEY``,
-    but this bundle exposes only ``STRIPE_API_KEY``. Writing the canonical key
-    would add one the MCP never reads while leaving the real slot blank, so the
-    fill is skipped (no apply_connection) rather than silently mis-filling —
-    the buyer configures it manually.
-    """
-    row = {"provider": "stripe", "status": "connected"}
-    status_get = AsyncMock(return_value=row)
-    secret_get = AsyncMock(return_value={"token": "sk_live_buyer"})
-    apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
-    monkeypatch.setattr(
-        "core.services.credentials.integration_secret_store.get",
-        secret_get,
-    )
-    monkeypatch.setattr(
-        "core.services.credentials.apply_connection.apply_connection",
-        apply_mock,
-    )
-
-    # Non-canonical env key — the registry writes STRIPE_SECRET_KEY, not this.
-    slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_API_KEY": ""}}}}}
-
-    await _fill_buyer_credential_slots("owner_1", slice_)
-
-    apply_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_slot_fill_treats_missing_status_as_connected(monkeypatch):
-    """A legacy row with no explicit status is filled — matching the deploy gate,
-    which also defaults a status-less row to connected. If they diverged, the gate
-    would admit the deploy while this fill skipped it, leaving the slot blank.
-    """
-    row = {"provider": "stripe"}  # no "status" key
-    credential = {"token": "sk_live_buyer"}
-    status_get = AsyncMock(return_value=row)
-    secret_get = AsyncMock(return_value=credential)
-    apply_mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.integrations_repo.get", status_get)
-    monkeypatch.setattr(
-        "core.services.credentials.integration_secret_store.get",
-        secret_get,
-    )
-    monkeypatch.setattr(
-        "core.services.credentials.apply_connection.apply_connection",
-        apply_mock,
-    )
-
-    slice_ = {"mcp": {"servers": {"stripe": {"env": {"STRIPE_SECRET_KEY": ""}}}}}
-
-    await _fill_buyer_credential_slots("owner_1", slice_)
-
-    apply_mock.assert_awaited_once_with("owner_1", "stripe", credential)

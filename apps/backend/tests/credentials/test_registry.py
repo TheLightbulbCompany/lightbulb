@@ -4,17 +4,17 @@ from core.services.credentials import registry
 
 def test_loads_known_providers():
     providers = registry.all_providers()
-    assert "linear" in providers
+    assert "stripe" in providers
     assert "google" in providers
 
 
 def test_paste_key_provider_shape():
-    p = registry.get_provider("linear")
+    p = registry.get_provider("stripe")
     assert p.acquisition == "paste_token"
     assert p.actor == "mcp"
     assert p.refresh_owner == "none"
-    assert p.wiring.openclaw_paths[0].path == "mcp.servers.linear.env.LINEAR_API_KEY"
-    assert p.wiring.openclaw_paths[0].source == "input.token"
+    assert p.wiring.mcp_server.key == "stripe"
+    assert p.wiring.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
 
 
 def test_direct_oauth_provider_shape():
@@ -33,13 +33,10 @@ def test_unknown_provider_raises():
 
 
 def test_validate_key_maps_to_validation_field():
-    p = registry.get_provider("linear")
+    p = registry.get_provider("stripe")
     assert p.validation is not None
-    # Linear's GraphQL endpoint requires POST + a query body — a bare GET rejects
-    # valid personal API keys.
-    assert p.validation.method == "POST"
-    assert p.validation.url == "https://api.linear.app/graphql"
-    assert p.validation.body == {"query": "{ viewer { id } }"}
+    assert p.validation.method == "GET"
+    assert p.validation.url == "https://api.stripe.com/v1/account"
 
 
 def test_stripe_validate_has_no_body():
@@ -49,8 +46,6 @@ def test_stripe_validate_has_no_body():
 
 
 def test_validate_auth_scheme_is_per_provider():
-    # Linear personal API keys are sent as a BARE Authorization header (no "Bearer").
-    assert registry.get_provider("linear").validation.auth_scheme == ""
     # Stripe accepts the default Bearer scheme.
     assert registry.get_provider("stripe").validation.auth_scheme == "Bearer"
 
@@ -81,6 +76,54 @@ def test_direct_oauth_requires_oauth_block():
             refresh_owner="actor",
             wiring=Wiring(materializer="x"),
         )  # no oauth
+
+
+def test_stripe_is_mcp_server_and_linear_is_gone():
+    from core.services.credentials.registry import all_providers, get_provider
+
+    w = get_provider("stripe").wiring
+    assert w.mcp_server is not None and w.mcp_server.key == "stripe"
+    assert w.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
+    assert "linear" not in all_providers()  # Linear removed (D1)
+
+
+def test_mcp_server_wiring_parses():
+    from core.services.credentials.registry import Provider
+
+    p = Provider(
+        key="stripe",
+        display_name="Stripe",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring={
+            "mcp_server": {
+                "key": "stripe",
+                "command": "npx",
+                "args": ["-y", "@stripe/mcp", "--tools=all"],
+                "env": {"STRIPE_SECRET_KEY": "input.token"},
+            }
+        },
+    )
+    assert p.wiring.mcp_server.command == "npx"
+    assert p.wiring.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
+    assert p.wiring.openclaw_paths is None and p.wiring.materializer is None
+
+
+def test_wiring_accepts_exactly_one_of_three():
+    from pydantic import ValidationError
+
+    from core.services.credentials.registry import McpServer, Wiring
+
+    # zero set → reject
+    with pytest.raises(ValidationError):
+        Wiring()
+    # two set → reject (this is the case the OLD 2-way validator could not catch)
+    with pytest.raises(ValidationError):
+        Wiring(
+            materializer="gog_cli",
+            mcp_server=McpServer(key="x", command="npx", args=[], env={"K": "input.token"}),
+        )
 
 
 def test_registry_materializers_and_oauth_are_self_consistent():

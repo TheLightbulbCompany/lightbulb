@@ -35,4 +35,12 @@ async def apply_connection(owner_id: str, provider_key: str, credential: dict[st
         # thread to avoid stalling the event loop.
         await run_in_thread(MATERIALIZERS[w.materializer], owner_id, provider_key, credential)
         return
+    if w.mcp_server:
+        from core.services.credentials.mcp_server import build_mcp_server_block
+
+        block = build_mcp_server_block(provider_key, credential)
+        # Replace the whole server subtree — the integration OWNS mcp.servers.<key>,
+        # so a stale/scrubbed/user value for this key is overwritten.
+        await config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", w.mcp_server.key], block)
+        return
     raise RuntimeError(f"{provider_key}: registry wiring has no deliverable target")

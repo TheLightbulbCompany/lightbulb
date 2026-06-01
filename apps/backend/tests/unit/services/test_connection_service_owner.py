@@ -57,6 +57,32 @@ def test_store_connection_writes_owner_id_org():
     assert item2["ownerId"]["S"] == "user_b"
 
 
+@mock_aws
+def test_ensure_owner_id_stamps_when_absent_and_is_noop_when_present():
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    client.create_table(
+        TableName="ws-conn-test",
+        KeySchema=[{"AttributeName": "connectionId", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "connectionId", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    svc = ConnectionService(table_name="ws-conn-test", region_name="us-east-1")
+
+    # Legacy row: written before ownerId existed (simulate a pre-deploy socket).
+    client.put_item(
+        TableName="ws-conn-test",
+        Item={"connectionId": {"S": "c_legacy"}, "userId": {"S": "u1"}, "orgId": {"S": "org_x"}},
+    )
+    svc.ensure_owner_id("c_legacy", "org_x")
+    item = client.get_item(TableName="ws-conn-test", Key={"connectionId": {"S": "c_legacy"}})["Item"]
+    assert item["ownerId"]["S"] == "org_x"
+
+    # Idempotent: a second call with a different value must NOT clobber.
+    svc.ensure_owner_id("c_legacy", "SHOULD_NOT_OVERWRITE")
+    item2 = client.get_item(TableName="ws-conn-test", Key={"connectionId": {"S": "c_legacy"}})["Item"]
+    assert item2["ownerId"]["S"] == "org_x"
+
+
 @pytest.mark.asyncio
 async def test_query_by_owner_returns_members_and_types(ddb_table_with_owner_gsi):
     """An org's connections come back tagged with member userId + connectionType,

@@ -527,6 +527,12 @@ async def ws_message(
     try:
         pool = get_gateway_pool()
         pool.add_frontend_connection(owner_id, x_connection_id, member_id=user_id)
+        # Self-heal a pre-owner-keyed-fan-out row: if this socket connected
+        # before ownerId was written, stamp it now so it appears in the
+        # by-owner-id GSI. Idempotent + best-effort (no-op once set); avoids a
+        # backfill migration for tabs still open across the introducing deploy.
+        connection_service = await get_connection_service()
+        connection_service.ensure_owner_id(x_connection_id, owner_id)
     except Exception as e:
         logger.warning(
             "Failed to lazy-register frontend connection user=%s conn=%s: %s",

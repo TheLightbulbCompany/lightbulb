@@ -20,6 +20,7 @@ emits per-event-type metrics).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
@@ -29,6 +30,7 @@ from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services import credit_ledger
 from core.services.billing_service import BillingService
+from core.services.user_provision import ensure_user_ready_for
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +165,29 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 "Failed to persist provider_choice for owner %s",
                 account["owner_id"],
             )
+
+    # Event-driven provisioning (Trigger A): once the subscription gate
+    # clears, provision off this event instead of waiting for the user to
+    # sit on /chat for the /container/status poll to win. ensure_user_ready
+    # is gate-first + idempotent, so this no-ops if another gate is still up
+    # (e.g. no provider configured) and dedups against the poll.
+    #
+    # clerk_user_id is threaded into subscription metadata at checkout
+    # (create_flat_fee_checkout). Without it we can't build the owner's
+    # AuthContext identity, so fall back to the poll (legacy subscriptions).
+    status = event_data.get("status", "active")
+    clerk_user_id = metadata.get("clerk_user_id")
+    if status in ("active", "trialing") and clerk_user_id:
+        owner_id = account["owner_id"]
+        is_org = owner_id.startswith("org_")
+        asyncio.create_task(
+            ensure_user_ready_for(
+                user_id=clerk_user_id,
+                org_id=owner_id if is_org else None,
+                org_role="org:admin" if is_org else None,
+            )
+        )
+
     return None
 
 

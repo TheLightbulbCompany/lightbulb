@@ -148,6 +148,29 @@ class TestGatewayConnectionPool:
         pool.remove_frontend_connection("user-1", "conn-abc")
         assert len(pool._frontend_connections.get("user-1", set())) == 0
 
+    def test_add_frontend_connection_invalidates_recipient_cache(self, pool):
+        """Registering a new tab must bust the owning connection's recipient
+        cache so the new tab is picked up on its own first stream instead of
+        waiting behind a stale cached set (Codex L693)."""
+        conn = MagicMock(spec=GatewayConnection)
+        pool._connections["org-1"] = conn
+        pool.add_frontend_connection("org-1", "conn-new", member_id="m1")
+        conn.invalidate_recipients_cache.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_remove_frontend_connection_invalidates_recipient_cache(self, pool):
+        """Removing a tab also busts the cache so it stops receiving promptly.
+        (Async because the no-connections-left branch schedules _grace_close,
+        which needs a running loop.)"""
+        conn = MagicMock(spec=GatewayConnection)
+        pool._connections["org-1"] = conn
+        # Two tabs registered, so removing one does NOT trigger grace teardown.
+        pool.add_frontend_connection("org-1", "conn-a", member_id="m1")
+        pool.add_frontend_connection("org-1", "conn-b", member_id="m1")
+        conn.invalidate_recipients_cache.reset_mock()
+        pool.remove_frontend_connection("org-1", "conn-a")
+        conn.invalidate_recipients_cache.assert_called_once()
+
     @pytest.mark.asyncio
     async def test_send_rpc_creates_connection(self, pool):
         """send_rpc should create a GatewayConnection if none exists."""

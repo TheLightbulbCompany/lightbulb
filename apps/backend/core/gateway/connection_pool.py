@@ -714,6 +714,14 @@ class GatewayConnection:
             self._recipients_cache_ts = 0.0
         return recipients
 
+    def invalidate_recipients_cache(self) -> None:
+        """Drop the cached owner recipient set so the next fan-out re-queries
+        the by-owner-id GSI. Called when a frontend connection is added/removed
+        for this owner, so a newly-opened tab is included in its own first
+        stream instead of waiting up to _RECIPIENTS_TTL_S behind a stale cache."""
+        self._recipients_cache = None
+        self._recipients_cache_ts = 0.0
+
     async def _prune_dead_conn(self, conn_id: str) -> None:
         """Best-effort prune of a dead connection row + recipient-cache bust."""
         try:
@@ -1701,6 +1709,14 @@ class GatewayConnectionPool:
         if member_id:
             self._conn_member_map[connection_id] = member_id
 
+        # Bust the owner's recipient cache so a just-opened tab is picked up on
+        # its own first stream instead of waiting behind a stale cached set for
+        # up to _RECIPIENTS_TTL_S. (The by-owner-id GSI is the source; this only
+        # forces a re-query on the next fan-out for this owner.)
+        conn = self._connections.get(user_id)
+        if conn is not None:
+            conn.invalidate_recipients_cache()
+
         # Cancel grace period if one is running
         grace = self._grace_tasks.pop(user_id, None)
         if grace and not grace.done():
@@ -1712,6 +1728,12 @@ class GatewayConnectionPool:
         if fcs:
             fcs.discard(connection_id)
         self._conn_member_map.pop(connection_id, None)
+
+        # Bust the recipient cache so a removed tab stops receiving events
+        # promptly rather than lingering in a cached set for up to the TTL.
+        conn = self._connections.get(user_id)
+        if conn is not None:
+            conn.invalidate_recipients_cache()
 
         # Start grace period if no frontend connections remain
         if not fcs and user_id in self._connections:

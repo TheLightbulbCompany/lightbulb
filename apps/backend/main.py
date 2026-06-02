@@ -41,6 +41,7 @@ from routers import (
     debug,
     desktop_auth,
     desktop_pair,
+    google_accounts,
     hooks_credentials,
     hooks_proxy,
     integrations,
@@ -657,6 +658,9 @@ app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
 app.include_router(connections.router, prefix="/api/v1", tags=["connections"])
 # Public OAuth callback surface (provider redirects the unauthenticated browser here)
 app.include_router(connections.oauth_router, prefix="/api/v1", tags=["connections"])
+
+# Per-agent Google-account assignment (list accounts + bind/unbind an agent)
+app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accounts"])
 
 # Workspace file browser (EFS agent workspace)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])

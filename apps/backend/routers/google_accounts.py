@@ -70,8 +70,8 @@ async def unassign_agent(agent_id: str, auth: AuthContext = Depends(get_current_
         raise HTTPException(status_code=400, detail="Invalid agent_id")
     owner_id = resolve_owner_id(auth)
     await google_accounts_repo.remove_assignment(owner_id, agent_id)
-    # Re-seed re-resolves the agent: with the explicit binding gone it falls back
-    # to the owner's default account (or None), so the IDENTITY.md block is
-    # rewritten or removed to match.
+    # Re-seed reflects the agent's explicit assignment only: with the binding
+    # gone there is none, so the IDENTITY.md gog-account block is removed and the
+    # agent reverts to bare `gog` (the keyring's account).
     await seed_agent_google_identity(owner_id, agent_id)
     return {"assignments": await google_accounts_repo.list_assignments(owner_id)}

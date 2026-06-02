@@ -54,12 +54,17 @@ def _make_workspace(initial: str | None):
 
 @pytest.fixture
 def patch_resolver(monkeypatch):
-    """Patch resolve_account_for_agent to return a controllable email."""
+    """Patch get_assignment to return a controllable email.
+
+    The seeder reflects ONLY an agent's explicit assignment (no default
+    fallback), so the block is driven by ``get_assignment``: an email seeds
+    the block, None removes it.
+    """
 
     def _set(email):
         monkeypatch.setattr(
             google_identity.google_accounts_repo,
-            "resolve_account_for_agent",
+            "get_assignment",
             AsyncMock(return_value=email),
         )
 
@@ -176,3 +181,70 @@ async def test_missing_identity_without_email_is_noop(patch_resolver):
     await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
 
     ws.write_file.assert_not_called()
+
+
+@pytest.fixture
+def real_repo(monkeypatch):
+    """Run the seeder against the REAL repo backed by an in-memory table.
+
+    Lets us prove the finding-2 flow end-to-end without mocking get_assignment:
+    the seeder reads the actual explicit-assignment row, so unassigning truly
+    drives the block away rather than to a default account.
+    """
+    from core.repositories import google_accounts_repo
+
+    store = {}
+
+    class _T:
+        def put_item(self, Item):
+            store[(Item["owner_id"], Item["provider"])] = Item
+
+        def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None, **kw):
+            item = store.setdefault((Key["owner_id"], Key["provider"]), dict(Key))
+            if "connected_at" not in item:
+                item["connected_at"] = (ExpressionAttributeValues or {})[":now"]
+
+        def get_item(self, Key):
+            it = store.get((Key["owner_id"], Key["provider"]))
+            return {"Item": it} if it else {}
+
+        def delete_item(self, Key):
+            store.pop((Key["owner_id"], Key["provider"]), None)
+
+    monkeypatch.setattr(google_accounts_repo, "_table", lambda: _T())
+    return google_accounts_repo
+
+
+@pytest.mark.asyncio
+async def test_unassign_then_disconnect_leaves_no_stale_block(real_repo):
+    # Finding-2: with B explicitly assigned to the agent, unassigning must
+    # REMOVE the block — not silently rewrite it to the owner's default account
+    # A. So when A is later disconnected, there is nothing stale left behind.
+    repo = real_repo
+    await repo.add_account("org_1", "alice@gmail.com")  # default (oldest) A
+    await repo.add_account("org_1", "bob@gmail.com")  # B
+    await repo.set_assignment("org_1", "agent_x", "bob@gmail.com")
+
+    base = "# IDENTITY.md\n\n- **Name:** Friday\n"
+    ws = _make_workspace(base)
+
+    # Assign B → block names bob.
+    await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
+    assert "bob@gmail.com" in ws._state["content"]
+
+    # Unassign → block removed, NOT rewritten to the default alice.
+    await repo.remove_assignment("org_1", "agent_x")
+    await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
+    after_unassign = ws._state["content"]
+    assert BEGIN_MARKER not in after_unassign
+    assert "alice@gmail.com" not in after_unassign  # never rewritten to default
+    assert "bob@gmail.com" not in after_unassign
+
+    # Disconnect the default A. The agent has no assignment, so re-seeding it
+    # is still a no-op block-wise: there is nothing stale to clean up.
+    await repo.remove_account("org_1", "alice@gmail.com")
+    await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
+    final = ws._state["content"]
+    assert BEGIN_MARKER not in final
+    assert "alice@gmail.com" not in final
+    assert final.startswith(base.rstrip("\n"))

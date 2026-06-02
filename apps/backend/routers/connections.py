@@ -205,9 +205,9 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
         if email == account:
             await google_accounts_repo.remove_assignment(owner_id, agent_id)
             # Re-seed so the agent's IDENTITY.md reflects life after the account:
-            # it re-resolves to the owner's default account, or has its
-            # gog-account block removed if no accounts remain. Best-effort —
-            # a seed failure here must not fail the disconnect, since the
+            # with its explicit assignment now gone, the gog-account block is
+            # removed (the seeder reflects explicit assignments only). Best-effort
+            # — a seed failure here must not fail the disconnect, since the
             # authoritative keyring + inventory removal has already happened.
             await _seed_identity_best_effort(owner_id, agent_id)
 

@@ -1,9 +1,12 @@
 """Seed each agent's Google-account identity into its IDENTITY.md.
 
 An agent that acts on Gmail / Calendar / Drive must do so as a *specific*
-Google account, invoked via ``gog -a <email>``. Which account an agent uses
-is resolved per-agent (explicit assignment, else the owner's default) by
-``google_accounts_repo.resolve_account_for_agent``.
+Google account, invoked via ``gog -a <email>``. The block reflects ONLY the
+agent's EXPLICIT assignment (``google_accounts_repo.get_assignment``) — there
+is no default fallback. An unassigned agent gets no block and uses bare
+``gog`` (the keyring's account). Deriving the block from a default would leave
+a stale ``gog -a <email>`` instruction behind when that default account is
+later disconnected, since an unassigned agent has no row to drive a cleanup.
 
 The instruction lives in IDENTITY.md because OpenClaw auto-loads IDENTITY.md
 into the agent's chat context — so the agent reads "use this account" without
@@ -108,11 +111,11 @@ async def seed_agent_google_identity(
 ) -> None:
     """Seed (or clear) the agent's Google-account instruction in IDENTITY.md.
 
-    Resolves the account via ``resolve_account_for_agent`` and rewrites the
-    managed block:
+    Reads the agent's EXPLICIT assignment via ``get_assignment`` and rewrites
+    the managed block:
 
-    - account present → block holds the ``gog -a <email>`` instruction.
-    - account absent → block removed entirely.
+    - explicit assignment → block holds the ``gog -a <email>`` instruction.
+    - no assignment → block removed entirely (agent uses bare ``gog``).
 
     Idempotent: re-running with the same account produces byte-identical
     content (and skips the write entirely); re-running with a different
@@ -126,7 +129,7 @@ async def seed_agent_google_identity(
     ws = workspace or get_workspace()
     rel_path = f"workspaces/{agent_id}/IDENTITY.md"
 
-    email = await google_accounts_repo.resolve_account_for_agent(owner_id, agent_id)
+    email = await google_accounts_repo.get_assignment(owner_id, agent_id)
 
     try:
         existing = ws.read_file(owner_id, rel_path)

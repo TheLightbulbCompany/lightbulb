@@ -198,31 +198,18 @@ async def test_remove_assignment_deletes_the_right_item(fake_table):
     assert ("org_1", "google#assign#agent_y") in fake_table
 
 
-# ---------------------------------------------------------------------------
-# Resolution
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_get_assignment_returns_the_explicit_email(fake_table):
+    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+
+    assert await google_accounts_repo.get_assignment("org_1", "agent_x") == "alice@gmail.com"
 
 
 @pytest.mark.asyncio
-async def test_resolve_returns_assigned_email_when_assigned(fake_table):
+async def test_get_assignment_returns_none_with_no_default_fallback(fake_table):
+    # An owner with connected accounts but NO explicit assignment for this agent
+    # must get None — get_assignment never falls back to the oldest/default
+    # account. (That fallback is exactly what would leave a stale IDENTITY block.)
     await google_accounts_repo.add_account("org_1", "alice@gmail.com")
-    await google_accounts_repo.add_account("org_1", "bob@gmail.com")
-    await google_accounts_repo.set_assignment("org_1", "agent_x", "bob@gmail.com")
 
-    assert await google_accounts_repo.resolve_account_for_agent("org_1", "agent_x") == "bob@gmail.com"
-
-
-@pytest.mark.asyncio
-async def test_resolve_falls_back_to_oldest_account_when_unassigned(fake_table):
-    await google_accounts_repo.add_account("org_1", "bob@gmail.com")
-    fake_table[("org_1", "google#account#bob@gmail.com")]["connected_at"] = "2026-01-02T00:00:00+00:00"
-    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
-    fake_table[("org_1", "google#account#alice@gmail.com")]["connected_at"] = "2026-01-01T00:00:00+00:00"
-
-    # No assignment for agent_x → default is the oldest (earliest connected_at).
-    assert await google_accounts_repo.resolve_account_for_agent("org_1", "agent_x") == "alice@gmail.com"
-
-
-@pytest.mark.asyncio
-async def test_resolve_returns_none_when_no_accounts(fake_table):
-    assert await google_accounts_repo.resolve_account_for_agent("org_1", "agent_x") is None
+    assert await google_accounts_repo.get_assignment("org_1", "agent_unassigned") is None

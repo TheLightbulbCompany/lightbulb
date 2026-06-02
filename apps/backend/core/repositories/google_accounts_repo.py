@@ -98,6 +98,22 @@ async def set_assignment(owner_id: str, agent_id: str, email: str) -> None:
     )
 
 
+async def get_assignment(owner_id: str, agent_id: str) -> str | None:
+    """The agent's EXPLICITLY assigned Google account, or None.
+
+    No default fallback: an unassigned agent returns None even when the owner
+    has connected accounts. The IDENTITY.md seeder reflects only an explicit
+    assignment, so falling back to a default here would write a block that no
+    longer gets cleaned up when that default account is later disconnected.
+    """
+    response = await run_in_thread(
+        _table().get_item,
+        Key={"owner_id": owner_id, "provider": f"{_ASSIGN_PREFIX}{agent_id}"},
+    )
+    item = response.get("Item")
+    return item["email"] if item else None
+
+
 async def remove_assignment(owner_id: str, agent_id: str) -> None:
     await run_in_thread(
         _table().delete_item,
@@ -116,25 +132,3 @@ async def list_assignments(owner_id: str) -> dict[str, str]:
         for item in response.get("Items", [])
         if item["provider"].startswith(_ASSIGN_PREFIX)
     }
-
-
-# ---------------------------------------------------------------------------
-# Resolution
-# ---------------------------------------------------------------------------
-
-
-async def resolve_account_for_agent(owner_id: str, agent_id: str) -> str | None:
-    """Which Google account an agent should act as.
-
-    Precedence: the agent's explicit assignment, else the owner's default
-    (oldest connected account), else None when the owner has no accounts.
-    """
-    assignments = await list_assignments(owner_id)
-    assigned = assignments.get(agent_id)
-    if assigned is not None:
-        return assigned
-
-    accounts = await list_accounts(owner_id)
-    if accounts:
-        return accounts[0]["email"]
-    return None

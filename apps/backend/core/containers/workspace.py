@@ -127,11 +127,23 @@ class Workspace:
         """Resolve a user-relative path and validate it stays within bounds.
 
         Raises:
-            WorkspaceError: If the resolved path escapes the user directory
-                (path traversal attack).
+            WorkspaceError: If the path is malformed (e.g. contains an
+                embedded null byte) or the resolved path escapes the user
+                directory (path traversal attack).
         """
         user_dir = self.user_path(user_id).resolve()
-        resolved = (user_dir / path).resolve()
+        # A path carrying an embedded null byte makes ``resolve()`` raise a
+        # raw ``ValueError`` (the OS rejects NUL in path components). Callers
+        # only guard against WorkspaceError, so wrap it as one — otherwise an
+        # untrusted path component (e.g. an agent_id from a URL) escapes as an
+        # unhandled 500 instead of a clean rejection.
+        try:
+            resolved = (user_dir / path).resolve()
+        except ValueError:
+            raise WorkspaceError(
+                f"Invalid path: {path!r}",
+                user_id=user_id,
+            )
         try:
             resolved.relative_to(user_dir)
         except ValueError:

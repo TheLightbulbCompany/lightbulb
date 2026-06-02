@@ -285,7 +285,12 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             provider = row.get("provider")
             if not provider:
                 continue
-            await integration_secret_store.delete(owner_id, provider)
+            # `#`-namespaced rows (e.g. google#account#<email>) are actor-refresh
+            # sub-records with no Secrets Manager secret, and the `#` would make
+            # the SM delete raise InvalidParameterException. Drop the DDB row
+            # only; skip the SM call for them.
+            if "#" not in provider:
+                await integration_secret_store.delete(owner_id, provider)
             await integrations_repo.delete(owner_id, provider)
 
     async def _wipe_byo_llm_keys() -> None:

@@ -41,6 +41,11 @@ async def list_accounts(auth: AuthContext = Depends(get_current_user)):
 @router.post("/accounts/{email}/assign")
 async def assign_account(email: str, body: AssignBody, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
+    # The agent_id keys a DDB row and is handed to the IDENTITY.md seeder, so a
+    # traversal-y value would persist a junk row before the workspace guard
+    # rejects it — reject up front, matching the workspace-files convention.
+    if "/" in body.agent_id or "\\" in body.agent_id or ".." in body.agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
     owner_id = resolve_owner_id(auth)
     # An agent may only be bound to an account the owner has actually connected —
     # otherwise the seeded `gog -a <email>` instruction would name a keyring entry
@@ -58,6 +63,11 @@ async def assign_account(email: str, body: AssignBody, auth: AuthContext = Depen
 @router.delete("/accounts/assign/{agent_id}")
 async def unassign_agent(agent_id: str, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
+    # The agent_id keys a DDB row and is handed to the IDENTITY.md seeder, so a
+    # traversal-y value would persist a junk row before the workspace guard
+    # rejects it — reject up front, matching the workspace-files convention.
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
     owner_id = resolve_owner_id(auth)
     await google_accounts_repo.remove_assignment(owner_id, agent_id)
     # Re-seed re-resolves the agent: with the explicit binding gone it falls back

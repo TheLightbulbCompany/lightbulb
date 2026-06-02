@@ -99,6 +99,24 @@ class TestAssignAccount:
     @pytest.mark.asyncio
     @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.google_accounts.google_accounts_repo")
+    async def test_assign_traversal_agent_id_rejected(self, mock_repo, mock_seed, async_client):
+        # A traversal-y agent_id is rejected before any repo write or re-seed, so
+        # no junk `google#assign#...` row is persisted.
+        mock_repo.list_accounts = AsyncMock(return_value=[{"email": "alice@example.com"}])
+        mock_repo.set_assignment = AsyncMock()
+        mock_repo.list_assignments = AsyncMock()
+
+        response = await async_client.post(
+            "/api/v1/google/accounts/alice@example.com/assign",
+            json={"agent_id": "../../etc"},
+        )
+        assert response.status_code == 400
+        mock_repo.set_assignment.assert_not_called()
+        mock_seed.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)
+    @patch("routers.google_accounts.google_accounts_repo")
     async def test_assign_non_admin_member_forbidden(self, mock_repo, mock_seed, async_client_org_member):
         mock_repo.list_accounts = AsyncMock(return_value=[{"email": "alice@example.com"}])
         mock_repo.set_assignment = AsyncMock()
@@ -148,6 +166,21 @@ class TestUnassignAgent:
         # Re-seed re-resolves the agent: it falls back to the owner default (or
         # None), so the IDENTITY.md block is updated/removed accordingly.
         mock_seed.assert_awaited_once_with("user_test_123", "agent_1")
+
+    @pytest.mark.asyncio
+    @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)
+    @patch("routers.google_accounts.google_accounts_repo")
+    async def test_unassign_traversal_agent_id_rejected(self, mock_repo, mock_seed, async_client):
+        # A traversal-y agent_id is rejected before remove_assignment, so the
+        # guard can't be used to churn an unrelated DDB row. A backslash survives
+        # URL path-normalization where forward-slash segments would not.
+        mock_repo.remove_assignment = AsyncMock()
+        mock_repo.list_assignments = AsyncMock()
+
+        response = await async_client.delete("/api/v1/google/accounts/assign/..\\..\\etc")
+        assert response.status_code == 400
+        mock_repo.remove_assignment.assert_not_called()
+        mock_seed.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)

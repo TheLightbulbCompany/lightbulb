@@ -1,7 +1,6 @@
 """Tests for org-aware gateway connection pool."""
 
 import os
-import time
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -132,21 +131,24 @@ async def test_forward_caches_recipients_within_ttl(make_conn):
 
 
 @pytest.mark.asyncio
-async def test_forward_does_not_cache_empty_recipients(make_conn):
-    """An empty query result (e.g. a tab that sent chat before the by-owner-id
-    GSI propagated its $connect row) must NOT be cached — otherwise the new
-    tab's first chunks + done are dropped for the whole TTL. The next event
-    must re-query so it self-heals once the GSI catches up."""
+async def test_forward_caches_recipients_and_busts_on_register(make_conn):
+    """The recipient set (incl. an empty one) is cached for the TTL; a new tab
+    is picked up because $connect/$disconnect bust the cache via
+    invalidate_recipients_cache — not via any freshness cross-check against the
+    in-process set. (GSI lag is moot: fan-out always postdates the $connect that
+    wrote the row by a chat.send round-trip + LLM turn.)"""
     conn = make_conn(owner_id="org_1")
-    # First forward: GSI hasn't indexed the new tab yet → empty.
+    # First forward: GSI returns empty → cached for the TTL (no per-chunk re-query).
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[])
+    await conn._forward_to_frontends({"type": "chunk"})
     await conn._forward_to_frontends({"type": "chunk"})
     assert conn._conn_svc.query_by_owner.call_count == 1
 
-    # GSI now propagated; the very next event must re-query (no stale empty cache)
-    # and deliver to the now-visible connection.
+    # A connect/disconnect busts the cache; the next event re-queries and
+    # delivers to the now-visible connection.
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_chat", "m1", "chat")])
     conn._management_api.send_message = MagicMock(return_value=True)
+    conn.invalidate_recipients_cache()
     await conn._forward_to_frontends({"type": "chunk", "content": "hi"})
     conn._conn_svc.query_by_owner.assert_awaited_once_with("org_1")
     conn._management_api.send_message.assert_called_once()
@@ -167,73 +169,6 @@ async def test_forward_does_not_prune_on_transient_exception(make_conn):
 
 
 @pytest.mark.asyncio
-async def test_forward_does_not_cache_partial_result_missing_local_conn(make_conn):
-    """A non-empty-but-STALE GSI result that omits a locally-registered (just-
-    connected) tab must NOT be cached — otherwise the new tab misses its own
-    first chunks for the TTL. Detected by cross-checking _frontend_connections;
-    the next event must re-query until the GSI includes the new conn."""
-    conn = make_conn(owner_id="org_1")
-    # Tab A is indexed; tab B just lazy-registered locally but isn't in the GSI yet.
-    conn._frontend_connections.add("c_a")
-    conn._frontend_connections.add("c_b_new")
-    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_a", "m1", "chat")])
-    conn._management_api.send_message = MagicMock(return_value=True)
-
-    await conn._forward_to_frontends({"type": "chunk"})
-    # Partial (c_b_new missing) → not cached → next event re-queries.
-    await conn._forward_to_frontends({"type": "chunk"})
-    assert conn._conn_svc.query_by_owner.call_count == 2
-
-    # Once the GSI catches up (both present), it caches and stops re-querying.
-    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_a", "m1", "chat"), ("c_b_new", "m1", "chat")])
-    await conn._forward_to_frontends({"type": "chunk"})
-    await conn._forward_to_frontends({"type": "chunk"})
-    assert conn._conn_svc.query_by_owner.call_count == 1  # cached after first
-
-
-@pytest.mark.asyncio
-async def test_stale_local_id_does_not_block_caching(make_conn):
-    """A local id registered longer ago than the GSI propagation window that is
-    still absent from the GSI is STALE (its $disconnect deleted the row before
-    we unregistered it). It must NOT permanently veto caching — otherwise one
-    missed disconnect pins the owner to a per-chunk DDB query forever (Codex
-    P2). A live tab IS in the GSI, so caching should kick in on the 2nd event."""
-    conn = make_conn(owner_id="org_1")
-    conn._frontend_connections.add("c_live")
-    conn._frontend_connections.add("c_stale")
-    # c_stale registered 100s ago (>> _GSI_PROPAGATION_WINDOW_S) and never made
-    # it into the GSI → treated as stale, ignored by the freshness gate.
-    conn._frontend_conn_registered_at["c_live"] = time.monotonic()
-    conn._frontend_conn_registered_at["c_stale"] = time.monotonic() - 100
-    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_live", "m1", "chat")])
-    conn._management_api.send_message = MagicMock(return_value=True)
-
-    await conn._forward_to_frontends({"type": "chunk"})
-    await conn._forward_to_frontends({"type": "chunk"})
-    # Cached after the first query despite c_stale's absence from the GSI.
-    assert conn._conn_svc.query_by_owner.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_recent_local_id_still_blocks_caching(make_conn):
-    """The freshness gate still protects a genuinely just-registered tab: a
-    local id registered within the propagation window that is absent from the
-    GSI suppresses caching so it isn't dropped from a cached partial set."""
-    conn = make_conn(owner_id="org_1")
-    conn._frontend_connections.add("c_a")
-    conn._frontend_connections.add("c_new")
-    conn._frontend_conn_registered_at["c_a"] = time.monotonic()
-    conn._frontend_conn_registered_at["c_new"] = time.monotonic()  # just now → pending
-    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_a", "m1", "chat")])
-    conn._management_api.send_message = MagicMock(return_value=True)
-
-    await conn._forward_to_frontends({"type": "chunk"})
-    await conn._forward_to_frontends({"type": "chunk"})
-    # c_new is recent + missing from GSI → not cached → re-queries each time.
-    assert conn._conn_svc.query_by_owner.call_count == 2
-
-
-@pytest.mark.asyncio
 async def test_forward_prunes_on_gone_false(make_conn):
     """send_message returns False ONLY for a gone connection (GoneException) —
     prune it."""
@@ -249,8 +184,8 @@ async def test_forward_prunes_on_gone_false(make_conn):
 @pytest.mark.asyncio
 async def test_prune_discards_from_in_process_set(make_conn):
     """Pruning a gone conn must also remove it from the in-process
-    _frontend_connections set (which still backs grace/idle teardown +
-    member broadcast), not just delete the DDB row."""
+    _frontend_connections set (which now backs only grace/idle teardown),
+    not just delete the DDB row."""
     conn = make_conn(owner_id="org_1")
     conn._frontend_connections.add("c_dead")
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_dead", "m1", "chat")])
@@ -278,21 +213,6 @@ async def test_forward_prunes_dead_conn_and_invalidates_cache(make_conn):
     conn._management_api.send_message = MagicMock(return_value=True)
     await conn._forward_to_frontends({"type": "chunk"})
     assert conn._conn_svc.query_by_owner.call_count == 2
-
-
-# ---------------------------------------------------------------------------
-# Registration-time tracking (feeds the stale-vs-pending freshness gate above)
-# ---------------------------------------------------------------------------
-
-
-def test_add_remove_tracks_registration_time():
-    pool = GatewayConnectionPool(management_api=MagicMock())
-    pool.add_frontend_connection("org_1", "c_1", member_id="m1")
-    assert "c_1" in pool._frontend_conn_registered_at
-    # Shared by reference into any GatewayConnection created for this owner.
-    assert pool._frontend_conn_registered_at is not None
-    pool.remove_frontend_connection("org_1", "c_1")
-    assert "c_1" not in pool._frontend_conn_registered_at
 
 
 # ---------------------------------------------------------------------------

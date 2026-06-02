@@ -378,7 +378,6 @@ class TestMessageEndpoint:
         mock_gateway_pool.add_frontend_connection.assert_called_once_with(
             "user_3D8qdjOCXakKFHCsErQHS7q8P9v",
             "ctMiYcLWoAMCLgg=",
-            member_id="user_3D8qdjOCXakKFHCsErQHS7q8P9v",
         )
 
     @pytest.mark.asyncio

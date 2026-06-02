@@ -52,7 +52,6 @@ def make_conn():
     def _make(owner_id="org_1"):
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id=owner_id,
             ip="10.0.0.1",
             token="tok",

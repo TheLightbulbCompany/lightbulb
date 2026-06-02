@@ -21,7 +21,6 @@ class TestIsConnected:
             token="t",
             management_api=MagicMock(),
             frontend_connections=set(),
-            conn_member_map={},
         )
 
     def test_no_ws_returns_false(self):
@@ -231,7 +230,6 @@ class TestHandleMessage:
             token="test-token",
             management_api=mock_management_api,
             frontend_connections=set(),
-            conn_member_map={},
         )
         # Owner-keyed fan-out reads recipients from the by-owner-id GSI. These
         # routing tests are personal (no target member), so a single chat row

@@ -117,7 +117,6 @@ class GatewayConnection:
         token: str,
         management_api: Any,
         frontend_connections: Set[str],
-        conn_member_map: Dict[str, str],
         on_activity: Any = None,
         owner_id: Optional[str] = None,
         conn_svc: Optional[ConnectionService] = None,
@@ -144,12 +143,10 @@ class GatewayConnection:
         self._ws: Any = None
         self._reader_task: Optional[asyncio.Task] = None
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
-        # Shared reference to the pool's canonical set — NOT a copy.
+        # Shared reference to the pool's canonical set — NOT a copy. Backs only
+        # the grace/idle-teardown check now (delivery + per-member demux are
+        # sourced from the by-owner-id GSI, not from in-process state).
         self._frontend_connections = frontend_connections
-        # Shared reference: connection_id → member_user_id. Used to route
-        # streaming events to the specific org member who initiated the chat
-        # instead of broadcasting to all members.
-        self._conn_member_map = conn_member_map
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
         self._billing_tasks: Set[asyncio.Task] = set()
@@ -1505,7 +1502,6 @@ class GatewayConnectionPool:
         self._conn_svc = conn_svc or ConnectionService()
         self._connections: Dict[str, GatewayConnection] = {}
         self._frontend_connections: Dict[str, Set[str]] = {}  # owner_id -> set of conn_ids
-        self._conn_member_map: Dict[str, str] = {}  # connection_id -> member_user_id
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
         # Per-user reconnect attempt timestamps for the `_RECONNECT_FLOOR_S`
@@ -1626,7 +1622,6 @@ class GatewayConnectionPool:
             token=token,
             management_api=self._management_api,
             frontend_connections=self._frontend_connections[user_id],
-            conn_member_map=self._conn_member_map,
             # `user_id` here IS the pool's owner key (org_id or user_id);
             # pass it explicitly as owner_id so the fan-out is unambiguous.
             owner_id=user_id,
@@ -1709,25 +1704,19 @@ class GatewayConnectionPool:
             )
         self._last_reconnect_at[user_id] = now
 
-    def add_frontend_connection(
-        self,
-        user_id: str,
-        connection_id: str,
-        member_id: str | None = None,
-    ) -> None:
-        """Register a frontend WS connection for event forwarding.
+    def add_frontend_connection(self, user_id: str, connection_id: str) -> None:
+        """Register a frontend WS connection so its owner's recipient cache is
+        busted (it's picked up on the next fan-out) and any pending idle-teardown
+        grace period is cancelled.
 
-        *member_id* is the Clerk user_id of the org member who owns this
-        connection. For personal (non-org) users it can be ``None`` — all
-        events broadcast to all connections. For org members it enables
-        per-member event routing so member A only sees their own chat
-        streaming, not member B's.
+        Per-member routing is NOT tracked here: delivery + demux are sourced from
+        the by-owner-id GSI (the row's ``userId`` is the member), so the only
+        in-process role of a registered connection is the grace/idle-teardown
+        signal below.
         """
         if user_id not in self._frontend_connections:
             self._frontend_connections[user_id] = set()
         self._frontend_connections[user_id].add(connection_id)
-        if member_id:
-            self._conn_member_map[connection_id] = member_id
 
         # Bust the owner's recipient cache so a just-opened tab is picked up on
         # its own first stream instead of waiting behind a stale cached set for
@@ -1747,7 +1736,6 @@ class GatewayConnectionPool:
         fcs = self._frontend_connections.get(user_id)
         if fcs:
             fcs.discard(connection_id)
-        self._conn_member_map.pop(connection_id, None)
 
         # Bust the recipient cache so a removed tab stops receiving events
         # promptly rather than lingering in a cached set for up to the TTL.

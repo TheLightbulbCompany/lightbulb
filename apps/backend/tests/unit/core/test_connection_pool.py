@@ -21,7 +21,6 @@ class TestGatewayConnection:
     def connection(self, mock_management_api):
         return GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
@@ -107,7 +106,6 @@ class TestGatewayConnectionOwnerId:
         """Direct constructors (no owner_id) fall back to user_id."""
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user-personal",
             ip="10.0.0.1",
             token="tok",
@@ -154,7 +152,7 @@ class TestGatewayConnectionPool:
         waiting behind a stale cached set (Codex L693)."""
         conn = MagicMock(spec=GatewayConnection)
         pool._connections["org-1"] = conn
-        pool.add_frontend_connection("org-1", "conn-new", member_id="m1")
+        pool.add_frontend_connection("org-1", "conn-new")
         conn.invalidate_recipients_cache.assert_called_once()
 
     @pytest.mark.asyncio
@@ -165,8 +163,8 @@ class TestGatewayConnectionPool:
         conn = MagicMock(spec=GatewayConnection)
         pool._connections["org-1"] = conn
         # Two tabs registered, so removing one does NOT trigger grace teardown.
-        pool.add_frontend_connection("org-1", "conn-a", member_id="m1")
-        pool.add_frontend_connection("org-1", "conn-b", member_id="m1")
+        pool.add_frontend_connection("org-1", "conn-a")
+        pool.add_frontend_connection("org-1", "conn-b")
         conn.invalidate_recipients_cache.reset_mock()
         pool.remove_frontend_connection("org-1", "conn-a")
         conn.invalidate_recipients_cache.assert_called_once()
@@ -292,7 +290,6 @@ class TestGatewayConnectionHandshake:
     def connection(self):
         return GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
@@ -575,7 +572,6 @@ class TestHandleMessageChatEvents:
         mgmt = MagicMock()
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
@@ -702,7 +698,6 @@ class TestReaderLoopCrash:
         """When the reader loop crashes, all pending RPCs are rejected."""
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
@@ -728,7 +723,6 @@ class TestReaderLoopCrash:
         """If the connection was explicitly closed, reader errors are silently ignored."""
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
@@ -758,7 +752,6 @@ class TestStatusChangeEvents:
 
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -785,7 +778,6 @@ class TestStatusChangeEvents:
 
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -805,7 +797,6 @@ class TestStatusChangeEvents:
 
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -823,7 +814,6 @@ class TestStatusChangeEvents:
 
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -848,7 +838,6 @@ class TestChatEventForwarding:
     def connection(self, mock_management_api):
         c = GatewayConnection(
             frontend_connections={"conn-1"},
-            conn_member_map={"conn-1": "user-1"},
             user_id="user-1",
             ip="10.0.0.1",
             token="t",
@@ -949,7 +938,6 @@ class TestActiveRunTracking:
     def connection(self):
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user-active-run",
             ip="10.0.0.1",
             token="tok",
@@ -1092,7 +1080,6 @@ class TestReaderLoopExitBranches:
         def _make():
             return GatewayConnection(
                 frontend_connections=set(),
-                conn_member_map={},
                 user_id="user-exit-branch",
                 ip="10.0.0.1",
                 token="tok",
@@ -1228,7 +1215,6 @@ class TestPoolReconnectFloor:
         pool = GatewayConnectionPool(management_api=MagicMock())
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user-parked",
             ip="10.0.0.1",
             token="tok",
@@ -1253,7 +1239,6 @@ async def test_reopen_failure_rearms_parked_watchdog(monkeypatch):
         token="t",
         management_api=MagicMock(),
         frontend_connections=set(),
-        conn_member_map={},
     )
     conn._parked = True
     conn._active_runs = {"agent:1:m": {"last_event_at": time.monotonic(), "agent_id": "1"}}

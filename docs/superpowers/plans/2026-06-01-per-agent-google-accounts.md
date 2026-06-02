@@ -84,13 +84,16 @@
 - [ ] `GET /google/accounts` → `{accounts: [...], assignments: {agent_id: email}}` (from the repo). `POST /google/accounts/{email}/assign {agent_id}` → `set_assignment` + re-seed that agent's identity file (Task 6). `DELETE …/assign/{agent_id}` → `remove_assignment` + re-seed (back to default). Org-admin gated, owner-scoped (the email must be one of the owner's connected accounts).
 - [ ] Commit — `feat(integrations): per-agent Google account assignment API`.
 
-## Task 6: Identity seeding (the `gog -a <email>` rule)
+## Task 6: Identity seeding — user-action-driven, in IDENTITY.md (NOT at provision)
 
-**Files:** `core/services/friday_identity.py` (+ a shared seeder), `atlas_seed/`, `ecs_manager.write_user_configs`; test.
+**Decision:** the per-agent `gog -a <email>` instruction lives in the agent's **IDENTITY.md** (auto-loaded into the agent's context), in a delimited managed block so it's updateable. Seeding is **driven by the user's assign/disconnect actions — NOT by provisioning.** IDENTITY.md is a workspace file that survives a config-rewrite reprovision, so a seeded agent stays seeded with no provision-time re-seed; unassigned agents need nothing (a single connected account is used by bare `gog`, today's behavior).
 
-- [ ] A `seed_agent_google_identity(owner, agent_id, email)` that writes `workspaces/{agent_id}/GOOGLE.md` (or appends to the agent's SOUL) with: *"Your Google account is `<email>`. For ANY Google action (Gmail/Calendar/Drive) run `gog -a <email> …` — never bare `gog`, never another agent's account."* Use a plain `write_file` (updateable on reassignment), NOT write-if-missing.
-- [ ] Wire it: Friday/Atlas seed call it with `resolve_account_for_agent`; `write_user_configs` re-seeds every agent from `list_assignments` on (re)provision; marketplace hire seeds the hired agent. Test the file content + that reassignment overwrites.
-- [ ] Commit — `feat(credentials): seed each agent's Google account identity`.
+**Files:** create `core/services/google_identity.py` (the seeder); test.
+
+- [ ] `seed_agent_google_identity(owner_id, agent_id)`: `email = google_accounts_repo.resolve_account_for_agent(...)`; maintain a managed block (`<!-- BEGIN gog-account -->` / `<!-- END gog-account -->`) in `workspaces/{agent_id}/IDENTITY.md` — *"## Google account\nYour Google account is `<email>`. For any Gmail/Calendar/Drive action, ALWAYS run `gog -a <email> …` — never bare `gog`, never another agent's account."* If `email is None`, remove the block. Idempotent (replace if present, append if missing); overwrite the file (NOT write-if-missing). If IDENTITY.md doesn't exist yet, skip.
+- [ ] **No `write_user_configs` wiring.** The ONLY callers are the assign API (Task 5) and the disconnect path (Task 4) — when the user sets up / tears down the integration.
+- [ ] Test: append-with-email; reassignment replaces the block (no dup) + leaves surrounding IDENTITY text intact; `None` removes the block; missing IDENTITY.md is a no-op.
+- [ ] Commit — `feat(credentials): seed an agent's Google account into IDENTITY.md on assign`.
 
 ## Task 7 (UI — same PR or follow-up): per-account + assignment UI
 

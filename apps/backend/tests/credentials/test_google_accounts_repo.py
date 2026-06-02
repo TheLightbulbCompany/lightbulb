@@ -30,6 +30,18 @@ def fake_table(monkeypatch):
         def put_item(self, Item):
             store[(Item["owner_id"], Item["provider"])] = Item
 
+        def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None, **kw):
+            # Minimal emulation of the single UpdateExpression the repo issues:
+            # "SET connected_at = if_not_exists(connected_at, :now)". if_not_exists
+            # keeps the stored value when the attr already exists, else writes the
+            # placeholder — exactly DynamoDB's documented semantics. That is what
+            # makes re-adding an account preserve its original connected_at.
+            item = store.setdefault((Key["owner_id"], Key["provider"]), dict(Key))
+            values = ExpressionAttributeValues or {}
+            assert UpdateExpression == "SET connected_at = if_not_exists(connected_at, :now)"
+            if "connected_at" not in item:
+                item["connected_at"] = values[":now"]
+
         def get_item(self, Key):
             it = store.get((Key["owner_id"], Key["provider"]))
             return {"Item": it} if it else {}
@@ -76,6 +88,26 @@ async def test_add_account_is_idempotent_overwrite(fake_table):
     # A second add must not create a second row.
     keys = [k for k in fake_table if k[0] == "org_1"]
     assert keys == [("org_1", "google#account#alice@gmail.com")]
+
+
+@pytest.mark.asyncio
+async def test_readd_account_preserves_original_connected_at(fake_table):
+    # The default account is the OLDEST (smallest connected_at). Re-running the
+    # OAuth callback for an already-connected account must NOT bump its
+    # connected_at — otherwise reauthorizing the first-connected account would
+    # make it newer than later accounts, silently flipping the owner's default.
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    fake_table[("org_1", "google#account#alice@gmail.com")]["connected_at"] = "2026-01-01T00:00:00+00:00"
+    await google_accounts_repo.add_account("org_1", "bob@gmail.com")
+    fake_table[("org_1", "google#account#bob@gmail.com")]["connected_at"] = "2026-01-02T00:00:00+00:00"
+
+    # Re-add alice (reauthorize): her connected_at must stay t1, not jump to now.
+    await google_accounts_repo.add_account("org_1", "alice@gmail.com")
+    assert fake_table[("org_1", "google#account#alice@gmail.com")]["connected_at"] == "2026-01-01T00:00:00+00:00"
+
+    # The oldest-default ordering is therefore stable: alice still leads.
+    accounts = await google_accounts_repo.list_accounts("org_1")
+    assert [a["email"] for a in accounts] == ["alice@gmail.com", "bob@gmail.com"]
 
 
 @pytest.mark.asyncio

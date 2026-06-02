@@ -36,16 +36,20 @@ def _table():
 async def add_account(owner_id: str, email: str) -> None:
     """Record that ``owner_id`` has connected the Google account ``email``.
 
-    Idempotent: re-adding the same email overwrites the existing row rather
-    than creating a duplicate, since the email is part of the SK.
+    Idempotent: re-adding the same email updates the existing row rather than
+    creating a duplicate, since the email is part of the SK.
+
+    ``connected_at`` is set only on first add and PRESERVED on re-add via
+    ``if_not_exists``. The default account is the oldest (smallest
+    ``connected_at``), so bumping the timestamp on a re-authorize would reorder
+    accounts and silently flip the owner's default — keeping the original
+    timestamp makes the oldest-default stable across reconnects.
     """
     await run_in_thread(
-        _table().put_item,
-        Item={
-            "owner_id": owner_id,
-            "provider": f"{_ACCOUNT_PREFIX}{email}",
-            "connected_at": utc_now_iso(),
-        },
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": f"{_ACCOUNT_PREFIX}{email}"},
+        UpdateExpression="SET connected_at = if_not_exists(connected_at, :now)",
+        ExpressionAttributeValues={":now": utc_now_iso()},
     )
 
 

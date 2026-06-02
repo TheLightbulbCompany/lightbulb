@@ -19,6 +19,7 @@ from core.services.credentials import (
     registry,
 )
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
+from core.services.google_identity import seed_agent_google_identity
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,24 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     return {"status": "connected", "provider": provider}
 
 
+async def _seed_identity_best_effort(owner_id: str, agent_id: str) -> None:
+    """Re-seed an agent's IDENTITY.md gog-account block, swallowing failures.
+
+    Called on the disconnect path after an assignment is removed. The keyring +
+    inventory removal is already done and authoritative, so a failure to rewrite
+    the on-disk instruction (e.g. EFS hiccup) must not fail the disconnect — the
+    block is stale at worst and gets corrected on the next assign/disconnect."""
+    try:
+        await seed_agent_google_identity(owner_id, agent_id)
+    except Exception:
+        logger.warning(
+            "failed to re-seed google identity for owner=%s agent=%s after disconnect",
+            owner_id,
+            agent_id,
+            exc_info=True,
+        )
+
+
 async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, account: str) -> None:
     """Disconnect a single Google account: drop its keyring token, its inventory
     row, and any per-agent assignments pointing at it. The provider-level status
@@ -185,8 +204,12 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
     for agent_id, email in assignments.items():
         if email == account:
             await google_accounts_repo.remove_assignment(owner_id, agent_id)
-            # An agent stripped of its account falls back to the owner's default
-            # account at resolve time, so no explicit re-seed write is needed here.
+            # Re-seed so the agent's IDENTITY.md reflects life after the account:
+            # it re-resolves to the owner's default account, or has its
+            # gog-account block removed if no accounts remain. Best-effort —
+            # a seed failure here must not fail the disconnect, since the
+            # authoritative keyring + inventory removal has already happened.
+            await _seed_identity_best_effort(owner_id, agent_id)
 
 
 @router.delete("/{provider}")
@@ -226,6 +249,9 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
             await google_accounts_repo.remove_account(owner_id, acct["email"])
         for agent_id in await google_accounts_repo.list_assignments(owner_id):
             await google_accounts_repo.remove_assignment(owner_id, agent_id)
+            # No accounts remain, so re-seeding removes each agent's gog-account
+            # block. Best-effort: a seed failure must not fail the disconnect.
+            await _seed_identity_best_effort(owner_id, agent_id)
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:
             await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), "")

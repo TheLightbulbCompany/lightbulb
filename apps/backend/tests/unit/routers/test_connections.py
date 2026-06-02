@@ -551,13 +551,14 @@ class TestDisconnect:
         assert response.status_code == 404
 
     @pytest.mark.asyncio
+    @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_all_clears_google_inventory(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, async_client
     ):
         # A provider-level disconnect (no ?account=) must drop the whole keyring
         # AND clear every account + assignment from the owner's inventory.
@@ -584,15 +585,19 @@ class TestDisconnect:
         assert removed == {"a@x.com", "b@x.com"}
         # Every assignment removed.
         mock_accounts.remove_assignment.assert_awaited_once_with("user_test_123", "agent_1")
+        # Each un-assigned agent re-seeded so its IDENTITY.md gog-account block
+        # is removed (the account it named is gone).
+        mock_seed.assert_awaited_once_with("user_test_123", "agent_1")
 
     @pytest.mark.asyncio
+    @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_single_google_account_removes_account_and_assignments(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, async_client
     ):
         # ?account=<email> removes ONLY that account from the keyring + inventory,
         # and drops only the assignments pointing at it — other accounts and the
@@ -617,6 +622,9 @@ class TestDisconnect:
         mock_accounts.remove_account.assert_awaited_once_with("user_test_123", "a@x.com")
         # Only the assignment pointing at a@x.com dropped; agent_2 (b@x.com) kept.
         mock_accounts.remove_assignment.assert_awaited_once_with("user_test_123", "agent_1")
+        # Only the agent stripped of a@x.com is re-seeded (its block is removed);
+        # agent_2, still on b@x.com, is left alone.
+        mock_seed.assert_awaited_once_with("user_test_123", "agent_1")
         # Provider-level status row + secret NOT dropped on a single-account disconnect.
         mock_repo.delete.assert_not_called()
         mock_store.delete.assert_not_called()

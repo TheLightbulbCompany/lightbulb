@@ -76,6 +76,19 @@ any owner, and the loss of any single instance does not cause an outage.
   persistent event log — out of scope.
 - **Cross-region / multi-AZ active-active beyond standard ECS.** Out of scope.
 - **The dead-air `run_active` UX fix (#780).** Separate; ships independently; inherits this work.
+- **First-frame delivery during GSI propagation lag (accepted residual, negligible).**
+  Fan-out resolves recipients from the eventually-consistent `by-owner-id` GSI (GSIs can't be read
+  strongly-consistently). In practice this lag never bites: a connection's row is written by the
+  `$connect` Lambda **before** API Gateway completes the connection, and every fan-out is gated behind
+  a `chat.send` round-trip + LLM turn — so propagation (typically single-digit ms on an on-demand
+  table) has long since completed before any frame is delivered. The cache is also busted on every
+  `$connect`/`$disconnect` for the owner, so a tab that sends a message is picked up immediately. The
+  only theoretical residual is a brand-new tab whose **very first action is a single one-shot frame**
+  within the sub-second window — accepted, ~zero probability, self-heals on the next event. We
+  deliberately do **not** build machinery to close it (no in-process freshness gate, no merge of the
+  local set into delivery): DynamoDB stays the single source of truth, and the gate would add more
+  complexity than the residual is worth (decision 2026-06-01, after the freshness-gate experiment was
+  removed as over-engineering — see §3.1).
 
 ---
 
@@ -125,54 +138,50 @@ any owner, and the loss of any single instance does not cause an outage.
 This is correct hygiene even at N=1 and is the foundation both blocks below rely on. It also covers
 the concurrent-multi-user constraint (see §6).
 
-**Migration safety — don't drop pre-deploy tabs (Codex P2).** Browser WebSockets terminate at API
-Gateway and survive backend rollovers, so when this ships there will be live `ws-connections` rows
-written by the *old* `store_connection` — they have `userId`/`orgId` but **no `ownerId`**, so they
-won't appear in the `by-owner-id` GSI. A passive tab that never sends another `/ws/message` would be
-silently omitted once fan-out switches to `query_by_owner` — even at `desiredCount=1`. Mitigations:
-- **A pre-switch `ownerId` backfill sweep is REQUIRED — even at N=1 (Codex P1).** The in-process
-  union does **not** save us: after a deploy, API Gateway keeps existing browser sockets open but the
-  **new** task never receives `$connect` for them, so they are absent from its fresh
-  `_frontend_connections` set, *and* their DDB rows still lack `ownerId` → `query_by_owner ∪ local`
-  silently omits a **passive pre-deploy tab until it next sends a message**, at any N. So the rollout
-  order is: (1) deploy code that writes `ownerId` on new connects and lazily upserts it on the first
-  `/ws/message` from a legacy row; (2) run a one-time **backfill sweep** stamping `ownerId = orgId or
-  userId` onto all existing `ws-connections` rows (the fields are already present); (3) **only then**
-  switch `_forward_to_frontends` to `query_by_owner`. Until step 2 completes, keep reading the legacy
-  path (in-process set / `by-user-id`). A forced client reconnect is an acceptable alternative to the
-  sweep.
-- **Lazy `ownerId` backfill** (complements the sweep): on the first `/ws/message` from a legacy
-  connection, upsert `ownerId` onto its row (chat-gated), so active tabs self-heal immediately.
+**Migration posture — no backfill, reconnect IS the migration (decision 2026-06-01).** Browser
+WebSockets terminate at API Gateway and survive backend rollovers, so when this ships there can be
+live `ws-connections` rows written by the *old* `store_connection` — they have `userId`/`orgId` but
+**no `ownerId`**, so they won't appear in the `by-owner-id` GSI. An earlier revision of this spec
+called for a one-time `ownerId` backfill sweep plus a lazy `ownerId` self-heal on the first
+`/ws/message`. **We do neither.** The deployed footprint is one prod container and two dev
+containers; a passively-waiting pre-deploy tab simply does not appear in the GSI until its socket
+reconnects (a deploy cycles the backend, and clients reconnect shortly after regardless), at which
+point both the `ws-connect` Lambda and `store_connection` write `ownerId` on the fresh row. That
+bounded, self-correcting gap is acceptable at this scale and keeps the system from carrying
+migration/self-heal machinery it would never need again. Rollout is therefore a plain deploy: every
+new connect is owner-correct from its first frame, and no code path reads a legacy fallback.
 
 ### 3.1 Owner-keyed DynamoDB fan-out
 
 Replace the in-memory recipient set with `query_by_owner(owner_id)` against `ws-connections`, then
 push via the existing global Management API; demux per member with the projected `userId`.
 
-- **Source of truth:** the `ws-connections` table (written on `$connect`/`$disconnect`).
-- **Hot-path cache:** the recipient set for an owner is stable across a streaming run, so cache
-  `query_by_owner` per `owner_id` with a short TTL (~5s), refreshed on `$connect`/`$disconnect`
-  events that the owning task observes. We do **not** query DynamoDB per chunk. The in-memory set
-  becomes this cache (sourced from DynamoDB, not from "connections that happened to land on me").
-- **Cache coherence bound at N>1 (Codex P2 — explicit tradeoff, not "solved").** A `$connect` can
-  land on a non-owner task (per-request LB) while the *owner* holds a ≤5s cached `query_by_owner`
-  that predates the new connection, and the GSI may also still be replicating — so a **brand-new tab
-  that is passively waiting** (not yet sending) can miss outbound events for up to ~the cache TTL.
-  Policy: this **bounded staleness (≤ TTL) is acceptable**; do not claim lazy registration eliminates
-  it. To tighten if ever needed: shorten the TTL, query the GSI once per run-start instead of caching
-  across runs, or add owner-directed invalidation (DDB Stream / pub-sub) — deferred as over-machinery
-  for a ≤5s window on a new tab at N>1.
-- **GSI eventual consistency + lazy registration (gated to chat — Codex P1).** The `by-owner-id` GSI
-  is eventually consistent; a just-connected tab may not appear for <~1s. Mitigation: **keep lazy
-  `add_frontend_connection` on `/ws/message`** so a connection that sends a message is registered in
-  the owner's cache immediately. **This lazy path MUST apply the same `connectionType == "chat"` gate
-  as the GSI filter** — node-host frames also reach `add_frontend_connection` (only operator-relay
-  short-circuits earlier), so without the gate a desktop **node** socket would get registered into the
-  chat fan-out cache and receive `chunk`/`done` via the cache/fallback path, bypassing the DDB filter
-  and reintroducing the bleed-through. A first-event miss on a brand-new *chat* tab self-heals on its
-  next message (subject to the coherence bound above).
-- **Failure fallback (no silent drops):** if `query_by_owner` errors/times out, fall back to the
-  in-process set rather than dropping the event.
+- **Source of truth:** the `ws-connections` table (written on `$connect`/`$disconnect`). The
+  delivery path reads **only** DynamoDB — the in-process connection set is never consulted to decide
+  recipients.
+- **Hot-path cache (plain TTL, no freshness gate).** The recipient set for an owner is stable across
+  a streaming run, so cache `query_by_owner` per `owner_id` with a short TTL (~5s) and **bust the
+  cache on every `$connect`/`$disconnect` for that owner** (`invalidate_recipients_cache` from
+  `add`/`remove_frontend_connection`). We do **not** query DynamoDB per chunk. We deliberately do
+  **not** cross-check the cached set against the in-process set to detect "partial" GSI results — an
+  earlier revision did (a stale-vs-pending freshness gate keyed on per-connection registration
+  timestamps), and it was **removed as over-engineering** (decision 2026-06-01): it guarded a GSI lag
+  that does not bite us, and its own failure mode (a never-unregistered id permanently disabling the
+  cache) was worse than what it prevented. Caching an empty/partial result for ≤TTL is acceptable
+  because the cache is busted on connect and the lag window has closed before any frame ships (below).
+- **Why GSI lag is moot here.** The `by-owner-id` GSI is eventually consistent, but a connection's
+  row is written by the `$connect` Lambda *before* API Gateway completes the connection, and every
+  fan-out is gated behind a `chat.send` round-trip + LLM turn. So by the time any frame is delivered,
+  propagation (single-digit ms on an on-demand table) finished long ago. The lazy
+  `add_frontend_connection` on `/ws/message` only matters for cache invalidation now (not as a
+  delivery source), so it does not need the `connectionType` gate — delivery is filtered to
+  `connectionType == "chat"` at the DDB read regardless of what is in the in-process set.
+- **Failure handling (DynamoDB is the only source):** if `query_by_owner` errors/times out, log and
+  drop the event for that push — there is **no** in-process fallback (per the Non-Goals, DynamoDB is
+  the single source of truth for fan-out). A transient query failure costs at most the current frame;
+  the next event re-queries. (Known residual: a *terminal* `done`/`error` frame has no successor to
+  re-query on, so a blip there can leave the UI streaming — addressed by a client-side watchdog, not
+  by weakening this invariant.)
 - **Stale-entry self-heal (already present):** a Management API push to a dead connection returns
   410/GoneException; discard it (`connection_pool.py:634`) and best-effort delete the row.
 - **Teams broker is NOT migrated.** It keeps its subscription-based `_subscribers` filtering — node
@@ -381,7 +390,8 @@ constraint the system must just work at one instance *or* more):
 - **DynamoDB native-TTL misuse:** explicitly avoided — expiry is conditional-expression-enforced;
   native TTL is GC-only (§3.2).
 - **Fan-out coherence (cross-task `$connect`):** short cache TTL + lazy `/ws/message` registration +
-  GSI eventual consistency handling (§3.1); failure falls back to the in-process set.
+  GSI eventual consistency handling (§3.1); a recipient-query failure logs and drops the current
+  frame (no in-process fallback — DynamoDB is the only source).
 - **Forwarding hop latency:** in-VPC HTTP, low single-digit ms; negligible vs OpenClaw RPC cost.
 - **DDB write hotspots (lease renew):** PK is `owner_id` (well-distributed); renew is a no-op unless
   near expiry; on-demand billing.
@@ -462,6 +472,20 @@ than iterating the design doc further:
 - **Strongly-consistent reads everywhere ownership is decided** (the fence read uses
   `ConsistentRead=True`, §3.2) — carry the same discipline to any acquire/lease-read path the
   implementation adds.
+- **One NON-chat delivery path still reads the in-process set — must move to owner-keyed DDB
+  fan-out before N>1.** Piece 1 migrated the *chat* path (`_forward_to_frontends` → `query_by_owner`)
+  and `GatewayConnectionPool.broadcast_to_member` (the org branch now routes through
+  `_forward_to_frontends(message, target_member_id=…)`, so node-status member pings are owner-keyed
+  too). The remaining holdout is `GatewayConnection._emit_status_change` (GATEWAY_DOWN/health status
+  pushes), which still iterates the per-task `_frontend_connections`. Correct at N=1 (single task
+  holds all of an owner's connections); at N>1 a status push raised on task B would not reach a tab on
+  task A — the exact cross-task gap this design eliminates for chat. It is deferred rather than
+  migrated with the others because it is a **sync** method called from 5 sites (connect / reader-loop
+  exit / reopen), so routing it through the async `_forward_to_frontends` is a sync→async refactor of
+  its callers, and it carries lower-stakes UI status pings tied to Piece 2's single-owner connection
+  (where the lease decides which instance holds the GatewayConnection). Migrate it to `query_by_owner`
+  (chat-filtered) before flipping `desiredCount>1`; the in-process set then reduces to the
+  grace/idle-teardown signal (`_grace_close`) or a DDB count.
 
 (Standing decision, not an open item: **no N>1 guardrail** — declined per the product requirement
 that the system work at one instance *or* more; relay routing is specified in §6.1 so "safe at any N"

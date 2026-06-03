@@ -16,10 +16,18 @@ def conn():
 
     c = GatewayConnection.__new__(GatewayConnection)
     c.user_id = "org_1"
+    c.owner_id = "org_1"
     c._frontend_connections = set()
     c._pending_rpcs = {}
     c._management_api = MagicMock()
     c._billing_tasks = set()
+    # Owner-keyed fan-out state (set by __init__ in real usage; __new__ bypasses
+    # it). These lifecycle/end events don't forward, but _handle_message now
+    # awaits the owner-keyed path, so the service + cache must exist.
+    c._conn_svc = MagicMock()
+    c._conn_svc.query_by_owner = AsyncMock(return_value=[])
+    c._recipients_cache = None
+    c._recipients_cache_ts = 0.0
     # Active-run tracking state (see _on_reader_loop_exit). These are set by
     # __init__ in real usage; tests that use __new__ to bypass init have to
     # populate them by hand.
@@ -49,7 +57,7 @@ async def test_lifecycle_end_for_channel_dm_triggers_billing_with_linked_member(
             AsyncMock(),
         ) as mock_fetch,
     ):
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -85,7 +93,7 @@ async def test_lifecycle_end_for_channel_dm_unlinked_falls_back_to_owner(conn):
             AsyncMock(),
         ) as mock_fetch,
     ):
-        conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
         # Yield to the loop so the task created by _record_usage_from_session runs
         await asyncio.sleep(0)
 
@@ -113,7 +121,7 @@ async def test_lifecycle_end_for_org_webchat_uses_clerk_member(conn):
             AsyncMock(),
         ) as mock_fetch,
     ):
-        conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
         # Yield to the loop so the task created by _record_usage_from_session runs
         await asyncio.sleep(0)
 
@@ -131,7 +139,7 @@ async def test_lifecycle_error_does_not_trigger_billing(conn):
     }
 
     with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
-        conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
         # Yield to the loop so any spurious tasks have a chance to run
         await asyncio.sleep(0)
 
@@ -149,7 +157,7 @@ async def test_group_session_key_bills_under_owner_not_literal_channel(conn):
     }
 
     with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
-        conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
         # Yield to the loop so the task created by _record_usage_from_session runs
         await asyncio.sleep(0)
 
@@ -170,9 +178,9 @@ async def test_chat_final_no_longer_calls_billing(conn):
 
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch,
-        patch.object(conn, "_forward_to_frontends") as mock_forward,
+        patch.object(conn, "_forward_to_frontends", AsyncMock()) as mock_forward,
     ):
-        conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
         # Yield for consistency with the other tests
         await asyncio.sleep(0)
 

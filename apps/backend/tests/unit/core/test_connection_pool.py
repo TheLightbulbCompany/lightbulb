@@ -21,7 +21,6 @@ class TestGatewayConnection:
     def connection(self, mock_management_api):
         return GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
@@ -42,7 +41,7 @@ class TestGatewayConnection:
         """_handle_message with type=res should resolve the matching Future."""
         future = asyncio.get_event_loop().create_future()
         connection._pending_rpcs["req-456"] = future
-        connection._handle_message({"type": "res", "id": "req-456", "ok": True, "payload": {"uptime": 3600}})
+        await connection._handle_message({"type": "res", "id": "req-456", "ok": True, "payload": {"uptime": 3600}})
         result = await asyncio.wait_for(future, timeout=1)
         assert result == {"uptime": 3600}
 
@@ -51,16 +50,21 @@ class TestGatewayConnection:
         """_handle_message with type=res ok=false should reject the Future."""
         future = asyncio.get_event_loop().create_future()
         connection._pending_rpcs["req-789"] = future
-        connection._handle_message({"type": "res", "id": "req-789", "ok": False, "error": {"message": "not found"}})
+        await connection._handle_message(
+            {"type": "res", "id": "req-789", "ok": False, "error": {"message": "not found"}}
+        )
         with pytest.raises(RuntimeError, match="not found"):
             await asyncio.wait_for(future, timeout=1)
 
-    def test_handle_event_forwards_to_frontend(self, connection, mock_management_api):
-        """_handle_message with type=event should forward to all frontend connections."""
-        connection._frontend_connections.add("conn-abc")
-        connection._frontend_connections.add("conn-def")
+    @pytest.mark.asyncio
+    async def test_handle_event_forwards_to_frontend(self, connection, mock_management_api):
+        """_handle_message with type=event fans out to the owner's chat connections
+        sourced from the by-owner-id GSI."""
+        connection._conn_svc.query_by_owner = AsyncMock(
+            return_value=[("conn-abc", None, "chat"), ("conn-def", None, "chat")]
+        )
         # Use sessions.updated — health/tick events are now intentionally dropped.
-        connection._handle_message({"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}})
+        await connection._handle_message({"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}})
         assert mock_management_api.send_message.call_count == 2
 
     def test_shared_frontend_connections(self, connection):
@@ -89,6 +93,47 @@ class TestGatewayConnection:
         assert "req-timeout" not in connection._pending_rpcs
 
 
+class TestGatewayConnectionOwnerId:
+    """GatewayConnection exposes the owner key it is pooled under.
+
+    The pool's `_connections` dict is keyed by owner_id (org_id or user_id)
+    and `_create_connection` passes that key in as `user_id`. The explicit
+    `owner_id` attribute makes that key unambiguous for the owner-keyed
+    DDB fan-out (it calls `query_by_owner(self.owner_id)`).
+    """
+
+    def test_owner_id_defaults_to_user_id(self):
+        """Direct constructors (no owner_id) fall back to user_id."""
+        conn = GatewayConnection(
+            frontend_connections=set(),
+            user_id="user-personal",
+            ip="10.0.0.1",
+            token="tok",
+            management_api=MagicMock(),
+        )
+        assert conn.owner_id == "user-personal"
+
+    @pytest.mark.asyncio
+    async def test_create_connection_sets_owner_id_to_pool_key(self):
+        """The pool creates connections under an owner key (org_id or
+        user_id) and that key is exposed as `owner_id`."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        created = {}
+
+        original_init = GatewayConnection.__init__
+
+        def _capturing_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            created["conn"] = self
+
+        # Skip the real WS connect — we only assert the constructed attribute.
+        with patch.object(GatewayConnection, "connect", new=AsyncMock()):
+            with patch.object(GatewayConnection, "__init__", new=_capturing_init):
+                await pool._create_connection("org_456", "10.0.0.2", "tok")
+
+        assert created["conn"].owner_id == "org_456"
+
+
 class TestGatewayConnectionPool:
     @pytest.fixture
     def pool(self):
@@ -100,6 +145,29 @@ class TestGatewayConnectionPool:
         assert "conn-abc" in pool._frontend_connections["user-1"]
         pool.remove_frontend_connection("user-1", "conn-abc")
         assert len(pool._frontend_connections.get("user-1", set())) == 0
+
+    def test_add_frontend_connection_invalidates_recipient_cache(self, pool):
+        """Registering a new tab must bust the owning connection's recipient
+        cache so the new tab is picked up on its own first stream instead of
+        waiting behind a stale cached set (Codex L693)."""
+        conn = MagicMock(spec=GatewayConnection)
+        pool._connections["org-1"] = conn
+        pool.add_frontend_connection("org-1", "conn-new")
+        conn.invalidate_recipients_cache.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_remove_frontend_connection_invalidates_recipient_cache(self, pool):
+        """Removing a tab also busts the cache so it stops receiving promptly.
+        (Async because the no-connections-left branch schedules _grace_close,
+        which needs a running loop.)"""
+        conn = MagicMock(spec=GatewayConnection)
+        pool._connections["org-1"] = conn
+        # Two tabs registered, so removing one does NOT trigger grace teardown.
+        pool.add_frontend_connection("org-1", "conn-a")
+        pool.add_frontend_connection("org-1", "conn-b")
+        conn.invalidate_recipients_cache.reset_mock()
+        pool.remove_frontend_connection("org-1", "conn-a")
+        conn.invalidate_recipients_cache.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_rpc_creates_connection(self, pool):
@@ -222,7 +290,6 @@ class TestGatewayConnectionHandshake:
     def connection(self):
         return GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
@@ -505,19 +572,20 @@ class TestHandleMessageChatEvents:
         mgmt = MagicMock()
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
             management_api=mgmt,
         )
-        conn._frontend_connections.add("frontend-1")
+        # Owner-keyed fan-out reads recipients from the by-owner-id GSI.
+        conn._conn_svc.query_by_owner = AsyncMock(return_value=[("frontend-1", None, "chat")])
         return conn, mgmt
 
-    def test_chat_final_sends_done(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_final_sends_done(self, connection):
         """chat state=final forwards a done message to frontends."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -527,7 +595,8 @@ class TestHandleMessageChatEvents:
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert {"type": "done", "runId": "run-1"} in calls
 
-    def test_chat_final_emits_text_chunk_then_done(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_final_emits_text_chunk_then_done(self, connection):
         """chat state=final forwards the assistant text as a chunk before the
         done signal. For agent runs the streamed chunks already painted the
         same text (cumulative replace ⇒ visual no-op). For slash commands
@@ -535,7 +604,7 @@ class TestHandleMessageChatEvents:
         response text to the frontend — without it, slash-command replies
         are silently dropped."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -554,10 +623,11 @@ class TestHandleMessageChatEvents:
             {"type": "done", "runId": "run-1"}
         )
 
-    def test_chat_error_sends_error_message(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_error_sends_error_message(self, connection):
         """chat state=error forwards an error type message."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -568,10 +638,11 @@ class TestHandleMessageChatEvents:
         assert any(c.get("type") == "error" for c in calls)
         assert any("timeout" in c.get("message", "") for c in calls)
 
-    def test_chat_aborted_sends_error_message(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_aborted_sends_error_message(self, connection):
         """chat state=aborted forwards a cancellation error."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -581,10 +652,11 @@ class TestHandleMessageChatEvents:
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert any(c.get("type") == "error" for c in calls)
 
-    def test_chat_delta_is_ignored(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_delta_is_ignored(self, connection):
         """chat state=delta is silently ignored (agent events handle streaming)."""
         conn, mgmt = connection
-        conn._handle_message(
+        await conn._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -593,11 +665,12 @@ class TestHandleMessageChatEvents:
         )
         mgmt.send_message.assert_not_called()
 
-    def test_other_events_forwarded_as_is(self, connection):
+    @pytest.mark.asyncio
+    async def test_other_events_forwarded_as_is(self, connection):
         """Non-chat, non-agent events are forwarded unchanged for SWR revalidation."""
         conn, mgmt = connection
         msg = {"type": "event", "event": "sessions.updated", "payload": {}}
-        conn._handle_message(msg)
+        await conn._handle_message(msg)
         mgmt.send_message.assert_called_once_with("frontend-1", msg)
 
 
@@ -625,7 +698,6 @@ class TestReaderLoopCrash:
         """When the reader loop crashes, all pending RPCs are rejected."""
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
@@ -651,7 +723,6 @@ class TestReaderLoopCrash:
         """If the connection was explicitly closed, reader errors are silently ignored."""
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
@@ -681,7 +752,6 @@ class TestStatusChangeEvents:
 
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -708,7 +778,6 @@ class TestStatusChangeEvents:
 
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -728,7 +797,6 @@ class TestStatusChangeEvents:
 
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -746,7 +814,6 @@ class TestStatusChangeEvents:
 
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -771,16 +838,20 @@ class TestChatEventForwarding:
     def connection(self, mock_management_api):
         c = GatewayConnection(
             frontend_connections={"conn-1"},
-            conn_member_map={"conn-1": "user-1"},
             user_id="user-1",
             ip="10.0.0.1",
             token="t",
             management_api=mock_management_api,
         )
+        # Owner-keyed fan-out reads recipients from the by-owner-id GSI. The
+        # session is "agent:main:user-1" → target_member "user-1", so the
+        # chat row must carry that member id to receive the demuxed event.
+        c._conn_svc.query_by_owner = AsyncMock(return_value=[("conn-1", "user-1", "chat")])
         return c
 
-    def test_done_event_carries_run_id(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_done_event_carries_run_id(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -797,8 +868,9 @@ class TestChatEventForwarding:
         assert len(done_msgs) == 1
         assert done_msgs[0]["runId"] == "run-done-1"
 
-    def test_error_event_carries_run_id(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_error_event_carries_run_id(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -817,8 +889,9 @@ class TestChatEventForwarding:
         assert error_msgs[0]["runId"] == "run-err-1"
         assert error_msgs[0]["message"] == "model unavailable"
 
-    def test_aborted_event_carries_run_id(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_aborted_event_carries_run_id(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -835,12 +908,13 @@ class TestChatEventForwarding:
         assert len(error_msgs) == 1
         assert error_msgs[0]["runId"] == "run-abort-1"
 
-    def test_done_without_run_id_raises(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_done_without_run_id_raises(self, connection, mock_management_api):
         """runId is required on chat-terminal events. Missing runId is a
         protocol violation — fail loudly rather than silently forwarding
         without it (frontend multi-bubble routing would break)."""
         with pytest.raises(KeyError):
-            connection._handle_message(
+            await connection._handle_message(
                 {
                     "type": "event",
                     "event": "chat",
@@ -862,14 +936,17 @@ class TestActiveRunTracking:
 
     @pytest.fixture
     def connection(self):
-        return GatewayConnection(
+        conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user-active-run",
             ip="10.0.0.1",
             token="tok",
             management_api=MagicMock(),
         )
+        # _handle_message now awaits owner-keyed fan-out; stub the GSI query so
+        # these active-run-lifecycle assertions don't touch DDB.
+        conn._conn_svc.query_by_owner = AsyncMock(return_value=[])
+        return conn
 
     def test_mark_run_active_records_session(self, connection):
         connection.mark_run_active("agent:main:user-active-run", agent_id="main")
@@ -880,13 +957,13 @@ class TestActiveRunTracking:
         assert run["last_event_at"] == run["started_at"]
         assert connection.has_active_runs is True
 
-    def test_chat_final_clears_active_run(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_final_clears_active_run(self, connection):
         """chat.final on the matching sessionKey clears the active run."""
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
-        connection._frontend_connections.add("conn-1")
 
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -902,12 +979,12 @@ class TestActiveRunTracking:
         assert connection.has_active_runs is False
         assert session_key not in connection._active_runs
 
-    def test_chat_error_clears_active_run(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_error_clears_active_run(self, connection):
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
-        connection._frontend_connections.add("conn-1")
 
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -923,12 +1000,12 @@ class TestActiveRunTracking:
 
         assert connection.has_active_runs is False
 
-    def test_chat_aborted_clears_active_run(self, connection):
+    @pytest.mark.asyncio
+    async def test_chat_aborted_clears_active_run(self, connection):
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
-        connection._frontend_connections.add("conn-1")
 
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -942,7 +1019,8 @@ class TestActiveRunTracking:
 
         assert connection.has_active_runs is False
 
-    def test_touch_run_updates_last_event_at(self, connection):
+    @pytest.mark.asyncio
+    async def test_touch_run_updates_last_event_at(self, connection):
         """Any inbound event tagged with the sessionKey bumps last_event_at —
         signal the deadlock watchdog uses to distinguish a stuck container
         from a slow turn."""
@@ -956,7 +1034,7 @@ class TestActiveRunTracking:
         _t.sleep(0.01)
 
         # Agent stream event for the same session
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -972,9 +1050,10 @@ class TestActiveRunTracking:
         bumped = connection._active_runs[session_key]["last_event_at"]
         assert bumped > original
 
-    def test_touch_run_noop_for_unknown_session(self, connection):
+    @pytest.mark.asyncio
+    async def test_touch_run_noop_for_unknown_session(self, connection):
         """Untracked sessionKeys (cron / channel) must not create entries."""
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -1001,7 +1080,6 @@ class TestReaderLoopExitBranches:
         def _make():
             return GatewayConnection(
                 frontend_connections=set(),
-                conn_member_map={},
                 user_id="user-exit-branch",
                 ip="10.0.0.1",
                 token="tok",
@@ -1137,7 +1215,6 @@ class TestPoolReconnectFloor:
         pool = GatewayConnectionPool(management_api=MagicMock())
         conn = GatewayConnection(
             frontend_connections=set(),
-            conn_member_map={},
             user_id="user-parked",
             ip="10.0.0.1",
             token="tok",
@@ -1162,7 +1239,6 @@ async def test_reopen_failure_rearms_parked_watchdog(monkeypatch):
         token="t",
         management_api=MagicMock(),
         frontend_connections=set(),
-        conn_member_map={},
     )
     conn._parked = True
     conn._active_runs = {"agent:1:m": {"last_event_at": time.monotonic(), "agent_id": "1"}}

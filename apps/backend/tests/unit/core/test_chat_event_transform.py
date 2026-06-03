@@ -5,7 +5,7 @@ Covers _transform_agent_event(), _handle_message routing, and is_connected prope
 """
 
 import pytest
-from unittest.mock import MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 from core.gateway.connection_pool import GatewayConnection
 
@@ -21,7 +21,6 @@ class TestIsConnected:
             token="t",
             management_api=MagicMock(),
             frontend_connections=set(),
-            conn_member_map={},
         )
 
     def test_no_ws_returns_false(self):
@@ -231,15 +230,18 @@ class TestHandleMessage:
             token="test-token",
             management_api=mock_management_api,
             frontend_connections=set(),
-            conn_member_map={},
         )
-        conn._frontend_connections.add("conn-1")
+        # Owner-keyed fan-out reads recipients from the by-owner-id GSI. These
+        # routing tests are personal (no target member), so a single chat row
+        # is the recipient.
+        conn._conn_svc.query_by_owner = AsyncMock(return_value=[("conn-1", None, "chat")])
         return conn
 
     # -- Agent events (unthrottled streaming) --
 
-    def test_agent_assistant_event_forwarded_as_chunk(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_agent_assistant_event_forwarded_as_chunk(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -250,8 +252,9 @@ class TestHandleMessage:
             "conn-1", {"type": "chunk", "content": "Hello", "runId": "run-1"}
         )
 
-    def test_agent_non_assistant_event_skipped(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_agent_non_assistant_event_skipped(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -260,8 +263,9 @@ class TestHandleMessage:
         )
         mock_management_api.send_message.assert_not_called()
 
-    def test_agent_tool_start_forwarded(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_agent_tool_start_forwarded(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -276,8 +280,9 @@ class TestHandleMessage:
             "conn-1", {"type": "tool_start", "tool": "web_search", "toolCallId": "t1", "runId": "run-1"}
         )
 
-    def test_agent_tool_end_forwarded(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_agent_tool_end_forwarded(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -292,9 +297,10 @@ class TestHandleMessage:
             "conn-1", {"type": "tool_end", "tool": "web_search", "toolCallId": "t1", "runId": "run-1"}
         )
 
-    def test_agent_events_tagged_with_agent_id_from_session_key(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_agent_events_tagged_with_agent_id_from_session_key(self, connection, mock_management_api):
         """sessionKey in the payload populates agent_id so the frontend can filter cross-agent messages."""
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",
@@ -310,9 +316,10 @@ class TestHandleMessage:
             "conn-1", {"type": "chunk", "content": "Hello", "agent_id": "my-agent-id", "runId": "run-1"}
         )
 
-    def test_chat_final_tagged_with_agent_id(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_final_tagged_with_agent_id(self, connection, mock_management_api):
         """chat.final chunk + done signals both carry agent_id so the frontend can route them."""
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -331,9 +338,10 @@ class TestHandleMessage:
 
     # -- Chat events (terminal states only) --
 
-    def test_chat_delta_skipped(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_delta_skipped(self, connection, mock_management_api):
         """Chat delta events are ignored — agent events handle streaming."""
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -345,10 +353,11 @@ class TestHandleMessage:
         )
         mock_management_api.send_message.assert_not_called()
 
-    def test_chat_final_sends_chunk_then_done(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_final_sends_chunk_then_done(self, connection, mock_management_api):
         """Final emits the assistant text as a chunk (cumulative replace, no-op for
         agent runs that already streamed it) then the done signal."""
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -367,9 +376,10 @@ class TestHandleMessage:
             call("conn-1", {"type": "done", "runId": "run-1"}),
         ]
 
-    def test_chat_final_with_thinking_sends_thinking_chunk_then_done(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_final_with_thinking_sends_thinking_chunk_then_done(self, connection, mock_management_api):
         """Thinking blocks in the final message are forwarded ahead of the text chunk."""
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -392,8 +402,9 @@ class TestHandleMessage:
             call("conn-1", {"type": "done", "runId": "run-1"}),
         ]
 
-    def test_chat_final_without_text_sends_only_done(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_chat_final_without_text_sends_only_done(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -402,14 +413,15 @@ class TestHandleMessage:
         )
         mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done", "runId": "run-1"})
 
-    def test_chat_final_emits_chunk_for_slash_command_response(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_final_emits_chunk_for_slash_command_response(self, connection, mock_management_api):
         """Slash commands (/help, /whoami, /status, etc.) reply via chat.final
         without any preceding agent stream — the response text lives only in
         message.content. The connection pool must forward that text as a chunk
         so the frontend has something to render. Without this, slash-command
         replies are silently dropped on their way to the browser.
         """
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -436,7 +448,8 @@ class TestHandleMessage:
         )
         assert calls[-1] == call("conn-1", {"type": "done", "agent_id": "agent-1", "runId": "run-cmd"})
 
-    def test_chat_error_carries_upstream_errorMessage(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_error_carries_upstream_errorMessage(self, connection, mock_management_api):
         """Upstream OpenClaw emits `errorMessage` (string) on chat-state-error events.
 
         See src/gateway/protocol/schema/logs-chat.ts ChatEventSchema in the
@@ -445,7 +458,7 @@ class TestHandleMessage:
         upstream message verbatim so the user sees the real failure reason
         instead of a generic "Agent run failed" fallback.
         """
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -465,11 +478,12 @@ class TestHandleMessage:
             },
         )
 
-    def test_chat_error_forwards_errorKind_as_code(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_error_forwards_errorKind_as_code(self, connection, mock_management_api):
         """`errorKind` (refusal | timeout | rate_limit | context_length | unknown)
         is forwarded as `code` so the frontend can render a typed error card.
         """
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -491,11 +505,12 @@ class TestHandleMessage:
             },
         )
 
-    def test_chat_error_legacy_error_dict_fallback(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_error_legacy_error_dict_fallback(self, connection, mock_management_api):
         """Defensive fallback: if some path emits the older `error: {message:...}`
         shape, we still extract the message rather than dropping it.
         """
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -506,8 +521,9 @@ class TestHandleMessage:
             "conn-1", {"type": "error", "message": "Legacy", "runId": "run-1"}
         )
 
-    def test_chat_error_legacy_error_string_fallback(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_chat_error_legacy_error_string_fallback(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -518,10 +534,11 @@ class TestHandleMessage:
             "conn-1", {"type": "error", "message": "Something broke", "runId": "run-1"}
         )
 
-    def test_chat_error_no_message_uses_generic_fallback(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_chat_error_no_message_uses_generic_fallback(self, connection, mock_management_api):
         """If neither field is present we still need to ship *something* so the
         frontend can finalize the bubble — but log it via the generic message."""
-        connection._handle_message(
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -532,8 +549,9 @@ class TestHandleMessage:
             "conn-1", {"type": "error", "message": "Agent run failed", "runId": "run-1"}
         )
 
-    def test_chat_aborted(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_chat_aborted(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -544,8 +562,9 @@ class TestHandleMessage:
             "conn-1", {"type": "error", "message": "Agent run was cancelled", "runId": "run-1"}
         )
 
-    def test_chat_unknown_state_skipped(self, connection, mock_management_api):
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_chat_unknown_state_skipped(self, connection, mock_management_api):
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
@@ -556,22 +575,29 @@ class TestHandleMessage:
 
     # -- Other events (forwarded as-is) --
 
-    def test_non_chat_non_agent_event_forwarded_as_is(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_non_chat_non_agent_event_forwarded_as_is(self, connection, mock_management_api):
         raw_event = {"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}}
-        connection._handle_message(raw_event)
+        await connection._handle_message(raw_event)
         mock_management_api.send_message.assert_called_once_with("conn-1", raw_event)
 
-    def test_health_tick_events_dropped(self, connection, mock_management_api):
+    @pytest.mark.asyncio
+    async def test_health_tick_events_dropped(self, connection, mock_management_api):
         """Health/tick heartbeat events should never reach frontends."""
-        connection._handle_message({"type": "event", "event": "health", "payload": {}})
-        connection._handle_message({"type": "event", "event": "tick", "payload": {}})
+        await connection._handle_message({"type": "event", "event": "health", "payload": {}})
+        await connection._handle_message({"type": "event", "event": "tick", "payload": {}})
         mock_management_api.send_message.assert_not_called()
 
     # -- Multi-connection forwarding --
 
-    def test_events_sent_to_all_frontend_connections(self, connection, mock_management_api):
-        connection._frontend_connections.add("conn-2")
-        connection._handle_message(
+    @pytest.mark.asyncio
+    async def test_events_sent_to_all_frontend_connections(self, connection, mock_management_api):
+        # Owner has two chat connections in the by-owner-id GSI — both receive
+        # the broadcast event.
+        connection._conn_svc.query_by_owner = AsyncMock(
+            return_value=[("conn-1", None, "chat"), ("conn-2", None, "chat")]
+        )
+        await connection._handle_message(
             {
                 "type": "event",
                 "event": "agent",

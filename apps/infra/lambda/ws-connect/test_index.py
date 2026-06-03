@@ -97,3 +97,37 @@ def test_handler_omits_x_client_id_when_no_query_string_at_all():
         event["queryStringParameters"] = None
         index.handler(event, None)
     assert "x-client-id" not in captured["headers_lc"]
+
+
+def _put_item_for(qs=None, **event_kwargs):
+    """Run the handler and return the Item dict written to DynamoDB put_item."""
+    import index
+
+    _, fake_urlopen = _capture_headers()
+    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
+        index.handler(_make_event(qs=qs, **event_kwargs), None)
+    # index.table is fake_dynamo.Table(...) — a MagicMock; inspect its put_item call.
+    item = index.table.put_item.call_args.kwargs["Item"]
+    return item
+
+
+def test_connect_writes_connection_type_node():
+    assert _put_item_for(qs={"clientId": "node-host"})["connectionType"] == "node"
+    assert _put_item_for(qs={"clientId": "openclaw-macos"})["connectionType"] == "node"
+
+
+def test_connect_writes_connection_type_operator():
+    assert _put_item_for(qs={"clientId": "paperclip-operator"})["connectionType"] == "operator"
+
+
+def test_connect_defaults_connection_type_chat():
+    # Browser chat (no clientId) and any unknown clientId both default to "chat".
+    assert _put_item_for(qs={})["connectionType"] == "chat"
+    assert _put_item_for(qs={"clientId": "some-browser"})["connectionType"] == "chat"
+
+
+def test_connect_writes_owner_id_personal_and_org():
+    # personal: ownerId == userId
+    assert _put_item_for(user_id="u_solo", org_id="")["ownerId"] == "u_solo"
+    # org: ownerId == orgId
+    assert _put_item_for(user_id="u_member", org_id="org_z")["ownerId"] == "org_z"

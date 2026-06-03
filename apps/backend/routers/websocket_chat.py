@@ -181,11 +181,11 @@ async def ws_connect(
     if not is_operator_relay:
         try:
             pool = get_gateway_pool()
-            # Pass member_id so the pool can route streaming events to the
-            # specific org member who initiated each chat, not broadcast to
-            # all members. For personal users member_id == owner_id so it's
-            # harmless (the filter matches all connections).
-            pool.add_frontend_connection(owner_id, x_connection_id, member_id=x_user_id)
+            # Registers the connection for the owner's idle-teardown signal and
+            # busts the recipient cache so this tab is picked up on its next
+            # fan-out. Per-member demux is sourced from the by-owner-id GSI's
+            # userId, so no member_id is tracked in-process.
+            pool.add_frontend_connection(owner_id, x_connection_id)
         except Exception as e:
             logger.warning("Failed to register frontend connection with pool: %s", e)
 
@@ -526,7 +526,7 @@ async def ws_message(
     # cheap to call on every message.
     try:
         pool = get_gateway_pool()
-        pool.add_frontend_connection(owner_id, x_connection_id, member_id=user_id)
+        pool.add_frontend_connection(owner_id, x_connection_id)
     except Exception as e:
         logger.warning(
             "Failed to lazy-register frontend connection user=%s conn=%s: %s",

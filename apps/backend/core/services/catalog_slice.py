@@ -26,7 +26,7 @@ _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
 # openclaw.json makes the next strict reload fail and crash-loops the
 # container. Strip on BOTH publish (new slices) and deploy (frozen old
 # artifacts) so neither can carry a now-invalid key into a buyer's config.
-_REMOVED_AGENT_ENTRY_KEYS = frozenset({"embeddedHarness", "embeddedPi", "agentRuntime", "systemPromptOverride"})
+REMOVED_AGENT_ENTRY_KEYS = frozenset({"embeddedHarness", "embeddedPi", "agentRuntime", "systemPromptOverride"})
 
 # Provider plugins are user-config (the buyer picked a provider at signup),
 # not agent-config. Shipping them in the slice would deep-merge over the
@@ -191,7 +191,7 @@ def strip_removed_agent_entry_keys(agent_entry: dict[str, Any]) -> dict[str, Any
     before the upgrade, and that key would brick the buyer on the next reload.
     """
     result = copy.deepcopy(agent_entry)
-    for key in _REMOVED_AGENT_ENTRY_KEYS:
+    for key in REMOVED_AGENT_ENTRY_KEYS:
         result.pop(key, None)
     return result
 

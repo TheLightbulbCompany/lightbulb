@@ -16,19 +16,20 @@ from core.services import update_service
 
 
 @pytest.mark.asyncio
-async def test_migrate_removed_config_keys_strips_embedded_harness():
-    with patch.object(update_service, "delete_openclaw_config_path", new=AsyncMock()) as del_mock:
+async def test_migrate_removed_config_keys_scrubs_defaults_and_entries():
+    with patch.object(update_service, "strip_removed_agent_keys", new=AsyncMock()) as strip_mock:
         await update_service.migrate_removed_config_keys("owner_1")
 
-    del_mock.assert_awaited_once_with("owner_1", ["agents", "defaults", "embeddedHarness"])
-
-
-@pytest.mark.asyncio
-async def test_migrate_removed_config_keys_is_idempotent_on_missing_key():
-    # delete_openclaw_config_path is a no-op when the key is absent; the
-    # migration must never raise on a config already free of the key.
-    with patch.object(update_service, "delete_openclaw_config_path", new=AsyncMock()):
-        await update_service.migrate_removed_config_keys("owner_fresh")  # no raise
+    strip_mock.assert_awaited_once()
+    _args, kwargs = strip_mock.await_args
+    assert kwargs["defaults_keys"] == ("embeddedHarness",)
+    # the AgentEntrySchema removals are scrubbed from agents.list[] entries too
+    assert {
+        "embeddedHarness",
+        "embeddedPi",
+        "agentRuntime",
+        "systemPromptOverride",
+    } <= set(kwargs["entry_keys"])
 
 
 @pytest.mark.asyncio

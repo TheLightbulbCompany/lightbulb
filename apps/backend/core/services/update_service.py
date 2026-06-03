@@ -21,7 +21,8 @@ import time
 
 from core.observability.metrics import put_metric
 from core.repositories import update_repo
-from core.services.config_patcher import delete_openclaw_config_path, patch_openclaw_config
+from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
+from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
 
 logger = logging.getLogger(__name__)
 
@@ -114,21 +115,28 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
 # Keys upstream removed from the strict OpenClaw schema that an older
 # on-disk openclaw.json may still carry. A container rolled to a newer
 # image reuses its existing EFS config, and a removed key the new image's
-# strict schema rejects crash-loops the gateway at boot. Strip them before
-# the roll. Each delete is idempotent — a no-op on a config already free of
-# the key (every fresh provision renders without them).
-_DEPRECATED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (("agents", "defaults", "embeddedHarness"),)
+# strict schema rejects crash-loops the gateway at boot. embeddedHarness was
+# dropped from agents.defaults; the AgentEntrySchema set (embeddedHarness,
+# embeddedPi, agentRuntime, systemPromptOverride) can also persist under
+# existing agents.list[] entries that an older marketplace deploy file-merged
+# verbatim — so both surfaces must be scrubbed before the roll.
+_REMOVED_DEFAULTS_KEYS: tuple[str, ...] = ("embeddedHarness",)
 
 
 async def migrate_removed_config_keys(owner_id: str) -> None:
     """Strip removed-upstream keys from an owner's on-disk openclaw.json.
 
-    Run before rolling a container to a newer image so a key the new
-    image's strict schema no longer accepts cannot crash-loop the gateway.
-    Idempotent and safe to call on any owner.
+    Run before rolling a container to a newer image so a key the new image's
+    strict schema no longer accepts cannot crash-loop the gateway — both the
+    dropped agents.defaults key and any removed AgentEntrySchema key still
+    persisted under an existing agents.list[] entry (e.g. from an older
+    marketplace deploy). Idempotent and safe to call on any owner.
     """
-    for path in _DEPRECATED_CONFIG_PATHS:
-        await delete_openclaw_config_path(owner_id, list(path))
+    await strip_removed_agent_keys(
+        owner_id,
+        defaults_keys=_REMOVED_DEFAULTS_KEYS,
+        entry_keys=REMOVED_AGENT_ENTRY_KEYS,
+    )
 
 
 async def apply_update(owner_id: str, update_id: str) -> bool:

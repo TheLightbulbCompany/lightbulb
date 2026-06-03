@@ -21,7 +21,7 @@ import time
 
 from core.observability.metrics import put_metric
 from core.repositories import update_repo
-from core.services.config_patcher import patch_openclaw_config
+from core.services.config_patcher import delete_openclaw_config_path, patch_openclaw_config
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,26 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
     return count
 
 
+# Keys upstream removed from the strict OpenClaw schema that an older
+# on-disk openclaw.json may still carry. A container rolled to a newer
+# image reuses its existing EFS config, and a removed key the new image's
+# strict schema rejects crash-loops the gateway at boot. Strip them before
+# the roll. Each delete is idempotent — a no-op on a config already free of
+# the key (every fresh provision renders without them).
+_DEPRECATED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (("agents", "defaults", "embeddedHarness"),)
+
+
+async def migrate_removed_config_keys(owner_id: str) -> None:
+    """Strip removed-upstream keys from an owner's on-disk openclaw.json.
+
+    Run before rolling a container to a newer image so a key the new
+    image's strict schema no longer accepts cannot crash-loop the gateway.
+    Idempotent and safe to call on any owner.
+    """
+    for path in _DEPRECATED_CONFIG_PATHS:
+        await delete_openclaw_config_path(owner_id, list(path))
+
+
 async def apply_update(owner_id: str, update_id: str) -> bool:
     """Apply a single pending update.
 
@@ -159,6 +179,13 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
 
         if new_image or new_cpu or new_memory:
             from core.containers import get_ecs_manager
+
+            # An image roll reuses the container's existing on-disk
+            # openclaw.json. Strip keys the new image's strict schema no
+            # longer accepts so the rolled gateway doesn't crash-loop at
+            # boot. No-op on a config already free of them.
+            if new_image:
+                await migrate_removed_config_keys(owner_id)
 
             await get_ecs_manager().resize_user_container(
                 user_id=owner_id,

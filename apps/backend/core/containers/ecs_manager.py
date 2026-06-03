@@ -1903,6 +1903,13 @@ class EcsManager:
                 exc,
             )
 
+        # NOTE: the per-agent Google-account instruction (`gog -a <email>`) is
+        # deliberately NOT seeded here. That managed-block edit to IDENTITY.md
+        # is user-action-driven — the assign API and the disconnect path own
+        # it. IDENTITY.md is a workspace file that survives a config-rewrite
+        # reprovision, so a seeded agent stays seeded with no provision-time
+        # re-seed; an unassigned agent needs nothing.
+
         await self.ensure_device_identities(owner_id, gateway_token)
 
     async def ensure_device_identities(self, user_id: str, gateway_token: str) -> None:

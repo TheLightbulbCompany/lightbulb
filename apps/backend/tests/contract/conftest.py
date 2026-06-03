@@ -47,6 +47,29 @@ def _mock_oauth_external_deps(monkeypatch):
         monkeypatch.setenv("OAUTH_TOKENS_TABLE", "contract-test-oauth-tokens")
         monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
 
+        # The /google/* endpoints read+write the shared ``integrations`` table
+        # (owner_id HASH + provider RANGE) via google_accounts_repo, the same
+        # table integrations_repo uses. Unlike the oauth table — which is
+        # looked up by the OAUTH_TOKENS_TABLE env var verbatim — this table is
+        # resolved through core.dynamodb.get_table("integrations"), which
+        # prepends DYNAMODB_TABLE_PREFIX (default "isol8-dev-"). So moto must
+        # create the table under that fully-prefixed name, not the short one,
+        # or the repo's Query hits a nonexistent table and the endpoint 5xxes.
+        from core.dynamodb import table_name as _table_name
+
+        client.create_table(
+            TableName=_table_name("integrations"),
+            KeySchema=[
+                {"AttributeName": "owner_id", "KeyType": "HASH"},
+                {"AttributeName": "provider", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "owner_id", "AttributeType": "S"},
+                {"AttributeName": "provider", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
         # Pre-seed a pending device-code session for the contract test user
         # so /poll has a row to look up. /start would normally create this
         # row, but schemathesis hits each endpoint independently. Field

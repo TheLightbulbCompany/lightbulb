@@ -24,21 +24,25 @@ def _resolve_source(source: str, credential: dict[str, Any], raw_input: dict[str
     return cur
 
 
-async def apply_connection(owner_id: str, provider_key: str, credential: dict[str, Any]) -> None:
+async def apply_connection(owner_id: str, provider_key: str, credential: dict[str, Any]) -> Any:
     """credential is the resolved token payload ({"token": ...} for paste, or
-    {"access_token","refresh_token",...} for OAuth). Async because config_patcher is async."""
+    {"access_token","refresh_token",...} for OAuth). Async because config_patcher is async.
+
+    Returns whatever the wiring produced as an identity for the connection — the
+    materializer rail surfaces its return (gog_cli returns the connected Google
+    account's email). The config-delivery rails have nothing to surface and
+    return None, which a generic caller can ignore."""
     p = registry.get_provider(provider_key)
     w = p.wiring
     if w.openclaw_paths:
         for op in w.openclaw_paths:
             value = _resolve_source(op.source, credential, credential)
             await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), value)
-        return
+        return None
     if w.materializer:
         # Materializers are sync; gog_cli blocks on subprocess + HTTP, so offload to a
         # thread to avoid stalling the event loop.
-        await run_in_thread(MATERIALIZERS[w.materializer], owner_id, provider_key, credential)
-        return
+        return await run_in_thread(MATERIALIZERS[w.materializer], owner_id, provider_key, credential)
     if w.mcp_server:
         from core.services.credentials.mcp_server import build_mcp_server_block
 
@@ -46,5 +50,5 @@ async def apply_connection(owner_id: str, provider_key: str, credential: dict[st
         # Replace the whole server subtree — the integration OWNS mcp.servers.<key>,
         # so a stale/scrubbed/user value for this key is overwritten.
         await config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", w.mcp_server.key], block)
-        return
+        return None
     raise RuntimeError(f"{provider_key}: registry wiring has no deliverable target")

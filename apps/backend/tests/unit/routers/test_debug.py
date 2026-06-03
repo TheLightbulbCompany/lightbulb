@@ -100,6 +100,73 @@ class TestDeleteUserData:
         mock_user_repo.delete.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
+    @patch("routers.debug.container_repo")
+    @patch("routers.debug.billing_repo")
+    @patch("routers.debug.update_repo")
+    @patch("routers.debug.usage_repo")
+    @patch("routers.debug.channel_link_repo")
+    @patch("routers.debug.user_repo")
+    @patch("routers.debug.connection_service")
+    @patch("routers.debug.get_ecs_manager")
+    @patch("routers.debug.get_workspace")
+    @patch("routers.debug.integration_secret_store")
+    @patch("routers.debug.integrations_repo")
+    async def test_wipe_skips_secret_delete_for_hash_namespaced_rows(
+        self,
+        mock_integrations_repo,
+        mock_secret_store,
+        mock_workspace,
+        mock_ecs_mgr,
+        mock_conn_svc,
+        mock_user_repo,
+        mock_chan_repo,
+        mock_usage_repo,
+        mock_update_repo,
+        mock_billing_repo,
+        mock_container_repo,
+        async_client,
+    ):
+        """`#`-namespaced sub-records (google#account#..., google#assign#...) have
+        no Secrets Manager secret and would 500 the wipe — their DDB row is still
+        deleted, but the SM delete is skipped. A real provider row still hits SM."""
+        mock_integrations_repo.list_for_owner = AsyncMock(
+            return_value=[
+                {"provider": "github"},
+                {"provider": "google#account#alice@example.com"},
+                {"provider": "google#assign#agent_1"},
+            ]
+        )
+        mock_integrations_repo.delete = AsyncMock()
+        mock_secret_store.delete = AsyncMock()
+
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_container_repo.delete = AsyncMock()
+        mock_billing_repo.delete = AsyncMock()
+        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_user_repo.delete = AsyncMock()
+        mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
+
+        ecs_mgr = MagicMock()
+        ecs_mgr.delete_user_service = AsyncMock()
+        mock_ecs_mgr.return_value = ecs_mgr
+        ws = MagicMock()
+        ws.delete_user_dir = MagicMock()
+        mock_workspace.return_value = ws
+
+        with patch("core.services.key_service.KeyService") as key_service_cls:
+            key_service_cls.return_value.delete_key = AsyncMock(return_value=True)
+            res = await async_client.delete("/api/v1/debug/user-data")
+
+        assert res.status_code == 200
+        assert "integrations" in res.json()["deleted"]["ddb"]
+        # SM delete only for the real provider, never for the `#`-namespaced rows.
+        mock_secret_store.delete.assert_awaited_once_with("user_test_123", "github")
+        # Every row's DDB record is still removed.
+        assert mock_integrations_repo.delete.await_count == 3
+
+    @pytest.mark.asyncio
     @patch("routers.debug.settings")
     async def test_endpoint_disabled_in_prod(self, mock_settings, async_client):
         """Endpoint returns 403 when ENVIRONMENT == 'prod' (existing /debug guard)."""

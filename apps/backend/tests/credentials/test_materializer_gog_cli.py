@@ -60,7 +60,9 @@ def test_write_seeds_client_and_token_via_gog(monkeypatch, tmp_path, cred):
     # Force the non-root path so chown is skipped under test.
     monkeypatch.setattr(gog_cli.os, "geteuid", lambda: 1000)
 
-    gog_cli.write("org_1", "google", cred)
+    # write returns the derived account email so the connect path can record it
+    # in the per-owner Google inventory without a second profile fetch.
+    assert gog_cli.write("org_1", "google", cred) == "user@example.com"
 
     # getProfile called with the Bearer access token.
     assert profile_calls == [
@@ -176,14 +178,64 @@ def test_write_propagates_gog_failure(monkeypatch, tmp_path, cred):
         gog_cli.write("org_1", "google", cred)
 
 
-def test_remove_deletes_gogcli_dir(monkeypatch, tmp_path):
+def test_remove_with_email_removes_one_account_and_keeps_keyring(monkeypatch, tmp_path):
+    _patch_efs(monkeypatch, tmp_path)
+    _patch_keyring_password(monkeypatch)
+
+    # A keyring with multiple accounts must survive disconnecting one account.
+    gogcli_dir = Path(tmp_path) / "org_1" / ".config" / "gogcli"
+    gogcli_dir.mkdir(parents=True)
+    (gogcli_dir / "keyring.jwe").write_text("blob")
+
+    runs = []
+
+    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
+        runs.append({"argv": argv, "env": env, "check": check})
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    rmtree_calls = []
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(gog_cli.shutil, "rmtree", lambda *a, **k: rmtree_calls.append((a, k)))
+
+    gog_cli.remove("org_1", "google", {"email": "a@x.com"})
+
+    # Exactly one per-account remove; the email is an argv element, never a shell string.
+    assert len(runs) == 1
+    run = runs[0]
+    assert run["argv"] == ["gog", "auth", "remove", "a@x.com", "--no-input", "--force"]
+    assert run["check"] is True
+
+    # Same env as write: XDG_CONFIG_HOME under owner_efs_root/.config + keyring backend/password.
+    expected_cfg = str(Path(tmp_path) / "org_1" / ".config")
+    assert run["env"]["XDG_CONFIG_HOME"] == expected_cfg
+    assert run["env"]["GOG_KEYRING_BACKEND"] == "file"
+    assert run["env"]["GOG_KEYRING_PASSWORD"] == "kp"
+
+    # The whole keyring is NOT nuked when removing a single account.
+    assert rmtree_calls == []
+
+
+def test_remove_without_email_deletes_gogcli_dir(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
     gogcli_dir = Path(tmp_path) / "org_1" / ".config" / "gogcli"
     gogcli_dir.mkdir(parents=True)
     (gogcli_dir / "keyring.jwe").write_text("blob")
 
+    # No per-account subprocess may run on the disconnect-ALL path.
+    runs = []
+    monkeypatch.setattr(
+        gog_cli.subprocess,
+        "run",
+        lambda *a, **k: runs.append((a, k)),
+    )
+
     gog_cli.remove("org_1", "google", {})
     assert not gogcli_dir.exists()
+    assert runs == []
 
 
 def test_remove_is_idempotent_when_missing(monkeypatch, tmp_path):

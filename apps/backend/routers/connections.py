@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,7 +10,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.repositories import integrations_repo
+from core.repositories import google_accounts_repo, integrations_repo
 from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
@@ -18,6 +19,7 @@ from core.services.credentials import (
     registry,
 )
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
+from core.services.google_identity import seed_agent_google_identity
 
 logger = logging.getLogger(__name__)
 
@@ -160,11 +162,69 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     return {"status": "connected", "provider": provider}
 
 
+async def _seed_identity_best_effort(owner_id: str, agent_id: str) -> None:
+    """Re-seed an agent's IDENTITY.md gog-account block, swallowing failures.
+
+    Called on the disconnect path after an assignment is removed. The keyring +
+    inventory removal is already done and authoritative, so a failure to rewrite
+    the on-disk instruction (e.g. EFS hiccup) must not fail the disconnect — the
+    block is stale at worst and gets corrected on the next assign/disconnect."""
+    try:
+        await seed_agent_google_identity(owner_id, agent_id)
+    except Exception:
+        logger.warning(
+            "failed to re-seed google identity for owner=%s agent=%s after disconnect",
+            owner_id,
+            agent_id,
+            exc_info=True,
+        )
+
+
+async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, account: str) -> None:
+    """Disconnect a single Google account: drop its keyring token, its inventory
+    row, and any per-agent assignments pointing at it. The provider-level status
+    and other accounts are left intact — one provider holds many accounts.
+
+    Idempotent: a repeat disconnect of an already-gone account is a success. We
+    skip the keyring remove when the account isn't in the inventory, and also
+    tolerate the remover's not-found error (gog exits non-zero for an account it
+    can't find) for the case where the keyring drifted from the inventory."""
+    accounts = await google_accounts_repo.list_accounts(owner_id)
+    if any(a["email"] == account for a in accounts):
+        remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer) if p.wiring.materializer else None
+        if remover:
+            try:
+                remover(owner_id, p.key, {"email": account})
+            except subprocess.CalledProcessError:
+                # Account already absent from the keyring — treat as success so a
+                # double-disconnect doesn't surface a 500.
+                pass
+    await google_accounts_repo.remove_account(owner_id, account)
+    assignments = await google_accounts_repo.list_assignments(owner_id)
+    for agent_id, email in assignments.items():
+        if email == account:
+            await google_accounts_repo.remove_assignment(owner_id, agent_id)
+            # Re-seed so the agent's IDENTITY.md reflects life after the account:
+            # with its explicit assignment now gone, the gog-account block is
+            # removed (the seeder reflects explicit assignments only). Best-effort
+            # — a seed failure here must not fail the disconnect, since the
+            # authoritative keyring + inventory removal has already happened.
+            await _seed_identity_best_effort(owner_id, agent_id)
+
+
 @router.delete("/{provider}")
-async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user)):
+async def disconnect(provider: str, account: str | None = None, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
+    # ?account= scopes the disconnect to one Google account. It is Google-specific
+    # (one provider, many accounts), so reject it on any other provider rather
+    # than silently honoring it.
+    if account is not None:
+        if provider != "google":
+            raise HTTPException(status_code=400, detail="the account parameter is only supported for google")
+        await _disconnect_one_google_account(owner_id, p, account)
+        return {"status": "disconnected", "provider": provider, "account": account}
     # Materializer-backed providers wrote credential files onto EFS; remove
     # those first so disconnect leaves no on-disk residue. The remover deletes
     # the artifact by owner/provider and does not need the secret value.
@@ -181,6 +241,17 @@ async def disconnect(provider: str, auth: AuthContext = Depends(get_current_user
     # one) and the status row, then blank any per-agent openclaw.json slots.
     await integration_secret_store.delete(owner_id, provider)
     await integrations_repo.delete(owner_id, provider)
+    # Google holds a per-account inventory alongside the provider status row;
+    # a provider-level disconnect must clear every account + assignment so no
+    # stale record outlives the dropped keyring.
+    if provider == "google":
+        for acct in await google_accounts_repo.list_accounts(owner_id):
+            await google_accounts_repo.remove_account(owner_id, acct["email"])
+        for agent_id in await google_accounts_repo.list_assignments(owner_id):
+            await google_accounts_repo.remove_assignment(owner_id, agent_id)
+            # No accounts remain, so re-seeding removes each agent's gog-account
+            # block. Best-effort: a seed failure must not fail the disconnect.
+            await _seed_identity_best_effort(owner_id, agent_id)
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:
             await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), "")
@@ -232,11 +303,17 @@ async def oauth_callback(provider: str, code: str, state: str):
     if _retains_secret(p):
         await integration_secret_store.put(owner_id, prov, credential)
     try:
-        await apply_connection.apply_connection(owner_id, prov, credential)
+        connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
     except Exception:
         _remove_materialized_artifacts(owner_id, p, credential)
         if _retains_secret(p):
             await integration_secret_store.delete(owner_id, prov)
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
     await integrations_repo.put_status(owner_id, prov, "connected")
+    # Google supports multiple accounts under one provider-level "connected"
+    # status: each connect adds a distinct account to the owner's inventory so an
+    # agent can later be bound to a specific one. The account identity is the
+    # email that apply_connection surfaced from the gog keyring seed.
+    if prov == "google" and connection_identity:
+        await google_accounts_repo.add_account(owner_id, connection_identity)
     return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?connected={prov}")

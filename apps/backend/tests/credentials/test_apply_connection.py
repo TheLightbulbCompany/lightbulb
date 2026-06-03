@@ -54,6 +54,38 @@ async def test_apply_materializer_dispatch_via_thread(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_apply_returns_materializer_value(monkeypatch):
+    # The materializer rail surfaces its return value (gog_cli returns the connected
+    # account's email) so the Google connect path can record it without re-fetching.
+    from core.services.credentials import apply_connection as ac
+
+    def _fake_mat(owner, provider, cred):
+        return "user@example.com"
+
+    async def _fake_run_in_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setitem(ac.MATERIALIZERS, "gog_cli", _fake_mat)
+    monkeypatch.setattr(ac, "run_in_thread", _fake_run_in_thread)
+    result = await ac.apply_connection("org_1", "google", {"access_token": "a", "refresh_token": "r"})
+    assert result == "user@example.com"
+
+
+@pytest.mark.asyncio
+async def test_apply_non_materializer_returns_none(monkeypatch):
+    # The other rails deliver into config and have nothing to surface — their
+    # return stays None so the generic caller can ignore it.
+    from core.services.credentials import apply_connection as ac
+
+    async def _set(owner, path, value):
+        return None
+
+    monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", _set)
+    result = await ac.apply_connection("org_1", "stripe", {"token": "sk_live_X"})
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_apply_mcp_server_writes_full_block(monkeypatch):
     # stripe's mcp_server wiring installs the full {command, args, env} server
     # block at mcp.servers.stripe in one write — the integration OWNS that key.

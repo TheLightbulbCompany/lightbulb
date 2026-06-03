@@ -456,12 +456,13 @@ class TestDisconnect:
         )
 
     @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_materializer_provider_removes_materialized_creds(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, async_client
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
     ):
         # google is a materializer-backed (gog_cli) actor-refresh provider. It
         # never stored a Secrets Manager credential, so get() returns None and
@@ -472,6 +473,11 @@ class TestDisconnect:
         mock_store.get = AsyncMock(return_value=None)
         remover = mock_removers.get.return_value
         mock_patcher.set_openclaw_config_path = AsyncMock()
+        # Empty inventory keeps the focus on the materializer-cleanup assertions.
+        mock_accounts.list_accounts = AsyncMock(return_value=[])
+        mock_accounts.list_assignments = AsyncMock(return_value={})
+        mock_accounts.remove_account = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/google")
         assert response.status_code == 200
@@ -487,12 +493,13 @@ class TestDisconnect:
         mock_patcher.set_openclaw_config_path.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_materializer_passes_retained_secret_to_remover(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, async_client
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
     ):
         # Regression guard: some removers locate the on-disk artifact by a
         # credential field (e.g. toml_cli uses credential["cli"]). disconnect must
@@ -506,6 +513,10 @@ class TestDisconnect:
         mock_store.get = AsyncMock(return_value=retained)
         remover = mock_removers.get.return_value
         mock_patcher.set_openclaw_config_path = AsyncMock()
+        mock_accounts.list_accounts = AsyncMock(return_value=[])
+        mock_accounts.list_assignments = AsyncMock(return_value={})
+        mock_accounts.remove_account = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/google")
         assert response.status_code == 200
@@ -538,6 +549,149 @@ class TestDisconnect:
     async def test_disconnect_unknown_provider_returns_404(self, async_client):
         response = await async_client.delete("/api/v1/connections/does-not-exist")
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_all_clears_google_inventory(
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, async_client
+    ):
+        # A provider-level disconnect (no ?account=) must drop the whole keyring
+        # AND clear every account + assignment from the owner's inventory.
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_store.get = AsyncMock(return_value=None)
+        mock_patcher.set_openclaw_config_path = AsyncMock()
+        remover = mock_removers.get.return_value
+        mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}, {"email": "b@x.com"}])
+        mock_accounts.list_assignments = AsyncMock(return_value={"agent_1": "a@x.com"})
+        mock_accounts.remove_account = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google")
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "google"}
+
+        # Whole-keyring remove: remover called with empty credential (no email).
+        remover.assert_called_once_with("user_test_123", "google", {})
+        # Provider-level status row + secret dropped.
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
+        # Every inventory account removed.
+        removed = {c.args[1] for c in mock_accounts.remove_account.await_args_list}
+        assert removed == {"a@x.com", "b@x.com"}
+        # Every assignment removed.
+        mock_accounts.remove_assignment.assert_awaited_once_with("user_test_123", "agent_1")
+        # Each un-assigned agent re-seeded so its IDENTITY.md gog-account block
+        # is removed (the account it named is gone).
+        mock_seed.assert_awaited_once_with("user_test_123", "agent_1")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_single_google_account_removes_account_and_assignments(
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, async_client
+    ):
+        # ?account=<email> removes ONLY that account from the keyring + inventory,
+        # and drops only the assignments pointing at it — other accounts and the
+        # provider-level status row are untouched.
+        mock_store.get = AsyncMock(return_value=None)
+        remover = mock_removers.get.return_value
+        mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}, {"email": "b@x.com"}])
+        mock_accounts.list_assignments = AsyncMock(return_value={"agent_1": "a@x.com", "agent_2": "b@x.com"})
+        mock_accounts.remove_account = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock()
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_patcher.set_openclaw_config_path = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
+
+        # Per-account remove: remover called with the single email.
+        remover.assert_called_once_with("user_test_123", "google", {"email": "a@x.com"})
+        # Only that account removed from inventory.
+        mock_accounts.remove_account.assert_awaited_once_with("user_test_123", "a@x.com")
+        # Only the assignment pointing at a@x.com dropped; agent_2 (b@x.com) kept.
+        mock_accounts.remove_assignment.assert_awaited_once_with("user_test_123", "agent_1")
+        # Only the agent stripped of a@x.com is re-seeded (its block is removed);
+        # agent_2, still on b@x.com, is left alone.
+        mock_seed.assert_awaited_once_with("user_test_123", "agent_1")
+        # Provider-level status row + secret NOT dropped on a single-account disconnect.
+        mock_repo.delete.assert_not_called()
+        mock_store.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_single_google_account_is_idempotent_when_absent(
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
+    ):
+        # A repeat disconnect of an already-gone account must succeed, not 500 —
+        # the account isn't in the inventory, so the keyring remove is skipped.
+        mock_store.get = AsyncMock(return_value=None)
+        remover = mock_removers.get.return_value
+        mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "b@x.com"}])
+        mock_accounts.list_assignments = AsyncMock(return_value={})
+        mock_accounts.remove_account = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
+
+        # Account absent -> no keyring remove attempted.
+        remover.assert_not_called()
+        # remove_account is still issued (a delete of an absent row is itself a no-op).
+        mock_accounts.remove_account.assert_awaited_once_with("user_test_123", "a@x.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_single_google_account_tolerates_remover_not_found(
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
+    ):
+        # If the keyring remove races (gog exits 1 for an account it can't find),
+        # the CalledProcessError is treated as already-gone success, not a 500.
+        import subprocess
+
+        mock_store.get = AsyncMock(return_value=None)
+        remover = mock_removers.get.return_value
+        remover.side_effect = subprocess.CalledProcessError(1, ["gog", "auth", "remove"])
+        mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}])
+        mock_accounts.list_assignments = AsyncMock(return_value={})
+        mock_accounts.remove_account = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
+        # Despite the remover error, the inventory row is still cleaned up.
+        mock_accounts.remove_account.assert_awaited_once_with("user_test_123", "a@x.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    async def test_disconnect_account_param_ignored_for_non_google_provider(self, mock_accounts, async_client):
+        # The ?account= param is Google-specific; it must be rejected (not silently
+        # honored) on a non-google provider so the inventory is never touched.
+        mock_accounts.remove_account = AsyncMock()
+        response = await async_client.delete("/api/v1/connections/stripe?account=a@x.com")
+        assert response.status_code == 400
+        mock_accounts.remove_account.assert_not_called()
 
 
 class TestAuthorize:
@@ -576,19 +730,21 @@ class TestOAuthCallback:
     """GET /api/v1/oauth/{provider}/callback — PUBLIC; identity from state record."""
 
     @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
     async def test_callback_happy_path_persists_and_redirects(
-        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
     ):
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
         mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_repo.put_status = AsyncMock()
-        mock_apply.apply_connection = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value="user@example.com")
+        mock_accounts.add_account = AsyncMock()
 
         response = await async_client.get(
             "/api/v1/oauth/google/callback?code=abc&state=st1",
@@ -649,6 +805,106 @@ class TestOAuthCallback:
         mock_store.delete.assert_not_called()
         # No status row on the failure path.
         mock_repo.put_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_google_callback_records_connected_account(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
+    ):
+        # A successful Google connect must record the connected account's email in
+        # the per-owner inventory, on top of the provider-level "connected" status.
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_repo.put_status = AsyncMock()
+        # apply_connection surfaces the connected account email (gog_cli rail).
+        mock_apply.apply_connection = AsyncMock(return_value="alice@example.com")
+        mock_accounts.add_account = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "/settings/connections?connected=google" in response.headers["location"]
+
+        # Provider-level status row still written.
+        mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected")
+        # The connected account is added to the owner's inventory.
+        mock_accounts.add_account.assert_awaited_once_with("org_1", "alice@example.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_two_google_callbacks_record_two_accounts(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
+    ):
+        # Connecting two different Google accounts yields two inventory records —
+        # the keyring holds both, so the inventory must too.
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_repo.put_status = AsyncMock()
+        mock_accounts.add_account = AsyncMock()
+
+        mock_apply.apply_connection = AsyncMock(return_value="alice@example.com")
+        await async_client.get("/api/v1/oauth/google/callback?code=a1&state=s1", follow_redirects=False)
+        mock_apply.apply_connection = AsyncMock(return_value="bob@example.com")
+        await async_client.get("/api/v1/oauth/google/callback?code=a2&state=s2", follow_redirects=False)
+
+        emails = [c.args[1] for c in mock_accounts.add_account.await_args_list]
+        assert emails == ["alice@example.com", "bob@example.com"]
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_non_google_callback_does_not_touch_account_inventory(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client, monkeypatch
+    ):
+        # The Google inventory is provider-specific — a different OAuth provider's
+        # callback must not record any Google account. Uses a synthetic OAuth,
+        # backend-custodian provider so the generic path runs unchanged.
+        from routers import connections
+        from core.services.credentials.registry import OAuthSpec, Provider, Wiring
+
+        synthetic = Provider(
+            key="acme",
+            display_name="Acme",
+            acquisition="direct_oauth",
+            actor="mcp",
+            refresh_owner="none",
+            oauth=OAuthSpec(
+                authorization_url="https://acme.test/authorize",
+                token_url="https://acme.test/token",
+                scopes=["read"],
+            ),
+            wiring=Wiring(mcp_server={"key": "acme", "command": "npx", "env": {"TOKEN": "credentials.access_token"}}),
+        )
+        monkeypatch.setattr(connections.registry, "get_provider", lambda key: synthetic)
+
+        cred = {"access_token": "a", "refresh_token": "r"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "acme", cred))
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value=None)
+        mock_accounts.add_account = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/acme/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        # Generic flow unchanged: status written, Google inventory untouched.
+        mock_repo.put_status.assert_awaited_once_with("org_1", "acme", "connected")
+        mock_accounts.add_account.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")

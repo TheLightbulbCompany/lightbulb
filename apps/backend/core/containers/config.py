@@ -628,10 +628,8 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
-                # embeddedHarness / contextLimits are genuine no-op stubs
-                # (their schemas don't change behavior when empty); kept as
-                # explicit defaults, safe to delete in a later cleanup.
-                "embeddedHarness": {},
+                # contextLimits is a no-op stub (its schema doesn't change
+                # behavior when empty); kept as an explicit default.
                 "contextLimits": {},
                 # heartbeat is NOT a no-op: upstream treats a present
                 # `agents.defaults.heartbeat` as truthy and falls back to a

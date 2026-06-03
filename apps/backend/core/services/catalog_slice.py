@@ -20,6 +20,14 @@ from typing import Any
 
 _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
 
+# Top-level agent-entry keys that upstream removed from the strict
+# AgentEntrySchema. A seller's pre-upgrade config (and any already-published
+# immutable artifact) may still carry one; deep-merging it into a buyer's
+# openclaw.json makes the next strict reload fail and crash-loops the
+# container. Strip on BOTH publish (new slices) and deploy (frozen old
+# artifacts) so neither can carry a now-invalid key into a buyer's config.
+_REMOVED_AGENT_ENTRY_KEYS = frozenset({"embeddedHarness", "embeddedPi", "agentRuntime", "systemPromptOverride"})
+
 # Provider plugins are user-config (the buyer picked a provider at signup),
 # not agent-config. Shipping them in the slice would deep-merge over the
 # buyer's provider setup and silently switch them off the path they chose
@@ -175,6 +183,19 @@ def strip_user_specific_fields(agent_entry: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def strip_removed_agent_entry_keys(agent_entry: dict[str, Any]) -> dict[str, Any]:
+    """Drop top-level keys upstream removed from the strict AgentEntrySchema.
+
+    Applied at deploy as well as publish: published artifacts are immutable,
+    so an older slice already in S3 still carries whatever key the seller had
+    before the upgrade, and that key would brick the buyer on the next reload.
+    """
+    result = copy.deepcopy(agent_entry)
+    for key in _REMOVED_AGENT_ENTRY_KEYS:
+        result.pop(key, None)
+    return result
+
+
 def _agents_list(openclaw_json: dict[str, Any]) -> list[Any]:
     """Return the agent-entry array from an openclaw.json.
 
@@ -283,7 +304,7 @@ def extract_agent_slice(
     agent_entry = matching[0]
 
     slice_: dict[str, Any] = {
-        "agent": strip_user_specific_fields(agent_entry),
+        "agent": strip_removed_agent_entry_keys(strip_user_specific_fields(agent_entry)),
         "plugins": _strip_provider_plugins(openclaw_json.get("plugins") or {}),
         "tools": copy.deepcopy(openclaw_json.get("tools") or {}),
     }

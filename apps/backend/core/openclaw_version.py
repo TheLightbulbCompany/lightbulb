@@ -32,7 +32,7 @@ from pathlib import Path
 # reintroduces OpenClaw's auto-restore/"config from the future" warning. Keep it
 # roughly current on upstream bumps; it is a safety floor, not a drift-checked
 # mirror, so exact lockstep is not required.
-_FALLBACK_UPSTREAM_VERSION = "2026.5.12"
+_FALLBACK_UPSTREAM_VERSION = "2026.5.28"
 
 
 @lru_cache(maxsize=1)

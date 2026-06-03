@@ -22,10 +22,10 @@ set -euo pipefail
 # Pin matches the dev container's openclaw image upstream tag
 # (openclaw-version.json). Keeping desktop ↔ container in sync avoids
 # the protocol-version (PR #660/#662) and dist-chunk drift bugs.
-# openclaw@2026.5.12 requires Node >=22.16.0 per its package.json
+# openclaw@2026.5.28 requires Node >=22.19.0 per its package.json
 # engines field; Node 22 is the current LTS line.
-NODE_VERSION="22.16.0"
-OPENCLAW_VERSION="2026.5.12"
+NODE_VERSION="22.19.0"
+OPENCLAW_VERSION="2026.5.28"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"

@@ -223,6 +223,28 @@ RUN set -eux; \
     done; \
     chown -R root:root /app/dist/extensions/slack /app/dist/extensions/discord
 
+# ---- Layer 11: externalized Amazon Bedrock provider plugin ----
+# Upstream externalized the Bedrock provider out of the core image at this
+# version: the gateway logs "plugin not installed: amazon-bedrock" and every
+# Bedrock-backed run fails with "No API provider registered for api:
+# bedrock-converse-stream". The runtime `openclaw plugins install` path is
+# blocked here (the per-user EFS mount forces uid 1000, which the loader
+# rejects), so bake it root-owned into the stock plugin root. The npm package
+# is `@openclaw/amazon-bedrock-provider`; the plugin id (and the discovery dir
+# the loader keys on) is `amazon-bedrock`. anthropic/openai providers stay
+# bundled in the base image, so only Bedrock needs baking. Pin in lockstep with
+# the FROM tag / openclaw-version.json#upstream.
+RUN set -eux; \
+    mkdir -p /opt/stage-amazon-bedrock; \
+    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.5.28"; \
+    mkdir -p /app/dist/extensions/amazon-bedrock; \
+    cp -R /opt/stage-amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider/. /app/dist/extensions/amazon-bedrock/; \
+    mkdir -p /app/dist/extensions/amazon-bedrock/node_modules; \
+    cp -R /opt/stage-amazon-bedrock/node_modules/. /app/dist/extensions/amazon-bedrock/node_modules/; \
+    rm -rf /app/dist/extensions/amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider; \
+    rm -rf /opt/stage-amazon-bedrock; \
+    chown -R root:root /app/dist/extensions/amazon-bedrock
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node

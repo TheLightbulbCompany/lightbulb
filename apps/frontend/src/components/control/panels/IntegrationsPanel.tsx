@@ -3,6 +3,8 @@
 import { useOrganization } from "@clerk/nextjs";
 
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
+import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
+import { useConnections } from "@/hooks/useConnections";
 
 /**
  * Control-dashboard home for third-party integrations. This re-homes the
@@ -24,6 +26,15 @@ export function IntegrationsPanel() {
   // This is a UX hint only — the connect/disconnect endpoints enforce the
   // same rule server-side (403), which ConnectButton surfaces inline.
   const canManage = !membership || membership.role === "org:admin";
+
+  // The Google multi-account surface only makes sense once Google is
+  // connected. We read the same shared /connections cache ConnectionsList
+  // uses (no extra request) to decide whether to render it. The provider
+  // list is server-driven, so this is a no-op until a `google` row exists.
+  const { connections } = useConnections();
+  const googleConnected = connections.some(
+    (c) => c.provider === "google" && c.status === "connected",
+  );
 
   return (
     <div className="bg-[#faf7f2] min-h-full">
@@ -49,6 +60,8 @@ export function IntegrationsPanel() {
         )}
 
         <ConnectionsList canManage={canManage} />
+
+        {googleConnected && <GoogleAccountsSection canManage={canManage} />}
       </div>
     </div>
   );

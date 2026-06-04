@@ -86,3 +86,32 @@ def test_load_pinned_no_crash_for_shallow_image_path(monkeypatch, tmp_path):
     # With no JSON found and no env var, upstream_version still yields the
     # non-empty hardcoded fallback.
     assert openclaw_version.upstream_version() == openclaw_version._FALLBACK_UPSTREAM_VERSION
+
+
+def test_deployed_upstream_version_uses_dev_tag_prefix(monkeypatch):
+    """meta.lastTouchedVersion tracks the DEPLOYED image: in dev it's the
+    <upstream> prefix of dev.tag, NOT the build-target `tag` (which can run
+    ahead during the bump → promotion window)."""
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("OPENCLAW_UPSTREAM_VERSION", "2026.5.28")
+    monkeypatch.setenv("OPENCLAW_DEV_TAG", "2026.5.12-0654e00")
+    monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.5.12-0654e00")
+    assert openclaw_version.deployed_upstream_version() == "2026.5.12"
+
+
+def test_deployed_upstream_version_uses_prod_tag_in_prod(monkeypatch):
+    """In prod, derive from prod.tag — independent of a more-advanced dev.tag
+    during a staggered promotion."""
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    monkeypatch.setenv("OPENCLAW_UPSTREAM_VERSION", "2026.5.28")
+    monkeypatch.setenv("OPENCLAW_DEV_TAG", "2026.5.28-devsha")
+    monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.5.12-prodsha")
+    assert openclaw_version.deployed_upstream_version() == "2026.5.12"
+
+
+def test_deployed_upstream_version_falls_back_to_tag_when_no_deployed_tag(monkeypatch):
+    """With no deployed dev/prod tag resolvable, fall back to the build-target
+    upstream version rather than empty (empty reintroduces the warning)."""
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setattr(openclaw_version, "_load_pinned", lambda: {"tag": "2026.5.28"})
+    assert openclaw_version.deployed_upstream_version() == "2026.5.28"

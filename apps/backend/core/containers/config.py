@@ -20,15 +20,17 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Pinned upstream OpenClaw version, resolved from the single source of truth
-# (openclaw-version.json#tag) via core.openclaw_version — the CDK-injected env
-# var in deployed containers, the repo JSON in local dev / CI. Used as the
-# `meta.lastTouchedVersion` value openclaw expects in our generated config
-# (defeats `missing-meta-vs-last-good` auto-restore in
-# src/config/io.observe-recovery.ts:425). Must match what openclaw itself
-# self-writes (io.ts:879 uses `VERSION` from package.json). No hand-sync;
-# bump openclaw-version.json only.
-OPENCLAW_UPSTREAM_VERSION = openclaw_version.upstream_version()
+# OpenClaw version of the extended image actually DEPLOYED to this environment,
+# resolved from openclaw-version.json#dev.tag / #prod.tag via
+# core.openclaw_version (CDK-injected env var in deployed containers, repo JSON
+# in local dev / CI). Used as the `meta.lastTouchedVersion` value openclaw
+# expects in our generated config: defeats `missing-meta-vs-last-good`
+# auto-restore (src/config/io.observe-recovery.ts:425) and must match what
+# openclaw itself self-writes (io.ts:879 uses `VERSION` from package.json), or
+# warnIfConfigFromFuture (io.ts:885) fires. Deliberately the DEPLOYED image's
+# version, NOT the build-target `tag` — `tag` can be bumped ahead of a per-env
+# promotion, and a provision in that window must not stamp a future version.
+DEPLOYED_UPSTREAM_VERSION = openclaw_version.deployed_upstream_version()
 
 
 # =============================================================================
@@ -558,7 +560,7 @@ def build_openclaw_config_dict(
         # silently restoring from .bak and clobbering whatever we wrote.
         # Use the real upstream version so warnIfConfigFromFuture
         # (io.ts:885) parses it as semver and short-circuits cleanly.
-        "meta": {"lastTouchedVersion": OPENCLAW_UPSTREAM_VERSION},
+        "meta": {"lastTouchedVersion": DEPLOYED_UPSTREAM_VERSION},
         "gateway": {
             "mode": "local",
             "bind": "lan",

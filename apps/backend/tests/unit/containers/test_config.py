@@ -7,7 +7,7 @@ import pytest
 
 
 from core.containers.config import (
-    OPENCLAW_UPSTREAM_VERSION,
+    DEPLOYED_UPSTREAM_VERSION,
     build_openclaw_config_dict,
     write_openclaw_config,
     merge_openclaw_config,
@@ -60,7 +60,7 @@ class TestOpenclawConfigShape:
         strings work for hasConfigMeta but trigger spurious "from future"
         warnings in warnIfConfigFromFuture (io.ts:885)."""
         config = _cfg()
-        assert config["meta"]["lastTouchedVersion"] == OPENCLAW_UPSTREAM_VERSION
+        assert config["meta"]["lastTouchedVersion"] == DEPLOYED_UPSTREAM_VERSION
 
     def test_agents_defaults_memory_search_pinned_to_bedrock(self):
         # Embedding provider must be pinned to bedrock — the upstream

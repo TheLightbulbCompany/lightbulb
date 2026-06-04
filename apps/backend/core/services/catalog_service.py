@@ -38,6 +38,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from core.services.catalog_slice import strip_removed_agent_entry_keys
 from core.services.credentials.mcp_server import reconcile_integrations
 
 logger = logging.getLogger(__name__)
@@ -301,7 +302,7 @@ class CatalogService:
             # Build the agent entry locally so we know the new id + workspace
             # path. Deep-copy the slice's agent dict so we don't mutate the
             # caller's state (matters if s3 returns a cached/shared dict).
-            agent_entry = copy.deepcopy(slice_.get("agent") or {})
+            agent_entry = strip_removed_agent_entry_keys(slice_.get("agent") or {})
             agent_entry["id"] = new_agent_id
             agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
 
@@ -373,8 +374,10 @@ class CatalogService:
             # Also file-merge the full agent_entry into agents.list so the
             # per-agent fields OpenClaw's narrow agents.update RPC schema
             # can't accept (``skills`` binding, ``reasoningDefault``,
-            # ``agentRuntime``, ``embeddedHarness``, ``tts``, etc.) land
-            # in the buyer's openclaw.json. Chokidar (CHOKIDAR_USEPOLLING
+            # ``tts``, etc.) land in the buyer's openclaw.json. Keys
+            # upstream dropped from the strict AgentEntrySchema are stripped
+            # at the deepcopy above so an older immutable artifact can't
+            # write a now-invalid key. Chokidar (CHOKIDAR_USEPOLLING
             # on EFS, 1-30s) reloads and the in-memory agent picks them
             # up. Display-level fields (``name``, ``identity``) were
             # already set instantly via the RPC pair above, so the

@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import tempfile
+from collections.abc import Iterable
 from typing import Any, Callable
 
 from core.config import settings
@@ -563,6 +564,48 @@ async def delete_openclaw_config_path(
         return True
 
     await _locked_rmw(owner_id, _mutate, f"delete path={path}")
+
+
+async def strip_removed_agent_keys(
+    owner_id: str,
+    *,
+    defaults_keys: Iterable[str],
+    entry_keys: Iterable[str],
+) -> None:
+    """Remove deprecated keys from ``agents.defaults`` and every
+    ``agents.list[]`` entry in the owner's openclaw.json.
+
+    For migrating an existing on-disk config before a container is rolled to
+    a newer image whose strict schema rejects keys an older image (or an
+    older marketplace deploy) wrote. Idempotent — a no-op when none of the
+    keys are present. Only top-level entry keys are stripped; nested
+    structures (e.g. ``models[*].agentRuntime``) are left intact.
+    """
+    defaults_set = frozenset(defaults_keys)
+    entry_set = frozenset(entry_keys)
+
+    def _mutate(current: dict) -> bool:
+        agents = current.get("agents")
+        if not isinstance(agents, dict):
+            return False
+        changed = False
+        defaults = agents.get("defaults")
+        if isinstance(defaults, dict):
+            for key in defaults_set:
+                if key in defaults:
+                    del defaults[key]
+                    changed = True
+        entries = agents.get("list")
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict):
+                    for key in entry_set:
+                        if key in entry:
+                            del entry[key]
+                            changed = True
+        return changed
+
+    await _locked_rmw(owner_id, _mutate, "strip removed agent keys")
 
 
 async def set_openclaw_config_path(

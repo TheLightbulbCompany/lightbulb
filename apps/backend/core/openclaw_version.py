@@ -32,7 +32,7 @@ from pathlib import Path
 # reintroduces OpenClaw's auto-restore/"config from the future" warning. Keep it
 # roughly current on upstream bumps; it is a safety floor, not a drift-checked
 # mirror, so exact lockstep is not required.
-_FALLBACK_UPSTREAM_VERSION = "2026.5.12"
+_FALLBACK_UPSTREAM_VERSION = "2026.5.28"
 
 
 @lru_cache(maxsize=1)
@@ -86,3 +86,21 @@ def prod_tag() -> str:
         return env
     prod = _load_pinned().get("prod")
     return prod.get("tag", "") if isinstance(prod, dict) else ""
+
+
+def deployed_upstream_version() -> str:
+    """Upstream OpenClaw version of the extended image actually DEPLOYED to
+    this environment — the value for ``meta.lastTouchedVersion``.
+
+    The per-env extended tag is ``<upstream>-<shortsha>`` (e.g.
+    ``2026.5.12-0654e00``); we take the ``<upstream>`` prefix so the stamped
+    meta tracks the container the gateway is actually running, not the
+    build-target ``tag`` — which can be bumped ahead of a per-env promotion
+    (a provision in that window would otherwise stamp a "from the future"
+    version that trips OpenClaw's warnIfConfigFromFuture). Falls back to
+    :func:`upstream_version` when the deployed tag is unset (non-CDK / local).
+    """
+    env = (os.getenv("ENVIRONMENT") or "").lower()
+    deployed = prod_tag() if env.startswith("prod") else dev_tag()
+    prefix = deployed.split("-", 1)[0] if deployed else ""
+    return prefix or upstream_version()

@@ -18,6 +18,7 @@ from core.services.config_patcher import (  # noqa: E402
     remove_from_openclaw_config_list,
     replace_provider_block,
     set_openclaw_config_path,
+    strip_removed_agent_keys,
 )
 
 
@@ -1236,3 +1237,57 @@ async def test_apply_paperclip_meta_clears_field_when_value_is_empty_string(tmp_
     assert "title" not in pc
     assert "capabilities" not in pc
     assert "icon" not in pc
+
+
+@pytest.mark.asyncio
+async def test_strip_removed_agent_keys_scrubs_defaults_and_list_entries():
+    """Pre-roll migration: removed-upstream keys are stripped from
+    agents.defaults AND every agents.list[] entry (the latter can carry them
+    from an older marketplace deploy); valid keys are preserved, nested
+    structures are untouched, and a second pass is a no-op."""
+    removed = ("embeddedHarness", "embeddedPi", "agentRuntime", "systemPromptOverride")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "owner_1")
+        os.makedirs(user_dir)
+        config = {
+            "agents": {
+                "defaults": {
+                    "model": {"primary": "amazon-bedrock/x"},
+                    "embeddedHarness": {},
+                    "contextLimits": {},
+                },
+                "list": [
+                    {
+                        "id": "agent_a",
+                        "skills": ["search"],
+                        "embeddedHarness": {},
+                        "agentRuntime": {"maxTurns": 50},
+                        "systemPromptOverride": "be terse",
+                        "models": {"x": {"agentRuntime": {"maxTurns": 9}}},
+                    }
+                ],
+            }
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await strip_removed_agent_keys("owner_1", defaults_keys=("embeddedHarness",), entry_keys=removed)
+            # second pass is a no-op (idempotent)
+            await strip_removed_agent_keys("owner_1", defaults_keys=("embeddedHarness",), entry_keys=removed)
+
+        with open(os.path.join(user_dir, "openclaw.json")) as f:
+            result = json.load(f)
+
+    defaults = result["agents"]["defaults"]
+    assert "embeddedHarness" not in defaults
+    assert defaults["model"] == {"primary": "amazon-bedrock/x"}
+    assert defaults["contextLimits"] == {}
+
+    entry = result["agents"]["list"][0]
+    assert "embeddedHarness" not in entry
+    assert "agentRuntime" not in entry
+    assert "systemPromptOverride" not in entry
+    assert entry["skills"] == ["search"]
+    # nested models[*].agentRuntime is not a top-level entry key — left intact
+    assert entry["models"]["x"]["agentRuntime"] == {"maxTurns": 9}

@@ -143,18 +143,23 @@ async def test_deploy_pair_extras_limited_to_agents_update_schema():
 
 @pytest.mark.asyncio
 async def test_deploy_file_merges_full_agent_entry_into_agents_list():
-    """The fields the RPC can't carry (skills binding, reasoningDefault,
-    agentRuntime, embeddedHarness, tts, etc.) must land via the
-    file-merge path so chokidar (1-30s) reloads them onto the buyer's
-    in-memory agent. Without this, the seller's per-agent runtime
-    config is lost on every deploy.
+    """The valid per-agent fields the RPC can't carry (skills binding,
+    reasoningDefault, identity, tts, etc.) must land via the file-merge
+    path so chokidar (1-30s) reloads them onto the buyer's in-memory
+    agent. Keys upstream removed from the strict AgentEntrySchema
+    (embeddedHarness, agentRuntime, systemPromptOverride) must instead be
+    STRIPPED at deploy so an older immutable artifact can't write a
+    now-invalid key into the buyer's openclaw.json and crash-loop it.
     """
     svc, _ws, apply_aux, _pair, _gw = _make_service()
 
     slice_ = _slice_with_agent()
     slice_["agent"]["identity"] = {"name": "Demo", "emoji": "🍃"}
     slice_["agent"]["reasoningDefault"] = "high"
+    # Removed-upstream keys a seller's pre-upgrade config may still carry.
     slice_["agent"]["agentRuntime"] = {"maxTurns": 50}
+    slice_["agent"]["systemPromptOverride"] = "be terse"
+    slice_["agent"]["embeddedHarness"] = {}
 
     await svc.deploy_from_artifact(
         owner_id="user_buyer",
@@ -176,8 +181,11 @@ async def test_deploy_file_merges_full_agent_entry_into_agents_list():
     assert entry["workspace"] == ".openclaw/workspaces/agent_new"
     assert entry["skills"] == ["search"]
     assert entry["reasoningDefault"] == "high"
-    assert entry["agentRuntime"] == {"maxTurns": 50}
     assert entry["identity"] == {"name": "Demo", "emoji": "🍃"}
+    # Removed-upstream keys must NOT survive into the buyer's config.
+    assert "agentRuntime" not in entry
+    assert "systemPromptOverride" not in entry
+    assert "embeddedHarness" not in entry
 
 
 @pytest.mark.asyncio

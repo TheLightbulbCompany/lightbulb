@@ -78,7 +78,7 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/openclaw/openclaw:2026.5.12
+FROM ghcr.io/openclaw/openclaw:2026.5.28
 
 USER root
 
@@ -156,8 +156,8 @@ RUN npm i -g --ignore-scripts \
       @xdevplatform/xurl
 
 # ---- Layer 9: Playwright Chromium + Chromium system libs + /usr/bin symlink ----
-# Upstream openclaw:2026.5.12 ships the playwright npm package (at
-# /app/node_modules/playwright-core, v1.59.1) but NOT the Chromium binary
+# Upstream openclaw:2026.5.28 ships the playwright npm package (at
+# /app/node_modules/playwright-core, v1.60.0) but NOT the Chromium binary
 # and NOT the GUI libs Chromium needs to launch. The chromium install is
 # gated behind upstream Dockerfile's `OPENCLAW_INSTALL_BROWSER` build arg,
 # which is empty by default; the published image is built without it.
@@ -213,7 +213,7 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
 RUN set -eux; \
     for P in slack discord; do \
       mkdir -p "/opt/stage-$P"; \
-      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.5.12"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.5.28"; \
       mkdir -p "/app/dist/extensions/$P"; \
       cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
       mkdir -p "/app/dist/extensions/$P/node_modules"; \

@@ -163,10 +163,16 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("openclaw container symlinks the npx + uv caches onto the EFS-backed mount", () => {
+  test("openclaw keeps the npm download cache on EFS but redirects the npx + uv extract storms to local /tmp", () => {
     // MCP servers spawn as npx/uvx children that inherit only HOME (not the
-    // container env), so the cache must be relocated by symlinking the
-    // default $HOME-relative paths onto EFS, not via NPM_CONFIG_CACHE.
+    // container env), so caches are relocated by symlinking the default
+    // $HOME-relative paths. The per-run EXTRACT (npx `_npx`, uv cache) is a
+    // metadata-heavy small-file unpack; on the EFS/NFS mount it stalls in
+    // D-state and overruns the MCP connect timeout, so it must land on local
+    // ephemeral /tmp. npm splits (keep `_cacache` on EFS so restarts don't
+    // re-download, redirect only `_npx` → /tmp); uv cannot split (a cache
+    // spread across filesystems hits a cross-device rename) so its whole
+    // cache goes to /tmp.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "isol8-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
@@ -176,10 +182,51 @@ describe("ContainerStack — dev", () => {
             "sh",
             "-c",
             Match.stringLikeRegexp(
+              // npm cache root stays on EFS (persists the `_cacache` tarballs)…
               ".*ln -sfn /home/node/\\.openclaw/\\.cache/npm /home/node/\\.npm.*" +
-                "ln -sfn /home/node/\\.openclaw/\\.cache/uv /home/node/\\.cache/uv.*",
+                // …but the npx extract dir is redirected to local /tmp…
+                "ln -sfn /tmp/openclaw-npx /home/node/\\.openclaw/\\.cache/npm/_npx.*" +
+                // …and the whole uv cache goes to local /tmp.
+                "ln -sfn /tmp/openclaw-uv /home/node/\\.cache/uv.*",
             ),
           ],
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw migrates a legacy real `_npx` dir aside with `mv`, never a boot-path `rm -rf`", () => {
+    // A legacy `_npx` on EFS can be tens of thousands of files; an `rm -rf` of
+    // it on the gateway-boot path is a synchronous NFS unlink storm that could
+    // overrun the health-check start period. The migration must `mv` it aside
+    // (an O(1) same-filesystem rename), exactly like the chromium/npm guards.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: Match.arrayWith([
+            Match.stringLikeRegexp(
+              "mv /home/node/\\.openclaw/\\.cache/npm/_npx /home/node/\\.openclaw/\\.cache/npm/_npx\\.efs-archive-",
+            ),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw startup never `rm -rf`s the `_npx` extract dir on the boot path", () => {
+    // Standalone guard so a future refactor can't swap the `mv`-aside
+    // migration for a recursive delete and silently re-introduce the
+    // boot-path NFS unlink storm.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: Match.not(
+            Match.arrayWith([Match.stringLikeRegexp("rm -rf[^;]*_npx")]),
+          ),
         }),
       ]),
     });

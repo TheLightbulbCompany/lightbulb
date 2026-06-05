@@ -591,14 +591,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // yet, so we drop side events here (the primary run is unaffected). This
       // MUST run before the resume-adoption transfer below so a side runId is
       // never mistaken for the primary run's post-approval continuation.
-      // Clean up the id on the side run's terminal so the set stays bounded.
-      // ("runId" in msg narrows away heartbeat/update_available, which carry no runId.)
+      // Clean up the id ONLY on `run_ended` — the side run's terminal sequence
+      // is the done/error frame FOLLOWED BY a synthesized run_ended (backend
+      // forwards both, run_ended last). Deleting on the first terminal (done)
+      // would let the trailing run_ended fall through to the normal path, where
+      // — with no primary run active — it could be adopted and drain the queue
+      // even though only a detached side note ended. run_ended is the last
+      // event for the run, so keeping the id until then drops the whole
+      // sequence. (If run_ended is somehow lost, the bounded FIFO set evicts
+      // the id eventually.) "runId" in msg narrows away heartbeat/update_available.
       if (
         "runId" in msg &&
         typeof msg.runId === "string" &&
         sideRunIdsRef.current.has(msg.runId)
       ) {
-        if (msg.type === "done" || msg.type === "error" || msg.type === "run_ended") {
+        if (msg.type === "run_ended") {
           sideRunIdsRef.current.delete(msg.runId);
         }
         return;

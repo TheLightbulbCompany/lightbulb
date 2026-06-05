@@ -302,8 +302,14 @@ describe("useAgentChat — T8 /btw side-channel", () => {
     const sideRunId = lastSideRunId();
     expect(result.current.queuedMessages).toHaveLength(1);
 
-    // The side run ends with its OWN (tracked) runId while the primary is
-    // active. Segregation drops it, so it must NOT flush the queued follow-up.
+    // The side run ends with its OWN (tracked) runId. Its real terminal
+    // SEQUENCE is the done frame FOLLOWED BY the synthesized run_ended (backend
+    // forwards both). Both must be segregated — including the trailing
+    // run_ended, which the id must survive until (deleting on `done` would let
+    // that run_ended leak to the normal drain path).
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: sideRunId } as ChatIncomingMessage),
+    );
     act(() =>
       dispatch({
         type: "run_ended",

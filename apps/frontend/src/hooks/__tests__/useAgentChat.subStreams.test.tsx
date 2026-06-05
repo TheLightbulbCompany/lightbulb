@@ -290,6 +290,71 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     });
   });
 
+  // When a tab reconnects/opens mid-run, the first observed frame after the
+  // original tool_start can be a tool_progress for a toolCallId this tab has
+  // no live pill for. The generic run-adoption block sets clientRunIdRef, but
+  // the tool_progress branch returned early on the missing pill WITHOUT
+  // flipping streaming — so the adopted run looked idle (no stop affordance)
+  // and cancelMessage no-opped (it guards on isStreaming). The branch must
+  // mark streaming for an observed in-flight run even with no local pill,
+  // exactly as tool_start does.
+  it("an observed tool_progress-first run marks isStreaming and makes cancelMessage effective", async () => {
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+    act(() => {
+      // First frame this tab sees for the run is a progress frame for a
+      // toolCallId it never saw start (no live pill).
+      emit({
+        type: "tool_progress",
+        tool: "bash",
+        toolCallId: "observed-1",
+        partialResult: [{ type: "text", text: "line 1\n" }],
+        agent_id: AGENT,
+        runId: RUN,
+      } as ChatIncomingMessage);
+    });
+
+    // The observed in-flight run marks the gate busy even without a local pill.
+    expect(result.current.isStreaming).toBe(true);
+
+    // cancelMessage is now effective: it fires a targeted agent_abort for the
+    // adopted run instead of no-opping on a false-idle gate.
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: "agent_abort",
+      agent_id: AGENT,
+      runId: RUN,
+    });
+  });
+
+  // Same false-idle hazard via command_output: a reconnecting tab's first
+  // observed frame is streamed stdout for a tool it has no pill for. The
+  // branch must flip streaming for the adopted run, mirroring tool_start.
+  it("an observed command_output-first run marks isStreaming and makes cancelMessage effective", async () => {
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+    act(() => {
+      emit({
+        type: "command_output",
+        toolCallId: "observed-2",
+        output: "compiling...\n",
+        agent_id: AGENT,
+        runId: RUN,
+      } as ChatIncomingMessage);
+    });
+
+    expect(result.current.isStreaming).toBe(true);
+
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: "agent_abort",
+      agent_id: AGENT,
+      runId: RUN,
+    });
+  });
+
   it("drops sub-stream events for a different agent", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {

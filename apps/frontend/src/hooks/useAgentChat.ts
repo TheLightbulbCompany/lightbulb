@@ -881,6 +881,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // attach to (the tool already terminated), so drop it.
         const toolCallId = msg.toolCallId;
         if (!toolCallId) return;
+        // An observed in-flight run (e.g. a tab that reconnected/opened mid-run
+        // and whose first frame for this tool is a progress frame) means the
+        // run is busy — mark it streaming so the stop affordance shows and
+        // cancelMessage works (it guards on isStreaming). Do this even when
+        // there's no local pill to update: run adoption above already claimed
+        // this run, but only the stream-type branches flip the busy gate.
+        // Mirrors tool_start (no run-match gate, same guarded call).
+        if (!isStreamingRef.current) setIsStreaming(true);
         const entry = toolStreamByIdRef.current.get(toolCallId);
         if (!entry) return;
         entry.progressText = renderPartial(msg.partialResult);
@@ -895,6 +903,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // deltas are incremental (not cumulative), so concatenate.
         const toolCallId = msg.toolCallId;
         if (!toolCallId || !msg.output) return;
+        // Same observed-run busy signal as tool_progress: a reconnecting tab's
+        // first frame can be streamed stdout for a tool it has no live pill
+        // for. Mark the adopted run streaming so the stop affordance shows and
+        // cancelMessage works, even with no local pill. Mirrors tool_start.
+        if (!isStreamingRef.current) setIsStreaming(true);
         const entry = toolStreamByIdRef.current.get(toolCallId);
         if (!entry) return;
         entry.progressText = (entry.progressText ?? "") + msg.output;

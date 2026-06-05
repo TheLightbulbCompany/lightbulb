@@ -297,6 +297,13 @@ function isApprovalForCurrentUser(
   if (!req.sessionKey) return true; // no scoping signal; accept (legacy emitters)
   const segments = req.sessionKey.split(":");
   const memberId = segments[segments.length - 1];
+  // Personal-account sessions are keyed `agent:<agentId>:main` (see the backend
+  // connection_pool.py _parse_session_key "Personal webchat" shape) — the
+  // trailing segment is the literal "main", not a Clerk user id. Accept it as
+  // an unscoped personal session so personal exec/plugin approvals surface a
+  // card. This does NOT weaken the org guard: org member segments are Clerk
+  // user ids, which are never literally "main".
+  if (memberId.toLowerCase() === "main") return true;
   return memberId.toLowerCase() === userId.toLowerCase();
 }
 

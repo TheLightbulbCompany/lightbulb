@@ -162,6 +162,62 @@ describe("useExecApprovals — exec metadata parsing (A)", () => {
   });
 });
 
+describe("useExecApprovals — personal :main session routing (D)", () => {
+  beforeEach(() => {
+    eventHandlers.clear();
+    sendReqMock = vi.fn();
+  });
+
+  function emitWithSessionKey(id: string, sessionKey: string, type = "exec.approval.requested") {
+    for (const h of eventHandlers) {
+      h(type, {
+        id,
+        request: {
+          command: "ls",
+          host: "gateway",
+          allowedDecisions: ["allow-once", "deny"],
+          // plugin fields (harmless for exec; used by the plugin variant)
+          pluginId: "plugin:slack",
+          title: "Send Slack message",
+          sessionKey,
+        },
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + 60_000,
+      });
+    }
+  }
+
+  it("ACCEPTS a personal-webchat :main exec approval for any signed-in user", () => {
+    // Personal accounts route under sessionKey `agent:<agentId>:main` — the
+    // trailing segment is the literal "main", not a Clerk user id. The guard
+    // must accept it so personal users still get their exec card.
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithSessionKey("pm1", "agent:agent_x:main"));
+    expect(result.current.queue).toHaveLength(1);
+    expect(result.current.queue[0].id).toBe("pm1");
+  });
+
+  it("ACCEPTS a personal-webchat :main plugin approval for any signed-in user", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithSessionKey("pm2", "agent:agent_x:main", "plugin.approval.requested"));
+    expect(result.current.queue).toHaveLength(1);
+    expect(result.current.queue[0].id).toBe("pm2");
+  });
+
+  it("ACCEPTS an org approval addressed to the current user", () => {
+    // current user is user_test (mocked useAuth above)
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithSessionKey("og1", "agent:agent_x:user_test"));
+    expect(result.current.queue).toHaveLength(1);
+  });
+
+  it("DROPS an org approval addressed to a different member", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithSessionKey("og2", "agent:agent_x:user_other"));
+    expect(result.current.queue).toHaveLength(0);
+  });
+});
+
 describe("useExecApprovals — plugin approvals (B)", () => {
   beforeEach(() => {
     eventHandlers.clear();

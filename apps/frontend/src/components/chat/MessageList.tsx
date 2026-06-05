@@ -208,12 +208,18 @@ interface ToolPillState {
   args: unknown;
   result: unknown;
   status: "running" | "done" | "error";
+  /** Live incremental output shown while the tool is still running, before
+   *  its terminal tool_result lands. */
+  progressText?: string;
 }
 
 function ToolPill({ tool }: { tool: ToolPillState }) {
   const [open, setOpen] = React.useState(false);
   const s = TOOL_STYLES[tool.status];
-  const output = renderToolOutput(tool.result);
+  // Prefer the terminal tool_result output; while still running, fall back to
+  // the live progress text so streaming output is visible mid-execution.
+  const output =
+    renderToolOutput(tool.result) ?? (tool.status === "running" ? (tool.progressText ?? null) : null);
   const hasArgs = !!(
     tool.args &&
     typeof tool.args === "object" &&
@@ -401,6 +407,7 @@ function MessageBlocks({
               args: resolveToolArgs(b),
               result: resultBlock?.content ?? resultBlock?.result,
               status,
+              progressText: (b as ContentBlock).progressText,
             }}
           />
         );

@@ -240,6 +240,11 @@ class TestProcessAgentChatBackground:
             # chat.send. Default to "no active run" so existing tests aren't
             # gated; the AsyncMock default would otherwise read as truthy.
             pool.has_active_run = MagicMock(return_value=False)
+            # mark_run_active / clear_active_run are SYNC on the real pool;
+            # stub as MagicMock so calling them doesn't spawn un-awaited
+            # coroutines (which surface as RuntimeWarnings).
+            pool.mark_run_active = MagicMock()
+            pool.clear_active_run = MagicMock()
             mock_getter.return_value = pool
             yield pool
 
@@ -335,6 +340,48 @@ class TestProcessAgentChatBackground:
         sent_msg = mock_mgmt_api.send_message.call_args[0][1]
         assert sent_msg["type"] == "error"
         assert "Connection lost" in sent_msg["message"]
+
+    @pytest.mark.asyncio
+    async def test_chat_send_failure_clears_active_run(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """If chat.send fails AFTER mark_run_active opened the busy-gate
+        window, the window must be torn back down. Otherwise no terminal
+        event will ever arrive to clear it and has_active_run wedges the
+        session agent_busy forever, rejecting every later send."""
+        mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("Connection lost"))
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            message="Hello!",
+        )
+        # The window was opened then torn down for this exact session.
+        mock_pool.mark_run_active.assert_called_once_with("user-1", "agent:luna:user-1", "luna")
+        mock_pool.clear_active_run.assert_called_once_with("user-1", "agent:luna:user-1")
+        # The user still gets the failure notice.
+        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_side_send_failure_does_not_clear_active_run(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """A side (/btw) send never opens the busy-gate window, so a send
+        failure on it must NOT tear down the PRIMARY run's active-run
+        window — that run is still legitimately in flight."""
+        mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("Connection lost"))
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            message="quick aside",
+            side=True,
+        )
+        mock_pool.mark_run_active.assert_not_called()
+        mock_pool.clear_active_run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_active_run_gates_chat_send(self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip):
@@ -514,6 +561,53 @@ class TestProcessAgentAbortBackground:
         mock_pool.clear_active_run.assert_not_called()
         mock_pool.mark_run_active.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_abort_no_container_emits_synthetic_aborted_terminal(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api
+    ):
+        """When there's no live container/IP the abort can't be forwarded —
+        but the frontend keeps isStreaming + the active runId until a SERVER
+        terminal arrives. The abort path must synthesize the SAME `error`
+        ("Agent run was cancelled") frame a real abort produces so the client
+        tears down its live turn, clears isStreaming, and drains the queue."""
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
+        await _process_agent_abort_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            run_id="run-9",
+        )
+        # No chat.abort RPC could be forwarded.
+        mock_pool.send_rpc.assert_not_called()
+        # A terminal error frame was pushed to unblock the client, tagged with
+        # the aborted runId so the frontend's error handler drains the queue.
+        mock_mgmt_api.send_message.assert_called_once()
+        conn_arg, frame = mock_mgmt_api.send_message.call_args[0]
+        assert conn_arg == "conn-1"
+        assert frame["type"] == "error"
+        assert frame["agent_id"] == "luna"
+        assert frame["runId"] == "run-9"
+        assert frame["message"] == "Agent run was cancelled"
+
+    @pytest.mark.asyncio
+    async def test_abort_no_container_without_run_id_omits_run_id(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
+        """The synthetic terminal omits runId when the client didn't supply one
+        (the frontend's error handler still clears isStreaming on a no-runId
+        error — it just can't key the queue drain)."""
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
+        await _process_agent_abort_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            run_id=None,
+        )
+        mock_mgmt_api.send_message.assert_called_once()
+        _, frame = mock_mgmt_api.send_message.call_args[0]
+        assert frame["type"] == "error"
+        assert "runId" not in frame
+
 
 # ---------------------------------------------------------------------------
 # agent_steer  ->  chat.send (deliver:false, fresh idempotencyKey)
@@ -666,6 +760,10 @@ class TestAgentChatSideChannel:
             # Sync gate check; default to "no active run" so a non-side message
             # isn't spuriously gated by the AsyncMock auto-attr.
             pool.has_active_run = MagicMock(return_value=False)
+            # mark_run_active / clear_active_run are SYNC on the real pool;
+            # stub as MagicMock so calls don't spawn un-awaited coroutines.
+            pool.mark_run_active = MagicMock()
+            pool.clear_active_run = MagicMock()
             mock_getter.return_value = pool
             yield pool
 

@@ -1663,6 +1663,22 @@ class GatewayConnectionPool:
             return False
         return conn.has_active_run(session_key)
 
+    def clear_active_run(self, user_id: str, session_key: str) -> None:
+        """Tear down the active-run window opened by ``mark_run_active``.
+
+        The dispatcher marks a run active *before* issuing chat.send so the
+        busy-gate is closed for the whole dispatch. If that chat.send never
+        reaches OpenClaw (timeout, container unreachable, gateway error), no
+        terminal event will ever arrive to clear the window — leaving the
+        session permanently ``agent_busy``. The dispatcher calls this on the
+        chat.send failure path to reopen the gate. Silently no-ops when no
+        connection exists. Idempotent.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        conn._clear_active_run(session_key)
+
     async def gate_chat(self, *, user_id: str, owner_id: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users.
 

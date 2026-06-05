@@ -1532,6 +1532,37 @@ class TestPoolReconnectFloor:
         assert pool.has_active_run("user-1", "agent:other:user-1") is False
 
     @pytest.mark.asyncio
+    async def test_pool_clear_active_run_reopens_busy_gate(self):
+        """The chat dispatcher calls pool.clear_active_run on the chat.send
+        failure path so a send that never reached OpenClaw doesn't leave the
+        session wedged agent_busy forever. It must resolve the owner's
+        connection and pop the per-session run; later has_active_run reads
+        False so the next send is no longer gated."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        conn = GatewayConnection(
+            frontend_connections=set(),
+            user_id="user-1",
+            ip="10.0.0.1",
+            token="tok",
+            management_api=MagicMock(),
+        )
+        conn.mark_run_active("agent:main:user-1", "main")
+        pool._connections["user-1"] = conn
+        assert pool.has_active_run("user-1", "agent:main:user-1") is True
+
+        pool.clear_active_run("user-1", "agent:main:user-1")
+        assert pool.has_active_run("user-1", "agent:main:user-1") is False
+
+    @pytest.mark.asyncio
+    async def test_pool_clear_active_run_noop_when_no_connection(self):
+        """clear_active_run runs on the chat.send failure path, which can fire
+        before send_rpc ever created the connection. It must be safe to call
+        when no connection exists for the owner."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        # Should not raise.
+        pool.clear_active_run("user-1", "agent:main:user-1")
+
+    @pytest.mark.asyncio
     async def test_is_user_connected_true_for_parked_with_runs(self):
         """The cold-start phase resolver consults is_user_connected. A
         parked connection with active runs must read as connected so

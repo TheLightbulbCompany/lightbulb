@@ -1366,6 +1366,12 @@ async def _process_agent_chat_background(
 
     management_api = await get_management_api_client()
 
+    # Tracks whether mark_run_active opened the busy-gate window below. Bound
+    # before the try so the error fall-through can safely decide whether to
+    # tear the window back down even if an exception fires before `pool` is
+    # assigned. Only ever True for non-side sends past the mark_run_active line.
+    run_active_marked = False
+
     try:
         # Look up user's container and discover task IP
         ecs_manager = get_ecs_manager()
@@ -1552,6 +1558,7 @@ async def _process_agent_chat_background(
         # side run's terminal event clear the PRIMARY run's window.
         if not side:
             pool.mark_run_active(owner_id, session_key, agent_id)
+            run_active_marked = True
 
         # Idempotency key for OpenClaw's chat.send. We always send one so
         # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`) and
@@ -1599,7 +1606,16 @@ async def _process_agent_chat_background(
     else:
         return  # success — no error to report
 
-    # All error branches fall through here to notify the client
+    # All error branches fall through here to notify the client.
+    #
+    # mark_run_active above opened the busy-gate window for this session
+    # (non-side sends only). chat.send never reached OpenClaw, so no terminal
+    # event will ever arrive to close that window — clear it here, otherwise
+    # has_active_run would reject every later send as agent_busy forever,
+    # wedging the session on a single transient send failure. The flag
+    # guarantees pool + session_key are bound (the mark is past both).
+    if run_active_marked:
+        pool.clear_active_run(owner_id, session_key)
     try:
         management_api.send_message(
             connection_id,
@@ -1639,20 +1655,38 @@ async def _process_agent_abort_background(
         run_id or "-",
         connection_id[:12],
     )
-    # Abort is best-effort and silent on failure (see except below), so we
-    # never need a Management API client here — nothing is pushed to the client.
     session_key = f"agent:{agent_id}:{user_id}"
     try:
+        management_api = await get_management_api_client()
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
         if not container or not ip:
-            # No live container/IP means there's nothing to abort. Stay quiet:
-            # an abort on a dead session is a no-op, not a user-facing error.
+            # No live container/IP means there's no run left in OpenClaw to
+            # abort — but the frontend's cancelMessage deliberately keeps
+            # isStreaming + the active runId until a SERVER terminal arrives
+            # (it server-reconciles rather than clearing locally). A silent
+            # return here would wedge the chat UI in "streaming" forever and
+            # the queue would never drain. Synthesize the SAME terminal a real
+            # abort produces — connection_pool._transform_agent_event maps the
+            # container's `aborted` event to an `error` frame ("Agent run was
+            # cancelled") — so the client tears down its live turn, clears
+            # isStreaming, and drains the queue.
             logger.info(
-                "[%s] chat.abort skipped agent=%s — no running container/ip",
+                "[%s] chat.abort no container/ip agent=%s — sending synthetic aborted terminal",
                 user_id,
                 agent_id,
             )
+            frame: dict[str, str] = {
+                "type": "error",
+                "agent_id": agent_id,
+                "message": "Agent run was cancelled",
+            }
+            if run_id:
+                frame["runId"] = run_id
+            try:
+                management_api.send_message(connection_id, frame)
+            except Exception:
+                pass
             return
 
         params: dict[str, str] = {"sessionKey": session_key}

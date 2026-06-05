@@ -317,6 +317,28 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     [],
   );
 
+  // Commit the in-progress stream tail as a segment before a pill is appended.
+  // Any handler that pushes onto toolStreamOrderRef (a real tool_start OR a
+  // live activity pill) must call this FIRST so foldLiveTurnIntoContent pairs
+  // the just-streamed text with the new pill in chronological order. Always
+  // pushes a segment (possibly empty-text) so chatStreamSegments[i] stays
+  // index-aligned with the i-th pill — buildChatItems/fold rely on the
+  // contract that segments[i] is "the text immediately before pill[i]", and
+  // they skip empty segments so the sentinel is invisible at render time.
+  // Without this, the streamed text stays in tailStream (folded LAST) while
+  // the pill folds first, so the pill renders BEFORE the earlier text. The
+  // committed length advances streamCommittedOffsetRef so the next post-pill
+  // chunk (cumulative from start-of-run) slices off the already-committed
+  // prefix. Does NOT clear chatStreamRunIdRef — the same run continues.
+  const commitStreamBeforePill = useCallback(() => {
+    const priorStream = chatStreamRef.current ?? "";
+    setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
+    if (priorStream.length > 0) {
+      streamCommittedOffsetRef.current += priorStream.length;
+      setChatStream(null);
+    }
+  }, [setChatStreamSegments, setChatStream]);
+
   // Live tool state.
   const [chatToolMessages, _setChatToolMessagesRaw] = useState<HistoryMessage[]>([]);
   const chatToolMessagesRef = useRef<HistoryMessage[]>([]);
@@ -777,25 +799,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         const toolCallId = msg.toolCallId;
         if (!toolCallId) return;
 
-        // Always push a segment (possibly empty-text) so chatStreamSegments[i]
-        // stays index-aligned with chatToolMessages[i] — buildChatItems and
-        // foldLiveTurnIntoContent both rely on the contract that segments[i]
-        // is "the text immediately before tool[i]". Without the sentinel push
-        // a tool firing before any text would shift post-tool text into
-        // segment[0], making interleave emit it BEFORE its tool.
-        // buildChatItems/fold already skip empty segments so the sentinel is
-        // invisible at render time.
-        //
-        // Advance streamCommittedOffsetRef by the committed length so the
-        // next post-tool chunk (which arrives cumulative from start-of-run)
-        // slices off the already-committed prefix. Do NOT clear
-        // chatStreamRunIdRef — the same run continues after the tool returns.
-        const priorStream = chatStreamRef.current ?? "";
-        setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
-        if (priorStream.length > 0) {
-          streamCommittedOffsetRef.current += priorStream.length;
-          setChatStream(null);
-        }
+        // Commit the in-progress stream tail before this pill so segments stay
+        // index-aligned with the tool order (see commitStreamBeforePill).
+        commitStreamBeforePill();
 
         const now = Date.now();
         const entry: ToolStreamEntry = {
@@ -938,6 +944,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             };
         toolStreamByIdRef.current.set(synthId, entry);
         if (!toolStreamOrderRef.current.includes(synthId)) {
+          // A NEW pill takes a new slot in the tool order, so commit the live
+          // stream tail FIRST (exactly as tool_start does) — otherwise the
+          // text streamed before this activity folds after the pill and renders
+          // out of order. An UPDATE to an existing pill keeps its slot, so skip
+          // the commit there (committing again would push a spurious segment).
+          commitStreamBeforePill();
           toolStreamOrderRef.current.push(synthId);
         }
         syncToolStreamMessages();

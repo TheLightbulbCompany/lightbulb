@@ -304,6 +304,29 @@ class TestTransformAgentEvent:
             "runId": "run-1",
         }
 
+    def test_tool_stream_update_without_name_still_emits_progress(self):
+        """phase:"update" attaches to an existing pill by toolCallId, so name is
+        optional — the update keys by toolCallId alone (upstream's tool-event
+        ``name`` is optional in the contract). An unnamed update with a
+        toolCallId must still forward live progress; dropping it loses output."""
+        result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "tool",
+                "data": {
+                    "phase": "update",
+                    "toolCallId": "abc-123",
+                    "partialResult": [{"type": "text", "text": "line 1\n"}],
+                },
+                "runId": "run-1",
+            }
+        )
+        assert result == {
+            "type": "tool_progress",
+            "toolCallId": "abc-123",
+            "partialResult": [{"type": "text", "text": "line 1\n"}],
+            "runId": "run-1",
+        }
+
     def test_tool_stream_update_without_toolcallid_ignored(self):
         """No toolCallId means no live pill to address — drop it."""
         assert (

@@ -214,6 +214,58 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     expect(findToolUseByName(result.current.renderItems, "Proposed a plan")).toBeTruthy();
   });
 
+  it("orders an activity pill AFTER streamed assistant text, not before it", () => {
+    // When an agent_activity frame arrives after the assistant has streamed
+    // text but before any real tool_start, the activity branch must first
+    // commit the live stream tail into segments (exactly as tool_start does)
+    // so foldLiveTurnIntoContent pairs the text with the pill in chronological
+    // order. Without that commit, the streamed text sits in tailStream (folded
+    // LAST) while the pill is folded first — rendering the pill BEFORE the
+    // earlier text.
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+    act(() => {
+      emit({ type: "chunk", content: "Here is the answer.", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+    });
+    act(() => {
+      emit({
+        type: "agent_activity",
+        activity: "plan",
+        title: "Proposed a plan",
+        detail: { steps: ["a"] },
+        agent_id: AGENT,
+        runId: RUN,
+      } as ChatIncomingMessage);
+    });
+    act(() => {
+      emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+    });
+
+    // The folded turn is a single assistant message; locate the content array
+    // that holds both the text and the activity pill, narrowing on kind first
+    // (ChatRenderItem is a discriminated union — same pattern as the helpers).
+    let content: ContentBlock[] | undefined;
+    for (const item of result.current.renderItems) {
+      if (item.kind !== "message") continue;
+      const c = (item.message as HistoryMessage).content;
+      if (!Array.isArray(c)) continue;
+      const hasText = c.some((b) => b.type === "text" && b.text === "Here is the answer.");
+      const hasPill = c.some((b) => b.type === "tool_use" && b.name === "Proposed a plan");
+      if (hasText && hasPill) {
+        content = c;
+        break;
+      }
+    }
+    expect(content).toBeTruthy();
+    const textIdx = content!.findIndex(
+      (b) => b.type === "text" && b.text === "Here is the answer.",
+    );
+    const pillIdx = content!.findIndex(
+      (b) => b.type === "tool_use" && b.name === "Proposed a plan",
+    );
+    // The streamed text must come before the activity pill.
+    expect(textIdx).toBeLessThan(pillIdx);
+  });
+
   it("drops sub-stream events for a different agent", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {

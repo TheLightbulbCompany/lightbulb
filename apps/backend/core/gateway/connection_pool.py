@@ -706,8 +706,27 @@ class GatewayConnection:
         elif stream == "tool":
             phase = data.get("phase", "")
             name = data.get("name", "")
-            if name:
-                tool_call_id = data.get("toolCallId", "")
+            tool_call_id = data.get("toolCallId", "")
+            if phase == "update":
+                # Live tool progress: incremental output emitted mid-execution
+                # before the result phase. Upstream renders this via
+                # formatToolOutput(data.partialResult); we forward it so the
+                # running tool pill can show streaming output. An update attaches
+                # to an EXISTING pill keyed by toolCallId, so a toolCallId is the
+                # only thing it needs — name is optional here (the upstream
+                # tool-event contract declares name as optional, and updates
+                # address the pill by id, not name). Drop updates without a
+                # toolCallId (nothing for the frontend to attach them to), but
+                # never drop one merely for lacking a name.
+                if tool_call_id:
+                    transformed = {"type": "tool_progress", "toolCallId": tool_call_id}
+                    if name:
+                        transformed["tool"] = name
+                    if "partialResult" in data:
+                        transformed["partialResult"] = data["partialResult"]
+            elif name:
+                # start/result build or resolve a pill that needs the tool name,
+                # so these phases still require it.
                 if phase == "start":
                     transformed = {"type": "tool_start", "tool": name}
                     if tool_call_id:
@@ -726,17 +745,6 @@ class GatewayConnection:
                         transformed["result"] = data["result"]
                     if data.get("meta"):
                         transformed["meta"] = data["meta"]
-                elif phase == "update":
-                    # Live tool progress: incremental output emitted mid-
-                    # execution before the result phase. Upstream renders this
-                    # via formatToolOutput(data.partialResult); we forward it so
-                    # the running tool pill can show streaming output. Requires a
-                    # toolCallId to address the live pill, so drop updates without
-                    # one (there is nothing for the frontend to attach them to).
-                    if tool_call_id:
-                        transformed = {"type": "tool_progress", "tool": name, "toolCallId": tool_call_id}
-                        if "partialResult" in data:
-                            transformed["partialResult"] = data["partialResult"]
 
         elif stream == "command_output":
             # Streaming command stdout/stderr emitted mid-exec. Carries a

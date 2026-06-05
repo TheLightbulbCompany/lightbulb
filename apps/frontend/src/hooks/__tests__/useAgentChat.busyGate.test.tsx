@@ -222,6 +222,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
   function fakeApproval(agentId: string, id = "approval-1"): ExecApprovalRequest {
     return {
       id,
+      kind: "exec",
       command: "ls",
       host: "gateway",
       allowedDecisions: ["allow-once", "allow-always", "deny"],

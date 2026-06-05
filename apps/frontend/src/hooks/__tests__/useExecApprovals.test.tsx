@@ -161,3 +161,106 @@ describe("useExecApprovals — exec metadata parsing (A)", () => {
     expect(result.current.queue[0].commandSpans).toBeUndefined();
   });
 });
+
+describe("useExecApprovals — plugin approvals (B)", () => {
+  beforeEach(() => {
+    eventHandlers.clear();
+    sendReqMock = vi.fn();
+  });
+
+  function emitPlugin(id: string) {
+    for (const h of eventHandlers) {
+      h("plugin.approval.requested", {
+        id,
+        request: {
+          pluginId: "plugin:slack",
+          title: "Send Slack message to #general",
+          description: "The agent wants to post a message.",
+          severity: "medium",
+          agentId: "agent_x",
+          sessionKey: "agent:agent_x:user_test",
+          allowedDecisions: ["allow-once", "deny"],
+        },
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + 60_000,
+      });
+    }
+  }
+
+  it("enqueues a plugin approval with kind=plugin and plugin fields", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitPlugin("p1"));
+    expect(result.current.queue).toHaveLength(1);
+    const req = result.current.queue[0];
+    expect(req.kind).toBe("plugin");
+    expect(req.pluginTitle).toBe("Send Slack message to #general");
+    expect(req.pluginDescription).toBe("The agent wants to post a message.");
+    expect(req.pluginSeverity).toBe("medium");
+    expect(req.pluginId).toBe("plugin:slack");
+    expect(req.agentId).toBe("agent_x");
+    expect(req.command).toBe("Send Slack message to #general"); // command slot reused
+  });
+
+  it("drops a plugin approval with no title", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => {
+      for (const h of eventHandlers) {
+        h("plugin.approval.requested", {
+          id: "p2",
+          request: { pluginId: "x" },
+          createdAtMs: Date.now(),
+          expiresAtMs: Date.now() + 1000,
+        });
+      }
+    });
+    expect(result.current.queue).toHaveLength(0);
+  });
+
+  it("resolves a plugin approval via plugin.approval.resolve", async () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitPlugin("p3"));
+    await act(async () => {
+      await result.current.resolve("p3", "allow-once");
+    });
+    expect(sendReqMock).toHaveBeenCalledWith("plugin.approval.resolve", {
+      id: "p3",
+      decision: "allow-once",
+    });
+    expect(result.current.queue).toHaveLength(0);
+  });
+
+  it("resolves an exec approval via exec.approval.resolve (kind routing)", async () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => {
+      for (const h of eventHandlers) {
+        h("exec.approval.requested", {
+          id: "e9",
+          request: {
+            command: "ls",
+            host: "gateway",
+            sessionKey: "agent:a:user_test",
+            allowedDecisions: ["allow-once", "deny"],
+          },
+          expiresAtMs: Date.now() + 60_000,
+        });
+      }
+    });
+    await act(async () => {
+      await result.current.resolve("e9", "allow-once");
+    });
+    expect(sendReqMock).toHaveBeenCalledWith("exec.approval.resolve", {
+      id: "e9",
+      decision: "allow-once",
+    });
+  });
+
+  it("drops a plugin approval on plugin.approval.resolved event", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitPlugin("p4"));
+    expect(result.current.queue).toHaveLength(1);
+    act(() => {
+      for (const h of eventHandlers) h("plugin.approval.resolved", { id: "p4" });
+    });
+    expect(result.current.queue).toHaveLength(0);
+  });
+});

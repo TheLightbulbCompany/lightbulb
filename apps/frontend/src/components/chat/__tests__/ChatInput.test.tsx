@@ -1,0 +1,63 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import React from "react";
+
+import { ChatInput } from "../ChatInput";
+
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+
+describe("ChatInput — Queue affordance", () => {
+  it("labels the send button 'Send' when idle and 'Queue' while streaming", () => {
+    const { rerender } = render(<ChatInput onSend={vi.fn()} />);
+    // Idle: the action is "Send".
+    expect(screen.getByRole("button", { name: /send message/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /queue message/i })).not.toBeInTheDocument();
+
+    // Streaming: the same action button becomes "Queue".
+    rerender(<ChatInput onSend={vi.fn()} isStreaming onStop={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /queue message/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^send message$/i })).not.toBeInTheDocument();
+  });
+
+  it("submitting while streaming routes through onSend (the hook enqueues)", () => {
+    const onSend = vi.fn();
+    render(<ChatInput onSend={onSend} isStreaming onStop={vi.fn()} />);
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "queued text" } });
+    fireEvent.click(screen.getByRole("button", { name: /queue message/i }));
+    expect(onSend).toHaveBeenCalledWith("queued text", undefined);
+  });
+
+  it("renders the queued list with each message's text and a remove action", () => {
+    const onRemoveQueued = vi.fn();
+    render(
+      <ChatInput
+        onSend={vi.fn()}
+        isStreaming
+        onStop={vi.fn()}
+        queuedMessages={[
+          { id: "q1", text: "first queued" },
+          { id: "q2", text: "second queued" },
+        ]}
+        onRemoveQueued={onRemoveQueued}
+      />,
+    );
+    expect(screen.getByText("first queued")).toBeInTheDocument();
+    expect(screen.getByText("second queued")).toBeInTheDocument();
+
+    const removeButtons = screen.getAllByRole("button", {
+      name: /remove queued message/i,
+    });
+    expect(removeButtons).toHaveLength(2);
+    fireEvent.click(removeButtons[0]);
+    expect(onRemoveQueued).toHaveBeenCalledWith("q1");
+  });
+
+  it("does not render the queued list when there are no queued messages", () => {
+    render(<ChatInput onSend={vi.fn()} isStreaming onStop={vi.fn()} />);
+    expect(
+      screen.queryByRole("button", { name: /remove queued message/i }),
+    ).not.toBeInTheDocument();
+  });
+});

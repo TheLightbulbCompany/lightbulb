@@ -330,6 +330,23 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     queuedMessagesRef.current = queuedMessages;
   }, [queuedMessages]);
 
+  // RunIds whose queue-drain has already fired. The queue drains on the
+  // SERVER's run-ended signal, which arrives as up to TWO frames for a
+  // single run: the terminal done/error AND the authoritative `run_ended`
+  // that trails it (run_ended is ADDITIONAL, never a replacement — see
+  // backend connection_pool.py). Some session-less slash-command terminals
+  // emit a `done` with NO trailing run_ended. We therefore drain on EITHER
+  // signal but dedupe by runId here so done+run_ended for the same run never
+  // drains twice (which would double-send the next queued message).
+  const drainedRunIdsRef = useRef<Set<string>>(new Set());
+
+  // Ref to the latest queue-drain function. The once-registered
+  // onChatMessage handler (deps [onChatMessage]) reads it through this ref
+  // so it can invoke the drain without re-binding on every render or
+  // capturing a stale dispatchNow closure. Assigned after dispatchNow is
+  // defined below.
+  const drainQueueRef = useRef<() => void>(() => {});
+
   const removeQueuedMessage = useCallback((id: string) => {
     setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
   }, []);
@@ -659,6 +676,30 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
+      if (msg.type === "run_ended") {
+        // The AUTHORITATIVE server signal that this run is truly over. It
+        // trails the terminal done/error for the same run and is the
+        // canonical drain trigger — the queue drains only when the run is
+        // truly over per the SERVER, never on a local terminal/error edge.
+        //
+        // Dedupe by runId: the terminal done/error handler below already
+        // drained this run (or, for the session-less edge, a `done` with no
+        // run_ended did). If so, this is a no-op so we don't double-send.
+        const runId = msg.runId;
+        if (drainedRunIdsRef.current.has(runId)) {
+          return;
+        }
+        drainedRunIdsRef.current.add(runId);
+        // run_ended is the server's word that the run ended — force-release
+        // the busy gate for it even if some local heuristic still held it.
+        if (clientRunIdRef.current === runId) {
+          clientRunIdRef.current = null;
+          resumeExpectedRef.current = false;
+        }
+        drainQueueRef.current();
+        return;
+      }
+
       if (msg.type === "done") {
         const runId = msg.runId;
         // Fold the entire live turn into a single synthesized assistant
@@ -714,7 +755,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           approvalQueueRef.current.some(
             (a) => a.agentId === agentIdRef.current,
           );
-        if (runId === clientRunIdRef.current && !hasPendingApprovalForThisAgent) {
+        // Did THIS done end the active run? Only a true terminal (matching
+        // runId, no pending approval) clears the gate. An interim chat.final
+        // that closes a tool-approval bracket keeps the gate armed — and the
+        // backend sends NO run_ended for it — so we must not drain on it.
+        const endedActiveRun =
+          runId === clientRunIdRef.current && !hasPendingApprovalForThisAgent;
+        if (endedActiveRun) {
           clientRunIdRef.current = null;
         }
 
@@ -737,10 +784,32 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             }
           }
         }
+
+        // Drain the queue if this done genuinely ended the active run. The
+        // authoritative `run_ended` trails most terminals — dedupe by runId
+        // so we don't double-drain. For the session-less slash-command edge
+        // (a `done` with no trailing run_ended) this `done` IS the only
+        // run-ended signal, so the drain must happen here too.
+        if (endedActiveRun && !drainedRunIdsRef.current.has(runId)) {
+          drainedRunIdsRef.current.add(runId);
+          drainQueueRef.current();
+        }
         return;
       }
 
       if (msg.type === "error") {
+        // agent_busy is a backend SAFETY-NET frame for a send that was
+        // gated server-side (the agent is still working the previous turn).
+        // It carries NO runId and is NOT a terminal for the live run — it's
+        // a benign "still busy" notice, primarily for non-frontend senders.
+        // The frontend already enqueues sends while busy, so for the live
+        // turn this is informational only. Branch on it FIRST: the generic
+        // error path below would (because !msg.runId) clear clientRunIdRef
+        // and isStreaming, WIPING the in-flight turn's streaming state.
+        if (msg.code === "agent_busy") {
+          return;
+        }
+
         const displayError = friendlyError(msg.message);
         const errorCode = msg.code;
         // Append an assistant-role error message to chatMessages.
@@ -766,6 +835,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         toolStreamOrderRef.current = [];
         setChatToolMessages([]);
         setError(displayError);
+        // Did THIS error end the active run? A terminal agent error carries
+        // the run's runId (the no-runId agent_busy notice was handled and
+        // returned above). Capture the match before clearing so we can drain.
+        const endedActiveRun =
+          !!msg.runId && msg.runId === clientRunIdRef.current;
         if (!msg.runId || msg.runId === clientRunIdRef.current) {
           clientRunIdRef.current = null;
         }
@@ -773,6 +847,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // this handler; by here, msg.runId is never in the set.
         if (clientRunIdRef.current === null) {
           setIsStreaming(false);
+        }
+
+        // Drain the queue if this error genuinely ended the active run. A
+        // trailing `run_ended {outcome:"error"}` is deduped by runId so the
+        // pair never double-drains. (No-runId transport errors don't drain
+        // — there's no run-ended runId to key the drain/dedupe on.)
+        if (endedActiveRun && !drainedRunIdsRef.current.has(msg.runId!)) {
+          drainedRunIdsRef.current.add(msg.runId!);
+          drainQueueRef.current();
         }
         return;
       }
@@ -886,33 +969,40 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // refs so the NEXT user turn measures from its own start.
         turnStartedAtRef.current = null;
         turnAssistantLenRef.current = 0;
+        // The gate just released with no server run-ended frame coming
+        // (the user dismissed / the card expired / it errored — there's no
+        // post-approval continuation). Drain the queue here explicitly since
+        // the server-signal handlers won't fire for this locally-resolved
+        // termination.
+        drainQueueRef.current();
       }
     });
   }, [onApprovalRemoved, setIsStreaming]);
 
-  // Drain queued messages one at a time on busy→idle transitions.
-  // We track the previous value of clientRunIdRef in a ref so a simple
-  // effect can detect the falling edge without polling.
-  const prevClientRunIdRef = useRef<string | null>(null);
-  // Deliberate no-deps effect: must run after every render so the ref-based
-  // falling-edge detector catches the busy→idle transition. The work is
-  // O(1) (two ref reads + comparison) when no transition occurred.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Drain ONE queued message if the run is truly over and we're not busy.
+  //
+  // This is invoked off the SERVER's run-ended signal — `run_ended`, or a
+  // terminal done/error for the active runId when no run_ended trails it —
+  // NEVER on a local clientRunId falling edge. Mirrors upstream OpenClaw web
+  // UI's flushChatQueue (app-chat.ts:775): drain only when !isChatBusy, send
+  // one, and let the dispatched message's own run-ended re-invoke the drain
+  // for the next one. dispatchNow re-arms clientRunIdRef, so the gate stays
+  // closed for the freshly-dispatched run until its server terminal.
+  const drainQueue = useCallback(() => {
+    if (clientRunIdRef.current !== null) return; // still busy
+    if (!isConnected) return;
+    if (queuedMessagesRef.current.length === 0) return;
+    const next = queuedMessagesRef.current[0];
+    setQueuedMessages((q) => q.slice(1));
+    void dispatchNow(next.text);
+  }, [isConnected, dispatchNow]);
+
+  // Keep the handler-visible drain ref pointed at the latest drainQueue so
+  // the once-registered onChatMessage handler invokes the current closure
+  // (fresh isConnected / dispatchNow) without re-binding.
   useEffect(() => {
-    const prev = prevClientRunIdRef.current;
-    const curr = clientRunIdRef.current;
-    prevClientRunIdRef.current = curr;
-    if (
-      prev !== null &&
-      curr === null &&
-      queuedMessagesRef.current.length > 0 &&
-      isConnected
-    ) {
-      const next = queuedMessagesRef.current[0];
-      setQueuedMessages((q) => q.slice(1));
-      void dispatchNow(next.text);
-    }
-  });
+    drainQueueRef.current = drainQueue;
+  }, [drainQueue]);
 
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {

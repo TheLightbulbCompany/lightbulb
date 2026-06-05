@@ -299,7 +299,13 @@ export function ChatInput({
               onClick={handleSend}
               disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
               data-testid="send-button"
-              aria-label="Send message"
+              // While a run is in flight a send doesn't fire immediately —
+              // useAgentChat enqueues it and drains on the server run-ended
+              // signal. Surface that as a "Queue" affordance so the button's
+              // accessible label / tooltip reflects the actual action.
+              // Mirrors upstream OpenClaw web UI (chat/run-controls.ts:83-91).
+              aria-label={isStreaming ? "Queue message" : "Send message"}
+              title={isStreaming ? "Queue" : "Send"}
             >
               {isUploading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

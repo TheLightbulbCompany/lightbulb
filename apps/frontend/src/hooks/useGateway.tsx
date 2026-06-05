@@ -39,6 +39,12 @@ export type ChatIncomingMessage =
   | { type: "thinking"; content: string; agent_id?: string; runId: string }
   | { type: "done"; agent_id?: string; runId: string }
   | { type: "error"; message: string; code?: string; agent_id?: string; runId?: string }
+  // Authoritative "run truly ended" frame. ADDITIONAL to done/error/aborted —
+  // never a replacement. The backend forwards it EXACTLY ONCE per run on a
+  // genuine termination (NOT on the interim chat.final that closes a
+  // tool-approval bracket). The chat queue drains off this signal, not a
+  // local terminal heuristic. See backend connection_pool.py run_ended forward.
+  | { type: "run_ended"; runId: string; outcome: "done" | "error" | "aborted"; agent_id?: string }
   | { type: "heartbeat" }
   | {
       type: "tool_start";
@@ -205,6 +211,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       msgType === "thinking" ||
       msgType === "done" ||
       msgType === "error" ||
+      msgType === "run_ended" ||
       msgType === "heartbeat" ||
       msgType === "tool_start" ||
       msgType === "tool_end" ||

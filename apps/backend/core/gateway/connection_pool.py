@@ -269,6 +269,10 @@ class GatewayConnection:
             "started_at": now,
             "last_event_at": now,
             "agent_id": agent_id or "",
+            # Set when OpenClaw emits an approval-requested agent event for this
+            # session; consumed by `_is_true_terminal` so the interim chat
+            # `final` that closes the approval bracket does NOT end the run.
+            "awaiting_approval": False,
         }
 
     def _touch_run(self, session_key: str) -> None:
@@ -284,6 +288,52 @@ class GatewayConnection:
     def _clear_active_run(self, session_key: str) -> None:
         """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
         self._active_runs.pop(session_key, None)
+
+    def _mark_awaiting_approval(self, session_key: str) -> None:
+        """Flag the active run keyed by *session_key* as paused on an approval.
+
+        OpenClaw emits an ``agent`` event with ``stream:"approval"``,
+        ``data.phase:"requested"`` when a tool call (e.g. exec) needs the user
+        to approve before it can run (upstream
+        src/agents/embedded-agent-subscribe.handlers.tools.ts → emitAgentApproval
+        Event). The embedded runner then closes the current *bracket* with a
+        chat ``final`` even though the run will CONTINUE after the decision.
+        Recording the pause here lets `_is_true_terminal` treat that interim
+        `final` as non-terminal so the run-active signal survives the approval.
+
+        No-op when no run is tracked for the key (cron / channel sessions).
+        """
+        run = self._active_runs.get(session_key)
+        if run is not None:
+            run["awaiting_approval"] = True
+
+    def _is_true_terminal(self, session_key: str, state: str) -> bool:
+        """True iff this chat-terminal event genuinely ends the run.
+
+        ``error`` and ``aborted`` are always terminal — the run is over either
+        way. A ``final`` is terminal UNLESS the run is paused awaiting a tool
+        approval: OpenClaw emits a chat ``final`` to close the approval bracket
+        but resumes the run with a fresh lifecycle after the user decides, so
+        the bracket-closing ``final`` is interim, not the end. We consume the
+        pending-approval flag here (one interim `final` per approval) so the
+        run reverts to a normal active run and the next ``final`` — the one
+        after the continuation, with no approval outstanding — clears it.
+
+        Keeping the interim `final` non-terminal preserves the run-active
+        signal across the approval (no UI "dead air") without leaking dead
+        runs: a genuine terminal `final`/`error`/`aborted` still clears
+        ``_active_runs``, so the parked-vs-dead teardown in
+        `_on_reader_loop_exit` stays correct.
+        """
+        if state in ("error", "aborted"):
+            return True
+        run = self._active_runs.get(session_key)
+        if run is not None and run.get("awaiting_approval"):
+            # Interim final closing the approval bracket — consume the flag and
+            # keep the run active for the post-approval continuation.
+            run["awaiting_approval"] = False
+            return False
+        return True
 
     async def connect(self) -> None:
         """Open WebSocket, complete OpenClaw handshake, verify health, start reader."""
@@ -1134,6 +1184,24 @@ class GatewayConnection:
                         data.get("name", ""),
                         list(data.keys()) if isinstance(data, dict) else type(data).__name__,
                     )
+                # Approval pause: when a tool call needs the user to approve
+                # before it runs, OpenClaw emits an approval-requested agent
+                # event and then closes the current bracket with a chat `final`
+                # even though the run CONTINUES after the decision. Flag the run
+                # so `_is_true_terminal` doesn't clear it on that interim final
+                # (otherwise the run-active signal drifts to false across the
+                # approval → UI "dead air"). No-op for cron/channel sessions,
+                # which never have a tracked active run. Done before the
+                # channel/cron forwarding gate because the marker is independent
+                # of whether we forward the event to the web UI.
+                if (
+                    stream == "approval"
+                    and isinstance(payload.get("data"), dict)
+                    and payload["data"].get("phase") == "requested"
+                    and payload["data"].get("status") in ("pending", "unavailable")
+                    and session_key
+                ):
+                    self._mark_awaiting_approval(session_key)
                 # Billing: lifecycle/end fires once per completed agent run
                 # for BOTH webchat and channel-driven runs (webchat's chat.final
                 # only fires for webchat, so we use lifecycle/end instead).
@@ -1177,10 +1245,14 @@ class GatewayConnection:
                 # Delta/unknown states never forward, so they don't need it.
                 if state not in ("final", "error", "aborted"):
                     return
-                # Terminal state for this session_key — clear the active-run
-                # entry so subsequent reader_loop exits make the dead-vs-
-                # parked decision based on still-in-flight runs only.
-                if session_key:
+                # Clear the active-run entry only on a TRUE terminal so
+                # subsequent reader_loop exits make the dead-vs-parked decision
+                # based on still-in-flight runs only. An interim `final` that
+                # merely closes a tool-approval bracket is NOT terminal — the
+                # run continues after the user decides — so `_is_true_terminal`
+                # keeps it active to avoid run-active "dead air" across the
+                # approval. (Frontend forwarding below is unchanged here.)
+                if session_key and self._is_true_terminal(session_key, state):
                     self._clear_active_run(session_key)
                 run_id = payload["runId"]
                 if state == "final":

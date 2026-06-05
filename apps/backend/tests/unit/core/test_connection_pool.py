@@ -1025,6 +1025,78 @@ class TestActiveRunTracking:
         assert connection.has_active_runs is False
 
     @pytest.mark.asyncio
+    async def test_approval_bracketed_interim_final_keeps_run_active(self, connection):
+        """A tool-approval pause must NOT end the run.
+
+        OpenClaw brackets a pending tool approval like this on the wire (all for
+        the same sessionKey, in order):
+          1. agent event, stream="approval", data.phase="requested",
+             data.status="pending" — the run paused awaiting the user's decision
+             (src/agents/embedded-agent-subscribe.handlers.tools.ts:1378 →
+              emitAgentApprovalEvent / onAgentEvent, infra/agent-events.ts:263).
+          2. chat event, state="final" — the embedded runner closes the *bracket*
+             (finalizeLifecycleEvent → emitChatFinal, src/gateway/server-chat.ts:419),
+             but the run CONTINUES after approval with a fresh lifecycle/end.
+        Clearing _active_runs on (2) drops the run-active signal across the
+        approval (UI "dead air"), so the interim final must be treated as
+        non-terminal. Only the post-continuation final (no approval pending)
+        is a true terminal.
+        """
+        session_key = "agent:a:user-1"
+        connection.mark_run_active(session_key, "a")
+
+        # 1. Approval requested — the run pauses, not ends.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {
+                        "phase": "requested",
+                        "kind": "exec",
+                        "status": "pending",
+                        "title": "Command approval requested",
+                        "approvalId": "appr-1",
+                    },
+                },
+            }
+        )
+        assert connection.has_active_run(session_key) is True
+
+        # 2. Interim chat final for the approval bracket — run must stay active.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "message": {"content": []},
+                },
+            }
+        )
+        assert connection.has_active_run(session_key) is True  # still active across approval
+
+        # 3. True terminal final after the continuation — run clears.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-2",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                },
+            }
+        )
+        assert connection.has_active_run(session_key) is False
+
+    @pytest.mark.asyncio
     async def test_touch_run_updates_last_event_at(self, connection):
         """Any inbound event tagged with the sessionKey bumps last_event_at —
         signal the deadlock watchdog uses to distinguish a stuck container

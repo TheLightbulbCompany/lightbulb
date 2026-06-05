@@ -257,6 +257,36 @@ describe("useExecApprovals — plugin approvals (B)", () => {
     expect(req.command).toBe("Send Slack message to #general"); // command slot reused
   });
 
+  it("defaults a plugin approval with no allowedDecisions to the full set (keeps Trust)", () => {
+    // Upstream's resolvePluginApprovalRequestAllowedDecisions falls back to
+    // DEFAULT_PLUGIN_APPROVAL_DECISIONS (allow-once/allow-always/deny) when the
+    // payload omits allowedDecisions, and the server validates a resolve against
+    // that default — so allow-always (Trust) must be offered, not dropped.
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => {
+      for (const h of eventHandlers) {
+        h("plugin.approval.requested", {
+          id: "pd1",
+          request: {
+            pluginId: "plugin:slack",
+            title: "Send Slack message to #general",
+            agentId: "agent_x",
+            sessionKey: "agent:agent_x:user_test",
+            // allowedDecisions intentionally omitted
+          },
+          createdAtMs: Date.now(),
+          expiresAtMs: Date.now() + 60_000,
+        });
+      }
+    });
+    expect(result.current.queue).toHaveLength(1);
+    expect(result.current.queue[0].allowedDecisions).toEqual([
+      "allow-once",
+      "allow-always",
+      "deny",
+    ]);
+  });
+
   it("drops a plugin approval with no title", () => {
     const { result } = renderHook(() => useExecApprovals());
     act(() => {

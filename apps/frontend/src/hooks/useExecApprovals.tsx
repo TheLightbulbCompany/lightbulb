@@ -256,7 +256,19 @@ function parsePluginRequest(payload: unknown): ExecApprovalRequest | null {
     host: "gateway", // not meaningful for plugins; satisfies the union
     agentId: p.request?.agentId,
     sessionKey: p.request?.sessionKey,
-    allowedDecisions: p.request?.allowedDecisions ?? ["allow-once", "deny"],
+    // The plugin-approval contract defaults a missing allowedDecisions to the
+    // FULL set including allow-always (Trust): upstream
+    // resolvePluginApprovalRequestAllowedDecisions falls back to
+    // DEFAULT_PLUGIN_APPROVAL_DECISIONS, and the server validates a resolve
+    // against that default — so it would accept allow-always. Dropping it here
+    // would disable the Trust button and force re-approval of the same plugin
+    // action every time. (Exec's default deliberately omits Trust — see
+    // parseRequest above — because exec only offers it in certain security modes.)
+    allowedDecisions: p.request?.allowedDecisions ?? [
+      "allow-once",
+      "allow-always",
+      "deny",
+    ],
     expiresAtMs,
     enqueuedAtMs: nowMs,
     pluginTitle: title,

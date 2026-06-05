@@ -112,6 +112,7 @@ export interface UseAgentChatReturn {
   queuedMessages: QueuedMessage[];
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
+  steerMessage: (id: string) => void;
 }
 
 // =============================================================================
@@ -360,6 +361,36 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const clearQueue = useCallback(() => {
     setQueuedMessages([]);
   }, []);
+
+  // Steer a queued message INTO the live run. Only valid while a run is
+  // active (clientRunIdRef set) — the steer text is injected mid-run rather
+  // than queued to run after. Sends {type:"agent_steer", agent_id, text,
+  // runId} via the gateway send primitive (mirroring how sendChat emits
+  // agent_chat) and removes the item from the normal queue, since it's now
+  // part of the live run. No-op if no active run or the id isn't queued.
+  // Mirrors upstream OpenClaw web UI's steerQueuedChatMessage
+  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:737).
+  const steerMessage = useCallback(
+    (id: string) => {
+      const activeRunId = clientRunIdRef.current;
+      if (!activeRunId) return;
+      if (!agentIdRef.current) return;
+      if (!isConnected) return;
+      const item = queuedMessagesRef.current.find((m) => m.id === id);
+      if (!item) return;
+      const text = item.text.trim();
+      if (!text) return;
+
+      send({
+        type: "agent_steer",
+        agent_id: agentIdRef.current,
+        text,
+        runId: activeRunId,
+      });
+      setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+    },
+    [isConnected, send],
+  );
 
   useEffect(() => {
     agentIdRef.current = agentId;
@@ -1180,5 +1211,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     queuedMessages,
     removeQueuedMessage,
     clearQueue,
+    steerMessage,
   };
 }

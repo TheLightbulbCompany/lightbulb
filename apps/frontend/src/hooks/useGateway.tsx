@@ -91,8 +91,6 @@ export type ChatIncomingMessage =
       agent_id?: string;
       runId: string;
     }
-  // Context-compaction notice (terminal "end" only) — rendered as a divider.
-  | { type: "compaction"; phase: "end"; agent_id?: string; runId: string }
   // Low-noise agent-activity surfaces (proposed plan, patch summary, item
   // lifecycle, ACP step) folded into one pill. `detail` carries the full
   // upstream payload for the pill's expansion.
@@ -253,7 +251,6 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       msgType === "tool_error" ||
       msgType === "tool_progress" ||
       msgType === "command_output" ||
-      msgType === "compaction" ||
       msgType === "agent_activity" ||
       msgType === "update_available"
     ) {

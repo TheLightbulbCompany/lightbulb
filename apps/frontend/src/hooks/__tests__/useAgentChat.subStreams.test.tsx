@@ -1,17 +1,15 @@
 /**
- * Dropped sub-stream surfacing for useAgentChat (C-track).
+ * Dropped sub-stream surfacing for useAgentChat.
  *
- * The backend now forwards four formerly-dropped OpenClaw sub-streams as
- * typed chat frames: tool_progress, command_output, compaction, and
- * agent_activity. This suite drives those frames through the hook's chat
- * handler and asserts they reach the public render output (renderItems /
- * renderGroups) instead of vanishing.
+ * The backend forwards formerly-dropped OpenClaw sub-streams as typed chat
+ * frames: tool_progress, command_output, and agent_activity. This suite drives
+ * those frames through the hook's chat handler and asserts they reach the
+ * public render output (renderItems / renderGroups) instead of vanishing.
  *
  * Asserts against the PUBLIC interface (renderItems) — the hook exposes
  * renderGroups/renderItems, not the internal chatMessages/chatToolMessages
  * arrays. A live tool/activity entry surfaces as a kind:"message" render item
- * whose message.content carries the tool_use block; a compaction surfaces as
- * a kind:"divider" item.
+ * whose message.content carries the tool_use block.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -190,15 +188,6 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     expect(findToolUseBlock(result.current.renderItems, "ghost")).toBeUndefined();
   });
 
-  it("compaction end appends a compaction divider", () => {
-    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
-    act(() => {
-      emit({ type: "compaction", phase: "end", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
-    });
-    const divider = result.current.renderItems.find((i) => i.kind === "divider");
-    expect(divider).toBeTruthy();
-  });
-
   it("agent_activity (plan) creates an activity pill", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {
@@ -283,25 +272,9 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
 
   // After the user clears (or aborts) a run, that run's id is tombstoned. A
   // late sub-stream frame for it must NOT repopulate the now-empty chat with a
-  // compaction divider or a stale activity pill (the latter can also re-arm the
-  // busy gate via run adoption). The #811 tombstone filter only covers
-  // chunk/thinking/tool_*; these C-track sub-stream branches sit after it.
-  it("drops a late compaction frame for a cleared/tombstoned run", () => {
-    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
-    act(() => {
-      // Establish the active run so clearMessages can tombstone its runId.
-      emit({ type: "chunk", content: "hi", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
-    });
-    act(() => {
-      result.current.clearMessages();
-    });
-    act(() => {
-      // Late frame for the cleared run — must be dropped.
-      emit({ type: "compaction", phase: "end", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
-    });
-    expect(result.current.renderItems.find((i) => i.kind === "divider")).toBeUndefined();
-  });
-
+  // stale activity pill (which can also re-arm the busy gate via run adoption).
+  // The tombstone filter only covers chunk/thinking/tool_*; these sub-stream
+  // branches sit after it.
   it("drops a late agent_activity frame for a cleared/tombstoned run", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {

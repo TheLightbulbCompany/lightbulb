@@ -680,7 +680,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (
         (msg.type === "tool_progress" ||
           msg.type === "command_output" ||
-          msg.type === "compaction" ||
           msg.type === "agent_activity") &&
         cancelledRunIdsRef.current.has(msg.runId)
       ) {
@@ -868,9 +867,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
-      // --- Dropped sub-streams surfaced additively (C-track) ---
-      // These attach live tool progress, command output, a compaction divider,
-      // and low-noise agent-activity pills. They never touch the run-lifecycle
+      // --- Dropped sub-streams surfaced additively ---
+      // These attach live tool progress, command output, and low-noise
+      // agent-activity pills. They never touch the run-lifecycle
       // refs (clientRunIdRef / resumeExpectedRef / drainedRunIds) — those are
       // owned by the chunk/tool/done/run_ended handlers. Tombstoned-run frames
       // for these types are dropped up front, next to the cancelled-run guard,
@@ -902,22 +901,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         entry.updatedAt = Date.now();
         toolStreamByIdRef.current.set(toolCallId, entry);
         syncToolStreamMessages();
-        return;
-      }
-
-      if (msg.type === "compaction") {
-        // Append a compaction marker message. buildChatItems renders any
-        // message with __openclaw.kind==="compaction" as a divider.
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            role: "system",
-            content: [],
-            timestamp: Date.now(),
-            runId: msg.runId,
-            __openclaw: { kind: "compaction" },
-          },
-        ]);
         return;
       }
 

@@ -131,15 +131,17 @@ class TestTransformAgentEvent:
             is None
         )
 
-    def test_compaction_end_forwarded(self):
-        result = GatewayConnection._transform_agent_event(
-            {"stream": "compaction", "data": {"phase": "end", "completed": True}, "runId": "run-1"}
+    def test_compaction_stream_dropped(self):
+        """Compaction is not surfaced to the chat client yet. Rendering it
+        correctly needs a mid-run live-turn boundary plus a willRetry
+        stream-offset reset, so the transform drops both phases for now and
+        compaction lands in its own change."""
+        assert (
+            GatewayConnection._transform_agent_event(
+                {"stream": "compaction", "data": {"phase": "end", "completed": True}, "runId": "run-1"}
+            )
+            is None
         )
-        assert result == {"type": "compaction", "phase": "end", "runId": "run-1"}
-
-    def test_compaction_start_ignored(self):
-        """Only the terminal 'end' produces the divider; 'start' would render a
-        divider that never resolves."""
         assert (
             GatewayConnection._transform_agent_event({"stream": "compaction", "data": {"phase": "start"}, "runId": "r"})
             is None

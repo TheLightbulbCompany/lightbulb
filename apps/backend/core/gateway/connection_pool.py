@@ -673,7 +673,6 @@ class GatewayConnection:
           plus tool_progress for the mid-execution ``phase: "update"``.
         - ``stream: "command_output"`` events are forwarded as command_output
           (live stdout/stderr addressed to the matching tool pill).
-        - ``stream: "compaction"`` (terminal ``end``) is forwarded as a compaction divider.
         - ``stream: "plan" | "patch" | "item" | "acp"`` are folded into one
           uniform ``agent_activity`` envelope for a single low-noise pill.
 
@@ -755,12 +754,6 @@ class GatewayConnection:
                 transformed = {"type": "command_output", "toolCallId": tool_call_id}
                 if "output" in data:
                     transformed["output"] = data["output"]
-
-        elif stream == "compaction":
-            # Context-compaction notice. Only the terminal 'end' renders the
-            # divider; 'start' would leave a divider that never resolves.
-            if data.get("phase") == "end":
-                transformed = {"type": "compaction", "phase": "end"}
 
         elif stream in ("plan", "patch", "item", "acp"):
             # Low-noise "agent activity" surfaces upstream renders as rich

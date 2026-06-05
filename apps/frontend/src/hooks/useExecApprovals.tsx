@@ -69,6 +69,14 @@ export interface ExecApprovalRequest {
   /** Which decisions the server will accept — usually all three, but
    *  "allow-always" may be absent when policy is ask=always. */
   allowedDecisions: ExecApprovalDecision[];
+  /** Byte-offset ranges into `command` marking the executable tokens
+   *  (top-level + nested). Used to highlight what will actually run
+   *  inside a compound/piped command. Validated against command length. */
+  commandSpans?: { startIndex: number; endIndex: number }[];
+  /** Effective exec security mode: deny | allowlist | full. */
+  security?: string;
+  /** Effective ask policy: off | on-miss | always. */
+  ask?: string;
   /** Server-side expiry timestamp in ms. Used both for the live countdown
    *  and the auto-prune timer. */
   expiresAtMs: number;
@@ -112,6 +120,9 @@ interface RequestPayload {
     agentId?: string;
     sessionKey?: string;
     allowedDecisions?: ExecApprovalDecision[];
+    commandSpans?: { startIndex: number; endIndex: number }[];
+    security?: string;
+    ask?: string;
   };
   expiresAtMs?: number;
 }
@@ -125,6 +136,34 @@ interface ResolvedPayload {
  *  OpenClaw's gateway emits this field, but we set a generous local fallback
  *  (10 min) so a malformed event still gets pruned eventually. */
 const DEFAULT_EXPIRY_MS = 10 * 60 * 1000;
+
+/** Validate command spans against the command. Ported from upstream
+ *  parseCommandSpans — drops out-of-range / malformed spans, returns
+ *  undefined when nothing valid remains so the renderer falls back to
+ *  plain text. WHY: a span that overruns command.length would slice into
+ *  nothing and produce an empty <mark>. */
+function parseCommandSpans(
+  value: unknown,
+  commandLength: number,
+): { startIndex: number; endIndex: number }[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const spans = value.filter(
+    (item): item is { startIndex: number; endIndex: number } => {
+      if (!item || typeof item !== "object") return false;
+      const { startIndex, endIndex } = item as Record<string, unknown>;
+      return (
+        typeof startIndex === "number" &&
+        typeof endIndex === "number" &&
+        Number.isSafeInteger(startIndex) &&
+        Number.isSafeInteger(endIndex) &&
+        startIndex >= 0 &&
+        endIndex > startIndex &&
+        endIndex <= commandLength
+      );
+    },
+  );
+  return spans.length > 0 ? spans : undefined;
+}
 
 function parseRequest(payload: unknown): ExecApprovalRequest | null {
   if (!payload || typeof payload !== "object") return null;
@@ -152,6 +191,12 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
     agentId: p.request.agentId,
     sessionKey: p.request.sessionKey,
     allowedDecisions: p.request.allowedDecisions ?? ["allow-once", "deny"],
+    commandSpans: parseCommandSpans(
+      p.request.commandSpans,
+      p.request.command.length,
+    ),
+    security: p.request.security,
+    ask: p.request.ask,
     expiresAtMs,
     enqueuedAtMs: nowMs,
   };

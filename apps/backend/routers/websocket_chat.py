@@ -1436,6 +1436,35 @@ async def _process_agent_chat_background(
                 logger.warning("[%s] failed to deliver blocked-chat error event", user_id)
             return
 
+        # Serialize per session: refuse to forward a second chat.send into a
+        # session that already has a run in flight. OpenClaw does NOT serialize
+        # distinct messages per session, so two concurrent runs race the
+        # per-session JSONL write lock ("session file locked" / "agent busy").
+        # The backend is the single serialize authority for every chat
+        # entrypoint, so the gate lives here — BEFORE mark_run_active, so we
+        # never mark a run we then refuse.
+        if pool.has_active_run(owner_id, session_key):
+            put_metric("chat.error", dimensions={"reason": "agent_busy"})
+            logger.info(
+                "[%s] chat.send GATED agent=%s session=%s (run active)",
+                user_id,
+                agent_id,
+                session_key,
+            )
+            try:
+                management_api.send_message(
+                    connection_id,
+                    {
+                        "type": "error",
+                        "code": "agent_busy",
+                        "message": "Agent is still working on your previous message.",
+                        "agent_id": agent_id,
+                    },
+                )
+            except Exception:
+                logger.warning("[%s] failed to deliver agent_busy error event", user_id)
+            return
+
         # Open the active-run window BEFORE forwarding chat.send. If the WS
         # to OpenClaw tears down mid-turn (ping timeout during a long Bedrock
         # call), the pool's parked-vs-dead decision in `_on_reader_loop_exit`

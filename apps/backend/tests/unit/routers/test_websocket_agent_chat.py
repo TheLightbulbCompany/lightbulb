@@ -228,6 +228,10 @@ class TestProcessAgentChatBackground:
             # OpenClaw. Default to "not blocked" so existing tests don't
             # need to know about the gate.
             pool.gate_chat = AsyncMock(return_value={"blocked": False})
+            # The busy-gate consults has_active_run (sync) before forwarding
+            # chat.send. Default to "no active run" so existing tests aren't
+            # gated; the AsyncMock default would otherwise read as truthy.
+            pool.has_active_run = MagicMock(return_value=False)
             mock_getter.return_value = pool
             yield pool
 
@@ -323,3 +327,25 @@ class TestProcessAgentChatBackground:
         sent_msg = mock_mgmt_api.send_message.call_args[0][1]
         assert sent_msg["type"] == "error"
         assert "Connection lost" in sent_msg["message"]
+
+    @pytest.mark.asyncio
+    async def test_active_run_gates_chat_send(self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip):
+        """When a run is already active for the session, the second message
+        must NOT be forwarded to OpenClaw (which does not serialize per
+        session) and the user gets a structured agent_busy frame."""
+        mock_pool.has_active_run = MagicMock(return_value=True)
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            message="Second message while busy",
+        )
+        mock_pool.has_active_run.assert_called_once_with("user-1", "agent:luna:user-1")
+        mock_pool.send_rpc.assert_not_called()
+        mock_pool.mark_run_active.assert_not_called()
+        mock_mgmt_api.send_message.assert_called_once()
+        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "error"
+        assert sent_msg["code"] == "agent_busy"
+        assert sent_msg["agent_id"] == "luna"

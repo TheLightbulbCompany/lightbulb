@@ -957,6 +957,11 @@ class TestActiveRunTracking:
         assert run["last_event_at"] == run["started_at"]
         assert connection.has_active_runs is True
 
+    def test_has_active_run_true_only_for_marked_session(self, connection):
+        connection.mark_run_active("agent:a:user-1", "a")
+        assert connection.has_active_run("agent:a:user-1") is True
+        assert connection.has_active_run("agent:a:user-2") is False
+
     @pytest.mark.asyncio
     async def test_chat_final_clears_active_run(self, connection):
         """chat.final on the matching sessionKey clears the active run."""
@@ -1205,6 +1210,27 @@ class TestPoolReconnectFloor:
         pool = GatewayConnectionPool(management_api=MagicMock())
         # Should not raise.
         pool.mark_run_active("user-1", "agent:main:user-1", "main")
+
+    @pytest.mark.asyncio
+    async def test_pool_has_active_run_resolves_owner_connection(self):
+        """The chat dispatcher's busy-gate calls pool.has_active_run before
+        forwarding chat.send. It must resolve the owner's connection and
+        report the per-session run state; False when no connection exists."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        assert pool.has_active_run("user-1", "agent:main:user-1") is False
+
+        conn = GatewayConnection(
+            frontend_connections=set(),
+            user_id="user-1",
+            ip="10.0.0.1",
+            token="tok",
+            management_api=MagicMock(),
+        )
+        conn.mark_run_active("agent:main:user-1", "main")
+        pool._connections["user-1"] = conn
+
+        assert pool.has_active_run("user-1", "agent:main:user-1") is True
+        assert pool.has_active_run("user-1", "agent:other:user-1") is False
 
     @pytest.mark.asyncio
     async def test_is_user_connected_true_for_parked_with_runs(self):

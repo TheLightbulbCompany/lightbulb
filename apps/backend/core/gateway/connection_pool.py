@@ -238,6 +238,17 @@ class GatewayConnection:
     def has_active_runs(self) -> bool:
         return bool(self._active_runs)
 
+    def has_active_run(self, session_key: str) -> bool:
+        """True iff a chat.send is in flight for *session_key*.
+
+        The chat dispatcher's busy-gate consults this before forwarding a
+        second chat.send into the same OpenClaw session — OpenClaw does not
+        serialize distinct messages per session, so two concurrent runs race
+        the per-session JSONL write lock. Returns False once the run's
+        chat-terminal event clears the entry.
+        """
+        return session_key in self._active_runs
+
     def mark_run_active(self, session_key: str, agent_id: str | None = None) -> None:
         """Record that a chat.send is being dispatched for *session_key*.
 
@@ -1543,6 +1554,17 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.mark_run_active(session_key, agent_id)
+
+    def has_active_run(self, user_id: str, session_key: str) -> bool:
+        """Whether a chat.send is in flight for *session_key* on *user_id*'s
+        connection. Returns False when no connection exists yet (nothing can
+        be in flight). Resolves the connection the same way ``mark_run_active``
+        does so the busy-gate sees the exact state the dispatcher marks.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return False
+        return conn.has_active_run(session_key)
 
     async def gate_chat(self, *, user_id: str, owner_id: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users.

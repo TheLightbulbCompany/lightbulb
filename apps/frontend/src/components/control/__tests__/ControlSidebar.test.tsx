@@ -49,4 +49,12 @@ describe("ControlSidebar", () => {
     // Loading state: render the item rather than flash it on resolve.
     expect(screen.getByText("Credits")).toBeInTheDocument();
   });
+
+  it("shows the Channels nav item for every provider", () => {
+    // Channels is provider-agnostic — unlike Credits, it isn't gated on
+    // provider_choice, so any seeded value (here byo_key) must still show it.
+    mockSWRData.mockReturnValue({ provider_choice: "byo_key" });
+    render(<ControlSidebar activePanel="overview" />);
+    expect(screen.getByText("Channels")).toBeInTheDocument();
+  });
 });

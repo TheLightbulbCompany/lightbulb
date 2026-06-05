@@ -12,6 +12,7 @@ import { SkillsPanel } from "./panels/SkillsPanel";
 import { LLMPanel } from "./panels/LLMPanel";
 import { CreditsPanel } from "./panels/CreditsPanel";
 import { IntegrationsPanel } from "./panels/IntegrationsPanel";
+import { ChannelsStatusPanel } from "./panels/ChannelsStatusPanel";
 
 
 interface ControlPanelRouterProps {
@@ -26,6 +27,7 @@ type UserMeResponse = {
 const PANELS: Record<string, React.ComponentType> = {
   overview: OverviewPanel,
   sessions: SessionsPanel,
+  channels: ChannelsStatusPanel,
   usage: UsagePanel,
   cron: CronPanel,
   agents: AgentsPanel,

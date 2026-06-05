@@ -17,6 +17,9 @@ export interface ContentBlock {
   args?: unknown;
   arguments?: unknown;
   input?: unknown;
+  /** Live incremental output (tool phase:update / command_output) shown in the
+   *  tool pill while running; superseded by the tool_result block on terminal. */
+  progressText?: string;
   // tool_result-flavored
   tool_use_id?: string;
   toolUseId?: string;
@@ -54,6 +57,14 @@ export interface ToolStreamEntry {
   status: "running" | "done" | "error";
   startedAt: number;
   updatedAt: number;
+  /** Live incremental output (tool phase:update / command_output). Rendered in
+   *  the tool pill while running; superseded by `output` on terminal. */
+  progressText?: string;
+  /** Non-tool activity surfaces (plan/patch/item/acp) reuse this entry shape
+   *  via a synthetic id; `kind` distinguishes them from real tools. */
+  kind?: "tool" | "activity";
+  /** Human label for an activity entry's pill. */
+  title?: string;
 }
 
 /** A single render item produced by buildChatItems(). */

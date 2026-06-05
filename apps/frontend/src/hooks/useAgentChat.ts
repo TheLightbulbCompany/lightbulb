@@ -230,6 +230,27 @@ function addCappedRunId(set: Set<string>, runId: string): void {
 }
 
 // =============================================================================
+// renderPartial
+//
+// Coerce an OpenClaw partialResult (string OR an array of {type,text} blocks)
+// to a display string. Mirrors upstream formatToolOutput's text extraction so
+// the live tool pill renders the same incremental output the control UI shows.
+// =============================================================================
+
+function renderPartial(partial: unknown): string {
+  if (partial == null) return "";
+  if (typeof partial === "string") return partial;
+  if (Array.isArray(partial)) {
+    return partial
+      .map((b) =>
+        b && typeof b === "object" && "text" in b ? String((b as { text?: unknown }).text ?? "") : "",
+      )
+      .join("");
+  }
+  return "";
+}
+
+// =============================================================================
 // Hook
 //
 // NOTE: Only one useAgentChat instance should be active at a time. The backend
@@ -481,6 +502,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
               id: e.toolCallId,
               name: e.name,
               args: e.args,
+              // Live incremental output (tool phase:update / command_output),
+              // shown in the running pill until the terminal tool_result lands.
+              ...(e.progressText ? { progressText: e.progressText } : {}),
             },
             // Emit tool_result on terminal state regardless of payload —
             // see foldLiveTurnIntoContent for rationale.
@@ -820,6 +844,86 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           }
           return prev;
         });
+        return;
+      }
+
+      // --- Dropped sub-streams surfaced additively (C-track) ---
+      // These attach live tool progress, command output, a compaction divider,
+      // and low-noise agent-activity pills. They never touch the run-lifecycle
+      // refs (clientRunIdRef / resumeExpectedRef / drainedRunIds) — those are
+      // owned by the chunk/tool/done/run_ended handlers.
+
+      if (msg.type === "tool_progress") {
+        // Replace the live pill's progress with the latest partialResult (it is
+        // cumulative per the upstream tool stream). No live entry → nothing to
+        // attach to (the tool already terminated), so drop it.
+        const toolCallId = msg.toolCallId;
+        if (!toolCallId) return;
+        const entry = toolStreamByIdRef.current.get(toolCallId);
+        if (!entry) return;
+        entry.progressText = renderPartial(msg.partialResult);
+        entry.updatedAt = Date.now();
+        toolStreamByIdRef.current.set(toolCallId, entry);
+        syncToolStreamMessages();
+        return;
+      }
+
+      if (msg.type === "command_output") {
+        // Append streamed stdout/stderr to the live pill's progress. command_output
+        // deltas are incremental (not cumulative), so concatenate.
+        const toolCallId = msg.toolCallId;
+        if (!toolCallId || !msg.output) return;
+        const entry = toolStreamByIdRef.current.get(toolCallId);
+        if (!entry) return;
+        entry.progressText = (entry.progressText ?? "") + msg.output;
+        entry.updatedAt = Date.now();
+        toolStreamByIdRef.current.set(toolCallId, entry);
+        syncToolStreamMessages();
+        return;
+      }
+
+      if (msg.type === "compaction") {
+        // Append a compaction marker message. buildChatItems renders any
+        // message with __openclaw.kind==="compaction" as a divider.
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: "system",
+            content: [],
+            timestamp: Date.now(),
+            runId: msg.runId,
+            __openclaw: { kind: "compaction" },
+          },
+        ]);
+        return;
+      }
+
+      if (msg.type === "agent_activity") {
+        // Surface plan/patch/item/acp as a single low-noise pill. Keyed by a
+        // synthetic id (activity+runId) so repeated activities of the same kind
+        // within a run collapse into one updating pill rather than stacking.
+        // Status "done" because activities are point-in-time, not long-running
+        // — this also force-flushes syncToolStreamMessages (terminal entry).
+        const synthId = `activity:${msg.activity}:${msg.runId}`;
+        const now = Date.now();
+        const existing = toolStreamByIdRef.current.get(synthId);
+        const entry: ToolStreamEntry = existing
+          ? { ...existing, name: msg.title || msg.activity, args: msg.detail, updatedAt: now }
+          : {
+              toolCallId: synthId,
+              runId: msg.runId,
+              name: msg.title || msg.activity,
+              args: msg.detail,
+              status: "done",
+              kind: "activity",
+              startedAt: now,
+              updatedAt: now,
+            };
+        toolStreamByIdRef.current.set(synthId, entry);
+        if (!toolStreamOrderRef.current.includes(synthId)) {
+          toolStreamOrderRef.current.push(synthId);
+        }
+        syncToolStreamMessages();
         return;
       }
 

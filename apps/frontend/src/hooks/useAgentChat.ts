@@ -65,6 +65,13 @@ const ERROR_PATTERNS: [RegExp, string][] = [
   [/health check timed out/i, "Your agent is not responding. Please try again in a moment."],
   [/Gateway connection lost/i, "Lost connection to your agent. Retrying..."],
   [/Connection closed/i, "Connection to your agent was interrupted. Please try again."],
+  // Quiet defensive fallback. The backend serialize gate now returns a benign
+  // `agent_busy` frame (handled in the error branch below) instead of letting a
+  // raw "session file locked" surface to the web client, so this should never
+  // fire. It stays only to keep the bare technical lock string from reaching a
+  // user on some untested edge — softened to plain "busy" copy, never an error
+  // card (a lock error carries no errorKind, so it renders as plain text, not a
+  // typed ChatErrorCard).
   [/session file locked/i, "Your agent is busy with another request. Please wait a moment and try again."],
   [/Model access is denied/i, "This model is not available. Try switching to a different model in settings."],
 ];

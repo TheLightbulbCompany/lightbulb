@@ -81,4 +81,15 @@ describe("ChatErrorCard", () => {
       "rate_limit",
     );
   });
+
+  it("never renders the scary 'Provider timeout' title for a stray lock-style error", () => {
+    // The backend serialize gate makes a raw "session file locked" reaching the
+    // web client a now-impossible/defensive path. Even on an untested edge, a
+    // lock error carries no OpenClaw errorKind — so it would never reach this
+    // card with the `timeout` code. Assert that a lock message under a
+    // non-timeout code (or no code) is NOT presented as "Provider timeout".
+    render(<ChatErrorCard message="session file locked" />);
+    expect(screen.queryByText("Provider timeout")).not.toBeInTheDocument();
+    expect(screen.getByText("Failed to generate")).toBeInTheDocument();
+  });
 });

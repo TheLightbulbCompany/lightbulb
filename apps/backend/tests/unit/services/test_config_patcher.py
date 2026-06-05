@@ -1043,6 +1043,48 @@ async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock
 
 
 @pytest.mark.asyncio
+async def test_replace_provider_block_forces_memory_search_off_on_legacy_config(tmp_efs_with_bedrock_provider):
+    """A container provisioned before memory-core was seeded on swaps still
+    has ``memorySearch.enabled: true`` on EFS. Once the swap seeds memory-core
+    (which registers memory_search/memory_get), a stale True there would open
+    the embeddings node:sqlite store on EFS — the NFS-retry gateway deadlock
+    the dreaming change disables. The swap must pair memory-core with
+    memorySearch forced off, exactly as the provision builder does."""
+    from core.containers.config import memory_plugin_entries
+
+    # Simulate the legacy on-disk shape: memorySearch.enabled true (with the
+    # provider/model the builder pins) on a config that predates the seam.
+    config_path = os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")
+    with open(config_path) as f:
+        cfg = json.load(f)
+    cfg["agents"]["defaults"]["memorySearch"] = {
+        "enabled": True,
+        "provider": "bedrock",
+        "model": "amazon.titan-embed-text-v2:0",
+    }
+    with open(config_path, "w") as f:
+        json.dump(cfg, f)
+
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    # The pairing invariant: memory-core present => search forced off.
+    assert result["agents"]["defaults"]["memorySearch"]["enabled"] is False
+    assert "memory-core" in result["plugins"]["entries"]
+    assert result["plugins"]["entries"]["memory-core"] == memory_plugin_entries()["memory-core"]
+    # The pinned provider/model survive so a future off-EFS re-enable inherits
+    # a sane default rather than upstream's "local" GGUF.
+    assert result["agents"]["defaults"]["memorySearch"]["provider"] == "bedrock"
+    assert result["agents"]["defaults"]["memorySearch"]["model"] == "amazon.titan-embed-text-v2:0"
+
+
+@pytest.mark.asyncio
 async def test_replace_provider_block_swaps_chatgpt_for_bedrock():
     """ChatGPT OAuth → Bedrock: starting from an empty providers dict +
     empty plugin entries, the bedrock block must land cleanly."""

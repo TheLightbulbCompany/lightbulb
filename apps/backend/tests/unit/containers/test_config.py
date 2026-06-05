@@ -138,6 +138,26 @@ class TestOpenclawConfigShape:
         assert entries["lobster"] == {"enabled": True}
         assert entries["llm-task"] == {"enabled": True}
 
+    def test_memory_core_dreaming_enabled_light_rem_only(self):
+        """memory-core's dreaming subsystem is enabled at provision with the
+        light + REM phases on and the deep phase OFF. Deep phase + embeddings
+        drive the EFS-sqlite store (gateway-deadlock class) and are an
+        explicit follow-up. Only schema-legal keys may appear under
+        plugins.entries.memory-core.config — the upstream configSchema is
+        additionalProperties:false at every level, so a stray key bricks the
+        container at boot."""
+        config = _cfg()
+        entry = config["plugins"]["entries"]["memory-core"]
+        assert entry["enabled"] is True
+        dreaming = entry["config"]["dreaming"]
+        assert dreaming["enabled"] is True
+        assert dreaming["frequency"] == "0 3 * * *"
+        assert dreaming["timezone"] == "UTC"
+        assert dreaming["phases"]["light"] == {"enabled": True}
+        assert dreaming["phases"]["rem"] == {"enabled": True}
+        assert dreaming["phases"]["deep"] == {"enabled": False}
+        assert set(entry["config"].keys()) == {"dreaming"}
+
     def test_tools_exec_approval_policy(self):
         """allowlist + on-miss lets the in-chat approval card decide on
         unknown commands. OpenClaw's default security=deny silently blocks

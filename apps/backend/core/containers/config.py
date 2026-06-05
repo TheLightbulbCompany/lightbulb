@@ -489,6 +489,51 @@ def workflow_plugin_entries() -> dict:
     }
 
 
+def memory_plugin_entries() -> dict:
+    """The bundled ``memory-core`` extension with dreaming enabled, shared
+    by both the provision-time builder (``build_openclaw_config_dict``) and
+    the provider hot-swap path (``config_patcher.replace_provider_block``).
+
+    Dreaming consolidates session transcripts into MEMORY.md on a nightly
+    cron. Light + REM phases read session transcripts off disk and write
+    flat JSON / markdown artifacts (``memory/.dreams/*.json``, ``DREAMS.md``)
+    under a lockfile — no long-lived sqlite connection, so they are EFS-safe.
+
+    The DEEP phase is OFF: its short-term promotion is driven by recall
+    signals from ``memory_search`` (embeddings-backed), and any embeddings
+    call opens a ``node:sqlite`` store at ``~/.openclaw/memory/<agentId>.sqlite``
+    — which in Isol8 is EFS, the same NFS-retry deadlock class that bricks
+    the gateway's V8 main thread. Re-enabling deep requires relocating the
+    embeddings store off EFS first (a separate change), and is gated behind
+    ``agents.defaults.memorySearch.enabled`` being flipped back to True.
+
+    Keys are restricted to the upstream ``memory-core`` configSchema, which
+    is strict (``additionalProperties:false``) at every level: the only key
+    under ``config`` is ``dreaming``. A stray key fails the strict plugin
+    loader and the container crash-loops at boot.
+
+    Returned fresh each call so callers may merge/mutate without corrupting
+    shared module state.
+    """
+    return {
+        "memory-core": {
+            "enabled": True,
+            "config": {
+                "dreaming": {
+                    "enabled": True,
+                    "frequency": "0 3 * * *",  # nightly 03:00 unified sweep
+                    "timezone": "UTC",
+                    "phases": {
+                        "light": {"enabled": True},
+                        "deep": {"enabled": False},
+                        "rem": {"enabled": True},
+                    },
+                },
+            },
+        },
+    }
+
+
 def build_openclaw_config_dict(
     *,
     user_id: str,
@@ -778,6 +823,11 @@ def build_openclaw_config_dict(
                 # Kept in sync with the provider hot-swap path via the shared
                 # workflow_plugin_entries() seam.
                 **workflow_plugin_entries(),
+                # memory-core's dreaming subsystem (light + REM phases; deep
+                # OFF). Shared with the provider hot-swap path via the
+                # memory_plugin_entries() seam so a Bedrock <-> ChatGPT switch
+                # doesn't drop it.
+                **memory_plugin_entries(),
             },
         },
         # Channels: we ship every supported provider as `enabled: true`

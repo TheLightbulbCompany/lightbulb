@@ -293,6 +293,26 @@ class TestProcessAgentChatBackground:
         assert call_kwargs["token"] == "test-gw-token"
 
     @pytest.mark.asyncio
+    async def test_ensures_connection_before_marking_run_active(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """The active-run window must open even on the FIRST send to a fresh
+        task. mark_run_active no-ops without a connection (and nothing else
+        populates _active_runs), and send_rpc is what creates the connection —
+        so the dispatcher must ensure_connection BEFORE marking, otherwise the
+        first run has no window and has_active_run can't gate a concurrent send.
+        """
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            message="Hello!",
+        )
+        mock_pool.ensure_connection.assert_awaited_once_with("user-1", "10.0.1.5", "test-gw-token")
+        mock_pool.mark_run_active.assert_called_once_with("user-1", "agent:luna:user-1", "luna")
+
+    @pytest.mark.asyncio
     async def test_no_container_sends_error(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
         """No container should send error to frontend, not call pool."""
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
@@ -826,8 +846,10 @@ class TestAgentChatSideChannel:
         # Side sends carry deliver:false on the same wire as a normal send —
         # the container detects the /btw prefix and runs it as a side run.
         assert kw["params"]["deliver"] is False
-        # Side run must not claim the run window.
+        # Side run must not claim the run window — the dispatcher skips the
+        # whole ensure_connection + mark block for side sends.
         mock_pool.mark_run_active.assert_not_called()
+        mock_pool.ensure_connection.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_side_message_marks_run_active(

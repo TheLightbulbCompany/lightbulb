@@ -181,6 +181,20 @@ class TestGatewayConnectionPool:
             assert result == {"status": "ok"}
 
     @pytest.mark.asyncio
+    async def test_ensure_connection_creates_when_absent(self, pool):
+        """ensure_connection get-or-creates the per-user connection and returns
+        it, so the chat dispatcher can guarantee a connection exists BEFORE
+        marking a run active — pool.mark_run_active no-ops without one, and
+        nothing else populates _active_runs."""
+        mock_conn = AsyncMock(spec=GatewayConnection)
+        mock_conn.is_connected = True
+        mock_conn._frontend_connections = set()
+        with patch.object(pool, "_create_connection", return_value=mock_conn) as create:
+            conn = await pool.ensure_connection("user-1", "10.0.0.1", "tok")
+            assert conn is mock_conn
+            create.assert_awaited_once_with("user-1", "10.0.0.1", "tok")
+
+    @pytest.mark.asyncio
     async def test_send_rpc_reuses_existing(self, pool):
         """send_rpc should reuse an existing connected GatewayConnection."""
         mock_conn = AsyncMock(spec=GatewayConnection)

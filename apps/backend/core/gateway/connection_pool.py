@@ -1659,11 +1659,12 @@ class GatewayConnectionPool:
         """Public entry point for the chat dispatcher.
 
         Records that a chat.send is being issued for *session_key* on the
-        per-user gateway connection. Silently no-ops when no connection
-        exists for *user_id* yet (the chat dispatcher will create one on
-        the same code path); the next inbound event keyed on this
-        session_key will populate ``_active_runs`` once the connection
-        is up. Idempotent.
+        per-user gateway connection. Silently no-ops when no connection exists
+        for *user_id* yet — and NOTHING else populates ``_active_runs`` (inbound
+        events only touch/clear an existing entry), so a mark issued before the
+        connection exists is simply lost. The chat dispatcher therefore calls
+        ``ensure_connection`` before marking on every non-side send, which
+        guarantees a connection here. Idempotent.
         """
         conn = self._connections.get(user_id)
         if conn is None:
@@ -1807,6 +1808,27 @@ class GatewayConnectionPool:
         not first-time creates — a fresh user landing on /chat shouldn't
         wait 5s for the first connection.
         """
+        conn = await self.ensure_connection(user_id, ip, token)
+        await conn.send_rpc(req_id, method, params)
+        try:
+            return await conn.wait_for_response(req_id)
+        except Exception:
+            put_metric("gateway.rpc.error", dimensions={"method": method})
+            raise
+
+    async def ensure_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
+        """Get-or-create the per-user gateway connection and return it.
+
+        Same three repair paths as ``send_rpc`` (parked→reopen, stale→recreate,
+        absent→create), adopting the freshly-resolved endpoint. Extracted so the
+        chat dispatcher can GUARANTEE the connection exists before it records the
+        active-run window: ``mark_run_active`` silently no-ops when no connection
+        exists yet, and on a fresh backend task it is ``send_rpc`` that would
+        otherwise create the connection — so marking before the first send would
+        be lost. ``send_rpc`` itself routes through here, so the dispatcher's
+        pre-send call is idempotent (the second resolution finds the live
+        connection on the fast path).
+        """
         async with self._lock:
             conn = self._connections.get(user_id)
             # Always adopt the freshly-resolved endpoint. Container task IPs are
@@ -1830,13 +1852,7 @@ class GatewayConnectionPool:
                 conn = None
             if conn is None:
                 conn = await self._create_connection(user_id, ip, token)
-
-        await conn.send_rpc(req_id, method, params)
-        try:
-            return await conn.wait_for_response(req_id)
-        except Exception:
-            put_metric("gateway.rpc.error", dimensions={"method": method})
-            raise
+            return conn
 
     def _respect_reconnect_floor(self, user_id: str) -> None:
         """Raise if another reconnect for *user_id* fired within `_RECONNECT_FLOOR_S`.

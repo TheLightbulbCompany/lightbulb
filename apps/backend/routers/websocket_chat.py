@@ -1556,11 +1556,20 @@ async def _process_agent_chat_background(
         # during the streaming window. Idempotent for the cancel-and-retry
         # race where the same sessionKey starts a fresh run.
         #
+        # `mark_run_active` records against the per-user gateway connection and
+        # no-ops if none exists yet. On the FIRST send to a fresh backend task
+        # the connection is created lazily by send_rpc, so we ensure_connection
+        # FIRST — otherwise the mark is lost and the first run has no active-run
+        # window (has_active_run wouldn't gate a concurrent send and the parked
+        # reader wouldn't see the run). send_rpc routes through ensure_connection
+        # too, so this is idempotent (the second resolution hits the fast path).
+        #
         # Skip for side (`/btw`) sends: a side run is a detached question that
         # never enters the session's active-run window upstream, so claiming
         # the window here would falsely mark the session busy and let the
         # side run's terminal event clear the PRIMARY run's window.
         if not side:
+            await pool.ensure_connection(owner_id, ip, container["gateway_token"])
             pool.mark_run_active(owner_id, session_key, agent_id)
             run_active_marked = True
 

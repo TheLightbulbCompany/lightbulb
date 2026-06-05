@@ -62,14 +62,17 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["meta"]["lastTouchedVersion"] == DEPLOYED_UPSTREAM_VERSION
 
-    def test_agents_defaults_memory_search_pinned_to_bedrock(self):
-        # Embedding provider must be pinned to bedrock — the upstream
-        # default is "local" which needs a GGUF model file we don't ship,
-        # and qmd's first embed cycle hangs ~3min on that. Bedrock works
-        # via task-role IAM regardless of the user's chosen auth path.
+    def test_agents_defaults_memory_search_disabled(self):
+        # memorySearch is OFF. It was inert while no plugin consumed it, but
+        # memory-core registers memory_search/memory_get; a True value would
+        # open an embeddings node:sqlite store at ~/.openclaw/memory/*.sqlite
+        # — which is EFS here, the documented NFS-retry gateway deadlock.
+        # The provider/model stay pinned to Bedrock so re-enabling later
+        # (after relocating the store off EFS) inherits a sane default
+        # instead of upstream's "local" GGUF we don't ship.
         config = _cfg()
         memory_search = config["agents"]["defaults"]["memorySearch"]
-        assert memory_search["enabled"] is True
+        assert memory_search["enabled"] is False
         assert memory_search["provider"] == "bedrock"
         assert memory_search["model"] == "amazon.titan-embed-text-v2:0"
 

@@ -689,14 +689,20 @@ def build_openclaw_config_dict(
                 # assignment/comment) is independent of this.
                 "heartbeat": {"every": "30m"},
                 "workspace": "/home/node/.openclaw/workspaces",
-                # Memory embedding provider, kept pinned to Bedrock so any
-                # future plugin that does want embeddings inherits a sane
-                # default. Today's `builtin` backend doesn't use embeddings
-                # — it's flat MEMORY.md files. Without an explicit provider,
-                # openclaw defaults to "local" (GGUF we don't ship), which
-                # historically caused hangs.
+                # Memory embedding search is OFF. Once memory-core registers
+                # memory_search/memory_get, a True value here makes any recall
+                # open an embeddings node:sqlite store at
+                # ~/.openclaw/memory/<agentId>.sqlite — which is EFS here, the
+                # documented NFS-retry deadlock that bricks the gateway's V8
+                # main thread. The light/REM dreaming phases we enable are
+                # flat-file (DREAMS.md / memory/.dreams/*.json) and need no
+                # embeddings, so dreaming runs safely with search off.
+                # provider/model stay pinned to Bedrock so a future off-EFS
+                # re-enable inherits a sane default instead of upstream's
+                # "local" GGUF (which we don't ship and which historically
+                # hung on first embed).
                 "memorySearch": {
-                    "enabled": True,
+                    "enabled": False,
                     "provider": "bedrock",
                     "model": "amazon.titan-embed-text-v2:0",
                 },

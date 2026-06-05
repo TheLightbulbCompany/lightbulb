@@ -746,4 +746,40 @@ describe("useAgentChat — multi-tab observation (runId adoption + agent_busy ro
     expect(result.current.isStreaming).toBe(true);
     expect(result.current.queuedMessages).toHaveLength(0);
   });
+
+  it("drains the queue when a no-runId error releases the gate (no container / send failure)", async () => {
+    // A send that fails BEFORE OpenClaw assigns a runId (no-container,
+    // billing-gate, or chat.send failure) sends {type:error} with NO runId. It
+    // releases the gate (clears clientRunIdRef) but there is no runId to key the
+    // normal endedActiveRun drain on — and no trailing run_ended will arrive. A
+    // follow-up the user queued while that send was pending must still drain.
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("primary");
+    });
+    const r1 = lastClientRunId();
+    act(() =>
+      dispatch({ type: "chunk", agent_id: "agent-X", runId: r1, content: "x" } as ChatIncomingMessage),
+    );
+    await act(async () => {
+      await result.current.sendMessage("follow-up");
+    });
+    expect(result.current.queuedMessages).toHaveLength(1);
+
+    // The active send fails with a no-runId transport/gate error.
+    act(() =>
+      dispatch({
+        type: "error",
+        agent_id: "agent-X",
+        message: "No container provisioned. Please subscribe to start chatting.",
+      } as ChatIncomingMessage),
+    );
+
+    // Gate released → the queued follow-up drains instead of stranding.
+    expect(sendChat).toHaveBeenCalledTimes(2);
+    expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
 });

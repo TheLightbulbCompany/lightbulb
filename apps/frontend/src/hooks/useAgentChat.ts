@@ -991,9 +991,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         setError(displayError);
         // Did THIS error end the active run? A terminal agent error carries
         // the run's runId (the no-runId agent_busy notice was handled and
-        // returned above). Capture the match before clearing so we can drain.
+        // returned above). Capture state before clearing so we can drain.
         const endedActiveRun =
           !!msg.runId && msg.runId === clientRunIdRef.current;
+        const gateWasArmed = clientRunIdRef.current !== null;
         if (!msg.runId || msg.runId === clientRunIdRef.current) {
           clientRunIdRef.current = null;
         }
@@ -1003,12 +1004,19 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           setIsStreaming(false);
         }
 
-        // Drain the queue if this error genuinely ended the active run. A
-        // trailing `run_ended {outcome:"error"}` is deduped by runId so the
-        // pair never double-drains. (No-runId transport errors don't drain
-        // — there's no run-ended runId to key the drain/dedupe on.)
+        // Drain the queue if this error RELEASED the busy gate, so a follow-up
+        // the user queued while the failed send was pending isn't stranded.
+        // Two release paths:
+        //  - terminal agent error WITH a matching runId (endedActiveRun): dedupe
+        //    by runId so the trailing `run_ended {outcome:"error"}` doesn't
+        //    double-drain.
+        //  - no-runId transport/gate error (no container, billing block, send
+        //    failure) that just cleared clientRunIdRef: there is no runId to key
+        //    a dedupe on, and no trailing run_ended will arrive, so drain here.
         if (endedActiveRun && !drainedRunIdsRef.current.has(msg.runId!)) {
           addCappedRunId(drainedRunIdsRef.current, msg.runId!);
+          drainQueueRef.current();
+        } else if (!msg.runId && gateWasArmed && clientRunIdRef.current === null) {
           drainQueueRef.current();
         }
         return;
@@ -1267,6 +1275,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // (controllers/chat.ts) and the client tracks it (TUI noteLocalBtwRunId).
       // The eventual side `run_ended` is dropped by that segregation, so it can
       // never drain the primary queue.
+      //
+      // Known limitation: a `/btw` typed while DISCONNECTED does not match here
+      // (no live socket to mint+track a side run against), so it falls through
+      // to the waiting-reconnect queue below and replays as an ordinary send on
+      // reconnect — losing its detached framing client-side (the container still
+      // detects the `/btw` prefix server-side and runs it as a side run). This
+      // is accepted while `/btw` lacks a dedicated side-result surface: detached
+      // answers aren't rendered in the web UI yet regardless, and the trigger
+      // (compose a `/btw` precisely during a transient disconnect) is narrow.
       if (/^\/(btw|side)(?::|\s|$)/i.test(trimmed) && isConnected && agentIdRef.current) {
         const sideRunId = crypto.randomUUID();
         addCappedRunId(sideRunIdsRef.current, sideRunId);

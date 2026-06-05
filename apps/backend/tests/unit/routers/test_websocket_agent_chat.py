@@ -240,11 +240,12 @@ class TestProcessAgentChatBackground:
             # chat.send. Default to "no active run" so existing tests aren't
             # gated; the AsyncMock default would otherwise read as truthy.
             pool.has_active_run = MagicMock(return_value=False)
-            # mark_run_active / clear_active_run are SYNC on the real pool;
-            # stub as MagicMock so calling them doesn't spawn un-awaited
-            # coroutines (which surface as RuntimeWarnings).
+            # mark_run_active / clear_active_run / mark_side_run are SYNC on the
+            # real pool; stub as MagicMock so calling them doesn't spawn
+            # un-awaited coroutines (which surface as RuntimeWarnings).
             pool.mark_run_active = MagicMock()
             pool.clear_active_run = MagicMock()
+            pool.mark_side_run = MagicMock()
             mock_getter.return_value = pool
             yield pool
 
@@ -783,10 +784,12 @@ class TestAgentChatSideChannel:
             # Sync gate check; default to "no active run" so a non-side message
             # isn't spuriously gated by the AsyncMock auto-attr.
             pool.has_active_run = MagicMock(return_value=False)
-            # mark_run_active / clear_active_run are SYNC on the real pool;
-            # stub as MagicMock so calls don't spawn un-awaited coroutines.
+            # mark_run_active / clear_active_run / mark_side_run are SYNC on the
+            # real pool; stub as MagicMock so calls don't spawn un-awaited
+            # coroutines.
             pool.mark_run_active = MagicMock()
             pool.clear_active_run = MagicMock()
+            pool.mark_side_run = MagicMock()
             mock_getter.return_value = pool
             yield pool
 
@@ -846,10 +849,17 @@ class TestAgentChatSideChannel:
         # Side sends carry deliver:false on the same wire as a normal send —
         # the container detects the /btw prefix and runs it as a side run.
         assert kw["params"]["deliver"] is False
-        # Side run must not claim the run window — the dispatcher skips the
-        # whole ensure_connection + mark block for side sends.
+        # A side run ensures the connection (its events arrive there + the side
+        # runId is registered so its terminal won't clear the primary window),
+        # and registers as a side run — but must NOT claim the primary's
+        # active-run window.
+        mock_pool.ensure_connection.assert_awaited_once()
+        mock_pool.mark_side_run.assert_called_once()
         mock_pool.mark_run_active.assert_not_called()
-        mock_pool.ensure_connection.assert_not_called()
+        # The side runId registered MUST equal the chat.send idempotencyKey, so
+        # the runId OpenClaw stamps on the side run's events/terminal matches
+        # what the terminal handler checks against the side-run set.
+        assert mock_pool.mark_side_run.call_args[0][1] == kw["params"]["idempotencyKey"]
 
     @pytest.mark.asyncio
     async def test_non_side_message_marks_run_active(

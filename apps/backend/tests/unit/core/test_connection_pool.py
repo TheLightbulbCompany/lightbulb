@@ -1169,6 +1169,74 @@ class TestActiveRunTracking:
         assert connection.has_active_runs is False
 
     @pytest.mark.asyncio
+    async def test_side_run_terminal_preserves_primary_active_run(self, connection):
+        """A /btw side run shares the primary's sessionKey but owns no window
+        (the dispatcher skips mark_run_active for it). Its terminal must NOT
+        clear the PRIMARY run's active-run window — otherwise the busy gate
+        drops mid-primary-run and a concurrent send races the JSONL write lock.
+        Mirrors upstream's per-runId tracking + the clients' separate btw-id
+        sets (app-gateway.ts chatSideResultTerminalRuns / tui isLocalBtwRunId).
+        """
+        session_key = "agent:main:user-1"
+        connection.mark_run_active(session_key, agent_id="main")  # primary
+        connection.mark_side_run("side-run-9")  # concurrent /btw run
+
+        # The side run finishes first, on the SAME sessionKey but its own runId.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "side-run-9",
+                    "message": {"content": [{"type": "text", "text": "aside"}]},
+                },
+            }
+        )
+        # Primary window survives; the side id self-cleaned.
+        assert connection.has_active_run(session_key) is True
+        assert connection._is_side_run("side-run-9") is False
+
+        # The PRIMARY run's own terminal clears it normally.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-primary",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                },
+            }
+        )
+        assert connection.has_active_run(session_key) is False
+
+    @pytest.mark.asyncio
+    async def test_side_run_approval_does_not_flag_primary_awaiting(self, connection):
+        """A side run's approval-requested event must not flag the PRIMARY run
+        (shared sessionKey) as awaiting-approval — that would suppress the
+        primary's real terminal and wedge its window."""
+        session_key = "agent:main:user-1"
+        connection.mark_run_active(session_key, "main")
+        connection.mark_side_run("side-run-9")
+
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "side-run-9",
+                    "data": {"phase": "requested", "kind": "exec", "status": "pending"},
+                },
+            }
+        )
+        assert connection._active_runs[session_key]["awaiting_approval"] is False
+
+    @pytest.mark.asyncio
     async def test_approval_bracketed_interim_final_keeps_run_active(self, connection):
         """A tool-approval pause must NOT end the run.
 

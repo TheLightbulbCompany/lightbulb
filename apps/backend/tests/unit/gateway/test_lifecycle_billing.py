@@ -32,6 +32,7 @@ def conn():
     # __init__ in real usage; tests that use __new__ to bypass init have to
     # populate them by hand.
     c._active_runs = {}
+    c._side_run_ids = {}
     c._parked = False
     c._parked_watchdog_task = None
     return c

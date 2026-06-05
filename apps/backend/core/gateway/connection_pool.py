@@ -61,6 +61,11 @@ _RECONNECT_FLOOR_S = 5
 # vs-slow-turn signal is greppable in CloudWatch Insights.
 _RUN_LONG_IDLE_S = 300
 
+# Bound on the per-connection side-run id set. Entries self-clean on the side
+# run's terminal; this cap is only a safety net for a side run that never emits
+# one. Far above any realistic count of concurrent `/btw` runs on one session.
+_SIDE_RUN_IDS_CAP = 256
+
 
 def _deliver_to_recipients(
     recipients: list[tuple[str, str, str]],
@@ -156,6 +161,20 @@ class GatewayConnection:
         # Non-emptiness is the load-bearing signal for the parked-vs-dead
         # teardown decision in `_reader_loop` — see _on_reader_loop_exit.
         self._active_runs: Dict[str, Dict[str, Any]] = {}
+        # Side-channel (`/btw`) run ids. A `/btw` aside runs CONCURRENTLY with a
+        # normal turn but, on the wire, shares the same ``session_key`` (only the
+        # runId differs). ``_active_runs`` is keyed by session_key — which is
+        # load-bearing for the approval-pause mechanism (a same-session,
+        # different-runId follow-up final must clear the window) — so it cannot
+        # also be keyed by runId. Upstream sidesteps this entirely by tracking
+        # runs per-runId and keeping btw ids in a separate set the primary
+        # active-run state excludes (web UI ``chatSideResultTerminalRuns`` /
+        # app-gateway.ts; TUI ``localBtwRunIds`` / tui-event-handlers.ts). We
+        # mirror that: a side run's terminal must NOT clear the PRIMARY run's
+        # session window, so we record side runIds here and the agent-event
+        # handler skips all ``_active_runs`` mutation for them. Insertion-ordered
+        # dict used as a bounded FIFO set; entries self-clean on their terminal.
+        self._side_run_ids: Dict[str, None] = {}
         # True after the reader_loop has died with active runs in flight.
         # Means: the OpenClaw process is presumed alive (we just saw it
         # streaming) but our WS to it tore down (e.g. websockets ping
@@ -288,6 +307,30 @@ class GatewayConnection:
     def _clear_active_run(self, session_key: str) -> None:
         """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
         self._active_runs.pop(session_key, None)
+
+    def mark_side_run(self, run_id: str) -> None:
+        """Record *run_id* as a side-channel (`/btw`) run.
+
+        A side run shares the primary run's ``session_key`` on the wire, so the
+        agent-event handler consults this set to AVOID mutating the primary
+        run's ``_active_runs`` window when a side run's events / terminal
+        arrive. Bounded FIFO; entries are removed on the side run's terminal
+        (``_forget_side_run``), so the cap is only a safety net.
+        """
+        if not run_id:
+            return
+        self._side_run_ids[run_id] = None
+        while len(self._side_run_ids) > _SIDE_RUN_IDS_CAP:
+            oldest = next(iter(self._side_run_ids))
+            del self._side_run_ids[oldest]
+
+    def _is_side_run(self, run_id: str | None) -> bool:
+        """Whether *run_id* is a tracked side-channel (`/btw`) run."""
+        return bool(run_id) and run_id in self._side_run_ids
+
+    def _forget_side_run(self, run_id: str) -> None:
+        """Drop *run_id* from the side-run set (on its terminal)."""
+        self._side_run_ids.pop(run_id, None)
 
     def _mark_awaiting_approval(self, session_key: str) -> None:
         """Flag the active run keyed by *session_key* as paused on an approval.
@@ -1217,6 +1260,10 @@ class GatewayConnection:
                     and payload["data"].get("phase") == "requested"
                     and payload["data"].get("status") in ("pending", "unavailable")
                     and session_key
+                    # A side (`/btw`) run's approval must not flag the PRIMARY
+                    # run's window (shared session_key) as awaiting-approval —
+                    # that would suppress the primary's real terminal.
+                    and not self._is_side_run(payload.get("runId"))
                 ):
                     self._mark_awaiting_approval(session_key)
                 # Billing: lifecycle/end fires once per completed agent run
@@ -1262,21 +1309,37 @@ class GatewayConnection:
                 # Delta/unknown states never forward, so they don't need it.
                 if state not in ("final", "error", "aborted"):
                     return
-                # Clear the active-run entry only on a TRUE terminal so
-                # subsequent reader_loop exits make the dead-vs-parked decision
-                # based on still-in-flight runs only. An interim `final` that
-                # merely closes a tool-approval bracket is NOT terminal — the
-                # run continues after the user decides — so `_is_true_terminal`
-                # keeps it active to avoid run-active "dead air" across the
-                # approval. (Frontend forwarding below is unchanged here.)
-                #
-                # `_is_true_terminal` consumes the pending-approval flag, so
-                # call it exactly once and reuse the result for both clearing
-                # the run and the authoritative `run_ended` forward below.
-                is_true_terminal = bool(session_key) and self._is_true_terminal(session_key, state)
-                if is_true_terminal:
-                    self._clear_active_run(session_key)
                 run_id = payload["runId"]
+                # Side-channel (`/btw`) terminal: a side run shares this
+                # session_key with the primary run but owns NO active-run window
+                # (the dispatcher skips mark_run_active for it). It must NOT
+                # touch `_active_runs` — clearing here would tear down the
+                # PRIMARY run's window mid-stream, dropping the busy-gate and
+                # reintroducing the per-session JSONL write-lock race. It must
+                # also NOT consult `_is_true_terminal` (that would consume the
+                # primary run's awaiting_approval flag). So treat it as terminal
+                # for ITS OWN run only — forget the id and forward `run_ended`
+                # (the frontend drops it via its own side-run set). Mirrors
+                # upstream's per-runId run tracking + the clients' separate
+                # btw-id sets (app-gateway.ts chatSideResultTerminalRuns /
+                # tui-event-handlers.ts isLocalBtwRunId).
+                if self._is_side_run(run_id):
+                    self._forget_side_run(run_id)
+                    is_true_terminal = True
+                else:
+                    # Clear the active-run entry only on a TRUE terminal so
+                    # subsequent reader_loop exits make the dead-vs-parked
+                    # decision based on still-in-flight runs only. An interim
+                    # `final` that merely closes a tool-approval bracket is NOT
+                    # terminal (the run continues via a separate follow-up run),
+                    # so `_is_true_terminal` keeps it active to avoid run-active
+                    # "dead air" across the approval. `_is_true_terminal`
+                    # consumes the pending-approval flag, so call it exactly once
+                    # and reuse the result for both clearing the run and the
+                    # authoritative `run_ended` forward below.
+                    is_true_terminal = bool(session_key) and self._is_true_terminal(session_key, state)
+                    if is_true_terminal:
+                        self._clear_active_run(session_key)
                 if state == "final":
                     put_metric("chat.message.count")
                     # Deliver thinking from content blocks for models that
@@ -1697,6 +1760,18 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn._clear_active_run(session_key)
+
+    def mark_side_run(self, user_id: str, run_id: str) -> None:
+        """Record *run_id* as a side-channel (`/btw`) run on *user_id*'s
+        connection so its terminal never clears the PRIMARY run's session
+        window (both share the session_key). The dispatcher calls this after
+        ``ensure_connection`` for a side send, so a connection exists here.
+        Silently no-ops when none does.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        conn.mark_side_run(run_id)
 
     async def gate_chat(self, *, user_id: str, owner_id: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users.

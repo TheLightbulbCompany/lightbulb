@@ -1568,10 +1568,23 @@ async def _process_agent_chat_background(
         # never enters the session's active-run window upstream, so claiming
         # the window here would falsely mark the session busy and let the
         # side run's terminal event clear the PRIMARY run's window.
+        # The runId this send is bound to: == the chat.send idempotencyKey ==
+        # the runId OpenClaw stamps on every event for this run (chat.ts:2450).
+        # Computed up-front so a side run can be registered under the SAME id its
+        # terminal will carry.
+        run_id_for_send = client_run_id or str(uuid4())
+
         if not side:
             await pool.ensure_connection(owner_id, ip, container["gateway_token"])
             pool.mark_run_active(owner_id, session_key, agent_id)
             run_active_marked = True
+        else:
+            # Side (`/btw`) run: register its runId so the agent-event handler
+            # never clears the PRIMARY run's session window when this side run
+            # ends (both share the session_key). ensure_connection first so the
+            # registration lands on the live connection the events arrive on.
+            await pool.ensure_connection(owner_id, ip, container["gateway_token"])
+            pool.mark_side_run(owner_id, run_id_for_send)
 
         # Idempotency key for OpenClaw's chat.send. We always send one so
         # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`,
@@ -1596,7 +1609,7 @@ async def _process_agent_chat_background(
         chat_send_params: dict[str, object] = {
             "sessionKey": session_key,
             "message": message,
-            "idempotencyKey": client_run_id or str(uuid4()),
+            "idempotencyKey": run_id_for_send,
             "deliver": False,
         }
 

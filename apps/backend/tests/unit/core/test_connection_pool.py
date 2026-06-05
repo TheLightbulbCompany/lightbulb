@@ -1227,6 +1227,103 @@ class TestActiveRunTracking:
         assert connection.has_active_run(session_key) is False
 
     @pytest.mark.asyncio
+    async def test_awaiting_approval_run_cleared_on_error_terminal(self, connection):
+        """A run paused on an approval that then ERRORS must still clear.
+
+        `awaiting_approval` only suppresses the interim `final` that closes the
+        approval bracket. An `error` is always a true terminal (the run is over
+        either way), so it must clear `_active_runs` even while the approval flag
+        is set — otherwise a run that dies mid-approval would leak forever and
+        the parked-vs-dead teardown in `_on_reader_loop_exit` would mistake the
+        dead run for an in-flight one. This is the leak-prevention safety valve.
+        """
+        session_key = "agent:a:user-1"
+        connection.mark_run_active(session_key, "a")
+
+        # Pause on an approval.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {
+                        "phase": "requested",
+                        "kind": "exec",
+                        "status": "pending",
+                        "approvalId": "appr-1",
+                    },
+                },
+            }
+        )
+        assert connection.has_active_run(session_key) is True
+        assert connection._active_runs[session_key]["awaiting_approval"] is True
+
+        # The run errors out WHILE awaiting the approval — still a true terminal.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "errorMessage": "boom",
+                    "errorKind": "unknown",
+                },
+            }
+        )
+        assert connection.has_active_run(session_key) is False
+        assert session_key not in connection._active_runs
+
+    @pytest.mark.asyncio
+    async def test_awaiting_approval_run_cleared_on_aborted_terminal(self, connection):
+        """A run paused on an approval that is then ABORTED must still clear.
+
+        Same safety valve as the error case: `aborted` is always a true
+        terminal, so the approval-pause flag must not keep a dead run alive.
+        """
+        session_key = "agent:a:user-1"
+        connection.mark_run_active(session_key, "a")
+
+        # Pause on an approval.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {
+                        "phase": "requested",
+                        "kind": "exec",
+                        "status": "pending",
+                        "approvalId": "appr-1",
+                    },
+                },
+            }
+        )
+        assert connection._active_runs[session_key]["awaiting_approval"] is True
+
+        # The run is aborted WHILE awaiting the approval — still a true terminal.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "aborted",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                },
+            }
+        )
+        assert connection.has_active_run(session_key) is False
+        assert session_key not in connection._active_runs
+
+    @pytest.mark.asyncio
     async def test_touch_run_updates_last_event_at(self, connection):
         """Any inbound event tagged with the sessionKey bumps last_event_at —
         signal the deadlock watchdog uses to distinguish a stuck container

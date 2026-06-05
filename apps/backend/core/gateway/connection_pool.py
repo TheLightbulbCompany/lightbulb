@@ -315,9 +315,11 @@ class GatewayConnection:
         approval: OpenClaw emits a chat ``final`` to close the approval bracket
         but resumes the run with a fresh lifecycle after the user decides, so
         the bracket-closing ``final`` is interim, not the end. We consume the
-        pending-approval flag here (one interim `final` per approval) so the
-        run reverts to a normal active run and the next ``final`` — the one
-        after the continuation, with no approval outstanding — clears it.
+        pending-approval flag here (one interim `final` per approval *bracket* —
+        the boolean tracks a single pause-point bracket, not a per-approval
+        counter) so the run reverts to a normal active run and the next
+        ``final`` — the one after the continuation, with no approval
+        outstanding — clears it.
 
         Keeping the interim `final` non-terminal preserves the run-active
         signal across the approval (no UI "dead air") without leaking dead

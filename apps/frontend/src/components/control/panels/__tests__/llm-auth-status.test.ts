@@ -40,6 +40,13 @@ describe("resolveProviderStatus", () => {
     expect(resolveProviderStatus("bedrock_claude", null, list)).toBe("ok");
   });
 
+  it("matches bedrock_claude to the amazon-bedrock provider entry (the real container id)", () => {
+    const list = providers(
+      { provider: "amazon-bedrock", displayName: "Amazon Bedrock", status: "ok" },
+    );
+    expect(resolveProviderStatus("bedrock_claude", null, list)).toBe("ok");
+  });
+
   it("matches byo_key + anthropic to the anthropic provider entry", () => {
     const list = providers(
       { provider: "anthropic", displayName: "Anthropic", status: "expiring" },

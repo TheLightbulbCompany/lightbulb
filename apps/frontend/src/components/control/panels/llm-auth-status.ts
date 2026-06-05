@@ -43,7 +43,11 @@ function candidateIds(
   choice: ProviderChoice,
   byoProvider: ByoProvider | null,
 ): string[] {
-  if (choice === "bedrock_claude") return ["bedrock"];
+  // The container writes ``models.providers.amazon-bedrock`` and reports that
+  // id back through models.authStatus (upstream normalizeProviderId only
+  // lowercases — it does NOT map ``amazon-bedrock`` → ``bedrock``), so the
+  // real reported id is ``amazon-bedrock``; ``bedrock`` is a tolerant fallback.
+  if (choice === "bedrock_claude") return ["amazon-bedrock", "bedrock"];
   if (choice === "chatgpt_oauth") return ["openai-codex"];
   // byo_key
   if (byoProvider === "anthropic") return ["anthropic"];

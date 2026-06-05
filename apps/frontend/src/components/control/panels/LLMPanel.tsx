@@ -298,7 +298,7 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
   // Live container auth health for the provider dot. The panel mounts under the
   // control surface's GatewayProvider, so the RPC resolves. These hooks sit
   // above the early return below so hook order stays stable across renders.
-  const { data: authStatus } = useGatewayRpc<{
+  const { data: authStatus, mutate: revalidateAuthStatus } = useGatewayRpc<{
     ts: number;
     providers: AuthStatusProvider[];
   }>("models.authStatus");
@@ -325,7 +325,17 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
         <h2 className="text-lg font-semibold">LLM Provider</h2>
         <button
           type="button"
-          onClick={() => void refreshAuthStatus("models.authStatus", { refresh: true })}
+          // The read hook only auto-revalidates on a matching gateway *event*,
+          // and models.authStatus is an RPC (nothing pushes a matching event),
+          // so Refresh must explicitly revalidate the read key. Order matters:
+          // first bust the gateway's 60s cache snapshot via the refresh RPC,
+          // then revalidate the read hook so its SWR cache (and the dot) pulls
+          // the now-fresh snapshot.
+          onClick={() =>
+            void refreshAuthStatus("models.authStatus", { refresh: true }).then(() =>
+              revalidateAuthStatus(),
+            )
+          }
           className="rounded-md border border-[#e0dbd0] text-[#8a8578] hover:bg-[#f3efe6] px-2.5 py-1 text-xs"
         >
           Refresh status

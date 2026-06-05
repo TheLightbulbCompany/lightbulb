@@ -28,15 +28,18 @@ vi.mock("@/hooks/useChatGPTOAuth", () => ({
 }));
 
 // models.authStatus drives the live provider-health dot. Each test seeds a
-// providers[] snapshot; the mutation captures refresh:true calls.
+// providers[] snapshot; the mutation captures refresh:true calls. The read
+// hook's mutate is a stable captured spy so we can assert the Refresh button
+// revalidates the read key (the source of the dot) after busting the cache.
 const mockAuthStatusData = vi.fn();
 const mockRpcMutation = vi.fn();
+const mockReadMutate = vi.fn();
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({
     data: mockAuthStatusData(),
     error: undefined,
     isLoading: false,
-    mutate: vi.fn(),
+    mutate: mockReadMutate,
   }),
   useGatewayRpcMutation: () => mockRpcMutation,
 }));
@@ -79,6 +82,10 @@ describe("LLMPanel", () => {
     mockAuthStatusData.mockReset();
     mockAuthStatusData.mockReturnValue({ ts: 1, providers: [] });
     mockRpcMutation.mockReset();
+    // The refresh handler chains ``.then(revalidate)`` off the mutation, so
+    // the mutation mock must resolve or the chain throws on undefined.
+    mockRpcMutation.mockResolvedValue({ ts: 2, providers: [] });
+    mockReadMutate.mockReset();
   });
 
   it("renders the ChatGPT hero + Connected status + Disconnect button for chatgpt_oauth", () => {
@@ -250,14 +257,23 @@ describe("LLMPanel", () => {
     expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "neutral");
   });
 
-  it("refreshes auth status with {refresh:true} when the Refresh button is clicked", () => {
+  it("busts the gateway cache then revalidates the read key when Refresh is clicked", async () => {
     mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
     mockAuthStatusData.mockReturnValue({
       ts: 1,
-      providers: [{ provider: "bedrock", displayName: "Bedrock", status: "ok" }],
+      providers: [{ provider: "amazon-bedrock", displayName: "Amazon Bedrock", status: "ok" }],
     });
     render(<LLMPanel />);
     fireEvent.click(screen.getByRole("button", { name: /refresh status/i }));
+    // Busts the gateway's 60s cache snapshot...
     expect(mockRpcMutation).toHaveBeenCalledWith("models.authStatus", { refresh: true });
+    // ...then revalidates the read hook so the SWR cache (and the dot) updates.
+    // The read hook only auto-revalidates on a matching gateway *event*, and
+    // models.authStatus is an RPC with no event, so without this explicit
+    // revalidate the dot keeps its stale color until an unrelated remount.
+    await waitFor(() => expect(mockReadMutate).toHaveBeenCalled());
+    expect(mockRpcMutation.mock.invocationCallOrder[0]).toBeLessThan(
+      mockReadMutate.mock.invocationCallOrder[0],
+    );
   });
 });

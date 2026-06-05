@@ -228,4 +228,46 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     });
     expect(findToolUseByName(result.current.renderItems, "Other agent plan")).toBeUndefined();
   });
+
+  // After the user clears (or aborts) a run, that run's id is tombstoned. A
+  // late sub-stream frame for it must NOT repopulate the now-empty chat with a
+  // compaction divider or a stale activity pill (the latter can also re-arm the
+  // busy gate via run adoption). The #811 tombstone filter only covers
+  // chunk/thinking/tool_*; these C-track sub-stream branches sit after it.
+  it("drops a late compaction frame for a cleared/tombstoned run", () => {
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+    act(() => {
+      // Establish the active run so clearMessages can tombstone its runId.
+      emit({ type: "chunk", content: "hi", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+    });
+    act(() => {
+      result.current.clearMessages();
+    });
+    act(() => {
+      // Late frame for the cleared run — must be dropped.
+      emit({ type: "compaction", phase: "end", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+    });
+    expect(result.current.renderItems.find((i) => i.kind === "divider")).toBeUndefined();
+  });
+
+  it("drops a late agent_activity frame for a cleared/tombstoned run", () => {
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+    act(() => {
+      emit({ type: "chunk", content: "hi", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+    });
+    act(() => {
+      result.current.clearMessages();
+    });
+    act(() => {
+      emit({
+        type: "agent_activity",
+        activity: "plan",
+        title: "Late plan",
+        detail: { steps: ["a"] },
+        agent_id: AGENT,
+        runId: RUN,
+      } as ChatIncomingMessage);
+    });
+    expect(findToolUseByName(result.current.renderItems, "Late plan")).toBeUndefined();
+  });
 });

@@ -853,6 +853,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // refs (clientRunIdRef / resumeExpectedRef / drainedRunIds) — those are
       // owned by the chunk/tool/done/run_ended handlers.
 
+      // A run the user cleared/aborted is tombstoned in cancelledRunIdsRef; late
+      // sub-stream frames for it must not repopulate the cleared chat (a compaction
+      // divider) or surface a stale activity pill / re-arm the busy gate via run
+      // adoption. The tombstone filter above only covers chunk/thinking/tool_*;
+      // extend the same protection to the sub-stream types added here.
+      if (
+        (msg.type === "tool_progress" ||
+          msg.type === "command_output" ||
+          msg.type === "compaction" ||
+          msg.type === "agent_activity") &&
+        cancelledRunIdsRef.current.has(msg.runId)
+      ) {
+        return;
+      }
+
       if (msg.type === "tool_progress") {
         // Replace the live pill's progress with the latest partialResult (it is
         // cumulative per the upstream tool stream). No live entry → nothing to

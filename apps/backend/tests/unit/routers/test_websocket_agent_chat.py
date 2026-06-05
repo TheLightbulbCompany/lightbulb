@@ -663,6 +663,9 @@ class TestAgentChatSideChannel:
             pool = AsyncMock()
             pool.send_rpc = AsyncMock(return_value={"runId": "run-btw", "status": "started"})
             pool.gate_chat = AsyncMock(return_value={"blocked": False})
+            # Sync gate check; default to "no active run" so a non-side message
+            # isn't spuriously gated by the AsyncMock auto-attr.
+            pool.has_active_run = MagicMock(return_value=False)
             mock_getter.return_value = pool
             yield pool
 

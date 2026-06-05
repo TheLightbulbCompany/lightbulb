@@ -1513,8 +1513,10 @@ async def _process_agent_chat_background(
         # per-session JSONL write lock ("session file locked" / "agent busy").
         # The backend is the single serialize authority for every chat
         # entrypoint, so the gate lives here — BEFORE mark_run_active, so we
-        # never mark a run we then refuse.
-        if pool.has_active_run(owner_id, session_key):
+        # never mark a run we then refuse. Side (`/btw`) sends bypass the gate:
+        # a detached side run never claims the session's active-run window, so
+        # it must be allowed alongside an in-flight primary run.
+        if not side and pool.has_active_run(owner_id, session_key):
             put_metric("chat.error", dimensions={"reason": "agent_busy"})
             logger.info(
                 "[%s] chat.send GATED agent=%s session=%s (run active)",

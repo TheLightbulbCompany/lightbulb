@@ -97,6 +97,28 @@ function MetaRow({
   );
 }
 
+/** Plugin-approval body: free-text description + a plugin-flavored meta
+ *  block. Ported from upstream renderPluginBody. The exec command-span +
+ *  exec-only meta rows (Host/CWD/Security/Ask/argv) are intentionally
+ *  absent — they're not meaningful for a plugin/MCP tool call. */
+function PluginBody({ pending }: { pending: ExecApprovalRequest }) {
+  return (
+    <>
+      {pending.pluginDescription && (
+        <pre className="font-mono text-[#302d28] whitespace-pre-wrap break-words text-sm mt-1">
+          {pending.pluginDescription}
+        </pre>
+      )}
+      <div className="mt-2 space-y-1 text-xs text-[#302d28]">
+        <MetaRow label="Severity" value={pending.pluginSeverity} />
+        <MetaRow label="Plugin" value={pending.pluginId} />
+        <MetaRow label="Agent" value={pending.agentId} />
+        <MetaRow label="Session" value={pending.sessionKey} />
+      </div>
+    </>
+  );
+}
+
 export function ExecApprovalCards() {
   const { queue, resolve, error } = useExecApprovalsContext();
   if (queue.length === 0) return null;
@@ -151,26 +173,41 @@ function ExecApprovalCard({ pending, onDecide, globalError }: ExecApprovalCardPr
 
   return (
     <div className="rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-3 text-sm">
-      <div className="flex items-start justify-between gap-2">
-        <CommandWithSpans command={pending.command} spans={pending.commandSpans} />
-        <span className="inline-flex items-center px-2 py-0.5 text-xs rounded bg-[#e8e3d9] text-[#302d28] shrink-0">
-          {HOST_LABEL[pending.host]}
-        </span>
-      </div>
+      {pending.kind === "plugin" ? (
+        <>
+          <div className="flex items-start justify-between gap-2">
+            <div className="font-semibold text-[#1a1a1a] break-all">
+              {pending.pluginTitle}
+            </div>
+          </div>
+          <PluginBody pending={pending} />
+        </>
+      ) : (
+        <>
+          <div className="flex items-start justify-between gap-2">
+            <CommandWithSpans command={pending.command} spans={pending.commandSpans} />
+            <span className="inline-flex items-center px-2 py-0.5 text-xs rounded bg-[#e8e3d9] text-[#302d28] shrink-0">
+              {HOST_LABEL[pending.host]}
+            </span>
+          </div>
 
-      <div className="mt-2 space-y-1 text-xs text-[#302d28]">
-        <MetaRow label="Host" value={HOST_LABEL[pending.host]} />
-        <MetaRow label="Agent" value={pending.agentId} />
-        <MetaRow label="Session" value={pending.sessionKey} />
-        <MetaRow label="CWD" value={pending.cwd} path />
-        <MetaRow label="Resolved" value={pending.resolvedPath} path />
-        <MetaRow label="Security" value={pending.security} />
-        <MetaRow label="Ask" value={pending.ask} />
-        {pending.commandArgv && (
-          <MetaRow label="argv" value={JSON.stringify(pending.commandArgv)} />
-        )}
-        {allowsAlways && <div className="text-[#8a8578] pt-1">{trustScopeLine}</div>}
-      </div>
+          <div className="mt-2 space-y-1 text-xs text-[#302d28]">
+            <MetaRow label="Host" value={HOST_LABEL[pending.host]} />
+            <MetaRow label="Agent" value={pending.agentId} />
+            <MetaRow label="Session" value={pending.sessionKey} />
+            <MetaRow label="CWD" value={pending.cwd} path />
+            <MetaRow label="Resolved" value={pending.resolvedPath} path />
+            <MetaRow label="Security" value={pending.security} />
+            <MetaRow label="Ask" value={pending.ask} />
+            {pending.commandArgv && (
+              <MetaRow label="argv" value={JSON.stringify(pending.commandArgv)} />
+            )}
+            {allowsAlways && (
+              <div className="text-[#8a8578] pt-1">{trustScopeLine}</div>
+            )}
+          </div>
+        </>
+      )}
 
       <div className="mt-3 flex gap-2 flex-wrap">
         <Button

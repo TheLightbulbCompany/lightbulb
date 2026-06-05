@@ -67,4 +67,11 @@ describe("countCronOverdue", () => {
     const jobs = [job({ state: {} })];
     expect(countCronOverdue(jobs, NOW)).toBe(0);
   });
+
+  it("does not count a job that has fired and is still running", () => {
+    // nextRunAtMs is in the past because the job already fired, but runningAtMs
+    // means the run is still in progress — it isn't overdue, it's executing.
+    const jobs = [job({ state: { nextRunAtMs: NOW - 1000, runningAtMs: NOW - 500 } })];
+    expect(countCronOverdue(jobs, NOW)).toBe(0);
+  });
 });

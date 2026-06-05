@@ -17,10 +17,14 @@ export function countCronFailed(jobs: CronJob[]): number {
 
 // An enabled job whose scheduled next run is already in the past is "overdue"
 // — the container hasn't fired it on time. nowMs is injected so tests can
-// freeze the clock.
+// freeze the clock. A job that has already fired and is still executing has a
+// past nextRunAtMs but a live runningAtMs; it is in-progress, not overdue, so
+// it's excluded here. runningAtMs is JobCard's own running indicator, so the
+// badge and the per-job card agree on what "running" means.
 export function countCronOverdue(jobs: CronJob[], nowMs: number): number {
   return jobs.filter((job) => {
     const next = job.state?.nextRunAtMs;
-    return job.enabled && next != null && next < nowMs;
+    const isRunning = Boolean(job.state?.runningAtMs);
+    return job.enabled && !isRunning && next != null && next < nowMs;
   }).length;
 }

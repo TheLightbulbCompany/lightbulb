@@ -695,6 +695,32 @@ async def ws_message(
         )
         return Response(status_code=200)
 
+    if msg_type == "agent_abort":
+        # Cancel the in-flight run for this session. Forwarded as upstream's
+        # chat.abort: {sessionKey, runId} when the client knows the runId, else
+        # {sessionKey} (mirrors openclaw chat.ts abortChatRun). Fire-and-don't-
+        # wait-for-terminal: the run's aborted/run_ended arrives via the normal
+        # event stream, where the existing terminal handler clears the active
+        # run — so we deliberately do NOT clear it here.
+        agent_id = body.get("agent_id")
+        run_id = body.get("runId")
+        if not agent_id:
+            management_api = await get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {"type": "error", "message": "Missing agent_id"},
+            )
+            return Response(status_code=200)
+        background_tasks.add_task(
+            _process_agent_abort_background,
+            connection_id=x_connection_id,
+            user_id=user_id,
+            owner_id=owner_id,
+            agent_id=agent_id,
+            run_id=run_id,
+        )
+        return Response(status_code=200)
+
     # Unknown message type
     management_api = await get_management_api_client()
     management_api.send_message(
@@ -1532,3 +1558,66 @@ async def _process_agent_chat_background(
         )
     except Exception:
         pass
+
+
+async def _process_agent_abort_background(
+    connection_id: str,
+    user_id: str,
+    owner_id: str,
+    agent_id: str,
+    run_id: str | None = None,
+) -> None:
+    """Cancel the in-flight run for ``agent:{agent_id}:{user_id}``.
+
+    Forwards upstream's ``chat.abort``. Param shape mirrors openclaw's
+    abortChatRun (ui/src/ui/controllers/chat.ts:682): ``{sessionKey, runId}``
+    when the runId is known, else ``{sessionKey}`` alone.
+
+    Fire-and-don't-wait-for-terminal: chat.abort only requests cancellation.
+    The run's ``aborted`` / ``run_ended`` event arrives via the normal event
+    stream, and the pool's existing terminal handler clears the active-run
+    window there — so this function deliberately does NOT clear it.
+    """
+    logger.info(
+        "[%s] chat.abort agent=%s owner=%s runId=%s conn=%s",
+        user_id,
+        agent_id,
+        owner_id,
+        run_id or "-",
+        connection_id[:12],
+    )
+    # Abort is best-effort and silent on failure (see except below), so we
+    # never need a Management API client here — nothing is pushed to the client.
+    session_key = f"agent:{agent_id}:{user_id}"
+    try:
+        ecs_manager = get_ecs_manager()
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
+        if not container or not ip:
+            # No live container/IP means there's nothing to abort. Stay quiet:
+            # an abort on a dead session is a no-op, not a user-facing error.
+            logger.info(
+                "[%s] chat.abort skipped agent=%s — no running container/ip",
+                user_id,
+                agent_id,
+            )
+            return
+
+        params: dict[str, str] = {"sessionKey": session_key}
+        if run_id:
+            params["runId"] = run_id
+
+        pool = get_gateway_pool()
+        await pool.send_rpc(
+            user_id=owner_id,
+            req_id=str(uuid4()),
+            method="chat.abort",
+            params=params,
+            ip=ip,
+            token=container["gateway_token"],
+        )
+        logger.info("[%s] chat.abort SENT agent=%s runId=%s", user_id, agent_id, run_id or "-")
+    except Exception as e:
+        # Best-effort: a failed abort shouldn't surface as a chat error. The
+        # run either already finished or will time out on its own.
+        put_metric("chat.error", dimensions={"reason": "abort_failed"})
+        logger.warning("[%s] chat.abort FAIL agent=%s: %s", user_id, agent_id, e)

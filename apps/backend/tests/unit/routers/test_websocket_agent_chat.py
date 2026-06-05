@@ -16,7 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routers.websocket_chat import router, _process_agent_chat_background
+from routers.websocket_chat import (
+    router,
+    _process_agent_chat_background,
+    _process_agent_abort_background,
+)
 
 
 @pytest.fixture
@@ -349,3 +353,159 @@ class TestProcessAgentChatBackground:
         assert sent_msg["type"] == "error"
         assert sent_msg["code"] == "agent_busy"
         assert sent_msg["agent_id"] == "luna"
+
+
+# ---------------------------------------------------------------------------
+# agent_abort  ->  chat.abort
+# ---------------------------------------------------------------------------
+
+
+class TestAgentAbortRouting:
+    """ws_message routes agent_abort to the abort background task."""
+
+    @pytest.mark.asyncio
+    async def test_agent_abort_with_run_id_queued(
+        self, test_app, mock_connection_service, mock_management_api, connected_user
+    ):
+        """agent_abort with a runId queues the abort task carrying that runId."""
+        with patch("routers.websocket_chat._process_agent_abort_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "test-conn-123"},
+                    json={"type": "agent_abort", "agent_id": "luna", "runId": "run-9"},
+                )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_not_called()
+        mock_bg.assert_called_once_with(
+            connection_id="test-conn-123",
+            user_id="test-user-456",
+            owner_id="test-user-456",
+            agent_id="luna",
+            run_id="run-9",
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_abort_without_run_id_queued(
+        self, test_app, mock_connection_service, mock_management_api, connected_user
+    ):
+        """agent_abort without a runId still queues the abort task (run_id=None)."""
+        with patch("routers.websocket_chat._process_agent_abort_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "test-conn-123"},
+                    json={"type": "agent_abort", "agent_id": "luna"},
+                )
+
+        assert response.status_code == 200
+        mock_bg.assert_called_once_with(
+            connection_id="test-conn-123",
+            user_id="test-user-456",
+            owner_id="test-user-456",
+            agent_id="luna",
+            run_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_abort_missing_agent_id_sends_error(
+        self, test_app, mock_connection_service, mock_management_api, connected_user
+    ):
+        """Missing agent_id should send an error and not queue the task."""
+        with patch("routers.websocket_chat._process_agent_abort_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "test-conn-123"},
+                    json={"type": "agent_abort", "runId": "run-9"},
+                )
+
+        assert response.status_code == 200
+        mock_bg.assert_not_called()
+        mock_management_api.send_message.assert_called_once()
+        assert mock_management_api.send_message.call_args[0][1]["type"] == "error"
+
+
+class TestProcessAgentAbortBackground:
+    """_process_agent_abort_background forwards chat.abort with the right params."""
+
+    @pytest.fixture
+    def mock_ecs_manager(self):
+        with patch("routers.websocket_chat.get_ecs_manager") as mock_getter:
+            manager = AsyncMock()
+            mock_getter.return_value = manager
+            yield manager
+
+    @pytest.fixture
+    def mock_pool(self):
+        with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
+            pool = AsyncMock()
+            pool.send_rpc = AsyncMock(return_value={})
+            mock_getter.return_value = pool
+            yield pool
+
+    @pytest.fixture
+    def mock_mgmt_api(self):
+        with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
+            client = MagicMock()
+            client.send_message = MagicMock(return_value=True)
+            mock_getter.return_value = client
+            yield client
+
+    @pytest.fixture
+    def container_with_ip(self, mock_ecs_manager):
+        container = {"gateway_token": "test-gw-token", "owner_id": "user-1"}
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        return container
+
+    @pytest.mark.asyncio
+    async def test_abort_with_run_id_forwards_session_key_and_run_id(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """chat.abort carries {sessionKey, runId} when runId is present."""
+        await _process_agent_abort_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            run_id="run-9",
+        )
+        mock_pool.send_rpc.assert_called_once()
+        kw = mock_pool.send_rpc.call_args[1]
+        assert kw["method"] == "chat.abort"
+        assert kw["params"] == {"sessionKey": "agent:luna:user-1", "runId": "run-9"}
+        assert kw["ip"] == "10.0.1.5"
+        assert kw["token"] == "test-gw-token"
+
+    @pytest.mark.asyncio
+    async def test_abort_without_run_id_forwards_session_key_only(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """chat.abort carries {sessionKey} only when runId is absent."""
+        await _process_agent_abort_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            run_id=None,
+        )
+        mock_pool.send_rpc.assert_called_once()
+        kw = mock_pool.send_rpc.call_args[1]
+        assert kw["method"] == "chat.abort"
+        assert kw["params"] == {"sessionKey": "agent:luna:user-1"}
+
+    @pytest.mark.asyncio
+    async def test_abort_does_not_clear_active_run(self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip):
+        """Abort must NOT clear the active-run window — the terminal
+        aborted/run_ended event from the stream owns that transition."""
+        await _process_agent_abort_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            run_id="run-9",
+        )
+        # The pool's run-clearing entry points must not be invoked here.
+        mock_pool.clear_active_run.assert_not_called()
+        mock_pool.mark_run_active.assert_not_called()

@@ -125,6 +125,7 @@ export interface UseAgentChatReturn {
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
   steerMessage: (id: string) => void;
+  retryQueuedMessage: (id: string) => void;
 }
 
 // =============================================================================
@@ -196,6 +197,27 @@ function foldLiveTurnIntoContent(params: {
     content.push({ type: "text", text: tailStream });
   }
   return content;
+}
+
+// =============================================================================
+// markDrained
+//
+// Records a runId in the drained-runIds Set, capping it to the last
+// DRAINED_RUNIDS_CAP entries (FIFO eviction via insertion-ordered Set) so it
+// never grows unbounded over a long-lived chat. A drained runId only needs to
+// outlive the done↔run_ended pair for its own run; once a handful of newer
+// runs have completed, an older entry can never legitimately re-fire.
+// =============================================================================
+
+const DRAINED_RUNIDS_CAP = 64;
+
+function markDrained(set: Set<string>, runId: string): void {
+  set.add(runId);
+  while (set.size > DRAINED_RUNIDS_CAP) {
+    const oldest = set.values().next().value;
+    if (oldest === undefined) break;
+    set.delete(oldest);
+  }
 }
 
 // =============================================================================
@@ -357,6 +379,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // emit a `done` with NO trailing run_ended. We therefore drain on EITHER
   // signal but dedupe by runId here so done+run_ended for the same run never
   // drains twice (which would double-send the next queued message).
+  //
+  // Capped to the last N runIds (insertion-ordered Set, FIFO eviction) so it
+  // never grows unbounded over a long-lived chat. A drained runId only needs
+  // to outlive the done↔run_ended pair for its own run; once a handful of
+  // newer runs have completed, an older entry can never legitimately re-fire.
   const drainedRunIdsRef = useRef<Set<string>>(new Set());
 
   // Ref to the latest queue-drain function. The once-registered
@@ -738,7 +765,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         if (drainedRunIdsRef.current.has(runId)) {
           return;
         }
-        drainedRunIdsRef.current.add(runId);
+        markDrained(drainedRunIdsRef.current, runId);
         // run_ended is the server's word that the run ended — force-release
         // the busy gate for it even if some local heuristic still held it.
         if (clientRunIdRef.current === runId) {
@@ -840,7 +867,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // (a `done` with no trailing run_ended) this `done` IS the only
         // run-ended signal, so the drain must happen here too.
         if (endedActiveRun && !drainedRunIdsRef.current.has(runId)) {
-          drainedRunIdsRef.current.add(runId);
+          markDrained(drainedRunIdsRef.current, runId);
           drainQueueRef.current();
         }
         return;
@@ -903,7 +930,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // pair never double-drains. (No-runId transport errors don't drain
         // — there's no run-ended runId to key the drain/dedupe on.)
         if (endedActiveRun && !drainedRunIdsRef.current.has(msg.runId!)) {
-          drainedRunIdsRef.current.add(msg.runId!);
+          markDrained(drainedRunIdsRef.current, msg.runId!);
           drainQueueRef.current();
         }
         return;
@@ -916,15 +943,25 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   // ---- Send message ----
 
-  // Hoisted so both sendMessage and the flushQueue effect can call it.
-  // dispatchNow assumes the busy-gate has already been checked.
+  // Hoisted so both sendMessage and the drain can call it. dispatchNow
+  // assumes the busy-gate has already been checked. Returns true on a
+  // successful wire send, false if the send threw.
+  //
+  // `queueItem` distinguishes a drain-originated send from a direct typed
+  // send. For a drain failure we re-queue the item as `failed` (so it stays
+  // visible and retryable) and roll back the optimistic user bubble + gate,
+  // instead of appending an "Error:" bubble to history. Mirrors upstream's
+  // flushChatQueue treating a failed send via sendState on the queue item.
   const dispatchNow = useCallback(
-    async (message: string): Promise<void> => {
+    async (
+      message: string,
+      opts?: { queueItem?: QueuedMessage },
+    ): Promise<boolean> => {
       const agentId = agentIdRef.current;
-      if (!agentId) return;
+      if (!agentId) return false;
       if (!isConnected) {
         setError("Not connected. Please wait and try again.");
-        return;
+        return false;
       }
 
       const newClientRunId = crypto.randomUUID();
@@ -947,19 +984,37 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       try {
         sendChat(agentId, message, newClientRunId);
+        return true;
       } catch (err) {
         const errorMessage = friendlyError(
           err instanceof Error ? err.message : "Failed to send message",
         );
-        setError(errorMessage);
-        const errMsg: HistoryMessage = {
-          role: "assistant",
-          content: [{ type: "text", text: `Error: ${errorMessage}` }],
-          timestamp: Date.now(),
-        };
-        setChatMessages((prev) => [...prev, errMsg]);
+        // Roll back the optimistic turn state regardless of origin.
+        setChatMessages((prev) => prev.filter((m) => m !== userMsg));
         setIsStreaming(false);
         clientRunIdRef.current = null;
+
+        if (opts?.queueItem) {
+          // Drain failure: re-queue the item as failed so the user can
+          // retry it. No "Error:" history bubble — the failure surfaces on
+          // the queue item itself.
+          const failed: QueuedMessage = {
+            ...opts.queueItem,
+            sendState: "failed",
+            sendError: errorMessage,
+          };
+          setQueuedMessages((prev) => [failed, ...prev]);
+        } else {
+          // Direct typed send: surface the failure as a chat error bubble.
+          setError(errorMessage);
+          const errMsg: HistoryMessage = {
+            role: "assistant",
+            content: [{ type: "text", text: `Error: ${errorMessage}` }],
+            timestamp: Date.now(),
+          };
+          setChatMessages((prev) => [...prev, errMsg]);
+        }
+        return false;
       }
     },
     [sendChat, isConnected, setIsStreaming],
@@ -1040,10 +1095,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const drainQueue = useCallback(() => {
     if (clientRunIdRef.current !== null) return; // still busy
     if (!isConnected) return;
-    if (queuedMessagesRef.current.length === 0) return;
-    const next = queuedMessagesRef.current[0];
-    setQueuedMessages((q) => q.slice(1));
-    void dispatchNow(next.text);
+    // Drain the first PLAIN queued send. Skip items the user must act on
+    // (failed → Retry, waiting-reconnect → handled on the reconnect edge).
+    const next = queuedMessagesRef.current.find((m) => !m.sendState);
+    if (!next) return;
+    setQueuedMessages((q) => q.filter((m) => m.id !== next.id));
+    // On a dispatch failure, dispatchNow re-queues `next` as failed.
+    void dispatchNow(next.text, { queueItem: next });
   }, [isConnected, dispatchNow]);
 
   // Keep the handler-visible drain ref pointed at the latest drainQueue so
@@ -1052,6 +1110,55 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   useEffect(() => {
     drainQueueRef.current = drainQueue;
   }, [drainQueue]);
+
+  // Re-attempt a failed queued send. Pulls the item out of the queue,
+  // clears its failed state, and:
+  //   - disconnected → re-park as waiting-reconnect (the reconnect edge
+  //     will replay it);
+  //   - busy (a run is active) → re-park as a plain queued send (the
+  //     server run-ended drain will pick it up);
+  //   - free + connected → dispatch immediately (re-queued as failed again
+  //     if the send throws).
+  // Mirrors upstream OpenClaw web UI's retryQueuedChatMessage
+  // (~/Desktop/openclaw/ui/src/ui/chat/chat-queue.ts:914).
+  const retryQueuedMessage = useCallback(
+    (id: string) => {
+      const item = queuedMessagesRef.current.find((m) => m.id === id);
+      if (!item) return;
+
+      if (!isConnected) {
+        setQueuedMessages((prev) =>
+          prev.map((m) =>
+            m.id === id
+              ? { ...m, sendState: "waiting-reconnect", sendError: undefined }
+              : m,
+          ),
+        );
+        return;
+      }
+
+      if (clientRunIdRef.current !== null) {
+        // Still busy — clear the failed flag and let the normal drain take it.
+        setQueuedMessages((prev) =>
+          prev.map((m) =>
+            m.id === id ? { ...m, sendState: undefined, sendError: undefined } : m,
+          ),
+        );
+        return;
+      }
+
+      // Free + connected → dispatch now. Pull it out first; dispatchNow
+      // re-queues it as failed if the send throws again.
+      const cleaned: QueuedMessage = {
+        ...item,
+        sendState: undefined,
+        sendError: undefined,
+      };
+      setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+      void dispatchNow(cleaned.text, { queueItem: cleaned });
+    },
+    [isConnected, dispatchNow],
+  );
 
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {
@@ -1167,12 +1274,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       });
     }
 
-    const hasWaiting = queuedMessagesRef.current.some(
+    const waiting = queuedMessagesRef.current.filter(
       (m) => m.sendState === "waiting-reconnect",
     );
-    if (hasWaiting) {
-      // Strip the waiting-reconnect flag so the items become plain queued
-      // sends (UI no longer shows "Waiting for reconnect").
+    if (waiting.length > 0) {
+      // Strip the waiting-reconnect flag on ALL parked sends so they become
+      // plain queued sends (UI no longer shows "Waiting for reconnect").
       setQueuedMessages((prev) =>
         prev.map((m) =>
           m.sendState === "waiting-reconnect"
@@ -1180,13 +1287,22 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             : m,
         ),
       );
-      // Resume the normal drain. drainQueue reads the head off
-      // queuedMessagesRef (the text is unchanged by the flag strip) and
-      // slices it via a functional setState updater, so it composes
-      // correctly with the strip above regardless of commit ordering.
-      drainQueueRef.current();
+      // Resume sending. If the gate is free, dispatch the first parked send
+      // now (drainQueue can't see it yet — the strip setState above hasn't
+      // committed to queuedMessagesRef). Its server run-ended re-invokes the
+      // normal drain for the rest, which by then are plain queued sends.
+      if (clientRunIdRef.current === null) {
+        const head = waiting[0];
+        const cleaned: QueuedMessage = {
+          ...head,
+          sendState: undefined,
+          sendError: undefined,
+        };
+        setQueuedMessages((prev) => prev.filter((m) => m.id !== head.id));
+        void dispatchNow(cleaned.text, { queueItem: cleaned });
+      }
     }
-  }, [isConnected, send]);
+  }, [isConnected, send, dispatchNow]);
 
   // ---- Clear messages ----
 
@@ -1264,5 +1380,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     removeQueuedMessage,
     clearQueue,
     steerMessage,
+    retryQueuedMessage,
   };
 }

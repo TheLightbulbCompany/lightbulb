@@ -232,6 +232,7 @@ export function AgentChatWindow({
     removeQueuedMessage,
     clearQueue,
     steerMessage,
+    retryQueuedMessage,
   } = useAgentChat(agentId, sessionName);
 
   const { agents } = useAgents();
@@ -322,6 +323,7 @@ export function AgentChatWindow({
             onRemoveQueued={removeQueuedMessage}
             onClearQueue={clearQueue}
             onSteerQueued={steerMessage}
+            onRetryQueued={retryQueuedMessage}
           />
         </div>
       </div>
@@ -369,6 +371,7 @@ export function AgentChatWindow({
               onRemoveQueued={removeQueuedMessage}
               onClearQueue={clearQueue}
               onSteerQueued={steerMessage}
+              onRetryQueued={retryQueuedMessage}
             />
           </div>
         </div>
@@ -399,6 +402,7 @@ export function AgentChatWindow({
         onRemoveQueued={removeQueuedMessage}
         onClearQueue={clearQueue}
         onSteerQueued={steerMessage}
+        onRetryQueued={retryQueuedMessage}
       />
     </div>
   );

@@ -20,6 +20,7 @@ from routers.websocket_chat import (
     router,
     _process_agent_chat_background,
     _process_agent_abort_background,
+    _process_agent_steer_background,
 )
 
 
@@ -508,4 +509,129 @@ class TestProcessAgentAbortBackground:
         )
         # The pool's run-clearing entry points must not be invoked here.
         mock_pool.clear_active_run.assert_not_called()
+        mock_pool.mark_run_active.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# agent_steer  ->  chat.send (deliver:false, fresh idempotencyKey)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentSteerRouting:
+    """ws_message routes agent_steer to the steer background task."""
+
+    @pytest.mark.asyncio
+    async def test_agent_steer_queued(self, test_app, mock_connection_service, mock_management_api, connected_user):
+        with patch("routers.websocket_chat._process_agent_steer_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "test-conn-123"},
+                    json={
+                        "type": "agent_steer",
+                        "agent_id": "luna",
+                        "text": "actually, focus on the API",
+                    },
+                )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_not_called()
+        mock_bg.assert_called_once_with(
+            connection_id="test-conn-123",
+            user_id="test-user-456",
+            owner_id="test-user-456",
+            agent_id="luna",
+            text="actually, focus on the API",
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_steer_missing_text_sends_error(
+        self, test_app, mock_connection_service, mock_management_api, connected_user
+    ):
+        with patch("routers.websocket_chat._process_agent_steer_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "test-conn-123"},
+                    json={"type": "agent_steer", "agent_id": "luna"},
+                )
+
+        assert response.status_code == 200
+        mock_bg.assert_not_called()
+        mock_management_api.send_message.assert_called_once()
+        assert mock_management_api.send_message.call_args[0][1]["type"] == "error"
+
+
+class TestProcessAgentSteerBackground:
+    """_process_agent_steer_background forwards chat.send with deliver:false."""
+
+    @pytest.fixture
+    def mock_ecs_manager(self):
+        with patch("routers.websocket_chat.get_ecs_manager") as mock_getter:
+            manager = AsyncMock()
+            mock_getter.return_value = manager
+            yield manager
+
+    @pytest.fixture
+    def mock_pool(self):
+        with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
+            pool = AsyncMock()
+            pool.send_rpc = AsyncMock(return_value={"runId": "run-steer", "status": "started"})
+            mock_getter.return_value = pool
+            yield pool
+
+    @pytest.fixture
+    def mock_mgmt_api(self):
+        with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
+            client = MagicMock()
+            client.send_message = MagicMock(return_value=True)
+            mock_getter.return_value = client
+            yield client
+
+    @pytest.fixture
+    def container_with_ip(self, mock_ecs_manager):
+        container = {"gateway_token": "test-gw-token", "owner_id": "user-1"}
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        return container
+
+    @pytest.mark.asyncio
+    async def test_steer_forwards_chat_send_deliver_false(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """Steer is upstream's chat.send with deliver:false + a fresh
+        idempotencyKey on the SAME sessionKey — the container's queue-mode
+        steer injects the text into the in-flight run."""
+        await _process_agent_steer_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            text="focus on the API",
+        )
+        mock_pool.send_rpc.assert_called_once()
+        kw = mock_pool.send_rpc.call_args[1]
+        assert kw["method"] == "chat.send"
+        params = kw["params"]
+        assert params["sessionKey"] == "agent:luna:user-1"
+        assert params["message"] == "focus on the API"
+        assert params["deliver"] is False
+        # Steer always mints a fresh run id (upstream generateUUID()); the
+        # in-flight run is targeted by sessionKey, not by this key.
+        assert isinstance(params["idempotencyKey"], str) and params["idempotencyKey"]
+        assert kw["ip"] == "10.0.1.5"
+        assert kw["token"] == "test-gw-token"
+
+    @pytest.mark.asyncio
+    async def test_steer_does_not_open_a_new_active_run(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """Steer injects into an EXISTING run; it must not open a new
+        active-run window (that belongs to the original agent_chat send)."""
+        await _process_agent_steer_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            text="focus on the API",
+        )
         mock_pool.mark_run_active.assert_not_called()

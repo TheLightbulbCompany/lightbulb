@@ -721,6 +721,33 @@ async def ws_message(
         )
         return Response(status_code=200)
 
+    if msg_type == "agent_steer":
+        # Inject `text` into the in-flight run for this session. Upstream's
+        # sendSteerChatMessage (ui/controllers/chat.ts:674 -> requestChatSend)
+        # is just a chat.send with deliver:false + a freshly-generated
+        # idempotencyKey on the SAME sessionKey; the container's queue-mode
+        # "steer" merges it into the active run. There is no separate steer RPC
+        # at the chat layer (sessions.steer is the distinct hard-redirect path,
+        # used only by the /redirect slash command — not what we want here).
+        agent_id = body.get("agent_id")
+        text = body.get("text")
+        if not agent_id or not text:
+            management_api = await get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {"type": "error", "message": "Missing agent_id or text"},
+            )
+            return Response(status_code=200)
+        background_tasks.add_task(
+            _process_agent_steer_background,
+            connection_id=x_connection_id,
+            user_id=user_id,
+            owner_id=owner_id,
+            agent_id=agent_id,
+            text=text,
+        )
+        return Response(status_code=200)
+
     # Unknown message type
     management_api = await get_management_api_client()
     management_api.send_message(
@@ -1621,3 +1648,89 @@ async def _process_agent_abort_background(
         # run either already finished or will time out on its own.
         put_metric("chat.error", dimensions={"reason": "abort_failed"})
         logger.warning("[%s] chat.abort FAIL agent=%s: %s", user_id, agent_id, e)
+
+
+async def _process_agent_steer_background(
+    connection_id: str,
+    user_id: str,
+    owner_id: str,
+    agent_id: str,
+    text: str,
+) -> None:
+    """Inject ``text`` into the in-flight run for ``agent:{agent_id}:{user_id}``.
+
+    Upstream's steer (sendSteerChatMessage -> requestChatSend,
+    ui/src/ui/controllers/chat.ts:674/438) is an ordinary ``chat.send`` with
+    ``deliver:false`` and a freshly-generated ``idempotencyKey`` on the SAME
+    sessionKey. The container's queue-mode "steer" merges the message into the
+    active run rather than starting a new turn — so there is no separate steer
+    RPC at the chat layer, and we do NOT open a new active-run window here (the
+    original agent_chat send owns it).
+    """
+    logger.info(
+        "[%s] chat.steer agent=%s owner=%s conn=%s text_len=%d",
+        user_id,
+        agent_id,
+        owner_id,
+        connection_id[:12],
+        len(text),
+    )
+    management_api = await get_management_api_client()
+    session_key = f"agent:{agent_id}:{user_id}"
+    try:
+        ecs_manager = get_ecs_manager()
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
+        if not container:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "agent_id": agent_id,
+                    "message": "No container provisioned.",
+                },
+            )
+            return
+        if not ip:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "agent_id": agent_id,
+                    "message": "Your agent is starting up. Please try again in a moment.",
+                },
+            )
+            return
+
+        pool = get_gateway_pool()
+        await pool.send_rpc(
+            user_id=owner_id,
+            req_id=str(uuid4()),
+            method="chat.send",
+            params={
+                "sessionKey": session_key,
+                "message": text,
+                # deliver:false keeps the steer off external delivery routes
+                # (webchat-only injection), matching upstream requestChatSend.
+                "deliver": False,
+                # Fresh key per upstream generateUUID(); the in-flight run is
+                # targeted by sessionKey, not by this idempotencyKey.
+                "idempotencyKey": str(uuid4()),
+            },
+            ip=ip,
+            token=container["gateway_token"],
+        )
+        logger.info("[%s] chat.steer SENT agent=%s", user_id, agent_id)
+    except Exception as e:
+        put_metric("chat.error", dimensions={"reason": "steer_failed"})
+        logger.warning("[%s] chat.steer FAIL agent=%s: %s", user_id, agent_id, e)
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "agent_id": agent_id,
+                    "message": f"Failed to steer: {e}",
+                },
+            )
+        except Exception:
+            pass

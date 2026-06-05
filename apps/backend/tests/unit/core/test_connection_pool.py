@@ -925,6 +925,136 @@ class TestChatEventForwarding:
                 }
             )
 
+    @staticmethod
+    def _run_ended_frames(mock_management_api):
+        return [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "run_ended"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_final_emits_run_ended_done(self, connection, mock_management_api):
+        """A true terminal final forwards an authoritative run_ended frame
+        (outcome=done) IN ADDITION TO the existing done frame, carrying the
+        run's runId so the frontend can drain its queue for that run."""
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-done-1",
+                },
+            }
+        )
+        # Existing done frame is unchanged.
+        done_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "done"
+        ]
+        assert len(done_msgs) == 1
+        assert done_msgs[0]["runId"] == "run-done-1"
+        # Additional run_ended frame.
+        run_ended = self._run_ended_frames(mock_management_api)
+        assert len(run_ended) == 1
+        assert run_ended[0]["outcome"] == "done"
+        assert run_ended[0]["runId"] == "run-done-1"
+
+    @pytest.mark.asyncio
+    async def test_error_emits_run_ended_error(self, connection, mock_management_api):
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-err-1",
+                    "errorMessage": "boom",
+                },
+            }
+        )
+        run_ended = self._run_ended_frames(mock_management_api)
+        assert len(run_ended) == 1
+        assert run_ended[0]["outcome"] == "error"
+        assert run_ended[0]["runId"] == "run-err-1"
+
+    @pytest.mark.asyncio
+    async def test_aborted_emits_run_ended_aborted(self, connection, mock_management_api):
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "aborted",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-abort-1",
+                },
+            }
+        )
+        run_ended = self._run_ended_frames(mock_management_api)
+        assert len(run_ended) == 1
+        assert run_ended[0]["outcome"] == "aborted"
+        assert run_ended[0]["runId"] == "run-abort-1"
+
+    @pytest.mark.asyncio
+    async def test_interim_approval_final_emits_no_run_ended(self, connection, mock_management_api):
+        """The interim final that closes a tool-approval bracket is NOT a true
+        terminal — no run_ended must be forwarded for it. The post-continuation
+        final is the only one that fires run_ended."""
+        session_key = "agent:main:user-1"
+        connection.mark_run_active(session_key, agent_id="main")
+
+        # 1. Approval requested — pauses the run.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {
+                        "phase": "requested",
+                        "kind": "exec",
+                        "status": "pending",
+                        "approvalId": "appr-1",
+                    },
+                },
+            }
+        )
+        # 2. Interim final closing the approval bracket — NO run_ended.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "message": {"content": []},
+                },
+            }
+        )
+        assert self._run_ended_frames(mock_management_api) == []
+
+        # 3. True terminal final after the continuation — run_ended fires once.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-2",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                },
+            }
+        )
+        run_ended = self._run_ended_frames(mock_management_api)
+        assert len(run_ended) == 1
+        assert run_ended[0]["outcome"] == "done"
+        assert run_ended[0]["runId"] == "run-2"
+
 
 class TestActiveRunTracking:
     """Active-run lifecycle: chat.send opens the window, chat-terminal

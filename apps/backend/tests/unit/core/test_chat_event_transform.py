@@ -334,6 +334,8 @@ class TestHandleMessage:
         assert mock_management_api.send_message.call_args_list == [
             call("conn-1", {"type": "chunk", "content": "Done.", "agent_id": "my-agent-id", "runId": "run-1"}),
             call("conn-1", {"type": "done", "agent_id": "my-agent-id", "runId": "run-1"}),
+            # Authoritative run-ended frame trails the done frame (true terminal).
+            call("conn-1", {"type": "run_ended", "runId": "run-1", "outcome": "done", "agent_id": "my-agent-id"}),
         ]
 
     # -- Chat events (terminal states only) --
@@ -446,7 +448,11 @@ class TestHandleMessage:
                 "runId": "run-cmd",
             },
         )
-        assert calls[-1] == call("conn-1", {"type": "done", "agent_id": "agent-1", "runId": "run-cmd"})
+        # The done frame is forwarded; the authoritative run_ended frame trails it.
+        assert call("conn-1", {"type": "done", "agent_id": "agent-1", "runId": "run-cmd"}) in calls
+        assert calls[-1] == call(
+            "conn-1", {"type": "run_ended", "runId": "run-cmd", "outcome": "done", "agent_id": "agent-1"}
+        )
 
     @pytest.mark.asyncio
     async def test_chat_error_carries_upstream_errorMessage(self, connection, mock_management_api):

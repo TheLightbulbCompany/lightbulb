@@ -1252,7 +1252,12 @@ class GatewayConnection:
                 # run continues after the user decides — so `_is_true_terminal`
                 # keeps it active to avoid run-active "dead air" across the
                 # approval. (Frontend forwarding below is unchanged here.)
-                if session_key and self._is_true_terminal(session_key, state):
+                #
+                # `_is_true_terminal` consumes the pending-approval flag, so
+                # call it exactly once and reuse the result for both clearing
+                # the run and the authoritative `run_ended` forward below.
+                is_true_terminal = bool(session_key) and self._is_true_terminal(session_key, state)
+                if is_true_terminal:
                     self._clear_active_run(session_key)
                 run_id = payload["runId"]
                 if state == "final":
@@ -1327,6 +1332,24 @@ class GatewayConnection:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
                     await self._forward_to_frontends(fwd, target_member)
+
+                # Authoritative "run truly ended" frame. ADDITIONAL to the
+                # done/error/aborted frames above — never a replacement. The
+                # frontend keys off this (not a local heuristic) to drain its
+                # queued messages for the run, so it must fire EXACTLY ONCE per
+                # run and ONLY on a genuine termination. The `is_true_terminal`
+                # gate guarantees we skip the interim `final` that merely closes
+                # a tool-approval bracket (the run continues after the user
+                # decides), so a paused-on-approval run never drains early.
+                if is_true_terminal:
+                    run_ended: dict = {
+                        "type": "run_ended",
+                        "runId": run_id,
+                        "outcome": "done" if state == "final" else state,
+                    }
+                    if event_agent_id:
+                        run_ended["agent_id"] = event_agent_id
+                    await self._forward_to_frontends(run_ended, target_member)
 
             else:
                 # Forward other events as-is for SWR revalidation (broadcast to all)

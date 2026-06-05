@@ -665,9 +665,18 @@ async def ws_message(
         # upstream ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:502.
         # Optional for backwards-compat with old frontend builds — when
         # absent, the backend mints a UUID below so OpenClaw's chat.send
-        # always carries an idempotencyKey (the field is required by
-        # upstream chat.ts:2002 which does `const clientRunId = p.idempotencyKey`).
+        # always carries an idempotencyKey (the field is read by upstream
+        # chat.ts:2450 which does `const clientRunId = p.idempotencyKey`).
         client_run_id = body.get("clientRunId")
+        # Side-channel (`/btw`) send. Upstream's webchat routes a `/btw`/`/side`
+        # message through the SAME wire call as a normal chat.send (deliver:false
+        # + fresh idempotencyKey); the OpenClaw container detects the `/btw`
+        # prefix in the message text and runs it as a non-blocking side run that
+        # never enters the session's active-run window (see upstream
+        # auto-reply/reply/btw-command.ts BTW_COMMAND_RE). We forward it as a
+        # normal chat.send but skip mark_run_active so it does NOT claim the
+        # active-run window — that keeps the busy gate clear for the primary run.
+        side = bool(body.get("side"))
 
         if not agent_id or not message:
             management_api = await get_management_api_client()
@@ -692,6 +701,60 @@ async def ws_message(
             agent_id=agent_id,
             message=message,
             client_run_id=client_run_id,
+            side=side,
+        )
+        return Response(status_code=200)
+
+    if msg_type == "agent_abort":
+        # Cancel the in-flight run for this session. Forwarded as upstream's
+        # chat.abort: {sessionKey, runId} when the client knows the runId, else
+        # {sessionKey} (mirrors openclaw chat.ts abortChatRun). Fire-and-don't-
+        # wait-for-terminal: the run's aborted/run_ended arrives via the normal
+        # event stream, where the existing terminal handler clears the active
+        # run — so we deliberately do NOT clear it here.
+        agent_id = body.get("agent_id")
+        run_id = body.get("runId")
+        if not agent_id:
+            management_api = await get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {"type": "error", "message": "Missing agent_id"},
+            )
+            return Response(status_code=200)
+        background_tasks.add_task(
+            _process_agent_abort_background,
+            connection_id=x_connection_id,
+            user_id=user_id,
+            owner_id=owner_id,
+            agent_id=agent_id,
+            run_id=run_id,
+        )
+        return Response(status_code=200)
+
+    if msg_type == "agent_steer":
+        # Inject `text` into the in-flight run for this session. Upstream's
+        # sendSteerChatMessage (ui/controllers/chat.ts:674 -> requestChatSend)
+        # is just a chat.send with deliver:false + a freshly-generated
+        # idempotencyKey on the SAME sessionKey; the container's queue-mode
+        # "steer" merges it into the active run. There is no separate steer RPC
+        # at the chat layer (sessions.steer is the distinct hard-redirect path,
+        # used only by the /redirect slash command — not what we want here).
+        agent_id = body.get("agent_id")
+        text = body.get("text")
+        if not agent_id or not text:
+            management_api = await get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {"type": "error", "message": "Missing agent_id or text"},
+            )
+            return Response(status_code=200)
+        background_tasks.add_task(
+            _process_agent_steer_background,
+            connection_id=x_connection_id,
+            user_id=user_id,
+            owner_id=owner_id,
+            agent_id=agent_id,
+            text=text,
         )
         return Response(status_code=200)
 
@@ -1268,6 +1331,7 @@ async def _process_agent_chat_background(
     agent_id: str,
     message: str,
     client_run_id: str | None = None,
+    side: bool = False,
 ) -> None:
     """
     Process agent chat message via OpenClaw's native chat.send RPC.
@@ -1283,6 +1347,13 @@ async def _process_agent_chat_background(
     event back to the originating send (drains the client-side chat queue).
     Absent → backend mints a UUID instead so the chat.send call always
     carries an idempotencyKey (preserves upstream's dedupe contract).
+
+    side (`/btw` side-channel): the wire call is an ordinary chat.send — the
+    container recognizes the `/btw` prefix in ``message`` and runs it as a
+    non-blocking side run that never enters the session's active-run window.
+    On our side that means we must NOT call ``mark_run_active`` for a side
+    send: a side run does not own the parked-vs-dead window, so it is tracked
+    separately (``mark_side_run``) and leaves the primary run's window intact.
     """
     logger.info(
         "[%s] chat.send START agent=%s owner=%s conn=%s msg_len=%d",
@@ -1294,6 +1365,12 @@ async def _process_agent_chat_background(
     )
 
     management_api = await get_management_api_client()
+
+    # Tracks whether mark_run_active opened the busy-gate window below. Bound
+    # before the try so the error fall-through can safely decide whether to
+    # tear the window back down even if an exception fires before `pool` is
+    # assigned. Only ever True for non-side sends past the mark_run_active line.
+    run_active_marked = False
 
     try:
         # Look up user's container and discover task IP
@@ -1436,29 +1513,71 @@ async def _process_agent_chat_background(
                 logger.warning("[%s] failed to deliver blocked-chat error event", user_id)
             return
 
-        # Open the active-run window BEFORE forwarding chat.send. If the WS
-        # to OpenClaw tears down mid-turn (ping timeout during a long Bedrock
-        # call), the pool's parked-vs-dead decision in `_on_reader_loop_exit`
-        # keys on whether `_active_runs` is non-empty — so marking here, not
-        # after the ack, is what keeps the connection in the PARKED branch
-        # during the streaming window. Idempotent for the cancel-and-retry
-        # race where the same sessionKey starts a fresh run.
-        pool.mark_run_active(owner_id, session_key, agent_id)
+        # NO server-side serialize gate. We mirror upstream's concurrency model:
+        # the frontend QUEUES sends while a run is active (clientRunIdRef +
+        # observed-run adoption) and never fires a second, and the container's
+        # per-session JSONL write-lock serializes anything that still races (it
+        # retries up to 60s — see upstream session-write-lock.ts). Upstream's web
+        # UI has no server gate either; an earlier Isol8 `agent_busy` gate was an
+        # extra layer that diverged from that model (and caused side-run / steer
+        # / multi-tab interaction bugs the single-client UI never has), so it is
+        # removed in favor of the upstream three-layer approach.
+
+        # Record the run for the parked-vs-dead reconnect decision — this is NOT
+        # a gate. If the WS to OpenClaw tears down mid-turn (ping timeout during
+        # a long Bedrock call), `_on_reader_loop_exit` keys on whether
+        # `_active_runs` is non-empty to PARK the connection (reopen + preserve
+        # state) instead of treating it as dead. mark_run_active no-ops without a
+        # connection and send_rpc creates it lazily, so on the FIRST send to a
+        # fresh task we ensure_connection first; send_rpc routes through the same
+        # method, so this is idempotent (the second resolution hits the fast
+        # path). Skip for side (`/btw`) runs — they're tracked separately
+        # (mark_side_run) so their terminal can't clear the primary run's
+        # parked-vs-dead window.
+        #
+        # The runId this send is bound to: == the chat.send idempotencyKey ==
+        # the runId OpenClaw stamps on every event for this run (chat.ts:2450).
+        # Computed up-front so a side run can be registered under the SAME id its
+        # terminal will carry.
+        run_id_for_send = client_run_id or str(uuid4())
+
+        if not side:
+            await pool.ensure_connection(owner_id, ip, container["gateway_token"])
+            pool.mark_run_active(owner_id, session_key, agent_id)
+            run_active_marked = True
+        else:
+            # Side (`/btw`) run: register its runId so the agent-event handler
+            # never clears the PRIMARY run's session window when this side run
+            # ends (both share the session_key). ensure_connection first so the
+            # registration lands on the live connection the events arrive on.
+            await pool.ensure_connection(owner_id, ip, container["gateway_token"])
+            pool.mark_side_run(owner_id, run_id_for_send)
 
         # Idempotency key for OpenClaw's chat.send. We always send one so
-        # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`) and
-        # in-flight detection (`context.chatAbortControllers.get(clientRunId)`)
-        # in ~/Desktop/openclaw/src/gateway/server-methods/chat.ts:2037-2052
-        # have a stable key to match against. When the frontend supplies
-        # `clientRunId`, we use it so the frontend can correlate the eventual
-        # chat.final back to its send (drives the local chat queue drain).
-        # When absent (old client), we mint a backend UUID — matches the
-        # pre-clientRunId behavior. Upstream chat.ts:2174 calls
-        # `context.addChatRun(clientRunId, ...)` with whichever value we pass.
-        chat_send_params: dict[str, str] = {
+        # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`,
+        # chat.ts:2488) and in-flight detection
+        # (`context.chatAbortControllers.get(clientRunId)`, chat.ts:2496) in
+        # ~/Desktop/openclaw/src/gateway/server-methods/chat.ts have a stable
+        # key to match against. When the frontend supplies `clientRunId`, we use
+        # it so the frontend can correlate the eventual chat.final back to its
+        # send (drives the local chat queue drain). When absent (old client), we
+        # mint a backend UUID — matches the pre-clientRunId behavior. Upstream
+        # chat.ts:2640 calls `context.addChatRun(clientRunId, ...)` with
+        # whichever value we pass (and chat.ts:2450 reads it as the runId).
+        #
+        # deliver:false matches upstream's web-UI requestChatSend
+        # (ui/src/ui/controllers/chat.ts) for EVERY web send — normal, steer,
+        # and /btw alike: a direct streaming client gets the reply over the
+        # socket and must NOT also re-broadcast it to external channels. The
+        # server only delivers externally on `params.deliver === true`
+        # (chat.ts:674), so this is the explicit form of the previous omitted
+        # default (verified behaviorally identical), shared by normal + side
+        # sends.
+        chat_send_params: dict[str, object] = {
             "sessionKey": session_key,
             "message": message,
-            "idempotencyKey": client_run_id or str(uuid4()),
+            "idempotencyKey": run_id_for_send,
+            "deliver": False,
         }
 
         result = await pool.send_rpc(
@@ -1491,7 +1610,15 @@ async def _process_agent_chat_background(
     else:
         return  # success — no error to report
 
-    # All error branches fall through here to notify the client
+    # All error branches fall through here to notify the client.
+    #
+    # mark_run_active above opened the parked-vs-dead window for this session
+    # (non-side sends only). chat.send never reached OpenClaw, so no terminal
+    # event will ever arrive to close that window — clear it here, otherwise a
+    # stale entry would keep the connection parking on a WS drop indefinitely.
+    # The flag guarantees pool + session_key are bound (the mark is past both).
+    if run_active_marked:
+        pool.clear_active_run(owner_id, session_key)
     try:
         management_api.send_message(
             connection_id,
@@ -1503,3 +1630,201 @@ async def _process_agent_chat_background(
         )
     except Exception:
         pass
+
+
+async def _process_agent_abort_background(
+    connection_id: str,
+    user_id: str,
+    owner_id: str,
+    agent_id: str,
+    run_id: str | None = None,
+) -> None:
+    """Cancel the in-flight run for ``agent:{agent_id}:{user_id}``.
+
+    Forwards upstream's ``chat.abort``. Param shape mirrors openclaw's
+    abortChatRun (ui/src/ui/controllers/chat.ts:682): ``{sessionKey, runId}``
+    when the runId is known, else ``{sessionKey}`` alone.
+
+    Fire-and-don't-wait-for-terminal: chat.abort only requests cancellation.
+    The run's ``aborted`` / ``run_ended`` event arrives via the normal event
+    stream, and the pool's existing terminal handler clears the active-run
+    window there — so this function deliberately does NOT clear it.
+    """
+    logger.info(
+        "[%s] chat.abort agent=%s owner=%s runId=%s conn=%s",
+        user_id,
+        agent_id,
+        owner_id,
+        run_id or "-",
+        connection_id[:12],
+    )
+    session_key = f"agent:{agent_id}:{user_id}"
+
+    async def _notify_aborted_terminal() -> None:
+        """Tell the client the run is over so cancelMessage's server-reconciled
+        wait unblocks (it keeps isStreaming + the active runId until a SERVER
+        terminal arrives). Synthesizes the SAME ``error`` frame a real abort
+        produces — connection_pool._transform_agent_event maps the container's
+        ``aborted`` event to ``{type:"error", message:"Agent run was
+        cancelled"}`` — so the client tears down its live turn and drains the
+        queue. Used whenever we cannot confirm the abort reached OpenClaw (no
+        container, or the abort RPC failed). If the run is actually still alive
+        (a transient RPC failure), the client re-adopts its continuing events
+        via runId adoption, so this is safe either way. Best-effort."""
+        try:
+            mgmt = await get_management_api_client()
+            frame: dict[str, str] = {
+                "type": "error",
+                "agent_id": agent_id,
+                "message": "Agent run was cancelled",
+            }
+            if run_id:
+                frame["runId"] = run_id
+            mgmt.send_message(connection_id, frame)
+        except Exception:
+            pass
+
+    try:
+        ecs_manager = get_ecs_manager()
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
+        if not container or not ip:
+            # No live container/IP means there's no run left in OpenClaw to
+            # abort. Unblock the client rather than wedging it in "streaming".
+            logger.info(
+                "[%s] chat.abort no container/ip agent=%s — sending synthetic aborted terminal",
+                user_id,
+                agent_id,
+            )
+            await _notify_aborted_terminal()
+            # The original chat.send may have opened the parked-vs-dead window
+            # for this session. With no container left to emit a real terminal,
+            # that _active_runs entry would never clear — leaving the connection
+            # to PARK (treat itself as busy) on every later reader-loop exit.
+            # We've just declared the run over to the client, so clear it here.
+            # No-ops if no connection exists for the owner.
+            get_gateway_pool().clear_active_run(owner_id, session_key)
+            return
+
+        params: dict[str, str] = {"sessionKey": session_key}
+        if run_id:
+            params["runId"] = run_id
+
+        pool = get_gateway_pool()
+        await pool.send_rpc(
+            user_id=owner_id,
+            req_id=str(uuid4()),
+            method="chat.abort",
+            params=params,
+            ip=ip,
+            token=container["gateway_token"],
+        )
+        logger.info("[%s] chat.abort SENT agent=%s runId=%s", user_id, agent_id, run_id or "-")
+    except Exception as e:
+        # The abort RPC failed AFTER a container was resolved (RPC timeout,
+        # gateway reconnect failure, dead backend<->container WS). Don't leave
+        # the client wedged: cancelMessage keeps isStreaming until a SERVER
+        # terminal arrives, and if the WS to the container is gone, the run's
+        # own terminal will never reach us. Synthesize the aborted terminal so
+        # the client unblocks (runId adoption recovers it if the run is in fact
+        # still alive after a transient failure).
+        put_metric("chat.error", dimensions={"reason": "abort_failed"})
+        logger.warning(
+            "[%s] chat.abort FAIL agent=%s: %s — sending synthetic aborted terminal",
+            user_id,
+            agent_id,
+            e,
+        )
+        await _notify_aborted_terminal()
+
+
+async def _process_agent_steer_background(
+    connection_id: str,
+    user_id: str,
+    owner_id: str,
+    agent_id: str,
+    text: str,
+) -> None:
+    """Inject ``text`` into the in-flight run for ``agent:{agent_id}:{user_id}``.
+
+    Upstream's steer (sendSteerChatMessage -> requestChatSend,
+    ui/src/ui/controllers/chat.ts:674/438) is an ordinary ``chat.send`` with
+    ``deliver:false`` and a freshly-generated ``idempotencyKey`` on the SAME
+    sessionKey. The container's queue-mode "steer" merges the message into the
+    active run rather than starting a new turn — so there is no separate steer
+    RPC at the chat layer, and we do NOT open a new active-run window here (the
+    original agent_chat send owns it).
+    """
+    logger.info(
+        "[%s] chat.steer agent=%s owner=%s conn=%s text_len=%d",
+        user_id,
+        agent_id,
+        owner_id,
+        connection_id[:12],
+        len(text),
+    )
+    management_api = await get_management_api_client()
+    session_key = f"agent:{agent_id}:{user_id}"
+    try:
+        ecs_manager = get_ecs_manager()
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
+        if not container:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "agent_id": agent_id,
+                    "message": "No container provisioned.",
+                },
+            )
+            return
+        if not ip:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "agent_id": agent_id,
+                    "message": "Your agent is starting up. Please try again in a moment.",
+                },
+            )
+            return
+
+        pool = get_gateway_pool()
+        await pool.send_rpc(
+            user_id=owner_id,
+            req_id=str(uuid4()),
+            method="chat.send",
+            params={
+                "sessionKey": session_key,
+                "message": text,
+                # deliver:false keeps the steer off external delivery routes
+                # (webchat-only injection), matching upstream requestChatSend.
+                "deliver": False,
+                # Fresh key per upstream generateUUID(); the in-flight run is
+                # targeted by sessionKey, not by this idempotencyKey.
+                "idempotencyKey": str(uuid4()),
+            },
+            ip=ip,
+            token=container["gateway_token"],
+        )
+        logger.info("[%s] chat.steer SENT agent=%s", user_id, agent_id)
+    except Exception as e:
+        put_metric("chat.error", dimensions={"reason": "steer_failed"})
+        logger.warning("[%s] chat.steer FAIL agent=%s: %s", user_id, agent_id, e)
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    # A steer is a mid-run injection into an ALREADY-active run —
+                    # its failure is NOT terminal for that run (OpenClaw keeps
+                    # working). The `steer_failed` code tells the frontend to
+                    # surface a notice WITHOUT tearing down the live turn; a
+                    # generic no-runId error would otherwise clear clientRunIdRef
+                    # + isStreaming and wipe the still-streaming primary response.
+                    "code": "steer_failed",
+                    "agent_id": agent_id,
+                    "message": f"Failed to steer: {e}",
+                },
+            )
+        except Exception:
+            pass

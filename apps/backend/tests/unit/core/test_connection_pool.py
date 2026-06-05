@@ -181,6 +181,20 @@ class TestGatewayConnectionPool:
             assert result == {"status": "ok"}
 
     @pytest.mark.asyncio
+    async def test_ensure_connection_creates_when_absent(self, pool):
+        """ensure_connection get-or-creates the per-user connection and returns
+        it, so the chat dispatcher can guarantee a connection exists BEFORE
+        marking a run active — pool.mark_run_active no-ops without one, and
+        nothing else populates _active_runs."""
+        mock_conn = AsyncMock(spec=GatewayConnection)
+        mock_conn.is_connected = True
+        mock_conn._frontend_connections = set()
+        with patch.object(pool, "_create_connection", return_value=mock_conn) as create:
+            conn = await pool.ensure_connection("user-1", "10.0.0.1", "tok")
+            assert conn is mock_conn
+            create.assert_awaited_once_with("user-1", "10.0.0.1", "tok")
+
+    @pytest.mark.asyncio
     async def test_send_rpc_reuses_existing(self, pool):
         """send_rpc should reuse an existing connected GatewayConnection."""
         mock_conn = AsyncMock(spec=GatewayConnection)
@@ -925,6 +939,136 @@ class TestChatEventForwarding:
                 }
             )
 
+    @staticmethod
+    def _run_ended_frames(mock_management_api):
+        return [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "run_ended"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_final_emits_run_ended_done(self, connection, mock_management_api):
+        """A true terminal final forwards an authoritative run_ended frame
+        (outcome=done) IN ADDITION TO the existing done frame, carrying the
+        run's runId so the frontend can drain its queue for that run."""
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-done-1",
+                },
+            }
+        )
+        # Existing done frame is unchanged.
+        done_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "done"
+        ]
+        assert len(done_msgs) == 1
+        assert done_msgs[0]["runId"] == "run-done-1"
+        # Additional run_ended frame.
+        run_ended = self._run_ended_frames(mock_management_api)
+        assert len(run_ended) == 1
+        assert run_ended[0]["outcome"] == "done"
+        assert run_ended[0]["runId"] == "run-done-1"
+
+    @pytest.mark.asyncio
+    async def test_error_emits_run_ended_error(self, connection, mock_management_api):
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-err-1",
+                    "errorMessage": "boom",
+                },
+            }
+        )
+        run_ended = self._run_ended_frames(mock_management_api)
+        assert len(run_ended) == 1
+        assert run_ended[0]["outcome"] == "error"
+        assert run_ended[0]["runId"] == "run-err-1"
+
+    @pytest.mark.asyncio
+    async def test_aborted_emits_run_ended_aborted(self, connection, mock_management_api):
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "aborted",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-abort-1",
+                },
+            }
+        )
+        run_ended = self._run_ended_frames(mock_management_api)
+        assert len(run_ended) == 1
+        assert run_ended[0]["outcome"] == "aborted"
+        assert run_ended[0]["runId"] == "run-abort-1"
+
+    @pytest.mark.asyncio
+    async def test_interim_approval_final_emits_no_run_ended(self, connection, mock_management_api):
+        """The interim final that closes a tool-approval bracket is NOT a true
+        terminal — no run_ended must be forwarded for it. The post-continuation
+        final is the only one that fires run_ended."""
+        session_key = "agent:main:user-1"
+        connection.mark_run_active(session_key, agent_id="main")
+
+        # 1. Approval requested — pauses the run.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {
+                        "phase": "requested",
+                        "kind": "exec",
+                        "status": "pending",
+                        "approvalId": "appr-1",
+                    },
+                },
+            }
+        )
+        # 2. Interim final closing the approval bracket — NO run_ended.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "message": {"content": []},
+                },
+            }
+        )
+        assert self._run_ended_frames(mock_management_api) == []
+
+        # 3. True terminal final after the continuation — run_ended fires once.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-2",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                },
+            }
+        )
+        run_ended = self._run_ended_frames(mock_management_api)
+        assert len(run_ended) == 1
+        assert run_ended[0]["outcome"] == "done"
+        assert run_ended[0]["runId"] == "run-2"
+
 
 class TestActiveRunTracking:
     """Active-run lifecycle: chat.send opens the window, chat-terminal
@@ -956,6 +1100,11 @@ class TestActiveRunTracking:
         assert run["started_at"] > 0
         assert run["last_event_at"] == run["started_at"]
         assert connection.has_active_runs is True
+
+    def test_mark_run_active_is_per_session(self, connection):
+        connection.mark_run_active("agent:a:user-1", "a")
+        assert "agent:a:user-1" in connection._active_runs
+        assert "agent:a:user-2" not in connection._active_runs
 
     @pytest.mark.asyncio
     async def test_chat_final_clears_active_run(self, connection):
@@ -1018,6 +1167,243 @@ class TestActiveRunTracking:
         )
 
         assert connection.has_active_runs is False
+
+    @pytest.mark.asyncio
+    async def test_side_run_terminal_preserves_primary_active_run(self, connection):
+        """A /btw side run shares the primary's sessionKey but owns no window
+        (the dispatcher skips mark_run_active for it). Its terminal must NOT
+        clear the PRIMARY run's active-run window — otherwise the busy gate
+        drops mid-primary-run and a concurrent send races the JSONL write lock.
+        Mirrors upstream's per-runId tracking + the clients' separate btw-id
+        sets (app-gateway.ts chatSideResultTerminalRuns / tui isLocalBtwRunId).
+        """
+        session_key = "agent:main:user-1"
+        connection.mark_run_active(session_key, agent_id="main")  # primary
+        connection.mark_side_run("side-run-9")  # concurrent /btw run
+
+        # The side run finishes first, on the SAME sessionKey but its own runId.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "side-run-9",
+                    "message": {"content": [{"type": "text", "text": "aside"}]},
+                },
+            }
+        )
+        # Primary window survives; the side id self-cleaned.
+        assert session_key in connection._active_runs
+        assert connection._is_side_run("side-run-9") is False
+
+        # The PRIMARY run's own terminal clears it normally.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-primary",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                },
+            }
+        )
+        assert session_key not in connection._active_runs
+
+    @pytest.mark.asyncio
+    async def test_side_run_approval_does_not_flag_primary_awaiting(self, connection):
+        """A side run's approval-requested event must not flag the PRIMARY run
+        (shared sessionKey) as awaiting-approval — that would suppress the
+        primary's real terminal and wedge its window."""
+        session_key = "agent:main:user-1"
+        connection.mark_run_active(session_key, "main")
+        connection.mark_side_run("side-run-9")
+
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "side-run-9",
+                    "data": {"phase": "requested", "kind": "exec", "status": "pending"},
+                },
+            }
+        )
+        assert connection._active_runs[session_key]["awaiting_approval"] is False
+
+    @pytest.mark.asyncio
+    async def test_approval_bracketed_interim_final_keeps_run_active(self, connection):
+        """A tool-approval pause must NOT end the run.
+
+        OpenClaw brackets a pending tool approval like this on the wire (all for
+        the same sessionKey, in order):
+          1. agent event, stream="approval", data.phase="requested",
+             data.status="pending" — the run paused awaiting the user's decision
+             (src/agents/embedded-agent-subscribe.handlers.tools.ts:1378 →
+              emitAgentApprovalEvent / onAgentEvent, infra/agent-events.ts:263).
+          2. chat event, state="final" — the embedded runner closes the *bracket*
+             (finalizeLifecycleEvent → emitChatFinal, src/gateway/server-chat.ts:419),
+             but the run CONTINUES after approval with a fresh lifecycle/end.
+        Clearing _active_runs on (2) drops the run-active signal across the
+        approval (UI "dead air"), so the interim final must be treated as
+        non-terminal. Only the post-continuation final (no approval pending)
+        is a true terminal.
+        """
+        session_key = "agent:a:user-1"
+        connection.mark_run_active(session_key, "a")
+
+        # 1. Approval requested — the run pauses, not ends.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {
+                        "phase": "requested",
+                        "kind": "exec",
+                        "status": "pending",
+                        "title": "Command approval requested",
+                        "approvalId": "appr-1",
+                    },
+                },
+            }
+        )
+        assert session_key in connection._active_runs
+
+        # 2. Interim chat final for the approval bracket — run must stay active.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "message": {"content": []},
+                },
+            }
+        )
+        assert session_key in connection._active_runs  # still active across approval
+
+        # 3. True terminal final after the continuation — run clears.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": session_key,
+                    "runId": "run-2",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                },
+            }
+        )
+        assert session_key not in connection._active_runs
+
+    @pytest.mark.asyncio
+    async def test_awaiting_approval_run_cleared_on_error_terminal(self, connection):
+        """A run paused on an approval that then ERRORS must still clear.
+
+        `awaiting_approval` only suppresses the interim `final` that closes the
+        approval bracket. An `error` is always a true terminal (the run is over
+        either way), so it must clear `_active_runs` even while the approval flag
+        is set — otherwise a run that dies mid-approval would leak forever and
+        the parked-vs-dead teardown in `_on_reader_loop_exit` would mistake the
+        dead run for an in-flight one. This is the leak-prevention safety valve.
+        """
+        session_key = "agent:a:user-1"
+        connection.mark_run_active(session_key, "a")
+
+        # Pause on an approval.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {
+                        "phase": "requested",
+                        "kind": "exec",
+                        "status": "pending",
+                        "approvalId": "appr-1",
+                    },
+                },
+            }
+        )
+        assert session_key in connection._active_runs
+        assert connection._active_runs[session_key]["awaiting_approval"] is True
+
+        # The run errors out WHILE awaiting the approval — still a true terminal.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "errorMessage": "boom",
+                    "errorKind": "unknown",
+                },
+            }
+        )
+        assert session_key not in connection._active_runs
+        assert session_key not in connection._active_runs
+
+    @pytest.mark.asyncio
+    async def test_awaiting_approval_run_cleared_on_aborted_terminal(self, connection):
+        """A run paused on an approval that is then ABORTED must still clear.
+
+        Same safety valve as the error case: `aborted` is always a true
+        terminal, so the approval-pause flag must not keep a dead run alive.
+        """
+        session_key = "agent:a:user-1"
+        connection.mark_run_active(session_key, "a")
+
+        # Pause on an approval.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "approval",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                    "data": {
+                        "phase": "requested",
+                        "kind": "exec",
+                        "status": "pending",
+                        "approvalId": "appr-1",
+                    },
+                },
+            }
+        )
+        assert connection._active_runs[session_key]["awaiting_approval"] is True
+
+        # The run is aborted WHILE awaiting the approval — still a true terminal.
+        await connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "aborted",
+                    "sessionKey": session_key,
+                    "runId": "run-1",
+                },
+            }
+        )
+        assert session_key not in connection._active_runs
+        assert session_key not in connection._active_runs
 
     @pytest.mark.asyncio
     async def test_touch_run_updates_last_event_at(self, connection):
@@ -1198,13 +1584,43 @@ class TestPoolReconnectFloor:
 
     @pytest.mark.asyncio
     async def test_pool_mark_run_active_noop_when_no_connection(self):
-        """The chat dispatcher calls mark_run_active BEFORE send_rpc creates
-        the connection on a cold start. The call must be safe to issue when
-        no connection exists — the first inbound event keyed on the same
-        sessionKey will populate _active_runs once the conn is up."""
+        """The chat dispatcher calls mark_run_active BEFORE send_rpc on a cold
+        start. It must be safe to issue when no connection exists — the
+        dispatcher calls ensure_connection first on the real path, so this just
+        guards the no-connection edge (the mark is silently dropped)."""
         pool = GatewayConnectionPool(management_api=MagicMock())
         # Should not raise.
         pool.mark_run_active("user-1", "agent:main:user-1", "main")
+
+    @pytest.mark.asyncio
+    async def test_pool_clear_active_run_clears_parked_window(self):
+        """The dispatcher calls pool.clear_active_run on the chat.send failure
+        path so a send that never reached OpenClaw doesn't leave a stale
+        parked-vs-dead entry. It must resolve the owner's connection and pop the
+        per-session run."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        conn = GatewayConnection(
+            frontend_connections=set(),
+            user_id="user-1",
+            ip="10.0.0.1",
+            token="tok",
+            management_api=MagicMock(),
+        )
+        conn.mark_run_active("agent:main:user-1", "main")
+        pool._connections["user-1"] = conn
+        assert "agent:main:user-1" in conn._active_runs
+
+        pool.clear_active_run("user-1", "agent:main:user-1")
+        assert "agent:main:user-1" not in conn._active_runs
+
+    @pytest.mark.asyncio
+    async def test_pool_clear_active_run_noop_when_no_connection(self):
+        """clear_active_run runs on the chat.send failure path, which can fire
+        before send_rpc ever created the connection. It must be safe to call
+        when no connection exists for the owner."""
+        pool = GatewayConnectionPool(management_api=MagicMock())
+        # Should not raise.
+        pool.clear_active_run("user-1", "agent:main:user-1")
 
     @pytest.mark.asyncio
     async def test_is_user_connected_true_for_parked_with_runs(self):

@@ -65,6 +65,13 @@ const ERROR_PATTERNS: [RegExp, string][] = [
   [/health check timed out/i, "Your agent is not responding. Please try again in a moment."],
   [/Gateway connection lost/i, "Lost connection to your agent. Retrying..."],
   [/Connection closed/i, "Connection to your agent was interrupted. Please try again."],
+  // Quiet defensive fallback. The backend serialize gate now returns a benign
+  // `agent_busy` frame (handled in the error branch below) instead of letting a
+  // raw "session file locked" surface to the web client, so this should never
+  // fire. It stays only to keep the bare technical lock string from reaching a
+  // user on some untested edge — softened to plain "busy" copy, never an error
+  // card (a lock error carries no errorKind, so it renders as plain text, not a
+  // typed ChatErrorCard).
   [/session file locked/i, "Your agent is busy with another request. Please wait a moment and try again."],
   [/Model access is denied/i, "This model is not available. Try switching to a different model in settings."],
 ];
@@ -85,14 +92,26 @@ export const BOOTSTRAP_MESSAGE =
 
 /**
  * A user-typed message that arrived while a previous turn was still in
- * flight. Held in `queuedMessages` and drained one-at-a-time on the
- * busy→idle transition. Mirrors upstream OpenClaw control-ui's chat
- * queue (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217).
+ * flight, OR while disconnected. Held in `queuedMessages` and drained
+ * one-at-a-time off the SERVER's run-ended signal (`run_ended`, or a
+ * terminal done/error for the active run when no run_ended trails it) —
+ * never on a local busy→idle edge. Mirrors upstream OpenClaw control-ui's
+ * chat queue (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217).
+ *
+ * `sendState` tracks a send's transport status:
+ *   - undefined  — a plain queued send awaiting the normal drain.
+ *   - "waiting-reconnect" — enqueued/attempted while disconnected; replayed
+ *     on the next reconnect rising edge.
+ *   - "failed" — a dispatch attempt threw; retryable via retryQueuedMessage.
+ * (`"sending"` is reserved for parity with upstream but not used here, since
+ * a dispatched send becomes its own active run rather than staying queued.)
  */
 export interface QueuedMessage {
   id: string;
   text: string;
   createdAt: number;
+  sendState?: "sending" | "waiting-reconnect" | "failed";
+  sendError?: string;
 }
 
 export interface UseAgentChatReturn {
@@ -112,6 +131,8 @@ export interface UseAgentChatReturn {
   queuedMessages: QueuedMessage[];
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
+  steerMessage: (id: string) => void;
+  retryQueuedMessage: (id: string) => void;
 }
 
 // =============================================================================
@@ -186,6 +207,29 @@ function foldLiveTurnIntoContent(params: {
 }
 
 // =============================================================================
+// addCappedRunId
+//
+// Records a runId in a bounded Set, capping it to the last RUNID_SET_CAP entries
+// (FIFO eviction via insertion-ordered Set) so it never grows unbounded over a
+// long-lived chat. Used for both the drained-runIds set (an id only needs to
+// outlive the done↔run_ended pair for its own run) and the side-run set (a
+// /btw id only needs to outlive that side run's own event stream); in both
+// cases, once a handful of newer runs have completed an older entry can never
+// legitimately re-fire.
+// =============================================================================
+
+const RUNID_SET_CAP = 64;
+
+function addCappedRunId(set: Set<string>, runId: string): void {
+  set.add(runId);
+  while (set.size > RUNID_SET_CAP) {
+    const oldest = set.values().next().value;
+    if (oldest === undefined) break;
+    set.delete(oldest);
+  }
+}
+
+// =============================================================================
 // Hook
 //
 // NOTE: Only one useAgentChat instance should be active at a time. The backend
@@ -195,7 +239,7 @@ function foldLiveTurnIntoContent(params: {
 // =============================================================================
 
 export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
-  const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
+  const { isConnected, sendChat, send, onChatMessage, sendReq } = useGateway();
 
   // Cache key includes session name so org members don't share history cache
   const cacheKey = agentId ? `${agentId}:${sessionName}` : null;
@@ -287,6 +331,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // an aborted run.
   const cancelledRunIdsRef = useRef<Set<string>>(new Set());
 
+  // Side-channel /btw run ids. A /btw (or /side) aside runs CONCURRENTLY with
+  // the primary turn on the same sessionKey + agent_id, but as a separate run
+  // with its OWN runId. We mint that runId on send (passed as clientRunId so it
+  // becomes the backend idempotencyKey → the runId every side event carries)
+  // and record it here so the event handler can keep the side run's
+  // stream/terminal events OFF the primary turn's live state. Mirrors upstream:
+  // sendDetachedChatMessage generates the runId (controllers/chat.ts) and the
+  // client tracks it (TUI noteLocalBtwRunId / isLocalBtwRunId). Bounded set.
+  const sideRunIdsRef = useRef<Set<string>>(new Set());
+
   // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
 
@@ -297,6 +351,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // intermediate `done` would reopen ChatInput and let a user-typed
   // follow-up race with the post-approval resume.
   const clientRunIdRef = useRef<string | null>(null);
+
+  // Deferred abort intent. cancelMessage() while disconnected stores the
+  // target {agentId, runId} here; the reconnect rising-edge effect below
+  // replays it exactly once. Mirrors upstream app-chat.ts's host.pendingAbort
+  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:213).
+  const pendingAbortRef = useRef<{ agentId: string; runId: string | null } | null>(null);
 
   // Approval queue snapshot — used to keep the busy gate armed while an
   // exec-approval card is still pending for this agent. Mirrored to a ref
@@ -330,6 +390,28 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     queuedMessagesRef.current = queuedMessages;
   }, [queuedMessages]);
 
+  // RunIds whose queue-drain has already fired. The queue drains on the
+  // SERVER's run-ended signal, which arrives as up to TWO frames for a
+  // single run: the terminal done/error AND the authoritative `run_ended`
+  // that trails it (run_ended is ADDITIONAL, never a replacement — see
+  // backend connection_pool.py). Some session-less slash-command terminals
+  // emit a `done` with NO trailing run_ended. We therefore drain on EITHER
+  // signal but dedupe by runId here so done+run_ended for the same run never
+  // drains twice (which would double-send the next queued message).
+  //
+  // Capped to the last N runIds (insertion-ordered Set, FIFO eviction) so it
+  // never grows unbounded over a long-lived chat. A drained runId only needs
+  // to outlive the done↔run_ended pair for its own run; once a handful of
+  // newer runs have completed, an older entry can never legitimately re-fire.
+  const drainedRunIdsRef = useRef<Set<string>>(new Set());
+
+  // Ref to the latest queue-drain function. The once-registered
+  // onChatMessage handler (deps [onChatMessage]) reads it through this ref
+  // so it can invoke the drain without re-binding on every render or
+  // capturing a stale dispatchNow closure. Assigned after dispatchNow is
+  // defined below.
+  const drainQueueRef = useRef<() => void>(() => {});
+
   const removeQueuedMessage = useCallback((id: string) => {
     setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
   }, []);
@@ -337,6 +419,36 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const clearQueue = useCallback(() => {
     setQueuedMessages([]);
   }, []);
+
+  // Steer a queued message INTO the live run. Only valid while a run is
+  // active (clientRunIdRef set) — the steer text is injected mid-run rather
+  // than queued to run after. Sends {type:"agent_steer", agent_id, text,
+  // runId} via the gateway send primitive (mirroring how sendChat emits
+  // agent_chat) and removes the item from the normal queue, since it's now
+  // part of the live run. No-op if no active run or the id isn't queued.
+  // Mirrors upstream OpenClaw web UI's steerQueuedChatMessage
+  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:737).
+  const steerMessage = useCallback(
+    (id: string) => {
+      const activeRunId = clientRunIdRef.current;
+      if (!activeRunId) return;
+      if (!agentIdRef.current) return;
+      if (!isConnected) return;
+      const item = queuedMessagesRef.current.find((m) => m.id === id);
+      if (!item) return;
+      const text = item.text.trim();
+      if (!text) return;
+
+      send({
+        type: "agent_steer",
+        agent_id: agentIdRef.current,
+        text,
+        runId: activeRunId,
+      });
+      setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+    },
+    [isConnected, send],
+  );
 
   useEffect(() => {
     agentIdRef.current = agentId;
@@ -468,6 +580,37 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
+      // Segregate side-channel /btw runs. A /btw aside runs concurrently with
+      // the primary turn but as a SEPARATE run carrying its own (frontend-
+      // minted) runId. Its stream/terminal events MUST NOT touch the primary
+      // turn's live state — otherwise a side chunk would hijack the live
+      // stream and a side `done`/`error` would fold+clear the still-running
+      // primary turn. Upstream solves this by gating apply on the active run
+      // (controllers/chat.ts handleChatEvent activeRunMatches) and routing btw
+      // output to a separate side-result card; Isol8 has no side-result surface
+      // yet, so we drop side events here (the primary run is unaffected). This
+      // MUST run before the resume-adoption transfer below so a side runId is
+      // never mistaken for the primary run's post-approval continuation.
+      // Clean up the id ONLY on `run_ended` — the side run's terminal sequence
+      // is the done/error frame FOLLOWED BY a synthesized run_ended (backend
+      // forwards both, run_ended last). Deleting on the first terminal (done)
+      // would let the trailing run_ended fall through to the normal path, where
+      // — with no primary run active — it could be adopted and drain the queue
+      // even though only a detached side note ended. run_ended is the last
+      // event for the run, so keeping the id until then drops the whole
+      // sequence. (If run_ended is somehow lost, the bounded FIFO set evicts
+      // the id eventually.) "runId" in msg narrows away heartbeat/update_available.
+      if (
+        "runId" in msg &&
+        typeof msg.runId === "string" &&
+        sideRunIdsRef.current.has(msg.runId)
+      ) {
+        if (msg.type === "run_ended") {
+          sideRunIdsRef.current.delete(msg.runId);
+        }
+        return;
+      }
+
       // Drop late stream/tool events for a runId the user already aborted
       // or cleared. Without this, an event landing after cancelMessage()
       // (e.g. a chunk that was in flight when the user hit Stop) would
@@ -529,6 +672,27 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       ) {
         clientRunIdRef.current = msg.runId;
         resumeExpectedRef.current = false;
+      }
+
+      // Adopt an observed run as the active run when we have none — mirrors
+      // upstream handleChatEvent (controllers/chat.ts:711 `if (!chatRunId &&
+      // sessionMatches) chatRunId = payload.runId`; tui-event-handlers.ts:461).
+      // A tab OBSERVING another tab's run (owner-keyed fan-out delivers its
+      // events here) thereby knows it's busy and ENQUEUES subsequent sends
+      // rather than dispatching into the backend serialize gate. This is the
+      // primary fix for the multi-tab case; the `agent_busy` rollback below is
+      // only the safety net for the sub-second race where this tab submits
+      // before the run's first event has reached it. Guards: skip side (`/btw`)
+      // runs (they never own the primary window) and already-finalized runs
+      // (drainedRunIds — a late/stray event must not re-arm the gate).
+      if (
+        clientRunIdRef.current === null &&
+        "runId" in msg &&
+        typeof msg.runId === "string" &&
+        !sideRunIdsRef.current.has(msg.runId) &&
+        !drainedRunIdsRef.current.has(msg.runId)
+      ) {
+        clientRunIdRef.current = msg.runId;
       }
 
       if (msg.type === "chunk") {
@@ -659,6 +823,30 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
+      if (msg.type === "run_ended") {
+        // The AUTHORITATIVE server signal that this run is truly over. It
+        // trails the terminal done/error for the same run and is the
+        // canonical drain trigger — the queue drains only when the run is
+        // truly over per the SERVER, never on a local terminal/error edge.
+        //
+        // Dedupe by runId: the terminal done/error handler below already
+        // drained this run (or, for the session-less edge, a `done` with no
+        // run_ended did). If so, this is a no-op so we don't double-send.
+        const runId = msg.runId;
+        if (drainedRunIdsRef.current.has(runId)) {
+          return;
+        }
+        addCappedRunId(drainedRunIdsRef.current, runId);
+        // run_ended is the server's word that the run ended — force-release
+        // the busy gate for it even if some local heuristic still held it.
+        if (clientRunIdRef.current === runId) {
+          clientRunIdRef.current = null;
+          resumeExpectedRef.current = false;
+        }
+        drainQueueRef.current();
+        return;
+      }
+
       if (msg.type === "done") {
         const runId = msg.runId;
         // Fold the entire live turn into a single synthesized assistant
@@ -714,7 +902,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           approvalQueueRef.current.some(
             (a) => a.agentId === agentIdRef.current,
           );
-        if (runId === clientRunIdRef.current && !hasPendingApprovalForThisAgent) {
+        // Did THIS done end the active run? Only a true terminal (matching
+        // runId, no pending approval) clears the gate. An interim chat.final
+        // that closes a tool-approval bracket keeps the gate armed — and the
+        // backend sends NO run_ended for it — so we must not drain on it.
+        const endedActiveRun =
+          runId === clientRunIdRef.current && !hasPendingApprovalForThisAgent;
+        if (endedActiveRun) {
           clientRunIdRef.current = null;
         }
 
@@ -737,10 +931,39 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             }
           }
         }
+
+        // Drain the queue if this done genuinely ended the active run. The
+        // authoritative `run_ended` trails most terminals — dedupe by runId
+        // so we don't double-drain. For the session-less slash-command edge
+        // (a `done` with no trailing run_ended) this `done` IS the only
+        // run-ended signal, so the drain must happen here too.
+        if (endedActiveRun && !drainedRunIdsRef.current.has(runId)) {
+          addCappedRunId(drainedRunIdsRef.current, runId);
+          drainQueueRef.current();
+        }
         return;
       }
 
       if (msg.type === "error") {
+        // Defensive: we no longer run a server-side serialize gate. Concurrency
+        // is handled the upstream way — client-side queue + observed-run
+        // adoption + the container's per-session write-lock — so the backend
+        // never emits `agent_busy`. If a stray one ever arrives (e.g. a
+        // mid-deploy skew with an old backend), treat it as a benign no-op: it
+        // carries NO runId, and the generic error path below would (because
+        // !msg.runId) clear clientRunIdRef and isStreaming, WIPING the live turn.
+        if (msg.code === "agent_busy") {
+          return;
+        }
+
+        // A steer injection that failed is NOT terminal for the primary run —
+        // OpenClaw keeps working. Surface a notice but do NOT tear down the
+        // live turn (the generic no-runId path below would wipe it).
+        if (msg.code === "steer_failed") {
+          setError(friendlyError(msg.message));
+          return;
+        }
+
         const displayError = friendlyError(msg.message);
         const errorCode = msg.code;
         // Append an assistant-role error message to chatMessages.
@@ -766,6 +989,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         toolStreamOrderRef.current = [];
         setChatToolMessages([]);
         setError(displayError);
+        // Did THIS error end the active run? A terminal agent error carries
+        // the run's runId (the no-runId agent_busy notice was handled and
+        // returned above). Capture state before clearing so we can drain.
+        const endedActiveRun =
+          !!msg.runId && msg.runId === clientRunIdRef.current;
+        const gateWasArmed = clientRunIdRef.current !== null;
         if (!msg.runId || msg.runId === clientRunIdRef.current) {
           clientRunIdRef.current = null;
         }
@@ -773,6 +1002,22 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // this handler; by here, msg.runId is never in the set.
         if (clientRunIdRef.current === null) {
           setIsStreaming(false);
+        }
+
+        // Drain the queue if this error RELEASED the busy gate, so a follow-up
+        // the user queued while the failed send was pending isn't stranded.
+        // Two release paths:
+        //  - terminal agent error WITH a matching runId (endedActiveRun): dedupe
+        //    by runId so the trailing `run_ended {outcome:"error"}` doesn't
+        //    double-drain.
+        //  - no-runId transport/gate error (no container, billing block, send
+        //    failure) that just cleared clientRunIdRef: there is no runId to key
+        //    a dedupe on, and no trailing run_ended will arrive, so drain here.
+        if (endedActiveRun && !drainedRunIdsRef.current.has(msg.runId!)) {
+          addCappedRunId(drainedRunIdsRef.current, msg.runId!);
+          drainQueueRef.current();
+        } else if (!msg.runId && gateWasArmed && clientRunIdRef.current === null) {
+          drainQueueRef.current();
         }
         return;
       }
@@ -784,15 +1029,25 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   // ---- Send message ----
 
-  // Hoisted so both sendMessage and the flushQueue effect can call it.
-  // dispatchNow assumes the busy-gate has already been checked.
+  // Hoisted so both sendMessage and the drain can call it. dispatchNow
+  // assumes the busy-gate has already been checked. Returns true on a
+  // successful wire send, false if the send threw.
+  //
+  // `queueItem` distinguishes a drain-originated send from a direct typed
+  // send. For a drain failure we re-queue the item as `failed` (so it stays
+  // visible and retryable) and roll back the optimistic user bubble + gate,
+  // instead of appending an "Error:" bubble to history. Mirrors upstream's
+  // flushChatQueue treating a failed send via sendState on the queue item.
   const dispatchNow = useCallback(
-    async (message: string): Promise<void> => {
+    async (
+      message: string,
+      opts?: { queueItem?: QueuedMessage },
+    ): Promise<boolean> => {
       const agentId = agentIdRef.current;
-      if (!agentId) return;
+      if (!agentId) return false;
       if (!isConnected) {
         setError("Not connected. Please wait and try again.");
-        return;
+        return false;
       }
 
       const newClientRunId = crypto.randomUUID();
@@ -815,19 +1070,37 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       try {
         sendChat(agentId, message, newClientRunId);
+        return true;
       } catch (err) {
         const errorMessage = friendlyError(
           err instanceof Error ? err.message : "Failed to send message",
         );
-        setError(errorMessage);
-        const errMsg: HistoryMessage = {
-          role: "assistant",
-          content: [{ type: "text", text: `Error: ${errorMessage}` }],
-          timestamp: Date.now(),
-        };
-        setChatMessages((prev) => [...prev, errMsg]);
+        // Roll back the optimistic turn state regardless of origin.
+        setChatMessages((prev) => prev.filter((m) => m !== userMsg));
         setIsStreaming(false);
         clientRunIdRef.current = null;
+
+        if (opts?.queueItem) {
+          // Drain failure: re-queue the item as failed so the user can
+          // retry it. No "Error:" history bubble — the failure surfaces on
+          // the queue item itself.
+          const failed: QueuedMessage = {
+            ...opts.queueItem,
+            sendState: "failed",
+            sendError: errorMessage,
+          };
+          setQueuedMessages((prev) => [failed, ...prev]);
+        } else {
+          // Direct typed send: surface the failure as a chat error bubble.
+          setError(errorMessage);
+          const errMsg: HistoryMessage = {
+            role: "assistant",
+            content: [{ type: "text", text: `Error: ${errorMessage}` }],
+            timestamp: Date.now(),
+          };
+          setChatMessages((prev) => [...prev, errMsg]);
+        }
+        return false;
       }
     },
     [sendChat, isConnected, setIsStreaming],
@@ -886,42 +1159,97 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // refs so the NEXT user turn measures from its own start.
         turnStartedAtRef.current = null;
         turnAssistantLenRef.current = 0;
+        // The gate just released with no server run-ended frame coming
+        // (the user dismissed / the card expired / it errored — there's no
+        // post-approval continuation). Drain the queue here explicitly since
+        // the server-signal handlers won't fire for this locally-resolved
+        // termination.
+        drainQueueRef.current();
       }
     });
   }, [onApprovalRemoved, setIsStreaming]);
 
-  // Drain queued messages one at a time on busy→idle transitions.
-  // We track the previous value of clientRunIdRef in a ref so a simple
-  // effect can detect the falling edge without polling.
-  const prevClientRunIdRef = useRef<string | null>(null);
-  // Deliberate no-deps effect: must run after every render so the ref-based
-  // falling-edge detector catches the busy→idle transition. The work is
-  // O(1) (two ref reads + comparison) when no transition occurred.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Drain ONE queued message if the run is truly over and we're not busy.
+  //
+  // This is invoked off the SERVER's run-ended signal — `run_ended`, or a
+  // terminal done/error for the active runId when no run_ended trails it —
+  // NEVER on a local clientRunId falling edge. Mirrors upstream OpenClaw web
+  // UI's flushChatQueue (app-chat.ts:775): drain only when !isChatBusy, send
+  // one, and let the dispatched message's own run-ended re-invoke the drain
+  // for the next one. dispatchNow re-arms clientRunIdRef, so the gate stays
+  // closed for the freshly-dispatched run until its server terminal.
+  const drainQueue = useCallback(() => {
+    if (clientRunIdRef.current !== null) return; // still busy
+    if (!isConnected) return;
+    // Drain the first PLAIN queued send. Skip items the user must act on
+    // (failed → Retry, waiting-reconnect → handled on the reconnect edge).
+    const next = queuedMessagesRef.current.find((m) => !m.sendState);
+    if (!next) return;
+    setQueuedMessages((q) => q.filter((m) => m.id !== next.id));
+    // On a dispatch failure, dispatchNow re-queues `next` as failed.
+    void dispatchNow(next.text, { queueItem: next });
+  }, [isConnected, dispatchNow]);
+
+  // Keep the handler-visible drain ref pointed at the latest drainQueue so
+  // the once-registered onChatMessage handler invokes the current closure
+  // (fresh isConnected / dispatchNow) without re-binding.
   useEffect(() => {
-    const prev = prevClientRunIdRef.current;
-    const curr = clientRunIdRef.current;
-    prevClientRunIdRef.current = curr;
-    if (
-      prev !== null &&
-      curr === null &&
-      queuedMessagesRef.current.length > 0 &&
-      isConnected
-    ) {
-      const next = queuedMessagesRef.current[0];
-      setQueuedMessages((q) => q.slice(1));
-      void dispatchNow(next.text);
-    }
-  });
+    drainQueueRef.current = drainQueue;
+  }, [drainQueue]);
+
+  // Re-attempt a failed queued send. Pulls the item out of the queue,
+  // clears its failed state, and:
+  //   - disconnected → re-park as waiting-reconnect (the reconnect edge
+  //     will replay it);
+  //   - busy (a run is active) → re-park as a plain queued send (the
+  //     server run-ended drain will pick it up);
+  //   - free + connected → dispatch immediately (re-queued as failed again
+  //     if the send throws).
+  // Mirrors upstream OpenClaw web UI's retryQueuedChatMessage
+  // (~/Desktop/openclaw/ui/src/ui/chat/chat-queue.ts:914).
+  const retryQueuedMessage = useCallback(
+    (id: string) => {
+      const item = queuedMessagesRef.current.find((m) => m.id === id);
+      if (!item) return;
+
+      if (!isConnected) {
+        setQueuedMessages((prev) =>
+          prev.map((m) =>
+            m.id === id
+              ? { ...m, sendState: "waiting-reconnect", sendError: undefined }
+              : m,
+          ),
+        );
+        return;
+      }
+
+      if (clientRunIdRef.current !== null) {
+        // Still busy — clear the failed flag and let the normal drain take it.
+        setQueuedMessages((prev) =>
+          prev.map((m) =>
+            m.id === id ? { ...m, sendState: undefined, sendError: undefined } : m,
+          ),
+        );
+        return;
+      }
+
+      // Free + connected → dispatch now. Pull it out first; dispatchNow
+      // re-queues it as failed if the send throws again.
+      const cleaned: QueuedMessage = {
+        ...item,
+        sendState: undefined,
+        sendError: undefined,
+      };
+      setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+      void dispatchNow(cleaned.text, { queueItem: cleaned });
+    },
+    [isConnected, dispatchNow],
+  );
 
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {
       if (!agentIdRef.current) {
         throw new Error("No agent selected");
-      }
-      if (!isConnected) {
-        setError("Not connected. Please wait and try again.");
-        return;
       }
 
       const trimmed = message.trim();
@@ -931,9 +1259,65 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
       if (key) _needsBootstrap.delete(key);
 
-      // Busy gate: if a user-turn is already in flight (clientRunIdRef
-      // is set), enqueue instead of firing chat.send. The flushQueue
-      // effect picks this up when clientRunIdRef clears.
+      // Side-channel `/btw` (or `/side`): a detached, non-blocking aside that
+      // runs alongside the main turn rather than queuing behind it. Send it
+      // IMMEDIATELY — even while a run is active — and do NOT touch
+      // clientRunIdRef / isStreaming (a side run is detached, it has no claim
+      // on the primary run's busy gate). The FULL original text including the
+      // `/btw` prefix goes on the wire: the container detects the prefix and
+      // runs it as a non-blocking side run server-side.
+      //
+      // We MINT the side run's runId here (sent as clientRunId → backend
+      // idempotencyKey → the runId every side event carries) and record it in
+      // sideRunIdsRef so the event handler segregates the side run's
+      // stream/terminal events from the primary turn. Mirrors upstream
+      // sendDetachedChatMessage, which generates the runId client-side
+      // (controllers/chat.ts) and the client tracks it (TUI noteLocalBtwRunId).
+      // The eventual side `run_ended` is dropped by that segregation, so it can
+      // never drain the primary queue.
+      //
+      // Known limitation: a `/btw` typed while DISCONNECTED does not match here
+      // (no live socket to mint+track a side run against), so it falls through
+      // to the waiting-reconnect queue below and replays as an ordinary send on
+      // reconnect — losing its detached framing client-side (the container still
+      // detects the `/btw` prefix server-side and runs it as a side run). This
+      // is accepted while `/btw` lacks a dedicated side-result surface: detached
+      // answers aren't rendered in the web UI yet regardless, and the trigger
+      // (compose a `/btw` precisely during a transient disconnect) is narrow.
+      if (/^\/(btw|side)(?::|\s|$)/i.test(trimmed) && isConnected && agentIdRef.current) {
+        const sideRunId = crypto.randomUUID();
+        addCappedRunId(sideRunIdsRef.current, sideRunId);
+        send({
+          type: "agent_chat",
+          agent_id: agentIdRef.current,
+          message: trimmed,
+          side: true,
+          clientRunId: sideRunId,
+        });
+        return;
+      }
+
+      // Disconnected: park the send as waiting-reconnect instead of
+      // dropping it. The reconnect rising-edge effect replays it (and
+      // resumes the normal drain) once the socket is back. Mirrors upstream
+      // markQueuedChatSendsWaitingForReconnect (chat-queue.ts:848).
+      if (!isConnected) {
+        const id = `queued-${crypto.randomUUID()}`;
+        setQueuedMessages((prev) => [
+          ...prev,
+          {
+            id,
+            text: trimmed,
+            createdAt: Date.now(),
+            sendState: "waiting-reconnect",
+          },
+        ]);
+        return;
+      }
+
+      // Busy gate: if a user-turn is already in flight (clientRunIdRef is
+      // set), enqueue instead of firing chat.send. The queue drains off the
+      // server's run-ended signal for the active run (see drainQueue).
       if (clientRunIdRef.current !== null) {
         const id = `queued-${crypto.randomUUID()}`;
         setQueuedMessages((prev) => [
@@ -945,11 +1329,20 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       await dispatchNow(trimmed);
     },
-    [isConnected, sessionName, dispatchNow],
+    [isConnected, sessionName, dispatchNow, send],
   );
 
   // ---- Cancel / stop agent ----
-
+  //
+  // Targeted, server-reconciled abort. We send `agent_abort` carrying the
+  // active clientRunId and then WAIT for the server's terminal — the aborted
+  // run surfaces as an `error` ("Agent run was cancelled" per
+  // connection_pool.py's chat.aborted transform) followed by the
+  // authoritative `run_ended {outcome:"aborted"}`. Those handlers tear down
+  // the live turn and drain the queue. We deliberately do NOT clear
+  // isStreaming / live state locally: server-reconcile drives "done", not a
+  // local edge. Mirrors upstream OpenClaw web UI's handleAbortChat
+  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:201).
   const cancelMessage = useCallback(async () => {
     if (!agentIdRef.current || !isStreaming) return;
 
@@ -958,70 +1351,93 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       agent_id: agentIdRef.current,
       elapsed_ms: startedAt !== null ? Date.now() - startedAt : 0,
     });
-    turnStartedAtRef.current = null;
-    turnAssistantLenRef.current = 0;
 
-    // Remember the cancelled runId so any chunk/thinking/tool events still
-    // in flight from this run get dropped instead of reanimating live state.
-    // The server's chat.aborted event will eventually arrive as a terminal
-    // `error` which removes the entry.
-    const cancelledRunId = clientRunIdRef.current;
-    if (cancelledRunId) cancelledRunIdsRef.current.add(cancelledRunId);
+    const activeRunId = clientRunIdRef.current;
 
-    const sessionKey = `agent:${agentIdRef.current}:${sessionName}`;
-    try {
-      await sendReq("chat.abort", { sessionKey });
-    } catch (err) {
-      console.warn("Failed to abort agent run:", err);
-    }
-
-    // Fold the in-progress turn into a single assistant HistoryMessage so
-    // the user sees what they cancelled preserved in chat history. Without
-    // this fold, the live segments/tools would render AFTER the next user
-    // message at the buildChatItems tail — same cross-turn ordering bug
-    // that bit the `done` path.
-    const content = foldLiveTurnIntoContent({
-      segments: chatStreamSegmentsRef.current,
-      toolEntries: toolStreamByIdRef.current,
-      toolOrder: toolStreamOrderRef.current,
-      tailStream: chatStreamRef.current,
-      tailThinking: chatStreamThinkingRef.current,
-    });
-    if (content.length > 0) {
-      const synthesized: HistoryMessage = {
-        role: "assistant",
-        content,
-        timestamp: Date.now(),
-        runId: cancelledRunId ?? undefined,
+    // Disconnected: queue the abort intent and replay it on the next
+    // reconnect rising edge (see the pending-abort replay effect below).
+    // Mirrors upstream app-chat.ts:211.
+    if (!isConnected) {
+      pendingAbortRef.current = {
+        agentId: agentIdRef.current,
+        runId: activeRunId,
       };
-      setChatMessages((prev) => [...prev, synthesized]);
+      return;
     }
 
-    setIsStreaming(false);
-    setChatStream(null);
-    chatStreamRunIdRef.current = null;
-    streamCommittedOffsetRef.current = 0;
-    setChatStreamThinking(null);
-    chatStreamThinkingRunIdRef.current = null;
-    setChatStreamSegments([]);
-    toolStreamByIdRef.current.clear();
-    toolStreamOrderRef.current = [];
-    setChatToolMessages([]);
-    clientRunIdRef.current = null;
-    // Clear any pending approval-resume flag — the user cancelled, so a
-    // post-approval continuation (if one arrives) must not be adopted
-    // as the new active run.
-    resumeExpectedRef.current = false;
-  }, [
-    isStreaming,
-    sendReq,
-    sessionName,
-    setIsStreaming,
-    setChatStream,
-    setChatStreamThinking,
-    setChatStreamSegments,
-    setChatToolMessages,
-  ]);
+    // `send` returns false when the socket isn't actually open — the
+    // stale-isConnected race where the WS closed but React hasn't re-rendered
+    // isConnected=false yet. Because cancel is server-reconciled (we wait for a
+    // terminal rather than tearing down locally), a silently-dropped abort here
+    // would hang the chat. Park the intent so the reconnect replay fires it.
+    const delivered = send({
+      type: "agent_abort",
+      agent_id: agentIdRef.current,
+      ...(activeRunId ? { runId: activeRunId } : {}),
+    });
+    if (!delivered) {
+      pendingAbortRef.current = {
+        agentId: agentIdRef.current,
+        runId: activeRunId,
+      };
+    }
+  }, [isStreaming, isConnected, send]);
+
+  // ---- Reconnect rising-edge: replay deferred abort + waiting sends ----
+  //
+  // On the disconnected→connected transition:
+  //   1. Fire a deferred abort parked by cancelMessage() (pendingAbortRef),
+  //      exactly once. Mirrors app-chat.ts's host.pendingAbort handling.
+  //   2. Replay any queued sends marked `waiting-reconnect` — strip the
+  //      flag so they become plain queued sends, then resume the normal
+  //      drain (drainQueue dispatches the head; each dispatched send's
+  //      server run-ended re-invokes the drain for the next). Mirrors
+  //      retryReconnectableQueuedChatSends (chat-queue.ts:883).
+  const prevConnectedRef = useRef(isConnected);
+  useEffect(() => {
+    const rose = !prevConnectedRef.current && isConnected;
+    prevConnectedRef.current = isConnected;
+    if (!rose) return;
+
+    const pending = pendingAbortRef.current;
+    if (pending) {
+      pendingAbortRef.current = null;
+      send({
+        type: "agent_abort",
+        agent_id: pending.agentId,
+        ...(pending.runId ? { runId: pending.runId } : {}),
+      });
+    }
+
+    const waiting = queuedMessagesRef.current.filter(
+      (m) => m.sendState === "waiting-reconnect",
+    );
+    if (waiting.length > 0) {
+      // Strip the waiting-reconnect flag on ALL parked sends so they become
+      // plain queued sends (UI no longer shows "Waiting for reconnect").
+      setQueuedMessages((prev) =>
+        prev.map((m) =>
+          m.sendState === "waiting-reconnect"
+            ? { ...m, sendState: undefined, sendError: undefined }
+            : m,
+        ),
+      );
+      // Resume sending. If the gate is free, dispatch the first parked send
+      // now (drainQueue can't see it yet — the strip setState above hasn't
+      // committed to queuedMessagesRef). Its server run-ended re-invokes the
+      // normal drain for the rest, which by then are plain queued sends.
+      if (clientRunIdRef.current === null) {
+        const head = waiting[0];
+        const cleaned: QueuedMessage = {
+          ...head,
+          sendState: undefined,
+          sendError: undefined,
+        };
+        setQueuedMessages((prev) => prev.filter((m) => m.id !== head.id));
+        void dispatchNow(cleaned.text, { queueItem: cleaned });
+      }
+    }
+  }, [isConnected, send, dispatchNow]);
 
   // ---- Clear messages ----
 
@@ -1098,5 +1514,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     queuedMessages,
     removeQueuedMessage,
     clearQueue,
+    steerMessage,
+    retryQueuedMessage,
   };
 }

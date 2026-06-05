@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
-import { SendHorizontal, Paperclip, X, FileIcon, Loader2, Square } from "lucide-react";
+import { SendHorizontal, Paperclip, X, FileIcon, Loader2, Square, CornerDownRight, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -21,9 +21,16 @@ interface ChatInputProps {
   isUploading?: boolean;
   isStreaming?: boolean;
   suggestedMessage?: string;
-  queuedMessages?: { id: string; text: string }[];
+  queuedMessages?: {
+    id: string;
+    text: string;
+    sendState?: "sending" | "waiting-reconnect" | "failed";
+    sendError?: string;
+  }[];
   onRemoveQueued?: (id: string) => void;
   onClearQueue?: () => void;
+  onSteerQueued?: (id: string) => void;
+  onRetryQueued?: (id: string) => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -43,6 +50,8 @@ export function ChatInput({
   queuedMessages = [],
   onRemoveQueued,
   onClearQueue,
+  onSteerQueued,
+  onRetryQueued,
 }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
@@ -218,24 +227,76 @@ export function ChatInput({
                 </button>
               )}
             </div>
-            {queuedMessages.map((q) => (
-              <div
-                key={q.id}
-                className="flex items-center gap-2 text-sm text-[#1a1a1a]"
-              >
-                <span className="flex-1 truncate">{q.text}</span>
-                {onRemoveQueued && (
-                  <button
-                    type="button"
-                    aria-label="Remove queued message"
-                    onClick={() => onRemoveQueued(q.id)}
-                    className="text-[#b5ae9e] hover:text-[#5a5549]"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-            ))}
+            {queuedMessages.map((q) => {
+              const stateLabel =
+                q.sendState === "waiting-reconnect"
+                  ? "Waiting for reconnect"
+                  : q.sendState === "failed"
+                    ? "Failed"
+                    : q.sendState === "sending"
+                      ? "Sending"
+                      : null;
+              // Steer is only meaningful while a run is live and the item is
+              // a plain queued send (not failed / waiting). Mirrors upstream
+              // chat-queue.ts:69-86 (canAbort && !sendState).
+              const canSteer =
+                !!isStreaming && !!onSteerQueued && !q.sendState;
+              const canRetry = q.sendState === "failed" && !!onRetryQueued;
+              return (
+                <div
+                  key={q.id}
+                  className="flex flex-col gap-0.5 text-sm text-[#1a1a1a]"
+                >
+                  <div className="flex items-center gap-2">
+                    {stateLabel && (
+                      <span className="shrink-0 text-[0.65rem] uppercase tracking-wide text-[#8a8578]">
+                        {stateLabel}
+                      </span>
+                    )}
+                    <span className="flex-1 truncate">{q.text}</span>
+                    {canRetry && (
+                      <button
+                        type="button"
+                        aria-label="Retry queued message"
+                        title="Retry"
+                        onClick={() => onRetryQueued!(q.id)}
+                        className="flex items-center gap-1 text-[#8a8578] hover:text-[#1a1a1a]"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        <span className="text-xs">Retry</span>
+                      </button>
+                    )}
+                    {canSteer && (
+                      <button
+                        type="button"
+                        aria-label="Steer queued message"
+                        title="Steer now"
+                        onClick={() => onSteerQueued!(q.id)}
+                        className="flex items-center gap-1 text-[#8a8578] hover:text-[#1a1a1a]"
+                      >
+                        <CornerDownRight className="h-3 w-3" />
+                        <span className="text-xs">Steer</span>
+                      </button>
+                    )}
+                    {onRemoveQueued && (
+                      <button
+                        type="button"
+                        aria-label="Remove queued message"
+                        onClick={() => onRemoveQueued(q.id)}
+                        className="text-[#b5ae9e] hover:text-[#5a5549]"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                  {q.sendError && (
+                    <span className="text-xs text-red-600 truncate">
+                      {q.sendError}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -299,7 +360,13 @@ export function ChatInput({
               onClick={handleSend}
               disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
               data-testid="send-button"
-              aria-label="Send message"
+              // While a run is in flight a send doesn't fire immediately —
+              // useAgentChat enqueues it and drains on the server run-ended
+              // signal. Surface that as a "Queue" affordance so the button's
+              // accessible label / tooltip reflects the actual action.
+              // Mirrors upstream OpenClaw web UI (chat/run-controls.ts:83-91).
+              aria-label={isStreaming ? "Queue message" : "Send message"}
+              title={isStreaming ? "Queue" : "Send"}
             >
               {isUploading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

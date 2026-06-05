@@ -255,6 +255,41 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     expect(textIdx).toBeLessThan(pillIdx);
   });
 
+  // When the FIRST frame of an adopted run is agent_activity (a plan/patch/
+  // item/acp event before any assistant chunk, thinking, or tool_start), the
+  // branch must flip streaming on — exactly as chunk/thinking/tool_start do
+  // when they accept a run's first frame. Otherwise the busy gate looks idle
+  // (no stop affordance) and cancelMessage no-ops (it guards on isStreaming),
+  // so the user can't stop an activity-first run until another stream type
+  // arrives.
+  it("an activity-first run marks isStreaming and makes cancelMessage effective", async () => {
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+    act(() => {
+      emit({
+        type: "agent_activity",
+        activity: "plan",
+        title: "Proposed a plan",
+        detail: { steps: ["a"] },
+        agent_id: AGENT,
+        runId: RUN,
+      } as ChatIncomingMessage);
+    });
+
+    // The accepted activity pill marks the run busy.
+    expect(result.current.isStreaming).toBe(true);
+
+    // cancelMessage is now effective: it fires a targeted agent_abort for the
+    // adopted run instead of no-opping on a false-idle gate.
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: "agent_abort",
+      agent_id: AGENT,
+      runId: RUN,
+    });
+  });
+
   it("drops sub-stream events for a different agent", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {

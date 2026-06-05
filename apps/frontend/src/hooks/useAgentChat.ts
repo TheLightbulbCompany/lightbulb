@@ -936,6 +936,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           toolStreamOrderRef.current.push(synthId);
         }
         syncToolStreamMessages();
+        // An accepted activity pill means the run is busy — mark it streaming so
+        // the stop affordance shows and cancelMessage works (it guards on
+        // isStreaming). Mirrors the chunk/thinking/tool_start branches, which
+        // flip streaming when they accept a run's first frame. Cancelled-run
+        // frames are dropped by the tombstone guard above before adoption, so
+        // a dead run never reaches here. Set once for the branch — covers both
+        // the new-pill and activity-update paths (an update is still busy).
+        if (!isStreamingRef.current) setIsStreaming(true);
         return;
       }
 

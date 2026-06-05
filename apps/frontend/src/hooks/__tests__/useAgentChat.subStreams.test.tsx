@@ -355,6 +355,56 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     });
   });
 
+  // A tool that streamed output (tool_progress / command_output) but finishes
+  // with an EMPTY terminal result must keep that streamed output in the final
+  // folded history bubble — not just during execution. Mirrors upstream
+  // app-tool-stream's single `entry.output` field: the update phase sets it to
+  // the streamed partialResult and the result phase only overwrites it when the
+  // result is non-empty, so streamed output persists when no real result lands.
+  // Here we carry progressText through foldLiveTurnIntoContent onto the folded
+  // tool_use block so MessageList can fall back to it for a completed tool with
+  // no result.
+  it("keeps streamed tool output in folded history when the terminal result is empty", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+      act(() => {
+        startTool();
+        emit({
+          type: "command_output",
+          toolCallId: "t1",
+          output: "streamed line\n",
+          agent_id: AGENT,
+          runId: RUN,
+        } as ChatIncomingMessage);
+        // Tool terminates with NO payload (e.g. an aborted exec or a
+        // stream-only tool): the terminal result carries no output (result
+        // omitted, mirroring a tool_end with an empty/absent result array).
+        emit({
+          type: "tool_end",
+          tool: "bash",
+          toolCallId: "t1",
+          agent_id: AGENT,
+          runId: RUN,
+        } as ChatIncomingMessage);
+      });
+      // End the run so the live turn folds into a single history bubble.
+      act(() => {
+        emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      });
+      act(() => {
+        vi.advanceTimersByTime(TOOL_STREAM_THROTTLE_MS);
+      });
+      // The folded history's tool_use block must still carry the streamed
+      // output so MessageList can surface it when the result is empty.
+      const block = findToolUseBlock(result.current.renderItems, "t1");
+      expect(block).toBeTruthy();
+      expect(block!.progressText).toBe("streamed line\n");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drops sub-stream events for a different agent", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {

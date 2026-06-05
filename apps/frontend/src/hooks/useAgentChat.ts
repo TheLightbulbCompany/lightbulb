@@ -171,7 +171,19 @@ function foldLiveTurnIntoContent(params: {
     .filter((e): e is ToolStreamEntry => Boolean(e))
     .map((e) => {
       const blocks: ContentBlock[] = [
-        { type: "tool_use", id: e.toolCallId, name: e.name, args: e.args },
+        {
+          type: "tool_use",
+          id: e.toolCallId,
+          name: e.name,
+          args: e.args,
+          // Carry the streamed incremental output into history (mirrors the
+          // live sync path's spread). MessageList falls back to this when a
+          // completed tool has no terminal result, matching upstream
+          // app-tool-stream's single entry.output field — so a tool that
+          // streamed output but ended without a real result keeps it in the
+          // final folded bubble instead of only during execution.
+          ...(e.progressText ? { progressText: e.progressText } : {}),
+        },
       ];
       // Emit tool_result whenever the tool has reached a terminal state,
       // even if the backend produced no payload — MessageBlocks derives

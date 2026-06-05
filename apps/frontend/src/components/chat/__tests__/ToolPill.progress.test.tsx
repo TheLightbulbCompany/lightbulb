@@ -38,6 +38,45 @@ function groupWithRunningToolProgress(): RenderGroup[] {
   ];
 }
 
+// A COMPLETED tool (tool_use paired with a tool_result) whose result is empty
+// but which carries streamed progressText must fall back to that streamed
+// output. Mirrors upstream app-tool-stream's single `entry.output`: the result
+// phase only overwrites the streamed output when the result is non-empty, so a
+// tool that streamed output then ended with no real result keeps showing it.
+function groupWithCompletedEmptyResultProgress(): RenderGroup[] {
+  return [
+    {
+      side: "assistant",
+      key: "g1",
+      items: [
+        {
+          kind: "message",
+          key: "m1",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "t1",
+                name: "bash",
+                args: { cmd: "make" },
+                progressText: "streamed line\n",
+              },
+              // Terminal result with no payload — the tool is done but produced
+              // no output of its own.
+              {
+                type: "tool_result",
+                tool_use_id: "t1",
+                content: "",
+              },
+            ],
+          },
+        },
+      ],
+    },
+  ];
+}
+
 describe("ToolPill — live progress (C)", () => {
   it("shows progressText output while the tool is still running", () => {
     render(
@@ -52,5 +91,20 @@ describe("ToolPill — live progress (C)", () => {
     // Expand the pill, then assert the live output is rendered.
     fireEvent.click(screen.getByText("bash"));
     expect(screen.getByText(/compiling\.\.\./)).toBeInTheDocument();
+  });
+
+  it("falls back to streamed output for a completed tool with an empty result", () => {
+    render(
+      <MessageList
+        renderGroups={groupWithCompletedEmptyResultProgress()}
+        isStreaming={false}
+        isTyping={false}
+        agentName="Friday"
+        onOpenFile={() => {}}
+      />,
+    );
+    // Expand the pill, then assert the streamed output survives into history.
+    fireEvent.click(screen.getByText("bash"));
+    expect(screen.getByText(/streamed line/)).toBeInTheDocument();
   });
 });

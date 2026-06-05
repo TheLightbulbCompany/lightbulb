@@ -22,6 +22,18 @@ describe("ChannelsStatusPanel", () => {
     mockMutate.mockReset();
   });
 
+  it("shows an unavailable state (not 'no channels') when the container is offline", () => {
+    // undefined data = container unreachable. This is a different (and more
+    // actionable) diagnosis than an empty-but-reachable snapshot, so it must
+    // NOT collapse into the "No channels configured" empty state.
+    mockData.mockReturnValue(undefined);
+    render(<ChannelsStatusPanel />);
+    expect(
+      screen.getByTestId("channels-status-unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/no channels configured/i)).toBeNull();
+  });
+
   it("shows an empty state when no channels are configured", () => {
     mockData.mockReturnValue({
       ts: 1,

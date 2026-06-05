@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, RefreshCw, Radio } from "lucide-react";
+import { Loader2, RefreshCw, Radio, AlertTriangle } from "lucide-react";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -53,7 +53,7 @@ function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
 export function ChannelsStatusPanel() {
   // probe:true forces a live connectivity probe on the container rather than
   // returning the cached snapshot — the panel exists to show fresh health.
-  const { data, isLoading, mutate } = useGatewayRpc<ChannelsStatusSnapshot>(
+  const { data, error, isLoading, mutate } = useGatewayRpc<ChannelsStatusSnapshot>(
     "channels.status",
     { probe: true },
   );
@@ -83,6 +83,29 @@ export function ChannelsStatusPanel() {
       {isLoading && !data ? (
         <div className="flex items-center gap-2 text-sm text-[#8a8578]">
           <Loader2 className="h-4 w-4 animate-spin" /> Probing channels…
+        </div>
+      ) : error || !data ? (
+        // Undefined data means the container was unreachable — a different (and
+        // more actionable) diagnosis than an empty-but-reachable snapshot. We
+        // must NOT collapse it into "No channels configured", which is the exact
+        // failure this panel exists to investigate.
+        <div
+          data-testid="channels-status-unavailable"
+          className="rounded-lg border border-[#e0dbd0] bg-white p-6 text-center"
+        >
+          <AlertTriangle className="h-5 w-5 mx-auto mb-2 text-amber-500" />
+          <p className="text-sm text-[#8a8578]">
+            Couldn&apos;t reach the container to probe channel status.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => mutate()}
+            className="mt-3 text-xs gap-1.5"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Try again
+          </Button>
         </div>
       ) : channelOrder.length === 0 ? (
         <div className="rounded-lg border border-[#e0dbd0] bg-white p-6 text-center">

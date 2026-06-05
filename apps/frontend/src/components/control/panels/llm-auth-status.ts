@@ -63,9 +63,16 @@ export function resolveProviderStatus(
   if (!choice || !list || list.length === 0) return undefined;
   const wanted = candidateIds(choice, byoProvider ?? null);
   if (wanted.length === 0) return undefined;
-  const match = list.find((p) => {
-    const id = normalizeId(p.provider);
-    return wanted.some((w) => id === w || id.startsWith(`${w}-`));
-  });
-  return match?.status;
+  // Candidates are ranked (real id before fallback alias), so iterate them in
+  // priority order and take the first that matches any list entry. Scanning the
+  // list first would let a stale alias (e.g. a legacy `bedrock`) win over the
+  // higher-priority current id (`amazon-bedrock`) purely by list position.
+  for (const w of wanted) {
+    const match = list.find((p) => {
+      const id = normalizeId(p.provider);
+      return id === w || id.startsWith(`${w}-`);
+    });
+    if (match) return match.status;
+  }
+  return undefined;
 }

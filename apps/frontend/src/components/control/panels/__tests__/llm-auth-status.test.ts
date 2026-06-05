@@ -47,6 +47,18 @@ describe("resolveProviderStatus", () => {
     expect(resolveProviderStatus("bedrock_claude", null, list)).toBe("ok");
   });
 
+  it("prefers the priority candidate (amazon-bedrock) over a legacy bedrock entry listed first", () => {
+    // Snapshot contains BOTH a stale legacy `bedrock` entry (listed first) and
+    // the current `amazon-bedrock` entry. Candidate priority puts
+    // `amazon-bedrock` first, so resolution must honor that ranking rather than
+    // returning whichever entry happens to appear earlier in the list.
+    const list = providers(
+      { provider: "bedrock", displayName: "Bedrock (legacy)", status: "expired" },
+      { provider: "amazon-bedrock", displayName: "Amazon Bedrock", status: "ok" },
+    );
+    expect(resolveProviderStatus("bedrock_claude", null, list)).toBe("ok");
+  });
+
   it("matches byo_key + anthropic to the anthropic provider entry", () => {
     const list = providers(
       { provider: "anthropic", displayName: "Anthropic", status: "expiring" },

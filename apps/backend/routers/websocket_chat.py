@@ -1659,26 +1659,20 @@ async def _process_agent_abort_background(
         connection_id[:12],
     )
     session_key = f"agent:{agent_id}:{user_id}"
-    try:
-        management_api = await get_management_api_client()
-        ecs_manager = get_ecs_manager()
-        container, ip = await ecs_manager.resolve_running_container(owner_id)
-        if not container or not ip:
-            # No live container/IP means there's no run left in OpenClaw to
-            # abort — but the frontend's cancelMessage deliberately keeps
-            # isStreaming + the active runId until a SERVER terminal arrives
-            # (it server-reconciles rather than clearing locally). A silent
-            # return here would wedge the chat UI in "streaming" forever and
-            # the queue would never drain. Synthesize the SAME terminal a real
-            # abort produces — connection_pool._transform_agent_event maps the
-            # container's `aborted` event to an `error` frame ("Agent run was
-            # cancelled") — so the client tears down its live turn, clears
-            # isStreaming, and drains the queue.
-            logger.info(
-                "[%s] chat.abort no container/ip agent=%s — sending synthetic aborted terminal",
-                user_id,
-                agent_id,
-            )
+
+    async def _notify_aborted_terminal() -> None:
+        """Tell the client the run is over so cancelMessage's server-reconciled
+        wait unblocks (it keeps isStreaming + the active runId until a SERVER
+        terminal arrives). Synthesizes the SAME ``error`` frame a real abort
+        produces — connection_pool._transform_agent_event maps the container's
+        ``aborted`` event to ``{type:"error", message:"Agent run was
+        cancelled"}`` — so the client tears down its live turn and drains the
+        queue. Used whenever we cannot confirm the abort reached OpenClaw (no
+        container, or the abort RPC failed). If the run is actually still alive
+        (a transient RPC failure), the client re-adopts its continuing events
+        via runId adoption, so this is safe either way. Best-effort."""
+        try:
+            mgmt = await get_management_api_client()
             frame: dict[str, str] = {
                 "type": "error",
                 "agent_id": agent_id,
@@ -1686,10 +1680,22 @@ async def _process_agent_abort_background(
             }
             if run_id:
                 frame["runId"] = run_id
-            try:
-                management_api.send_message(connection_id, frame)
-            except Exception:
-                pass
+            mgmt.send_message(connection_id, frame)
+        except Exception:
+            pass
+
+    try:
+        ecs_manager = get_ecs_manager()
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
+        if not container or not ip:
+            # No live container/IP means there's no run left in OpenClaw to
+            # abort. Unblock the client rather than wedging it in "streaming".
+            logger.info(
+                "[%s] chat.abort no container/ip agent=%s — sending synthetic aborted terminal",
+                user_id,
+                agent_id,
+            )
+            await _notify_aborted_terminal()
             return
 
         params: dict[str, str] = {"sessionKey": session_key}
@@ -1707,10 +1713,21 @@ async def _process_agent_abort_background(
         )
         logger.info("[%s] chat.abort SENT agent=%s runId=%s", user_id, agent_id, run_id or "-")
     except Exception as e:
-        # Best-effort: a failed abort shouldn't surface as a chat error. The
-        # run either already finished or will time out on its own.
+        # The abort RPC failed AFTER a container was resolved (RPC timeout,
+        # gateway reconnect failure, dead backend<->container WS). Don't leave
+        # the client wedged: cancelMessage keeps isStreaming until a SERVER
+        # terminal arrives, and if the WS to the container is gone, the run's
+        # own terminal will never reach us. Synthesize the aborted terminal so
+        # the client unblocks (runId adoption recovers it if the run is in fact
+        # still alive after a transient failure).
         put_metric("chat.error", dimensions={"reason": "abort_failed"})
-        logger.warning("[%s] chat.abort FAIL agent=%s: %s", user_id, agent_id, e)
+        logger.warning(
+            "[%s] chat.abort FAIL agent=%s: %s — sending synthetic aborted terminal",
+            user_id,
+            agent_id,
+            e,
+        )
+        await _notify_aborted_terminal()
 
 
 async def _process_agent_steer_background(

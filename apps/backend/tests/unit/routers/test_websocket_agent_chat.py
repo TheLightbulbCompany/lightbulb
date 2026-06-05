@@ -607,6 +607,32 @@ class TestProcessAgentAbortBackground:
         assert frame["type"] == "error"
         assert "runId" not in frame
 
+    @pytest.mark.asyncio
+    async def test_abort_rpc_failure_emits_synthetic_aborted_terminal(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """If the chat.abort RPC fails AFTER a container was resolved (RPC
+        timeout, dead backend<->container WS), the client must still be
+        unblocked — cancelMessage keeps isStreaming until a SERVER terminal, and
+        if the WS to the container is gone the run's own terminal will never
+        arrive. The catch synthesizes the same aborted terminal as the
+        no-container branch."""
+        mock_pool.send_rpc = AsyncMock(side_effect=ConnectionError("gateway gone"))
+        await _process_agent_abort_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            run_id="run-9",
+        )
+        mock_mgmt_api.send_message.assert_called_once()
+        conn_arg, frame = mock_mgmt_api.send_message.call_args[0]
+        assert conn_arg == "conn-1"
+        assert frame["type"] == "error"
+        assert frame["agent_id"] == "luna"
+        assert frame["runId"] == "run-9"
+        assert frame["message"] == "Agent run was cancelled"
+
 
 # ---------------------------------------------------------------------------
 # agent_steer  ->  chat.send (deliver:false, fresh idempotencyKey)

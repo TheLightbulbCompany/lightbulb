@@ -85,14 +85,26 @@ export const BOOTSTRAP_MESSAGE =
 
 /**
  * A user-typed message that arrived while a previous turn was still in
- * flight. Held in `queuedMessages` and drained one-at-a-time on the
- * busy→idle transition. Mirrors upstream OpenClaw control-ui's chat
- * queue (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217).
+ * flight, OR while disconnected. Held in `queuedMessages` and drained
+ * one-at-a-time off the SERVER's run-ended signal (`run_ended`, or a
+ * terminal done/error for the active run when no run_ended trails it) —
+ * never on a local busy→idle edge. Mirrors upstream OpenClaw control-ui's
+ * chat queue (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217).
+ *
+ * `sendState` tracks a send's transport status:
+ *   - undefined  — a plain queued send awaiting the normal drain.
+ *   - "waiting-reconnect" — enqueued/attempted while disconnected; replayed
+ *     on the next reconnect rising edge.
+ *   - "failed" — a dispatch attempt threw; retryable via retryQueuedMessage.
+ * (`"sending"` is reserved for parity with upstream but not used here, since
+ * a dispatched send becomes its own active run rather than staying queued.)
  */
 export interface QueuedMessage {
   id: string;
   text: string;
   createdAt: number;
+  sendState?: "sending" | "waiting-reconnect" | "failed";
+  sendError?: string;
 }
 
 export interface UseAgentChatReturn {
@@ -1046,10 +1058,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (!agentIdRef.current) {
         throw new Error("No agent selected");
       }
-      if (!isConnected) {
-        setError("Not connected. Please wait and try again.");
-        return;
-      }
 
       const trimmed = message.trim();
       if (!trimmed) return;
@@ -1058,9 +1066,27 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
       if (key) _needsBootstrap.delete(key);
 
-      // Busy gate: if a user-turn is already in flight (clientRunIdRef
-      // is set), enqueue instead of firing chat.send. The flushQueue
-      // effect picks this up when clientRunIdRef clears.
+      // Disconnected: park the send as waiting-reconnect instead of
+      // dropping it. The reconnect rising-edge effect replays it (and
+      // resumes the normal drain) once the socket is back. Mirrors upstream
+      // markQueuedChatSendsWaitingForReconnect (chat-queue.ts:848).
+      if (!isConnected) {
+        const id = `queued-${crypto.randomUUID()}`;
+        setQueuedMessages((prev) => [
+          ...prev,
+          {
+            id,
+            text: trimmed,
+            createdAt: Date.now(),
+            sendState: "waiting-reconnect",
+          },
+        ]);
+        return;
+      }
+
+      // Busy gate: if a user-turn is already in flight (clientRunIdRef is
+      // set), enqueue instead of firing chat.send. The queue drains off the
+      // server's run-ended signal for the active run (see drainQueue).
       if (clientRunIdRef.current !== null) {
         const id = `queued-${crypto.randomUUID()}`;
         setQueuedMessages((prev) => [
@@ -1115,25 +1141,51 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     });
   }, [isStreaming, isConnected, send]);
 
-  // ---- Reconnect rising-edge: replay a deferred abort ----
+  // ---- Reconnect rising-edge: replay deferred abort + waiting sends ----
   //
-  // When cancelMessage() ran while disconnected, the abort intent was parked
-  // in pendingAbortRef. On the next disconnected→connected transition, fire
-  // it exactly once. Mirrors upstream app-chat.ts's reconnect handling of
-  // host.pendingAbort.
+  // On the disconnected→connected transition:
+  //   1. Fire a deferred abort parked by cancelMessage() (pendingAbortRef),
+  //      exactly once. Mirrors app-chat.ts's host.pendingAbort handling.
+  //   2. Replay any queued sends marked `waiting-reconnect` — strip the
+  //      flag so they become plain queued sends, then resume the normal
+  //      drain (drainQueue dispatches the head; each dispatched send's
+  //      server run-ended re-invokes the drain for the next). Mirrors
+  //      retryReconnectableQueuedChatSends (chat-queue.ts:883).
   const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
     const rose = !prevConnectedRef.current && isConnected;
     prevConnectedRef.current = isConnected;
     if (!rose) return;
+
     const pending = pendingAbortRef.current;
-    if (!pending) return;
-    pendingAbortRef.current = null;
-    send({
-      type: "agent_abort",
-      agent_id: pending.agentId,
-      ...(pending.runId ? { runId: pending.runId } : {}),
-    });
+    if (pending) {
+      pendingAbortRef.current = null;
+      send({
+        type: "agent_abort",
+        agent_id: pending.agentId,
+        ...(pending.runId ? { runId: pending.runId } : {}),
+      });
+    }
+
+    const hasWaiting = queuedMessagesRef.current.some(
+      (m) => m.sendState === "waiting-reconnect",
+    );
+    if (hasWaiting) {
+      // Strip the waiting-reconnect flag so the items become plain queued
+      // sends (UI no longer shows "Waiting for reconnect").
+      setQueuedMessages((prev) =>
+        prev.map((m) =>
+          m.sendState === "waiting-reconnect"
+            ? { ...m, sendState: undefined, sendError: undefined }
+            : m,
+        ),
+      );
+      // Resume the normal drain. drainQueue reads the head off
+      // queuedMessagesRef (the text is unchanged by the flag strip) and
+      // slices it via a functional setState updater, so it composes
+      // correctly with the strip above regardless of commit ordering.
+      drainQueueRef.current();
+    }
   }, [isConnected, send]);
 
   // ---- Clear messages ----

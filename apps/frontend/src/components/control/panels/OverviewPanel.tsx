@@ -32,6 +32,8 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import type { CronJob, CronListResponse } from "./cron/types";
+import { countCronFailed, countCronOverdue } from "./overview-cron";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,12 +64,6 @@ interface HealthResponse {
   type?: string;
   event?: string;
   payload?: HealthPayload;
-  [key: string]: unknown;
-}
-
-interface CronJob {
-  name?: string;
-  enabled?: boolean;
   [key: string]: unknown;
 }
 
@@ -126,6 +122,13 @@ function formatTimeAgo(ts: number | string | undefined | null): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+// Overdue needs the wall clock; reading Date.now() inside a module-scope
+// helper (like formatUptime/formatTimeAgo above) keeps the impure call out of
+// the component render body that the react-hooks purity rule guards.
+function countOverdueNow(jobs: CronJob[]): number {
+  return countCronOverdue(jobs, Date.now());
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -151,7 +154,9 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   const { account } = useBilling();
   const subscriptionStatus = account?.subscription_status ?? null;
 
-  const { data: cronData } = useGatewayRpc<CronJob[]>("cron.list");
+  // cron.list returns either a bare array (older containers) or the wrapped
+  // { jobs } shape; normalize below before deriving counts.
+  const { data: cronData } = useGatewayRpc<CronListResponse | CronJob[]>("cron.list");
 
   // Skills count comes from the same RPC SkillsPanel uses; pass no agentId
   // to get the global skills inventory. Response can be either an array or
@@ -226,10 +231,15 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   const isOnline = health.ok === true;
   const sessionCount = health.sessions?.count;
   const agentCount = health.agents?.length;
-  const cronCount = Array.isArray(cronData) ? cronData.length : undefined;
-  const cronEnabledCount = Array.isArray(cronData)
-    ? cronData.filter((j) => j.enabled).length
-    : 0;
+  const cronJobs: CronJob[] = Array.isArray(cronData)
+    ? cronData
+    : cronData?.jobs ?? [];
+  const cronCount = cronData === undefined ? undefined : cronJobs.length;
+  const cronEnabledCount = cronJobs.filter((j) => j.enabled).length;
+  // Failed takes precedence over overdue on the card — a failing job is the
+  // louder signal — so derive both and let the render pick.
+  const cronFailed = countCronFailed(cronJobs);
+  const cronOverdue = countOverdueNow(cronJobs);
   // Normalize the skills.status response shape — same trick SkillsPanel uses.
   const skillsList: SkillEntry[] = Array.isArray(skillsRaw)
     ? skillsRaw
@@ -369,6 +379,14 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
                 ? "0"
                 : `${cronEnabledCount}/${cronCount}`
           }
+          subLabel={
+            cronFailed > 0
+              ? `${cronFailed} failing`
+              : cronOverdue > 0
+                ? `${cronOverdue} overdue`
+                : undefined
+          }
+          subLabelTone={cronFailed > 0 ? "red" : cronOverdue > 0 ? "amber" : undefined}
           onClick={onPanelChange ? () => onPanelChange("cron") : undefined}
         />
         <SummaryCard
@@ -507,11 +525,15 @@ function SummaryCard({
   label,
   value,
   onClick,
+  subLabel,
+  subLabelTone,
 }: {
   icon: typeof Clock;
   label: string;
   value: string;
   onClick?: () => void;
+  subLabel?: string;
+  subLabelTone?: "red" | "amber";
 }) {
   const interactive = !!onClick;
   const Tag = interactive ? "button" : "div";
@@ -532,6 +554,20 @@ function SummaryCard({
         </span>
       </div>
       <div className="text-sm font-medium">{value}</div>
+      {subLabel ? (
+        <div
+          className={cn(
+            "text-[10px] font-medium mt-0.5",
+            subLabelTone === "red"
+              ? "text-red-600"
+              : subLabelTone === "amber"
+                ? "text-amber-600"
+                : "text-[#8a8578]/60",
+          )}
+        >
+          {subLabel}
+        </div>
+      ) : null}
     </Tag>
   );
 }

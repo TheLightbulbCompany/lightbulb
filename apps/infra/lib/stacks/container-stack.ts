@@ -400,29 +400,52 @@ export class ContainerStack extends cdk.Stack {
       // Step B — symlink chromium user-data to ephemeral task storage.
       "mkdir -p /tmp/openclaw-browser || exit 1",
       "ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1",
-      // Step C — persist the npx + uv package caches on the EFS-backed
-      // mount. MCP servers are launched per chat session as `npx -y <pkg>`
-      // / `uvx <pkg>` child processes. Those children inherit only the MCP
-      // SDK's getDefaultEnvironment() (HOME, PATH, USER, SHELL, …) merged
-      // with the per-server `mcp.servers[].env` — NOT the container env
-      // (upstream src/agents/mcp-stdio-transport.ts) — so a container-level
-      // NPM_CONFIG_CACHE / UV_CACHE_DIR can't relocate their cache. They
-      // fall back to $HOME/.npm and $HOME/.cache/uv, which sit on the
-      // container's ephemeral overlay, so every task restart re-downloads
-      // every MCP package on the next session — pegging CPU on the small
-      // box and blowing session startup out to minutes, which trips the
-      // health check and SIGKILLs the task (a self-reinforcing loop, since
-      // the restart wipes the cache again). HOME *is* inherited, so
-      // symlinking those default HOME-relative cache paths onto the
-      // EFS-backed .openclaw mount makes the download a one-time cost that
-      // survives restarts. Same migration guard as the chromium symlink:
-      // `ln -sfn` nests inside an existing real directory rather than
-      // replacing it, so move a legacy real dir aside first.
-      "mkdir -p /home/node/.openclaw/.cache/npm /home/node/.openclaw/.cache/uv /home/node/.cache || exit 1",
+      // Step C — make MCP package caches fast AND restart-safe by splitting
+      // each package manager's PERSISTENT download cache from its per-run
+      // EXTRACT directory. MCP servers launch per chat session as
+      // `npx -y <pkg>` / `uvx <pkg>` children that inherit only the MCP SDK's
+      // getDefaultEnvironment() (HOME, PATH, USER, SHELL, …) merged with the
+      // per-server `mcp.servers[].env` — NOT the container env (upstream
+      // src/agents/mcp-stdio-transport.ts) — so a container-level
+      // NPM_CONFIG_CACHE / UV_CACHE_DIR cannot relocate their cache; only the
+      // HOME-relative default paths ($HOME/.npm, $HOME/.cache/uv) are
+      // reachable, via symlinks.
+      //
+      // The EXTRACT step is the problem. `npx` unpacks a package's full
+      // node_modules tree (thousands of small files) into `_npx/<hash>/`, and
+      // `uv` unpacks wheels into its cache. On the EFS-backed .openclaw mount
+      // every one of those file creates is a synchronous NFS round trip; the
+      // single-threaded unpack serializes thousands of them and, under
+      // concurrent in-container I/O, wedges in uninterruptible D-state —
+      // overrunning the gateway's per-server MCP connect timeout so the tool
+      // never comes up, and getting killed before the cache warms (a
+      // self-perpetuating stall). The hot extract therefore must live on local
+      // ephemeral task storage (/tmp), not EFS. Same migration guard as the
+      // chromium symlink: `ln -sfn` nests inside an existing real directory
+      // instead of replacing it, so move a legacy real dir aside first. A
+      // legacy `_npx` can be tens of thousands of files, so use `mv` (an O(1)
+      // same-filesystem rename) — never `rm -rf`, whose synchronous NFS
+      // unlink storm on the boot path could overrun the health-check start
+      // period.
+      //
+      // npm splits cleanly: keep the compressed download cache (`_cacache`,
+      // immutable tarballs — cheap on NFS, read-mostly) on EFS so a restart
+      // never re-downloads, but redirect ONLY the `_npx` extract tree to /tmp.
+      "mkdir -p /home/node/.openclaw/.cache/npm /home/node/.cache /tmp/openclaw-npx /tmp/openclaw-uv || exit 1",
       "[ -e /home/node/.npm ] && [ ! -L /home/node/.npm ] && { mv /home/node/.npm /home/node/.npm.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/.cache/npm /home/node/.npm || exit 1",
+      "[ -e /home/node/.openclaw/.cache/npm/_npx ] && [ ! -L /home/node/.openclaw/.cache/npm/_npx ] && { mv /home/node/.openclaw/.cache/npm/_npx /home/node/.openclaw/.cache/npm/_npx.efs-archive-$(date +%s) || exit 1; }",
+      "ln -sfn /tmp/openclaw-npx /home/node/.openclaw/.cache/npm/_npx || exit 1",
+      // uv CANNOT split. It stages each unpack in a temp dir on the cache root
+      // and then atomically renames it into `archive-v0`, so a cache spread
+      // across two filesystems hits a cross-device rename (EXDEV) and fails
+      // outright (verified live; UV_LINK_MODE=copy does not help — the failure
+      // is the rename, not the link). Put the WHOLE uv cache on /tmp. uv then
+      // re-downloads on restart, but uv installs take seconds and happen
+      // lazily at first tool use, so there is no boot-time re-download storm
+      // like npm's.
       "[ -e /home/node/.cache/uv ] && [ ! -L /home/node/.cache/uv ] && { mv /home/node/.cache/uv /home/node/.cache/uv.efs-archive-$(date +%s) || exit 1; }",
-      "ln -sfn /home/node/.openclaw/.cache/uv /home/node/.cache/uv || exit 1",
+      "ln -sfn /tmp/openclaw-uv /home/node/.cache/uv || exit 1",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");

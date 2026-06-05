@@ -100,7 +100,7 @@ describe("useAgentChat — tombstoned terminals", () => {
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
-    send.mockReset();
+    send.mockReset().mockReturnValue(true);
     approvalQueue = [];
     vi.resetModules();
   });
@@ -213,7 +213,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
-    send.mockReset();
+    send.mockReset().mockReturnValue(true);
     approvalQueue = [];
     removalHandlers.clear();
     vi.resetModules();
@@ -675,7 +675,7 @@ describe("useAgentChat — multi-tab observation (runId adoption + agent_busy ro
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
-    send.mockReset();
+    send.mockReset().mockReturnValue(true);
     approvalQueue = [];
     removalHandlers.clear();
     vi.resetModules();

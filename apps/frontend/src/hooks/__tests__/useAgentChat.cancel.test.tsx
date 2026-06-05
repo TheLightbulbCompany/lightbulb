@@ -64,7 +64,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
-    send.mockReset();
+    send.mockReset().mockReturnValue(true);
     isConnected = true;
     vi.resetModules();
   });

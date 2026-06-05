@@ -92,7 +92,10 @@ interface GatewayContextValue {
   nodeConnected: boolean;
   error: string | null;
   reconnectAttempt: number;
-  send: (payload: unknown) => void;
+  /** Fire-and-forget send; returns whether the payload was actually written
+   * (false when the socket isn't open — lets delivery-sensitive callers like
+   * cancelMessage detect the stale-isConnected race and park a retry). */
+  send: (payload: unknown) => boolean;
   sendReq: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
   sendChat: (agentId: string, message: string, clientRunId: string) => void;
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
@@ -465,12 +468,13 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   // subscription kinds can reuse it. Silent no-op when the socket
   // isn't open; callers retry on their own cadence (TeamsEventsProvider
   // re-fires on isConnected transitions).
-  const send = useCallback((payload: unknown): void => {
+  const send = useCallback((payload: unknown): boolean => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      return;
+      return false;
     }
     ws.send(JSON.stringify(payload));
+    return true;
   }, []);
 
   // ---- Subscription helpers ----

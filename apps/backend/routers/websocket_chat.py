@@ -1696,6 +1696,13 @@ async def _process_agent_abort_background(
                 agent_id,
             )
             await _notify_aborted_terminal()
+            # The original chat.send may have opened the parked-vs-dead window
+            # for this session. With no container left to emit a real terminal,
+            # that _active_runs entry would never clear — leaving the connection
+            # to PARK (treat itself as busy) on every later reader-loop exit.
+            # We've just declared the run over to the client, so clear it here.
+            # No-ops if no connection exists for the owner.
+            get_gateway_pool().clear_active_run(owner_id, session_key)
             return
 
         params: dict[str, str] = {"sessionKey": session_key}

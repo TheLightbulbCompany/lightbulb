@@ -53,7 +53,7 @@ describe("useAgentChat — F-RECONNECT", () => {
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
-    send.mockReset();
+    send.mockReset().mockReturnValue(true);
     isConnected = true;
     vi.resetModules();
   });
@@ -102,5 +102,48 @@ describe("useAgentChat — F-RECONNECT", () => {
     isConnected = true;
     act(() => rerender());
     expect(sendChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("parks a cancel's abort when the raw send no-ops under a stale isConnected, and replays it on reconnect", async () => {
+    // The stale-isConnected race: the socket closed but React hasn't
+    // re-rendered isConnected=false yet, so cancelMessage takes the connected
+    // path and the raw `send` silently drops (returns false). Because cancel is
+    // server-reconciled (no local teardown), a dropped abort would hang the
+    // chat — so the intent must be parked and replayed on reconnect.
+    isConnected = true;
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result, rerender } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("primary");
+    });
+    const runId = sendChat.mock.calls[sendChat.mock.calls.length - 1]?.[2] as string;
+    act(() =>
+      chatHandlers.forEach((h) =>
+        h({ type: "chunk", agent_id: "agent-X", runId, content: "x" } as ChatIncomingMessage),
+      ),
+    );
+    expect(result.current.isStreaming).toBe(true);
+
+    // Socket secretly closed: the abort send no-ops (returns false) this once.
+    send.mockReturnValueOnce(false);
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+
+    const abortCalls = () =>
+      send.mock.calls.filter((c) => (c[0] as { type?: string })?.type === "agent_abort");
+    // It was attempted on the wire but didn't land; the run stays streaming
+    // (server-reconciled cancel does not tear down locally).
+    expect(abortCalls()).toHaveLength(1);
+    expect(result.current.isStreaming).toBe(true);
+
+    // Reconnect rising edge → the parked abort replays (this time it lands).
+    isConnected = false;
+    act(() => rerender());
+    isConnected = true;
+    act(() => rerender());
+    expect(abortCalls()).toHaveLength(2);
+    expect(abortCalls()[1]?.[0]).toMatchObject({ type: "agent_abort", runId });
   });
 });

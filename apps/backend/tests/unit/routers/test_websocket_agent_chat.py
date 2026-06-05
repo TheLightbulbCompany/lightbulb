@@ -492,6 +492,9 @@ class TestProcessAgentAbortBackground:
         with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
             pool = AsyncMock()
             pool.send_rpc = AsyncMock(return_value={})
+            # clear_active_run is SYNC on the real pool — stub as MagicMock so
+            # calling it doesn't spawn an un-awaited coroutine.
+            pool.clear_active_run = MagicMock()
             mock_getter.return_value = pool
             yield pool
 
@@ -588,6 +591,10 @@ class TestProcessAgentAbortBackground:
         assert frame["agent_id"] == "luna"
         assert frame["runId"] == "run-9"
         assert frame["message"] == "Agent run was cancelled"
+        # And the stale parked-vs-dead window is cleared — with no container
+        # left to emit a real terminal, nothing else would clear _active_runs,
+        # so the connection would otherwise park "busy" forever.
+        mock_pool.clear_active_run.assert_called_once_with("user-1", "agent:luna:user-1")
 
     @pytest.mark.asyncio
     async def test_abort_no_container_without_run_id_omits_run_id(self, mock_ecs_manager, mock_pool, mock_mgmt_api):

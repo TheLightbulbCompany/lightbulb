@@ -60,7 +60,7 @@ describe("useAgentChat — F-STEER", () => {
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
-    send.mockReset();
+    send.mockReset().mockReturnValue(true);
     vi.resetModules();
   });
 

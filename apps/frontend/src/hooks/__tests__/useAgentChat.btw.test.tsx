@@ -100,7 +100,7 @@ describe("useAgentChat — T8 /btw side-channel", () => {
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
-    send.mockReset();
+    send.mockReset().mockReturnValue(true);
     vi.resetModules();
   });
 

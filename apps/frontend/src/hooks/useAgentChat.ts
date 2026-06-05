@@ -1365,11 +1365,22 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       return;
     }
 
-    send({
+    // `send` returns false when the socket isn't actually open — the
+    // stale-isConnected race where the WS closed but React hasn't re-rendered
+    // isConnected=false yet. Because cancel is server-reconciled (we wait for a
+    // terminal rather than tearing down locally), a silently-dropped abort here
+    // would hang the chat. Park the intent so the reconnect replay fires it.
+    const delivered = send({
       type: "agent_abort",
       agent_id: agentIdRef.current,
       ...(activeRunId ? { runId: activeRunId } : {}),
     });
+    if (!delivered) {
+      pendingAbortRef.current = {
+        agentId: agentIdRef.current,
+        runId: activeRunId,
+      };
+    }
   }, [isStreaming, isConnected, send]);
 
   // ---- Reconnect rising-edge: replay deferred abort + waiting sends ----

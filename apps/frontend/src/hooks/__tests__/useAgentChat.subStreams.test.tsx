@@ -270,4 +270,45 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     });
     expect(findToolUseByName(result.current.renderItems, "Late plan")).toBeUndefined();
   });
+
+  // clearMessages tombstones the active runId AND nulls clientRunIdRef. A late
+  // sub-stream for that run must be dropped BEFORE the generic run-adoption
+  // block — otherwise adoption (which fires whenever clientRunIdRef is null)
+  // re-adopts the tombstoned runId, re-arming the busy gate so the user's NEXT
+  // send is queued behind a dead run instead of dispatching. The drop must
+  // therefore precede adoption, not merely happen later in the sub-stream
+  // branches.
+  it("a late sub-stream for a cleared run does not re-adopt it (next send still dispatches)", async () => {
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+    act(() => {
+      // Establish the active run, then clear it (tombstones RUN, nulls
+      // clientRunIdRef).
+      emit({ type: "chunk", content: "hi", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+    });
+    act(() => {
+      result.current.clearMessages();
+    });
+    // Late sub-stream for the cleared run. If it re-adopts RUN, the busy gate
+    // re-arms and the next send queues.
+    act(() => {
+      emit({
+        type: "agent_activity",
+        activity: "plan",
+        title: "Late plan",
+        detail: { steps: ["a"] },
+        agent_id: AGENT,
+        runId: RUN,
+      } as ChatIncomingMessage);
+    });
+
+    await act(async () => {
+      await result.current.sendMessage("after clear");
+    });
+
+    // The gate must be clear: the send dispatched (sendChat fired) and nothing
+    // was parked behind the re-adopted dead run.
+    expect(sendChat).toHaveBeenCalledTimes(1);
+    expect(sendChat.mock.calls[0]?.[1]).toBe("after clear");
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
 });

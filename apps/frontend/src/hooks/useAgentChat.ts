@@ -650,6 +650,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
+      // Same tombstone protection as the cancelled-run guard above, extended to
+      // the sub-stream types. Must run BEFORE run-adoption: otherwise a late
+      // sub-stream for a cleared run re-adopts it (sets clientRunIdRef) and
+      // re-arms the busy gate before it can be dropped, queuing the user's next
+      // send behind a dead run.
+      if (
+        (msg.type === "tool_progress" ||
+          msg.type === "command_output" ||
+          msg.type === "compaction" ||
+          msg.type === "agent_activity") &&
+        cancelledRunIdsRef.current.has(msg.runId)
+      ) {
+        return;
+      }
+
       // Tombstoned terminals: a late `done` or `error` for a runId the
       // user already aborted/cleared must clean up its tombstone marker
       // without mutating the current live turn's state. Without this, a
@@ -851,22 +866,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // These attach live tool progress, command output, a compaction divider,
       // and low-noise agent-activity pills. They never touch the run-lifecycle
       // refs (clientRunIdRef / resumeExpectedRef / drainedRunIds) — those are
-      // owned by the chunk/tool/done/run_ended handlers.
-
-      // A run the user cleared/aborted is tombstoned in cancelledRunIdsRef; late
-      // sub-stream frames for it must not repopulate the cleared chat (a compaction
-      // divider) or surface a stale activity pill / re-arm the busy gate via run
-      // adoption. The tombstone filter above only covers chunk/thinking/tool_*;
-      // extend the same protection to the sub-stream types added here.
-      if (
-        (msg.type === "tool_progress" ||
-          msg.type === "command_output" ||
-          msg.type === "compaction" ||
-          msg.type === "agent_activity") &&
-        cancelledRunIdsRef.current.has(msg.runId)
-      ) {
-        return;
-      }
+      // owned by the chunk/tool/done/run_ended handlers. Tombstoned-run frames
+      // for these types are dropped up front, next to the cancelled-run guard,
+      // so the drop precedes run-adoption.
 
       if (msg.type === "tool_progress") {
         // Replace the live pill's progress with the latest partialResult (it is

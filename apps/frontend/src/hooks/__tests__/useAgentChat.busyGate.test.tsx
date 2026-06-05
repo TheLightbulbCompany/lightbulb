@@ -668,3 +668,82 @@ describe("useAgentChat — approval-pause busy gate", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 });
+
+describe("useAgentChat — multi-tab observation (runId adoption + agent_busy rollback)", () => {
+  beforeEach(() => {
+    chatHandlers = [];
+    eventHandlers = [];
+    sendReq.mockReset().mockResolvedValue({});
+    sendChat.mockReset();
+    send.mockReset();
+    approvalQueue = [];
+    removalHandlers.clear();
+    vi.resetModules();
+  });
+
+  it("adopts an observed run's runId and ENQUEUES a new send instead of dispatching into the busy gate", async () => {
+    // This tab did NOT start the run — it observes another tab's run via the
+    // owner-keyed fan-out. Mirrors upstream handleChatEvent adoption
+    // (controllers/chat.ts:711 / tui-event-handlers.ts:461): the observed runId
+    // becomes the active run, so the tab knows it's busy and queues.
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    act(() =>
+      dispatch({
+        type: "chunk",
+        agent_id: "agent-X",
+        runId: "foreign-run",
+        content: "working",
+      } as ChatIncomingMessage),
+    );
+    expect(result.current.isStreaming).toBe(true);
+
+    // Submitting now ENQUEUES (adopted run is active) — no dispatch, so the
+    // backend serialize gate is never hit.
+    await act(async () => {
+      await result.current.sendMessage("mine");
+    });
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(result.current.queuedMessages.map((m) => m.text)).toEqual(["mine"]);
+
+    // The observed run ends → gate releases → the queued send drains.
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: "foreign-run" } as ChatIncomingMessage),
+    );
+    expect(sendChat).toHaveBeenCalledTimes(1);
+    expect(sendChat.mock.calls[0]?.[1]).toBe("mine");
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
+
+  it("treats a stray agent_busy as a benign no-op (defensive — no server gate anymore)", async () => {
+    // We no longer run a server-side serialize gate, so the backend never emits
+    // agent_busy. But if a stray one arrives (mid-deploy skew), it must NOT tear
+    // down the live run: it has no runId, and the generic error path would clear
+    // clientRunIdRef + isStreaming.
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("hi");
+    });
+    const r1 = lastClientRunId();
+    act(() =>
+      dispatch({ type: "chunk", agent_id: "agent-X", runId: r1, content: "live" } as ChatIncomingMessage),
+    );
+    expect(result.current.isStreaming).toBe(true);
+
+    act(() =>
+      dispatch({
+        type: "error",
+        agent_id: "agent-X",
+        code: "agent_busy",
+        message: "busy",
+      } as ChatIncomingMessage),
+    );
+
+    // Run untouched: still streaming, no error bubble, nothing queued.
+    expect(result.current.isStreaming).toBe(true);
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
+});

@@ -1352,8 +1352,8 @@ async def _process_agent_chat_background(
     container recognizes the `/btw` prefix in ``message`` and runs it as a
     non-blocking side run that never enters the session's active-run window.
     On our side that means we must NOT call ``mark_run_active`` for a side
-    send: a side run does not own the run window, so it bypasses the
-    has_active_run busy gate and leaves the primary run's window intact.
+    send: a side run does not own the parked-vs-dead window, so it is tracked
+    separately (``mark_side_run``) and leaves the primary run's window intact.
     """
     logger.info(
         "[%s] chat.send START agent=%s owner=%s conn=%s msg_len=%d",
@@ -1513,61 +1513,28 @@ async def _process_agent_chat_background(
                 logger.warning("[%s] failed to deliver blocked-chat error event", user_id)
             return
 
-        # Serialize per session: refuse to forward a second chat.send into a
-        # session that already has a run in flight. The OpenClaw SERVER does not
-        # serialize distinct messages per session — two concurrent runs race the
-        # per-session JSONL write lock ("session file locked" / "agent busy").
-        # Upstream's web UI avoids that purely CLIENT-SIDE: a single client
-        # queues sends and never fires a second while busy (app-chat.ts
-        # flushChatQueue, gated on isChatBusy). Isol8's backend fans many
-        # clients into one container, so there is no single client to queue —
-        # the backend itself is the serialize authority. (This is an Isol8
-        # adaptation, NOT an upstream server feature.) The gate lives here,
-        # BEFORE mark_run_active, so we never mark a run we then refuse. Side
-        # (`/btw`) sends bypass the gate: a detached side run never claims the
-        # session's active-run window, so it must run alongside the primary run.
-        if not side and pool.has_active_run(owner_id, session_key):
-            put_metric("chat.error", dimensions={"reason": "agent_busy"})
-            logger.info(
-                "[%s] chat.send GATED agent=%s session=%s (run active)",
-                user_id,
-                agent_id,
-                session_key,
-            )
-            try:
-                management_api.send_message(
-                    connection_id,
-                    {
-                        "type": "error",
-                        "code": "agent_busy",
-                        "message": "Agent is still working on your previous message.",
-                        "agent_id": agent_id,
-                    },
-                )
-            except Exception:
-                logger.warning("[%s] failed to deliver agent_busy error event", user_id)
-            return
+        # NO server-side serialize gate. We mirror upstream's concurrency model:
+        # the frontend QUEUES sends while a run is active (clientRunIdRef +
+        # observed-run adoption) and never fires a second, and the container's
+        # per-session JSONL write-lock serializes anything that still races (it
+        # retries up to 60s — see upstream session-write-lock.ts). Upstream's web
+        # UI has no server gate either; an earlier Isol8 `agent_busy` gate was an
+        # extra layer that diverged from that model (and caused side-run / steer
+        # / multi-tab interaction bugs the single-client UI never has), so it is
+        # removed in favor of the upstream three-layer approach.
 
-        # Open the active-run window BEFORE forwarding chat.send. If the WS
-        # to OpenClaw tears down mid-turn (ping timeout during a long Bedrock
-        # call), the pool's parked-vs-dead decision in `_on_reader_loop_exit`
-        # keys on whether `_active_runs` is non-empty — so marking here, not
-        # after the ack, is what keeps the connection in the PARKED branch
-        # during the streaming window. Idempotent for the cancel-and-retry
-        # race where the same sessionKey starts a fresh run.
+        # Record the run for the parked-vs-dead reconnect decision — this is NOT
+        # a gate. If the WS to OpenClaw tears down mid-turn (ping timeout during
+        # a long Bedrock call), `_on_reader_loop_exit` keys on whether
+        # `_active_runs` is non-empty to PARK the connection (reopen + preserve
+        # state) instead of treating it as dead. mark_run_active no-ops without a
+        # connection and send_rpc creates it lazily, so on the FIRST send to a
+        # fresh task we ensure_connection first; send_rpc routes through the same
+        # method, so this is idempotent (the second resolution hits the fast
+        # path). Skip for side (`/btw`) runs — they're tracked separately
+        # (mark_side_run) so their terminal can't clear the primary run's
+        # parked-vs-dead window.
         #
-        # `mark_run_active` records against the per-user gateway connection and
-        # no-ops if none exists yet. On the FIRST send to a fresh backend task
-        # the connection is created lazily by send_rpc, so we ensure_connection
-        # FIRST — otherwise the mark is lost and the first run has no active-run
-        # window (has_active_run wouldn't gate a concurrent send and the parked
-        # reader wouldn't see the run). send_rpc routes through ensure_connection
-        # too, so this is idempotent (the second resolution hits the fast path).
-        #
-        # Skip for side (`/btw`) sends: a side run is a detached question that
-        # never enters the session's active-run window upstream, so claiming
-        # the window here would falsely mark the session busy and let the
-        # side run's terminal event clear the PRIMARY run's window.
         # The runId this send is bound to: == the chat.send idempotencyKey ==
         # the runId OpenClaw stamps on every event for this run (chat.ts:2450).
         # Computed up-front so a side run can be registered under the SAME id its
@@ -1645,12 +1612,11 @@ async def _process_agent_chat_background(
 
     # All error branches fall through here to notify the client.
     #
-    # mark_run_active above opened the busy-gate window for this session
+    # mark_run_active above opened the parked-vs-dead window for this session
     # (non-side sends only). chat.send never reached OpenClaw, so no terminal
-    # event will ever arrive to close that window — clear it here, otherwise
-    # has_active_run would reject every later send as agent_busy forever,
-    # wedging the session on a single transient send failure. The flag
-    # guarantees pool + session_key are bound (the mark is past both).
+    # event will ever arrive to close that window — clear it here, otherwise a
+    # stale entry would keep the connection parking on a WS drop indefinitely.
+    # The flag guarantees pool + session_key are bound (the mark is past both).
     if run_active_marked:
         pool.clear_active_run(owner_id, session_key)
     try:
@@ -1825,6 +1791,13 @@ async def _process_agent_steer_background(
                 connection_id,
                 {
                     "type": "error",
+                    # A steer is a mid-run injection into an ALREADY-active run —
+                    # its failure is NOT terminal for that run (OpenClaw keeps
+                    # working). The `steer_failed` code tells the frontend to
+                    # surface a notice WITHOUT tearing down the live turn; a
+                    # generic no-runId error would otherwise clear clientRunIdRef
+                    # + isStreaming and wipe the still-streaming primary response.
+                    "code": "steer_failed",
                     "agent_id": agent_id,
                     "message": f"Failed to steer: {e}",
                 },

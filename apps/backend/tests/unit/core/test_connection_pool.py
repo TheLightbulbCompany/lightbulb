@@ -1101,10 +1101,10 @@ class TestActiveRunTracking:
         assert run["last_event_at"] == run["started_at"]
         assert connection.has_active_runs is True
 
-    def test_has_active_run_true_only_for_marked_session(self, connection):
+    def test_mark_run_active_is_per_session(self, connection):
         connection.mark_run_active("agent:a:user-1", "a")
-        assert connection.has_active_run("agent:a:user-1") is True
-        assert connection.has_active_run("agent:a:user-2") is False
+        assert "agent:a:user-1" in connection._active_runs
+        assert "agent:a:user-2" not in connection._active_runs
 
     @pytest.mark.asyncio
     async def test_chat_final_clears_active_run(self, connection):
@@ -1195,7 +1195,7 @@ class TestActiveRunTracking:
             }
         )
         # Primary window survives; the side id self-cleaned.
-        assert connection.has_active_run(session_key) is True
+        assert session_key in connection._active_runs
         assert connection._is_side_run("side-run-9") is False
 
         # The PRIMARY run's own terminal clears it normally.
@@ -1211,7 +1211,7 @@ class TestActiveRunTracking:
                 },
             }
         )
-        assert connection.has_active_run(session_key) is False
+        assert session_key not in connection._active_runs
 
     @pytest.mark.asyncio
     async def test_side_run_approval_does_not_flag_primary_awaiting(self, connection):
@@ -1276,7 +1276,7 @@ class TestActiveRunTracking:
                 },
             }
         )
-        assert connection.has_active_run(session_key) is True
+        assert session_key in connection._active_runs
 
         # 2. Interim chat final for the approval bracket — run must stay active.
         await connection._handle_message(
@@ -1291,7 +1291,7 @@ class TestActiveRunTracking:
                 },
             }
         )
-        assert connection.has_active_run(session_key) is True  # still active across approval
+        assert session_key in connection._active_runs  # still active across approval
 
         # 3. True terminal final after the continuation — run clears.
         await connection._handle_message(
@@ -1306,7 +1306,7 @@ class TestActiveRunTracking:
                 },
             }
         )
-        assert connection.has_active_run(session_key) is False
+        assert session_key not in connection._active_runs
 
     @pytest.mark.asyncio
     async def test_awaiting_approval_run_cleared_on_error_terminal(self, connection):
@@ -1340,7 +1340,7 @@ class TestActiveRunTracking:
                 },
             }
         )
-        assert connection.has_active_run(session_key) is True
+        assert session_key in connection._active_runs
         assert connection._active_runs[session_key]["awaiting_approval"] is True
 
         # The run errors out WHILE awaiting the approval — still a true terminal.
@@ -1357,7 +1357,7 @@ class TestActiveRunTracking:
                 },
             }
         )
-        assert connection.has_active_run(session_key) is False
+        assert session_key not in connection._active_runs
         assert session_key not in connection._active_runs
 
     @pytest.mark.asyncio
@@ -1402,7 +1402,7 @@ class TestActiveRunTracking:
                 },
             }
         )
-        assert connection.has_active_run(session_key) is False
+        assert session_key not in connection._active_runs
         assert session_key not in connection._active_runs
 
     @pytest.mark.asyncio
@@ -1584,42 +1584,20 @@ class TestPoolReconnectFloor:
 
     @pytest.mark.asyncio
     async def test_pool_mark_run_active_noop_when_no_connection(self):
-        """The chat dispatcher calls mark_run_active BEFORE send_rpc creates
-        the connection on a cold start. The call must be safe to issue when
-        no connection exists — the first inbound event keyed on the same
-        sessionKey will populate _active_runs once the conn is up."""
+        """The chat dispatcher calls mark_run_active BEFORE send_rpc on a cold
+        start. It must be safe to issue when no connection exists — the
+        dispatcher calls ensure_connection first on the real path, so this just
+        guards the no-connection edge (the mark is silently dropped)."""
         pool = GatewayConnectionPool(management_api=MagicMock())
         # Should not raise.
         pool.mark_run_active("user-1", "agent:main:user-1", "main")
 
     @pytest.mark.asyncio
-    async def test_pool_has_active_run_resolves_owner_connection(self):
-        """The chat dispatcher's busy-gate calls pool.has_active_run before
-        forwarding chat.send. It must resolve the owner's connection and
-        report the per-session run state; False when no connection exists."""
-        pool = GatewayConnectionPool(management_api=MagicMock())
-        assert pool.has_active_run("user-1", "agent:main:user-1") is False
-
-        conn = GatewayConnection(
-            frontend_connections=set(),
-            user_id="user-1",
-            ip="10.0.0.1",
-            token="tok",
-            management_api=MagicMock(),
-        )
-        conn.mark_run_active("agent:main:user-1", "main")
-        pool._connections["user-1"] = conn
-
-        assert pool.has_active_run("user-1", "agent:main:user-1") is True
-        assert pool.has_active_run("user-1", "agent:other:user-1") is False
-
-    @pytest.mark.asyncio
-    async def test_pool_clear_active_run_reopens_busy_gate(self):
-        """The chat dispatcher calls pool.clear_active_run on the chat.send
-        failure path so a send that never reached OpenClaw doesn't leave the
-        session wedged agent_busy forever. It must resolve the owner's
-        connection and pop the per-session run; later has_active_run reads
-        False so the next send is no longer gated."""
+    async def test_pool_clear_active_run_clears_parked_window(self):
+        """The dispatcher calls pool.clear_active_run on the chat.send failure
+        path so a send that never reached OpenClaw doesn't leave a stale
+        parked-vs-dead entry. It must resolve the owner's connection and pop the
+        per-session run."""
         pool = GatewayConnectionPool(management_api=MagicMock())
         conn = GatewayConnection(
             frontend_connections=set(),
@@ -1630,10 +1608,10 @@ class TestPoolReconnectFloor:
         )
         conn.mark_run_active("agent:main:user-1", "main")
         pool._connections["user-1"] = conn
-        assert pool.has_active_run("user-1", "agent:main:user-1") is True
+        assert "agent:main:user-1" in conn._active_runs
 
         pool.clear_active_run("user-1", "agent:main:user-1")
-        assert pool.has_active_run("user-1", "agent:main:user-1") is False
+        assert "agent:main:user-1" not in conn._active_runs
 
     @pytest.mark.asyncio
     async def test_pool_clear_active_run_noop_when_no_connection(self):

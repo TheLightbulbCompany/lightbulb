@@ -257,24 +257,15 @@ class GatewayConnection:
     def has_active_runs(self) -> bool:
         return bool(self._active_runs)
 
-    def has_active_run(self, session_key: str) -> bool:
-        """True iff a chat.send is in flight for *session_key*.
-
-        The chat dispatcher's busy-gate consults this before forwarding a
-        second chat.send into the same OpenClaw session — OpenClaw does not
-        serialize distinct messages per session, so two concurrent runs race
-        the per-session JSONL write lock. Returns False once the run's
-        chat-terminal event clears the entry.
-        """
-        return session_key in self._active_runs
-
     def mark_run_active(self, session_key: str, agent_id: str | None = None) -> None:
-        """Record that a chat.send is being dispatched for *session_key*.
+        """Record an in-flight run for *session_key* (parked-vs-dead signal).
 
-        Called from the chat dispatcher BEFORE the chat.send RPC is forwarded
-        to OpenClaw, so the active-run window opens before the first inbound
-        event arrives. Idempotent — re-marking refreshes the started_at
-        without losing the existing last_event_at.
+        Called from the chat dispatcher before the chat.send RPC is forwarded so
+        the active-run window opens before the first inbound event. NOT a
+        serialize gate — its sole consumer is the parked-vs-dead reconnect
+        decision (`_on_reader_loop_exit` / `is_alive`), which keys on
+        ``_active_runs`` non-emptiness. Idempotent — re-marking refreshes
+        started_at without losing the existing last_event_at.
         """
         now = time.monotonic()
         existing = self._active_runs.get(session_key)
@@ -1734,27 +1725,16 @@ class GatewayConnectionPool:
             return
         conn.mark_run_active(session_key, agent_id)
 
-    def has_active_run(self, user_id: str, session_key: str) -> bool:
-        """Whether a chat.send is in flight for *session_key* on *user_id*'s
-        connection. Returns False when no connection exists yet (nothing can
-        be in flight). Resolves the connection the same way ``mark_run_active``
-        does so the busy-gate sees the exact state the dispatcher marks.
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return False
-        return conn.has_active_run(session_key)
-
     def clear_active_run(self, user_id: str, session_key: str) -> None:
         """Tear down the active-run window opened by ``mark_run_active``.
 
         The dispatcher marks a run active *before* issuing chat.send so the
-        busy-gate is closed for the whole dispatch. If that chat.send never
-        reaches OpenClaw (timeout, container unreachable, gateway error), no
-        terminal event will ever arrive to clear the window — leaving the
-        session permanently ``agent_busy``. The dispatcher calls this on the
-        chat.send failure path to reopen the gate. Silently no-ops when no
-        connection exists. Idempotent.
+        parked-vs-dead window is open for the whole dispatch. If that chat.send
+        never reaches OpenClaw (timeout, container unreachable, gateway error),
+        no terminal event will ever arrive to clear the window — leaving a stale
+        entry that keeps the connection parking on a WS drop forever. The
+        dispatcher calls this on the chat.send failure path. Silently no-ops
+        when no connection exists. Idempotent.
         """
         conn = self._connections.get(user_id)
         if conn is None:

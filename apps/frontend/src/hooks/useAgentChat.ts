@@ -667,6 +667,27 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         resumeExpectedRef.current = false;
       }
 
+      // Adopt an observed run as the active run when we have none — mirrors
+      // upstream handleChatEvent (controllers/chat.ts:711 `if (!chatRunId &&
+      // sessionMatches) chatRunId = payload.runId`; tui-event-handlers.ts:461).
+      // A tab OBSERVING another tab's run (owner-keyed fan-out delivers its
+      // events here) thereby knows it's busy and ENQUEUES subsequent sends
+      // rather than dispatching into the backend serialize gate. This is the
+      // primary fix for the multi-tab case; the `agent_busy` rollback below is
+      // only the safety net for the sub-second race where this tab submits
+      // before the run's first event has reached it. Guards: skip side (`/btw`)
+      // runs (they never own the primary window) and already-finalized runs
+      // (drainedRunIds — a late/stray event must not re-arm the gate).
+      if (
+        clientRunIdRef.current === null &&
+        "runId" in msg &&
+        typeof msg.runId === "string" &&
+        !sideRunIdsRef.current.has(msg.runId) &&
+        !drainedRunIdsRef.current.has(msg.runId)
+      ) {
+        clientRunIdRef.current = msg.runId;
+      }
+
       if (msg.type === "chunk") {
         const runId = msg.runId;
         // Run boundary: either first event of a fresh turn (current === null)
@@ -917,15 +938,22 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "error") {
-        // agent_busy is a backend SAFETY-NET frame for a send that was
-        // gated server-side (the agent is still working the previous turn).
-        // It carries NO runId and is NOT a terminal for the live run — it's
-        // a benign "still busy" notice, primarily for non-frontend senders.
-        // The frontend already enqueues sends while busy, so for the live
-        // turn this is informational only. Branch on it FIRST: the generic
-        // error path below would (because !msg.runId) clear clientRunIdRef
-        // and isStreaming, WIPING the in-flight turn's streaming state.
+        // Defensive: we no longer run a server-side serialize gate. Concurrency
+        // is handled the upstream way — client-side queue + observed-run
+        // adoption + the container's per-session write-lock — so the backend
+        // never emits `agent_busy`. If a stray one ever arrives (e.g. a
+        // mid-deploy skew with an old backend), treat it as a benign no-op: it
+        // carries NO runId, and the generic error path below would (because
+        // !msg.runId) clear clientRunIdRef and isStreaming, WIPING the live turn.
         if (msg.code === "agent_busy") {
+          return;
+        }
+
+        // A steer injection that failed is NOT terminal for the primary run —
+        // OpenClaw keeps working. Surface a notice but do NOT tear down the
+        // live turn (the generic no-runId path below would wipe it).
+        if (msg.code === "steer_failed") {
+          setError(friendlyError(msg.message));
           return;
         }
 

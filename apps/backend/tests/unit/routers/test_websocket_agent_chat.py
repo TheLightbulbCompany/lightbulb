@@ -236,10 +236,6 @@ class TestProcessAgentChatBackground:
             # OpenClaw. Default to "not blocked" so existing tests don't
             # need to know about the gate.
             pool.gate_chat = AsyncMock(return_value={"blocked": False})
-            # The busy-gate consults has_active_run (sync) before forwarding
-            # chat.send. Default to "no active run" so existing tests aren't
-            # gated; the AsyncMock default would otherwise read as truthy.
-            pool.has_active_run = MagicMock(return_value=False)
             # mark_run_active / clear_active_run / mark_side_run are SYNC on the
             # real pool; stub as MagicMock so calling them doesn't spawn
             # un-awaited coroutines (which surface as RuntimeWarnings).
@@ -297,11 +293,12 @@ class TestProcessAgentChatBackground:
     async def test_ensures_connection_before_marking_run_active(
         self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
     ):
-        """The active-run window must open even on the FIRST send to a fresh
+        """The parked-vs-dead window must open even on the FIRST send to a fresh
         task. mark_run_active no-ops without a connection (and nothing else
         populates _active_runs), and send_rpc is what creates the connection —
         so the dispatcher must ensure_connection BEFORE marking, otherwise the
-        first run has no window and has_active_run can't gate a concurrent send.
+        first run has no window and a WS drop would tear the connection down
+        mid-run instead of parking it.
         """
         await _process_agent_chat_background(
             connection_id="conn-1",
@@ -369,10 +366,10 @@ class TestProcessAgentChatBackground:
     async def test_chat_send_failure_clears_active_run(
         self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
     ):
-        """If chat.send fails AFTER mark_run_active opened the busy-gate
-        window, the window must be torn back down. Otherwise no terminal
-        event will ever arrive to clear it and has_active_run wedges the
-        session agent_busy forever, rejecting every later send."""
+        """If chat.send fails AFTER mark_run_active opened the parked-vs-dead
+        window, the window must be torn back down. Otherwise no terminal event
+        will ever arrive to clear it and the stale entry keeps the connection
+        parking on a WS drop indefinitely."""
         mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("Connection lost"))
         await _process_agent_chat_background(
             connection_id="conn-1",
@@ -392,9 +389,9 @@ class TestProcessAgentChatBackground:
     async def test_side_send_failure_does_not_clear_active_run(
         self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
     ):
-        """A side (/btw) send never opens the busy-gate window, so a send
-        failure on it must NOT tear down the PRIMARY run's active-run
-        window — that run is still legitimately in flight."""
+        """A side (/btw) send never opens the primary run's active-run window,
+        so a send failure on it must NOT tear down that window — the primary
+        run is still legitimately in flight."""
         mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("Connection lost"))
         await _process_agent_chat_background(
             connection_id="conn-1",
@@ -406,28 +403,6 @@ class TestProcessAgentChatBackground:
         )
         mock_pool.mark_run_active.assert_not_called()
         mock_pool.clear_active_run.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_active_run_gates_chat_send(self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip):
-        """When a run is already active for the session, the second message
-        must NOT be forwarded to OpenClaw (which does not serialize per
-        session) and the user gets a structured agent_busy frame."""
-        mock_pool.has_active_run = MagicMock(return_value=True)
-        await _process_agent_chat_background(
-            connection_id="conn-1",
-            user_id="user-1",
-            owner_id="user-1",
-            agent_id="luna",
-            message="Second message while busy",
-        )
-        mock_pool.has_active_run.assert_called_once_with("user-1", "agent:luna:user-1")
-        mock_pool.send_rpc.assert_not_called()
-        mock_pool.mark_run_active.assert_not_called()
-        mock_mgmt_api.send_message.assert_called_once()
-        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
-        assert sent_msg["type"] == "error"
-        assert sent_msg["code"] == "agent_busy"
-        assert sent_msg["agent_id"] == "luna"
 
 
 # ---------------------------------------------------------------------------
@@ -759,14 +734,15 @@ class TestProcessAgentSteerBackground:
 
 
 # ---------------------------------------------------------------------------
-# agent_chat side-channel (/btw)  ->  chat.send, busy-gate bypassed
+# agent_chat side-channel (/btw)  ->  chat.send, runs alongside the primary
 # ---------------------------------------------------------------------------
 
 
 class TestAgentChatSideChannel:
     """A side:true agent_chat is a /btw side run: it forwards a normal
     chat.send (the container detects the /btw prefix) but must NOT claim the
-    session's active-run window, so it bypasses the has_active_run busy gate."""
+    primary run's active-run window — it is tracked separately via
+    mark_side_run so its terminal can't clear the primary's window."""
 
     @pytest.fixture
     def mock_ecs_manager(self):
@@ -781,9 +757,6 @@ class TestAgentChatSideChannel:
             pool = AsyncMock()
             pool.send_rpc = AsyncMock(return_value={"runId": "run-btw", "status": "started"})
             pool.gate_chat = AsyncMock(return_value={"blocked": False})
-            # Sync gate check; default to "no active run" so a non-side message
-            # isn't spuriously gated by the AsyncMock auto-attr.
-            pool.has_active_run = MagicMock(return_value=False)
             # mark_run_active / clear_active_run / mark_side_run are SYNC on the
             # real pool; stub as MagicMock so calls don't spawn un-awaited
             # coroutines.
@@ -832,8 +805,8 @@ class TestAgentChatSideChannel:
     async def test_side_message_does_not_mark_run_active(
         self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
     ):
-        """A side run forwards chat.send but does NOT take over the active-run
-        window — that keeps the busy gate clear for the primary run."""
+        """A side run forwards chat.send but does NOT take over the primary
+        run's active-run window (it is tracked separately via mark_side_run)."""
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",

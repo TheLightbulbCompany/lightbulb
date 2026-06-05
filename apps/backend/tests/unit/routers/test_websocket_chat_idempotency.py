@@ -22,7 +22,6 @@ async def test_client_run_id_is_forwarded_as_idempotency_key():
     fake_pool.send_rpc = AsyncMock(return_value={"ok": True})
     fake_pool.mark_run_active = MagicMock()
     fake_pool.gate_chat = AsyncMock(return_value={"blocked": False})
-    fake_pool.has_active_run = MagicMock(return_value=False)
     fake_pool.ensure_connection = AsyncMock()
 
     fake_ecs = MagicMock()
@@ -74,7 +73,6 @@ async def test_missing_client_run_id_falls_back_to_backend_minted_uuid():
     fake_pool.send_rpc = AsyncMock(return_value={"ok": True})
     fake_pool.mark_run_active = MagicMock()
     fake_pool.gate_chat = AsyncMock(return_value={"blocked": False})
-    fake_pool.has_active_run = MagicMock(return_value=False)
     fake_pool.ensure_connection = AsyncMock()
 
     fake_ecs = MagicMock()

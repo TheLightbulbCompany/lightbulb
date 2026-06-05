@@ -144,4 +144,60 @@ describe("useAgentChat — F-STEER", () => {
     expect(send).not.toHaveBeenCalled();
     expect(result.current.queuedMessages).toHaveLength(1);
   });
+
+  it("a steer_failed error is NON-terminal — it must not tear down the live primary run", async () => {
+    // A steer is a mid-run injection into an already-active run; its failure
+    // does not end that run. The backend tags it `code:"steer_failed"` so the
+    // frontend surfaces a notice without clearing clientRunIdRef + isStreaming
+    // (a generic no-runId error would wipe the still-streaming response).
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("primary");
+    });
+    const r1 = lastClientRunId();
+    act(() =>
+      dispatch({ type: "chunk", agent_id: "agent-X", runId: r1, content: "working" } as ChatIncomingMessage),
+    );
+    expect(result.current.isStreaming).toBe(true);
+
+    act(() =>
+      dispatch({
+        type: "error",
+        agent_id: "agent-X",
+        code: "steer_failed",
+        message: "Failed to steer: boom",
+      } as ChatIncomingMessage),
+    );
+
+    // The live primary run is untouched: still streaming, and a new send still
+    // QUEUES (gate still armed) — proving clientRunIdRef wasn't cleared.
+    expect(result.current.isStreaming).toBe(true);
+    expect(result.current.error).toBeTruthy();
+    await act(async () => {
+      await result.current.sendMessage("follow-up");
+    });
+    expect(result.current.queuedMessages.map((m) => m.text)).toEqual(["follow-up"]);
+
+    // No "Error:" bubble was folded into the live turn.
+    const errorBubbles = result.current.renderItems.filter(
+      (i) =>
+        i.kind === "message" &&
+        i.message.role === "assistant" &&
+        Array.isArray(i.message.content) &&
+        i.message.content.some((b) => b.type === "text" && (b.text ?? "").startsWith("Error:")),
+    );
+    expect(errorBubbles).toHaveLength(0);
+
+    // The primary run ends normally → its terminal releases the gate and the
+    // queued follow-up drains (proving the run was still the active one after
+    // the steer_failed notice — clientRunIdRef was never cleared by it).
+    act(() =>
+      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+    );
+    expect(sendChat).toHaveBeenCalledTimes(2);
+    expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
 });

@@ -338,7 +338,7 @@ describe("useAgentChat — server-signal queue drain", () => {
         i.kind === "message" &&
         Array.isArray(i.message.content) &&
         i.message.content.some(
-          (b) => b.type === "text" && b.text.startsWith("Error:"),
+          (b) => b.type === "text" && (b.text ?? "").startsWith("Error:"),
         ),
     );
     expect(errorBubbles).toHaveLength(0);

@@ -80,6 +80,42 @@ describe("resolveProviderStatus", () => {
     expect(resolveProviderStatus("chatgpt_oauth", null, list)).toBe("ok");
   });
 
+  it("matches chatgpt_oauth to openai-codex even when a byo openai entry is present (exact)", () => {
+    const list = providers(
+      { provider: "openai-codex", displayName: "ChatGPT", status: "ok" },
+      { provider: "openai", displayName: "OpenAI", status: "expired" },
+    );
+    expect(resolveProviderStatus("chatgpt_oauth", null, list)).toBe("ok");
+  });
+
+  it("byo openai prefers the exact openai entry over openai-codex (ChatGPT-OAuth's id)", () => {
+    // openai-codex is ChatGPT OAuth's DISTINCT provider id. A BYO-OpenAI user's
+    // dot must read its own `openai` key status, never the OAuth entry. Exact
+    // match must win even when openai-codex is listed first.
+    const list = providers(
+      { provider: "openai-codex", displayName: "ChatGPT", status: "ok" },
+      { provider: "openai", displayName: "OpenAI", status: "expired" },
+    );
+    expect(resolveProviderStatus("byo_key", "openai", list)).toBe("expired");
+  });
+
+  it("byo openai does NOT match openai-codex when only the OAuth entry exists", () => {
+    // openai-codex belongs to chatgpt_oauth; the generic `openai` prefix must
+    // not swallow it, so a BYO-OpenAI user with only an OAuth entry resolves to
+    // undefined (their own key status is genuinely unknown).
+    const list = providers(
+      { provider: "openai-codex", displayName: "ChatGPT", status: "ok" },
+    );
+    expect(resolveProviderStatus("byo_key", "openai", list)).toBeUndefined();
+  });
+
+  it("byo openai still matches a legit openai prefix variant (openai-responses)", () => {
+    const list = providers(
+      { provider: "openai-responses", displayName: "OpenAI", status: "missing" },
+    );
+    expect(resolveProviderStatus("byo_key", "openai", list)).toBe("missing");
+  });
+
   it("returns undefined when no provider entry matches", () => {
     const list = providers(
       { provider: "anthropic", displayName: "Anthropic", status: "ok" },

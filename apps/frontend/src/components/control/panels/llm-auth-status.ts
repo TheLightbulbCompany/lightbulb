@@ -55,6 +55,21 @@ function candidateIds(
   return [];
 }
 
+// Exact ids reserved by EVERY provider choice. Used to keep one choice's prefix
+// match from swallowing another choice's exact id: the BYO ``openai`` candidate
+// must not prefix-match ``openai-codex`` (chatgpt_oauth's distinct provider),
+// and ``amazon-bedrock``/``bedrock``/``anthropic``/``openai`` must not be
+// claimed by an unrelated prefix either. Built from the full candidate union so
+// adding a future provider choice keeps the exclusion correct automatically.
+function allReservedExactIds(): Set<string> {
+  return new Set([
+    ...candidateIds("bedrock_claude", null),
+    ...candidateIds("chatgpt_oauth", null),
+    ...candidateIds("byo_key", "anthropic"),
+    ...candidateIds("byo_key", "openai"),
+  ]);
+}
+
 export function resolveProviderStatus(
   choice: ProviderChoice | null | undefined,
   byoProvider: ByoProvider | null | undefined,
@@ -63,14 +78,28 @@ export function resolveProviderStatus(
   if (!choice || !list || list.length === 0) return undefined;
   const wanted = candidateIds(choice, byoProvider ?? null);
   if (wanted.length === 0) return undefined;
-  // Candidates are ranked (real id before fallback alias), so iterate them in
-  // priority order and take the first that matches any list entry. Scanning the
-  // list first would let a stale alias (e.g. a legacy `bedrock`) win over the
-  // higher-priority current id (`amazon-bedrock`) purely by list position.
+
+  // Pass 1 — EXACT match in candidate-priority order. An exact hit on a
+  // higher-priority candidate (e.g. ``amazon-bedrock``) always beats a prefix
+  // hit on a lower one, and an exact hit on our own id always beats a prefix
+  // hit that could collide with another choice's reserved id.
+  for (const w of wanted) {
+    const match = list.find((p) => normalizeId(p.provider) === w);
+    if (match) return match.status;
+  }
+
+  // Pass 2 — PREFIX match in candidate-priority order, but never claim an id
+  // that is the EXACT reserved id of a DIFFERENT provider choice. This is what
+  // stops the BYO ``openai`` candidate from matching ``openai-codex`` (the
+  // chatgpt_oauth id) while still matching genuine variants like
+  // ``openai-responses``. A candidate is allowed to prefix-match its own exact
+  // id (already handled by pass 1), so excluding the full reserved set here is
+  // safe.
+  const reserved = allReservedExactIds();
   for (const w of wanted) {
     const match = list.find((p) => {
       const id = normalizeId(p.provider);
-      return id === w || id.startsWith(`${w}-`);
+      return id.startsWith(`${w}-`) && !reserved.has(id);
     });
     if (match) return match.status;
   }

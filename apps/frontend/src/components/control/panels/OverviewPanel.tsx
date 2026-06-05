@@ -156,7 +156,12 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
 
   // cron.list returns either a bare array (older containers) or the wrapped
   // { jobs } shape; normalize below before deriving counts.
-  const { data: cronData } = useGatewayRpc<CronListResponse | CronJob[]>("cron.list");
+  // Pass includeDisabled:true to match CronPanel — without it the gateway
+  // returns enabled-only, so the card's total would undercount disabled jobs.
+  const { data: cronData } = useGatewayRpc<CronListResponse | CronJob[]>(
+    "cron.list",
+    { includeDisabled: true },
+  );
 
   // Skills count comes from the same RPC SkillsPanel uses; pass no agentId
   // to get the global skills inventory. Response can be either an array or

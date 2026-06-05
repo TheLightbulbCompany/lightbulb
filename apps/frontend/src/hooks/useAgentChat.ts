@@ -1173,6 +1173,27 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
       if (key) _needsBootstrap.delete(key);
 
+      // Side-channel `/btw` (or `/side`): a detached, non-blocking aside that
+      // runs alongside the main turn rather than queuing behind it. Send it
+      // IMMEDIATELY — even while a run is active — and do NOT touch
+      // clientRunIdRef / isStreaming (a side run is detached, it has no claim
+      // on the primary run's busy gate). The FULL original text including the
+      // `/btw` prefix goes on the wire: the container detects the prefix and
+      // runs it as a non-blocking side run server-side. The eventual side
+      // `run_ended` carries its own runId — drainQueue is guarded by
+      // !isChatBusy + runId dedupe, so while the primary run is active that
+      // side run_ended no-ops the drain. Mirrors upstream OpenClaw web UI's
+      // sendDetachedBtwMessage (~/Desktop/openclaw/ui/src/ui/app-chat.ts:706).
+      if (/^\/(btw|side)(?::|\s|$)/i.test(trimmed) && isConnected && agentIdRef.current) {
+        send({
+          type: "agent_chat",
+          agent_id: agentIdRef.current,
+          message: trimmed,
+          side: true,
+        });
+        return;
+      }
+
       // Disconnected: park the send as waiting-reconnect instead of
       // dropping it. The reconnect rising-edge effect replays it (and
       // resumes the normal drain) once the socket is back. Mirrors upstream
@@ -1205,7 +1226,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       await dispatchNow(trimmed);
     },
-    [isConnected, sessionName, dispatchNow],
+    [isConnected, sessionName, dispatchNow, send],
   );
 
   // ---- Cancel / stop agent ----

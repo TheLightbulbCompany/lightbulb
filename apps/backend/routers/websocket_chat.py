@@ -668,6 +668,15 @@ async def ws_message(
         # always carries an idempotencyKey (the field is required by
         # upstream chat.ts:2002 which does `const clientRunId = p.idempotencyKey`).
         client_run_id = body.get("clientRunId")
+        # Side-channel (`/btw`) send. Upstream's webchat routes a `/btw`/`/side`
+        # message through the SAME wire call as a normal chat.send (deliver:false
+        # + fresh idempotencyKey); the OpenClaw container detects the `/btw`
+        # prefix in the message text and runs it as a non-blocking side run that
+        # never enters the session's active-run window (see upstream
+        # auto-reply/reply/btw-command.ts BTW_COMMAND_RE). We forward it as a
+        # normal chat.send but skip mark_run_active so it does NOT claim the
+        # active-run window — that keeps the busy gate clear for the primary run.
+        side = bool(body.get("side"))
 
         if not agent_id or not message:
             management_api = await get_management_api_client()
@@ -692,6 +701,7 @@ async def ws_message(
             agent_id=agent_id,
             message=message,
             client_run_id=client_run_id,
+            side=side,
         )
         return Response(status_code=200)
 
@@ -1321,6 +1331,7 @@ async def _process_agent_chat_background(
     agent_id: str,
     message: str,
     client_run_id: str | None = None,
+    side: bool = False,
 ) -> None:
     """
     Process agent chat message via OpenClaw's native chat.send RPC.
@@ -1336,6 +1347,13 @@ async def _process_agent_chat_background(
     event back to the originating send (drains the client-side chat queue).
     Absent → backend mints a UUID instead so the chat.send call always
     carries an idempotencyKey (preserves upstream's dedupe contract).
+
+    side (`/btw` side-channel): the wire call is an ordinary chat.send — the
+    container recognizes the `/btw` prefix in ``message`` and runs it as a
+    non-blocking side run that never enters the session's active-run window.
+    On our side that means we must NOT call ``mark_run_active`` for a side
+    send: a side run does not own the run window, so it bypasses the
+    has_active_run busy gate and leaves the primary run's window intact.
     """
     logger.info(
         "[%s] chat.send START agent=%s owner=%s conn=%s msg_len=%d",
@@ -1525,7 +1543,13 @@ async def _process_agent_chat_background(
         # after the ack, is what keeps the connection in the PARKED branch
         # during the streaming window. Idempotent for the cancel-and-retry
         # race where the same sessionKey starts a fresh run.
-        pool.mark_run_active(owner_id, session_key, agent_id)
+        #
+        # Skip for side (`/btw`) sends: a side run is a detached question that
+        # never enters the session's active-run window upstream, so claiming
+        # the window here would falsely mark the session busy and let the
+        # side run's terminal event clear the PRIMARY run's window.
+        if not side:
+            pool.mark_run_active(owner_id, session_key, agent_id)
 
         # Idempotency key for OpenClaw's chat.send. We always send one so
         # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`) and

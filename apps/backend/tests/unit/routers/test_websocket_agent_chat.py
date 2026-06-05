@@ -211,6 +211,9 @@ class TestAgentChatBackgroundTask:
             # Frontend payload omitted clientRunId; backend forwards None so
             # _process_agent_chat_background mints a fallback UUID downstream.
             client_run_id=None,
+            # Default (non-side) send: side=False unless the payload opts into
+            # the /btw side-channel.
+            side=False,
         )
 
 
@@ -635,3 +638,100 @@ class TestProcessAgentSteerBackground:
             text="focus on the API",
         )
         mock_pool.mark_run_active.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# agent_chat side-channel (/btw)  ->  chat.send, busy-gate bypassed
+# ---------------------------------------------------------------------------
+
+
+class TestAgentChatSideChannel:
+    """A side:true agent_chat is a /btw side run: it forwards a normal
+    chat.send (the container detects the /btw prefix) but must NOT claim the
+    session's active-run window, so it bypasses the has_active_run busy gate."""
+
+    @pytest.fixture
+    def mock_ecs_manager(self):
+        with patch("routers.websocket_chat.get_ecs_manager") as mock_getter:
+            manager = AsyncMock()
+            mock_getter.return_value = manager
+            yield manager
+
+    @pytest.fixture
+    def mock_pool(self):
+        with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
+            pool = AsyncMock()
+            pool.send_rpc = AsyncMock(return_value={"runId": "run-btw", "status": "started"})
+            pool.gate_chat = AsyncMock(return_value={"blocked": False})
+            mock_getter.return_value = pool
+            yield pool
+
+    @pytest.fixture
+    def mock_mgmt_api(self):
+        with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
+            client = MagicMock()
+            client.send_message = MagicMock(return_value=True)
+            mock_getter.return_value = client
+            yield client
+
+    @pytest.fixture
+    def container_with_ip(self, mock_ecs_manager):
+        container = {"gateway_token": "test-gw-token", "owner_id": "user-1"}
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        return container
+
+    @pytest.mark.asyncio
+    async def test_side_message_routed_with_side_flag(
+        self, test_app, mock_connection_service, mock_management_api, connected_user
+    ):
+        """ws_message forwards side=True through to the background task."""
+        with patch("routers.websocket_chat._process_agent_chat_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "test-conn-123"},
+                    json={
+                        "type": "agent_chat",
+                        "agent_id": "luna",
+                        "message": "/btw what's the weather",
+                        "side": True,
+                    },
+                )
+
+        mock_bg.assert_called_once()
+        assert mock_bg.call_args[1]["side"] is True
+
+    @pytest.mark.asyncio
+    async def test_side_message_does_not_mark_run_active(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """A side run forwards chat.send but does NOT take over the active-run
+        window — that keeps the busy gate clear for the primary run."""
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            message="/btw what's the weather",
+            side=True,
+        )
+        mock_pool.send_rpc.assert_called_once()
+        kw = mock_pool.send_rpc.call_args[1]
+        assert kw["method"] == "chat.send"
+        assert kw["params"]["message"] == "/btw what's the weather"
+        # Side run must not claim the run window.
+        mock_pool.mark_run_active.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_side_message_marks_run_active(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """A normal (non-side) chat.send DOES open the active-run window."""
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            message="hello",
+        )
+        mock_pool.mark_run_active.assert_called_once()

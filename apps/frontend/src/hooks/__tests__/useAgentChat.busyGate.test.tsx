@@ -20,6 +20,7 @@ let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
 let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
+const send = vi.fn();
 
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
@@ -27,7 +28,7 @@ vi.mock("@/hooks/useGateway", () => ({
     nodeConnected: false,
     error: null,
     reconnectAttempt: 0,
-    send: vi.fn(),
+    send,
     sendReq,
     sendChat,
     onEvent: (h: (name: string, data: unknown) => void) => {
@@ -99,17 +100,21 @@ describe("useAgentChat — tombstoned terminals", () => {
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
+    send.mockReset();
     approvalQueue = [];
     vi.resetModules();
   });
 
-  it("late `done` for a cancelled run must not fold runB's live state into a runA-tagged message", async () => {
-    // The race: user cancels runA, sends a new prompt that starts runB,
-    // then a stale chat.final for runA arrives. Without the tombstone
-    // path, the done handler folds runB's live segments + tools into a
-    // synthesized HistoryMessage tagged with runA's runId and wipes runB's
-    // live state. The tombstone marker swallows the late terminal and
+  it("late `done` for a cleared run must not fold runB's live state into a runA-tagged message", async () => {
+    // The race: user clears runA (tombstoning it), sends a new prompt that
+    // starts runB, then a stale chat.final for runA arrives. Without the
+    // tombstone path, the done handler folds runB's live segments + tools
+    // into a synthesized HistoryMessage tagged with runA's runId and wipes
+    // runB's live state. The tombstone marker swallows the late terminal and
     // returns without touching state.
+    //
+    // (Cancel is now server-reconciled and does NOT tombstone locally —
+    // clearMessages is the remaining local tombstone trigger.)
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
 
@@ -118,8 +123,8 @@ describe("useAgentChat — tombstoned terminals", () => {
     });
     const runA = lastClientRunId();
 
-    await act(async () => {
-      await result.current.cancelMessage();
+    act(() => {
+      result.current.clearMessages();
     });
 
     await act(async () => {
@@ -156,7 +161,7 @@ describe("useAgentChat — tombstoned terminals", () => {
     expect(assistantMessages).toHaveLength(0);
   });
 
-  it("late `error` for a cancelled run must not append a stale Error: bubble or wipe runB's live state", async () => {
+  it("late `error` for a cleared run must not append a stale Error: bubble or wipe runB's live state", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
 
@@ -165,8 +170,8 @@ describe("useAgentChat — tombstoned terminals", () => {
     });
     const runA = lastClientRunId();
 
-    await act(async () => {
-      await result.current.cancelMessage();
+    act(() => {
+      result.current.clearMessages();
     });
 
     await act(async () => {
@@ -208,6 +213,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
+    send.mockReset();
     approvalQueue = [];
     removalHandlers.clear();
     vi.resetModules();
@@ -444,13 +450,15 @@ describe("useAgentChat — approval-pause busy gate", () => {
     });
   });
 
-  it("doesn't adopt a fresh continuation runId after the user cancels mid-resume", async () => {
+  it("server-reconciled cancel mid-resume releases the gate and drains a follow-up", async () => {
     // Scenario: user resolves approval → resumeExpectedRef is armed →
-    // user hits Stop before the continuation emits → cancelMessage
-    // clears clientRunIdRef. A late continuation chunk on a fresh
-    // runId must NOT be adopted (the user no longer wants this run),
-    // and must not reanimate the busy gate so a fresh sendMessage's
-    // runId can't be stolen by it either.
+    // user hits Stop before the continuation emits. Cancel is now
+    // server-reconciled: cancelMessage sends agent_abort but does NOT
+    // locally clear the gate. The server then reconciles the aborted run
+    // (run_ended outcome "aborted"), which force-releases the gate and
+    // drains any queued follow-up. A send issued while the gate is still
+    // armed (between Stop and the server terminal) must QUEUE, then fire
+    // when the server reconciles.
     approvalQueue = [fakeApproval("agent-X", "ap-cancel")];
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result, rerender } = renderHook(() =>
@@ -469,52 +477,34 @@ describe("useAgentChat — approval-pause busy gate", () => {
       rerender();
     });
 
-    // User hits Stop before the continuation arrives.
+    // User hits Stop before the continuation arrives. The gate stays armed
+    // (clientRunIdRef === r1) until the server reconciles.
     await act(async () => {
       await result.current.cancelMessage();
     });
-
-    // Late continuation chunk on fresh runId — must be rejected.
-    const rContinuation = "fresh-continuation-runid";
-    act(() =>
-      dispatch({
-        type: "chunk",
-        agent_id: "agent-X",
-        runId: rContinuation,
-        content: "should not adopt",
-      } as ChatIncomingMessage),
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "agent_abort", agent_id: "agent-X" }),
     );
 
-    // User sends a new turn — its runId must be the active gate, NOT
-    // overridden by any further late event from the abandoned
-    // continuation.
+    // A follow-up typed before the server terminal must QUEUE, not dispatch.
     await act(async () => {
       await result.current.sendMessage("second");
     });
-    const r2 = lastClientRunId();
-    expect(r2).not.toBe(rContinuation);
+    expect(sendChat).toHaveBeenCalledTimes(1);
+    expect(result.current.queuedMessages).toHaveLength(1);
 
-    // Stray late continuation tool_end arrives — must not transfer
-    // the gate away from r2.
+    // Server reconciles the aborted run → gate releases → queue drains.
     act(() =>
       dispatch({
-        type: "tool_end",
+        type: "run_ended",
         agent_id: "agent-X",
-        runId: rContinuation,
-        tool: "exec",
-        toolCallId: "tc-orphan",
+        runId: r1,
+        outcome: "aborted",
       } as ChatIncomingMessage),
     );
-    // r2's terminal done should release the gate, regardless of the
-    // stray rContinuation events.
-    act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r2 } as ChatIncomingMessage),
-    );
-    await act(async () => {
-      await result.current.sendMessage("third");
-    });
-    expect(sendChat).toHaveBeenCalledTimes(3);
-    expect(sendChat.mock.calls[2]?.[1]).toBe("third");
+    expect(sendChat).toHaveBeenCalledTimes(2);
+    expect(sendChat.mock.calls[1]?.[1]).toBe("second");
+    expect(result.current.queuedMessages).toHaveLength(0);
   });
 
   it("transfers the gate when the first fresh-run event is a tool_end (approved exec's result)", async () => {

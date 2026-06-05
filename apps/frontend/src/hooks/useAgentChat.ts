@@ -195,7 +195,7 @@ function foldLiveTurnIntoContent(params: {
 // =============================================================================
 
 export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
-  const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
+  const { isConnected, sendChat, send, onChatMessage, sendReq } = useGateway();
 
   // Cache key includes session name so org members don't share history cache
   const cacheKey = agentId ? `${agentId}:${sessionName}` : null;
@@ -297,6 +297,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // intermediate `done` would reopen ChatInput and let a user-typed
   // follow-up race with the post-approval resume.
   const clientRunIdRef = useRef<string | null>(null);
+
+  // Deferred abort intent. cancelMessage() while disconnected stores the
+  // target {agentId, runId} here; the reconnect rising-edge effect below
+  // replays it exactly once. Mirrors upstream app-chat.ts's host.pendingAbort
+  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:213).
+  const pendingAbortRef = useRef<{ agentId: string; runId: string | null } | null>(null);
 
   // Approval queue snapshot — used to keep the busy gate armed while an
   // exec-approval card is still pending for this agent. Mirrored to a ref
@@ -1039,7 +1045,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   );
 
   // ---- Cancel / stop agent ----
-
+  //
+  // Targeted, server-reconciled abort. We send `agent_abort` carrying the
+  // active clientRunId and then WAIT for the server's terminal — the aborted
+  // run surfaces as an `error` ("Agent run was cancelled" per
+  // connection_pool.py's chat.aborted transform) followed by the
+  // authoritative `run_ended {outcome:"aborted"}`. Those handlers tear down
+  // the live turn and drain the queue. We deliberately do NOT clear
+  // isStreaming / live state locally: server-reconcile drives "done", not a
+  // local edge. Mirrors upstream OpenClaw web UI's handleAbortChat
+  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:201).
   const cancelMessage = useCallback(async () => {
     if (!agentIdRef.current || !isStreaming) return;
 
@@ -1048,70 +1063,47 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       agent_id: agentIdRef.current,
       elapsed_ms: startedAt !== null ? Date.now() - startedAt : 0,
     });
-    turnStartedAtRef.current = null;
-    turnAssistantLenRef.current = 0;
 
-    // Remember the cancelled runId so any chunk/thinking/tool events still
-    // in flight from this run get dropped instead of reanimating live state.
-    // The server's chat.aborted event will eventually arrive as a terminal
-    // `error` which removes the entry.
-    const cancelledRunId = clientRunIdRef.current;
-    if (cancelledRunId) cancelledRunIdsRef.current.add(cancelledRunId);
+    const activeRunId = clientRunIdRef.current;
 
-    const sessionKey = `agent:${agentIdRef.current}:${sessionName}`;
-    try {
-      await sendReq("chat.abort", { sessionKey });
-    } catch (err) {
-      console.warn("Failed to abort agent run:", err);
-    }
-
-    // Fold the in-progress turn into a single assistant HistoryMessage so
-    // the user sees what they cancelled preserved in chat history. Without
-    // this fold, the live segments/tools would render AFTER the next user
-    // message at the buildChatItems tail — same cross-turn ordering bug
-    // that bit the `done` path.
-    const content = foldLiveTurnIntoContent({
-      segments: chatStreamSegmentsRef.current,
-      toolEntries: toolStreamByIdRef.current,
-      toolOrder: toolStreamOrderRef.current,
-      tailStream: chatStreamRef.current,
-      tailThinking: chatStreamThinkingRef.current,
-    });
-    if (content.length > 0) {
-      const synthesized: HistoryMessage = {
-        role: "assistant",
-        content,
-        timestamp: Date.now(),
-        runId: cancelledRunId ?? undefined,
+    // Disconnected: queue the abort intent and replay it on the next
+    // reconnect rising edge (see the pending-abort replay effect below).
+    // Mirrors upstream app-chat.ts:211.
+    if (!isConnected) {
+      pendingAbortRef.current = {
+        agentId: agentIdRef.current,
+        runId: activeRunId,
       };
-      setChatMessages((prev) => [...prev, synthesized]);
+      return;
     }
 
-    setIsStreaming(false);
-    setChatStream(null);
-    chatStreamRunIdRef.current = null;
-    streamCommittedOffsetRef.current = 0;
-    setChatStreamThinking(null);
-    chatStreamThinkingRunIdRef.current = null;
-    setChatStreamSegments([]);
-    toolStreamByIdRef.current.clear();
-    toolStreamOrderRef.current = [];
-    setChatToolMessages([]);
-    clientRunIdRef.current = null;
-    // Clear any pending approval-resume flag — the user cancelled, so a
-    // post-approval continuation (if one arrives) must not be adopted
-    // as the new active run.
-    resumeExpectedRef.current = false;
-  }, [
-    isStreaming,
-    sendReq,
-    sessionName,
-    setIsStreaming,
-    setChatStream,
-    setChatStreamThinking,
-    setChatStreamSegments,
-    setChatToolMessages,
-  ]);
+    send({
+      type: "agent_abort",
+      agent_id: agentIdRef.current,
+      ...(activeRunId ? { runId: activeRunId } : {}),
+    });
+  }, [isStreaming, isConnected, send]);
+
+  // ---- Reconnect rising-edge: replay a deferred abort ----
+  //
+  // When cancelMessage() ran while disconnected, the abort intent was parked
+  // in pendingAbortRef. On the next disconnected→connected transition, fire
+  // it exactly once. Mirrors upstream app-chat.ts's reconnect handling of
+  // host.pendingAbort.
+  const prevConnectedRef = useRef(isConnected);
+  useEffect(() => {
+    const rose = !prevConnectedRef.current && isConnected;
+    prevConnectedRef.current = isConnected;
+    if (!rose) return;
+    const pending = pendingAbortRef.current;
+    if (!pending) return;
+    pendingAbortRef.current = null;
+    send({
+      type: "agent_abort",
+      agent_id: pending.agentId,
+      ...(pending.runId ? { runId: pending.runId } : {}),
+    });
+  }, [isConnected, send]);
 
   // ---- Clear messages ----
 

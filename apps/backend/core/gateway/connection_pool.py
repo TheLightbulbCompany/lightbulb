@@ -292,14 +292,22 @@ class GatewayConnection:
     def _mark_awaiting_approval(self, session_key: str) -> None:
         """Flag the active run keyed by *session_key* as paused on an approval.
 
-        OpenClaw emits an ``agent`` event with ``stream:"approval"``,
-        ``data.phase:"requested"`` when a tool call (e.g. exec) needs the user
-        to approve before it can run (upstream
-        src/agents/embedded-agent-subscribe.handlers.tools.ts → emitAgentApproval
-        Event). The embedded runner then closes the current *bracket* with a
-        chat ``final`` even though the run will CONTINUE after the decision.
-        Recording the pause here lets `_is_true_terminal` treat that interim
-        `final` as non-terminal so the run-active signal survives the approval.
+        When an exec tool needs an out-of-band (async) approval, OpenClaw's
+        embedded agent emits an ``agent`` event with ``stream:"approval"``,
+        ``data.phase:"requested"`` carrying the CURRENT run's id (upstream
+        src/agents/embedded-agent-subscribe.handlers.tools.ts:1348-1384, on an
+        exec result with status ``approval-pending``). That run (Run A) then
+        reaches run-loop completion and emits its GENUINE terminal chat
+        ``final`` — it does NOT pause-and-resume as the same run. The work
+        continues only after the user decides, as a SEPARATE follow-up ``agent``
+        run with a fresh runId (src/agents/bash-tools.exec-approval-followup.ts;
+        upstream itself bounds that wait at 60s via waitForAgentFollowupRun).
+
+        Recording the pause here lets `_is_true_terminal` suppress Run A's
+        terminal ``final`` so the per-session run-active window stays open across
+        the approval round-trip (no UI "dead air"). The window is keyed by
+        ``session_key``, so it is the follow-up run's eventual ``final`` (same
+        session, DIFFERENT runId) that re-clears it.
 
         No-op when no run is tracked for the key (cron / channel sessions).
         """
@@ -308,31 +316,37 @@ class GatewayConnection:
             run["awaiting_approval"] = True
 
     def _is_true_terminal(self, session_key: str, state: str) -> bool:
-        """True iff this chat-terminal event genuinely ends the run.
+        """True iff this chat-terminal event genuinely ends the per-session run.
 
-        ``error`` and ``aborted`` are always terminal — the run is over either
-        way. A ``final`` is terminal UNLESS the run is paused awaiting a tool
-        approval: OpenClaw emits a chat ``final`` to close the approval bracket
-        but resumes the run with a fresh lifecycle after the user decides, so
-        the bracket-closing ``final`` is interim, not the end. We consume the
-        pending-approval flag here (one interim `final` per approval *bracket* —
-        the boolean tracks a single pause-point bracket, not a per-approval
-        counter) so the run reverts to a normal active run and the next
-        ``final`` — the one after the continuation, with no approval
-        outstanding — clears it.
+        ``error`` and ``aborted`` are ALWAYS terminal — they clear the
+        run-active window regardless of any pending approval, so a dead run can
+        never be kept alive (see the regression tests covering this).
 
-        Keeping the interim `final` non-terminal preserves the run-active
-        signal across the approval (no UI "dead air") without leaking dead
-        runs: a genuine terminal `final`/`error`/`aborted` still clears
-        ``_active_runs``, so the parked-vs-dead teardown in
-        `_on_reader_loop_exit` stays correct.
+        A ``final`` is terminal UNLESS the session is paused awaiting an async
+        exec approval. In that case the ``final`` is Run A's genuine terminal
+        (it really did end — see `_mark_awaiting_approval`), but the work
+        continues in a SEPARATE follow-up run, so clearing the window now would
+        flash "dead air" until that follow-up starts. We consume the
+        pending-approval flag (one suppressed ``final`` per approval pause-point,
+        not a per-approval counter) and keep the window open; the follow-up
+        run's later ``final`` — no approval outstanding — clears it. The window
+        is keyed by ``session_key`` (not runId), which is why a DIFFERENT run's
+        ``final`` legitimately clears it.
+
+        Known gap (tracked follow-up): if the follow-up run never spawns — a
+        denied approval with suppressed follow-up, or subagent/cron suppression
+        (bash-tools.exec-approval-followup.ts) — no second ``final`` arrives and
+        the window leaks until the connection-level parked→dead reaper tears the
+        connection down. A bounded per-session safety-valve timeout (mirroring
+        upstream's 60s follow-up wait) would close this; it is gated on first
+        confirming the live container's approval mode.
         """
         if state in ("error", "aborted"):
             return True
         run = self._active_runs.get(session_key)
         if run is not None and run.get("awaiting_approval"):
-            # Interim final closing the approval bracket — consume the flag and
-            # keep the run active for the post-approval continuation.
+            # Suppress Run A's genuine terminal final so the per-session window
+            # survives the approval; the separate follow-up run's final clears it.
             run["awaiting_approval"] = False
             return False
         return True
@@ -1186,16 +1200,17 @@ class GatewayConnection:
                         data.get("name", ""),
                         list(data.keys()) if isinstance(data, dict) else type(data).__name__,
                     )
-                # Approval pause: when a tool call needs the user to approve
-                # before it runs, OpenClaw emits an approval-requested agent
-                # event and then closes the current bracket with a chat `final`
-                # even though the run CONTINUES after the decision. Flag the run
-                # so `_is_true_terminal` doesn't clear it on that interim final
-                # (otherwise the run-active signal drifts to false across the
-                # approval → UI "dead air"). No-op for cron/channel sessions,
-                # which never have a tracked active run. Done before the
-                # channel/cron forwarding gate because the marker is independent
-                # of whether we forward the event to the web UI.
+                # Approval pause: when a tool call needs an async approval,
+                # OpenClaw emits this approval-requested agent event; the run
+                # then reaches completion and emits its GENUINE terminal `final`,
+                # with the work continuing as a SEPARATE follow-up run (see
+                # `_mark_awaiting_approval` / `_is_true_terminal` for the full
+                # sequence). Flag the run so `_is_true_terminal` suppresses that
+                # terminal `final` and the per-session run-active window survives
+                # the approval round-trip (otherwise → UI "dead air"). No-op for
+                # cron/channel sessions, which never have a tracked active run.
+                # Done before the channel/cron forwarding gate because the marker
+                # is independent of whether we forward the event to the web UI.
                 if (
                     stream == "approval"
                     and isinstance(payload.get("data"), dict)
@@ -1335,14 +1350,17 @@ class GatewayConnection:
                     fwd["runId"] = run_id
                     await self._forward_to_frontends(fwd, target_member)
 
-                # Authoritative "run truly ended" frame. ADDITIONAL to the
+                # Authoritative "run truly ended" frame. This is an Isol8-
+                # synthesized frame — there is no upstream `run_ended` event; we
+                # derive it from the chat terminal states. ADDITIONAL to the
                 # done/error/aborted frames above — never a replacement. The
                 # frontend keys off this (not a local heuristic) to drain its
                 # queued messages for the run, so it must fire EXACTLY ONCE per
                 # run and ONLY on a genuine termination. The `is_true_terminal`
-                # gate guarantees we skip the interim `final` that merely closes
-                # a tool-approval bracket (the run continues after the user
-                # decides), so a paused-on-approval run never drains early.
+                # gate guarantees we skip Run A's terminal `final` while it is
+                # paused awaiting an async approval (the work resumes as a
+                # separate follow-up run), so a paused-on-approval session never
+                # drains early.
                 if is_true_terminal:
                     run_ended: dict = {
                         "type": "run_ended",

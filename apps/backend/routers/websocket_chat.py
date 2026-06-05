@@ -665,8 +665,8 @@ async def ws_message(
         # upstream ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:502.
         # Optional for backwards-compat with old frontend builds — when
         # absent, the backend mints a UUID below so OpenClaw's chat.send
-        # always carries an idempotencyKey (the field is required by
-        # upstream chat.ts:2002 which does `const clientRunId = p.idempotencyKey`).
+        # always carries an idempotencyKey (the field is read by upstream
+        # chat.ts:2450 which does `const clientRunId = p.idempotencyKey`).
         client_run_id = body.get("clientRunId")
         # Side-channel (`/btw`) send. Upstream's webchat routes a `/btw`/`/side`
         # message through the SAME wire call as a normal chat.send (deliver:false
@@ -1514,14 +1514,18 @@ async def _process_agent_chat_background(
             return
 
         # Serialize per session: refuse to forward a second chat.send into a
-        # session that already has a run in flight. OpenClaw does NOT serialize
-        # distinct messages per session, so two concurrent runs race the
+        # session that already has a run in flight. The OpenClaw SERVER does not
+        # serialize distinct messages per session — two concurrent runs race the
         # per-session JSONL write lock ("session file locked" / "agent busy").
-        # The backend is the single serialize authority for every chat
-        # entrypoint, so the gate lives here — BEFORE mark_run_active, so we
-        # never mark a run we then refuse. Side (`/btw`) sends bypass the gate:
-        # a detached side run never claims the session's active-run window, so
-        # it must be allowed alongside an in-flight primary run.
+        # Upstream's web UI avoids that purely CLIENT-SIDE: a single client
+        # queues sends and never fires a second while busy (app-chat.ts
+        # flushChatQueue, gated on isChatBusy). Isol8's backend fans many
+        # clients into one container, so there is no single client to queue —
+        # the backend itself is the serialize authority. (This is an Isol8
+        # adaptation, NOT an upstream server feature.) The gate lives here,
+        # BEFORE mark_run_active, so we never mark a run we then refuse. Side
+        # (`/btw`) sends bypass the gate: a detached side run never claims the
+        # session's active-run window, so it must run alongside the primary run.
         if not side and pool.has_active_run(owner_id, session_key):
             put_metric("chat.error", dimensions={"reason": "agent_busy"})
             logger.info(
@@ -1561,19 +1565,30 @@ async def _process_agent_chat_background(
             run_active_marked = True
 
         # Idempotency key for OpenClaw's chat.send. We always send one so
-        # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`) and
-        # in-flight detection (`context.chatAbortControllers.get(clientRunId)`)
-        # in ~/Desktop/openclaw/src/gateway/server-methods/chat.ts:2037-2052
-        # have a stable key to match against. When the frontend supplies
-        # `clientRunId`, we use it so the frontend can correlate the eventual
-        # chat.final back to its send (drives the local chat queue drain).
-        # When absent (old client), we mint a backend UUID — matches the
-        # pre-clientRunId behavior. Upstream chat.ts:2174 calls
-        # `context.addChatRun(clientRunId, ...)` with whichever value we pass.
-        chat_send_params: dict[str, str] = {
+        # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`,
+        # chat.ts:2488) and in-flight detection
+        # (`context.chatAbortControllers.get(clientRunId)`, chat.ts:2496) in
+        # ~/Desktop/openclaw/src/gateway/server-methods/chat.ts have a stable
+        # key to match against. When the frontend supplies `clientRunId`, we use
+        # it so the frontend can correlate the eventual chat.final back to its
+        # send (drives the local chat queue drain). When absent (old client), we
+        # mint a backend UUID — matches the pre-clientRunId behavior. Upstream
+        # chat.ts:2640 calls `context.addChatRun(clientRunId, ...)` with
+        # whichever value we pass (and chat.ts:2450 reads it as the runId).
+        #
+        # deliver:false matches upstream's web-UI requestChatSend
+        # (ui/src/ui/controllers/chat.ts) for EVERY web send — normal, steer,
+        # and /btw alike: a direct streaming client gets the reply over the
+        # socket and must NOT also re-broadcast it to external channels. The
+        # server only delivers externally on `params.deliver === true`
+        # (chat.ts:674), so this is the explicit form of the previous omitted
+        # default (verified behaviorally identical), shared by normal + side
+        # sends.
+        chat_send_params: dict[str, object] = {
             "sessionKey": session_key,
             "message": message,
             "idempotencyKey": client_run_id or str(uuid4()),
+            "deliver": False,
         }
 
         result = await pool.send_rpc(

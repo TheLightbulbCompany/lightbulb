@@ -286,6 +286,9 @@ class TestProcessAgentChatBackground:
         assert params["sessionKey"] == "agent:luna:user-1"
         assert params["message"] == "Hello!"
         assert "idempotencyKey" in params  # UUID, just check it's present
+        # deliver:false mirrors upstream web-UI requestChatSend — a direct
+        # streaming client must not also re-deliver the reply to channels.
+        assert params["deliver"] is False
         assert call_kwargs["ip"] == "10.0.1.5"
         assert call_kwargs["token"] == "test-gw-token"
 
@@ -820,6 +823,9 @@ class TestAgentChatSideChannel:
         kw = mock_pool.send_rpc.call_args[1]
         assert kw["method"] == "chat.send"
         assert kw["params"]["message"] == "/btw what's the weather"
+        # Side sends carry deliver:false on the same wire as a normal send —
+        # the container detects the /btw prefix and runs it as a side run.
+        assert kw["params"]["deliver"] is False
         # Side run must not claim the run window.
         mock_pool.mark_run_active.assert_not_called()
 

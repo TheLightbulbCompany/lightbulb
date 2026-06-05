@@ -207,20 +207,22 @@ function foldLiveTurnIntoContent(params: {
 }
 
 // =============================================================================
-// markDrained
+// addCappedRunId
 //
-// Records a runId in the drained-runIds Set, capping it to the last
-// DRAINED_RUNIDS_CAP entries (FIFO eviction via insertion-ordered Set) so it
-// never grows unbounded over a long-lived chat. A drained runId only needs to
-// outlive the done↔run_ended pair for its own run; once a handful of newer
-// runs have completed, an older entry can never legitimately re-fire.
+// Records a runId in a bounded Set, capping it to the last RUNID_SET_CAP entries
+// (FIFO eviction via insertion-ordered Set) so it never grows unbounded over a
+// long-lived chat. Used for both the drained-runIds set (an id only needs to
+// outlive the done↔run_ended pair for its own run) and the side-run set (a
+// /btw id only needs to outlive that side run's own event stream); in both
+// cases, once a handful of newer runs have completed an older entry can never
+// legitimately re-fire.
 // =============================================================================
 
-const DRAINED_RUNIDS_CAP = 64;
+const RUNID_SET_CAP = 64;
 
-function markDrained(set: Set<string>, runId: string): void {
+function addCappedRunId(set: Set<string>, runId: string): void {
   set.add(runId);
-  while (set.size > DRAINED_RUNIDS_CAP) {
+  while (set.size > RUNID_SET_CAP) {
     const oldest = set.values().next().value;
     if (oldest === undefined) break;
     set.delete(oldest);
@@ -328,6 +330,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // error transform per connection_pool.py) — that's the cleanup point for
   // an aborted run.
   const cancelledRunIdsRef = useRef<Set<string>>(new Set());
+
+  // Side-channel /btw run ids. A /btw (or /side) aside runs CONCURRENTLY with
+  // the primary turn on the same sessionKey + agent_id, but as a separate run
+  // with its OWN runId. We mint that runId on send (passed as clientRunId so it
+  // becomes the backend idempotencyKey → the runId every side event carries)
+  // and record it here so the event handler can keep the side run's
+  // stream/terminal events OFF the primary turn's live state. Mirrors upstream:
+  // sendDetachedChatMessage generates the runId (controllers/chat.ts) and the
+  // client tracks it (TUI noteLocalBtwRunId / isLocalBtwRunId). Bounded set.
+  const sideRunIdsRef = useRef<Set<string>>(new Set());
 
   // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
@@ -568,6 +580,30 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
+      // Segregate side-channel /btw runs. A /btw aside runs concurrently with
+      // the primary turn but as a SEPARATE run carrying its own (frontend-
+      // minted) runId. Its stream/terminal events MUST NOT touch the primary
+      // turn's live state — otherwise a side chunk would hijack the live
+      // stream and a side `done`/`error` would fold+clear the still-running
+      // primary turn. Upstream solves this by gating apply on the active run
+      // (controllers/chat.ts handleChatEvent activeRunMatches) and routing btw
+      // output to a separate side-result card; Isol8 has no side-result surface
+      // yet, so we drop side events here (the primary run is unaffected). This
+      // MUST run before the resume-adoption transfer below so a side runId is
+      // never mistaken for the primary run's post-approval continuation.
+      // Clean up the id on the side run's terminal so the set stays bounded.
+      // ("runId" in msg narrows away heartbeat/update_available, which carry no runId.)
+      if (
+        "runId" in msg &&
+        typeof msg.runId === "string" &&
+        sideRunIdsRef.current.has(msg.runId)
+      ) {
+        if (msg.type === "done" || msg.type === "error" || msg.type === "run_ended") {
+          sideRunIdsRef.current.delete(msg.runId);
+        }
+        return;
+      }
+
       // Drop late stream/tool events for a runId the user already aborted
       // or cleared. Without this, an event landing after cancelMessage()
       // (e.g. a chunk that was in flight when the user hit Stop) would
@@ -772,7 +808,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         if (drainedRunIdsRef.current.has(runId)) {
           return;
         }
-        markDrained(drainedRunIdsRef.current, runId);
+        addCappedRunId(drainedRunIdsRef.current, runId);
         // run_ended is the server's word that the run ended — force-release
         // the busy gate for it even if some local heuristic still held it.
         if (clientRunIdRef.current === runId) {
@@ -874,7 +910,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // (a `done` with no trailing run_ended) this `done` IS the only
         // run-ended signal, so the drain must happen here too.
         if (endedActiveRun && !drainedRunIdsRef.current.has(runId)) {
-          markDrained(drainedRunIdsRef.current, runId);
+          addCappedRunId(drainedRunIdsRef.current, runId);
           drainQueueRef.current();
         }
         return;
@@ -937,7 +973,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // pair never double-drains. (No-runId transport errors don't drain
         // — there's no run-ended runId to key the drain/dedupe on.)
         if (endedActiveRun && !drainedRunIdsRef.current.has(msg.runId!)) {
-          markDrained(drainedRunIdsRef.current, msg.runId!);
+          addCappedRunId(drainedRunIdsRef.current, msg.runId!);
           drainQueueRef.current();
         }
         return;
@@ -1186,17 +1222,25 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // clientRunIdRef / isStreaming (a side run is detached, it has no claim
       // on the primary run's busy gate). The FULL original text including the
       // `/btw` prefix goes on the wire: the container detects the prefix and
-      // runs it as a non-blocking side run server-side. The eventual side
-      // `run_ended` carries its own runId — drainQueue is guarded by
-      // !isChatBusy + runId dedupe, so while the primary run is active that
-      // side run_ended no-ops the drain. Mirrors upstream OpenClaw web UI's
-      // sendDetachedBtwMessage (~/Desktop/openclaw/ui/src/ui/app-chat.ts:706).
+      // runs it as a non-blocking side run server-side.
+      //
+      // We MINT the side run's runId here (sent as clientRunId → backend
+      // idempotencyKey → the runId every side event carries) and record it in
+      // sideRunIdsRef so the event handler segregates the side run's
+      // stream/terminal events from the primary turn. Mirrors upstream
+      // sendDetachedChatMessage, which generates the runId client-side
+      // (controllers/chat.ts) and the client tracks it (TUI noteLocalBtwRunId).
+      // The eventual side `run_ended` is dropped by that segregation, so it can
+      // never drain the primary queue.
       if (/^\/(btw|side)(?::|\s|$)/i.test(trimmed) && isConnected && agentIdRef.current) {
+        const sideRunId = crypto.randomUUID();
+        addCappedRunId(sideRunIdsRef.current, sideRunId);
         send({
           type: "agent_chat",
           agent_id: agentIdRef.current,
           message: trimmed,
           side: true,
+          clientRunId: sideRunId,
         });
         return;
       }

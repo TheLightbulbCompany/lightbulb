@@ -27,6 +27,20 @@ vi.mock("@/hooks/useChatGPTOAuth", () => ({
   }),
 }));
 
+// models.authStatus drives the live provider-health dot. Each test seeds a
+// providers[] snapshot; the mutation captures refresh:true calls.
+const mockAuthStatusData = vi.fn();
+const mockRpcMutation = vi.fn();
+vi.mock("@/hooks/useGatewayRpc", () => ({
+  useGatewayRpc: () => ({
+    data: mockAuthStatusData(),
+    error: undefined,
+    isLoading: false,
+    mutate: vi.fn(),
+  }),
+  useGatewayRpcMutation: () => mockRpcMutation,
+}));
+
 // next/navigation isn't available in jsdom by default. useSearchParams
 // powers the ``?action=change-provider`` auto-open on mount; stub it to
 // return an empty params map so the modal stays closed unless the test
@@ -62,6 +76,9 @@ describe("LLMPanel", () => {
     mockMutate.mockReset();
     mockApiPut.mockReset();
     mockDisconnect.mockReset();
+    mockAuthStatusData.mockReset();
+    mockAuthStatusData.mockReturnValue({ ts: 1, providers: [] });
+    mockRpcMutation.mockReset();
   });
 
   it("renders the ChatGPT hero + Connected status + Disconnect button for chatgpt_oauth", () => {
@@ -193,5 +210,54 @@ describe("LLMPanel", () => {
     fireEvent.change(input, { target: { value: "sk-proj-bad" } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() => expect(screen.getByText("Invalid key")).toBeInTheDocument());
+  });
+
+  it("colors the provider dot green when models.authStatus reports ok", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockAuthStatusData.mockReturnValue({
+      ts: 1,
+      providers: [{ provider: "bedrock", displayName: "Bedrock", status: "ok" }],
+    });
+    render(<LLMPanel />);
+    const dot = screen.getByTestId("provider-health-dot");
+    expect(dot).toHaveAttribute("data-color", "green");
+  });
+
+  it("colors the provider dot red when the provider auth is expired", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "chatgpt_oauth" });
+    mockAuthStatusData.mockReturnValue({
+      ts: 1,
+      providers: [{ provider: "openai-codex", displayName: "ChatGPT", status: "expired" }],
+    });
+    render(<LLMPanel />);
+    expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "red");
+  });
+
+  it("colors the provider dot amber when the provider auth is expiring", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: "anthropic" });
+    mockAuthStatusData.mockReturnValue({
+      ts: 1,
+      providers: [{ provider: "anthropic", displayName: "Anthropic", status: "expiring" }],
+    });
+    render(<LLMPanel />);
+    expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "amber");
+  });
+
+  it("falls back to a neutral dot when no provider entry matches", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockAuthStatusData.mockReturnValue({ ts: 1, providers: [] });
+    render(<LLMPanel />);
+    expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "neutral");
+  });
+
+  it("refreshes auth status with {refresh:true} when the Refresh button is clicked", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockAuthStatusData.mockReturnValue({
+      ts: 1,
+      providers: [{ provider: "bedrock", displayName: "Bedrock", status: "ok" }],
+    });
+    render(<LLMPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /refresh status/i }));
+    expect(mockRpcMutation).toHaveBeenCalledWith("models.authStatus", { refresh: true });
   });
 });

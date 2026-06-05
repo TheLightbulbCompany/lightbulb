@@ -6,9 +6,16 @@ import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
+import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
 import { Input } from "@/components/ui/input";
 import { ChangeProviderModal } from "./ChangeProviderModal";
+import {
+  resolveProviderStatus,
+  statusToDotColor,
+  type AuthStatusProvider,
+  type DotColor,
+} from "./llm-auth-status";
 
 type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
 type ByoProvider = "openai" | "anthropic";
@@ -22,10 +29,24 @@ const HERO_TILE = "h-12 w-12 rounded-lg bg-[#f3efe6] flex items-center justify-c
 const ACTION_CARD = "rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3";
 const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
 
-function StatusChip({ label }: { label: string }) {
+// Dot color is driven by the container's live models.authStatus, not the
+// chip label — the label states which provider is configured, the dot states
+// whether its auth is currently usable.
+const DOT_CLASS: Record<DotColor, string> = {
+  green: "bg-[#2d8a4e]",
+  amber: "bg-amber-500",
+  red: "bg-red-500",
+  neutral: "bg-[#8a8578]",
+};
+
+function StatusChip({ label, dotColor }: { label: string; dotColor: DotColor }) {
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-[#06402B]/10 text-[#06402B] px-2 py-0.5 text-xs font-medium">
-      <span className="h-1.5 w-1.5 rounded-full bg-[#06402B]" />
+      <span
+        data-testid="provider-health-dot"
+        data-color={dotColor}
+        className={`h-1.5 w-1.5 rounded-full ${DOT_CLASS[dotColor]}`}
+      />
       {label}
     </span>
   );
@@ -36,11 +57,13 @@ function HeroCard({
   title,
   subtitle,
   status,
+  dotColor,
 }: {
   icon: React.ReactNode;
   title: string;
   subtitle: string;
   status: string;
+  dotColor: DotColor;
 }) {
   return (
     <div className="rounded-xl border border-[#e0dbd0] bg-white p-6 flex items-center gap-4">
@@ -49,7 +72,7 @@ function HeroCard({
         <h3 className="font-medium text-[#1a1a1a]">{title}</h3>
         <p className="text-sm text-[#8a8578] truncate">{subtitle}</p>
       </div>
-      <StatusChip label={status} />
+      <StatusChip label={status} dotColor={dotColor} />
     </div>
   );
 }
@@ -57,9 +80,11 @@ function HeroCard({
 function ChatGPTOAuthBlock({
   onDisconnected,
   onChangeProvider,
+  dotColor,
 }: {
   onDisconnected: () => void;
   onChangeProvider: () => void;
+  dotColor: DotColor;
 }) {
   const { disconnect } = useChatGPTOAuth();
   const [busy, setBusy] = useState(false);
@@ -81,6 +106,7 @@ function ChatGPTOAuthBlock({
         title="Sign in with ChatGPT"
         subtitle="Inference via your ChatGPT account"
         status="Connected"
+        dotColor={dotColor}
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Account</span>
@@ -109,10 +135,12 @@ function ByoKeyBlock({
   byoProvider,
   onReplaced,
   onChangeProvider,
+  dotColor,
 }: {
   byoProvider: ByoProvider;
   onReplaced: () => void;
   onChangeProvider: () => void;
+  dotColor: DotColor;
 }) {
   const isOpenAI = byoProvider === "openai";
   const title = isOpenAI ? "Bring your own OpenAI key" : "Bring your own Anthropic key";
@@ -125,6 +153,7 @@ function ByoKeyBlock({
         title={title}
         subtitle="Your key, your billing"
         status="Active"
+        dotColor={dotColor}
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>API key</span>
@@ -146,9 +175,11 @@ function ByoKeyBlock({
 function BedrockBlock({
   onManageCredits,
   onChangeProvider,
+  dotColor,
 }: {
   onManageCredits: () => void;
   onChangeProvider: () => void;
+  dotColor: DotColor;
 }) {
   return (
     <>
@@ -157,6 +188,7 @@ function BedrockBlock({
         title="Powered by Claude"
         subtitle="Anthropic Claude via AWS Bedrock"
         status="Active"
+        dotColor={dotColor}
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Billing</span>
@@ -263,6 +295,21 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Live container auth health for the provider dot. The panel mounts under the
+  // control surface's GatewayProvider, so the RPC resolves. These hooks sit
+  // above the early return below so hook order stays stable across renders.
+  const { data: authStatus } = useGatewayRpc<{
+    ts: number;
+    providers: AuthStatusProvider[];
+  }>("models.authStatus");
+  const refreshAuthStatus = useGatewayRpcMutation();
+  const providerStatus = resolveProviderStatus(
+    user?.provider_choice ?? null,
+    user?.byo_provider ?? null,
+    authStatus?.providers,
+  );
+  const dotColor: DotColor = statusToDotColor(providerStatus);
+
   if (!user) return <div className="p-6 text-sm">Loading…</div>;
 
   const handleManageCredits = () => {
@@ -274,12 +321,22 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
 
   return (
     <div className="p-6 space-y-6">
-      <h2 className="text-lg font-semibold">LLM Provider</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">LLM Provider</h2>
+        <button
+          type="button"
+          onClick={() => void refreshAuthStatus("models.authStatus", { refresh: true })}
+          className="rounded-md border border-[#e0dbd0] text-[#8a8578] hover:bg-[#f3efe6] px-2.5 py-1 text-xs"
+        >
+          Refresh status
+        </button>
+      </div>
 
       {user.provider_choice === "chatgpt_oauth" && (
         <ChatGPTOAuthBlock
           onDisconnected={() => mutate()}
           onChangeProvider={openModal}
+          dotColor={dotColor}
         />
       )}
 
@@ -288,6 +345,7 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
           byoProvider={user.byo_provider}
           onReplaced={() => mutate()}
           onChangeProvider={openModal}
+          dotColor={dotColor}
         />
       )}
 
@@ -302,7 +360,11 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
       )}
 
       {user.provider_choice === "bedrock_claude" && (
-        <BedrockBlock onManageCredits={handleManageCredits} onChangeProvider={openModal} />
+        <BedrockBlock
+          onManageCredits={handleManageCredits}
+          onChangeProvider={openModal}
+          dotColor={dotColor}
+        />
       )}
 
       {!user.provider_choice && <EmptyStateCard onChangeProvider={openModal} />}

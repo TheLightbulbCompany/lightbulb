@@ -62,6 +62,7 @@ describe("PluginsTab", () => {
 
   it("toggling an unmanaged plugin calls config.patch with a merge-patch raw payload", async () => {
     mockConfig.mockReturnValue({
+      hash: "h1",
       config: { plugins: { entries: { "custom-x": { enabled: true } } }, agents: { list: [] } },
     });
     render(<PluginsTab />);
@@ -69,7 +70,19 @@ describe("PluginsTab", () => {
     await waitFor(() => expect(mockCallRpc).toHaveBeenCalledTimes(1));
     expect(mockCallRpc).toHaveBeenCalledWith("config.patch", {
       raw: JSON.stringify({ plugins: { entries: { "custom-x": { enabled: false } } } }),
+      baseHash: "h1",
     });
+  });
+
+  it("surfaces an error when config.patch is rejected (e.g. stale base hash)", async () => {
+    mockConfig.mockReturnValue({
+      hash: "h1",
+      config: { plugins: { entries: { "custom-x": { enabled: true } } }, agents: { list: [] } },
+    });
+    mockCallRpc.mockRejectedValueOnce(new Error("config changed since last load; re-run config.get and retry"));
+    render(<PluginsTab />);
+    fireEvent.click(screen.getByRole("button", { name: /disable/i }));
+    await waitFor(() => expect(screen.getByText(/config changed since last load/i)).toBeInTheDocument());
   });
 
   it("hides toggles for non-admin org members", () => {

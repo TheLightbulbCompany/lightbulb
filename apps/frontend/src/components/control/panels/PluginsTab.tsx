@@ -42,6 +42,7 @@ export function PluginsTab() {
   const { data: snapshot, error, isLoading, mutate } = useGatewayRpc<ConfigSnapshot>("config.get");
   const callRpc = useGatewayRpcMutation();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
 
   const config = snapshot?.config;
   const entries =
@@ -78,14 +79,23 @@ export function PluginsTab() {
 
   const handleToggle = async (row: PluginRow) => {
     setBusyId(row.id);
+    setToggleError(null);
     try {
       await callRpc("config.patch", {
         raw: JSON.stringify({ plugins: { entries: { [row.id]: { enabled: !row.enabled } } } }),
+        // config.patch is optimistic-concurrency: the gateway requires the
+        // hash of the config snapshot we read and rejects the write if the
+        // file changed underneath us. Send the hash from our config.get read.
+        baseHash: snapshot?.hash,
       });
       capture("plugin_toggled", { plugin: row.id, enabled: !row.enabled });
       await mutate();
     } catch (err) {
       console.error("Failed to toggle plugin:", err);
+      setToggleError(err instanceof Error ? err.message : "Failed to update plugin.");
+      // Refresh so a retry carries the latest base hash (handles a
+      // "config changed since last load" rejection self-healingly).
+      await mutate();
     } finally {
       setBusyId(null);
     }
@@ -127,6 +137,12 @@ export function PluginsTab() {
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
         </div>
+
+        {toggleError && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[#fce4ec] border border-[#dc2626]/20">
+            <span className="text-xs text-[#dc2626]">{toggleError}</span>
+          </div>
+        )}
 
         {rows.length === 0 && (
           <p className="text-sm text-[#8a8578] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>

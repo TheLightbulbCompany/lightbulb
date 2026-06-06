@@ -1,10 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { useOrganization } from "@clerk/nextjs";
+import { ChevronDown } from "lucide-react";
 
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
+import { McpServersTab } from "@/components/control/panels/McpServersTab";
 import { useConnections } from "@/hooks/useConnections";
+import { cn } from "@/lib/utils";
 
 /**
  * Control-dashboard home for third-party integrations. This re-homes the
@@ -26,6 +30,8 @@ export function IntegrationsPanel() {
   // This is a UX hint only — the connect/disconnect endpoints enforce the
   // same rule server-side (403), which ConnectButton surfaces inline.
   const canManage = !membership || membership.role === "org:admin";
+
+  const [mcpOpen, setMcpOpen] = useState(false);
 
   // The Google multi-account surface only makes sense once Google is
   // connected. We read the same shared /connections cache ConnectionsList
@@ -62,6 +68,29 @@ export function IntegrationsPanel() {
         <ConnectionsList canManage={canManage} />
 
         {googleConnected && <GoogleAccountsSection canManage={canManage} />}
+
+        {/* Advanced: the raw mcp.servers escape hatch. Curated integrations
+            above write the same mcp.servers config; this is the manual rail
+            for MCP servers that don't have a curated card. McpServersTab
+            self-gates non-admins (403 -> "org admins only"). */}
+        <div className="rounded-md border border-[#e0dbd0] bg-white">
+          <button
+            type="button"
+            aria-expanded={mcpOpen}
+            onClick={() => setMcpOpen((v) => !v)}
+            className="flex w-full items-center justify-between p-4 text-left"
+          >
+            <span className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+              Advanced — raw MCP servers
+            </span>
+            <ChevronDown className={cn("h-4 w-4 text-[#8a8578] transition-transform", !mcpOpen && "-rotate-90")} />
+          </button>
+          {mcpOpen && (
+            <div className="border-t border-[#e0dbd0]">
+              <McpServersTab />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

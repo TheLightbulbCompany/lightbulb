@@ -64,28 +64,11 @@ def find_orphan_provider_secrets(
 
 
 async def _scan_owner_ids() -> list[str]:
-    """Paginate the ``containers`` table and return every ``owner_id``.
+    """Return every container ``owner_id`` (deduped, sorted)."""
+    from core.repositories import container_repo
 
-    Mirrors ``backfill_paperclip_for_legacy_users._scan_owner_ids``.
-    """
-    from core.dynamodb import get_table, run_in_thread
-
-    table = get_table("containers")
-    owner_ids: set[str] = set()
-    last_evaluated_key: dict | None = None
-    while True:
-        kwargs: dict[str, Any] = {}
-        if last_evaluated_key is not None:
-            kwargs["ExclusiveStartKey"] = last_evaluated_key
-        resp = await run_in_thread(table.scan, **kwargs)
-        for item in resp.get("Items", []):
-            owner_id = item.get("owner_id")
-            if owner_id:
-                owner_ids.add(owner_id)
-        last_evaluated_key = resp.get("LastEvaluatedKey")
-        if not last_evaluated_key:
-            break
-    return sorted(owner_ids)
+    rows = await container_repo.scan_all()
+    return sorted({r["owner_id"] for r in rows if r.get("owner_id")})
 
 
 async def main(*, apply: bool, env: str) -> int:
@@ -112,7 +95,12 @@ async def main(*, apply: bool, env: str) -> int:
             total_providers += 1
             print(f"  {owner_id} channels.{provider}: {', '.join(keys)}")
             if apply:
-                await delete_provider_level_channel_secrets(owner_id, provider)
+                try:
+                    await delete_provider_level_channel_secrets(owner_id, provider)
+                except Exception as e:  # noqa: BLE001
+                    # Don't let one transient owner (e.g. container deleted
+                    # mid-run) abort the whole fleet sweep.
+                    print(f"  ERR  {owner_id} channels.{provider}: strip failed ({e})")
 
     print(f"[{env}] {affected_owners} owner(s), {total_providers} provider(s) with orphan provider-level creds")
     if not apply:

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from core.containers.config import write_openclaw_config
+from core.containers.config import premium_model_ref, write_openclaw_config
 
 
 @pytest.mark.asyncio
@@ -38,8 +38,12 @@ async def test_byo_key_openai_branch(tmp_path):
         user_id="u_1",
     )
     cfg = json.loads(out.read_text())
-    primary = cfg["agents"]["defaults"]["model"]["primary"]
-    assert primary == "openai/gpt-5.4"
+    model_block = cfg["agents"]["defaults"]["model"]
+    # Primary stays gpt-5.4 (already the standard tier; gpt-5.5 is premium and
+    # reserved for the CEO). Fallback demotes to the cheaper gpt-5.4-mini so an
+    # error-failover never costs more than the primary.
+    assert model_block["primary"] == "openai/gpt-5.4"
+    assert model_block["fallbacks"] == ["openai/gpt-5.4-mini"]
     # The OPENAI_API_KEY env var is injected via ECS task secret, not in this file.
     env_block = cfg.get("env", {})
     assert "OPENAI_API_KEY" not in env_block, "API key must NEVER be embedded in openclaw.json — comes from ECS secret"
@@ -58,8 +62,11 @@ async def test_byo_key_anthropic_branch(tmp_path):
     cfg = json.loads(out.read_text())
     primary = cfg["agents"]["defaults"]["model"]["primary"]
     fallbacks = cfg["agents"]["defaults"]["model"]["fallbacks"]
-    assert primary == "anthropic/claude-opus-4-6-v1"
-    assert fallbacks == ["anthropic/claude-sonnet-4-6"]
+    # Default tier is the cheaper Sonnet 4.6, with Haiku 4.5 as the cheap
+    # error-failover. Opus 4.6 is reserved for the CEO agent (Friday) via
+    # per-agent agents.list[*].model — see test_ceo_agent_gets_premium_model.
+    assert primary == "anthropic/claude-sonnet-4-6"
+    assert fallbacks == ["anthropic/claude-haiku-4-5"]
     env_block = cfg.get("env", {})
     assert "ANTHROPIC_API_KEY" not in env_block
 
@@ -82,16 +89,15 @@ async def test_bedrock_claude_branch(tmp_path):
     )
     cfg = json.loads(out.read_text())
 
-    # Primary is Opus 4.6 — Opus 4.7 ships with applied=0 TPM on most
-    # accounts pending AWS capacity rollout (Service Quotas L-5DB28B7B),
-    # which throttles the very first invocation. 4.6 is functionally
-    # identical at the same list price. 4.7 is intentionally omitted
-    # from the catalog until the quota lifts; add it back as a fallback
-    # (or promote to primary) at that point. Sonnet 4.6 fallback is
-    # ~5× cheaper escape hatch for capacity/throttling.
+    # Default tier is the cheaper Sonnet 4.6, with Haiku 4.5 as the cheap
+    # error-failover. Opus 4.6 is reserved for the CEO agent (Friday) via a
+    # per-agent agents.list[*].model — see test_ceo_agent_gets_premium_model.
+    # Opus 4.7 is intentionally absent from the catalog: it ships with
+    # applied=0 TPM on most accounts (Service Quotas L-5DB28B7B), which
+    # throttles the very first invocation.
     model_block = cfg["agents"]["defaults"]["model"]
-    assert model_block["primary"] == "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
-    assert model_block["fallbacks"] == ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"]
+    assert model_block["primary"] == "amazon-bedrock/us.anthropic.claude-sonnet-4-6"
+    assert model_block["fallbacks"] == ["amazon-bedrock/us.anthropic.claude-haiku-4-5"]
 
     # Static provider catalog — Opus 4.6 + Sonnet 4.6 + Haiku 4.5 (the
     # cheap aux-task tier). New entries land here in lockstep with
@@ -115,6 +121,84 @@ async def test_bedrock_claude_branch(tmp_path):
     # the per-user container, and no risk of surfacing un-priced models.
     bedrock_cfg = cfg["plugins"]["entries"]["amazon-bedrock"]["config"]
     assert bedrock_cfg["discovery"]["enabled"] is False
+
+
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider,expected",
+    [
+        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"),
+        ("byo_key", "anthropic", "anthropic/claude-opus-4-6-v1"),
+        ("byo_key", "openai", "openai/gpt-5.5"),
+        # chatgpt_oauth is a flat-rate plan — no premium tier to reserve, so
+        # the CEO inherits the default (no per-agent model override).
+        ("chatgpt_oauth", None, None),
+    ],
+)
+def test_premium_model_ref_matrix(provider_choice, byo_provider, expected):
+    """The CEO premium ref is the top-tier model per provider path, or None
+    for the flat-rate chatgpt_oauth plan where there's nothing to reserve."""
+    assert premium_model_ref(provider_choice, byo_provider) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider,expected_ceo_model",
+    [
+        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"),
+        ("byo_key", "anthropic", "anthropic/claude-opus-4-6-v1"),
+        ("byo_key", "openai", "openai/gpt-5.5"),
+    ],
+)
+async def test_ceo_agent_gets_premium_model(tmp_path, provider_choice, byo_provider, expected_ceo_model):
+    """The CEO agent (role='ceo', i.e. Friday) is pinned to the premium model
+    via a per-agent agents.list[*].model, while non-CEO agents carry no
+    per-agent model and inherit the cheaper default."""
+    out = tmp_path / "openclaw.json"
+    kwargs = {
+        "config_path": out,
+        "gateway_token": "test-token",
+        "provider_choice": provider_choice,
+        "user_id": "u_1",
+        "paperclip_agents": [
+            {"id": "agent_friday", "role": "ceo", "name": "Friday"},
+            {"id": "agent_atlas", "role": "recruiter", "name": "Atlas"},
+        ],
+    }
+    if byo_provider is not None:
+        kwargs["byo_provider"] = byo_provider
+    await write_openclaw_config(**kwargs)
+    cfg = json.loads(out.read_text())
+
+    entries = {a["id"]: a for a in cfg["agents"]["list"]}
+    ceo = entries["agent_friday"]
+    non_ceo = entries["agent_atlas"]
+    assert ceo["default"] is True
+    assert ceo["model"] == expected_ceo_model
+    # Non-CEO agents have no per-agent model — they inherit the (cheaper)
+    # agents.defaults.model so only Friday pays premium rates.
+    assert "model" not in non_ceo
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_oauth_ceo_inherits_default(tmp_path):
+    """chatgpt_oauth is flat-rate — there's no premium tier to reserve, so
+    even the CEO carries no per-agent model and inherits the default."""
+    out = tmp_path / "openclaw.json"
+    await write_openclaw_config(
+        config_path=out,
+        gateway_token="test-token",
+        provider_choice="chatgpt_oauth",
+        user_id="u_1",
+        paperclip_agents=[
+            {"id": "agent_friday", "role": "ceo", "name": "Friday"},
+            {"id": "agent_atlas", "role": "recruiter", "name": "Atlas"},
+        ],
+    )
+    cfg = json.loads(out.read_text())
+    entries = {a["id"]: a for a in cfg["agents"]["list"]}
+    assert entries["agent_friday"]["default"] is True
+    assert "model" not in entries["agent_friday"]
+    assert "model" not in entries["agent_atlas"]
 
 
 @pytest.mark.asyncio

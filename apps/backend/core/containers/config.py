@@ -319,20 +319,22 @@ def build_provider_block(
         )
     if provider_choice == "byo_key":
         if byo_provider == "openai":
-            return ({}, {"primary": "openai/gpt-5.4", "fallbacks": ["openai/gpt-5.4"]}, {})
+            # gpt-5.4 primary (already the standard tier), gpt-5.4-mini
+            # fallback. gpt-5.5 is the premium tier, reserved for the CEO
+            # agent via a per-agent agents.list[*].model. Fallbacks are
+            # error-only, so the cheaper mini never raises cost on failover.
+            return ({}, {"primary": "openai/gpt-5.4", "fallbacks": ["openai/gpt-5.4-mini"]}, {})
         if byo_provider == "anthropic":
-            # Opus 4.6 primary, Sonnet 4.6 fallback. Opus 4.7 is omitted
-            # while AWS holds the cross-region TPM quota at applied=0
-            # (Service Quotas L-5DB28B7B); add it back here once the
-            # quota lifts. For byo_key the user pays Anthropic directly
-            # so the Bedrock quota doesn't bind, but we keep the catalog
-            # symmetric across paths to avoid divergent test/runtime
-            # behavior.
+            # Sonnet 4.6 primary, Haiku 4.5 fallback — the cheaper standard
+            # tier so the default agent never pays top-tier Opus rates on
+            # every turn. Opus 4.6 is reserved for the CEO agent via a
+            # per-agent agents.list[*].model. Kept symmetric with the Bedrock
+            # path to avoid divergent test/runtime behavior.
             return (
                 {},
                 {
-                    "primary": "anthropic/claude-opus-4-6-v1",
-                    "fallbacks": ["anthropic/claude-sonnet-4-6"],
+                    "primary": "anthropic/claude-sonnet-4-6",
+                    "fallbacks": ["anthropic/claude-haiku-4-5"],
                 },
                 {},
             )
@@ -393,28 +395,24 @@ def build_provider_block(
                 },
             },
             {
-                # Opus 4.6 primary, Sonnet 4.6 fallback.
+                # Sonnet 4.6 primary, Haiku 4.5 fallback. The default is the
+                # cheaper standard tier so a runaway agent loop never pays
+                # top-tier rates on every turn. Opus 4.6 is reserved for the
+                # CEO agent (Friday) via a per-agent agents.list[*].model
+                # (see premium_model_ref / _build_agents_list).
                 #
-                # Why 4.6 instead of 4.7: AWS ships Opus 4.7 with
+                # Why not Opus 4.7 anywhere: AWS ships Opus 4.7 with
                 # `applied = 0` TPM on most accounts pending capacity
                 # rollout (Service Quotas L-5DB28B7B), so 4.7 invokes
-                # throttle on the very first request. Until AWS lifts
-                # the applied limit, 4.6 is the only Opus we can
-                # actually invoke. Pricing is identical between 4.6
-                # and 4.7 on Bedrock list price, so swapping is
-                # cost-neutral. Add 4.7 back to the fallbacks (or
-                # promote to primary) once the quota lands.
+                # throttle on the very first request.
                 #
-                # Sonnet 4.6 stays as the capacity/throttling escape
-                # hatch (requires a Marketplace agreement first; see
-                # Bedrock Model Access console). Sonnet is ~5× cheaper
-                # than Opus so a failover quietly REDUCES spend rather
-                # than increasing it — safe direction for surprise
-                # bills.
+                # Fallbacks are error-only, not cost routing — Haiku 4.5 is
+                # the cheapest priced tier, so a failover quietly REDUCES
+                # spend rather than increasing it.
                 #
-                # Users can override per-agent via agents.list[*].model.
-                "primary": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
-                "fallbacks": ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"],
+                # Users can still override per-agent via agents.list[*].model.
+                "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+                "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5"],
             },
             {
                 "amazon-bedrock": {
@@ -425,7 +423,29 @@ def build_provider_block(
     raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
 
 
-def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
+def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
+    """The premium model ref reserved for the CEO agent (Friday), per provider
+    path — or ``None`` when there is no premium tier to reserve.
+
+    The default agent runs on the cheaper standard tier (see
+    ``build_provider_block``); only the CEO is pinned to the top tier via a
+    per-agent ``agents.list[*].model``. ``chatgpt_oauth`` returns ``None``
+    because it's a flat-rate plan — there's no cheaper tier to demote the
+    default to, so the CEO inherits the same model as everyone else.
+
+    Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
+    """
+    if provider_choice == "bedrock_claude":
+        return "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            return "anthropic/claude-opus-4-6-v1"
+        if byo_provider == "openai":
+            return "openai/gpt-5.5"
+    return None
+
+
+def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = None) -> list[dict]:
     """Build the openclaw.json agents.list entries from Paperclip agents.
 
     If paperclip_agents is empty, fall back to the legacy hardcoded 'main'
@@ -438,6 +458,11 @@ def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
     one in the list wins. Each agent's workspace is keyed by its
     Paperclip UUID so OpenClaw's session-key routing
     (agent:<uuid>:<rest>) lands in the right directory on EFS.
+
+    ``ceo_model`` (when provided) pins the CEO agent to the premium model
+    via a per-agent ``model`` override; every other agent omits ``model``
+    and inherits the cheaper ``agents.defaults.model``. ``None`` leaves the
+    CEO inheriting the default too (flat-rate provider paths).
     """
     if not paperclip_agents:
         return [
@@ -474,6 +499,12 @@ def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
             entry["name"] = friendly_name
         if i == default_index:
             entry["default"] = True
+            # The CEO (Friday) runs on the premium tier; everyone else
+            # inherits the cheaper agents.defaults.model. ``ceo_model`` is
+            # None on flat-rate provider paths (chatgpt_oauth), where there
+            # is no premium tier to reserve.
+            if ceo_model is not None:
+                entry["model"] = ceo_model
         entries.append(entry)
     return entries
 
@@ -593,6 +624,9 @@ def build_openclaw_config_dict(
         user_id=user_id,
         byo_provider=byo_provider,
     )
+    # The default agent runs on the cheaper standard tier (above); the CEO
+    # (Friday) is pinned to the premium tier via a per-agent override below.
+    ceo_model = premium_model_ref(provider_choice, byo_provider)
 
     # Token auth — shared secret between backend and container.
     # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
@@ -736,7 +770,7 @@ def build_openclaw_config_dict(
             # Absolute workspace paths so path.resolve() returns them unchanged
             # regardless of process cwd (agent exec tools run with
             # cwd=workspaceDir, which breaks relative resolution).
-            "list": _build_agents_list(paperclip_agents or []),
+            "list": _build_agents_list(paperclip_agents or [], ceo_model=ceo_model),
         },
         # Memory backend: "builtin" = flat MEMORY.md files in the agent
         # workspace. Do NOT switch to the qmd backend: qmd's

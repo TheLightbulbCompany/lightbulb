@@ -139,6 +139,70 @@ async def test_record_usage_known_model_records_spend(dynamodb_tables):
 
 
 @pytest.mark.asyncio
+async def test_unpriced_bedrock_model_pages_and_records_volume(dynamodb_tables):
+    """A Bedrock model with no rate row is a genuine pricing gap: emit the
+    page-tier ``billing.pricing.missing_model`` metric AND still record token
+    volume with spend 0."""
+    from core.repositories import usage_repo
+    from core.services import usage_service
+    from core.services.usage_service import _current_period, record_usage
+
+    with patch.object(usage_service, "put_metric") as mock_put_metric:
+        await record_usage(
+            owner_id="org_bedrock_gap",
+            user_id="user_f",
+            model="amazon-bedrock/us.anthropic.claude-some-unpriced",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read=0,
+            cache_write=0,
+        )
+
+    metric_names = [call.args[0] for call in mock_put_metric.call_args_list]
+    assert "billing.pricing.missing_model" in metric_names
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_bedrock_gap", period)
+    assert owner_usage is not None
+    assert owner_usage["request_count"] == 1
+    assert owner_usage["total_input_tokens"] == 1000
+    assert owner_usage["total_output_tokens"] == 500
+    assert owner_usage["total_spend_microdollars"] == 0
+
+
+@pytest.mark.asyncio
+async def test_non_bedrock_model_does_not_page_but_records_volume(dynamodb_tables):
+    """A non-Bedrock model (OpenAI/Codex/BYO Anthropic) has no Bedrock pricing
+    row by design. It must NOT emit the page-tier metric, but token volume is
+    still recorded with spend 0."""
+    from core.repositories import usage_repo
+    from core.services import usage_service
+    from core.services.usage_service import _current_period, record_usage
+
+    with patch.object(usage_service, "put_metric") as mock_put_metric:
+        await record_usage(
+            owner_id="org_codex_gap",
+            user_id="user_g",
+            model="openai-codex/gpt-5.5",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read=0,
+            cache_write=0,
+        )
+
+    metric_names = [call.args[0] for call in mock_put_metric.call_args_list]
+    assert "billing.pricing.missing_model" not in metric_names
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_codex_gap", period)
+    assert owner_usage is not None
+    assert owner_usage["request_count"] == 1
+    assert owner_usage["total_input_tokens"] == 1000
+    assert owner_usage["total_output_tokens"] == 500
+    assert owner_usage["total_spend_microdollars"] == 0
+
+
+@pytest.mark.asyncio
 async def test_record_usage_empty_call_records_nothing(dynamodb_tables):
     """A completely-empty event (no tokens, unknown model → spend 0) is skipped."""
     from core.repositories import usage_repo

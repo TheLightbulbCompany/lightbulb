@@ -14,6 +14,9 @@ def _current_period() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
+_BEDROCK_PROVIDER_PREFIX = "amazon-bedrock/"
+
+
 def _strip_provider_prefix(model: str) -> str:
     """Strip the provider prefix (e.g. ``amazon-bedrock/``) from the model id.
 
@@ -24,6 +27,19 @@ def _strip_provider_prefix(model: str) -> str:
     if "/" in model:
         return model.split("/", 1)[1]
     return model
+
+
+def _is_bedrock_model(model: str) -> bool:
+    """True when *model* is an ``amazon-bedrock/`` provider ref.
+
+    Pricing only knows Bedrock models, so a pricing miss is a genuine,
+    page-worthy gap only for Bedrock refs. OpenAI (``openai/``), Codex
+    (``openai-codex/``), and BYO-direct Anthropic (``anthropic/``) refs
+    are expected to miss and must not page. The check runs on the raw
+    model ref (before any prefix stripping) where the provider is still
+    visible.
+    """
+    return model.startswith(_BEDROCK_PROVIDER_PREFIX)
 
 
 async def record_usage(
@@ -56,14 +72,20 @@ async def record_usage(
             cache_write_tokens=cache_write,
         )
     except UnknownModelError:
-        # Non-Bedrock models (OpenAI/Codex) have no Bedrock pricing entry. We
-        # still record token + request VOLUME (with spend 0) so usage is never
-        # invisible — a runaway loop on the Codex path must remain visible.
-        # spend 0 is correct for Isol8's books: byo_key is user-paid, Codex is
-        # flat-rate, so Isol8's per-token $ cost there is ~0. The metric still
-        # fires for genuinely-mispriced Bedrock models (and, expectedly, for
-        # non-Bedrock models).
-        put_metric("billing.pricing.missing_model")
+        # Non-Bedrock models (OpenAI/Codex/BYO Anthropic) have no Bedrock
+        # pricing entry. We still record token + request VOLUME (with spend 0)
+        # so usage is never invisible — a runaway loop on the Codex path must
+        # remain visible. spend 0 is correct for Isol8's books: byo_key is
+        # user-paid, Codex is flat-rate, so Isol8's per-token $ cost there is ~0.
+        #
+        # The page-tier metric fires ONLY for Bedrock refs, where a pricing
+        # miss is a genuine gap (a Bedrock model we forgot to price). Pricing
+        # only knows Bedrock, so emitting it for the expected non-Bedrock misses
+        # would spam the page-tier alarm on every non-Bedrock chat.
+        if _is_bedrock_model(model):
+            put_metric("billing.pricing.missing_model")
+        else:
+            put_metric("billing.usage.non_bedrock")
         logger.warning(
             "No pricing for model %s — recording volume with spend 0 for owner %s",
             model,

@@ -768,45 +768,16 @@ async def publish_new_version(
         raise
 
 
-async def get_by_slug(*, slug: str) -> dict | None:
-    """Look up listing by slug.
-
-    Returns the highest-version row that is currently published, falling back
-    to the highest-version row of any status if nothing is published yet.
-
-    Why two-tier: during the publish_new_version flow, a v_new row exists in
-    'review' state while v_prev is still 'published'. The downstream
-    public/deploy/checkout routes all gate on status=='published', so
-    returning the highest version unconditionally would 404 the still-live
-    v_prev for the duration of moderation. The fallback preserves the
-    original behavior for admin/seller paths that need to see the latest
-    row regardless of state (rendering "draft", "pending review", etc.).
-    """
-    table = _listings_table()
-    resp = table.query(
-        IndexName="slug-version-index",
-        # Real listings start at version=1; version > 0 is a harmless lower
-        # bound that keeps every live row in range.
-        KeyConditionExpression="slug = :s AND version > :zero",
-        ExpressionAttributeValues={":s": slug, ":zero": 0},
-        ScanIndexForward=False,  # newest version first
-    )
-    items = resp.get("Items", [])
-    if not items:
-        return None
-    for item in items:
-        if item.get("status") == "published":
-            return item
-    return items[0]
-
-
 async def get_published_by_id(*, listing_id: str) -> dict | None:
     """Resolve the buyer-facing row for a listing_id.
 
-    Returns the currently-published version, falling back to the highest
-    version of any status (so seller/admin paths still see drafts). Mirrors
-    get_by_slug's two-tier logic but keyed on the UUID — the canonical
-    identity now that slugs are non-unique.
+    Two-tier: prefer the currently-published version, else fall back to the
+    highest version of any status (so seller/admin paths still see drafts).
+    The fallback matters during a republish, when a v_new row sits in 'review'
+    while v_prev is still 'published' — the public/deploy/checkout routes gate
+    on status=='published', so returning the highest version unconditionally
+    would 404 the still-live v_prev for the duration of moderation. Keyed on
+    the UUID, which is the canonical identity now that slugs are non-unique.
     """
     table = _listings_table()
     resp = table.query(

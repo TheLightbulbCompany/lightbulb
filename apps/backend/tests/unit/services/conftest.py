@@ -30,7 +30,7 @@ from core.services import marketplace_service  # noqa: E402
 @pytest.fixture
 def dynamodb_table():
     """Moto-backed listings table with the prod schema (HASH listing_id +
-    RANGE version) and the slug-version GSI that get_by_slug needs.
+    RANGE version) plus the slug-version GSI, mirroring the prod table.
 
     Also stubs out the S3 artifact upload so create_draft can run without
     a real bucket — the actual S3 path is exercised by the catalog tests.

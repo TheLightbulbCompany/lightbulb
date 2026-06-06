@@ -146,42 +146,6 @@ async def test_reject_rejects_non_review_state(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
-async def test_get_by_slug_prefers_published_over_higher_review_version(mock_listings):
-    """Regression: during publish_new_version flow, a v2 row exists in 'review' state
-    while v1 is still 'published'. Returning the highest version
-    unconditionally would 404 the still-live v1 on the public storefront for
-    the duration of moderation.
-    """
-    mock_listings.return_value.query.return_value = {
-        "Items": [
-            {"version": 2, "status": "review", "slug": "demo"},
-            {"version": 1, "status": "published", "slug": "demo"},
-        ]
-    }
-    result = await marketplace_service.get_by_slug(slug="demo")
-    assert result is not None
-    assert result["version"] == 1
-    assert result["status"] == "published"
-
-
-@pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
-async def test_get_by_slug_returns_highest_when_no_published(mock_listings):
-    """If nothing is published yet (v1 in draft/review), fall back to the
-    highest-version row so admin/seller paths still find the listing."""
-    mock_listings.return_value.query.return_value = {
-        "Items": [
-            {"version": 1, "status": "draft", "slug": "demo"},
-        ]
-    }
-    result = await marketplace_service.get_by_slug(slug="demo")
-    assert result is not None
-    assert result["version"] == 1
-    assert result["status"] == "draft"
-
-
-@pytest.mark.asyncio
 async def test_get_published_by_id_prefers_published(mock_listings):
     table = marketplace_service._listings_table()
     lid = "11111111-1111-1111-1111-111111111111"

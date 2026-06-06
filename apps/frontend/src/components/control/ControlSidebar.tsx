@@ -3,7 +3,7 @@
 import {
   LayoutDashboard,
   Bot,
-  Sparkles,
+  Boxes,
   MessageSquare,
   Radio,
   Clock,
@@ -33,7 +33,7 @@ type UserMeResponse = {
 const NAV_ITEMS = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "agents", label: "Agents", icon: Bot },
-  { key: "skills", label: "Skills", icon: Sparkles },
+  { key: "skills", label: "Capabilities", icon: Boxes },
   { key: "sessions", label: "Sessions", icon: MessageSquare },
   { key: "channels", label: "Channels", icon: Radio },
   { key: "cron", label: "Cron Jobs", icon: Clock },

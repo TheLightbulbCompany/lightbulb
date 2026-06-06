@@ -8,7 +8,7 @@ import { SessionsPanel } from "./panels/SessionsPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 import { CronPanel } from "./panels/CronPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
-import { SkillsPanel } from "./panels/SkillsPanel";
+import { CapabilitiesPanel } from "./panels/CapabilitiesPanel";
 import { LLMPanel } from "./panels/LLMPanel";
 import { CreditsPanel } from "./panels/CreditsPanel";
 import { IntegrationsPanel } from "./panels/IntegrationsPanel";
@@ -31,7 +31,7 @@ const PANELS: Record<string, React.ComponentType> = {
   usage: UsagePanel,
   cron: CronPanel,
   agents: AgentsPanel,
-  skills: SkillsPanel,
+  skills: CapabilitiesPanel,
   llm: LLMPanel,
   integrations: IntegrationsPanel,
   credits: CreditsPanel,

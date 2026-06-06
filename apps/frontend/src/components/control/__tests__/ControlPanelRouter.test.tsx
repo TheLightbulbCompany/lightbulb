@@ -26,7 +26,7 @@ vi.mock("../panels/SessionsPanel", () => ({ SessionsPanel: () => null }));
 vi.mock("../panels/UsagePanel", () => ({ UsagePanel: () => null }));
 vi.mock("../panels/CronPanel", () => ({ CronPanel: () => null }));
 vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => null }));
-vi.mock("../panels/SkillsPanel", () => ({ SkillsPanel: () => null }));
+vi.mock("../panels/CapabilitiesPanel", () => ({ CapabilitiesPanel: () => null }));
 vi.mock("../panels/LLMPanel", () => ({ LLMPanel: () => null }));
 
 describe("ControlPanelRouter", () => {

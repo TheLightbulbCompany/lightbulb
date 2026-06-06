@@ -149,6 +149,19 @@ def dynamodb_table():
             yield listings
 
 
+@pytest.fixture
+def mock_listings(dynamodb_table):
+    """Alias for the moto-backed listings table.
+
+    Tests that exercise create_draft / get_published_by_id against real
+    DynamoDB semantics (conditional puts, query ordering, no sentinel row)
+    want the table wired into _listings_table(); they don't care about the
+    purchases/takedowns tables the dynamodb_table fixture also builds. This
+    alias yields the listings table under the name those tests read.
+    """
+    yield dynamodb_table
+
+
 async def _create_and_publish(
     table,
     listing_id: str,

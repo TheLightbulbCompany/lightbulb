@@ -558,21 +558,18 @@ async def create_listing(
     profile = await seller_profile.get_profile(auth.user_id)
     if not profile:
         raise HTTPException(status_code=409, detail="seller_profile_required")
-    try:
-        listing = await marketplace_service.create_draft(
-            seller_id=auth.user_id,
-            slug=payload.slug,
-            name=payload.name,
-            description_md=payload.description_md,
-            format=payload.format,
-            price_cents=payload.price_cents,
-            tags=payload.tags,
-            category=payload.category,
-            artifact_bytes=b"",  # uploaded separately; this is the metadata create
-            manifest={"name": payload.name, "description": payload.description_md},
-        )
-    except marketplace_service.SlugCollisionError:
-        raise HTTPException(status_code=409, detail="slug already taken")
+    listing = await marketplace_service.create_draft(
+        seller_id=auth.user_id,
+        slug=payload.slug,
+        name=payload.name,
+        description_md=payload.description_md,
+        format=payload.format,
+        price_cents=payload.price_cents,
+        tags=payload.tags,
+        category=payload.category,
+        artifact_bytes=b"",  # uploaded separately; this is the metadata create
+        manifest={"name": payload.name, "description": payload.description_md},
+    )
     await seller_display.attach_seller_name(listing)
     return listing
 

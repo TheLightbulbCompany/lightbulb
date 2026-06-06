@@ -22,7 +22,7 @@ from tests.unit.services.conftest import _create_and_publish, _upload_dummy_arti
     new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
 )
 async def test_create_draft_listing(mock_client):
-    mock_client.return_value.transact_write_items = MagicMock(return_value={})
+    mock_client.return_value.put_item = MagicMock(return_value={})
     listing = await marketplace_service.create_draft(
         seller_id="user_abc",
         slug="my-agent",
@@ -38,46 +38,41 @@ async def test_create_draft_listing(mock_client):
     assert listing["seller_id"] == "user_abc"
     assert listing["slug"] == "my-agent"
     assert listing["version"] == 1
-    # Slug-reservation row is in the same TransactWrite as the listing.
-    transact_items = mock_client.return_value.transact_write_items.call_args.kwargs["TransactItems"]
-    assert len(transact_items) == 2
-    reservation = transact_items[0]["Put"]
-    assert reservation["Item"]["listing_id"]["S"] == "slug:my-agent"
-    assert reservation["Item"]["version"]["N"] == "0"
-    assert reservation["ConditionExpression"] == "attribute_not_exists(listing_id)"
+    # The listing row is written as a single put_item keyed on the UUID
+    # listing_id — no sentinel row, no transaction.
+    item = mock_client.return_value.put_item.call_args.kwargs["Item"]
+    assert item["listing_id"]["S"] == listing["listing_id"]
+    assert item["version"]["N"] == "1"
+    assert item["slug"]["S"] == "my-agent"
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._dynamodb_client")
-@patch(
-    "core.services.marketplace_service._upload_artifact_to_s3",
-    new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
-)
-async def test_create_draft_rejects_duplicate_slug(mock_client):
-    """Regression: slug uniqueness must be atomic via TransactWriteItems +
-    a slug-reservation row, not a read-then-put. Two concurrent create_draft
-    calls for the same slug both pass the read but TransactWrite fails for
-    the loser."""
-    from botocore.exceptions import ClientError
+async def test_create_draft_allows_duplicate_slug(mock_listings, monkeypatch):
+    """Names repeat: two drafts may share a slug, and no sentinel row exists."""
 
-    mock_client.return_value.transact_write_items = MagicMock(
-        side_effect=ClientError(
-            {"Error": {"Code": "TransactionCanceledException", "Message": "x"}},
-            "TransactWriteItems",
-        )
+    async def _fake_upload(**_kwargs):
+        return ("listings/x/v1/", "deadbeef")
+
+    monkeypatch.setattr(marketplace_service, "_upload_artifact_to_s3", _fake_upload)
+
+    common = dict(
+        seller_id="user_1",
+        slug="dup",
+        name="Dup",
+        description_md="d",
+        format="openclaw",
+        price_cents=0,
+        tags=[],
+        artifact_bytes=b"",
+        manifest={"name": "Dup"},
     )
-    with pytest.raises(marketplace_service.SlugCollisionError):
-        await marketplace_service.create_draft(
-            seller_id="user_abc",
-            slug="my-agent",
-            name="My Agent",
-            description_md="cool",
-            format="openclaw",
-            price_cents=2000,
-            tags=["sales"],
-            artifact_bytes=b"x",
-            manifest={"name": "x"},
-        )
+    a = await marketplace_service.create_draft(**common)
+    b = await marketplace_service.create_draft(**common)
+
+    assert a["listing_id"] != b["listing_id"]
+    table = marketplace_service._listings_table()
+    sentinel = table.get_item(Key={"listing_id": "slug:dup", "version": 0}).get("Item")
+    assert sentinel is None, "no slug-reservation sentinel should be written"
 
 
 @pytest.mark.asyncio
@@ -666,7 +661,7 @@ class TestDiscardDraft:
 
     @pytest.mark.asyncio
     async def test_cannot_discard_v1(self, dynamodb_table):
-        """v=1 carries the slug reservation; full listing retraction is a
+        """v=1 is the listing's root row; full listing retraction is a
         separate flow not in scope here."""
         result = await marketplace_service.create_draft(
             seller_id="seller_1",

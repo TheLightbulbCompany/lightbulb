@@ -41,7 +41,7 @@ export async function MarketplaceSection() {
               {items.map((listing) => (
                 <Link
                   key={listing.listing_id}
-                  href={`/marketplace/listing/${listing.slug}`}
+                  href={`/marketplace/listing/${listing.listing_id}`}
                   className="listing"
                 >
                   <div className="listing-head">

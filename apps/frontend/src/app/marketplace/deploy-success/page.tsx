@@ -13,8 +13,8 @@ import type { ListingDetailResponse } from "@/lib/marketplace/types";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.isol8.co";
 
-function titleCase(slug: string): string {
-  return slug
+function titleCase(token: string): string {
+  return token
     .split(/[-_]/)
     .filter(Boolean)
     .map((part) => part[0].toUpperCase() + part.slice(1))
@@ -39,7 +39,7 @@ function Loading() {
 
 function DeploySuccessInner() {
   const params = useSearchParams();
-  const listingSlug = params.get("listing_slug") ?? "";
+  const listingId = params.get("listing_id") ?? "";
   const sessionId = params.get("session_id");
   const initialAgentUuid = params.get("agent_uuid");
 
@@ -53,20 +53,20 @@ function DeploySuccessInner() {
   const [detail, setDetail] = useState<ListingDetailResponse | null>(null);
 
   // Editorial identity — uses the fetched listing if available, otherwise
-  // derives a placeholder from the slug so the celebration still has shape
-  // even before the listing fetch completes.
+  // derives a placeholder from the listing_id so the celebration still has
+  // shape even before the listing fetch completes.
   const editorial = useMemo(() => {
     if (detail) {
       const fromList = fromListing(detail.listing);
       const vibe = detail.manifest?.vibe || fromList.vibe;
       return { ...fromList, vibe };
     }
-    const palette = paletteFor(listingSlug || "agent");
+    const palette = paletteFor(listingId || "agent");
     return {
-      slug: listingSlug,
-      name: titleCase(listingSlug) || "Your agent",
+      slug: listingId,
+      name: titleCase(listingId) || "Your agent",
       role: "Agent",
-      monogram: initialsFor(listingSlug.replace(/[-_]/g, " ") || "Agent"),
+      monogram: initialsFor(listingId.replace(/[-_]/g, " ") || "Agent"),
       accent: palette.accent,
       tint: palette.tint,
       vibe: "Settling into your container.",
@@ -75,7 +75,7 @@ function DeploySuccessInner() {
       skills: [] as string[],
       tags: [] as string[],
     };
-  }, [detail, listingSlug]);
+  }, [detail, listingId]);
 
   // Send unauthed users to sign-in.
   useEffect(() => {
@@ -85,30 +85,30 @@ function DeploySuccessInner() {
   }, [isLoaded, isSignedIn]);
 
   // Fetch listing details for the celebration. Best-effort; if it fails, we
-  // fall back to slug-derived identity.
+  // fall back to listing_id-derived identity.
   useEffect(() => {
-    if (!listingSlug) return;
+    if (!listingId) return;
     let cancelled = false;
     (async () => {
       try {
-        const result = await getListing(listingSlug);
+        const result = await getListing(listingId);
         if (cancelled) return;
         setDetail(result);
       } catch {
-        // Fall back to slug-derived identity.
+        // Fall back to listing_id-derived identity.
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [listingSlug]);
+  }, [listingId]);
 
   // Paid-return path: fire deploy on mount once Clerk auth is loaded.
   useEffect(() => {
     if (!isLoaded || !isSignedIn) return;
     if (initialAgentUuid) return;
     if (!sessionId) return;
-    if (!listingSlug) return;
+    if (!listingId) return;
     if (phase !== "idle") return;
 
     let cancelled = false;
@@ -117,7 +117,7 @@ function DeploySuccessInner() {
       try {
         const jwt = await getToken();
         const resp = await fetch(
-          `${API}/marketplace/listings/${encodeURIComponent(listingSlug)}/deploy`,
+          `${API}/marketplace/listings/${encodeURIComponent(listingId)}/deploy`,
           {
             method: "POST",
             headers: {
@@ -147,7 +147,7 @@ function DeploySuccessInner() {
     return () => {
       cancelled = true;
     };
-  }, [isLoaded, isSignedIn, getToken, listingSlug, sessionId, initialAgentUuid, phase]);
+  }, [isLoaded, isSignedIn, getToken, listingId, sessionId, initialAgentUuid, phase]);
 
   if (isLoaded && !isSignedIn) return <Loading />;
 

@@ -13,7 +13,7 @@ import type { Listing } from "@/lib/marketplace/types";
  * Drives the "hire" CTA in the marketplace drawer.
  *
  * Free listings (price_cents === 0):
- *   - POST /marketplace/listings/{slug}/deploy via useCatalog().deploy()
+ *   - POST /marketplace/listings/{listing_id}/deploy via useCatalog().deploy()
  *   - Mark the resulting agent as freshly installed in the drawer state
  *     (so the chat sidebar can highlight it)
  *   - Show the install toast and auto-close the drawer after 700ms
@@ -25,7 +25,7 @@ import type { Listing } from "@/lib/marketplace/types";
  * The `agent_id` field on DeployResult is what drives both the toast and
  * the freshly-installed marker. If a deploy ever returns no agent id (it
  * shouldn't in practice, but the guard is defensive), we fall back to
- * the slug for toast display only — the freshly-installed setter is
+ * the listing_id for toast display only — the freshly-installed setter is
  * skipped because the chat sidebar keys off real agent ids.
  */
 export function useHire() {
@@ -48,7 +48,7 @@ export function useHire() {
         // product.
         const isSeller = !!user?.id && listing.seller_id === user.id;
         if (listing.price_cents === 0 || isSeller) {
-          const result = await deploy(listing.slug);
+          const result = await deploy(listing.listing_id);
           // Refresh the chat sidebar's agents.list cache BEFORE marking
           // freshly-installed, so the slide-in animation has a row to attach to.
           // useCatalog().deploy() only revalidates the marketplace catalog cache;
@@ -59,7 +59,7 @@ export function useHire() {
           }
           showInstallToast({
             agentName: listing.name,
-            agentId: result.agent_id ?? listing.slug,
+            agentId: result.agent_id ?? listing.listing_id,
           });
           // 700ms delay before closing matches the mock spec.
           setTimeout(() => close(), 700);
@@ -67,12 +67,12 @@ export function useHire() {
           const jwt = await getToken();
           if (!jwt) throw new Error("Not authenticated");
           const result = await checkout({
-            listingSlug: listing.slug,
+            listingId: listing.listing_id,
             // {CHECKOUT_SESSION_ID} is a Stripe placeholder — Stripe substitutes
             // the actual session_id into the redirect URL. /deploy-success requires
             // session_id in its query params or its paid-return deploy effect exits
             // and the purchased listing is never installed.
-            successUrl: `${window.location.origin}/marketplace/deploy-success?listing_slug=${encodeURIComponent(listing.slug)}&session_id={CHECKOUT_SESSION_ID}`,
+            successUrl: `${window.location.origin}/marketplace/deploy-success?listing_id=${encodeURIComponent(listing.listing_id)}&session_id={CHECKOUT_SESSION_ID}`,
             cancelUrl: `${window.location.origin}/chat`,
             jwt,
             email: user?.primaryEmailAddress?.emailAddress,

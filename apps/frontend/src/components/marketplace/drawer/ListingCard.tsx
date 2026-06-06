@@ -48,7 +48,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
         </span>
       )}
       <Link
-        href={`/marketplace/listing/${listing.slug}`}
+        href={`/marketplace/listing/${listing.listing_id}`}
         target="_blank"
         rel="noopener noreferrer"
         className="font-editorial-serif text-lg leading-tight text-[#1a1a1a] no-underline hover:underline"

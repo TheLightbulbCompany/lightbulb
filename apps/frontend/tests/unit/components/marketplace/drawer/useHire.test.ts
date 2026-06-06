@@ -61,7 +61,7 @@ describe("useHire", () => {
         price_cents: 0,
       } as unknown as Parameters<typeof result.current.hire>[0]);
     });
-    expect(deployFn).toHaveBeenCalledWith("atlas");
+    expect(deployFn).toHaveBeenCalledWith("l1");
     expect(refreshAgents).toHaveBeenCalled();
     expect(setFreshlyInstalled).toHaveBeenCalledWith("ag_42");
     expect(showInstallToast).toHaveBeenCalledWith({ agentName: "Atlas", agentId: "ag_42" });
@@ -84,7 +84,7 @@ describe("useHire", () => {
     });
     expect(checkoutFn).toHaveBeenCalledWith(
       expect.objectContaining({
-        listingSlug: "pulse",
+        listingId: "l2",
         jwt: "tok_abc",
         email: "buyer@example.com",
       }),

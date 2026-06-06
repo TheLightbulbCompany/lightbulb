@@ -359,8 +359,8 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
       </div>
 
       {/* Summary Row \u2014 clickable cards deep-link to the relevant panel.
-          Cron deep-links to CronPanel; Skills + MCP both go to SkillsPanel
-          (MCP lives behind its "MCP Servers" tab there, not its own panel). */}
+          Cron -> CronPanel; Skills -> CapabilitiesPanel; MCP -> IntegrationsPanel
+          (the raw MCP-servers escape hatch now lives under Integrations > Advanced). */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <SummaryCard
           icon={Users}
@@ -404,7 +404,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
           icon={Server}
           label="MCP"
           value={mcpCount !== undefined ? String(mcpCount) : "\u2014"}
-          onClick={onPanelChange ? () => onPanelChange("skills") : undefined}
+          onClick={onPanelChange ? () => onPanelChange("integrations") : undefined}
         />
       </div>
 

@@ -1,0 +1,196 @@
+"use client";
+
+import { useState } from "react";
+import { useOrganization } from "@clerk/nextjs";
+import { Loader2, RefreshCw, Package } from "lucide-react";
+import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { capture } from "@/lib/analytics";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import type { ConfigSnapshot, ToolsCatalogResponse } from "./agents-types";
+
+// Plugins Isol8 manages itself — provider plumbing + bundled workflow
+// extensions. Disabling them can break inference or the agent runtime, so
+// they're shown read-only (mirrors how the Skills tab locks `always` skills).
+const LOCKED_PLUGIN_IDS = new Set(["amazon-bedrock", "lobster", "llm-task"]);
+
+interface PluginEntryConfig {
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
+type PluginKind = "provider" | "workflow" | "plugin";
+
+interface PluginRow {
+  id: string;
+  enabled: boolean;
+  locked: boolean;
+  kind: PluginKind;
+  toolCount: number;
+}
+
+function inferKind(id: string): PluginKind {
+  if (id === "lobster" || id === "llm-task") return "workflow";
+  if (id.includes("bedrock") || id.includes("openai") || id.includes("anthropic")) return "provider";
+  return "plugin";
+}
+
+export function PluginsTab() {
+  const { membership } = useOrganization();
+  const canManage = !membership || membership.role === "org:admin";
+
+  const { data: snapshot, error, isLoading, mutate } = useGatewayRpc<ConfigSnapshot>("config.get");
+  const callRpc = useGatewayRpcMutation();
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const config = snapshot?.config;
+  const entries =
+    (config?.plugins as { entries?: Record<string, PluginEntryConfig> } | undefined)?.entries ?? {};
+
+  // tools.catalog needs an agentId; reuse the first configured agent. Skip the
+  // fetch (method=null) until an agent exists — tool counts are pure enrichment,
+  // not load-bearing, so it's fine for them to populate a beat later.
+  const defaultAgentId = config?.agents?.list?.[0]?.id;
+  const { data: catalog } = useGatewayRpc<ToolsCatalogResponse>(
+    defaultAgentId ? "tools.catalog" : null,
+    { agentId: defaultAgentId, includePlugins: true },
+  );
+
+  const pluginTools = (catalog?.groups ?? [])
+    .flatMap((g) => g.tools ?? [])
+    .concat(catalog?.tools ?? []);
+  const toolCounts: Record<string, number> = {};
+  for (const t of pluginTools) {
+    if (t.source === "plugin" && t.pluginId) {
+      toolCounts[t.pluginId] = (toolCounts[t.pluginId] ?? 0) + 1;
+    }
+  }
+
+  const ids = Array.from(new Set([...Object.keys(entries), ...Object.keys(toolCounts)])).sort();
+  const rows: PluginRow[] = ids.map((id) => ({
+    id,
+    // Enabled unless the entry explicitly sets enabled:false.
+    enabled: entries[id]?.enabled !== false,
+    locked: LOCKED_PLUGIN_IDS.has(id),
+    kind: inferKind(id),
+    toolCount: toolCounts[id] ?? 0,
+  }));
+
+  const handleToggle = async (row: PluginRow) => {
+    setBusyId(row.id);
+    try {
+      await callRpc("config.patch", {
+        raw: JSON.stringify({ plugins: { entries: { [row.id]: { enabled: !row.enabled } } } }),
+      });
+      capture("plugin_toggled", { plugin: row.id, enabled: !row.enabled });
+      await mutate();
+    } catch (err) {
+      console.error("Failed to toggle plugin:", err);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center py-20">
+        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6 space-y-3">
+        <p className="text-sm text-destructive">{error.message}</p>
+        <Button variant="outline" size="sm" onClick={() => mutate()}>
+          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-[#faf7f2] min-h-full">
+      <div className="p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
+              Plugins
+            </h2>
+            <p className="text-sm text-[#8a8578] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+              OpenClaw plugins loaded in your container. A plugin bundles tools, skills,
+              providers and channels. Isol8-managed plugins are locked.
+            </p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[#8a8578] hover:text-[#1a1a1a]">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
+        {rows.length === 0 && (
+          <p className="text-sm text-[#8a8578] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            No plugins configured.
+          </p>
+        )}
+
+        <div className="grid gap-3" data-testid="plugins-list">
+          {rows.map((row) => (
+            <div key={row.id} className="rounded-xl border border-[#e0dbd0] bg-white p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0 flex-1">
+                  <Package className="h-5 w-5 text-[#8a8578] flex-shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3
+                        className="text-sm font-semibold text-[#1a1a1a] truncate"
+                        style={{ fontFamily: "'DM Sans', sans-serif" }}
+                      >
+                        {row.id}
+                      </h3>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#8a8578] flex-shrink-0">
+                        {row.kind}
+                      </span>
+                      {row.locked && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#b5ae9e] flex-shrink-0">
+                          Managed
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-[#8a8578] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+                      {row.toolCount > 0
+                        ? `Provides ${row.toolCount} tool${row.toolCount === 1 ? "" : "s"}`
+                        : "No tools contributed"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className={cn("text-xs font-medium", row.enabled ? "text-[#2d8a4e]" : "text-[#b5ae9e]")}>
+                    {row.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                  {!row.locked && canManage && (
+                    <button
+                      onClick={() => handleToggle(row)}
+                      disabled={busyId !== null}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[#e0dbd0] text-[#8a8578] hover:text-[#1a1a1a] hover:border-[#c5c0b6] transition-colors disabled:opacity-50"
+                      style={{ fontFamily: "'DM Sans', sans-serif" }}
+                    >
+                      {busyId === row.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : row.enabled ? (
+                        "Disable"
+                      ) : (
+                        "Enable"
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

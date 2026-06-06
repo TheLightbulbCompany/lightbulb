@@ -182,6 +182,26 @@ async def test_get_by_slug_returns_highest_when_no_published(mock_listings):
 
 
 @pytest.mark.asyncio
+async def test_get_published_by_id_prefers_published(mock_listings):
+    table = marketplace_service._listings_table()
+    lid = "11111111-1111-1111-1111-111111111111"
+    table.put_item(Item={"listing_id": lid, "version": 1, "slug": "demo", "status": "published"})
+    table.put_item(Item={"listing_id": lid, "version": 2, "slug": "demo", "status": "review"})
+    result = await marketplace_service.get_published_by_id(listing_id=lid)
+    assert result["version"] == 1 and result["status"] == "published"
+
+
+@pytest.mark.asyncio
+async def test_get_published_by_id_falls_back_to_highest(mock_listings):
+    table = marketplace_service._listings_table()
+    lid = "22222222-2222-2222-2222-222222222222"
+    table.put_item(Item={"listing_id": lid, "version": 1, "slug": "demo", "status": "taken_down"})
+    table.put_item(Item={"listing_id": lid, "version": 2, "slug": "demo", "status": "draft"})
+    result = await marketplace_service.get_published_by_id(listing_id=lid)
+    assert result["version"] == 2
+
+
+@pytest.mark.asyncio
 @patch("core.services.marketplace_service._dynamodb_client")
 async def test_publish_new_version_translates_transaction_cancel_to_invalid_state(mock_client):
     """Regression: publish_new_version raises ClientError(TransactionCanceledException)

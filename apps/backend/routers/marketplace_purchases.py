@@ -41,7 +41,7 @@ async def checkout(
     require_org_admin(auth)
     from core.services import marketplace_service
 
-    listing = await marketplace_service.get_by_slug(slug=payload.listing_slug)
+    listing = await marketplace_service.get_published_by_id(listing_id=payload.listing_id)
     if not listing or listing["status"] != "published":
         raise HTTPException(status_code=404, detail="listing not available")
     if listing["price_cents"] == 0:

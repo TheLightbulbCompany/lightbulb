@@ -800,6 +800,29 @@ async def get_by_slug(*, slug: str) -> dict | None:
     return items[0]
 
 
+async def get_published_by_id(*, listing_id: str) -> dict | None:
+    """Resolve the buyer-facing row for a listing_id.
+
+    Returns the currently-published version, falling back to the highest
+    version of any status (so seller/admin paths still see drafts). Mirrors
+    get_by_slug's two-tier logic but keyed on the UUID — the canonical
+    identity now that slugs are non-unique.
+    """
+    table = _listings_table()
+    resp = table.query(
+        KeyConditionExpression="listing_id = :l",
+        ExpressionAttributeValues={":l": listing_id},
+        ScanIndexForward=False,  # newest version first
+    )
+    items = resp.get("Items", [])
+    if not items:
+        return None
+    for item in items:
+        if item.get("status") == "published":
+            return item
+    return items[0]
+
+
 async def get_by_id(*, listing_id: str, version: int) -> dict | None:
     """Look up listing by id + version."""
     table = _listings_table()

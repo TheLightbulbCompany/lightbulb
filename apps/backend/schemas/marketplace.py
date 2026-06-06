@@ -115,7 +115,7 @@ class Requires(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
-    listing_slug: str
+    listing_id: str
     success_url: str
     cancel_url: str
     email: str | None = None  # required for anonymous (guest) checkout

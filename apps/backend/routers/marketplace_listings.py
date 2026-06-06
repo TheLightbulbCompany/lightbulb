@@ -241,8 +241,8 @@ async def my_agents_summary(auth: Annotated[AuthContext, Depends(get_current_use
     }
 
 
-@router.get("/listings/{slug}")
-async def get_listing(slug: str, response: Response):
+@router.get("/listings/{listing_id}")
+async def get_listing(listing_id: str, response: Response):
     """Public listing detail.
 
     Returns ``{listing, manifest}``. The manifest is fetched from
@@ -253,7 +253,7 @@ async def get_listing(slug: str, response: Response):
     the listing row alone.
     """
     response.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
-    listing = await marketplace_service.get_by_slug(slug=slug)
+    listing = await marketplace_service.get_published_by_id(listing_id=listing_id)
     # Only published listings are publicly visible. The previous version
     # blacklisted retired/taken_down but allowed draft + review through,
     # leaking unmoderated content if someone guessed a slug. Whitelist
@@ -283,8 +283,8 @@ async def get_listing(slug: str, response: Response):
             # AttributeError, …) propagate so programming errors surface as
             # 500 rather than getting silently swallowed.
             logger.exception(
-                "get_listing: failed to fetch manifest for slug=%s prefix=%s",
-                slug,
+                "get_listing: failed to fetch manifest for listing_id=%s prefix=%s",
+                listing_id,
                 s3_prefix,
             )
             manifest = None
@@ -292,18 +292,18 @@ async def get_listing(slug: str, response: Response):
     return {"listing": listing, "manifest": manifest}
 
 
-@router.post("/listings/{slug}/deploy")
+@router.post("/listings/{listing_id}/deploy")
 async def deploy_listing(
-    slug: str,
+    listing_id: str,
     auth: Annotated[AuthContext, Depends(get_current_user)],
 ):
     """One-click deploy: land a published listing into the buyer's container.
 
-    Resolves the listing by slug, verifies entitlement (free → anyone signed
-    in, paid → caller must hold a non-revoked marketplace-purchases row),
-    fetches the artifact tarball + openclaw-slice from S3, and hands them to
-    ``catalog_service.deploy_from_artifact`` which extracts files into the
-    buyer's EFS at ``workspaces/{agent_uuid}/`` and deep-merges the slice
+    Resolves the listing by listing_id, verifies entitlement (free → anyone
+    signed in, paid → caller must hold a non-revoked marketplace-purchases
+    row), fetches the artifact tarball + openclaw-slice from S3, and hands
+    them to ``catalog_service.deploy_from_artifact`` which extracts files into
+    the buyer's EFS at ``workspaces/{agent_uuid}/`` and deep-merges the slice
     into their ``openclaw.json`` so the new agent auto-registers.
 
     Listings published before slice-synthesis shipped have an empty
@@ -311,7 +311,7 @@ async def deploy_listing(
     response's ``config_registered`` flag tells the caller which path ran.
     """
     require_org_admin(auth)
-    listing = await marketplace_service.get_by_slug(slug=slug)
+    listing = await marketplace_service.get_published_by_id(listing_id=listing_id)
     if not listing or listing.get("status") != "published":
         raise HTTPException(status_code=404, detail="listing not found")
 
@@ -407,7 +407,7 @@ async def deploy_listing(
     manifest = listing.get("manifest_json") or {}
     manifest = dict(manifest)
     manifest.setdefault("version", listing.get("version", 1))
-    manifest.setdefault("name", listing.get("name", slug))
+    manifest.setdefault("name", listing.get("name", listing.get("slug")))
 
     catalog = get_catalog_service()
     owner_id = resolve_owner_id(auth)
@@ -436,7 +436,7 @@ async def deploy_listing(
             description_md=listing.get("description_md"),
         )
 
-    agent_name = slice_agent.get("name") or listing.get("name") or slug
+    agent_name = slice_agent.get("name") or listing.get("name") or listing.get("slug")
     try:
         paperclip_agent = await create_paperclip_for_marketplace(
             buyer_user_id=auth.user_id,
@@ -479,7 +479,7 @@ async def deploy_listing(
 
         result = await catalog.deploy_from_artifact(
             owner_id=owner_id,
-            slug=slug,
+            slug=listing.get("slug"),
             manifest=manifest,
             slice_=slice_,
             tar_bytes=tar_bytes,
@@ -507,9 +507,9 @@ async def deploy_listing(
         # + 404-tolerant on the Paperclip side, so a retry doesn't
         # accumulate phantom records.
         logger.exception(
-            "Marketplace deploy: post-Paperclip step failed for owner=%s slug=%s — rolling back paperclip agent %s",
+            "Marketplace deploy: post-Paperclip step failed for owner=%s listing=%s — rolling back paperclip agent %s",
             owner_id,
-            slug,
+            listing.get("listing_id"),
             new_agent_id,
         )
         try:

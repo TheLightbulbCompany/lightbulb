@@ -45,22 +45,6 @@ def test_mcp_block_emitted_when_all_inputs_present():
     assert env["PAPERCLIP_AGENT_ID"] == "friday-uuid"
 
 
-def test_mcp_block_pins_runtime_scope_shared():
-    """The bundled MCP runtime is pinned to "shared" scope so connected servers
-    are reused across sessions instead of re-spawned per session. Safe because
-    each container serves a single owner."""
-    cfg = build_openclaw_config_dict(
-        user_id="user_x",
-        gateway_token="t" * 32,
-        provider_choice="bedrock_claude",
-        paperclip_agents=[_ceo_agent("friday-uuid")],
-        paperclip_api_key="pcli_live_abc",
-        paperclip_company_id="comp-1",
-        paperclip_api_url="http://paperclip.internal:3100",
-    )
-    assert cfg["mcp"]["runtimeScope"] == "shared"
-
-
 def test_mcp_block_omitted_when_api_key_missing():
     """Most common failure mode: Paperclip outage during provision means
     ensure_paperclip_api_key returns None. The openclaw config should

@@ -995,6 +995,17 @@ def build_openclaw_config_dict(
         servers = config.setdefault("mcp", {}).setdefault("servers", {})
         servers.update(integration_mcp_servers)
 
+    # Pin the bundled MCP runtime to "shared" scope: one connected runtime per
+    # (workspace, server-config), reused across every session, instead of one
+    # spawned per session. Each container serves a single owner, so there is no
+    # cross-session credential bleed — and sharing means a new session (a new
+    # Paperclip issue, a chat after the daily session reset) reuses the
+    # already-connected MCP servers instead of paying a fresh serial connect.
+    # Only meaningful when an mcp block exists.
+    mcp_block = config.get("mcp")
+    if isinstance(mcp_block, dict):
+        mcp_block["runtimeScope"] = "shared"
+
     return config
 
 

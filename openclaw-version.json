@@ -1,11 +1,11 @@
 {
   "$schema": "./openclaw-version.schema.json",
-  "upstream": "ghcr.io/openclaw/openclaw:2026.5.28",
-  "image": "ghcr.io/openclaw/openclaw",
-  "tag": "2026.5.28",
-  "full": "ghcr.io/openclaw/openclaw:2026.5.28",
+  "upstream": "ghcr.io/isol8ai/agent:2026.6.1-isol8.1",
+  "image": "ghcr.io/isol8ai/agent",
+  "tag": "2026.6.1-isol8.1",
+  "full": "ghcr.io/isol8ai/agent:2026.6.1-isol8.1",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended",
   "dev":  { "tag": "2026.5.28-9ae309b" },
   "prod": { "tag": "2026.5.28-9ae309b" },
-  "notes": "`upstream`/`image`/`tag`/`full` describe the openclaw base image the extended Dockerfile FROMs (and the bootstrap fallback in container-stack.ts). `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev and prod."
+  "notes": "`upstream`/`image`/`tag`/`full` describe the base image the extended Dockerfile FROMs. It now points at the Isol8 fork (Isol8AI/agent) built from upstream OpenClaw 2026.6.1 plus the bundled-MCP fixes (non-blocking materialization + shared runtime scope); tag scheme is `<upstream-version>-isol8.<n>`. `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev and prod (re-stamped by build-openclaw-image.yml on each base/extended build)."
 }

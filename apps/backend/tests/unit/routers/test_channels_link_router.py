@@ -266,6 +266,10 @@ def test_admin_delete_bot_sweeps_links_and_config(client):
                 AsyncMock(),
             ) as mock_rm_binding,
             patch(
+                "routers.channels.delete_provider_level_channel_secrets",
+                AsyncMock(),
+            ),
+            patch(
                 "routers.channels.channel_link_repo.sweep_by_owner_provider_agent",
                 AsyncMock(return_value=3),
             ) as mock_sweep,
@@ -295,6 +299,10 @@ def test_admin_delete_bot_personal_account_sweeps_links_and_config(client):
                 AsyncMock(),
             ) as mock_rm_binding,
             patch(
+                "routers.channels.delete_provider_level_channel_secrets",
+                AsyncMock(),
+            ),
+            patch(
                 "routers.channels.channel_link_repo.sweep_by_owner_provider_agent",
                 AsyncMock(return_value=2),
             ) as mock_sweep,
@@ -310,5 +318,30 @@ def test_admin_delete_bot_personal_account_sweeps_links_and_config(client):
         assert sweep_call["provider"] == "telegram"
         assert sweep_call["agent_id"] == "sales"
         assert resp.json()["links_swept"] == 2
+    finally:
+        cleanup()
+
+
+def test_admin_delete_bot_strips_orphan_provider_secrets(client):
+    """Deleting a bot also strips any legacy provider-level credential keys
+    (channels.<provider>.botToken/appToken/...) so a revoked orphan "[default]"
+    account can't keep crash-looping after its real accounts are gone."""
+    cleanup = _patch_auth(_personal_auth("user_personal"))
+    try:
+        with (
+            patch("routers.channels.delete_openclaw_config_path", AsyncMock()),
+            patch("routers.channels.remove_from_openclaw_config_list", AsyncMock()),
+            patch(
+                "routers.channels.delete_provider_level_channel_secrets",
+                AsyncMock(),
+            ) as mock_strip,
+            patch(
+                "routers.channels.channel_link_repo.sweep_by_owner_provider_agent",
+                AsyncMock(return_value=0),
+            ),
+        ):
+            resp = client.delete("/api/v1/channels/slack/sales")
+        assert resp.status_code == 200
+        mock_strip.assert_awaited_once_with("user_personal", "slack")
     finally:
         cleanup()

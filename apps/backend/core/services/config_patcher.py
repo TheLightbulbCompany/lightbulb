@@ -566,6 +566,41 @@ async def delete_openclaw_config_path(
     await _locked_rmw(owner_id, _mutate, f"delete path={path}")
 
 
+# Provider-level credential keys OpenClaw reads as a synthetic "[default]"
+# account. The setup wizard only ever writes tokens under accounts.<id>; any of
+# these sitting directly on channels.<provider> is a legacy orphan that auths
+# and crash-loops on revoked creds (auth.test -> invalid_auth, getMe -> 401).
+PROVIDER_LEVEL_CHANNEL_SECRET_KEYS = ("botToken", "appToken", "token", "signingSecret")
+
+
+async def delete_provider_level_channel_secrets(owner_id: str, provider: str) -> None:
+    """Strip legacy provider-level credential keys from ``channels.<provider>``.
+
+    Removes ``botToken`` / ``appToken`` / ``token`` / ``signingSecret`` that sit
+    directly on the channel object (NOT under ``accounts.<id>``). Leaves
+    ``accounts``, ``enabled``, ``dmPolicy``, ``mode`` and everything else intact
+    — an enabled channel with no account and no provider-level secret is silent.
+
+    No-op (no write, no ``.bak``) when none of the keys are present.
+    """
+
+    def _mutate(current: dict) -> bool:
+        channels = current.get("channels")
+        if not isinstance(channels, dict):
+            return False
+        channel = channels.get(provider)
+        if not isinstance(channel, dict):
+            return False
+        changed = False
+        for key in PROVIDER_LEVEL_CHANNEL_SECRET_KEYS:
+            if key in channel:
+                del channel[key]
+                changed = True
+        return changed
+
+    await _locked_rmw(owner_id, _mutate, f"strip provider-level secrets channels.{provider}")
+
+
 async def strip_removed_agent_keys(
     owner_id: str,
     *,

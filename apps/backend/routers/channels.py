@@ -24,6 +24,7 @@ from core.repositories import channel_link_repo
 from core.services import channel_link_service
 from core.services.config_patcher import (
     delete_openclaw_config_path,
+    delete_provider_level_channel_secrets,
     remove_from_openclaw_config_list,
 )
 
@@ -237,12 +238,15 @@ async def admin_delete_bot(
 ):
     """Admin-only: completely remove a bot from an agent and sweep its links.
 
-    Requires org admin (or personal-account caller). Performs three writes:
+    Requires org admin (or personal-account caller). Performs:
 
     1. Deletes `channels.<provider>.accounts.<agent_id>` from `openclaw.json`.
-    2. Removes the routing binding that points `(provider, accountId)` at the
+    2. Strips any legacy provider-level orphan credentials on
+       `channels.<provider>` (botToken/appToken/token/signingSecret) so a
+       revoked "[default]" account can't keep crash-looping.
+    3. Removes the routing binding that points `(provider, accountId)` at the
        agent.
-    3. Sweeps every `channel-links` row for the same `(owner, provider,
+    4. Sweeps every `channel-links` row for the same `(owner, provider,
        agent_id)` so member identities don't dangle on a bot that no longer
        exists.
 
@@ -257,6 +261,11 @@ async def admin_delete_bot(
         owner_id,
         ["channels", provider, "accounts", agent_id],
     )
+    # Strip any legacy provider-level orphan credentials (botToken/appToken/…
+    # written directly on channels.<provider>). OpenClaw reads those as a
+    # synthetic "[default]" account that keeps crash-looping auth on revoked
+    # creds; nothing else ever clears them.
+    await delete_provider_level_channel_secrets(owner_id, provider)
     # Remove the binding that routes this (provider, accountId) to the agent
     await remove_from_openclaw_config_list(
         owner_id,

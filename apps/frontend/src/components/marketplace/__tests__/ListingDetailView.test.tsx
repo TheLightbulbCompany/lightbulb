@@ -47,7 +47,7 @@ const { baseListing } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/marketplace/api", () => ({
-  getListingBySlug: vi.fn().mockResolvedValue(baseListing),
+  getListingById: vi.fn().mockResolvedValue(baseListing),
   // ListingDetailView fetches the seller's full list and filters by listing_id.
   // The detail row(s) must appear in items[] for the component to resolve.
   myListings: vi.fn().mockResolvedValue({ items: [baseListing] }),

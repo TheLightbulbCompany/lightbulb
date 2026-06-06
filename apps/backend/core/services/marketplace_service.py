@@ -36,10 +36,6 @@ class InvalidStateError(Exception):
     """Listing is not in the state required for the operation."""
 
 
-class SlugCollisionError(Exception):
-    """Another listing already owns this slug."""
-
-
 class ArtifactNotUploadedError(Exception):
     """Seller called submit_for_review on a draft whose artifact bytes
     were never replaced. create_draft writes a metadata-only artifact
@@ -114,14 +110,9 @@ async def create_draft(
     openclaw_slice: dict | None = None,
     category: str | None = None,
 ) -> dict:
-    """Create a new listing in draft state. Slug must be unique.
-
-    Uses a TransactWriteItems with a slug-reservation row to enforce
-    uniqueness atomically — a read-then-put has a race window where two
-    concurrent create_draft calls for the same slug both pass the
-    pre-check and both insert. The reservation row uses listing_id=
-    "slug:{slug}" + version=0 (sentinel) so it sits in the same table
-    but doesn't appear in any real-listing query (those filter version >= 1).
+    """Create a new listing in draft state. Slugs are NOT unique —
+    listing_id (a UUID) is the sole identity key; the slug is a cosmetic
+    display token.
 
     ``openclaw_slice`` is optional — metadata-only drafts (created via the
     /listings POST route) pass nothing because the artifact is uploaded in
@@ -137,58 +128,31 @@ async def create_draft(
         openclaw_slice=openclaw_slice,
     )
 
-    listings_tbl = settings.MARKETPLACE_LISTINGS_TABLE
     client = _dynamodb_client()
-    try:
-        client.transact_write_items(
-            TransactItems=[
-                {
-                    "Put": {
-                        "TableName": listings_tbl,
-                        "Item": {
-                            "listing_id": {"S": f"slug:{slug}"},
-                            "version": {"N": "0"},
-                            "slug": {"S": slug},
-                            "owner_listing_id": {"S": listing_id},
-                            "reserved_at": {"S": now_iso},
-                        },
-                        "ConditionExpression": "attribute_not_exists(listing_id)",
-                    },
-                },
-                {
-                    "Put": {
-                        "TableName": listings_tbl,
-                        "Item": {
-                            "listing_id": {"S": listing_id},
-                            "version": {"N": "1"},
-                            "slug": {"S": slug},
-                            "name": {"S": name},
-                            "description_md": {"S": description_md},
-                            "format": {"S": format},
-                            "price_cents": {"N": str(price_cents)},
-                            "tags": {"L": [{"S": t} for t in tags]},
-                            **({"category": {"S": category}} if category else {}),
-                            "seller_id": {"S": seller_id},
-                            "status": {"S": "draft"},
-                            "s3_prefix": {"S": s3_prefix},
-                            "manifest_sha256": {"S": sha},
-                            "manifest_json": {"S": json.dumps(manifest)},
-                            "artifact_format_version": {"S": "v1"},
-                            "entitlement_policy": {"S": "perpetual"},
-                            "artifact_uploaded": {"BOOL": False},
-                            "created_at": {"S": now_iso},
-                            "updated_at": {"S": now_iso},
-                            # published_at is NULL until publish (resp. submit
-                            # populates it for sparse-GSI visibility).
-                        },
-                    },
-                },
-            ]
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "TransactionCanceledException":
-            raise SlugCollisionError(f"slug '{slug}' is taken")
-        raise
+    client.put_item(
+        TableName=settings.MARKETPLACE_LISTINGS_TABLE,
+        Item={
+            "listing_id": {"S": listing_id},
+            "version": {"N": "1"},
+            "slug": {"S": slug},
+            "name": {"S": name},
+            "description_md": {"S": description_md},
+            "format": {"S": format},
+            "price_cents": {"N": str(price_cents)},
+            "tags": {"L": [{"S": t} for t in tags]},
+            **({"category": {"S": category}} if category else {}),
+            "seller_id": {"S": seller_id},
+            "status": {"S": "draft"},
+            "s3_prefix": {"S": s3_prefix},
+            "manifest_sha256": {"S": sha},
+            "manifest_json": {"S": json.dumps(manifest)},
+            "artifact_format_version": {"S": "v1"},
+            "entitlement_policy": {"S": "perpetual"},
+            "artifact_uploaded": {"BOOL": False},
+            "created_at": {"S": now_iso},
+            "updated_at": {"S": now_iso},
+        },
+    )
 
     # Return the listing item shape the caller expects (matching the
     # pre-TransactWrite dict literal — manifest is the original dict, not
@@ -804,28 +768,21 @@ async def publish_new_version(
         raise
 
 
-async def get_by_slug(*, slug: str) -> dict | None:
-    """Look up listing by slug.
+async def get_published_by_id(*, listing_id: str) -> dict | None:
+    """Resolve the buyer-facing row for a listing_id.
 
-    Returns the highest-version row that is currently published, falling back
-    to the highest-version row of any status if nothing is published yet.
-
-    Why two-tier: during the publish_new_version flow, a v_new row exists in
-    'review' state while v_prev is still 'published'. The downstream
-    public/deploy/checkout routes all gate on status=='published', so
-    returning the highest version unconditionally would 404 the still-live
-    v_prev for the duration of moderation. The fallback preserves the
-    original behavior for admin/seller paths that need to see the latest
-    row regardless of state (rendering "draft", "pending review", etc.).
+    Two-tier: prefer the currently-published version, else fall back to the
+    highest version of any status (so seller/admin paths still see drafts).
+    The fallback matters during a republish, when a v_new row sits in 'review'
+    while v_prev is still 'published' — the public/deploy/checkout routes gate
+    on status=='published', so returning the highest version unconditionally
+    would 404 the still-live v_prev for the duration of moderation. Keyed on
+    the UUID, which is the canonical identity now that slugs are non-unique.
     """
     table = _listings_table()
     resp = table.query(
-        IndexName="slug-version-index",
-        # version > 0 excludes the slug-reservation sentinel row written by
-        # create_draft (listing_id="slug:…", version=0). Real listings start
-        # at version=1.
-        KeyConditionExpression="slug = :s AND version > :zero",
-        ExpressionAttributeValues={":s": slug, ":zero": 0},
+        KeyConditionExpression="listing_id = :l",
+        ExpressionAttributeValues={":l": listing_id},
         ScanIndexForward=False,  # newest version first
     )
     items = resp.get("Items", [])

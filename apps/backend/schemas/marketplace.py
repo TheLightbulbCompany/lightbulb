@@ -73,9 +73,8 @@ class ListingUpdate(BaseModel):
     """Seller-facing patch for an existing draft listing.
 
     All fields optional — only provided keys are written. Slug and format
-    are intentionally absent: slug is reserved at create time (a separate
-    sentinel row enforces uniqueness atomically) and format is determined
-    by the artifact, not by metadata.
+    are intentionally absent: slug is set at create time and is immutable
+    thereafter, and format is determined by the artifact, not by metadata.
     """
 
     name: str | None = Field(default=None, min_length=2, max_length=80)
@@ -116,7 +115,7 @@ class Requires(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
-    listing_slug: str
+    listing_id: str
     success_url: str
     cancel_url: str
     email: str | None = None  # required for anonymous (guest) checkout

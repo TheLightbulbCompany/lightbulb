@@ -8,7 +8,7 @@ export function ListingCard({ listing }: { listing: Listing }) {
   const editorial = fromListing(listing);
   return (
     <Link
-      href={`/marketplace/listing/${listing.slug}`}
+      href={`/marketplace/listing/${listing.listing_id}`}
       className="editorial-card editorial-card-hover group block p-5 no-underline"
     >
       <div className="flex items-start gap-4">

@@ -11,7 +11,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
  *
  * Free listings (price_cents === 0) → "Deploy to my Isol8 container":
  *   - Signed-out: clicking redirects to Clerk sign-in then back to this listing.
- *   - Signed-in: POST /listings/{slug}/deploy → /deploy-success?listing_slug=…&agent_uuid=…
+ *   - Signed-in: POST /listings/{listing_id}/deploy → /deploy-success?listing_id=…&agent_uuid=…
  *
  * Paid listings → "Buy for $X.XX":
  *   - Signed-out: redirect to Clerk sign-in.
@@ -28,7 +28,7 @@ export function BuyButton({ listing }: { listing: Listing }) {
   if (listing.price_cents === 0) {
     return (
       <FreeDeployButton
-        slug={listing.slug}
+        listingId={listing.listing_id}
         isSignedIn={!!isSignedIn}
         getToken={getToken}
         loading={loading}
@@ -56,7 +56,7 @@ export function BuyButton({ listing }: { listing: Listing }) {
 type GetToken = () => Promise<string | null>;
 
 interface FreeDeployButtonProps {
-  slug: string;
+  listingId: string;
   isSignedIn: boolean;
   getToken: GetToken;
   loading: boolean;
@@ -66,7 +66,7 @@ interface FreeDeployButtonProps {
 }
 
 function FreeDeployButton({
-  slug,
+  listingId,
   isSignedIn,
   getToken,
   loading,
@@ -84,7 +84,7 @@ function FreeDeployButton({
     try {
       const jwt = await getToken();
       const resp = await fetch(
-        `${API}/marketplace/listings/${encodeURIComponent(slug)}/deploy`,
+        `${API}/marketplace/listings/${encodeURIComponent(listingId)}/deploy`,
         {
           method: "POST",
           headers: {
@@ -98,7 +98,7 @@ function FreeDeployButton({
         throw new Error(body?.detail ?? `deploy failed (${resp.status})`);
       }
       const body = (await resp.json()) as { agent_uuid?: string };
-      const params = new URLSearchParams({ listing_slug: slug });
+      const params = new URLSearchParams({ listing_id: listingId });
       if (body.agent_uuid) params.set("agent_uuid", body.agent_uuid);
       window.location.href = `/deploy-success?${params.toString()}`;
     } catch (e) {
@@ -166,7 +166,7 @@ function PaidBuyButton({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          listing_slug: listing.slug,
+          listing_id: listing.listing_id,
           jwt,
           email,
         }),

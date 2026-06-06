@@ -8,7 +8,7 @@ import { useApi } from "@/lib/api";
  *
  * Reads ``/marketplace/featured-listings`` and
  * ``/marketplace/me/installed-templates``, exposes the difference as
- * ``agents`` plus a ``deploy(slug)`` mutation. Consumed by the drawer's
+ * ``agents`` plus a ``deploy(listingId)`` mutation. Consumed by the drawer's
  * BrowseView and the useHire deploy flow.
  */
 
@@ -100,9 +100,9 @@ export function useCatalog() {
   );
 
   const deploy = useCallback(
-    async (slug: string): Promise<DeployResult> => {
+    async (listingId: string): Promise<DeployResult> => {
       const result = (await api.post(
-        `/marketplace/listings/${encodeURIComponent(slug)}/deploy`,
+        `/marketplace/listings/${encodeURIComponent(listingId)}/deploy`,
         {},
       )) as DeployResult;
       await Promise.all([mutateFeatured(), mutateInstalled()]);

@@ -213,9 +213,9 @@ def _stub_ecs():
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
-@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_deploy_returns_409_and_rolls_back_when_credential_missing(
-    mock_get_by_slug,
+    mock_get_published,
     mock_get_catalog,
     mock_boto,
     mock_create_pc,
@@ -231,7 +231,7 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
     that to 409 AND delete the pre-minted Paperclip agent (the gate runs
     before any EFS/gateway side effect, so the agent is the only orphan).
     """
-    mock_get_by_slug.return_value = _published_listing()
+    mock_get_published.return_value = _published_listing()
     mock_create_pc.return_value = {"id": "agent_orphan_1", "name": "Demo Agent"}
     mock_get_ecs.return_value = _stub_ecs()
     mock_boto.return_value = _stub_s3_with_slice({"agent": {"name": "Demo Agent"}})
@@ -252,7 +252,7 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
     )
     mock_get_catalog.return_value = catalog
 
-    resp = client.post("/api/v1/marketplace/listings/demo-agent/deploy")
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
 
     assert resp.status_code == 409, resp.text
     detail = resp.json()["detail"]

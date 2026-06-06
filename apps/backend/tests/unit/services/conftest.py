@@ -30,7 +30,7 @@ from core.services import marketplace_service  # noqa: E402
 @pytest.fixture
 def dynamodb_table():
     """Moto-backed listings table with the prod schema (HASH listing_id +
-    RANGE version) and the slug-version GSI that get_by_slug needs.
+    RANGE version) plus the slug-version GSI, mirroring the prod table.
 
     Also stubs out the S3 artifact upload so create_draft can run without
     a real bucket — the actual S3 path is exercised by the catalog tests.
@@ -147,6 +147,19 @@ def dynamodb_table():
             ),
         ):
             yield listings
+
+
+@pytest.fixture
+def mock_listings(dynamodb_table):
+    """Alias for the moto-backed listings table.
+
+    Tests that exercise create_draft / get_published_by_id against real
+    DynamoDB semantics (conditional puts, query ordering, no sentinel row)
+    want the table wired into _listings_table(); they don't care about the
+    purchases/takedowns tables the dynamodb_table fixture also builds. This
+    alias yields the listings table under the name those tests read.
+    """
+    yield dynamodb_table
 
 
 async def _create_and_publish(

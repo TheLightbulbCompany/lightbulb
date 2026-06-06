@@ -700,11 +700,11 @@ def test_checkout_non_admin_org_member_403(mock_stripe_create, org_member_client
     """Non-admin org members can't create a Stripe Checkout session against
     the shared org account. Gate fires before any Stripe call.
     """
-    with patch("core.services.marketplace_service.get_by_slug", new_callable=AsyncMock) as mock_get:
+    with patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock) as mock_get:
         resp = org_member_client.post(
             "/api/v1/marketplace/checkout",
             json={
-                "listing_slug": "demo-agent",
+                "listing_id": "lst_1",
                 "success_url": "https://example.com/ok",
                 "cancel_url": "https://example.com/no",
             },

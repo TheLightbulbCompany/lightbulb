@@ -128,7 +128,7 @@ describe("useCatalog", () => {
     expect(deployResult).toMatchObject({ agent_id: "agent_new" });
   });
 
-  it("URL-encodes the slug on deploy", async () => {
+  it("URL-encodes the listing_id on deploy", async () => {
     mockGet.mockImplementation((path: string) => {
       if (path === FEATURED) return Promise.resolve({ items: [] });
       if (path === INSTALLED) return Promise.resolve({ installed: [] });

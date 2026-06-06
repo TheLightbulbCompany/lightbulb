@@ -301,7 +301,7 @@ function Header({
           </button>
         )}
         <a
-          href={`/marketplace/listing/${live.slug}`}
+          href={`/marketplace/listing/${live.listing_id}`}
           className="text-[12.5px] font-semibold text-[#06402b] hover:underline"
         >
           View on marketplace →

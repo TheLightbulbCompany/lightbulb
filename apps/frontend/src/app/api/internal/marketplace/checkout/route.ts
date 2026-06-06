@@ -10,12 +10,12 @@ export async function POST(req: NextRequest) {
     // /deploy-success page uses session_id presence to differentiate paid
     // returns from free deploys, and fires the deploy on mount.
     const successUrl =
-      `${origin}/deploy-success?listing_slug=${encodeURIComponent(body.listing_slug)}` +
+      `${origin}/deploy-success?listing_id=${encodeURIComponent(body.listing_id)}` +
       `&session_id={CHECKOUT_SESSION_ID}`;
     const result = await checkout({
-      listingSlug: body.listing_slug,
+      listingId: body.listing_id,
       successUrl,
-      cancelUrl: `${origin}/listing/${body.listing_slug}`,
+      cancelUrl: `${origin}/listing/${body.listing_id}`,
       jwt: body.jwt,
       email: body.email,
     });

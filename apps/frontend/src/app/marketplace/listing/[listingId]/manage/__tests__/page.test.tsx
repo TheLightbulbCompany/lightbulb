@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 
 import ManagePage from "../page";
-import { getListingBySlug, myListings } from "@/lib/marketplace/api";
+import { getListingById, myListings } from "@/lib/marketplace/api";
 
 // Stable auth object — ManagePage's useEffect lists getToken as a dep, and a
 // fresh function per render would refetch indefinitely (same trap that bit
@@ -20,7 +20,7 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 
 vi.mock("@/lib/marketplace/api", () => ({
-  getListingBySlug: vi.fn(),
+  getListingById: vi.fn(),
   // ListingDetailView calls myListings under the hood; the page test stubs it
   // so the inner component can resolve without hitting the network.
   myListings: vi.fn().mockResolvedValue({ items: [] }),
@@ -76,10 +76,10 @@ const baseListing = {
 // in tests, we hand it a "thenable" with the React internal status fields
 // pre-set, which React.use() reads synchronously and returns immediately.
 // See React's `trackUsedThenable` for the contract.
-function resolvedParams(slug: string) {
+function resolvedParams(listingId: string) {
   return {
     status: "fulfilled" as const,
-    value: { slug },
+    value: { listingId },
     then() {},
   };
 }
@@ -91,26 +91,28 @@ async function renderManagePage() {
   const result = render(
     <Suspense fallback={<div data-testid="suspense-fallback" />}>
       <ManagePage
-        params={resolvedParams("x") as unknown as Promise<{ slug: string }>}
+        params={
+          resolvedParams("lst_x") as unknown as Promise<{ listingId: string }>
+        }
       />
     </Suspense>,
   );
-  // Flush ManagePage's useEffect microtask chain — getListingBySlug resolves,
+  // Flush ManagePage's useEffect microtask chain — getListingById resolves,
   // then setListing/setForbidden + setListing's render.
   await act(async () => {});
   return result;
 }
 
 beforeEach(() => {
-  vi.mocked(getListingBySlug).mockReset();
+  vi.mocked(getListingById).mockReset();
   vi.mocked(myListings).mockReset();
   vi.mocked(myListings).mockResolvedValue({ items: [baseListing] });
   startEditListingSpy.mockReset();
 });
 
-describe("/marketplace/listing/[slug]/manage", () => {
+describe("/marketplace/listing/[listingId]/manage", () => {
   it("renders ListingDetailView for the owner", async () => {
-    vi.mocked(getListingBySlug).mockResolvedValueOnce(baseListing);
+    vi.mocked(getListingById).mockResolvedValueOnce(baseListing);
     await renderManagePage();
     // ListingDetailView re-fetches via myListings → live row → name visible.
     await waitFor(() =>
@@ -123,7 +125,7 @@ describe("/marketplace/listing/[slug]/manage", () => {
 
   it("redirects non-owner to public listing page", async () => {
     const otherListing = { ...baseListing, seller_id: "someone_else" };
-    vi.mocked(getListingBySlug).mockResolvedValueOnce(otherListing);
+    vi.mocked(getListingById).mockResolvedValueOnce(otherListing);
 
     // jsdom's window.location.replace is read-only by default — stub the
     // whole location object so the redirect is observable.
@@ -137,7 +139,7 @@ describe("/marketplace/listing/[slug]/manage", () => {
 
     await renderManagePage();
     await waitFor(() =>
-      expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/x"),
+      expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/lst_x"),
     );
 
     Object.defineProperty(window, "location", {
@@ -147,11 +149,11 @@ describe("/marketplace/listing/[slug]/manage", () => {
     });
   });
 
-  it("soft-redirects when getListingBySlug rejects (404/401/network)", async () => {
+  it("soft-redirects when getListingById rejects (404/401/network)", async () => {
     // Backend 404 / token-expiry / transient failure must terminate the
     // gate flow — otherwise the page sits on indefinite Loading… and the
     // owner-gate effect never completes.
-    vi.mocked(getListingBySlug).mockRejectedValueOnce(
+    vi.mocked(getListingById).mockRejectedValueOnce(
       Object.assign(new Error("not found"), { status: 404 }),
     );
 
@@ -165,7 +167,7 @@ describe("/marketplace/listing/[slug]/manage", () => {
 
     await renderManagePage();
     await waitFor(() =>
-      expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/x"),
+      expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/lst_x"),
     );
 
     Object.defineProperty(window, "location", {
@@ -191,11 +193,11 @@ describe("/marketplace/listing/[slug]/manage", () => {
 
     await renderManagePage();
     await waitFor(() =>
-      expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/x"),
+      expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/lst_x"),
     );
-    // getListingBySlug should never have been called — we shortcut before
+    // getListingById should never have been called — we shortcut before
     // any authed fetch.
-    expect(getListingBySlug).not.toHaveBeenCalled();
+    expect(getListingById).not.toHaveBeenCalled();
 
     Object.defineProperty(window, "location", {
       configurable: true,

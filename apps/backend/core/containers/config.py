@@ -718,6 +718,17 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
+                # Global default provider params applied to all models before
+                # per-model/per-agent overrides (openclaw
+                # zod-schema.agent-defaults.ts is a free-form record). The
+                # Bedrock runtime reads `cacheRetention` from here; its default
+                # is "short" (5m TTL), but this agent's runs are spaced further
+                # apart than that, so cached prefixes expire before reuse and
+                # get re-written (write-heavy cache). "long" = 1h TTL widens the
+                # window so re-reads land within it, cutting input-token cost.
+                # openai/openai-codex ignore the key, so it's a global no-op
+                # there — set unconditionally rather than per-provider.
+                "params": {"cacheRetention": "long"},
                 # contextLimits is a no-op stub (its schema doesn't change
                 # behavior when empty); kept as an explicit default.
                 "contextLimits": {},

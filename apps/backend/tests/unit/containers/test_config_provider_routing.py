@@ -251,6 +251,39 @@ async def test_memory_search_pinned_to_bedrock_across_auth_paths(tmp_path, provi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider",
+    [
+        ("bedrock_claude", None),
+        ("byo_key", "anthropic"),
+        ("byo_key", "openai"),
+        ("chatgpt_oauth", None),
+    ],
+)
+async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_choice, byo_provider):
+    """agents.defaults.params.cacheRetention is pinned to "long" (1h TTL).
+
+    The Bedrock runtime defaults cacheRetention to "short" (5m TTL); the
+    agent's runs are spaced further apart than that, so cached prefixes
+    expire before reuse and get re-written (live metrics showed a
+    write-heavy read:write ratio). "long" widens the window so re-reads
+    land within it. The openai/openai-codex providers ignore the param,
+    so it's a harmless global no-op there — set unconditionally.
+    """
+    kwargs = {
+        "config_path": tmp_path / "openclaw.json",
+        "gateway_token": "test-token",
+        "provider_choice": provider_choice,
+        "user_id": "u_1",
+    }
+    if byo_provider is not None:
+        kwargs["byo_provider"] = byo_provider
+    await write_openclaw_config(**kwargs)
+    cfg = json.loads((tmp_path / "openclaw.json").read_text())
+    assert cfg["agents"]["defaults"]["params"]["cacheRetention"] == "long"
+
+
+@pytest.mark.asyncio
 async def test_byo_key_requires_byo_provider(tmp_path):
     """byo_key without byo_provider raises ValueError."""
     out = tmp_path / "openclaw.json"

@@ -16,6 +16,18 @@ import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import { Construct } from "constructs";
 
 // ---------------------------------------------------------------------------
+// Tunable thresholds
+// ---------------------------------------------------------------------------
+
+// Daily Bedrock cache-write token ceiling before we page. A runaway agent loop
+// once drove a single container to ~17-21M cache-write tokens/day (~$130+/day)
+// and went unnoticed for weeks. Legitimate single-tenant usage sits well below
+// 10M/day, so 10M catches the runaway with margin while staying quiet for normal
+// traffic. Bump this as the fleet grows (it's a fleet-wide Sum across all
+// containers, not per-tenant).
+const BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD = 10_000_000;
+
+// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
@@ -1567,6 +1579,32 @@ def handler(event, context):
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w51.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W52: Bedrock cache-write token volume — runaway-inference guard
+    // Sums AWS/Bedrock CacheWriteInputTokenCount across the whole account over a
+    // 1-day window. This is the metric a runaway agent loop blows through (the
+    // 2026 incident hit ~17-21M cache-write tokens/day, ~$130+/day, silent for
+    // weeks). Pages so it can't go unnoticed again. Threshold lives in
+    // BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD — tune as the fleet grows.
+    const w52 = new cloudwatch.Alarm(this, "W52", {
+      alarmName: `isol8-${this.envName}-W52-bedrock-cache-write-token-volume`,
+      alarmDescription:
+        "Bedrock cache-write input tokens exceeded the daily ceiling — " +
+        "possible runaway inference loop driving cost",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/Bedrock",
+        metricName: "CacheWriteInputTokenCount",
+        statistic: "Sum",
+        period: cdk.Duration.days(1),
+      }),
+      threshold: BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w52.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+    w52.addOkAction(new cloudwatch_actions.SnsAction(this.pageTopic));
   }
 
   // =========================================================================

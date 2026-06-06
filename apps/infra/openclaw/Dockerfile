@@ -150,7 +150,7 @@ RUN curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install
 # files), which doesn't open a sqlite connection on EFS at all.
 ENV NPM_CONFIG_PREFIX=/usr/local
 RUN npm i -g --ignore-scripts \
-      mcporter clawhub openai \
+      clawhub openai \
       @steipete/oracle @steipete/summarize \
       @anthropic-ai/claude-code @google/gemini-cli \
       @xdevplatform/xurl

@@ -3,7 +3,7 @@
 import { use, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 
-import { getListingBySlug } from "@/lib/marketplace/api";
+import { getListingById } from "@/lib/marketplace/api";
 import { ListingDetailView } from "@/components/marketplace/ListingDetailView";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -23,11 +23,11 @@ import type { Listing } from "@/lib/marketplace/types";
 export default function ManagePage({
   params,
 }: {
-  params: Promise<{ slug: string }>;
+  params: Promise<{ listingId: string }>;
 }) {
   // Next.js 16 makes route params async; unwrap with React.use() in client
   // components — `await params` would force the file into a server component.
-  const { slug } = use(params);
+  const { listingId } = use(params);
   const { isLoaded, userId, getToken } = useAuth();
   const [listing, setListing] = useState<Listing | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -41,7 +41,7 @@ export default function ManagePage({
       // external-system→React sync the rule allows.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setForbidden(true);
-      window.location.replace(`/marketplace/listing/${slug}`);
+      window.location.replace(`/marketplace/listing/${listingId}`);
       return;
     }
     let alive = true;
@@ -50,15 +50,15 @@ export default function ManagePage({
       if (!alive || !jwt) return;
       let row: Listing;
       try {
-        row = await getListingBySlug({ slug, jwt });
+        row = await getListingById({ listingId, jwt });
       } catch {
-        // 404 (bad slug), 401 (token expired), 5xx, network. All map to the
-        // same UX: send them to the public listing page rather than
+        // 404 (bad listing_id), 401 (token expired), 5xx, network. All map to
+        // the same UX: send them to the public listing page rather than
         // stranding on indefinite Loading…. The public page handles 404
         // with its own NotFound state.
         if (!alive) return;
         setForbidden(true);
-        window.location.replace(`/marketplace/listing/${slug}`);
+        window.location.replace(`/marketplace/listing/${listingId}`);
         return;
       }
       if (!alive) return;
@@ -67,7 +67,7 @@ export default function ManagePage({
         // session or admins poking the URL should land on the public page,
         // not a hard error.
         setForbidden(true);
-        window.location.replace(`/marketplace/listing/${slug}`);
+        window.location.replace(`/marketplace/listing/${listingId}`);
         return;
       }
       setListing(row);
@@ -75,7 +75,7 @@ export default function ManagePage({
     return () => {
       alive = false;
     };
-  }, [slug, isLoaded, userId, getToken]);
+  }, [listingId, isLoaded, userId, getToken]);
 
   if (forbidden) return null;
   if (!listing) return <p className="p-8">Loading…</p>;

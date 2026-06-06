@@ -11,12 +11,12 @@ import type { ListingManifest } from "@/lib/marketplace/types";
 export default async function ListingDetail({
   params,
 }: {
-  params: Promise<{ slug: string }>;
+  params: Promise<{ listingId: string }>;
 }) {
-  const { slug } = await params;
+  const { listingId } = await params;
   let detail;
   try {
-    detail = await getListing(slug);
+    detail = await getListing(listingId);
   } catch {
     detail = null;
   }
@@ -51,7 +51,7 @@ export default async function ListingDetail({
           {/* Client component — renders the seller-only CTA when the
               signed-in viewer matches listing.seller_id. Server-rendered
               parent stays cacheable and seller-agnostic. */}
-          <OwnerManageLink sellerId={listing.seller_id} slug={listing.slug} />
+          <OwnerManageLink sellerId={listing.seller_id} listingId={listing.listing_id} />
         </div>
       </aside>
 

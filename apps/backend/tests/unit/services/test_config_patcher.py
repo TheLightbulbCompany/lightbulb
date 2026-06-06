@@ -14,6 +14,7 @@ from core.services.config_patcher import (  # noqa: E402
     append_to_openclaw_config_list,
     apply_deploy_aux_mutations,
     delete_openclaw_config_path,
+    delete_provider_level_channel_secrets,
     patch_openclaw_config,
     remove_from_openclaw_config_list,
     replace_provider_block,
@@ -1291,3 +1292,88 @@ async def test_strip_removed_agent_keys_scrubs_defaults_and_list_entries():
     assert entry["skills"] == ["search"]
     # nested models[*].agentRuntime is not a top-level entry key — left intact
     assert entry["models"]["x"]["agentRuntime"] == {"maxTurns": 9}
+
+
+# --- delete_provider_level_channel_secrets -----------------------------------
+# Provider-level token fields (channels.<p>.botToken / appToken / token /
+# signingSecret) are legacy orphans: OpenClaw reads them as a synthetic
+# "[default]" account that auths and crash-loops on invalid creds. The current
+# wizard only ever writes tokens under accounts.<id>, so any provider-level
+# token is stale and must be strippable without touching real accounts.
+
+
+def _write_config(efs_dir, owner, config):
+    with open(os.path.join(efs_dir, owner, "openclaw.json"), "w") as f:
+        json.dump(config, f)
+
+
+@pytest.mark.asyncio
+async def test_strip_provider_secrets_removes_orphan_tokens_keeps_accounts(efs_dir):
+    _write_config(
+        efs_dir,
+        "user_1",
+        {
+            "channels": {
+                "slack": {
+                    "enabled": True,
+                    "dmPolicy": "pairing",
+                    "mode": "socket",
+                    "appToken": "xapp-orphan",
+                    "botToken": "xoxb-orphan",
+                    "accounts": {"agent_x": {"botToken": "xoxb-real", "appToken": "xapp-real"}},
+                },
+                "telegram": {"enabled": True, "dmPolicy": "pairing", "botToken": "tg-orphan"},
+            }
+        },
+    )
+    await delete_provider_level_channel_secrets("user_1", "slack")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    slack = result["channels"]["slack"]
+    # provider-level secrets stripped
+    assert "botToken" not in slack
+    assert "appToken" not in slack
+    # non-secret config + the real account preserved (enabled stays true by design)
+    assert slack["enabled"] is True
+    assert slack["dmPolicy"] == "pairing"
+    assert slack["accounts"]["agent_x"]["botToken"] == "xoxb-real"
+    assert slack["accounts"]["agent_x"]["appToken"] == "xapp-real"
+    # other providers are untouched (per-provider operation)
+    assert result["channels"]["telegram"]["botToken"] == "tg-orphan"
+
+
+@pytest.mark.asyncio
+async def test_strip_provider_secrets_is_noop_when_absent(efs_dir):
+    _write_config(
+        efs_dir,
+        "user_1",
+        {"channels": {"telegram": {"enabled": True, "dmPolicy": "pairing", "accounts": {}}}},
+    )
+    # No provider-level secrets present -> must not error, must not create a .bak.
+    await delete_provider_level_channel_secrets("user_1", "telegram")
+    assert not os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.bak"))
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["channels"]["telegram"] == {"enabled": True, "dmPolicy": "pairing", "accounts": {}}
+
+
+@pytest.mark.asyncio
+async def test_strip_provider_secrets_strips_discord_token_and_signing_secret(efs_dir):
+    _write_config(
+        efs_dir,
+        "user_1",
+        {
+            "channels": {
+                "discord": {"enabled": True, "token": "disc-orphan"},
+                "slack": {"enabled": True, "signingSecret": "sig-orphan", "botToken": "xoxb-orphan"},
+            }
+        },
+    )
+    await delete_provider_level_channel_secrets("user_1", "discord")
+    await delete_provider_level_channel_secrets("user_1", "slack")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert "token" not in result["channels"]["discord"]
+    assert result["channels"]["discord"]["enabled"] is True
+    assert "signingSecret" not in result["channels"]["slack"]
+    assert "botToken" not in result["channels"]["slack"]

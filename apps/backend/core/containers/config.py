@@ -912,13 +912,16 @@ def build_openclaw_config_dict(
             config["mcp"] = {
                 "servers": {
                     "paperclip": {
-                        # Baked as a global bin in the image (Dockerfile Layer 8),
-                        # so spawn it directly rather than `npx -y`-installing the
-                        # package on every cold run. The bare command keeps our
-                        # core MCP out of the per-run npx connect storm and makes
-                        # its tools load reliably.
-                        "command": "paperclip-mcp-server",
-                        "args": [],
+                        # Kept on `npx` so it resolves on ANY deployed image. The
+                        # binary is now baked as a global bin (Dockerfile Layer 8),
+                        # but switching this to the bare `paperclip-mcp-server`
+                        # command (instant spawn, off the npx connect storm) must
+                        # wait until the baked image tag is selected in
+                        # openclaw-version.json and rolled out — otherwise a
+                        # provision against an older image writes a command its
+                        # OpenClaw can't resolve and the MCP loses all tools.
+                        "command": "npx",
+                        "args": ["-y", "@paperclipai/mcp-server"],
                         "env": {
                             "PAPERCLIP_API_URL": paperclip_api_url,
                             "PAPERCLIP_API_KEY": paperclip_api_key,

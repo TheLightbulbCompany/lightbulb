@@ -150,11 +150,13 @@ RUN curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install
 # files), which doesn't open a sqlite connection on EFS at all.
 ENV NPM_CONFIG_PREFIX=/usr/local
 # @paperclipai/mcp-server is the Friday<->Paperclip MCP and is required on
-# EVERY container. Baking it as a global bin (`paperclip-mcp-server` on PATH)
-# lets the seeded config spawn it directly instead of `npx -y`-installing it on
-# every cold run: the tools load reliably (a bare `paperclip-mcp-server` command
-# with no installed bin silently exposes zero tools) and our core MCP no longer
-# joins the per-run npx connect storm. Pinned like the other bakes.
+# EVERY container. Bake it as a global bin (`paperclip-mcp-server` on PATH) so
+# that once this image tag is rolled out, config.py can switch the seeded
+# command from `npx -y @paperclipai/mcp-server` to the bare `paperclip-mcp-server`
+# — instant spawn, off the per-run npx connect storm, and tools that load
+# reliably (a bare command with no installed bin silently exposes zero tools).
+# The config switch is deferred to a follow-up so it only lands after this baked
+# tag is live. Pinned like the other bakes.
 RUN npm i -g --ignore-scripts \
       mcporter clawhub openai \
       @steipete/oracle @steipete/summarize \

@@ -239,13 +239,6 @@ When credentials are missing:
 
 Users can create multiple projects for different work contexts.
 
-**For mcporter/other MCP clients:**
-```bash
-mcporter config add taskr "$MCP_API_URL" \
-  --header "x-project-id=$MCP_PROJECT_ID" \
-  --header "x-user-api-key=$MCP_USER_API_KEY"
-```
-
 ---
 
 ## Quick Reference

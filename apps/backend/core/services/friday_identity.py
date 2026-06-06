@@ -5,8 +5,9 @@ container provisions, we write four customized markdown files to her
 EFS workspace dir BEFORE the container boots. OpenClaw's lazy
 ``ensureAgentWorkspace`` runs on first chat as today, but
 ``writeFileIfMissing`` honors any file we wrote first — so OpenClaw
-fills only the gaps we don't seed (``AGENTS.md``, ``MEMORY.md``,
-``TOOLS.md``, ``HEARTBEAT.md``).
+fills only the gaps we don't seed (``TOOLS.md``, ``HEARTBEAT.md``). We
+seed ``MEMORY.md`` ourselves with a durable-memory scaffold so every
+Friday starts with structured long-term memory.
 
 We also write ``.openclaw/workspace-state.json`` with
 ``setupCompletedAt`` set. OpenClaw upstream (``src/agents/workspace.ts``
@@ -130,6 +131,10 @@ with respect.
 
 Each session, you wake up fresh. These files _are_ your memory. Read them.
 Update them. They're how you persist.
+
+Run memory_search before answering about prior work, decisions, dates, people,
+or preferences. Append durable facts and decisions to MEMORY.md as they arise —
+MEMORY.md is your memory across sessions.
 
 If you change this file, tell {owner_display} — it's your soul, and they
 should know.
@@ -454,6 +459,29 @@ browser, web fetch, images, channels) — use these for your own work
 """
 
 
+_MEMORY_TEMPLATE = """\
+# MEMORY.md
+
+Your durable, long-term memory. This file is loaded into your context at the
+start of every session — anything you need to remember across conversations
+belongs here. Record decisions (with dates and the reasoning), standing
+preferences, and hard-won facts; prune what goes stale. When you learn
+something durable mid-conversation, append it here.
+
+## About {owner_display}
+- (Durable facts about your principal and their priorities.)
+
+## Operating Decisions
+- (Standing decisions and why, dated — e.g. "2026-01-01 — chose X because Y".)
+
+## Known Issues & Workarounds
+- (Recurring problems and their confirmed workarounds, dated.)
+
+## Lessons Learned
+- (Durable lessons, appended as you learn them.)
+"""
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -488,16 +516,18 @@ def _format_provider_label(provider_choice: str, byo_provider: str | None) -> st
 
 
 def _render_templates(profile: dict) -> dict[str, str]:
-    """Render the four seed files from a resolved profile dict.
+    """Render the seed files from a resolved profile dict.
 
-    Returns: {filename: rendered_content} for IDENTITY/SOUL/USER/BOOTSTRAP.
-    Profile shape varies by `kind`: 'personal' uses USER_TEMPLATE_PERSONAL,
-    'org' uses USER_TEMPLATE_ORG. SOUL/IDENTITY/BOOTSTRAP share fields
+    Returns: {filename: rendered_content} for
+    IDENTITY/SOUL/USER/BOOTSTRAP/AGENTS/MEMORY. Profile shape varies by
+    `kind`: 'personal' uses USER_TEMPLATE_PERSONAL, 'org' uses
+    USER_TEMPLATE_ORG. SOUL/IDENTITY/BOOTSTRAP/AGENTS/MEMORY share fields
     across both kinds.
     """
     identity = _IDENTITY_TEMPLATE.format(owner_display=profile["owner_display"])
     soul = _SOUL_TEMPLATE.format(owner_display=profile["owner_display"])
     agents = _AGENTS_TEMPLATE.format(owner_display=profile["owner_display"])
+    memory = _MEMORY_TEMPLATE.format(owner_display=profile["owner_display"])
     bootstrap = _BOOTSTRAP_TEMPLATE.format(
         owner_display=profile["owner_display"],
         first_name_or_fallback=profile["first_name_or_fallback"],
@@ -521,6 +551,7 @@ def _render_templates(profile: dict) -> dict[str, str]:
         "USER.md": user_md,
         "BOOTSTRAP.md": bootstrap,
         "AGENTS.md": agents,
+        "MEMORY.md": memory,
     }
 
 

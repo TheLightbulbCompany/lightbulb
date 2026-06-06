@@ -1043,17 +1043,16 @@ async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock
 
 
 @pytest.mark.asyncio
-async def test_replace_provider_block_forces_memory_search_off_on_legacy_config(tmp_efs_with_bedrock_provider):
-    """A container provisioned before memory-core was seeded on swaps still
-    has ``memorySearch.enabled: true`` on EFS. Once the swap seeds memory-core
-    (which registers memory_search/memory_get), a stale True there would open
-    the embeddings node:sqlite store on EFS — the NFS-retry gateway deadlock
-    the dreaming change disables. The swap must pair memory-core with
-    memorySearch forced off, exactly as the provision builder does."""
+async def test_replace_provider_block_leaves_memory_search_enabled(tmp_efs_with_bedrock_provider):
+    """A provider swap must NOT force memorySearch off. Recall is intentionally
+    on (memory-core registers memory_search/memory_get and the "Memory Recall"
+    prompt section only renders while those tools exist), and the embeddings
+    store stays on EFS — live logs show no sqlite contention. So a config with
+    ``memorySearch.enabled: true`` keeps it after the swap."""
     from core.containers.config import memory_plugin_entries
 
-    # Simulate the legacy on-disk shape: memorySearch.enabled true (with the
-    # provider/model the builder pins) on a config that predates the seam.
+    # On-disk shape: memorySearch.enabled true (with the provider/model the
+    # builder pins).
     config_path = os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")
     with open(config_path) as f:
         cfg = json.load(f)
@@ -1074,12 +1073,11 @@ async def test_replace_provider_block_forces_memory_search_off_on_legacy_config(
     with open(config_path) as f:
         result = json.load(f)
 
-    # The pairing invariant: memory-core present => search forced off.
-    assert result["agents"]["defaults"]["memorySearch"]["enabled"] is False
+    # The swap leaves memorySearch at its provisioned value — recall stays on.
+    assert result["agents"]["defaults"]["memorySearch"]["enabled"] is True
     assert "memory-core" in result["plugins"]["entries"]
     assert result["plugins"]["entries"]["memory-core"] == memory_plugin_entries()["memory-core"]
-    # The pinned provider/model survive so a future off-EFS re-enable inherits
-    # a sane default rather than upstream's "local" GGUF.
+    # The pinned provider/model survive.
     assert result["agents"]["defaults"]["memorySearch"]["provider"] == "bedrock"
     assert result["agents"]["defaults"]["memorySearch"]["model"] == "amazon.titan-embed-text-v2:0"
 

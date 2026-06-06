@@ -62,17 +62,17 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["meta"]["lastTouchedVersion"] == DEPLOYED_UPSTREAM_VERSION
 
-    def test_agents_defaults_memory_search_disabled(self):
-        # memorySearch is OFF. It was inert while no plugin consumed it, but
-        # memory-core registers memory_search/memory_get; a True value would
-        # open an embeddings node:sqlite store at ~/.openclaw/memory/*.sqlite
-        # — which is EFS here, the documented NFS-retry gateway deadlock.
-        # The provider/model stay pinned to Bedrock so re-enabling later
-        # (after relocating the store off EFS) inherits a sane default
-        # instead of upstream's "local" GGUF we don't ship.
+    def test_agents_defaults_memory_search_enabled(self):
+        # memorySearch is ON. memory-core registers memory_search/memory_get,
+        # and the "Memory Recall" prompt section only renders while those tools
+        # exist — recall is what lets agents remember beyond the always-loaded
+        # MEMORY.md. The embeddings index is sqlite on EFS, which we keep on EFS
+        # because live container logs show no sqlite contention. provider/model
+        # stay pinned to Bedrock Titan (not upstream's "local" GGUF, which we
+        # don't ship and which historically hung on first embed).
         config = _cfg()
         memory_search = config["agents"]["defaults"]["memorySearch"]
-        assert memory_search["enabled"] is False
+        assert memory_search["enabled"] is True
         assert memory_search["provider"] == "bedrock"
         assert memory_search["model"] == "amazon.titan-embed-text-v2:0"
 
@@ -141,11 +141,14 @@ class TestOpenclawConfigShape:
         assert entries["lobster"] == {"enabled": True}
         assert entries["llm-task"] == {"enabled": True}
 
-    def test_memory_core_dreaming_enabled_light_rem_only(self):
+    def test_memory_core_dreaming_enabled_light_only(self):
         """memory-core's dreaming subsystem is enabled at provision with the
-        light + REM phases on and the deep phase OFF. Deep phase + embeddings
-        drive the EFS-sqlite store (gateway-deadlock class) and are an
-        explicit follow-up. Only schema-legal keys may appear under
+        light phase ON and both REM and deep phases OFF. Light-phase
+        consolidates recent session transcripts into dated memory/<day>.md
+        notes that auto-load — cross-session continuity without relying on
+        discretionary writes. REM only writes DREAMS.md (nothing reads it);
+        deep needs sustained memory_search recall traffic that is ~zero today.
+        Only schema-legal keys may appear under
         plugins.entries.memory-core.config — the upstream configSchema is
         additionalProperties:false at every level, so a stray key bricks the
         container at boot."""
@@ -157,7 +160,7 @@ class TestOpenclawConfigShape:
         assert dreaming["frequency"] == "0 3 * * *"
         assert dreaming["timezone"] == "UTC"
         assert dreaming["phases"]["light"] == {"enabled": True}
-        assert dreaming["phases"]["rem"] == {"enabled": True}
+        assert dreaming["phases"]["rem"] == {"enabled": False}
         assert dreaming["phases"]["deep"] == {"enabled": False}
         assert set(entry["config"].keys()) == {"dreaming"}
 

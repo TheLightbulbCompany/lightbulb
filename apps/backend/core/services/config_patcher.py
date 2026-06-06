@@ -212,15 +212,8 @@ async def replace_provider_block(
             **copy.deepcopy(plugin_entries),
         }
 
-        # memory-core (seeded above) registers memory_search/memory_get; a
-        # stale memorySearch.enabled:true from a pre-change provision would
-        # open the embeddings node:sqlite store on EFS (the NFS-retry gateway
-        # deadlock the dreaming change disables). Pair the same invariant the
-        # provision builder enforces: memory-core present => search off.
-        # Preserve any existing provider/model so a future off-EFS re-enable
-        # inherits a sane default instead of upstream's "local" GGUF.
-        mem = defaults.setdefault("memorySearch", {})
-        mem["enabled"] = False
+        # memorySearch stays at its provisioned value (enabled) — recall is
+        # intentionally on; do not force it off here.
 
         return True
 

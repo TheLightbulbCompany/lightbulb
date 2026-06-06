@@ -490,27 +490,26 @@ def workflow_plugin_entries() -> dict:
 
 
 def memory_plugin_entries() -> dict:
-    """The bundled ``memory-core`` extension with dreaming enabled, shared
-    by both the provision-time builder (``build_openclaw_config_dict``) and
-    the provider hot-swap path (``config_patcher.replace_provider_block``).
+    """The bundled ``memory-core`` extension with nightly LIGHT-phase dreaming,
+    shared by the provision-time builder and the provider hot-swap path.
 
-    Dreaming consolidates session transcripts into MEMORY.md on a nightly
-    cron. Light + REM phases read session transcripts off disk and write
-    flat JSON / markdown artifacts (``memory/.dreams/*.json``, ``DREAMS.md``)
-    under a lockfile — no long-lived sqlite connection, so they are EFS-safe.
+    Light-phase dreaming reads recent session transcripts off disk and writes
+    consolidated dated ``memory/<day>.md`` notes (flat files, under a lockfile,
+    no embeddings). Today/yesterday's dated notes auto-load into context, so
+    agents carry recent work forward without relying on the agent remembering
+    to call ``memory_search``.
 
-    The DEEP phase is OFF: its short-term promotion is driven by recall
-    signals from ``memory_search`` (embeddings-backed), and any embeddings
-    call opens a ``node:sqlite`` store at ``~/.openclaw/memory/<agentId>.sqlite``
-    — which in Isol8 is EFS, the same NFS-retry deadlock class that bricks
-    the gateway's V8 main thread. Re-enabling deep requires relocating the
-    embeddings store off EFS first (a separate change), and is gated behind
-    ``agents.defaults.memorySearch.enabled`` being flipped back to True.
+    REM is OFF: it only writes ``DREAMS.md``, which nothing in Isol8 reads (no
+    Dreaming UI) — pure noise/cost. DEEP is OFF: it auto-promotes recurring
+    recalls into root ``MEMORY.md`` but is gated on sustained ``memory_search``
+    recall traffic, which is ~zero today; enable it once recall is actually
+    exercised. ``memory_search`` itself stays ENABLED in agents.defaults (live
+    logs show no sqlite contention; recall is what lets agents remember beyond
+    the always-loaded ``MEMORY.md``).
 
-    Keys are restricted to the upstream ``memory-core`` configSchema, which
-    is strict (``additionalProperties:false``) at every level: the only key
-    under ``config`` is ``dreaming``. A stray key fails the strict plugin
-    loader and the container crash-loops at boot.
+    Keys are restricted to the upstream ``memory-core`` configSchema, which is
+    strict (``additionalProperties:false``) at every level: the only key under
+    ``config`` is ``dreaming``. A stray key crash-loops the container at boot.
 
     Returned fresh each call so callers may merge/mutate without corrupting
     shared module state.
@@ -526,7 +525,7 @@ def memory_plugin_entries() -> dict:
                     "phases": {
                         "light": {"enabled": True},
                         "deep": {"enabled": False},
-                        "rem": {"enabled": True},
+                        "rem": {"enabled": False},
                     },
                 },
             },
@@ -689,20 +688,17 @@ def build_openclaw_config_dict(
                 # assignment/comment) is independent of this.
                 "heartbeat": {"every": "30m"},
                 "workspace": "/home/node/.openclaw/workspaces",
-                # Memory embedding search is OFF. Once memory-core registers
-                # memory_search/memory_get, a True value here makes any recall
-                # open an embeddings node:sqlite store at
-                # ~/.openclaw/memory/<agentId>.sqlite — which is EFS here, the
-                # documented NFS-retry deadlock that bricks the gateway's V8
-                # main thread. The light/REM dreaming phases we enable are
-                # flat-file (DREAMS.md / memory/.dreams/*.json) and need no
-                # embeddings, so dreaming runs safely with search off.
-                # provider/model stay pinned to Bedrock so a future off-EFS
-                # re-enable inherits a sane default instead of upstream's
-                # "local" GGUF (which we don't ship and which historically
+                # Memory recall stays ON (matches main): memory-core registers
+                # memory_search/memory_get, and the "Memory Recall" prompt
+                # section only renders while those tools exist. The per-agent
+                # embeddings index is sqlite on EFS; we keep it on EFS because
+                # live container logs show no sqlite contention and recall is
+                # what lets agents remember beyond the always-loaded MEMORY.md.
+                # provider/model pinned to Bedrock Titan (not upstream's
+                # "local" GGUF, which we don't ship and which historically
                 # hung on first embed).
                 "memorySearch": {
-                    "enabled": False,
+                    "enabled": True,
                     "provider": "bedrock",
                     "model": "amazon.titan-embed-text-v2:0",
                 },
@@ -829,7 +825,7 @@ def build_openclaw_config_dict(
                 # Kept in sync with the provider hot-swap path via the shared
                 # workflow_plugin_entries() seam.
                 **workflow_plugin_entries(),
-                # memory-core's dreaming subsystem (light + REM phases; deep
+                # memory-core's dreaming subsystem (light phase only; REM + deep
                 # OFF). Shared with the provider hot-swap path via the
                 # memory_plugin_entries() seam so a Bedrock <-> ChatGPT switch
                 # doesn't drop it.

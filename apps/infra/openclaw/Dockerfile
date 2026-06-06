@@ -165,7 +165,7 @@ RUN npm i -g --ignore-scripts \
       @paperclipai/mcp-server@2026.529.0
 
 # ---- Layer 9: Playwright Chromium + Chromium system libs + /usr/bin symlink ----
-# Upstream openclaw:2026.5.28 ships the playwright npm package (at
+# Upstream openclaw:2026.6.1 ships the playwright npm package (at
 # /app/node_modules/playwright-core, v1.60.0) but NOT the Chromium binary
 # and NOT the GUI libs Chromium needs to launch. The chromium install is
 # gated behind upstream Dockerfile's `OPENCLAW_INSTALL_BROWSER` build arg,
@@ -222,7 +222,7 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
 RUN set -eux; \
     for P in slack discord; do \
       mkdir -p "/opt/stage-$P"; \
-      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.5.28"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.6.1"; \
       mkdir -p "/app/dist/extensions/$P"; \
       cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
       mkdir -p "/app/dist/extensions/$P/node_modules"; \
@@ -245,7 +245,7 @@ RUN set -eux; \
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-amazon-bedrock; \
-    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.5.28"; \
+    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.6.1"; \
     mkdir -p /app/dist/extensions/amazon-bedrock; \
     cp -R /opt/stage-amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider/. /app/dist/extensions/amazon-bedrock/; \
     mkdir -p /app/dist/extensions/amazon-bedrock/node_modules; \

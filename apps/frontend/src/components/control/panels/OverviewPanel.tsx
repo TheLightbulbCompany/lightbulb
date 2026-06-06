@@ -163,9 +163,9 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
     { includeDisabled: true },
   );
 
-  // Skills count comes from the same RPC SkillsPanel uses; pass no agentId
+  // Skills count comes from the same RPC SkillsTab uses; pass no agentId
   // to get the global skills inventory. Response can be either an array or
-  // {skills: [...]} depending on OpenClaw version (see SkillsPanel.tsx:230).
+  // {skills: [...]} depending on OpenClaw version (see SkillsTab.tsx).
   const { data: skillsRaw } = useGatewayRpc<SkillStatus | SkillEntry[]>(
     "skills.status",
   );
@@ -245,7 +245,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   // louder signal — so derive both and let the render pick.
   const cronFailed = countCronFailed(cronJobs);
   const cronOverdue = countOverdueNow(cronJobs);
-  // Normalize the skills.status response shape — same trick SkillsPanel uses.
+  // Normalize the skills.status response shape — same trick SkillsTab uses.
   const skillsList: SkillEntry[] = Array.isArray(skillsRaw)
     ? skillsRaw
     : skillsRaw?.skills ?? [];

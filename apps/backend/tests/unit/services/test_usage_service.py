@@ -85,11 +85,70 @@ async def test_record_usage_strips_provider_prefix(dynamodb_tables):
 
 
 @pytest.mark.asyncio
-async def test_record_usage_unknown_model_skips(dynamodb_tables):
-    from core.services.usage_service import record_usage
+async def test_record_usage_unknown_model_records_volume_with_zero_spend(dynamodb_tables):
+    """Non-Bedrock models (OpenAI/Codex) have no Bedrock pricing entry. We still
+    record token + request VOLUME (with spend 0) so usage is never invisible —
+    spend 0 is correct for Isol8's books (byo_key is user-paid, Codex is
+    flat-rate)."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
 
     # Should not raise
-    await record_usage("user_1", "user_1", "unknown-model", 1000, 500, 0, 0)
+    await record_usage("org_codex", "user_c", "openai-codex/gpt-5.5", 1000, 500, 200, 100)
+
+    period = _current_period()
+
+    for owner_id, sk in [
+        ("org_codex", period),
+        ("org_codex", "lifetime"),
+        ("org_codex", f"member:user_c:{period}"),
+    ]:
+        usage = await usage_repo.get_period_usage(owner_id, sk)
+        assert usage is not None, f"expected volume recorded for {sk}"
+        assert usage["request_count"] == 1
+        assert usage["total_input_tokens"] == 1000
+        assert usage["total_output_tokens"] == 500
+        assert usage["total_cache_read_tokens"] == 200
+        assert usage["total_cache_write_tokens"] == 100
+        assert usage["total_spend_microdollars"] == 0
+
+
+@pytest.mark.asyncio
+async def test_record_usage_known_model_records_spend(dynamodb_tables):
+    """Regression: a known Bedrock model still records real (non-zero) spend."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage(
+        owner_id="org_bedrock",
+        user_id="user_d",
+        model="anthropic.claude-sonnet-4-6",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read=0,
+        cache_write=0,
+    )
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_bedrock", period)
+    assert owner_usage is not None
+    assert owner_usage["request_count"] == 1
+    assert owner_usage["total_input_tokens"] == 1000
+    assert owner_usage["total_output_tokens"] == 500
+    assert owner_usage["total_spend_microdollars"] > 0
+
+
+@pytest.mark.asyncio
+async def test_record_usage_empty_call_records_nothing(dynamodb_tables):
+    """A completely-empty event (no tokens, unknown model → spend 0) is skipped."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage("org_empty", "user_e", "unknown-model", 0, 0, 0, 0)
+
+    period = _current_period()
+    assert await usage_repo.get_period_usage("org_empty", period) is None
+    assert await usage_repo.get_period_usage("org_empty", "lifetime") is None
 
 
 @pytest.mark.asyncio

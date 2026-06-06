@@ -56,11 +56,24 @@ async def record_usage(
             cache_write_tokens=cache_write,
         )
     except UnknownModelError:
+        # Non-Bedrock models (OpenAI/Codex) have no Bedrock pricing entry. We
+        # still record token + request VOLUME (with spend 0) so usage is never
+        # invisible — a runaway loop on the Codex path must remain visible.
+        # spend 0 is correct for Isol8's books: byo_key is user-paid, Codex is
+        # flat-rate, so Isol8's per-token $ cost there is ~0. The metric still
+        # fires for genuinely-mispriced Bedrock models (and, expectedly, for
+        # non-Bedrock models).
         put_metric("billing.pricing.missing_model")
-        logger.warning("No pricing for model %s — skipping for owner %s", model, owner_id)
-        return
+        logger.warning(
+            "No pricing for model %s — recording volume with spend 0 for owner %s",
+            model,
+            owner_id,
+        )
+        spend_microcents = 0
 
-    if spend_microcents <= 0:
+    # Skip only a completely-empty event (no token volume AND no spend);
+    # otherwise record so spend-0 unknown-model volume is preserved.
+    if spend_microcents <= 0 and not (input_tokens or output_tokens or cache_read or cache_write):
         return
 
     period = _current_period()

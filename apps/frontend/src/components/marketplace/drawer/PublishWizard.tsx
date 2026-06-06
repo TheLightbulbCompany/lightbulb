@@ -298,20 +298,15 @@ export function PublishWizard() {
     } catch (err) {
       // useApi's ApiError doesn't expose `.detail` directly; the body's
       // detail string lives at `.body.detail` and is also serialized into
-      // `.message`. Check all three so 409s with shape {detail:"slug ..."}
-      // route to the slug-collision branch regardless of which field carries
-      // the text.
+      // `.message`. Check all three so the seller_profile_required 409 is
+      // recognized regardless of which field carries the text.
       const e = err as Error & {
         status?: number;
         detail?: string;
         body?: { detail?: string };
       };
       const errMsg = e.body?.detail || e.detail || e.message || "";
-      if (e.status === 409 && /slug/i.test(errMsg)) {
-        setSubmitError("That slug is already taken — change the name and try again.");
-        setDraftListingId(null);
-        setStep(2);
-      } else if (e.status === 409 && /seller_profile_required/i.test(errMsg)) {
+      if (e.status === 409 && /seller_profile_required/i.test(errMsg)) {
         // Backend gated the publish on the seller having a marketplace
         // handle. Surface the picker inline; on save we'll let the seller
         // retry Submit. Don't auto-retry — the seller just spent time

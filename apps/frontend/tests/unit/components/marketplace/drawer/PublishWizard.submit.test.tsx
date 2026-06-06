@@ -112,27 +112,6 @@ describe("PublishWizard — submit chain", () => {
     await waitFor(() => expect(screen.getByText("step6-success")).toBeInTheDocument());
   });
 
-  it("on 409 slug collision, surfaces error and returns to Step 2 without preserving draft id", async () => {
-    const slugError = Object.assign(new Error("slug already taken"), {
-      status: 409,
-      detail: "slug already taken",
-    });
-    apiPost.mockRejectedValueOnce(slugError);
-
-    const user = userEvent.setup();
-    render(<PublishWizard />);
-    await user.click(screen.getByText("pick"));
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 2
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 3 (Bundle)
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 4 (Pricing)
-    await user.click(screen.getByRole("button", { name: /continue/i })); // → step 5 (Review)
-    await user.click(screen.getByRole("button", { name: /submit for review/i }));
-
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/slug is already taken/i));
-    // Wizard should rewind to step 2 so the user can rename
-    expect(screen.getByText(/^step2/)).toBeInTheDocument();
-  });
-
   it("after step 1 succeeds but step 2 fails, retry skips listing creation", async () => {
     const snapshotError = Object.assign(new Error("snapshot failed"), {
       status: 500,

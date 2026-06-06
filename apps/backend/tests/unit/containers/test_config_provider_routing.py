@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from core.containers.config import premium_model_ref, write_openclaw_config
+from core.containers.config import cheap_model_ref, premium_model_ref, write_openclaw_config
 
 
 @pytest.mark.asyncio
@@ -281,6 +281,65 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
     await write_openclaw_config(**kwargs)
     cfg = json.loads((tmp_path / "openclaw.json").read_text())
     assert cfg["agents"]["defaults"]["params"]["cacheRetention"] == "long"
+
+
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider,expected",
+    [
+        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-haiku-4-5"),
+        ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
+        ("byo_key", "openai", "openai/gpt-5.4-mini"),
+        # chatgpt_oauth is flat-rate, but the codex provider DOES carry a
+        # mini tier (gpt-5.4-mini, in the openai-codex catalog) — route aux
+        # work to it for rate-limit headroom on the flat-rate plan.
+        ("chatgpt_oauth", None, "openai-codex/gpt-5.4-mini"),
+    ],
+)
+def test_cheap_model_ref_matrix(provider_choice, byo_provider, expected):
+    """The cheap aux ref is the cheapest model per provider path, routed to
+    pure-overhead operations (compaction / memory-flush / heartbeat)."""
+    assert cheap_model_ref(provider_choice, byo_provider) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider,expected_cheap",
+    [
+        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-haiku-4-5"),
+        ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
+        ("byo_key", "openai", "openai/gpt-5.4-mini"),
+        ("chatgpt_oauth", None, "openai-codex/gpt-5.4-mini"),
+    ],
+)
+async def test_aux_operations_routed_to_cheap_tier(tmp_path, provider_choice, byo_provider, expected_cheap):
+    """Compaction, memory-flush, and the internal heartbeat are pure-overhead
+    operations that don't need the premium default — route them to the cheap
+    tier. Only the aux slots' ``.model`` is set; no enabled/mode flag is
+    toggled. All three keys are valid under upstream's strict
+    AgentDefaultsSchema (compaction.model, compaction.memoryFlush.model,
+    heartbeat.model)."""
+    kwargs = {
+        "config_path": tmp_path / "openclaw.json",
+        "gateway_token": "test-token",
+        "provider_choice": provider_choice,
+        "user_id": "u_1",
+    }
+    if byo_provider is not None:
+        kwargs["byo_provider"] = byo_provider
+    await write_openclaw_config(**kwargs)
+    cfg = json.loads((tmp_path / "openclaw.json").read_text())
+    defaults = cfg["agents"]["defaults"]
+
+    assert defaults["compaction"]["model"] == expected_cheap
+    assert defaults["compaction"]["memoryFlush"]["model"] == expected_cheap
+    assert defaults["heartbeat"]["model"] == expected_cheap
+
+    # Aux routing sets ONLY .model — it must not enable a feature that wasn't
+    # already on (don't flip memoryFlush.enabled or any compaction toggle).
+    assert "enabled" not in defaults["compaction"].get("memoryFlush", {})
+    assert "mode" not in defaults["compaction"]
+    # The pre-existing heartbeat cadence is preserved alongside the new model.
+    assert defaults["heartbeat"]["every"] == "30m"
 
 
 @pytest.mark.asyncio

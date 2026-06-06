@@ -445,6 +445,34 @@ def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | N
     return None
 
 
+def cheap_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
+    """The cheapest model ref per provider path, routed to pure-overhead aux
+    operations — or ``None`` when there is no cheaper tier to route to.
+
+    History compaction (summarizing very large transcripts), memory-flush, and
+    OpenClaw's internal maintenance heartbeat are overhead that doesn't need the
+    premium default model. Routing them to the cheapest tier cuts spend —
+    compaction especially, since it processes the largest contexts.
+
+    Unlike ``premium_model_ref``, the flat-rate ``chatgpt_oauth`` path DOES get
+    a value: the openai-codex provider catalog carries a mini tier
+    (``gpt-5.4-mini``), and pushing aux work onto it buys rate-limit headroom on
+    the flat-rate plan.
+
+    Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
+    """
+    if provider_choice == "bedrock_claude":
+        return "amazon-bedrock/us.anthropic.claude-haiku-4-5"
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            return "anthropic/claude-haiku-4-5"
+        if byo_provider == "openai":
+            return "openai/gpt-5.4-mini"
+    if provider_choice == "chatgpt_oauth":
+        return "openai-codex/gpt-5.4-mini"
+    return None
+
+
 def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = None) -> list[dict]:
     """Build the openclaw.json agents.list entries from Paperclip agents.
 
@@ -627,6 +655,11 @@ def build_openclaw_config_dict(
     # The default agent runs on the cheaper standard tier (above); the CEO
     # (Friday) is pinned to the premium tier via a per-agent override below.
     ceo_model = premium_model_ref(provider_choice, byo_provider)
+    # Pure-overhead aux operations (compaction / memory-flush / internal
+    # heartbeat) are routed to the cheapest tier — they don't need the
+    # premium default, and compaction in particular processes very large
+    # contexts where the cost difference is largest.
+    cheap_model = cheap_model_ref(provider_choice, byo_provider)
 
     # Token auth — shared secret between backend and container.
     # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
@@ -732,6 +765,20 @@ def build_openclaw_config_dict(
                 # contextLimits is a no-op stub (its schema doesn't change
                 # behavior when empty); kept as an explicit default.
                 "contextLimits": {},
+                # Route compaction + memory-flush to the cheap tier: both are
+                # pure-overhead operations that don't need the premium default.
+                # Compaction summarizes very large transcripts, so the per-turn
+                # token cost is where the savings are largest. We set ONLY
+                # `.model` on each slot — never an enabled/mode flag — so this
+                # never turns on a feature that wasn't already running upstream
+                # (memoryFlush has its own opt-in). On flat-rate paths with no
+                # cheaper tier (`cheap_model` is None) the block is omitted so
+                # both inherit the default model. Both keys are valid under
+                # upstream's strict AgentDefaultsSchema (compaction.model,
+                # compaction.memoryFlush.model).
+                **(
+                    {"compaction": {"model": cheap_model, "memoryFlush": {"model": cheap_model}}} if cheap_model else {}
+                ),
                 # heartbeat is NOT a no-op: upstream treats a present
                 # `agents.defaults.heartbeat` as truthy and falls back to a
                 # 30m interval with `target: none`. That is OpenClaw's
@@ -741,7 +788,12 @@ def build_openclaw_config_dict(
                 # cadence is visible in our config rather than inherited from
                 # an upstream default. Event-driven waking (Paperclip issue
                 # assignment/comment) is independent of this.
-                "heartbeat": {"every": "30m"},
+                #
+                # `model` routes the heartbeat to the cheap tier — it's pure
+                # overhead and doesn't need the premium default. `None` on
+                # flat-rate paths with no cheaper tier omits the override so
+                # the heartbeat inherits the default model.
+                "heartbeat": {"every": "30m", **({"model": cheap_model} if cheap_model else {})},
                 "workspace": "/home/node/.openclaw/workspaces",
                 # Memory recall stays ON (matches main): memory-core registers
                 # memory_search/memory_get, and the "Memory Recall" prompt

@@ -9,8 +9,8 @@
     "$schema": { "type": "string" },
     "upstream": {
       "type": "string",
-      "description": "Pinned upstream openclaw image+tag the Dockerfile FROMs.",
-      "pattern": "^ghcr\\.io/openclaw/openclaw:[a-zA-Z0-9._-]+$"
+      "description": "Pinned base OpenClaw image+tag the Dockerfile FROMs — either upstream ghcr.io/openclaw/openclaw or the Isol8 fork ghcr.io/isol8ai/agent.",
+      "pattern": "^ghcr\\.io/[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$"
     },
     "image": {
       "type": "string",

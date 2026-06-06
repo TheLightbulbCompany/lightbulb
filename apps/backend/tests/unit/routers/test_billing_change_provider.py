@@ -380,7 +380,7 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
     async def _pre_stage(*, user_id, oauth_tokens):
         call_order.append("pre_stage")
 
-    async def _replace(owner_id, *, providers, default_model, plugin_entries):
+    async def _replace(owner_id, *, providers, default_model, plugin_entries, ceo_model):
         call_order.append("replace")
         # The chatgpt_oauth branch sets ``models.providers`` to {} and the
         # default model to the openai-codex pair. Pin the contract so a
@@ -392,6 +392,9 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
             "fallbacks": ["openai-codex/gpt-5.5"],
         }
         assert plugin_entries == {}
+        # chatgpt_oauth is flat-rate — no premium tier, so the CEO's stale
+        # amazon-bedrock Opus override MUST be cleared (ceo_model=None).
+        assert ceo_model is None
 
     with (
         patch(
@@ -447,13 +450,17 @@ async def test_change_provider_chatgpt_to_bedrock_hot_path_no_restart(async_clie
         "provider_choice": "chatgpt_oauth",
     }
 
-    async def _replace(owner_id, *, providers, default_model, plugin_entries):
+    async def _replace(owner_id, *, providers, default_model, plugin_entries, ceo_model):
         # Pin the Bedrock-bound contract. amazon-bedrock provider entry +
         # discovery=false + us. inference-profile model IDs.
         assert "amazon-bedrock" in providers
         assert providers["amazon-bedrock"]["api"] == "bedrock-converse-stream"
         assert default_model["primary"].startswith("amazon-bedrock/us.")
         assert plugin_entries["amazon-bedrock"]["config"]["discovery"]["enabled"] is False
+        # Bedrock reserves the premium Opus tier for the CEO via a per-agent
+        # override — the swap must re-pin it (the chatgpt-provisioned CEO had
+        # none, so it would otherwise stay on the cheap Sonnet default).
+        assert ceo_model == "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
 
     with (
         patch(

@@ -34,6 +34,8 @@ def test_mcp_block_emitted_when_all_inputs_present():
     )
 
     entry = cfg["mcp"]["servers"]["paperclip"]
+    # Stays on npx until the baked image tag is rolled out (the bare
+    # `paperclip-mcp-server` command requires the new image to be live).
     assert entry["command"] == "npx"
     assert entry["args"] == ["-y", "@paperclipai/mcp-server"]
     env = entry["env"]

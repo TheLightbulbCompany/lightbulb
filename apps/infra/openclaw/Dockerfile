@@ -149,11 +149,20 @@ RUN curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install
 # We now use openclaw's `builtin` memory backend (flat MEMORY.md
 # files), which doesn't open a sqlite connection on EFS at all.
 ENV NPM_CONFIG_PREFIX=/usr/local
+# @paperclipai/mcp-server is the Friday<->Paperclip MCP and is required on
+# EVERY container. Bake it as a global bin (`paperclip-mcp-server` on PATH) so
+# that once this image tag is rolled out, config.py can switch the seeded
+# command from `npx -y @paperclipai/mcp-server` to the bare `paperclip-mcp-server`
+# — instant spawn, off the per-run npx connect storm, and tools that load
+# reliably (a bare command with no installed bin silently exposes zero tools).
+# The config switch is deferred to a follow-up so it only lands after this baked
+# tag is live. Pinned like the other bakes.
 RUN npm i -g --ignore-scripts \
       clawhub openai \
       @steipete/oracle @steipete/summarize \
       @anthropic-ai/claude-code @google/gemini-cli \
-      @xdevplatform/xurl
+      @xdevplatform/xurl \
+      @paperclipai/mcp-server@2026.529.0
 
 # ---- Layer 9: Playwright Chromium + Chromium system libs + /usr/bin symlink ----
 # Upstream openclaw:2026.5.28 ships the playwright npm package (at

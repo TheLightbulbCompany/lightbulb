@@ -34,8 +34,10 @@ def test_mcp_block_emitted_when_all_inputs_present():
     )
 
     entry = cfg["mcp"]["servers"]["paperclip"]
-    assert entry["command"] == "npx"
-    assert entry["args"] == ["-y", "@paperclipai/mcp-server"]
+    # Baked as a global bin in the image (Dockerfile Layer 8) and spawned
+    # directly — not `npx -y`-installed on every cold run.
+    assert entry["command"] == "paperclip-mcp-server"
+    assert entry["args"] == []
     env = entry["env"]
     assert env["PAPERCLIP_API_URL"] == "http://paperclip.internal:3100"
     assert env["PAPERCLIP_API_KEY"] == "pcli_live_abc"
@@ -156,7 +158,7 @@ def test_integration_mcp_servers_merged_alongside_paperclip():
     assert servers["stripe"]["command"] == "npx"
     assert servers["stripe"]["env"]["STRIPE_SECRET_KEY"] == "sk_X"
     # The paperclip block is preserved alongside the integration server.
-    assert servers["paperclip"]["command"] == "npx"
+    assert servers["paperclip"]["command"] == "paperclip-mcp-server"
     assert servers["paperclip"]["env"]["PAPERCLIP_AGENT_ID"] == "friday-uuid"
 
 

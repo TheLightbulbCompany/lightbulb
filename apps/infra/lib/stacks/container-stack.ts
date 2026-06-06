@@ -537,21 +537,27 @@ export class ContainerStack extends cdk.Stack {
           "node -e \"fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
         ],
         interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(5),
-        // 5 retries (150s of tolerated unhealthiness) rather than 3 (90s).
-        // /healthz stays responsive during package installs (verified on
-        // dev — the install runs in a child process, not the gateway event
-        // loop), but a brand-new container's first session warms a cold
-        // npx/uv cache by downloading every MCP server package at once, which
-        // can saturate CPU on the small box long enough to drop a few probes.
-        // The wider margin lets that one-time warm-up complete and populate
-        // the EFS cache; every subsequent restart reads the warm cache and is
-        // fast, so this only ever matters on the very first cold boot.
-        retries: 5,
-        // 120s start period covers EFS first-touch latency plus gateway
-        // boot (~5s warm). Tunable if dev observes false positives
-        // during cold provisioning.
-        startPeriod: cdk.Duration.seconds(120),
+        // 10s (was 5s). A cold chat connects every configured MCP server
+        // SERIALLY (npx spawn + handshake, several seconds each); on the
+        // 0.5-vCPU box those spawns contend for the half-core and starve the
+        // gateway's event loop, so /healthz — which runs on that loop — can
+        // momentarily take seconds to answer even though the gateway is alive.
+        // A 5s probe timeout turns that transient busyness into a kill; 10s
+        // rides it out. A genuinely dead gateway still fails every probe.
+        timeout: cdk.Duration.seconds(10),
+        // 6 retries x 30s = ~180s of tolerated unhealthiness. The earlier
+        // premise ("installs run in a child process, not the event loop, so
+        // /healthz stays responsive") was wrong: the serial connect storm
+        // CPU-starves the gateway process itself, so probes do slow during it.
+        // This margin lets a cold connect storm finish (baking the paperclip
+        // MCP + warm /tmp caches keep it well under this) without ECS killing
+        // the task mid-chat — which previously wiped /tmp and re-triggered a
+        // cold storm, a crash-loop. A truly dead gateway is still replaced in
+        // ~3 min.
+        retries: 6,
+        // 180s start period covers EFS first-touch latency, gateway boot, and
+        // the first cold MCP connect on a brand-new container.
+        startPeriod: cdk.Duration.seconds(180),
       },
       // Inject Fargate's init process (tini-equivalent) as PID 1. The
       // openclaw container runs `sh -c "... ; exec node ..."` so Node

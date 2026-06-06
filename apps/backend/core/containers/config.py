@@ -912,8 +912,13 @@ def build_openclaw_config_dict(
             config["mcp"] = {
                 "servers": {
                     "paperclip": {
-                        "command": "npx",
-                        "args": ["-y", "@paperclipai/mcp-server"],
+                        # Baked as a global bin in the image (Dockerfile Layer 8),
+                        # so spawn it directly rather than `npx -y`-installing the
+                        # package on every cold run. The bare command keeps our
+                        # core MCP out of the per-run npx connect storm and makes
+                        # its tools load reliably.
+                        "command": "paperclip-mcp-server",
+                        "args": [],
                         "env": {
                             "PAPERCLIP_API_URL": paperclip_api_url,
                             "PAPERCLIP_API_KEY": paperclip_api_key,

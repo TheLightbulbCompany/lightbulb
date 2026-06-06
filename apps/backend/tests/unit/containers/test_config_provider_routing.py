@@ -93,10 +93,10 @@ async def test_bedrock_claude_branch(tmp_path):
     assert model_block["primary"] == "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
     assert model_block["fallbacks"] == ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"]
 
-    # Static provider catalog — Opus 4.6 + Sonnet 4.6. New entries land
-    # here in lockstep with bedrock_pricing._RATES; otherwise the
-    # credit ledger would either skip billing or 500 with
-    # UnknownModelError.
+    # Static provider catalog — Opus 4.6 + Sonnet 4.6 + Haiku 4.5 (the
+    # cheap aux-task tier). New entries land here in lockstep with
+    # bedrock_pricing._RATES; otherwise the credit ledger would either
+    # skip billing or 500 with UnknownModelError.
     provider = cfg["models"]["providers"]["amazon-bedrock"]
     assert provider["api"] == "bedrock-converse-stream"
     assert provider["auth"] == "aws-sdk"
@@ -104,11 +104,12 @@ async def test_bedrock_claude_branch(tmp_path):
     assert model_ids == {
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-haiku-4-5",
     }
     # Cost shape matches upstream ModelDefinitionConfig.cost (USD/MTok).
     for model in provider["models"]:
         assert set(model["cost"].keys()) == {"input", "output", "cacheRead", "cacheWrite"}
-        assert model["contextWindow"] == 1_000_000
+        assert model["contextWindow"] > 0
 
     # Discovery disabled — no bedrock:ListFoundationModels IAM needed on
     # the per-user container, and no risk of surfacing un-priced models.

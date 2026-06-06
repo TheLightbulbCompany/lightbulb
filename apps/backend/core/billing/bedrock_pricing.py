@@ -67,6 +67,13 @@ _RATES: dict[str, ModelRate] = {
         "cache_write": 18.75,
         "cache_read": 1.5,
     },
+    "anthropic.claude-haiku-4-5": {
+        # Cheap aux-task tier — compaction / heartbeat / memory-flush.
+        "input": 1.0,
+        "output": 5.0,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+    },
 }
 
 

@@ -39,6 +39,17 @@ class TestCostMicrocents:
         )
         assert result == 52_500
 
+    def test_haiku_4_5_cost(self):
+        # Haiku 4.5: $1 / MTok input (the cheap aux-task tier).
+        # 1 MTok input + 0 output:
+        # (1_000_000 / 1_000_000) * $1 = $1 = 1_000_000 microcents
+        result = cost_microcents(
+            model_id="anthropic.claude-haiku-4-5",
+            input_tokens=1_000_000,
+            output_tokens=0,
+        )
+        assert result == 1_000_000
+
     def test_unknown_model_raises(self):
         with pytest.raises(UnknownModelError) as exc:
             cost_microcents(model_id="anthropic.claude-fake-99", input_tokens=100, output_tokens=100)
@@ -124,6 +135,19 @@ class TestGetRate:
         rate = get_rate("anthropic.claude-opus-4-6-v1")
         assert rate["input"] == 15.0
         assert rate["output"] == 75.0
+
+    def test_haiku_4_5_rate(self):
+        rate = get_rate("anthropic.claude-haiku-4-5")
+        assert rate["input"] == 1.0
+        assert rate["output"] == 5.0
+        assert rate["cache_read"] == 0.1
+        assert rate["cache_write"] == 1.25
+
+    def test_haiku_4_5_inference_profile_id_normalizes(self):
+        """The full openclaw ref must collapse to the same Haiku entry."""
+        assert get_rate("amazon-bedrock/us.anthropic.claude-haiku-4-5") == get_rate(
+            "anthropic.claude-haiku-4-5"
+        )
 
     def test_unknown_model_raises(self):
         with pytest.raises(UnknownModelError):

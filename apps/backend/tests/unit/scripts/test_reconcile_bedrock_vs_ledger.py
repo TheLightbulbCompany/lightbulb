@@ -1,0 +1,560 @@
+"""Unit tests for the Bedrock-vs-ledger reconciliation script.
+
+All AWS/DDB access is mocked — no live calls. The headline case mirrors
+the real incident: AWS metered ~510M cache-read tokens while the ledger
+recorded 0 (cache tokens dropped), which must surface as ~100% divergence
+and an ALERT / non-zero exit.
+"""
+
+from __future__ import annotations
+
+import argparse
+from datetime import date
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from scripts.reconcile_bedrock_vs_ledger import (
+    ClassResult,
+    build_arg_parser,
+    fetch_ledger_period_totals,
+    format_report,
+    main,
+    reconcile,
+    resolve_window,
+    sum_metric_datapoints,
+    _is_month_aligned,
+    _period_strings,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Divergence math
+# --------------------------------------------------------------------------- #
+
+
+def test_class_result_exact_match_is_zero_divergence():
+    r = ClassResult(name="input", aws_total=1_000_000, ledger_total=1_000_000)
+    assert r.abs_diff == 0
+    assert r.divergence_pct == 0.0
+
+
+def test_class_result_cache_undercount_is_full_divergence():
+    """The incident: AWS metered 510M cache tokens, ledger recorded 0."""
+    r = ClassResult(name="cache_read", aws_total=510_000_000, ledger_total=0)
+    assert r.abs_diff == 510_000_000
+    assert r.divergence_pct == 100.0
+
+
+def test_class_result_partial_undercount():
+    # Ledger captured a quarter of what AWS metered → 75% divergence.
+    r = ClassResult(name="input", aws_total=400, ledger_total=100)
+    assert r.divergence_pct == pytest.approx(75.0)
+
+
+def test_class_result_overcount_uses_aws_denominator():
+    # Ledger reports more than AWS billed → still measured against AWS.
+    r = ClassResult(name="output", aws_total=100, ledger_total=150)
+    assert r.abs_diff == 50
+    assert r.divergence_pct == pytest.approx(50.0)
+
+
+def test_class_result_zero_aws_zero_ledger_is_zero():
+    r = ClassResult(name="cache_write", aws_total=0, ledger_total=0)
+    assert r.divergence_pct == 0.0
+
+
+def test_class_result_zero_aws_nonzero_ledger_is_full_divergence():
+    # AWS billed nothing but the ledger invented tokens — maximal divergence.
+    r = ClassResult(name="cache_write", aws_total=0, ledger_total=42)
+    assert r.divergence_pct == 100.0
+
+
+# --------------------------------------------------------------------------- #
+# reconcile() pairing
+# --------------------------------------------------------------------------- #
+
+
+def test_reconcile_pairs_metrics_to_columns():
+    aws_metrics = {
+        "InputTokenCount": 1000,
+        "OutputTokenCount": 200,
+        "CacheReadInputTokenCount": 510_000_000,
+        "CacheWriteInputTokenCount": 30,
+    }
+    ledger_totals = {
+        "total_input_tokens": 1000,
+        "total_output_tokens": 200,
+        "total_cache_read_tokens": 0,
+        "total_cache_write_tokens": 0,
+    }
+    results = {r.name: r for r in reconcile(aws_metrics, ledger_totals)}
+
+    assert results["input"].aws_total == 1000
+    assert results["input"].ledger_total == 1000
+    assert results["cache_read"].aws_total == 510_000_000
+    assert results["cache_read"].ledger_total == 0
+    assert results["cache_read"].divergence_pct == 100.0
+    assert results["cache_write"].ledger_total == 0
+
+
+def test_reconcile_defaults_missing_keys_to_zero():
+    results = {r.name: r for r in reconcile({}, {})}
+    assert set(results) == {"input", "output", "cache_read", "cache_write"}
+    for r in results.values():
+        assert r.aws_total == 0
+        assert r.ledger_total == 0
+        assert r.divergence_pct == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# format_report() + threshold alerting
+# --------------------------------------------------------------------------- #
+
+
+def test_format_report_alerts_on_cache_undercount():
+    results = reconcile(
+        {"CacheReadInputTokenCount": 510_000_000, "InputTokenCount": 1000},
+        {"total_input_tokens": 1000, "total_cache_read_tokens": 0},
+    )
+    text, alerted = format_report(results, threshold_pct=20.0)
+    assert alerted is True
+    assert "OVER THRESHOLD" in text
+    assert "cache_read" in text
+    assert "OVERALL" in text
+
+
+def test_format_report_no_alert_when_within_threshold():
+    # Every class within 10% of AWS.
+    results = reconcile(
+        {
+            "InputTokenCount": 1000,
+            "OutputTokenCount": 1000,
+            "CacheReadInputTokenCount": 1000,
+            "CacheWriteInputTokenCount": 1000,
+        },
+        {
+            "total_input_tokens": 950,
+            "total_output_tokens": 1050,
+            "total_cache_read_tokens": 1000,
+            "total_cache_write_tokens": 980,
+        },
+    )
+    text, alerted = format_report(results, threshold_pct=20.0)
+    assert alerted is False
+    assert "OVER THRESHOLD" not in text
+
+
+def test_format_report_threshold_is_strict_greater_than():
+    # Exactly at threshold (20%) must NOT alert; just over must.
+    at = reconcile({"InputTokenCount": 100}, {"total_input_tokens": 80})
+    _, at_alerted = format_report(at, threshold_pct=20.0)
+    assert at_alerted is False
+
+    over = reconcile({"InputTokenCount": 100}, {"total_input_tokens": 79})
+    _, over_alerted = format_report(over, threshold_pct=20.0)
+    assert over_alerted is True
+
+
+def test_format_report_overall_row_is_its_own_check():
+    # The OVERALL aggregate is evaluated against the threshold independently
+    # of the per-class flags — here one heavily-skewed class drives the
+    # aggregate over 20%.
+    results = reconcile(
+        {
+            "InputTokenCount": 1000,
+            "OutputTokenCount": 10,
+            "CacheReadInputTokenCount": 10,
+            "CacheWriteInputTokenCount": 10,
+        },
+        {
+            "total_input_tokens": 700,
+            "total_output_tokens": 10,
+            "total_cache_read_tokens": 10,
+            "total_cache_write_tokens": 10,
+        },
+    )
+    text, alerted = format_report(results, threshold_pct=20.0)
+    assert alerted is True
+
+
+# --------------------------------------------------------------------------- #
+# sum_metric_datapoints()
+# --------------------------------------------------------------------------- #
+
+
+def test_sum_metric_datapoints_folds_sum_field():
+    resp = {"Datapoints": [{"Sum": 100.0}, {"Sum": 250.0}, {"Sum": 1.4}]}
+    assert sum_metric_datapoints(resp) == 351
+
+
+def test_sum_metric_datapoints_empty():
+    assert sum_metric_datapoints({"Datapoints": []}) == 0
+    assert sum_metric_datapoints({}) == 0
+
+
+# --------------------------------------------------------------------------- #
+# Period-string generation + month alignment
+# --------------------------------------------------------------------------- #
+
+
+def test_period_strings_single_month():
+    assert _period_strings(date(2026, 6, 1), date(2026, 7, 1)) == ["2026-06"]
+
+
+def test_period_strings_spans_two_months():
+    assert _period_strings(date(2026, 5, 15), date(2026, 6, 10)) == ["2026-05", "2026-06"]
+
+
+def test_period_strings_crosses_year_boundary():
+    assert _period_strings(date(2025, 12, 20), date(2026, 2, 5)) == [
+        "2025-12",
+        "2026-01",
+        "2026-02",
+    ]
+
+
+def test_period_strings_end_before_start_is_empty():
+    assert _period_strings(date(2026, 6, 1), date(2026, 6, 1)) == []
+    assert _period_strings(date(2026, 6, 2), date(2026, 6, 1)) == []
+
+
+def test_period_strings_end_exclusive_does_not_pull_extra_month():
+    # End is the 1st of July (exclusive) → only June, not July.
+    assert _period_strings(date(2026, 6, 1), date(2026, 7, 1)) == ["2026-06"]
+
+
+def test_is_month_aligned():
+    assert _is_month_aligned(date(2026, 6, 1), date(2026, 7, 1)) is True
+    assert _is_month_aligned(date(2026, 6, 1), date(2026, 6, 15)) is False
+    assert _is_month_aligned(date(2026, 6, 3), date(2026, 7, 1)) is False
+
+
+# --------------------------------------------------------------------------- #
+# fetch_ledger_period_totals() — skips lifetime + member:* rows
+# --------------------------------------------------------------------------- #
+
+
+async def test_fetch_ledger_period_totals_sums_only_period_rows():
+    """Lifetime and member:* rows must be excluded to avoid double-count."""
+    items = [
+        # Two owners' June period rollups — summed.
+        {
+            "owner_id": "user_a",
+            "period": "2026-06",
+            "total_input_tokens": 100,
+            "total_output_tokens": 10,
+            "total_cache_read_tokens": 1000,
+            "total_cache_write_tokens": 5,
+        },
+        {
+            "owner_id": "org_b",
+            "period": "2026-06",
+            "total_input_tokens": 200,
+            "total_output_tokens": 20,
+            "total_cache_read_tokens": 2000,
+            "total_cache_write_tokens": 10,
+        },
+        # Lifetime row — SKIPPED.
+        {
+            "owner_id": "user_a",
+            "period": "lifetime",
+            "total_input_tokens": 999999,
+            "total_output_tokens": 999999,
+            "total_cache_read_tokens": 999999,
+            "total_cache_write_tokens": 999999,
+        },
+        # Member row — SKIPPED (subset of org_b's period rollup).
+        {
+            "owner_id": "org_b",
+            "period": "member:user_m:2026-06",
+            "total_input_tokens": 150,
+            "total_output_tokens": 15,
+            "total_cache_read_tokens": 1500,
+            "total_cache_write_tokens": 7,
+        },
+        # A different month — SKIPPED (not in the requested window).
+        {
+            "owner_id": "user_a",
+            "period": "2026-05",
+            "total_input_tokens": 500,
+            "total_output_tokens": 50,
+            "total_cache_read_tokens": 5000,
+            "total_cache_write_tokens": 25,
+        },
+    ]
+    fake_table = _FakeTable(pages=[{"Items": items}])
+
+    with (
+        patch("core.dynamodb.get_table", return_value=fake_table),
+        patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
+    ):
+        totals = await fetch_ledger_period_totals(["2026-06"])
+
+    assert totals == {
+        "total_input_tokens": 300,
+        "total_output_tokens": 30,
+        "total_cache_read_tokens": 3000,
+        "total_cache_write_tokens": 15,
+    }
+
+
+async def test_fetch_ledger_period_totals_paginates():
+    page1 = {
+        "Items": [
+            {"owner_id": "u1", "period": "2026-06", "total_input_tokens": 1},
+        ],
+        "LastEvaluatedKey": {"owner_id": "u1", "period": "2026-06"},
+    }
+    page2 = {
+        "Items": [
+            {"owner_id": "u2", "period": "2026-06", "total_input_tokens": 4},
+        ],
+    }
+    fake_table = _FakeTable(pages=[page1, page2])
+
+    with (
+        patch("core.dynamodb.get_table", return_value=fake_table),
+        patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
+    ):
+        totals = await fetch_ledger_period_totals(["2026-06"])
+
+    assert totals["total_input_tokens"] == 5
+    assert fake_table.scan_calls == 2
+
+
+async def test_fetch_ledger_period_totals_sums_multiple_periods():
+    items = [
+        {"owner_id": "u1", "period": "2026-05", "total_input_tokens": 10},
+        {"owner_id": "u1", "period": "2026-06", "total_input_tokens": 20},
+        {"owner_id": "u1", "period": "2026-07", "total_input_tokens": 999},
+    ]
+    fake_table = _FakeTable(pages=[{"Items": items}])
+
+    with (
+        patch("core.dynamodb.get_table", return_value=fake_table),
+        patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
+    ):
+        totals = await fetch_ledger_period_totals(["2026-05", "2026-06"])
+
+    assert totals["total_input_tokens"] == 30  # 2026-07 excluded
+
+
+# --------------------------------------------------------------------------- #
+# argparse
+# --------------------------------------------------------------------------- #
+
+
+def test_argparse_requires_env():
+    parser = build_arg_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([])
+
+
+def test_argparse_rejects_unknown_env():
+    parser = build_arg_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--env", "staging"])
+
+
+def test_argparse_days_window():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--env", "prod", "--days", "30"])
+    assert args.env == "prod"
+    assert args.days == 30
+    assert args.threshold_pct == 20.0
+
+
+def test_argparse_start_end_window_and_threshold():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--env", "dev", "--start", "2026-05-01", "--end", "2026-06-01", "--threshold-pct", "15"])
+    assert args.start == date(2026, 5, 1)
+    assert args.end == date(2026, 6, 1)
+    assert args.threshold_pct == 15.0
+
+
+def test_resolve_window_rejects_days_with_start():
+    # argparse can't express "either --days OR (--start AND --end)", so the
+    # combination is caught at resolve time, not parse time.
+    parser = build_arg_parser()
+    args = parser.parse_args(["--env", "prod", "--days", "7", "--start", "2026-05-01"])
+    with pytest.raises(ValueError):
+        resolve_window(args)
+
+
+def test_argparse_rejects_bad_iso_date():
+    parser = build_arg_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--env", "prod", "--start", "not-a-date", "--end", "2026-06-01"])
+
+
+# --------------------------------------------------------------------------- #
+# resolve_window()
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_window_days():
+    args = argparse.Namespace(days=10, start=None, end=None)
+    start, end = resolve_window(args)
+    assert (end - start).days == 10
+
+
+def test_resolve_window_explicit_dates():
+    args = argparse.Namespace(days=None, start=date(2026, 5, 1), end=date(2026, 6, 1))
+    assert resolve_window(args) == (date(2026, 5, 1), date(2026, 6, 1))
+
+
+def test_resolve_window_rejects_end_before_start():
+    args = argparse.Namespace(days=None, start=date(2026, 6, 1), end=date(2026, 5, 1))
+    with pytest.raises(ValueError):
+        resolve_window(args)
+
+
+def test_resolve_window_rejects_nonpositive_days():
+    args = argparse.Namespace(days=0, start=None, end=None)
+    with pytest.raises(ValueError):
+        resolve_window(args)
+
+
+def test_resolve_window_requires_a_window():
+    args = argparse.Namespace(days=None, start=None, end=None)
+    with pytest.raises(ValueError):
+        resolve_window(args)
+
+
+# --------------------------------------------------------------------------- #
+# main() — end-to-end with both AWS + DDB mocked
+# --------------------------------------------------------------------------- #
+
+
+async def test_main_alerts_and_exits_nonzero_on_cache_undercount(capsys):
+    """The incident, end-to-end: AWS=510M cache, ledger=0 → exit 1 + ALERT."""
+    args = argparse.Namespace(
+        env="prod",
+        days=None,
+        start=date(2026, 6, 1),
+        end=date(2026, 7, 1),
+        threshold_pct=20.0,
+    )
+    aws_metrics = {
+        "InputTokenCount": 1_000_000,
+        "OutputTokenCount": 200_000,
+        "CacheReadInputTokenCount": 510_000_000,
+        "CacheWriteInputTokenCount": 20_000_000,
+    }
+    ledger_totals = {
+        "total_input_tokens": 1_000_000,
+        "total_output_tokens": 200_000,
+        "total_cache_read_tokens": 0,
+        "total_cache_write_tokens": 0,
+    }
+
+    with (
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_metrics",
+            new=AsyncMock(return_value=aws_metrics),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
+            new=AsyncMock(return_value=ledger_totals),
+        ),
+    ):
+        rc = await main(args)
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "ALERT" in out
+    assert "cache_read" in out
+
+
+async def test_main_clean_run_exits_zero(capsys):
+    args = argparse.Namespace(
+        env="dev",
+        days=None,
+        start=date(2026, 6, 1),
+        end=date(2026, 7, 1),
+        threshold_pct=20.0,
+    )
+    matched = {
+        "InputTokenCount": 1000,
+        "OutputTokenCount": 1000,
+        "CacheReadInputTokenCount": 1000,
+        "CacheWriteInputTokenCount": 1000,
+    }
+    ledger = {
+        "total_input_tokens": 1000,
+        "total_output_tokens": 1000,
+        "total_cache_read_tokens": 1000,
+        "total_cache_write_tokens": 1000,
+    }
+    with (
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_metrics",
+            new=AsyncMock(return_value=matched),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
+            new=AsyncMock(return_value=ledger),
+        ),
+    ):
+        rc = await main(args)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "OK:" in out
+    assert "ALERT" not in out
+
+
+async def test_main_warns_on_non_month_aligned_window(capsys):
+    args = argparse.Namespace(
+        env="prod",
+        days=None,
+        start=date(2026, 6, 3),
+        end=date(2026, 6, 20),
+        threshold_pct=20.0,
+    )
+    with (
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_metrics",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
+            new=AsyncMock(return_value={}),
+        ),
+    ):
+        await main(args)
+
+    out = capsys.readouterr().out
+    assert "not month-aligned" in out
+
+
+async def test_main_returns_2_on_invalid_window(capsys):
+    args = argparse.Namespace(env="prod", days=None, start=None, end=None, threshold_pct=20.0)
+    rc = await main(args)
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "ERROR" in out
+
+
+# --------------------------------------------------------------------------- #
+# Test doubles
+# --------------------------------------------------------------------------- #
+
+
+class _FakeTable:
+    """Minimal DDB Table stub: yields preset scan pages in order."""
+
+    def __init__(self, pages: list[dict]):
+        self._pages = pages
+        self.scan_calls = 0
+
+    def scan(self, **kwargs):  # noqa: ARG002 - signature parity with boto3
+        page = self._pages[self.scan_calls]
+        self.scan_calls += 1
+        return page
+
+
+async def _passthrough_run_in_thread(func, *args, **kwargs):
+    """Call the function directly instead of offloading to a thread."""
+    return func(*args, **kwargs)

@@ -523,7 +523,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const toolStreamSyncTimerRef = useRef<number | null>(null);
   const TOOL_STREAM_THROTTLE_MS = 80;
 
-  const syncToolStreamMessages = useCallback(() => {
+  const syncToolStreamMessages = useCallback((force = false) => {
     const flush = () => {
       const ordered: HistoryMessage[] = toolStreamOrderRef.current
         .map((id) => toolStreamByIdRef.current.get(id))
@@ -559,15 +559,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       setChatToolMessages(ordered);
       toolStreamSyncTimerRef.current = null;
     };
-    // Force-flush immediately if any entry is in terminal state — this must
-    // run BEFORE the "already scheduled" early-return, otherwise a tool_end
-    // arriving while a throttle timer is pending gets stuck behind the timer
-    // (terminal-state tool_result lands ~80ms late and the UI flashes a
-    // half-finished tool card).
-    const hasTerminal = Array.from(toolStreamByIdRef.current.values()).some(
-      (e) => e.status !== "running",
-    );
-    if (hasTerminal) {
+    // Force-flush immediately only when the CALLER signals a terminal event
+    // (tool_end/tool_error, or an accepted activity pill) — mirrors upstream's
+    // scheduleToolStreamSync(host, phase === "result"). A pending throttle
+    // timer is cleared so the terminal tool_result lands at once instead of
+    // ~80ms late (which would flash a half-finished tool card). Deriving this
+    // from map state ("any entry terminal") instead is wrong: once any tool/
+    // activity has completed, every high-frequency command_output/tool_progress
+    // frame would bypass the throttle and trigger a React render per chunk.
+    if (force) {
       if (toolStreamSyncTimerRef.current !== null) {
         window.clearTimeout(toolStreamSyncTimerRef.current);
         toolStreamSyncTimerRef.current = null;
@@ -842,7 +842,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           entry.status = msg.type === "tool_error" ? "error" : "done";
           entry.updatedAt = Date.now();
           toolStreamByIdRef.current.set(toolCallId, entry);
-          syncToolStreamMessages();
+          // Terminal event → force-flush so the tool_result lands at once.
+          syncToolStreamMessages(true);
           return;
         }
         // No live entry — likely the post-approval continuation for a
@@ -903,7 +904,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         if (!isStreamingRef.current) setIsStreaming(true);
         const entry = toolStreamByIdRef.current.get(toolCallId);
         if (!entry) return;
-        entry.progressText = renderPartial(msg.partialResult);
+        // A status-only update (no partialResult) carries no new output. Skip it
+        // instead of clearing the accumulated progress — renderPartial(null) is
+        // "", which would wipe prior command_output. Our backend forwards
+        // partialResult-less update frames; upstream's stream rarely emits them.
+        const partial = renderPartial(msg.partialResult);
+        if (!partial) return;
+        entry.progressText = partial;
         entry.updatedAt = Date.now();
         toolStreamByIdRef.current.set(toolCallId, entry);
         syncToolStreamMessages();
@@ -934,7 +941,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // synthetic id (activity+runId) so repeated activities of the same kind
         // within a run collapse into one updating pill rather than stacking.
         // Status "done" because activities are point-in-time, not long-running
-        // — this also force-flushes syncToolStreamMessages (terminal entry).
+        // (the sync call below force-flushes it as a terminal event).
         const synthId = `activity:${msg.activity}:${msg.runId}`;
         const now = Date.now();
         const existing = toolStreamByIdRef.current.get(synthId);
@@ -960,7 +967,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           commitStreamBeforePill();
           toolStreamOrderRef.current.push(synthId);
         }
-        syncToolStreamMessages();
+        // Activity pills are point-in-time (status "done") → terminal, so
+        // force-flush like tool_end.
+        syncToolStreamMessages(true);
         // An accepted activity pill means the run is busy — mark it streaming so
         // the stop affordance shows and cancelMessage works (it guards on
         // isStreaming). Mirrors the chunk/thinking/tool_start branches, which

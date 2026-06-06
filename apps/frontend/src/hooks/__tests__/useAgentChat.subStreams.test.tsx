@@ -142,6 +142,43 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     }
   });
 
+  it("a status-only tool_progress (no partialResult) keeps prior streamed output", () => {
+    // Our backend forwards phase:"update" frames that may omit partialResult;
+    // renderPartial(undefined) is "", so a naive assignment would wipe the
+    // accumulated output. The branch must skip the empty update, not clear it.
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+      act(() => {
+        startTool();
+        emit({
+          type: "tool_progress",
+          tool: "bash",
+          toolCallId: "t1",
+          partialResult: [{ type: "text", text: "real output\n" }],
+          agent_id: AGENT,
+          runId: RUN,
+        } as ChatIncomingMessage);
+        // Status-only update: no partialResult — must not clear the prior output.
+        emit({
+          type: "tool_progress",
+          tool: "bash",
+          toolCallId: "t1",
+          agent_id: AGENT,
+          runId: RUN,
+        } as ChatIncomingMessage);
+      });
+      act(() => {
+        vi.advanceTimersByTime(TOOL_STREAM_THROTTLE_MS);
+      });
+      const block = findToolUseBlock(result.current.renderItems, "t1");
+      expect(block).toBeTruthy();
+      expect(block!.progressText).toBe("real output\n");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("command_output appends to the live tool entry progressText", () => {
     vi.useFakeTimers();
     try {

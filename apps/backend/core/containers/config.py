@@ -489,6 +489,50 @@ def workflow_plugin_entries() -> dict:
     }
 
 
+def memory_plugin_entries() -> dict:
+    """The bundled ``memory-core`` extension with nightly LIGHT-phase dreaming,
+    shared by the provision-time builder and the provider hot-swap path.
+
+    Light-phase dreaming reads recent session transcripts off disk and writes
+    consolidated dated ``memory/<day>.md`` notes (flat files, under a lockfile,
+    no embeddings). Today/yesterday's dated notes auto-load into context, so
+    agents carry recent work forward without relying on the agent remembering
+    to call ``memory_search``.
+
+    REM is OFF: it only writes ``DREAMS.md``, which nothing in Isol8 reads (no
+    Dreaming UI) — pure noise/cost. DEEP is OFF: it auto-promotes recurring
+    recalls into root ``MEMORY.md`` but is gated on sustained ``memory_search``
+    recall traffic, which is ~zero today; enable it once recall is actually
+    exercised. ``memory_search`` itself stays ENABLED in agents.defaults (live
+    logs show no sqlite contention; recall is what lets agents remember beyond
+    the always-loaded ``MEMORY.md``).
+
+    Keys are restricted to the upstream ``memory-core`` configSchema, which is
+    strict (``additionalProperties:false``) at every level: the only key under
+    ``config`` is ``dreaming``. A stray key crash-loops the container at boot.
+
+    Returned fresh each call so callers may merge/mutate without corrupting
+    shared module state.
+    """
+    return {
+        "memory-core": {
+            "enabled": True,
+            "config": {
+                "dreaming": {
+                    "enabled": True,
+                    "frequency": "0 3 * * *",  # nightly 03:00 unified sweep
+                    "timezone": "UTC",
+                    "phases": {
+                        "light": {"enabled": True},
+                        "deep": {"enabled": False},
+                        "rem": {"enabled": False},
+                    },
+                },
+            },
+        },
+    }
+
+
 def build_openclaw_config_dict(
     *,
     user_id: str,
@@ -644,12 +688,15 @@ def build_openclaw_config_dict(
                 # assignment/comment) is independent of this.
                 "heartbeat": {"every": "30m"},
                 "workspace": "/home/node/.openclaw/workspaces",
-                # Memory embedding provider, kept pinned to Bedrock so any
-                # future plugin that does want embeddings inherits a sane
-                # default. Today's `builtin` backend doesn't use embeddings
-                # — it's flat MEMORY.md files. Without an explicit provider,
-                # openclaw defaults to "local" (GGUF we don't ship), which
-                # historically caused hangs.
+                # Memory recall stays ON (matches main): memory-core registers
+                # memory_search/memory_get, and the "Memory Recall" prompt
+                # section only renders while those tools exist. The per-agent
+                # embeddings index is sqlite on EFS; we keep it on EFS because
+                # live container logs show no sqlite contention and recall is
+                # what lets agents remember beyond the always-loaded MEMORY.md.
+                # provider/model pinned to Bedrock Titan (not upstream's
+                # "local" GGUF, which we don't ship and which historically
+                # hung on first embed).
                 "memorySearch": {
                     "enabled": True,
                     "provider": "bedrock",
@@ -778,6 +825,11 @@ def build_openclaw_config_dict(
                 # Kept in sync with the provider hot-swap path via the shared
                 # workflow_plugin_entries() seam.
                 **workflow_plugin_entries(),
+                # memory-core's dreaming subsystem (light phase only; REM + deep
+                # OFF). Shared with the provider hot-swap path via the
+                # memory_plugin_entries() seam so a Bedrock <-> ChatGPT switch
+                # doesn't drop it.
+                **memory_plugin_entries(),
             },
         },
         # Channels: we ship every supported provider as `enabled: true`

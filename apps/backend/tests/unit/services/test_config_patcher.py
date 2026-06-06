@@ -957,9 +957,9 @@ def tmp_efs_with_bedrock_provider(monkeypatch):
 async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bedrock_provider):
     """Bedrock → ChatGPT OAuth: amazon-bedrock provider entry MUST be
     gone after the replace (a deep-merge into {} would leave it in place).
-    The provider-independent workflow plugins persist, so entries is the
-    workflow seam exactly (no lingering amazon-bedrock)."""
-    from core.containers.config import workflow_plugin_entries
+    The provider-independent bundled extensions persist, so entries is the
+    workflow + memory seam exactly (no lingering amazon-bedrock)."""
+    from core.containers.config import memory_plugin_entries, workflow_plugin_entries
 
     await replace_provider_block(
         "user_p",
@@ -970,8 +970,11 @@ async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bed
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         result = json.load(f)
     assert result["models"]["providers"] == {}
-    # amazon-bedrock dropped; workflow plugins survive the wholesale replace.
-    assert result["plugins"]["entries"] == workflow_plugin_entries()
+    # amazon-bedrock dropped; bundled extensions survive the wholesale replace.
+    assert result["plugins"]["entries"] == {
+        **workflow_plugin_entries(),
+        **memory_plugin_entries(),
+    }
     assert "amazon-bedrock" not in result["plugins"]["entries"]
     assert result["agents"]["defaults"]["model"]["primary"] == "openai-codex/gpt-5.5"
 
@@ -1017,6 +1020,67 @@ async def test_replace_provider_block_preserves_unrelated_subtrees(tmp_efs_with_
     # Top-level siblings preserved.
     assert result["gateway"] == {"mode": "local"}
     assert result["tools"] == {"profile": "full"}
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock_provider):
+    """A provider swap must not drop memory-core. Like lobster/llm-task it is
+    a bundled extension enabled at provision time and is independent of the
+    chosen LLM provider; losing it on a Bedrock <-> ChatGPT switch would
+    silently disable dreaming until a full reprovision."""
+    from core.containers.config import memory_plugin_entries
+
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        entries = json.load(f)["plugins"]["entries"]
+    assert entries["memory-core"] == memory_plugin_entries()["memory-core"]
+    assert entries["memory-core"]["config"]["dreaming"]["enabled"] is True
+    assert entries["memory-core"]["config"]["dreaming"]["phases"]["deep"] == {"enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_leaves_memory_search_enabled(tmp_efs_with_bedrock_provider):
+    """A provider swap must NOT force memorySearch off. Recall is intentionally
+    on (memory-core registers memory_search/memory_get and the "Memory Recall"
+    prompt section only renders while those tools exist), and the embeddings
+    store stays on EFS — live logs show no sqlite contention. So a config with
+    ``memorySearch.enabled: true`` keeps it after the swap."""
+    from core.containers.config import memory_plugin_entries
+
+    # On-disk shape: memorySearch.enabled true (with the provider/model the
+    # builder pins).
+    config_path = os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")
+    with open(config_path) as f:
+        cfg = json.load(f)
+    cfg["agents"]["defaults"]["memorySearch"] = {
+        "enabled": True,
+        "provider": "bedrock",
+        "model": "amazon.titan-embed-text-v2:0",
+    }
+    with open(config_path, "w") as f:
+        json.dump(cfg, f)
+
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    # The swap leaves memorySearch at its provisioned value — recall stays on.
+    assert result["agents"]["defaults"]["memorySearch"]["enabled"] is True
+    assert "memory-core" in result["plugins"]["entries"]
+    assert result["plugins"]["entries"]["memory-core"] == memory_plugin_entries()["memory-core"]
+    # The pinned provider/model survive.
+    assert result["agents"]["defaults"]["memorySearch"]["provider"] == "bedrock"
+    assert result["agents"]["defaults"]["memorySearch"]["model"] == "amazon.titan-embed-text-v2:0"
 
 
 @pytest.mark.asyncio

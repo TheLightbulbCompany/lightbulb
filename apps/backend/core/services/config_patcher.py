@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from core.config import settings
-from core.containers.config import workflow_plugin_entries
+from core.containers.config import memory_plugin_entries, workflow_plugin_entries
 
 logger = logging.getLogger(__name__)
 
@@ -167,10 +167,11 @@ async def replace_provider_block(
     ``plugins``) are created or coerced as needed — a partial existing
     structure from a legacy config doesn't block the swap.
 
-    ``plugins.entries`` is rebuilt as ``workflow_plugin_entries()`` merged
-    with the provider entries, so the provider-independent workflow plugins
-    (lobster / llm-task) persist across provider switches even though the
-    old provider's entry is dropped.
+    ``plugins.entries`` is rebuilt as ``workflow_plugin_entries()`` and
+    ``memory_plugin_entries()`` merged with the provider entries, so the
+    provider-independent bundled extensions (lobster / llm-task and
+    memory-core's dreaming) persist across provider switches even though
+    the old provider's entry is dropped.
 
     Raises ``ConfigPatchError`` (via ``_locked_rmw``) if the owner has
     no ``openclaw.json`` on EFS yet. Callers should fall back to a full
@@ -199,15 +200,20 @@ async def replace_provider_block(
             plugins = {}
             current["plugins"] = plugins
         # Provider entries are replaced wholesale (to drop the OLD provider's
-        # entry on a switch), but the provider-independent workflow plugins
+        # entry on a switch), but the provider-independent bundled extensions
         # must persist — otherwise a Bedrock ↔ ChatGPT swap would drop
-        # lobster / llm-task until full reprovision. Re-seed them from the
-        # same source the provision builder uses. Distinct keys, so the
-        # provider entries below never collide with them.
+        # lobster / llm-task (workflow plugins) and memory-core (dreaming)
+        # until full reprovision. Re-seed them from the same sources the
+        # provision builder uses. Distinct keys, so the provider entries
+        # below never collide with them.
         plugins["entries"] = {
             **workflow_plugin_entries(),
+            **memory_plugin_entries(),
             **copy.deepcopy(plugin_entries),
         }
+
+        # memorySearch stays at its provisioned value (enabled) — recall is
+        # intentionally on; do not force it off here.
 
         return True
 

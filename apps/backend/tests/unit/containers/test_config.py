@@ -62,11 +62,14 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["meta"]["lastTouchedVersion"] == DEPLOYED_UPSTREAM_VERSION
 
-    def test_agents_defaults_memory_search_pinned_to_bedrock(self):
-        # Embedding provider must be pinned to bedrock — the upstream
-        # default is "local" which needs a GGUF model file we don't ship,
-        # and qmd's first embed cycle hangs ~3min on that. Bedrock works
-        # via task-role IAM regardless of the user's chosen auth path.
+    def test_agents_defaults_memory_search_enabled(self):
+        # memorySearch is ON. memory-core registers memory_search/memory_get,
+        # and the "Memory Recall" prompt section only renders while those tools
+        # exist — recall is what lets agents remember beyond the always-loaded
+        # MEMORY.md. The embeddings index is sqlite on EFS, which we keep on EFS
+        # because live container logs show no sqlite contention. provider/model
+        # stay pinned to Bedrock Titan (not upstream's "local" GGUF, which we
+        # don't ship and which historically hung on first embed).
         config = _cfg()
         memory_search = config["agents"]["defaults"]["memorySearch"]
         assert memory_search["enabled"] is True
@@ -137,6 +140,29 @@ class TestOpenclawConfigShape:
         entries = config["plugins"]["entries"]
         assert entries["lobster"] == {"enabled": True}
         assert entries["llm-task"] == {"enabled": True}
+
+    def test_memory_core_dreaming_enabled_light_only(self):
+        """memory-core's dreaming subsystem is enabled at provision with the
+        light phase ON and both REM and deep phases OFF. Light-phase
+        consolidates recent session transcripts into dated memory/<day>.md
+        notes that auto-load — cross-session continuity without relying on
+        discretionary writes. REM only writes DREAMS.md (nothing reads it);
+        deep needs sustained memory_search recall traffic that is ~zero today.
+        Only schema-legal keys may appear under
+        plugins.entries.memory-core.config — the upstream configSchema is
+        additionalProperties:false at every level, so a stray key bricks the
+        container at boot."""
+        config = _cfg()
+        entry = config["plugins"]["entries"]["memory-core"]
+        assert entry["enabled"] is True
+        dreaming = entry["config"]["dreaming"]
+        assert dreaming["enabled"] is True
+        assert dreaming["frequency"] == "0 3 * * *"
+        assert dreaming["timezone"] == "UTC"
+        assert dreaming["phases"]["light"] == {"enabled": True}
+        assert dreaming["phases"]["rem"] == {"enabled": False}
+        assert dreaming["phases"]["deep"] == {"enabled": False}
+        assert set(entry["config"].keys()) == {"dreaming"}
 
     def test_tools_exec_approval_policy(self):
         """allowlist + on-miss lets the in-chat approval card decide on

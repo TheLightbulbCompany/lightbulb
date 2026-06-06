@@ -70,16 +70,17 @@ async def test_personal_owner_writes_four_files(monkeypatch):
         workspace=workspace,
     )
 
-    # Six files written under the right path: 5 markdown templates + the
+    # Seven files written under the right path: 6 markdown templates + the
     # .openclaw/workspace-state.json marker that prevents OpenClaw's boot-time
     # reconcile from deleting BOOTSTRAP.md.
-    assert workspace.write_file_if_missing.call_count == 6
+    assert workspace.write_file_if_missing.call_count == 7
     paths = [call.args[1] for call in workspace.write_file_if_missing.call_args_list]
     assert all(p.startswith("workspaces/f47ac10b-58cc-4372-a567-0e02b2c3d479/") for p in paths)
     assert sorted(p.rsplit("/", 1)[-1] for p in paths) == [
         "AGENTS.md",
         "BOOTSTRAP.md",
         "IDENTITY.md",
+        "MEMORY.md",
         "SOUL.md",
         "USER.md",
         "workspace-state.json",
@@ -93,6 +94,15 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     assert "Sam's AI company" in contents_by_name["SOUL.md"]
     assert "sam@example.com" in contents_by_name["USER.md"]
     assert "Sam" in contents_by_name["BOOTSTRAP.md"]
+
+    # MEMORY.md is seeded as a structured durable-memory scaffold so every
+    # Friday starts with a place to record decisions / preferences / facts.
+    memory_md = contents_by_name["MEMORY.md"]
+    assert "# MEMORY.md" in memory_md
+    assert "## About Sam" in memory_md
+    assert "## Operating Decisions" in memory_md
+    assert "## Known Issues & Workarounds" in memory_md
+    assert "## Lessons Learned" in memory_md
 
     # BOOTSTRAP.md must explicitly forbid tool use on the opening turn — the
     # earlier template said "Delete this file" and frontier models would
@@ -175,7 +185,7 @@ async def test_skipped_existing_when_files_already_present(monkeypatch):
     """Reprovision case: write_file_if_missing returns False → no error,
     metric recorded for skipped_existing."""
     workspace = MagicMock()
-    # All four writes return False (files already exist on EFS).
+    # All writes return False (files already exist on EFS).
     workspace.write_file_if_missing = MagicMock(return_value=False)
 
     async def fake_resolve(owner_id):
@@ -197,9 +207,9 @@ async def test_skipped_existing_when_files_already_present(monkeypatch):
         workspace=workspace,
     )
 
-    # Still attempted all six writes (5 markdown + 1 state file);
+    # Still attempted all seven writes (6 markdown + 1 state file);
     # write_file_if_missing handles the skip.
-    assert workspace.write_file_if_missing.call_count == 6
+    assert workspace.write_file_if_missing.call_count == 7
 
 
 @pytest.mark.asyncio
@@ -251,12 +261,12 @@ async def test_state_file_written_first_with_setup_completed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
-    """If workspace-state.json write raises, the four markdown templates
+    """If workspace-state.json write raises, the six markdown templates
     still write (best-effort: state file is the floor, not the ceiling)."""
     workspace = MagicMock()
 
-    # First call (state file) raises; subsequent calls (4 templates) succeed.
-    side_effects = [OSError("disk full")] + [True] * 4
+    # First call (state file) raises; subsequent calls (6 templates) succeed.
+    side_effects = [OSError("disk full")] + [True] * 6
     workspace.write_file_if_missing = MagicMock(side_effect=side_effects)
 
     async def fake_resolve(owner_id):
@@ -278,10 +288,10 @@ async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
         workspace=workspace,
     )
 
-    # 1 state-file attempt (failed) + 5 template writes = 6 calls.
-    assert workspace.write_file_if_missing.call_count == 6
+    # 1 state-file attempt (failed) + 6 template writes = 7 calls.
+    assert workspace.write_file_if_missing.call_count == 7
     template_names = sorted(c.args[1].rsplit("/", 1)[-1] for c in workspace.write_file_if_missing.call_args_list[1:])
-    assert template_names == ["AGENTS.md", "BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md"]
+    assert template_names == ["AGENTS.md", "BOOTSTRAP.md", "IDENTITY.md", "MEMORY.md", "SOUL.md", "USER.md"]
 
 
 @pytest.mark.parametrize(

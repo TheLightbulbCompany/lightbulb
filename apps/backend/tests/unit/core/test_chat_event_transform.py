@@ -80,9 +80,128 @@ class TestTransformAgentEvent:
         )
         assert r2 == {"type": "chunk", "content": "Hello world", "runId": "run-1"}
 
-    def test_non_assistant_non_tool_stream_ignored(self):
+    def test_lifecycle_stream_still_ignored(self):
+        """lifecycle is consumed by _handle_message (run-active + billing) and
+        is not a user-visible chat surface — the transform never forwards it."""
         assert GatewayConnection._transform_agent_event({"stream": "lifecycle", "data": {"phase": "start"}}) is None
-        assert GatewayConnection._transform_agent_event({"stream": "compaction", "data": {"phase": "start"}}) is None
+        assert GatewayConnection._transform_agent_event({"stream": "lifecycle", "data": {"phase": "end"}}) is None
+
+    def test_approval_stream_still_ignored(self):
+        """approval is consumed by _handle_message (the awaiting-approval
+        run-active window logic). The transform must NOT forward it — doing so
+        would double-handle the approval bracket and conflict with the
+        run-active state machine."""
+        assert (
+            GatewayConnection._transform_agent_event(
+                {
+                    "stream": "approval",
+                    "data": {"phase": "requested", "kind": "exec", "status": "pending"},
+                    "runId": "r",
+                }
+            )
+            is None
+        )
+
+    def test_command_output_delta_forwarded(self):
+        result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "command_output",
+                "data": {
+                    "toolCallId": "t1",
+                    "phase": "delta",
+                    "name": "bash",
+                    "output": "compiling...\n",
+                    "title": "bash",
+                },
+                "runId": "run-1",
+            }
+        )
+        assert result == {
+            "type": "command_output",
+            "toolCallId": "t1",
+            "output": "compiling...\n",
+            "runId": "run-1",
+        }
+
+    def test_command_output_without_toolcallid_ignored(self):
+        assert (
+            GatewayConnection._transform_agent_event(
+                {"stream": "command_output", "data": {"output": "x"}, "runId": "r"}
+            )
+            is None
+        )
+
+    def test_compaction_stream_dropped(self):
+        """Compaction is not surfaced to the chat client yet. Rendering it
+        correctly needs a mid-run live-turn boundary plus a willRetry
+        stream-offset reset, so the transform drops both phases for now and
+        compaction lands in its own change."""
+        assert (
+            GatewayConnection._transform_agent_event(
+                {"stream": "compaction", "data": {"phase": "end", "completed": True}, "runId": "run-1"}
+            )
+            is None
+        )
+        assert (
+            GatewayConnection._transform_agent_event({"stream": "compaction", "data": {"phase": "start"}, "runId": "r"})
+            is None
+        )
+
+    def test_plan_stream_forwarded_as_activity(self):
+        result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "plan",
+                "data": {"phase": "update", "title": "Assistant proposed a plan", "steps": ["a", "b"]},
+                "runId": "run-1",
+            }
+        )
+        assert result == {
+            "type": "agent_activity",
+            "activity": "plan",
+            "title": "Assistant proposed a plan",
+            "detail": {"phase": "update", "title": "Assistant proposed a plan", "steps": ["a", "b"]},
+            "runId": "run-1",
+        }
+
+    def test_patch_stream_forwarded_as_activity(self):
+        result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "patch",
+                "data": {
+                    "phase": "end",
+                    "title": "Edited 2 files",
+                    "added": ["x"],
+                    "modified": [],
+                    "deleted": [],
+                    "summary": "…",
+                    "toolCallId": "t9",
+                },
+                "runId": "run-1",
+            }
+        )
+        assert result["type"] == "agent_activity"
+        assert result["activity"] == "patch"
+        assert result["title"] == "Edited 2 files"
+        assert result["runId"] == "run-1"
+
+    def test_item_stream_forwarded_as_activity(self):
+        result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "item",
+                "data": {"itemId": "i1", "phase": "start", "kind": "search", "title": "Searching", "status": "running"},
+                "runId": "run-1",
+            }
+        )
+        assert result["type"] == "agent_activity"
+        assert result["activity"] == "item"
+        assert result["title"] == "Searching"
+
+    def test_acp_stream_forwarded_as_activity(self):
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "acp", "data": {"title": "ACP step"}, "runId": "run-1"}
+        )
+        assert result["type"] == "agent_activity"
+        assert result["activity"] == "acp"
 
     def test_tool_stream_start_phase(self):
         result = GatewayConnection._transform_agent_event(
@@ -162,12 +281,62 @@ class TestTransformAgentEvent:
             "runId": "run-1",
         }
 
-    def test_tool_stream_update_phase_ignored(self):
-        """Intermediate tool updates are not forwarded."""
+    def test_tool_stream_update_phase_emits_progress(self):
+        """phase:"update" carries partialResult — forward it as tool_progress
+        so the live tool pill shows incremental output (upstream renders this
+        via formatToolOutput(data.partialResult)). Requires a toolCallId to
+        address the live pill."""
         result = GatewayConnection._transform_agent_event(
-            {"stream": "tool", "data": {"name": "web_search", "phase": "update", "toolCallId": "abc-123"}}
+            {
+                "stream": "tool",
+                "data": {
+                    "name": "bash",
+                    "phase": "update",
+                    "toolCallId": "abc-123",
+                    "partialResult": [{"type": "text", "text": "line 1\n"}],
+                },
+                "runId": "run-1",
+            }
         )
-        assert result is None
+        assert result == {
+            "type": "tool_progress",
+            "tool": "bash",
+            "toolCallId": "abc-123",
+            "partialResult": [{"type": "text", "text": "line 1\n"}],
+            "runId": "run-1",
+        }
+
+    def test_tool_stream_update_without_name_still_emits_progress(self):
+        """phase:"update" attaches to an existing pill by toolCallId, so name is
+        optional — the update keys by toolCallId alone (upstream's tool-event
+        ``name`` is optional in the contract). An unnamed update with a
+        toolCallId must still forward live progress; dropping it loses output."""
+        result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "tool",
+                "data": {
+                    "phase": "update",
+                    "toolCallId": "abc-123",
+                    "partialResult": [{"type": "text", "text": "line 1\n"}],
+                },
+                "runId": "run-1",
+            }
+        )
+        assert result == {
+            "type": "tool_progress",
+            "toolCallId": "abc-123",
+            "partialResult": [{"type": "text", "text": "line 1\n"}],
+            "runId": "run-1",
+        }
+
+    def test_tool_stream_update_without_toolcallid_ignored(self):
+        """No toolCallId means no live pill to address — drop it."""
+        assert (
+            GatewayConnection._transform_agent_event(
+                {"stream": "tool", "data": {"name": "bash", "phase": "update"}, "runId": "r"}
+            )
+            is None
+        )
 
     def test_tool_stream_missing_name_ignored(self):
         result = GatewayConnection._transform_agent_event(

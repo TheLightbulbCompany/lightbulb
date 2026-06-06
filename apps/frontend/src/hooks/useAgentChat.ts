@@ -171,7 +171,19 @@ function foldLiveTurnIntoContent(params: {
     .filter((e): e is ToolStreamEntry => Boolean(e))
     .map((e) => {
       const blocks: ContentBlock[] = [
-        { type: "tool_use", id: e.toolCallId, name: e.name, args: e.args },
+        {
+          type: "tool_use",
+          id: e.toolCallId,
+          name: e.name,
+          args: e.args,
+          // Carry the streamed incremental output into history (mirrors the
+          // live sync path's spread). MessageList falls back to this when a
+          // completed tool has no terminal result, matching upstream
+          // app-tool-stream's single entry.output field — so a tool that
+          // streamed output but ended without a real result keeps it in the
+          // final folded bubble instead of only during execution.
+          ...(e.progressText ? { progressText: e.progressText } : {}),
+        },
       ];
       // Emit tool_result whenever the tool has reached a terminal state,
       // even if the backend produced no payload — MessageBlocks derives
@@ -227,6 +239,27 @@ function addCappedRunId(set: Set<string>, runId: string): void {
     if (oldest === undefined) break;
     set.delete(oldest);
   }
+}
+
+// =============================================================================
+// renderPartial
+//
+// Coerce an OpenClaw partialResult (string OR an array of {type,text} blocks)
+// to a display string. Mirrors upstream formatToolOutput's text extraction so
+// the live tool pill renders the same incremental output the control UI shows.
+// =============================================================================
+
+function renderPartial(partial: unknown): string {
+  if (partial == null) return "";
+  if (typeof partial === "string") return partial;
+  if (Array.isArray(partial)) {
+    return partial
+      .map((b) =>
+        b && typeof b === "object" && "text" in b ? String((b as { text?: unknown }).text ?? "") : "",
+      )
+      .join("");
+  }
+  return "";
 }
 
 // =============================================================================
@@ -295,6 +328,28 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     },
     [],
   );
+
+  // Commit the in-progress stream tail as a segment before a pill is appended.
+  // Any handler that pushes onto toolStreamOrderRef (a real tool_start OR a
+  // live activity pill) must call this FIRST so foldLiveTurnIntoContent pairs
+  // the just-streamed text with the new pill in chronological order. Always
+  // pushes a segment (possibly empty-text) so chatStreamSegments[i] stays
+  // index-aligned with the i-th pill — buildChatItems/fold rely on the
+  // contract that segments[i] is "the text immediately before pill[i]", and
+  // they skip empty segments so the sentinel is invisible at render time.
+  // Without this, the streamed text stays in tailStream (folded LAST) while
+  // the pill folds first, so the pill renders BEFORE the earlier text. The
+  // committed length advances streamCommittedOffsetRef so the next post-pill
+  // chunk (cumulative from start-of-run) slices off the already-committed
+  // prefix. Does NOT clear chatStreamRunIdRef — the same run continues.
+  const commitStreamBeforePill = useCallback(() => {
+    const priorStream = chatStreamRef.current ?? "";
+    setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
+    if (priorStream.length > 0) {
+      streamCommittedOffsetRef.current += priorStream.length;
+      setChatStream(null);
+    }
+  }, [setChatStreamSegments, setChatStream]);
 
   // Live tool state.
   const [chatToolMessages, _setChatToolMessagesRaw] = useState<HistoryMessage[]>([]);
@@ -468,7 +523,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const toolStreamSyncTimerRef = useRef<number | null>(null);
   const TOOL_STREAM_THROTTLE_MS = 80;
 
-  const syncToolStreamMessages = useCallback(() => {
+  const syncToolStreamMessages = useCallback((force = false) => {
     const flush = () => {
       const ordered: HistoryMessage[] = toolStreamOrderRef.current
         .map((id) => toolStreamByIdRef.current.get(id))
@@ -481,6 +536,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
               id: e.toolCallId,
               name: e.name,
               args: e.args,
+              // Live incremental output (tool phase:update / command_output),
+              // shown in the running pill until the terminal tool_result lands.
+              ...(e.progressText ? { progressText: e.progressText } : {}),
             },
             // Emit tool_result on terminal state regardless of payload —
             // see foldLiveTurnIntoContent for rationale.
@@ -501,15 +559,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       setChatToolMessages(ordered);
       toolStreamSyncTimerRef.current = null;
     };
-    // Force-flush immediately if any entry is in terminal state — this must
-    // run BEFORE the "already scheduled" early-return, otherwise a tool_end
-    // arriving while a throttle timer is pending gets stuck behind the timer
-    // (terminal-state tool_result lands ~80ms late and the UI flashes a
-    // half-finished tool card).
-    const hasTerminal = Array.from(toolStreamByIdRef.current.values()).some(
-      (e) => e.status !== "running",
-    );
-    if (hasTerminal) {
+    // Force-flush immediately only when the CALLER signals a terminal event
+    // (tool_end/tool_error, or an accepted activity pill) — mirrors upstream's
+    // scheduleToolStreamSync(host, phase === "result"). A pending throttle
+    // timer is cleared so the terminal tool_result lands at once instead of
+    // ~80ms late (which would flash a half-finished tool card). Deriving this
+    // from map state ("any entry terminal") instead is wrong: once any tool/
+    // activity has completed, every high-frequency command_output/tool_progress
+    // frame would bypass the throttle and trigger a React render per chunk.
+    if (force) {
       if (toolStreamSyncTimerRef.current !== null) {
         window.clearTimeout(toolStreamSyncTimerRef.current);
         toolStreamSyncTimerRef.current = null;
@@ -621,6 +679,20 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           msg.type === "tool_start" ||
           msg.type === "tool_end" ||
           msg.type === "tool_error") &&
+        cancelledRunIdsRef.current.has(msg.runId)
+      ) {
+        return;
+      }
+
+      // Same tombstone protection as the cancelled-run guard above, extended to
+      // the sub-stream types. Must run BEFORE run-adoption: otherwise a late
+      // sub-stream for a cleared run re-adopts it (sets clientRunIdRef) and
+      // re-arms the busy gate before it can be dropped, queuing the user's next
+      // send behind a dead run.
+      if (
+        (msg.type === "tool_progress" ||
+          msg.type === "command_output" ||
+          msg.type === "agent_activity") &&
         cancelledRunIdsRef.current.has(msg.runId)
       ) {
         return;
@@ -738,25 +810,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         const toolCallId = msg.toolCallId;
         if (!toolCallId) return;
 
-        // Always push a segment (possibly empty-text) so chatStreamSegments[i]
-        // stays index-aligned with chatToolMessages[i] — buildChatItems and
-        // foldLiveTurnIntoContent both rely on the contract that segments[i]
-        // is "the text immediately before tool[i]". Without the sentinel push
-        // a tool firing before any text would shift post-tool text into
-        // segment[0], making interleave emit it BEFORE its tool.
-        // buildChatItems/fold already skip empty segments so the sentinel is
-        // invisible at render time.
-        //
-        // Advance streamCommittedOffsetRef by the committed length so the
-        // next post-tool chunk (which arrives cumulative from start-of-run)
-        // slices off the already-committed prefix. Do NOT clear
-        // chatStreamRunIdRef — the same run continues after the tool returns.
-        const priorStream = chatStreamRef.current ?? "";
-        setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
-        if (priorStream.length > 0) {
-          streamCommittedOffsetRef.current += priorStream.length;
-          setChatStream(null);
-        }
+        // Commit the in-progress stream tail before this pill so segments stay
+        // index-aligned with the tool order (see commitStreamBeforePill).
+        commitStreamBeforePill();
 
         const now = Date.now();
         const entry: ToolStreamEntry = {
@@ -786,7 +842,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           entry.status = msg.type === "tool_error" ? "error" : "done";
           entry.updatedAt = Date.now();
           toolStreamByIdRef.current.set(toolCallId, entry);
-          syncToolStreamMessages();
+          // Terminal event → force-flush so the tool_result lands at once.
+          syncToolStreamMessages(true);
           return;
         }
         // No live entry — likely the post-approval continuation for a
@@ -820,6 +877,107 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           }
           return prev;
         });
+        return;
+      }
+
+      // --- Dropped sub-streams surfaced additively ---
+      // These attach live tool progress, command output, and low-noise
+      // agent-activity pills. They never touch the run-lifecycle
+      // refs (clientRunIdRef / resumeExpectedRef / drainedRunIds) — those are
+      // owned by the chunk/tool/done/run_ended handlers. Tombstoned-run frames
+      // for these types are dropped up front, next to the cancelled-run guard,
+      // so the drop precedes run-adoption.
+
+      if (msg.type === "tool_progress") {
+        // Replace the live pill's progress with the latest partialResult (it is
+        // cumulative per the upstream tool stream). No live entry → nothing to
+        // attach to (the tool already terminated), so drop it.
+        const toolCallId = msg.toolCallId;
+        if (!toolCallId) return;
+        // An observed in-flight run (e.g. a tab that reconnected/opened mid-run
+        // and whose first frame for this tool is a progress frame) means the
+        // run is busy — mark it streaming so the stop affordance shows and
+        // cancelMessage works (it guards on isStreaming). Do this even when
+        // there's no local pill to update: run adoption above already claimed
+        // this run, but only the stream-type branches flip the busy gate.
+        // Mirrors tool_start (no run-match gate, same guarded call).
+        if (!isStreamingRef.current) setIsStreaming(true);
+        const entry = toolStreamByIdRef.current.get(toolCallId);
+        if (!entry) return;
+        // A status-only update (no partialResult) carries no new output. Skip it
+        // instead of clearing the accumulated progress — renderPartial(null) is
+        // "", which would wipe prior command_output. Our backend forwards
+        // partialResult-less update frames; upstream's stream rarely emits them.
+        const partial = renderPartial(msg.partialResult);
+        if (!partial) return;
+        entry.progressText = partial;
+        entry.updatedAt = Date.now();
+        toolStreamByIdRef.current.set(toolCallId, entry);
+        syncToolStreamMessages();
+        return;
+      }
+
+      if (msg.type === "command_output") {
+        // Append streamed stdout/stderr to the live pill's progress. command_output
+        // deltas are incremental (not cumulative), so concatenate.
+        const toolCallId = msg.toolCallId;
+        if (!toolCallId || !msg.output) return;
+        // Same observed-run busy signal as tool_progress: a reconnecting tab's
+        // first frame can be streamed stdout for a tool it has no live pill
+        // for. Mark the adopted run streaming so the stop affordance shows and
+        // cancelMessage works, even with no local pill. Mirrors tool_start.
+        if (!isStreamingRef.current) setIsStreaming(true);
+        const entry = toolStreamByIdRef.current.get(toolCallId);
+        if (!entry) return;
+        entry.progressText = (entry.progressText ?? "") + msg.output;
+        entry.updatedAt = Date.now();
+        toolStreamByIdRef.current.set(toolCallId, entry);
+        syncToolStreamMessages();
+        return;
+      }
+
+      if (msg.type === "agent_activity") {
+        // Surface plan/patch/item/acp as a single low-noise pill. Keyed by a
+        // synthetic id (activity+runId) so repeated activities of the same kind
+        // within a run collapse into one updating pill rather than stacking.
+        // Status "done" because activities are point-in-time, not long-running
+        // (the sync call below force-flushes it as a terminal event).
+        const synthId = `activity:${msg.activity}:${msg.runId}`;
+        const now = Date.now();
+        const existing = toolStreamByIdRef.current.get(synthId);
+        const entry: ToolStreamEntry = existing
+          ? { ...existing, name: msg.title || msg.activity, args: msg.detail, updatedAt: now }
+          : {
+              toolCallId: synthId,
+              runId: msg.runId,
+              name: msg.title || msg.activity,
+              args: msg.detail,
+              status: "done",
+              kind: "activity",
+              startedAt: now,
+              updatedAt: now,
+            };
+        toolStreamByIdRef.current.set(synthId, entry);
+        if (!toolStreamOrderRef.current.includes(synthId)) {
+          // A NEW pill takes a new slot in the tool order, so commit the live
+          // stream tail FIRST (exactly as tool_start does) — otherwise the
+          // text streamed before this activity folds after the pill and renders
+          // out of order. An UPDATE to an existing pill keeps its slot, so skip
+          // the commit there (committing again would push a spurious segment).
+          commitStreamBeforePill();
+          toolStreamOrderRef.current.push(synthId);
+        }
+        // Activity pills are point-in-time (status "done") → terminal, so
+        // force-flush like tool_end.
+        syncToolStreamMessages(true);
+        // An accepted activity pill means the run is busy — mark it streaming so
+        // the stop affordance shows and cancelMessage works (it guards on
+        // isStreaming). Mirrors the chunk/thinking/tool_start branches, which
+        // flip streaming when they accept a run's first frame. Cancelled-run
+        // frames are dropped by the tombstone guard above before adoption, so
+        // a dead run never reaches here. Set once for the branch — covers both
+        // the new-pill and activity-update paths (an update is still busy).
+        if (!isStreamingRef.current) setIsStreaming(true);
         return;
       }
 

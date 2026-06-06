@@ -72,6 +72,36 @@ export type ChatIncomingMessage =
       agent_id?: string;
       runId: string;
     }
+  // Live incremental tool output (OpenClaw tool stream phase:"update").
+  // Attached to the running tool pill addressed by toolCallId.
+  | {
+      type: "tool_progress";
+      tool: string;
+      toolCallId: string;
+      partialResult?: ToolResultBlock[];
+      agent_id?: string;
+      runId: string;
+    }
+  // Live command stdout/stderr streamed mid-exec, appended to the tool pill
+  // addressed by toolCallId.
+  | {
+      type: "command_output";
+      toolCallId: string;
+      output?: string;
+      agent_id?: string;
+      runId: string;
+    }
+  // Low-noise agent-activity surfaces (proposed plan, patch summary, item
+  // lifecycle, ACP step) folded into one pill. `detail` carries the full
+  // upstream payload for the pill's expansion.
+  | {
+      type: "agent_activity";
+      activity: "plan" | "patch" | "item" | "acp";
+      title: string;
+      detail?: Record<string, unknown>;
+      agent_id?: string;
+      runId: string;
+    }
   | { type: "update_available" };
 
 /** Gateway event forwarded from OpenClaw */
@@ -219,6 +249,9 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       msgType === "tool_start" ||
       msgType === "tool_end" ||
       msgType === "tool_error" ||
+      msgType === "tool_progress" ||
+      msgType === "command_output" ||
+      msgType === "agent_activity" ||
       msgType === "update_available"
     ) {
       const chatMsg = data as unknown as ChatIncomingMessage;

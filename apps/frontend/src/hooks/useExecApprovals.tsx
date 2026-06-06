@@ -52,7 +52,12 @@ export type ApprovalRemovedHandler = (
 export interface ExecApprovalRequest {
   /** Approval ID issued by OpenClaw. Used as the key when posting exec.approval.resolve. */
   id: string;
-  /** Raw command line as the agent would execute it. */
+  /** Discriminates exec (shell command) vs plugin (MCP/plugin tool) approvals.
+   *  Required so the union is exhaustive — both construction paths set it,
+   *  and the card branches on it. */
+  kind: "exec" | "plugin";
+  /** Raw command line as the agent would execute it. For plugin approvals this
+   *  slot mirrors `pluginTitle` so the queue stays homogeneous. */
   command: string;
   /** Parsed argv; absent when the request came through host=node with a wrapped form. */
   commandArgv?: string[];
@@ -69,6 +74,22 @@ export interface ExecApprovalRequest {
   /** Which decisions the server will accept — usually all three, but
    *  "allow-always" may be absent when policy is ask=always. */
   allowedDecisions: ExecApprovalDecision[];
+  /** Byte-offset ranges into `command` marking the executable tokens
+   *  (top-level + nested). Used to highlight what will actually run
+   *  inside a compound/piped command. Validated against command length. */
+  commandSpans?: { startIndex: number; endIndex: number }[];
+  /** Effective exec security mode: deny | allowlist | full. */
+  security?: string;
+  /** Effective ask policy: off | on-miss | always. */
+  ask?: string;
+  /** Plugin approval title (also mirrored into `command` for the shared slot). */
+  pluginTitle?: string;
+  /** Plugin approval description (free text). */
+  pluginDescription?: string | null;
+  /** Plugin severity classification. */
+  pluginSeverity?: string | null;
+  /** Server-prefixed plugin id (e.g. "plugin:slack"). */
+  pluginId?: string | null;
   /** Server-side expiry timestamp in ms. Used both for the live countdown
    *  and the auto-prune timer. */
   expiresAtMs: number;
@@ -112,7 +133,25 @@ interface RequestPayload {
     agentId?: string;
     sessionKey?: string;
     allowedDecisions?: ExecApprovalDecision[];
+    commandSpans?: { startIndex: number; endIndex: number }[];
+    security?: string;
+    ask?: string;
   };
+  expiresAtMs?: number;
+}
+
+interface PluginRequestPayload {
+  id?: string;
+  request?: {
+    pluginId?: string;
+    title?: string;
+    description?: string;
+    severity?: string;
+    agentId?: string;
+    sessionKey?: string;
+    allowedDecisions?: ExecApprovalDecision[];
+  };
+  createdAtMs?: number;
   expiresAtMs?: number;
 }
 
@@ -125,6 +164,34 @@ interface ResolvedPayload {
  *  OpenClaw's gateway emits this field, but we set a generous local fallback
  *  (10 min) so a malformed event still gets pruned eventually. */
 const DEFAULT_EXPIRY_MS = 10 * 60 * 1000;
+
+/** Validate command spans against the command. Ported from upstream
+ *  parseCommandSpans — drops out-of-range / malformed spans, returns
+ *  undefined when nothing valid remains so the renderer falls back to
+ *  plain text. WHY: a span that overruns command.length would slice into
+ *  nothing and produce an empty <mark>. */
+function parseCommandSpans(
+  value: unknown,
+  commandLength: number,
+): { startIndex: number; endIndex: number }[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const spans = value.filter(
+    (item): item is { startIndex: number; endIndex: number } => {
+      if (!item || typeof item !== "object") return false;
+      const { startIndex, endIndex } = item as Record<string, unknown>;
+      return (
+        typeof startIndex === "number" &&
+        typeof endIndex === "number" &&
+        Number.isSafeInteger(startIndex) &&
+        Number.isSafeInteger(endIndex) &&
+        startIndex >= 0 &&
+        endIndex > startIndex &&
+        endIndex <= commandLength
+      );
+    },
+  );
+  return spans.length > 0 ? spans : undefined;
+}
 
 function parseRequest(payload: unknown): ExecApprovalRequest | null {
   if (!payload || typeof payload !== "object") return null;
@@ -144,6 +211,7 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
     : nowMs + DEFAULT_EXPIRY_MS;
   return {
     id: p.id,
+    kind: "exec",
     command: p.request.command,
     commandArgv: p.request.commandArgv,
     host: p.request.host ?? "gateway",
@@ -152,8 +220,61 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
     agentId: p.request.agentId,
     sessionKey: p.request.sessionKey,
     allowedDecisions: p.request.allowedDecisions ?? ["allow-once", "deny"],
+    commandSpans: parseCommandSpans(
+      p.request.commandSpans,
+      p.request.command.length,
+    ),
+    security: p.request.security,
+    ask: p.request.ask,
     expiresAtMs,
     enqueuedAtMs: nowMs,
+  };
+}
+
+/** Parse a plugin.approval.requested payload into the shared queue shape.
+ *  Reuses `command` as the title slot so the queue stays homogeneous;
+ *  the card branches on `kind` for the body. Ported from upstream
+ *  parsePluginApprovalRequested. */
+function parsePluginRequest(payload: unknown): ExecApprovalRequest | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as PluginRequestPayload;
+  const title = p.request?.title;
+  if (!p.id || !title) return null;
+  const nowMs = Date.now();
+  // Mirror parseRequest's lenient expiry handling: only synthesize when the
+  // server omitted (or sent a malformed) timestamp; preserve past timestamps
+  // so replayed events prune immediately rather than getting re-extended.
+  const hasValidServerTimestamp =
+    typeof p.expiresAtMs === "number" && Number.isFinite(p.expiresAtMs);
+  const expiresAtMs = hasValidServerTimestamp
+    ? p.expiresAtMs!
+    : nowMs + DEFAULT_EXPIRY_MS;
+  return {
+    id: p.id,
+    kind: "plugin",
+    command: title, // shared slot; card heading uses pluginTitle
+    host: "gateway", // not meaningful for plugins; satisfies the union
+    agentId: p.request?.agentId,
+    sessionKey: p.request?.sessionKey,
+    // The plugin-approval contract defaults a missing allowedDecisions to the
+    // FULL set including allow-always (Trust): upstream
+    // resolvePluginApprovalRequestAllowedDecisions falls back to
+    // DEFAULT_PLUGIN_APPROVAL_DECISIONS, and the server validates a resolve
+    // against that default — so it would accept allow-always. Dropping it here
+    // would disable the Trust button and force re-approval of the same plugin
+    // action every time. (Exec's default deliberately omits Trust — see
+    // parseRequest above — because exec only offers it in certain security modes.)
+    allowedDecisions: p.request?.allowedDecisions ?? [
+      "allow-once",
+      "allow-always",
+      "deny",
+    ],
+    expiresAtMs,
+    enqueuedAtMs: nowMs,
+    pluginTitle: title,
+    pluginDescription: p.request?.description ?? null,
+    pluginSeverity: p.request?.severity ?? null,
+    pluginId: p.request?.pluginId ?? null,
   };
 }
 
@@ -188,6 +309,13 @@ function isApprovalForCurrentUser(
   if (!req.sessionKey) return true; // no scoping signal; accept (legacy emitters)
   const segments = req.sessionKey.split(":");
   const memberId = segments[segments.length - 1];
+  // Personal-account sessions are keyed `agent:<agentId>:main` (see the backend
+  // connection_pool.py _parse_session_key "Personal webchat" shape) — the
+  // trailing segment is the literal "main", not a Clerk user id. Accept it as
+  // an unscoped personal session so personal exec/plugin approvals surface a
+  // card. This does NOT weaken the org guard: org member segments are Clerk
+  // user ids, which are never literally "main".
+  if (memberId.toLowerCase() === "main") return true;
   return memberId.toLowerCase() === userId.toLowerCase();
 }
 
@@ -215,6 +343,14 @@ export function useExecApprovals(): UseExecApprovalsReturn {
   // present?" check. Avoids depending on setQueue's updater (which can
   // run twice in strict mode) to detect actual removals.
   const trackedIdsRef = useRef<Set<string>>(new Set());
+
+  // Mirror of `queue` so resolve() can read an entry's kind synchronously
+  // without widening its (id, decision) signature — the RPC method differs
+  // between exec and plugin approvals.
+  const queueRef = useRef<ExecApprovalRequest[]>([]);
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
 
   const removeFromQueue = useCallback(
     (id: string, reason: ApprovalRemovalReason) => {
@@ -282,12 +418,38 @@ export function useExecApprovals(): UseExecApprovalsReturn {
     return unsub;
   }, [onEvent, removeFromQueue]);
 
-  // Subscribe to exec.approval.resolved — drop server-resolved approvals.
-  // This fires when the approval was decided through some other channel
-  // (CLI, another tab, the desktop bridge), not just our own resolve().
+  // Subscribe to plugin.approval.requested — enqueue plugin approvals into
+  // the same queue. Same multi-tenant guard + dedup + auto-prune as exec.
   useEffect(() => {
     const unsub = onEvent((eventName, data) => {
-      if (eventName !== "exec.approval.resolved") return;
+      if (eventName !== "plugin.approval.requested") return;
+      const req = parsePluginRequest(data);
+      if (!req) return;
+      if (!isApprovalForCurrentUser(req, userIdRef.current)) return;
+      if (trackedIdsRef.current.has(req.id)) return;
+      trackedIdsRef.current.add(req.id);
+      setQueue((prev) => [...prev, req]);
+      const delay = Math.max(0, req.expiresAtMs - Date.now() + 500);
+      const timer = setTimeout(
+        () => removeFromQueue(req.id, "auto_pruned"),
+        delay,
+      );
+      timersRef.current.set(req.id, timer);
+    });
+    return unsub;
+  }, [onEvent, removeFromQueue]);
+
+  // Subscribe to {exec,plugin}.approval.resolved — drop server-resolved
+  // approvals. This fires when the approval was decided through some other
+  // channel (CLI, another tab, the desktop bridge), not just our own
+  // resolve(). Both payloads are shaped `{id}`.
+  useEffect(() => {
+    const unsub = onEvent((eventName, data) => {
+      if (
+        eventName !== "exec.approval.resolved" &&
+        eventName !== "plugin.approval.resolved"
+      )
+        return;
       const p = data as ResolvedPayload;
       if (!p?.id) return;
       removeFromQueue(p.id, "resolved");
@@ -307,10 +469,20 @@ export function useExecApprovals(): UseExecApprovalsReturn {
   const resolve = useCallback(
     async (id: string, decision: ExecApprovalDecision): Promise<void> => {
       setError(null);
+      // Route to the matching RPC by the entry's kind — plugin approvals
+      // resolve through plugin.approval.resolve, exec through exec's. Read
+      // the kind from the queue mirror so the (id, decision) signature stays
+      // narrow. Default to exec when the entry is unknown (already pruned).
+      const entry = queueRef.current.find((e) => e.id === id);
+      const method =
+        entry?.kind === "plugin"
+          ? "plugin.approval.resolve"
+          : "exec.approval.resolve";
       try {
-        await sendReq("exec.approval.resolve", { id, decision });
+        await sendReq(method, { id, decision });
         // Optimistically remove. The server will also emit
-        // exec.approval.resolved which is a no-op since we already removed.
+        // {exec,plugin}.approval.resolved which is a no-op since we already
+        // removed.
         removeFromQueue(id, "resolved");
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Failed to send decision";

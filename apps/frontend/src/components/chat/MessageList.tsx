@@ -208,12 +208,21 @@ interface ToolPillState {
   args: unknown;
   result: unknown;
   status: "running" | "done" | "error";
+  /** Live incremental output shown while the tool is still running, before
+   *  its terminal tool_result lands. */
+  progressText?: string;
 }
 
 function ToolPill({ tool }: { tool: ToolPillState }) {
   const [open, setOpen] = React.useState(false);
   const s = TOOL_STYLES[tool.status];
-  const output = renderToolOutput(tool.result);
+  // Prefer the terminal tool_result output; fall back to the streamed progress
+  // text whenever there's no result — both while running (live output) AND for
+  // a completed tool whose terminal result was empty/absent. Mirrors upstream
+  // app-tool-stream's single entry.output: the result phase only overwrites the
+  // streamed output when it's non-empty, so streamed output survives when no
+  // real result lands (e.g. an aborted exec or a stream-only tool).
+  const output = renderToolOutput(tool.result) ?? (tool.progressText ?? null);
   const hasArgs = !!(
     tool.args &&
     typeof tool.args === "object" &&
@@ -401,6 +410,7 @@ function MessageBlocks({
               args: resolveToolArgs(b),
               result: resultBlock?.content ?? resultBlock?.result,
               status,
+              progressText: (b as ContentBlock).progressText,
             }}
           />
         );

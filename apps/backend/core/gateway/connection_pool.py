@@ -664,12 +664,22 @@ class GatewayConnection:
 
     @staticmethod
     def _transform_agent_event(payload: dict) -> dict | None:
-        """Extract streaming text, thinking, or tool events from an OpenClaw agent event.
+        """Extract streaming text, thinking, tool, and activity events from an OpenClaw agent event.
 
         Agent events fire for every LLM token (no 150ms throttle).
         - ``stream: "assistant"`` events with text are forwarded as chunks.
         - ``stream: "reasoning"`` / ``"thinking"`` events are forwarded for real-time thinking.
-        - ``stream: "tool"`` events are forwarded as tool_start/tool_end/tool_error.
+        - ``stream: "tool"`` events are forwarded as tool_start/tool_end/tool_error,
+          plus tool_progress for the mid-execution ``phase: "update"``.
+        - ``stream: "command_output"`` events are forwarded as command_output
+          (live stdout/stderr addressed to the matching tool pill).
+        - ``stream: "plan" | "patch" | "item" | "acp"`` are folded into one
+          uniform ``agent_activity`` envelope for a single low-noise pill.
+
+        ``approval`` and ``lifecycle`` are intentionally NOT handled here — they
+        are consumed upstream in ``_handle_message`` (approval run-active window
+        + lifecycle billing/end) and forwarding them would conflict with that
+        state machine.
 
         The OpenClaw ``runId`` on the source payload is propagated onto every
         transformed event so the frontend can route chunks/tools to the
@@ -695,8 +705,27 @@ class GatewayConnection:
         elif stream == "tool":
             phase = data.get("phase", "")
             name = data.get("name", "")
-            if name:
-                tool_call_id = data.get("toolCallId", "")
+            tool_call_id = data.get("toolCallId", "")
+            if phase == "update":
+                # Live tool progress: incremental output emitted mid-execution
+                # before the result phase. Upstream renders this via
+                # formatToolOutput(data.partialResult); we forward it so the
+                # running tool pill can show streaming output. An update attaches
+                # to an EXISTING pill keyed by toolCallId, so a toolCallId is the
+                # only thing it needs — name is optional here (the upstream
+                # tool-event contract declares name as optional, and updates
+                # address the pill by id, not name). Drop updates without a
+                # toolCallId (nothing for the frontend to attach them to), but
+                # never drop one merely for lacking a name.
+                if tool_call_id:
+                    transformed = {"type": "tool_progress", "toolCallId": tool_call_id}
+                    if name:
+                        transformed["tool"] = name
+                    if "partialResult" in data:
+                        transformed["partialResult"] = data["partialResult"]
+            elif name:
+                # start/result build or resolve a pill that needs the tool name,
+                # so these phases still require it.
                 if phase == "start":
                     transformed = {"type": "tool_start", "tool": name}
                     if tool_call_id:
@@ -715,6 +744,33 @@ class GatewayConnection:
                         transformed["result"] = data["result"]
                     if data.get("meta"):
                         transformed["meta"] = data["meta"]
+
+        elif stream == "command_output":
+            # Streaming command stdout/stderr emitted mid-exec. Carries a
+            # toolCallId so the frontend appends it to the matching live tool
+            # pill. Without one there is nothing to address, so drop it.
+            tool_call_id = data.get("toolCallId", "")
+            if tool_call_id:
+                transformed = {"type": "command_output", "toolCallId": tool_call_id}
+                if "output" in data:
+                    transformed["output"] = data["output"]
+
+        elif stream in ("plan", "patch", "item", "acp"):
+            # Low-noise "agent activity" surfaces upstream renders as rich
+            # affordances (proposed plan, patch summary, item lifecycle, ACP
+            # step). We fold them into one uniform envelope so the frontend
+            # shows a single activity pill: `title` is the human label and
+            # `detail` carries the full payload for the pill's expansion.
+            # NOTE: ``approval`` and ``lifecycle`` are deliberately excluded —
+            # they are consumed by _handle_message (approval run-active window
+            # + lifecycle billing/end), so forwarding them here would conflict
+            # with that state machine.
+            transformed = {
+                "type": "agent_activity",
+                "activity": stream,
+                "title": data.get("title", ""),
+                "detail": data,
+            }
 
         if transformed is None:
             return None

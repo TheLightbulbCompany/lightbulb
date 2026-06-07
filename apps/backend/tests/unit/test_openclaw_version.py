@@ -115,3 +115,37 @@ def test_deployed_upstream_version_falls_back_to_tag_when_no_deployed_tag(monkey
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.setattr(openclaw_version, "_load_pinned", lambda: {"tag": "2026.5.28"})
     assert openclaw_version.deployed_upstream_version() == "2026.5.28"
+
+
+def test_deployed_upstream_at_least_true_when_dev_tag_is_newer(monkeypatch):
+    """The gate is satisfied once this env's deployed image reaches the target;
+    drives emission of 6.1-only config keys (e.g. mcp.runtimeScope)."""
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("OPENCLAW_DEV_TAG", "2026.6.1-isol8.1-9a12256")
+    assert openclaw_version.deployed_upstream_at_least("2026.6.1") is True
+
+
+def test_deployed_upstream_at_least_false_when_dev_tag_is_older(monkeypatch):
+    """A container still on the pre-6.1 image must NOT get 6.1-only keys — its
+    strict schema would reject them at boot."""
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("OPENCLAW_DEV_TAG", "2026.5.28-9ae309b")
+    assert openclaw_version.deployed_upstream_at_least("2026.6.1") is False
+
+
+def test_deployed_upstream_at_least_is_per_environment(monkeypatch):
+    """Gate flips per-env from the relevant tag: prod still on 5.28 stays gated
+    even while dev.tag has moved to 6.1 (staggered promotion)."""
+    monkeypatch.setenv("OPENCLAW_DEV_TAG", "2026.6.1-isol8.1-9a12256")
+    monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.5.28-9ae309b")
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    assert openclaw_version.deployed_upstream_at_least("2026.6.1") is False
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    assert openclaw_version.deployed_upstream_at_least("2026.6.1") is True
+
+
+def test_deployed_upstream_at_least_equal_boundary(monkeypatch):
+    """Equal version satisfies the >= gate (it's at-least, not strictly-after)."""
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("OPENCLAW_DEV_TAG", "2026.6.1-isol8.1-9a12256")
+    assert openclaw_version.deployed_upstream_at_least("2026.6.1") is True

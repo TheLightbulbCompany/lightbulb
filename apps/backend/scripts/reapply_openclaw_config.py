@@ -101,6 +101,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 logger = logging.getLogger("reapply_openclaw_config")
@@ -169,6 +170,16 @@ def _runtime_only_delta(existing: dict | None, fresh: dict | None) -> dict:
 
 
 async def main(*, apply: bool, env: str, owner_id: str) -> int:
+    # The generator (build_openclaw_config_dict, via write_user_configs below)
+    # stamps version-gated config keys (e.g. mcp.runtimeScope) using
+    # openclaw_version.deployed_upstream_version(), which reads ENVIRONMENT to
+    # pick the prod vs dev image tag. This CLI is run outside the deployed
+    # backend (where CDK injects ENVIRONMENT), so set it from --env or the gate
+    # falls back to dev_tag() and could write a 6.1-only key onto a prod owner
+    # whose container is still on the pre-6.1 image (crash-loop on boot).
+    # Does NOT change DDB/EFS targeting — that's keyed on DYNAMODB_TABLE_PREFIX.
+    os.environ["ENVIRONMENT"] = env
+
     # Imports inside main so script setup (path, env vars) is done first —
     # matches the backfill script's lazy-import convention.
     from pathlib import Path
@@ -286,7 +297,12 @@ if __name__ == "__main__":
         "--env",
         required=True,
         choices=["dev", "prod"],
-        help="Environment label (informational; doesn't change DDB/EFS targeting).",
+        help=(
+            "Target environment. Sets ENVIRONMENT so the generator's "
+            "version-gated keys (e.g. mcp.runtimeScope) resolve THIS env's "
+            "deployed image tag. Does NOT change DDB/EFS targeting "
+            "(keyed on DYNAMODB_TABLE_PREFIX)."
+        ),
     )
     parser.add_argument(
         "--apply",

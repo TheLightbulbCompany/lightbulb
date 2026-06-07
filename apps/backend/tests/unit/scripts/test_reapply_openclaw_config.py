@@ -9,6 +9,7 @@ those dropped subtrees via a deep-merge patch — otherwise linked channel
 DMs (and any other runtime-appended config) stop working until re-pair.
 """
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -173,6 +174,26 @@ async def test_dry_run_does_not_call_write_path():
 
     assert rc == 0
     write_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_main_sets_environment_from_env_flag(monkeypatch):
+    """--env sets ENVIRONMENT so the generator's version-gated keys (e.g.
+    mcp.runtimeScope) resolve THIS env's deployed image tag — not dev's via the
+    fallback, which could stamp a 6.1-only key onto a still-pre-6.1 prod owner."""
+    monkeypatch.setenv("ENVIRONMENT", "dev")  # start wrong; main must correct it
+    write_mock, cms = _patches(
+        container={"gateway_token": "gw", "hook_token": "hk", "owner_type": "org"},
+    )
+    for cm in cms:
+        cm.start()
+    try:
+        await mod.main(apply=False, env="prod", owner_id="org_x")
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert os.environ["ENVIRONMENT"] == "prod"
 
 
 @pytest.mark.asyncio

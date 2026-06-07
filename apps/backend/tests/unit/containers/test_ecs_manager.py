@@ -2361,3 +2361,70 @@ class TestPerUserTaskSize:
             reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
             assert reg_kwargs["cpu"] == PER_USER_CPU
             assert reg_kwargs["memory"] == PER_USER_MEMORY_MIB
+
+
+def test_user_owned_mcp_servers_excludes_integration_and_paperclip():
+    """Only the user's own servers are carried forward — registry integration
+    keys (re-injected from credentials) and the seeded paperclip block are not,
+    and non-dict junk is ignored."""
+    from core.containers.ecs_manager import _user_owned_mcp_servers
+
+    existing = {
+        "paperclip": {"command": "npx"},
+        "stripe": {"command": "npx"},  # registry integration key
+        "mine": {"command": "npx", "args": ["-y", "x"]},  # user-added
+        "bad": "not-a-dict",
+    }
+    assert _user_owned_mcp_servers(existing, {"stripe"}) == {"mine": {"command": "npx", "args": ["-y", "x"]}}
+
+
+@pytest.mark.asyncio
+async def test_provision_mcp_servers_preserves_user_and_merges_connected(monkeypatch):
+    """A full regenerate keeps the user's manual server, drops a stale on-disk
+    integration copy, and lets the freshly-built connected server win."""
+    from core.containers import ecs_manager as em
+    from core.services.credentials import registry
+
+    async def _read(owner_id):
+        return {
+            "mcp": {
+                "servers": {
+                    "paperclip": {"command": "npx"},  # re-seeded by generator
+                    "stripe": {"command": "stale-on-disk"},  # stale integration copy
+                    "mycustom": {"command": "npx", "args": ["-y", "x"]},  # user-added
+                }
+            }
+        }
+
+    monkeypatch.setattr(em, "read_openclaw_config_from_efs", _read)
+
+    class _Spec:
+        key = "stripe"
+
+    class _Wiring:
+        mcp_server = _Spec()
+
+    class _Provider:
+        wiring = _Wiring()
+
+    monkeypatch.setattr(registry, "all_providers", lambda: {"stripe": _Provider()})
+
+    result = await em._provision_mcp_servers("org_1", {"stripe": {"command": "fresh-connected"}})
+    assert result == {
+        "mycustom": {"command": "npx", "args": ["-y", "x"]},
+        "stripe": {"command": "fresh-connected"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_provision_mcp_servers_failsafe_returns_connected_on_error(monkeypatch):
+    """A read/registry hiccup must not fail provisioning — fall back to the
+    connected servers (worst case the user re-adds their manual server)."""
+    from core.containers import ecs_manager as em
+
+    async def _boom(owner_id):
+        raise RuntimeError("efs unreachable")
+
+    monkeypatch.setattr(em, "read_openclaw_config_from_efs", _boom)
+    connected = {"stripe": {"command": "npx"}}
+    assert await em._provision_mcp_servers("org_1", connected) == connected

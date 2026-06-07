@@ -25,6 +25,7 @@ from core.containers.config import (
     build_device_paired_json,
     generate_node_device_identity,
     load_node_device_identity,
+    read_openclaw_config_from_efs,
     write_openclaw_config,
 )
 from core.containers.workspace import get_workspace
@@ -40,6 +41,51 @@ GATEWAY_PORT = 18789
 # so the resize/register paths pull from a single place.
 PER_USER_CPU = "512"
 PER_USER_MEMORY_MIB = "2048"
+
+
+def _user_owned_mcp_servers(existing_servers: dict, integration_provider_keys: set[str]) -> dict:
+    """User-added MCP servers to carry across a full openclaw.json regenerate.
+
+    The reprovision path rebuilds openclaw.json from structured inputs and would
+    otherwise drop anything added through the manual MCP panel — those servers
+    live only in the on-disk file, not in a DDB store the generator reads back.
+    Preserve every existing server whose key is neither a registry integration
+    key (re-injected from the credential system) nor the seeded ``paperclip``
+    block — i.e. the ones the user added themselves.
+    """
+    reserved = integration_provider_keys | {"paperclip"}
+    return {name: block for name, block in existing_servers.items() if name not in reserved and isinstance(block, dict)}
+
+
+async def _provision_mcp_servers(owner_id: str, connected_servers: dict) -> dict:
+    """Servers to inject into a regenerated openclaw.json: the user's own
+    on-disk MCP servers plus the connected integration servers.
+
+    The reprovision path fully overwrites openclaw.json, so without this a
+    manually-added MCP server (which lives only on disk) is lost. Read the
+    current on-disk servers, keep the user-owned ones (not a registry
+    integration key, not the seeded paperclip block), and merge — connected
+    integrations win on the (impossible) key collision since user-owned keys
+    exclude integration keys.
+
+    Fail-safe: any read/registry hiccup falls back to ``connected_servers`` so
+    provisioning never breaks (worst case the user re-adds the server).
+    """
+    try:
+        from core.services.credentials import registry
+
+        existing_cfg = await read_openclaw_config_from_efs(owner_id) or {}
+        existing_servers = (existing_cfg.get("mcp") or {}).get("servers") or {}
+        if not isinstance(existing_servers, dict):
+            existing_servers = {}
+        integration_keys = {
+            p.wiring.mcp_server.key for p in registry.all_providers().values() if p.wiring.mcp_server is not None
+        }
+        user_servers = _user_owned_mcp_servers(existing_servers, integration_keys)
+        return {**user_servers, **connected_servers}
+    except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
+        logger.exception("preserving user MCP servers failed for %s; continuing", owner_id)
+        return connected_servers
 
 
 def _build_per_user_environment(
@@ -1844,6 +1890,11 @@ class EcsManager:
                 owner_id,
             )
             integration_mcp_servers = {}
+
+        # Carry the user's own on-disk MCP servers across this full overwrite
+        # (the manual MCP panel writes them only into openclaw.json), merged with
+        # the connected integration servers.
+        integration_mcp_servers = await _provision_mcp_servers(owner_id, integration_mcp_servers)
 
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(

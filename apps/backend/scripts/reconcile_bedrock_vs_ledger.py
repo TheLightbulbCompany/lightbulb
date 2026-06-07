@@ -59,6 +59,17 @@ Scope notes
   We sum only the rows whose SK exactly equals one of the ``YYYY-MM``
   period strings the window spans.
 
+* **Token side is Bedrock-owner-scoped.** Since ``record_usage`` records
+  non-Bedrock model VOLUME (ChatGPT OAuth / OpenAI / BYO) into the same
+  ``YYYY-MM`` rows with spend 0, and those rows carry no provider
+  dimension, the token reconciliation filters to owners whose
+  ``billing-accounts`` ``provider_choice == "bedrock_claude"`` (resolved
+  by ``fetch_bedrock_owner_ids``). Otherwise the ledger token columns get
+  inflated by non-Bedrock traffic while the account-wide ``AWS/Bedrock``
+  CloudWatch totals stay correct → false token-divergence alerts after a
+  provider migration. The dollar side needs no such filter: non-Bedrock
+  sessions already record spend 0.
+
 * **RAW spend, not the customer price.** The ledger's
   ``total_spend_microdollars`` column (a misnomer — it stores microcents;
   1 USD = 1e6 microcents) holds Isol8's RAW, un-marked-up cost: in
@@ -239,13 +250,61 @@ def sum_metric_datapoints(response: dict[str, Any]) -> int:
     return int(sum(dp.get("Sum", 0) for dp in response.get("Datapoints", [])))
 
 
-async def fetch_ledger_period_totals(periods: list[str]) -> dict[str, int]:
+async def fetch_bedrock_owner_ids() -> set[str]:
+    """Scan ``billing-accounts`` → the set of owner_ids on the Bedrock path.
+
+    An owner's LLM provider lives on the per-owner ``billing-accounts`` row
+    as ``provider_choice`` (set by ``billing_repo.set_provider_choice``); the
+    ``usage-counters`` rows carry no provider dimension. This builds the
+    owner→Bedrock filter the token reconciliation needs (see
+    :func:`fetch_ledger_period_totals`). Read-only paginated scan.
+
+    Rows with no ``provider_choice`` (phantom / pre-onboarding rows) are
+    excluded — they have no Bedrock usage to reconcile.
+    """
+    from core.dynamodb import get_table, run_in_thread
+
+    owners: set[str] = set()
+    table = get_table("billing-accounts")
+    last_evaluated_key: dict | None = None
+    while True:
+        kwargs: dict[str, Any] = {}
+        if last_evaluated_key is not None:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        resp = await run_in_thread(table.scan, **kwargs)
+        for item in resp.get("Items", []):
+            if item.get("provider_choice") == "bedrock_claude":
+                owner_id = item.get("owner_id")
+                if owner_id:
+                    owners.add(owner_id)
+        last_evaluated_key = resp.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+    return owners
+
+
+async def fetch_ledger_period_totals(
+    periods: list[str],
+    *,
+    bedrock_owner_ids: set[str] | None = None,
+) -> dict[str, int]:
     """Scan ``usage-counters`` and sum the PERIOD rollup rows for ``periods``.
 
     Returns ``{column: total}`` for the four token columns. Read-only —
     a paginated table scan, no writes. Only rows whose SK exactly equals
     one of ``periods`` (the ``YYYY-MM`` rollup shape) are counted;
     ``lifetime`` and ``member:*`` rows are skipped to avoid double-count.
+
+    ``bedrock_owner_ids`` (when provided) restricts the sum to owners on the
+    Bedrock provider path. This is REQUIRED to compare apples-to-apples
+    against the account-wide ``AWS/Bedrock`` CloudWatch token metrics: after
+    D6, ``record_usage`` writes non-Bedrock model VOLUME (ChatGPT OAuth /
+    OpenAI / BYO) into these same ``YYYY-MM`` rows with spend 0, and those
+    rows have no provider dimension. Without the filter the ledger token side
+    is inflated by non-Bedrock traffic while CloudWatch stays correct →
+    false token-divergence alerts after a provider migration. ``None`` keeps
+    the un-filtered behavior (every period row counted); ``main`` always
+    resolves and passes the Bedrock-only set.
     """
     from core.dynamodb import get_table, run_in_thread
 
@@ -267,6 +326,10 @@ async def fetch_ledger_period_totals(periods: list[str]) -> dict[str, int]:
         resp = await run_in_thread(table.scan, **kwargs)
         for item in resp.get("Items", []):
             if item.get("period") not in wanted:
+                continue
+            if bedrock_owner_ids is not None and item.get("owner_id") not in bedrock_owner_ids:
+                # Non-Bedrock owner: its token volume (spend 0) would inflate
+                # the comparison against the AWS/Bedrock CloudWatch totals.
                 continue
             for c in columns:
                 totals[c] += int(item.get(c, 0))
@@ -552,8 +615,15 @@ async def main(args: argparse.Namespace) -> int:
     end_dt = datetime(end.year, end.month, end.day, tzinfo=timezone.utc)
 
     # --- Token reconciliation: CloudWatch counts vs ledger token columns ---
+    # Resolve the Bedrock-only owner set first: the ledger's YYYY-MM rows hold
+    # non-Bedrock token VOLUME (spend 0) since D6, with no provider dimension,
+    # so the token side must be scoped to Bedrock owners to match the
+    # account-wide AWS/Bedrock CloudWatch totals (non-Bedrock owners
+    # contribute nothing to CloudWatch).
+    bedrock_owner_ids = await fetch_bedrock_owner_ids()
     aws_metrics = await fetch_bedrock_metrics(start=start_dt, end=end_dt, region=region)
-    ledger_totals = await fetch_ledger_period_totals(periods)
+    ledger_totals = await fetch_ledger_period_totals(periods, bedrock_owner_ids=bedrock_owner_ids)
+    print(f"  bedrock owners: {len(bedrock_owner_ids)} (token side scoped to these)")
 
     results = reconcile(aws_metrics, ledger_totals)
     token_report, token_alerted = format_report(results, threshold_pct=args.threshold_pct)
@@ -562,6 +632,9 @@ async def main(args: argparse.Namespace) -> int:
     print()
 
     # --- Dollar reconciliation: Cost Explorer $ vs ledger RAW spend $ ---
+    # No Bedrock-owner filter needed here: record_usage records non-Bedrock
+    # sessions with spend 0 (only Bedrock is Isol8-billed), so non-Bedrock
+    # owners contribute $0 to the ledger spend column already.
     aws_usd = await fetch_bedrock_actual_cost_usd(start=start, end=end, region=region)
     ledger_usd = await fetch_ledger_spend_usd(periods)
 

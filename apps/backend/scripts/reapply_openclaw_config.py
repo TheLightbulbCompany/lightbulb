@@ -20,6 +20,35 @@ operations (compaction / memory-flush / heartbeat) to the cheap tier. All of
 that comes from ``build_openclaw_config_dict`` — this script just re-renders
 and re-writes; it does not duplicate any of that assembly logic.
 
+Runtime-appended state is PRESERVED across the regen
+----------------------------------------------------
+
+``write_user_configs`` writes a FRESH ``build_openclaw_config_dict()`` over
+the EFS file. Some openclaw.json subtrees are NOT produced by the generator
+— they are appended at runtime AFTER provision and would be silently
+clobbered by a blind overwrite. The generator emits ``channels.<provider>``
+with only provider defaults (``enabled`` / ``dmPolicy``), but channel
+pairing writes ``channels.<provider>.accounts.<agent_id>.allowFrom`` at
+runtime (``channel_link_service.complete_link`` via ``config_patcher``),
+plus a matching top-level ``bindings`` route entry. The generator emits
+neither ``accounts``, ``bindings``, nor the top-level ``identity`` OpenClaw
+adds at boot.
+
+So this script reads the FULL on-disk config BEFORE the regen, runs the
+full regen (which applies the new model tiers / params / aux AND resolves
+the correct live ``agents.list`` / integration ``mcp.servers``), re-reads
+what the regen actually landed, then DEEP-DIFFS the two: any subtree the
+regen dropped (``_runtime_only_delta``) is re-added via
+``config_patcher.patch_openclaw_config`` — a deep-merge over the fresh
+config. The diff is general — it preserves EVERY runtime-only subtree the
+generator omits, not a hardcoded allowlist, so a future runtime-only subtree
+survives without a code change here. And because the delta holds only keys
+the regen did NOT set, the deep-merge can never revert a freshly generated
+value (the new model refs / cost blocks / aux-model slots win; only
+``accounts`` / ``bindings`` / ``identity`` and friends are re-added). Net
+effect: linked Slack/Discord/Telegram DMs keep routing AND the new model
+config lands.
+
 Run via::
 
     cd apps/backend
@@ -37,7 +66,8 @@ the write path.
 Idempotent + safe to re-run: ``write_user_configs`` reuses the existing
 gateway token, EFS access point, node/operator device identities, and agent
 workspaces; it only overwrites the config + paired-device files. Re-running
-just re-renders the same config from the same inputs.
+just re-renders the same config from the same inputs, and the
+runtime-subtree restore is itself a dedup-safe deep-merge.
 
 Note on rollout: re-writing ``openclaw.json`` lands the new config on EFS,
 but a RUNNING container only picks it up via OpenClaw's file watcher
@@ -76,6 +106,68 @@ import sys
 logger = logging.getLogger("reapply_openclaw_config")
 
 
+def _runtime_only_delta(existing: dict | None, fresh: dict | None) -> dict:
+    """Deep-diff ``existing`` against the freshly regenerated ``fresh`` and
+    return only the subtrees the regen DROPPED — i.e. everything present in
+    ``existing`` that ``fresh`` does not produce.
+
+    This is the general form of "preserve runtime-appended config." The
+    config generator (``build_openclaw_config_dict``) emits an authoritative
+    config for every key it knows about, but several openclaw.json subtrees
+    are written at runtime AFTER provision and the generator never emits
+    them — a full overwrite drops them. Rather than hardcode an allowlist of
+    those subtrees (which silently loses any new runtime-only subtree the
+    moment one is added), we diff the regen output against the on-disk file
+    and re-add only what the regen left out. Examples of what this preserves:
+
+    * ``channels.<provider>.accounts`` — channel pairing state written by
+      ``channel_link_service`` (allowFrom peers). The generator emits the
+      provider with ``enabled``/``dmPolicy`` only, so ``accounts`` is dropped
+      by an overwrite and linked DMs stop routing until re-pair.
+    * top-level ``bindings`` — the route entries written alongside each
+      channel account. Without them the bot misroutes inbound channel
+      messages to the default agent.
+    * top-level ``identity`` and any other subtree OpenClaw adds at boot.
+
+    Because the delta contains ONLY keys the regen did not set, deep-merging
+    it back over the fresh config can never revert a regenerated value
+    (e.g. the new ``agents.defaults.model`` / cost blocks / aux-model slots
+    win — they are present in ``fresh`` so they are excluded from the delta).
+
+    Diff rules:
+
+    * A key present in ``existing`` but absent in ``fresh`` is preserved
+      whole (the regen does not own it).
+    * When both have a key holding a dict, recurse — preserve only the nested
+      keys the regen omits.
+    * Any non-dict value the regen set (scalar OR list, even when its value
+      changed) is owned by the fresh write and excluded. Lists are not
+      descended into: the regen rebuilds e.g. ``agents.list`` /
+      ``models.providers[*].models`` wholesale, so the fresh list is
+      authoritative.
+
+    Returns an empty dict when the regen is a superset of ``existing``
+    (nothing was dropped); the caller skips the restore patch entirely then.
+    """
+    if not isinstance(existing, dict) or not isinstance(fresh, dict):
+        return {}
+
+    delta: dict = {}
+    for key, existing_value in existing.items():
+        if key not in fresh:
+            # The regen does not emit this key at all — preserve it whole.
+            delta[key] = existing_value
+            continue
+        fresh_value = fresh[key]
+        if isinstance(existing_value, dict) and isinstance(fresh_value, dict):
+            nested = _runtime_only_delta(existing_value, fresh_value)
+            if nested:
+                delta[key] = nested
+        # else: the regen owns this key (scalar/list, or a type the regen
+        # changed) — exclude it so the restore can't revert the fresh value.
+    return delta
+
+
 async def main(*, apply: bool, env: str, owner_id: str) -> int:
     # Imports inside main so script setup (path, env vars) is done first —
     # matches the backfill script's lazy-import convention.
@@ -83,7 +175,9 @@ async def main(*, apply: bool, env: str, owner_id: str) -> int:
 
     from core.config import settings
     from core.containers import get_ecs_manager
+    from core.containers.config import read_openclaw_config_from_efs
     from core.repositories import container_repo
+    from core.services.config_patcher import patch_openclaw_config
     from core.services.container_provision import resolve_provider_choice
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -129,6 +223,18 @@ async def main(*, apply: bool, env: str, owner_id: str) -> int:
         return 0
 
     try:
+        # Snapshot the FULL on-disk config BEFORE the regen overwrites it.
+        # The regen renders an authoritative config (correct agents.list,
+        # new model tiers / params / aux models) but drops every subtree the
+        # generator does not emit — channel pairing accounts/allowFrom, route
+        # bindings, identity, and any other runtime-appended state.
+        existing = await read_openclaw_config_from_efs(owner_id)
+
+        # write_user_configs resolves the live Paperclip agent list +
+        # connected integration MCP servers, so the fresh agents.list /
+        # mcp.servers are correct — that resolution is exactly why we go
+        # through the provisioning writer rather than rebuilding the dict in
+        # this script.
         await get_ecs_manager().write_user_configs(
             owner_id,
             gateway_token,
@@ -138,6 +244,25 @@ async def main(*, apply: bool, env: str, owner_id: str) -> int:
             owner_type=owner_type,
         )
         print(f"  OK   wrote {config_path}")
+
+        # Re-read what the regen actually landed, then deep-diff it against
+        # the pre-regen snapshot to recover ONLY the subtrees the regen
+        # dropped. Diffing (vs. a hardcoded allowlist) preserves any
+        # runtime-only subtree without a code change, and — because the
+        # delta holds only keys the regen did not set — re-adding it can
+        # never revert a regenerated value.
+        fresh = await read_openclaw_config_from_efs(owner_id)
+        restore_patch = _runtime_only_delta(existing, fresh)
+
+        if restore_patch:
+            # Deep-merge the dropped runtime subtrees back over the fresh
+            # config. patch_openclaw_config re-adds the matching channel
+            # route bindings in the same atomic write.
+            await patch_openclaw_config(owner_id, restore_patch)
+            restored = ", ".join(sorted(restore_patch.keys()))
+            print(f"  OK   restored runtime subtrees: {restored}")
+        else:
+            print("  ..   no runtime-only subtrees dropped by the regen")
     except Exception as e:  # noqa: BLE001
         print(f"  ERR  {owner_id}: {e}")
         return 1

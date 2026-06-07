@@ -19,6 +19,7 @@ from scripts.reconcile_bedrock_vs_ledger import (
     DollarResult,
     build_arg_parser,
     fetch_bedrock_actual_cost_usd,
+    fetch_bedrock_owner_ids,
     fetch_ledger_period_totals,
     fetch_ledger_spend_usd,
     format_dollar_report,
@@ -347,6 +348,119 @@ async def test_fetch_ledger_period_totals_sums_multiple_periods():
 
 
 # --------------------------------------------------------------------------- #
+# Bedrock-only token reconciliation — exclude non-Bedrock owners.
+#
+# After D6 (record_usage records non-Bedrock model VOLUME into the same
+# YYYY-MM period rows with spend 0), the token side must filter to
+# Bedrock-only owners or it false-alarms after a provider migration: the
+# AWS/Bedrock CloudWatch totals stay correct while the ledger token columns
+# get inflated by ChatGPT-OAuth / OpenAI / BYO traffic.
+# --------------------------------------------------------------------------- #
+
+
+async def test_fetch_bedrock_owner_ids_returns_only_bedrock_owners():
+    """Scan billing-accounts → set of owner_ids on the Bedrock path only."""
+    items = [
+        {"owner_id": "user_a", "provider_choice": "bedrock_claude"},
+        {"owner_id": "org_b", "provider_choice": "bedrock_claude"},
+        {"owner_id": "user_c", "provider_choice": "chatgpt_oauth"},
+        {"owner_id": "org_d", "provider_choice": "byo_key", "byo_provider": "anthropic"},
+        # Phantom / pre-onboarding row with no provider_choice yet — excluded.
+        {"owner_id": "user_e"},
+    ]
+    fake_table = _FakeTable(pages=[{"Items": items}])
+
+    with (
+        patch("core.dynamodb.get_table", return_value=fake_table),
+        patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
+    ):
+        owners = await fetch_bedrock_owner_ids()
+
+    assert owners == {"user_a", "org_b"}
+
+
+async def test_fetch_bedrock_owner_ids_paginates():
+    page1 = {
+        "Items": [{"owner_id": "u1", "provider_choice": "bedrock_claude"}],
+        "LastEvaluatedKey": {"owner_id": "u1"},
+    }
+    page2 = {
+        "Items": [
+            {"owner_id": "u2", "provider_choice": "chatgpt_oauth"},
+            {"owner_id": "u3", "provider_choice": "bedrock_claude"},
+        ],
+    }
+    fake_table = _FakeTable(pages=[page1, page2])
+
+    with (
+        patch("core.dynamodb.get_table", return_value=fake_table),
+        patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
+    ):
+        owners = await fetch_bedrock_owner_ids()
+
+    assert owners == {"u1", "u3"}
+    assert fake_table.scan_calls == 2
+
+
+async def test_fetch_ledger_period_totals_filters_to_bedrock_owners():
+    """A period with mixed Bedrock + non-Bedrock owner rows must count ONLY
+    the Bedrock owners' tokens — non-Bedrock volume (spend 0) would inflate
+    the comparison against the AWS/Bedrock CloudWatch totals."""
+    items = [
+        # Bedrock owner — COUNTED.
+        {
+            "owner_id": "user_bedrock",
+            "period": "2026-06",
+            "total_input_tokens": 100,
+            "total_output_tokens": 10,
+            "total_cache_read_tokens": 1000,
+            "total_cache_write_tokens": 5,
+        },
+        # Non-Bedrock owner with token VOLUME (spend 0) — EXCLUDED.
+        {
+            "owner_id": "user_chatgpt",
+            "period": "2026-06",
+            "total_input_tokens": 999_999,
+            "total_output_tokens": 999_999,
+            "total_cache_read_tokens": 999_999,
+            "total_cache_write_tokens": 999_999,
+        },
+    ]
+    fake_table = _FakeTable(pages=[{"Items": items}])
+
+    with (
+        patch("core.dynamodb.get_table", return_value=fake_table),
+        patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
+    ):
+        totals = await fetch_ledger_period_totals(["2026-06"], bedrock_owner_ids={"user_bedrock"})
+
+    assert totals == {
+        "total_input_tokens": 100,
+        "total_output_tokens": 10,
+        "total_cache_read_tokens": 1000,
+        "total_cache_write_tokens": 5,
+    }
+
+
+async def test_fetch_ledger_period_totals_none_filter_counts_all():
+    """``bedrock_owner_ids=None`` keeps the un-filtered behavior (every
+    period row counted) — used only by tests; ``main`` always passes a set."""
+    items = [
+        {"owner_id": "a", "period": "2026-06", "total_input_tokens": 1},
+        {"owner_id": "b", "period": "2026-06", "total_input_tokens": 2},
+    ]
+    fake_table = _FakeTable(pages=[{"Items": items}])
+
+    with (
+        patch("core.dynamodb.get_table", return_value=fake_table),
+        patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
+    ):
+        totals = await fetch_ledger_period_totals(["2026-06"], bedrock_owner_ids=None)
+
+    assert totals["total_input_tokens"] == 3
+
+
+# --------------------------------------------------------------------------- #
 # argparse
 # --------------------------------------------------------------------------- #
 
@@ -461,6 +575,10 @@ async def test_main_alerts_and_exits_nonzero_on_cache_undercount(capsys):
             new=AsyncMock(return_value=aws_metrics),
         ),
         patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_owner_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
             "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
             new=AsyncMock(return_value=ledger_totals),
         ),
@@ -508,6 +626,10 @@ async def test_main_clean_run_exits_zero(capsys):
             new=AsyncMock(return_value=matched),
         ),
         patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_owner_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
             "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
             new=AsyncMock(return_value=ledger),
         ),
@@ -540,6 +662,10 @@ async def test_main_warns_on_non_month_aligned_window(capsys):
         patch(
             "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_metrics",
             new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_owner_ids",
+            new=AsyncMock(return_value=set()),
         ),
         patch(
             "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
@@ -855,6 +981,10 @@ async def test_main_alerts_on_dollar_divergence_even_when_tokens_match(capsys):
             new=AsyncMock(return_value=matched_tokens),
         ),
         patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_owner_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
             "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
             new=AsyncMock(return_value=matched_ledger_tokens),
         ),
@@ -902,6 +1032,10 @@ async def test_main_clean_run_passes_both_token_and_dollar(capsys):
             new=AsyncMock(return_value=matched),
         ),
         patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_owner_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
             "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
             new=AsyncMock(return_value=ledger),
         ),
@@ -922,6 +1056,134 @@ async def test_main_clean_run_passes_both_token_and_dollar(capsys):
     assert "ALERT" not in out
 
 
+async def test_main_passes_bedrock_owner_ids_to_token_scan(capsys):
+    """main() must resolve the Bedrock-only owner set and hand it to the
+    token-side ledger scan so non-Bedrock volume can't inflate the token
+    comparison. The dollar side stays un-filtered (non-Bedrock spend is 0)."""
+    args = argparse.Namespace(
+        env="prod",
+        days=None,
+        start=date(2026, 6, 1),
+        end=date(2026, 7, 1),
+        threshold_pct=20.0,
+    )
+    token_scan = AsyncMock(
+        return_value={
+            "total_input_tokens": 1000,
+            "total_output_tokens": 1000,
+            "total_cache_read_tokens": 1000,
+            "total_cache_write_tokens": 1000,
+        }
+    )
+    with (
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_metrics",
+            new=AsyncMock(
+                return_value={
+                    "InputTokenCount": 1000,
+                    "OutputTokenCount": 1000,
+                    "CacheReadInputTokenCount": 1000,
+                    "CacheWriteInputTokenCount": 1000,
+                }
+            ),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_owner_ids",
+            new=AsyncMock(return_value={"user_bedrock", "org_bedrock"}),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",
+            new=token_scan,
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_actual_cost_usd",
+            new=AsyncMock(return_value=100.0),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_spend_usd",
+            new=AsyncMock(return_value=100.0),
+        ),
+    ):
+        rc = await main(args)
+
+    assert rc == 0
+    token_scan.assert_awaited_once()
+    _, kwargs = token_scan.call_args
+    assert kwargs["bedrock_owner_ids"] == {"user_bedrock", "org_bedrock"}
+
+
+async def test_main_no_false_token_alert_after_provider_migration(capsys):
+    """End-to-end: a ledger inflated by a migrated non-Bedrock owner must NOT
+    raise a token-divergence alert. main() resolves the Bedrock-only owner
+    set, the real fetch_ledger_period_totals filters by it, and the
+    Bedrock-only ledger total then matches the AWS/Bedrock CloudWatch
+    totals."""
+    args = argparse.Namespace(
+        env="prod",
+        days=None,
+        start=date(2026, 6, 1),
+        end=date(2026, 7, 1),
+        threshold_pct=20.0,
+    )
+    # AWS metered exactly what the ONE Bedrock owner used.
+    aws_metrics = {
+        "InputTokenCount": 100,
+        "OutputTokenCount": 10,
+        "CacheReadInputTokenCount": 1000,
+        "CacheWriteInputTokenCount": 5,
+    }
+    # The ledger carries that Bedrock owner PLUS a migrated ChatGPT owner
+    # whose spend-0 token volume would (without the filter) ~10000x inflate
+    # the ledger token side and trip a false alert.
+    ledger_items = [
+        {
+            "owner_id": "user_bedrock",
+            "period": "2026-06",
+            "total_input_tokens": 100,
+            "total_output_tokens": 10,
+            "total_cache_read_tokens": 1000,
+            "total_cache_write_tokens": 5,
+        },
+        {
+            "owner_id": "user_migrated_chatgpt",
+            "period": "2026-06",
+            "total_input_tokens": 1_000_000,
+            "total_output_tokens": 1_000_000,
+            "total_cache_read_tokens": 1_000_000,
+            "total_cache_write_tokens": 1_000_000,
+        },
+    ]
+    fake_table = _FakeTable(pages=[{"Items": ledger_items}])
+
+    with (
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_metrics",
+            new=AsyncMock(return_value=aws_metrics),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_owner_ids",
+            new=AsyncMock(return_value={"user_bedrock"}),
+        ),
+        # The real token scan runs against the fake table so the owner filter
+        # is exercised end-to-end (NOT a canned return).
+        patch("core.dynamodb.get_table", return_value=fake_table),
+        patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_actual_cost_usd",
+            new=AsyncMock(return_value=0.0),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_spend_usd",
+            new=AsyncMock(return_value=0.0),
+        ),
+    ):
+        rc = await main(args)
+
+    out = capsys.readouterr().out
+    assert rc == 0  # no false alert
+    assert "ALERT" not in out
+
+
 async def test_main_token_match_but_dollar_clean_still_zero(capsys):
     """Sanity: when both sides are clean the dollar section doesn't false-alarm."""
     args = argparse.Namespace(
@@ -935,6 +1197,10 @@ async def test_main_token_match_but_dollar_clean_still_zero(capsys):
         patch(
             "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_metrics",
             new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "scripts.reconcile_bedrock_vs_ledger.fetch_bedrock_owner_ids",
+            new=AsyncMock(return_value=set()),
         ),
         patch(
             "scripts.reconcile_bedrock_vs_ledger.fetch_ledger_period_totals",

@@ -1192,7 +1192,7 @@ def tmp_efs_with_ceo_premium_model(monkeypatch):
                 "defaults": {
                     "model": {
                         "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
-                        "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5"],
+                        "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"],
                     },
                     "workspace": "/home/node/.openclaw/workspaces",
                 },
@@ -1259,7 +1259,7 @@ async def test_replace_provider_block_sets_ceo_model_when_provided(tmp_efs_with_
         providers={"amazon-bedrock": {"api": "bedrock-converse-stream"}},
         default_model={
             "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
-            "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5"],
+            "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"],
         },
         plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
         ceo_model=ceo_model,

@@ -275,8 +275,8 @@ def _make_connection(user_id: str = "u_1") -> GatewayConnection:
 
 @pytest.mark.asyncio
 async def test_deduct_for_card3_sonnet_with_markup():
-    """Sonnet 4.6 = $3 input / $15 output per MTok.
-    1000 input + 500 output → raw 10500 microcents → 1.4x markup → 14_700.
+    """Sonnet 4.6 = $3.3 input / $16.5 output per MTok (AWS-verified us. rates).
+    1000 input + 500 output → raw 11_550 microcents → 1.4x markup → 16_170.
     """
     conn = _make_connection()
     deduct_mock = AsyncMock(return_value=8_000_000)
@@ -296,16 +296,16 @@ async def test_deduct_for_card3_sonnet_with_markup():
 
     deduct_mock.assert_awaited_once()
     _, kwargs = deduct_mock.call_args
-    assert kwargs["amount_microcents"] == 14_700
-    assert kwargs["raw_cost_microcents"] == 10_500
+    assert kwargs["amount_microcents"] == 16_170
+    assert kwargs["raw_cost_microcents"] == 11_550
     assert kwargs["markup_multiplier"] == 1.4
     assert kwargs["chat_session_id"] == "sess_1"
 
 
 @pytest.mark.asyncio
 async def test_deduct_for_card3_opus_with_markup():
-    """Opus 4.7 = $15 input / $75 output per MTok.
-    1000 input + 500 output → raw 52_500 microcents → 1.4x → 73_500.
+    """Opus 4.6 = $5.5 input / $27.5 output per MTok (AWS-verified us. rates).
+    1000 input + 500 output → raw 19_250 microcents → 1.4x → 26_950.
     """
     conn = _make_connection()
     deduct_mock = AsyncMock(return_value=0)
@@ -323,8 +323,8 @@ async def test_deduct_for_card3_opus_with_markup():
             output_tokens=500,
         )
     _, kwargs = deduct_mock.call_args
-    assert kwargs["amount_microcents"] == 73_500
-    assert kwargs["raw_cost_microcents"] == 52_500
+    assert kwargs["amount_microcents"] == 26_950
+    assert kwargs["raw_cost_microcents"] == 19_250
 
 
 @pytest.mark.asyncio

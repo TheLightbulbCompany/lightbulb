@@ -355,13 +355,20 @@ def build_provider_block(
         # docs/providers/bedrock.md and keeps inference within US regions.
         # bedrock_pricing.get_rate strips the prefix before lookup so the
         # rate table stays keyed on the bare model id.
+        # cost blocks are the AWS-verified `us.` Regional (CRIS) rates in
+        # USD/MTok, with the 1-hour cacheWrite tier (cacheRetention is pinned
+        # to "long", so every write bills at the 1h rate; upstream's cost block
+        # carries a single cacheWrite rate, so it must be the 1h value). Kept
+        # in lockstep with bedrock_pricing._RATES — see
+        # test_config_cost_blocks_match_bedrock_pricing_rates. Task D7 will
+        # source these from the AWS rate card automatically.
         bedrock_models = [
             {
                 "id": "us.anthropic.claude-opus-4-6-v1",
                 "name": "Claude Opus 4.6",
                 "reasoning": True,
                 "input": ["text", "image"],
-                "cost": {"input": 15.0, "output": 75.0, "cacheRead": 1.5, "cacheWrite": 18.75},
+                "cost": {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 11.0},
                 "contextWindow": 1_000_000,
                 "maxTokens": 8192,
             },
@@ -370,17 +377,20 @@ def build_provider_block(
                 "name": "Claude Sonnet 4.6",
                 "reasoning": True,
                 "input": ["text", "image"],
-                "cost": {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+                "cost": {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 6.6},
                 "contextWindow": 1_000_000,
                 "maxTokens": 8192,
             },
             {
                 # Cheap aux-task tier — compaction / heartbeat / memory-flush.
-                "id": "us.anthropic.claude-haiku-4-5",
+                # The date-stamped inference-profile id is the only valid Haiku
+                # 4.5 profile; the bare us.anthropic.claude-haiku-4-5 throws
+                # ValidationException on invoke.
+                "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                 "name": "Claude Haiku 4.5",
                 "reasoning": True,
                 "input": ["text", "image"],
-                "cost": {"input": 1.0, "output": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
+                "cost": {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 2.2},
                 "contextWindow": 200_000,
                 "maxTokens": 8192,
             },
@@ -412,7 +422,7 @@ def build_provider_block(
                 #
                 # Users can still override per-agent via agents.list[*].model.
                 "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
-                "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5"],
+                "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"],
             },
             {
                 "amazon-bedrock": {
@@ -439,7 +449,8 @@ def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | N
         return "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
-            return "anthropic/claude-opus-4-6-v1"
+            # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp.
+            return "anthropic/claude-opus-4-6"
         if byo_provider == "openai":
             return "openai/gpt-5.5"
     return None
@@ -462,7 +473,7 @@ def cheap_model_ref(provider_choice: str, byo_provider: str | None) -> str | Non
     Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
     """
     if provider_choice == "bedrock_claude":
-        return "amazon-bedrock/us.anthropic.claude-haiku-4-5"
+        return "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             return "anthropic/claude-haiku-4-5"

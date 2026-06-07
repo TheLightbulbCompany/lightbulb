@@ -4,7 +4,32 @@ import json
 
 import pytest
 
-from core.containers.config import cheap_model_ref, premium_model_ref, write_openclaw_config
+from core.billing.bedrock_pricing import get_rate, normalize_model_id
+from core.containers.config import (
+    build_provider_block,
+    cheap_model_ref,
+    premium_model_ref,
+    write_openclaw_config,
+)
+
+# The known-valid Bedrock inference-profile ids. Pins what the catalog emits
+# so a bad id (e.g. the bare us.anthropic.claude-haiku-4-5, which is NOT a
+# valid profile and throws ValidationException on invoke) can't slip back in.
+# Live list-inference-profiles validation lands in a later task; this just
+# locks the expected set.
+_VALID_BEDROCK_IDS = {
+    "us.anthropic.claude-opus-4-6-v1",
+    "us.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+# camelCase (config.py cost block) → snake_case (bedrock_pricing._RATES).
+_COST_KEY_MAP = {
+    "input": "input",
+    "output": "output",
+    "cacheRead": "cache_read",
+    "cacheWrite": "cache_write",
+}
 
 
 @pytest.mark.asyncio
@@ -67,6 +92,8 @@ async def test_byo_key_anthropic_branch(tmp_path):
     # per-agent agents.list[*].model — see test_ceo_agent_gets_premium_model.
     assert primary == "anthropic/claude-sonnet-4-6"
     assert fallbacks == ["anthropic/claude-haiku-4-5"]
+    # byo anthropic uses Anthropic-DIRECT ids — no Bedrock date-stamp.
+    # The premium ref strips the erroneous "-v1" suffix (Bedrock-only).
     env_block = cfg.get("env", {})
     assert "ANTHROPIC_API_KEY" not in env_block
 
@@ -97,12 +124,14 @@ async def test_bedrock_claude_branch(tmp_path):
     # throttles the very first invocation.
     model_block = cfg["agents"]["defaults"]["model"]
     assert model_block["primary"] == "amazon-bedrock/us.anthropic.claude-sonnet-4-6"
-    assert model_block["fallbacks"] == ["amazon-bedrock/us.anthropic.claude-haiku-4-5"]
+    assert model_block["fallbacks"] == ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"]
 
     # Static provider catalog — Opus 4.6 + Sonnet 4.6 + Haiku 4.5 (the
     # cheap aux-task tier). New entries land here in lockstep with
     # bedrock_pricing._RATES; otherwise the credit ledger would either
-    # skip billing or 500 with UnknownModelError.
+    # skip billing or 500 with UnknownModelError. Haiku carries the
+    # date-stamped inference-profile id — the bare us.anthropic.claude-haiku-4-5
+    # is NOT a valid Bedrock profile and throws ValidationException on invoke.
     provider = cfg["models"]["providers"]["amazon-bedrock"]
     assert provider["api"] == "bedrock-converse-stream"
     assert provider["auth"] == "aws-sdk"
@@ -110,7 +139,7 @@ async def test_bedrock_claude_branch(tmp_path):
     assert model_ids == {
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-sonnet-4-6",
-        "us.anthropic.claude-haiku-4-5",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     }
     # Cost shape matches upstream ModelDefinitionConfig.cost (USD/MTok).
     for model in provider["models"]:
@@ -127,7 +156,8 @@ async def test_bedrock_claude_branch(tmp_path):
     "provider_choice,byo_provider,expected",
     [
         ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"),
-        ("byo_key", "anthropic", "anthropic/claude-opus-4-6-v1"),
+        # Anthropic-DIRECT id — no Bedrock "-v1" suffix.
+        ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
         ("byo_key", "openai", "openai/gpt-5.5"),
         # chatgpt_oauth is a flat-rate plan — no premium tier to reserve, so
         # the CEO inherits the default (no per-agent model override).
@@ -145,7 +175,7 @@ def test_premium_model_ref_matrix(provider_choice, byo_provider, expected):
     "provider_choice,byo_provider,expected_ceo_model",
     [
         ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"),
-        ("byo_key", "anthropic", "anthropic/claude-opus-4-6-v1"),
+        ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
         ("byo_key", "openai", "openai/gpt-5.5"),
     ],
 )
@@ -286,7 +316,7 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected",
     [
-        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-haiku-4-5"),
+        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         # chatgpt_oauth is flat-rate, but the codex provider DOES carry a
@@ -305,7 +335,7 @@ def test_cheap_model_ref_matrix(provider_choice, byo_provider, expected):
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected_cheap",
     [
-        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-haiku-4-5"),
+        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         ("chatgpt_oauth", None, "openai-codex/gpt-5.4-mini"),
@@ -379,3 +409,35 @@ async def test_empty_gateway_token_raises(tmp_path, bad_token):
             provider_choice="bedrock_claude",
             user_id="u_1",
         )
+
+
+def _bedrock_catalog_models() -> list[dict]:
+    providers, _default, _plugins = build_provider_block(
+        provider_choice="bedrock_claude",
+        user_id="u_1",
+        byo_provider=None,
+    )
+    return providers["amazon-bedrock"]["models"]
+
+
+def test_bedrock_catalog_ids_are_the_known_valid_set():
+    """The catalog ids must equal the known-valid Bedrock inference-profile
+    set. The bare us.anthropic.claude-haiku-4-5 is NOT a valid profile — it
+    throws ValidationException on invoke, breaking the Sonnet→Haiku fallback
+    and every aux op (compaction/heartbeat/memoryFlush)."""
+    ids = {m["id"] for m in _bedrock_catalog_models()}
+    assert ids == _VALID_BEDROCK_IDS
+
+
+def test_config_cost_blocks_match_bedrock_pricing_rates():
+    """config.py cost blocks and bedrock_pricing._RATES must agree per model
+    so the two rate tables can't drift. Maps camelCase ↔ snake_case keys and
+    normalizes the catalog id to the bare foundation-model key the rate table
+    uses."""
+    for model in _bedrock_catalog_models():
+        bare = normalize_model_id(model["id"])
+        rate = get_rate(model["id"])
+        for camel, snake in _COST_KEY_MAP.items():
+            assert model["cost"][camel] == rate[snake], (
+                f"{bare}: cost.{camel}={model['cost'][camel]} != _RATES[{snake}]={rate[snake]}"
+            )

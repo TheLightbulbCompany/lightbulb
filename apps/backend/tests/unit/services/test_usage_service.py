@@ -216,6 +216,92 @@ async def test_record_usage_empty_call_records_nothing(dynamodb_tables):
 
 
 @pytest.mark.asyncio
+async def test_record_usage_raw_cost_override_used_verbatim(dynamodb_tables):
+    """When the caller passes ``raw_cost_microcents`` (sourced from OpenClaw's
+    cache-inclusive ``estimatedCostUsd``), it is recorded verbatim as spend —
+    NOT recomputed from the cache-blind token counts. The token counts are
+    still recorded for analytics. This is the ~30x undercount fix: cache
+    tokens are ~99.99% of volume but sessions.list omits them, so the
+    token-based path captures only ~3% of real cost."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    # estimatedCostUsd = 1.234567 USD → 1_234_567 microcents.
+    # Token counts are tiny (cache-blind), so the token-based path would
+    # record a far smaller spend — the override must win.
+    await record_usage(
+        owner_id="org_override",
+        user_id="user_o",
+        model="anthropic.claude-sonnet-4-6",
+        input_tokens=10,
+        output_tokens=5,
+        cache_read=0,
+        cache_write=0,
+        raw_cost_microcents=1_234_567,
+    )
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_override", period)
+    assert owner_usage is not None
+    assert owner_usage["total_spend_microdollars"] == 1_234_567
+    # Token volume is still recorded for analytics.
+    assert owner_usage["total_input_tokens"] == 10
+    assert owner_usage["total_output_tokens"] == 5
+
+
+@pytest.mark.asyncio
+async def test_record_usage_raw_cost_override_records_when_tokens_zero(dynamodb_tables):
+    """A cache-heavy turn may report ~0 input/output tokens (cache counts are
+    omitted by sessions.list) but a real positive cost. With a raw-cost
+    override the event must still be recorded, not dropped by the
+    empty-event guard."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage(
+        owner_id="org_override_zero_tok",
+        user_id="user_z",
+        model="anthropic.claude-sonnet-4-6",
+        input_tokens=0,
+        output_tokens=0,
+        cache_read=0,
+        cache_write=0,
+        raw_cost_microcents=900_000,
+    )
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_override_zero_tok", period)
+    assert owner_usage is not None
+    assert owner_usage["total_spend_microdollars"] == 900_000
+
+
+@pytest.mark.asyncio
+async def test_record_usage_none_override_falls_back_to_token_pricing(dynamodb_tables):
+    """When ``raw_cost_microcents`` is None (the default — no estimatedCostUsd
+    on the row), the existing token-based bedrock_pricing path is used,
+    unchanged."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage(
+        owner_id="org_fallback",
+        user_id="user_fb",
+        model="anthropic.claude-sonnet-4-6",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read=0,
+        cache_write=0,
+        raw_cost_microcents=None,
+    )
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_fallback", period)
+    assert owner_usage is not None
+    # 1000 input * 3.3 + 500 output * 16.5 (USD per MTok) → token-based spend.
+    assert owner_usage["total_spend_microdollars"] == 11_550
+
+
+@pytest.mark.asyncio
 async def test_get_usage_summary_returns_zeros_for_empty(dynamodb_tables):
     from core.services.usage_service import get_usage_summary
 

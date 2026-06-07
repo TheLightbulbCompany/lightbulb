@@ -995,13 +995,23 @@ def build_openclaw_config_dict(
         servers = config.setdefault("mcp", {}).setdefault("servers", {})
         servers.update(integration_mcp_servers)
 
-    # NOTE: do not pin mcp.runtimeScope here yet. The "shared" runtime scope only
-    # exists in the forked base image; the previously-deployed gateway's MCP
-    # schema is strict (servers / sessionIdleTtlMs only) and rejects unknown keys
-    # at boot, so emitting runtimeScope before the fork image is the deployed
-    # default for an owner would brick that container on reprovision. Pin it in a
-    # follow-up once the fork image is promoted to dev + prod. (Non-blocking MCP
-    # materialization is baked into the image and needs no config.)
+    # Pin the bundled MCP runtime to "shared" scope: one connected runtime per
+    # (workspace, server-config), reused across every session instead of spawned
+    # per session — so a new session (a new Paperclip issue, a chat after the
+    # daily session reset) reuses the already-connected MCP servers instead of
+    # paying a fresh connect. Each container serves a single owner, so there is
+    # no cross-session credential bleed.
+    #
+    # runtimeScope exists only in the forked base image; an older gateway's MCP
+    # schema is strict and rejects unknown keys at boot, so emit it only once
+    # THIS environment's deployed image supports it — otherwise a config write to
+    # a container still on the old image bricks it on next boot. The gate flips
+    # per-environment as each tag is promoted. Only meaningful when an mcp block
+    # exists.
+    if openclaw_version.deployed_upstream_at_least("2026.6.1"):
+        mcp_block = config.get("mcp")
+        if isinstance(mcp_block, dict):
+            mcp_block["runtimeScope"] = "shared"
 
     return config
 

@@ -104,3 +104,34 @@ def deployed_upstream_version() -> str:
     deployed = prod_tag() if env.startswith("prod") else dev_tag()
     prefix = deployed.split("-", 1)[0] if deployed else ""
     return prefix or upstream_version()
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse a dotted version (e.g. ``2026.6.1``) into a comparable int tuple.
+
+    A non-numeric segment collapses to 0 so an unparseable value sorts low —
+    a version we can't read will not satisfy a ``>=`` gate, which is the safe
+    default (don't emit a newer-only key when the deployed version is unknown).
+    """
+    parts: list[int] = []
+    for segment in v.split("."):
+        try:
+            parts.append(int(segment))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def deployed_upstream_at_least(target: str) -> bool:
+    """True when the extended image deployed to THIS environment is at least
+    ``target`` (an upstream version such as ``2026.6.1``).
+
+    Gates emission of config keys that exist only in newer OpenClaw. The
+    gateway validates ``openclaw.json`` against a strict schema at boot, so a
+    key the running image doesn't recognize crash-loops the container. Comparing
+    against :func:`deployed_upstream_version` (the per-env ``dev.tag``/``prod.tag``
+    prefix, not the build-target ``tag``) means a newer-only key is emitted only
+    once this environment's deployed image actually supports it, and flips
+    per-environment as each tag is promoted.
+    """
+    return _version_tuple(deployed_upstream_version()) >= _version_tuple(target)

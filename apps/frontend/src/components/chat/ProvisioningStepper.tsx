@@ -11,7 +11,7 @@ import {
   CheckCircle,
   Circle,
 } from "lucide-react";
-import { useOrganization } from "@clerk/nextjs";
+import { useOrganization, useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
@@ -186,10 +186,20 @@ export function ProvisioningStepper({
   trigger?: "onboarding" | "recovery";
 }) {
   const { organization, membership } = useOrganization();
+  const { userId } = useAuth();
   const isOrg = !!organization;
   // Personal accounts (no org) and explicit org admins manage channels.
   // Plain members see link-only flows or get sent straight to ready.
   const isAdmin = !isOrg || membership?.role === "org:admin";
+  // Stable per-owner key (org_… for orgs, user_… for personal) used to
+  // remember that this owner dismissed/finished the OPTIONAL channel
+  // onboarding step. Without this the wizard treats "no main-agent bot yet"
+  // as "onboarding not done" and re-appears on every reload for an owner who
+  // simply never wants a channel.
+  const channelOnboardingDismissKey =
+    organization?.id || userId
+      ? `isol8:channel-onboarding-dismissed:${organization?.id ?? userId}`
+      : null;
   const api = useApi();
   const { account, isLoading: billingLoading, isSubscribed } = useBilling();
   // Set when we first enter the container/gateway phase — _not_ at component
@@ -200,10 +210,48 @@ export function ProvisioningStepper({
   const provisioningStartRef = useRef<number | null>(null);
   const [timedOut, setTimedOut] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
-  // In-memory only — `channels.status` / `/channels/links/me` is the source
-  // of truth for "is the channel onboarding step needed for this user". Cancel
-  // hides the wizard for the current session; next mount re-checks the data.
-  const [onboardingComplete, setOnboardingComplete] = useState(false);
+  // `/channels/links/me` tells us whether a main-agent bot exists, but on its
+  // own that conflates "no bot yet" with "channel onboarding not done" — so an
+  // owner who never connects a channel got the Telegram wizard re-shoved over
+  // the dashboard every reload. We remember an explicit finish/cancel in
+  // localStorage (per owner) so the optional channels step shows once, not
+  // forever. Lazy-init covers the common case (Clerk ready at mount → no
+  // flash); the effect re-syncs if the key resolves late or the active org
+  // changes.
+  const [onboardingComplete, setOnboardingComplete] = useState<boolean>(() => {
+    if (typeof window === "undefined" || !channelOnboardingDismissKey) return false;
+    try {
+      return window.localStorage.getItem(channelOnboardingDismissKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !channelOnboardingDismissKey) return;
+    try {
+      if (window.localStorage.getItem(channelOnboardingDismissKey) === "1") {
+        setOnboardingComplete(true);
+      }
+    } catch {
+      // localStorage unavailable (private mode / disabled): fall back to the
+      // in-session-only behavior rather than block the stepper on storage.
+    }
+  }, [channelOnboardingDismissKey]);
+
+  // Mark the optional channel onboarding done for this owner, persisted across
+  // reloads so the wizard does not re-nag. Shared by the wizard's finish and
+  // cancel paths.
+  const dismissChannelOnboarding = useCallback(() => {
+    if (typeof window !== "undefined" && channelOnboardingDismissKey) {
+      try {
+        window.localStorage.setItem(channelOnboardingDismissKey, "1");
+      } catch {
+        // best-effort; the in-memory flag below still hides it this session
+      }
+    }
+    setOnboardingComplete(true);
+  }, [channelOnboardingDismissKey]);
 
   // Plan 3 (flat-fee pivot): `?provider=` is set by the landing page CTA
   // (/sign-up?provider=chatgpt_oauth|byo_key|bedrock_claude) and preserved
@@ -615,8 +663,8 @@ export function ProvisioningStepper({
             provider={wizardProvider}
             agentId="main"
             botUsername={wizardBotUsername}
-            onComplete={() => { capture("onboarding_completed"); setOnboardingComplete(true); }}
-            onCancel={() => setOnboardingComplete(true)}
+            onComplete={() => { capture("onboarding_completed"); dismissChannelOnboarding(); }}
+            onCancel={dismissChannelOnboarding}
           />
         </div>
       </div>

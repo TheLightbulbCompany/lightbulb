@@ -747,7 +747,7 @@ async def _hot_swap_provider(
     on EFS yet (legacy / un-provisioned), signaling the caller to fall
     back to the cold path.
     """
-    from core.containers.config import build_provider_block, premium_model_ref
+    from core.containers.config import build_provider_block, cheap_model_ref, premium_model_ref
     from core.services.config_patcher import ConfigPatchError, replace_provider_block
 
     if new_provider == "chatgpt_oauth":
@@ -779,6 +779,11 @@ async def _hot_swap_provider(
     # hot swap must re-pin (or clear) it so it tracks the new provider. None on
     # flat-rate paths (chatgpt_oauth), which drops any stale override.
     ceo_model = premium_model_ref(new_provider, None)
+    # Aux ops (compaction / memory-flush / heartbeat) are routed to the cheap
+    # tier via overrides under agents.defaults; the hot swap must re-pin (or
+    # clear) those too so they track the new provider — same hazard as the CEO
+    # override. chatgpt_oauth has a cheap tier (mini), so this is non-None there.
+    cheap_model = cheap_model_ref(new_provider, None)
 
     try:
         await replace_provider_block(
@@ -787,6 +792,7 @@ async def _hot_swap_provider(
             default_model=default_model,
             plugin_entries=plugin_entries,
             ceo_model=ceo_model,
+            cheap_model=cheap_model,
         )
     except ConfigPatchError as e:
         logger.info(

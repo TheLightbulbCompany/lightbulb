@@ -63,18 +63,28 @@ async def record_usage(
     column the legacy code wrote to (DDB schema unchanged for backward
     compatibility — column name is a misnomer; values are microcents).
 
-    When ``raw_cost_microcents`` is supplied it is recorded verbatim as
-    spend instead of recomputing from token counts. The caller sources it
-    from OpenClaw's ``estimatedCostUsd`` (cache-inclusive), which is the
-    authoritative cost: ``sessions.list`` omits cache token counts, and
-    cache tokens are ~99.99% of volume, so the token-based path captures
-    only ~3% of real cost. Token counts are still recorded for analytics
-    even when the override is used. ``None`` (the default — no
-    ``estimatedCostUsd`` on the row) falls back to the token-based path
-    unchanged.
+    When ``raw_cost_microcents`` is supplied AND the model is a Bedrock ref
+    it is recorded verbatim as spend instead of recomputing from token counts.
+    The caller sources it from OpenClaw's ``estimatedCostUsd`` (cache-inclusive),
+    which is the authoritative cost: ``sessions.list`` omits cache token counts,
+    and cache tokens are ~99.99% of volume, so the token-based path captures
+    only ~3% of real cost. The override is gated to Bedrock because that is the
+    only provider path Isol8 bills; non-Bedrock sessions (ChatGPT OAuth / OpenAI
+    / BYO) are user-paid / flat-rate, so recording their ``estimatedCostUsd`` as
+    Isol8 spend would contradict the books — they record spend 0 even when the
+    override is present. Token counts are still recorded for analytics in both
+    cases. ``None`` (the default — no ``estimatedCostUsd`` on the row) falls back
+    to the token-based path unchanged.
     """
     bare_model = _strip_provider_prefix(model)
-    if raw_cost_microcents is not None and raw_cost_microcents > 0:
+    # The raw-cost override (OpenClaw's cache-inclusive ``estimatedCostUsd``)
+    # is only authoritative Isol8 spend for the Bedrock path — that's the one
+    # Isol8 actually bills. Non-Bedrock sessions (ChatGPT OAuth / OpenAI / BYO)
+    # can carry ``estimatedCostUsd`` too, but those are user-paid / flat-rate,
+    # so recording that cost as Isol8 spend would contradict the books. Gate
+    # the override to Bedrock; a non-Bedrock model falls through to the token
+    # path → UnknownModelError → spend 0, even when the override is present.
+    if raw_cost_microcents is not None and raw_cost_microcents > 0 and _is_bedrock_model(model):
         spend_microcents = raw_cost_microcents
     else:
         try:

@@ -1297,6 +1297,111 @@ async def test_replace_provider_block_ceo_model_noop_when_no_agents_list(monkeyp
     assert "list" not in result["agents"]
 
 
+# ---------------------------------------------------------------------------
+# replace_provider_block — aux-model (compaction / memoryFlush / heartbeat)
+# overrides must also track the new provider on a hot swap, same as the CEO
+# model. Otherwise a Bedrock → ChatGPT swap leaves stale amazon-bedrock/...
+# refs under agents.defaults pointing at a provider no longer in
+# models.providers.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tmp_efs_with_aux_model_overrides(monkeypatch):
+    """Owner whose openclaw.json carries the aux-model overrides provisioning
+    writes for a Bedrock owner: ``agents.defaults.compaction.model``,
+    ``compaction.memoryFlush.model``, and ``heartbeat.model`` — all pinned to
+    the cheap Bedrock Haiku tier. The Bedrock → flat-rate swap (cheap_model=None)
+    must DELETE these so the aux slots inherit the new default. Sibling keys
+    (``heartbeat.every``, ``compaction.memoryFlush.enabled``) must survive."""
+    haiku = "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_aux")
+        os.makedirs(user_dir)
+        config = {
+            "models": {
+                "providers": {"amazon-bedrock": {"api": "bedrock-converse-stream"}},
+            },
+            "agents": {
+                "defaults": {
+                    "model": {
+                        "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+                        "fallbacks": [haiku],
+                    },
+                    "workspace": "/home/node/.openclaw/workspaces",
+                    "compaction": {
+                        "model": haiku,
+                        "memoryFlush": {"model": haiku, "enabled": True},
+                    },
+                    "heartbeat": {"every": "30m", "model": haiku},
+                },
+                "list": [
+                    {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspaces/main"},
+                ],
+            },
+            "plugins": {"entries": {"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}}},
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", tmpdir)
+        yield tmpdir
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_strips_aux_models_when_cheap_model_none(
+    tmp_efs_with_aux_model_overrides,
+):
+    """Bedrock → ChatGPT OAuth (cheap_model=None): the three aux-model overrides
+    holding stale amazon-bedrock Haiku refs MUST be removed so the aux slots
+    inherit the new flat-rate default. Sibling keys (heartbeat.every,
+    memoryFlush.enabled) must be preserved."""
+    await replace_provider_block(
+        "user_aux",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+        ceo_model=None,
+        cheap_model=None,
+    )
+    with open(os.path.join(tmp_efs_with_aux_model_overrides, "user_aux", "openclaw.json")) as f:
+        defaults = json.load(f)["agents"]["defaults"]
+
+    # The three aux model overrides are gone.
+    assert "model" not in defaults["compaction"]
+    assert "model" not in defaults["compaction"]["memoryFlush"]
+    assert "model" not in defaults["heartbeat"]
+    # Sibling keys preserved — we must not clobber the rest of the slot.
+    assert defaults["heartbeat"]["every"] == "30m"
+    assert defaults["compaction"]["memoryFlush"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_sets_aux_models_when_cheap_model_provided(
+    tmp_efs_with_bedrock_provider,
+):
+    """ChatGPT OAuth → Bedrock (cheap_model=<bedrock Haiku>): the three aux slots
+    must be (re)pinned to the cheap tier. The fixture starts with no aux model
+    overrides at all, so they must be created."""
+    cheap_model = "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    await replace_provider_block(
+        "user_p",
+        providers={"amazon-bedrock": {"api": "bedrock-converse-stream"}},
+        default_model={
+            "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+            "fallbacks": [cheap_model],
+        },
+        plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
+        ceo_model="amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
+        cheap_model=cheap_model,
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        defaults = json.load(f)["agents"]["defaults"]
+
+    assert defaults["compaction"]["model"] == cheap_model
+    assert defaults["compaction"]["memoryFlush"]["model"] == cheap_model
+    assert defaults["heartbeat"]["model"] == cheap_model
+
+
 @pytest.mark.asyncio
 async def test_apply_paperclip_meta_creates_params_paperclip_block(tmp_path, monkeypatch):
     """When the agent entry has no params yet, the helper creates the

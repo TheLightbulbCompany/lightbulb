@@ -218,21 +218,22 @@ async def test_record_usage_empty_call_records_nothing(dynamodb_tables):
 @pytest.mark.asyncio
 async def test_record_usage_raw_cost_override_used_verbatim(dynamodb_tables):
     """When the caller passes ``raw_cost_microcents`` (sourced from OpenClaw's
-    cache-inclusive ``estimatedCostUsd``), it is recorded verbatim as spend —
-    NOT recomputed from the cache-blind token counts. The token counts are
-    still recorded for analytics. This is the ~30x undercount fix: cache
-    tokens are ~99.99% of volume but sessions.list omits them, so the
+    cache-inclusive ``estimatedCostUsd``) for a Bedrock model, it is recorded
+    verbatim as spend — NOT recomputed from the cache-blind token counts. The
+    token counts are still recorded for analytics. This is the ~30x undercount
+    fix: cache tokens are ~99.99% of volume but sessions.list omits them, so the
     token-based path captures only ~3% of real cost."""
     from core.repositories import usage_repo
     from core.services.usage_service import _current_period, record_usage
 
     # estimatedCostUsd = 1.234567 USD → 1_234_567 microcents.
     # Token counts are tiny (cache-blind), so the token-based path would
-    # record a far smaller spend — the override must win.
+    # record a far smaller spend — the override must win. The model carries
+    # the amazon-bedrock/ prefix because the override is gated to Bedrock.
     await record_usage(
         owner_id="org_override",
         user_id="user_o",
-        model="anthropic.claude-sonnet-4-6",
+        model="amazon-bedrock/us.anthropic.claude-sonnet-4-6",
         input_tokens=10,
         output_tokens=5,
         cache_read=0,
@@ -251,8 +252,8 @@ async def test_record_usage_raw_cost_override_used_verbatim(dynamodb_tables):
 
 @pytest.mark.asyncio
 async def test_record_usage_raw_cost_override_records_when_tokens_zero(dynamodb_tables):
-    """A cache-heavy turn may report ~0 input/output tokens (cache counts are
-    omitted by sessions.list) but a real positive cost. With a raw-cost
+    """A cache-heavy Bedrock turn may report ~0 input/output tokens (cache counts
+    are omitted by sessions.list) but a real positive cost. With a raw-cost
     override the event must still be recorded, not dropped by the
     empty-event guard."""
     from core.repositories import usage_repo
@@ -261,7 +262,7 @@ async def test_record_usage_raw_cost_override_records_when_tokens_zero(dynamodb_
     await record_usage(
         owner_id="org_override_zero_tok",
         user_id="user_z",
-        model="anthropic.claude-sonnet-4-6",
+        model="amazon-bedrock/us.anthropic.claude-sonnet-4-6",
         input_tokens=0,
         output_tokens=0,
         cache_read=0,
@@ -273,6 +274,68 @@ async def test_record_usage_raw_cost_override_records_when_tokens_zero(dynamodb_
     owner_usage = await usage_repo.get_period_usage("org_override_zero_tok", period)
     assert owner_usage is not None
     assert owner_usage["total_spend_microdollars"] == 900_000
+
+
+@pytest.mark.asyncio
+async def test_record_usage_raw_cost_override_used_for_bedrock_model(dynamodb_tables):
+    """A Bedrock model carrying ``raw_cost_microcents`` records the override
+    verbatim as spend. The override is the cache-inclusive cost from OpenClaw;
+    gating it to Bedrock keeps this (the priced/Isol8-billed path) intact."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage(
+        owner_id="org_bedrock_override",
+        user_id="user_bo",
+        model="amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+        input_tokens=10,
+        output_tokens=5,
+        cache_read=0,
+        cache_write=0,
+        raw_cost_microcents=1_234_567,
+    )
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_bedrock_override", period)
+    assert owner_usage is not None
+    assert owner_usage["total_spend_microdollars"] == 1_234_567
+    assert owner_usage["total_input_tokens"] == 10
+    assert owner_usage["total_output_tokens"] == 5
+
+
+@pytest.mark.asyncio
+async def test_record_usage_raw_cost_override_ignored_for_non_bedrock_model(dynamodb_tables):
+    """A non-Bedrock model (ChatGPT OAuth / OpenAI / BYO) that carries a
+    ``raw_cost_microcents`` (from OpenClaw's ``estimatedCostUsd``) must NOT
+    record it as Isol8 spend. Non-Bedrock = user-paid / flat-rate, so Isol8's
+    books read spend 0. The override is gated to Bedrock; a non-Bedrock model
+    falls through to the token path → UnknownModelError → spend 0, even with
+    the override present. Token volume is still recorded."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage(
+        owner_id="org_codex_override",
+        user_id="user_co",
+        model="openai-codex/gpt-5.5",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read=200,
+        cache_write=100,
+        raw_cost_microcents=1_234_567,
+    )
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_codex_override", period)
+    assert owner_usage is not None
+    # Override IGNORED for the non-Bedrock model — spend stays 0.
+    assert owner_usage["total_spend_microdollars"] == 0
+    # Token volume still recorded for analytics.
+    assert owner_usage["request_count"] == 1
+    assert owner_usage["total_input_tokens"] == 1000
+    assert owner_usage["total_output_tokens"] == 500
+    assert owner_usage["total_cache_read_tokens"] == 200
+    assert owner_usage["total_cache_write_tokens"] == 100
 
 
 @pytest.mark.asyncio

@@ -144,10 +144,13 @@ async def replace_provider_block(
     providers: dict,
     default_model: dict,
     plugin_entries: dict,
+    ceo_model: str | None,
+    cheap_model: str | None = None,
 ) -> None:
     """Atomically swap the three openclaw.json subtrees that define the LLM
     provider: ``models.providers``, ``agents.defaults.model``, and
-    ``plugins.entries``.
+    ``plugins.entries`` — and re-pin the CEO agent's per-agent ``model`` plus
+    the aux-model overrides under ``agents.defaults``.
 
     Used by the post-onboarding change-provider hot path
     (``billing_service.change_provider`` for Bedrock ↔ ChatGPT switches).
@@ -173,6 +176,28 @@ async def replace_provider_block(
     memory-core's dreaming) persist across provider switches even though
     the old provider's entry is dropped.
 
+    ``ceo_model`` keeps the CEO (Friday) agent's per-agent ``model`` override
+    consistent with the new provider. The CEO is the ``agents.list`` entry with
+    ``default: true``. When ``ceo_model`` is set, the override is (re)written to
+    that ref; when it is ``None`` (a flat-rate provider with no premium tier,
+    e.g. chatgpt_oauth), any existing override is *deleted* so the CEO inherits
+    the new ``agents.defaults.model`` — critical for the Bedrock → ChatGPT
+    switch, where leaving a stale ``amazon-bedrock/…`` ref would point Friday at
+    a provider no longer in ``models.providers``. No-op when ``agents.list`` is
+    absent/empty or has no default entry.
+
+    ``cheap_model`` does the same for the aux-model overrides provisioning
+    writes under ``agents.defaults`` — ``compaction.model``,
+    ``compaction.memoryFlush.model``, and ``heartbeat.model`` (pure-overhead
+    operations routed to the cheapest tier). When ``cheap_model`` is set, each
+    of the three slots' ``model`` is (re)written to it; when it is ``None`` (a
+    flat-rate provider with no cheaper tier) the ``model`` key is *deleted* from
+    each slot so the aux op inherits the new default — same stale-ref hazard as
+    the CEO override. Only the ``model`` key is touched; sibling keys
+    (``heartbeat.every``, ``compaction.memoryFlush.enabled``) are preserved, and
+    a slot's intermediate dict is created on demand when setting but left absent
+    when clearing.
+
     Raises ``ConfigPatchError`` (via ``_locked_rmw``) if the owner has
     no ``openclaw.json`` on EFS yet. Callers should fall back to a full
     re-provision in that case.
@@ -194,6 +219,59 @@ async def replace_provider_block(
             defaults = {}
             agents["defaults"] = defaults
         defaults["model"] = copy.deepcopy(default_model)
+
+        # Keep the aux-model overrides (compaction / memory-flush / heartbeat)
+        # in sync with the new provider — same hazard as the CEO override below,
+        # just for the cheap-tier aux slots. When cheap_model is set, pin each
+        # slot's `model`; when None (flat-rate provider with no cheaper tier),
+        # drop any stale override so the aux op inherits the new default. Only
+        # the `model` key is touched so sibling keys (heartbeat.every,
+        # memoryFlush.enabled) survive. Slot dicts are created on demand when
+        # setting but left absent when clearing (no empty stubs).
+        if cheap_model is not None:
+            compaction = defaults.get("compaction")
+            if not isinstance(compaction, dict):
+                compaction = {}
+                defaults["compaction"] = compaction
+            compaction["model"] = cheap_model
+            memory_flush = compaction.get("memoryFlush")
+            if not isinstance(memory_flush, dict):
+                memory_flush = {}
+                compaction["memoryFlush"] = memory_flush
+            memory_flush["model"] = cheap_model
+            heartbeat = defaults.get("heartbeat")
+            if not isinstance(heartbeat, dict):
+                heartbeat = {}
+                defaults["heartbeat"] = heartbeat
+            heartbeat["model"] = cheap_model
+        else:
+            compaction = defaults.get("compaction")
+            if isinstance(compaction, dict):
+                compaction.pop("model", None)
+                memory_flush = compaction.get("memoryFlush")
+                if isinstance(memory_flush, dict):
+                    memory_flush.pop("model", None)
+            heartbeat = defaults.get("heartbeat")
+            if isinstance(heartbeat, dict):
+                heartbeat.pop("model", None)
+
+        # Keep the CEO (Friday) per-agent model override in sync with the new
+        # provider. The CEO is the agents.list entry with default: true. When
+        # ceo_model is set, pin it; when None (flat-rate provider with no
+        # premium tier), drop any stale override so Friday inherits the new
+        # default — otherwise a Bedrock -> ChatGPT switch leaves Friday pointing
+        # at a provider no longer in models.providers.
+        agents_list = agents.get("list")
+        if isinstance(agents_list, list):
+            ceo_entry = next(
+                (e for e in agents_list if isinstance(e, dict) and e.get("default") is True),
+                None,
+            )
+            if ceo_entry is not None:
+                if ceo_model is not None:
+                    ceo_entry["model"] = ceo_model
+                else:
+                    ceo_entry.pop("model", None)
 
         plugins = current.get("plugins")
         if not isinstance(plugins, dict):

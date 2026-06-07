@@ -1,8 +1,9 @@
 """Bedrock Claude pricing constants - input/output/cache token rates per model.
 
-Rates sourced from AWS Bedrock list price (us-east-1, 2026-04). Update
-this file when AWS changes pricing; no other code should hardcode rates.
-Per spec §6.3.
+Rates are the AWS-verified `us.` Regional (CRIS) rate card
+(list-foundation-model-agreement-offers). Update this file when AWS changes
+pricing; no other code should hardcode rates. Per spec §6.3. Task D7 will
+source these from AWS automatically.
 
 Microcents arithmetic is used everywhere in the credit ledger so we
 avoid float drift on deduction. 1 dollar = 100 cents = 1,000,000
@@ -47,25 +48,38 @@ class ModelRate(TypedDict):
     cache_write: float
 
 
-# Rates in USD per million tokens. Cache rates per Anthropic prompt-caching
-# pricing on Bedrock: cache_write = 1.25× input rate, cache_read = 0.1× input
-# rate. Reference: https://aws.amazon.com/bedrock/pricing/
+# Rates in USD per million tokens — the AWS-verified `us.` Regional (CRIS)
+# rate card. cache_read is the 0.1× input cacheRead rate; cache_write is the
+# 1-HOUR cacheWrite tier, because agents.defaults.params.cacheRetention is
+# pinned to "long" (1h TTL) — so every write bills at the 1h rate, not the
+# 5-minute one. Reference: AWS list-foundation-model-agreement-offers.
+# Task D7 will source these from the AWS rate card automatically; keep in
+# lockstep with the config.py catalog cost blocks until then.
 _RATES: dict[str, ModelRate] = {
     "anthropic.claude-sonnet-4-6": {
-        "input": 3.0,
-        "output": 15.0,
-        "cache_write": 3.75,
-        "cache_read": 0.3,
+        "input": 3.3,
+        "output": 16.5,
+        "cache_write": 6.6,
+        "cache_read": 0.33,
     },
     "anthropic.claude-opus-4-6-v1": {
         # Opus 4.6 carries our card-3 traffic while AWS holds Opus 4.7
         # at applied=0 TPM (Service Quotas L-5DB28B7B). Add 4.7 back
         # here when the quota lifts — pricing is identical so the
         # ledger math is unchanged.
-        "input": 15.0,
-        "output": 75.0,
-        "cache_write": 18.75,
-        "cache_read": 1.5,
+        "input": 5.5,
+        "output": 27.5,
+        "cache_write": 11.0,
+        "cache_read": 0.55,
+    },
+    "anthropic.claude-haiku-4-5-20251001-v1:0": {
+        # Cheap aux-task tier — compaction / heartbeat / memory-flush.
+        # Keyed on the date-stamped foundation id: the bare
+        # anthropic.claude-haiku-4-5 is NOT a valid Bedrock profile.
+        "input": 1.1,
+        "output": 5.5,
+        "cache_write": 2.2,
+        "cache_read": 0.11,
     },
 }
 

@@ -5,6 +5,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 // GuardDuty + Access Analyzer already enabled at account level — not managed by CDK
 import * as budgets from "aws-cdk-lib/aws-budgets";
+import * as ce from "aws-cdk-lib/aws-ce";
 import * as events from "aws-cdk-lib/aws-events";
 import * as events_targets from "aws-cdk-lib/aws-events-targets";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -14,6 +15,18 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import { Construct } from "constructs";
+
+// ---------------------------------------------------------------------------
+// Tunable thresholds
+// ---------------------------------------------------------------------------
+
+// Daily Bedrock cache-write token ceiling before we page. A runaway agent loop
+// once drove a single container to ~17-21M cache-write tokens/day (~$130+/day)
+// and went unnoticed for weeks. Legitimate single-tenant usage sits well below
+// 10M/day, so 10M catches the runaway with margin while staying quiet for normal
+// traffic. Bump this as the fleet grows (it's a fleet-wide Sum across all
+// containers, not per-tenant).
+const BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD = 10_000_000;
 
 // ---------------------------------------------------------------------------
 // Props
@@ -1567,6 +1580,103 @@ def handler(event, context):
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w51.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W52: Bedrock cache-write token volume — runaway-inference guard
+    // Sums AWS/Bedrock CacheWriteInputTokenCount across the whole account over a
+    // 1-day window. This is the metric a runaway agent loop blows through (the
+    // 2026 incident hit ~17-21M cache-write tokens/day, ~$130+/day, silent for
+    // weeks). Pages so it can't go unnoticed again. Threshold lives in
+    // BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD — tune as the fleet grows.
+    const w52 = new cloudwatch.Alarm(this, "W52", {
+      alarmName: `isol8-${this.envName}-W52-bedrock-cache-write-token-volume`,
+      alarmDescription:
+        "Bedrock cache-write input tokens exceeded the daily ceiling — " +
+        "possible runaway inference loop driving cost",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/Bedrock",
+        metricName: "CacheWriteInputTokenCount",
+        statistic: "Sum",
+        period: cdk.Duration.days(1),
+      }),
+      threshold: BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w52.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+    w52.addOkAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+
+    this.createBedrockCostAnomalyMonitor();
+  }
+
+  // =========================================================================
+  // Bedrock cost anomaly detection (W53)
+  // =========================================================================
+
+  /**
+   * Managed AWS Cost Anomaly Detection for Bedrock spend — a zero-compute
+   * guardrail layered on top of the CloudWatch token-volume alarm (W52).
+   *
+   * Where W52 fires on a fixed daily cache-write token ceiling, this watches
+   * actual dollar cost with AWS's managed ML baseline, so it catches a runaway
+   * loop even if the dollars-per-token mix shifts. The 2026 incident drove
+   * Bedrock spend ~10x with no automatic $-denominated alert; this closes that
+   * gap without a worker, Lambda, or scheduled job.
+   *
+   * Monitor type — DIMENSIONAL / SERVICE (not CUSTOM):
+   *   A CUSTOM monitor would need a monitorSpecification Expression that pins
+   *   the Bedrock SERVICE dimension values. The Cost Explorer SERVICE dimension
+   *   is exact-match only (no wildcard), and Bedrock spend is split across the
+   *   base "Amazon Bedrock" line PLUS one marketplace line per model
+   *   ("Claude Opus … (Amazon Bedrock Edition)", etc.) whose strings change as
+   *   models are added/retired. Hardcoding that set would silently miss spend
+   *   on any new model line. A DIMENSIONAL SERVICE monitor instead asks AWS to
+   *   baseline every service independently and surface the anomalous service in
+   *   the alert — so it covers every Bedrock line automatically (and any other
+   *   runaway service as a bonus) with nothing fragile to maintain.
+   *
+   * Account-global service: Cost Anomaly Detection lives in us-east-1 (the only
+   * region this app deploys to). The monitor is account-wide, so dev and prod
+   * stacks each create an env-named copy — redundant detection, never a name
+   * collision — matching the existing per-env account-wide cost constructs
+   * (W49 budget, W50/W52 Bedrock alarms).
+   */
+  private createBedrockCostAnomalyMonitor(): void {
+    const monitor = new ce.CfnAnomalyMonitor(this, "BedrockCostAnomalyMonitor", {
+      monitorName: `isol8-${this.envName}-bedrock-cost-anomaly`,
+      monitorType: "DIMENSIONAL",
+      monitorDimension: "SERVICE",
+    });
+
+    // EMAIL subscriber + DAILY frequency is the low-friction correct pairing.
+    // An SNS subscriber would require IMMEDIATE frequency AND a topic resource
+    // policy granting costalerts.amazonaws.com sns:Publish; EMAIL needs neither.
+    // DAILY batches anomalies into a once-a-day digest to the same address the
+    // budget alarms already page (alerts@isol8.co), which is fine for a cost
+    // backstop — W52 already provides the real-time token-volume page.
+    new ce.CfnAnomalySubscription(this, "BedrockCostAnomalySubscription", {
+      subscriptionName: `isol8-${this.envName}-bedrock-cost-anomaly`,
+      monitorArnList: [monitor.attrMonitorArn],
+      frequency: "DAILY",
+      // Notify only when an anomaly's absolute dollar impact clears $100 — keeps
+      // the digest quiet for normal single-tenant noise while still catching the
+      // runaway (the incident ran $130+/day). ThresholdExpression is the current
+      // API; the bare `threshold` prop is deprecated.
+      thresholdExpression: JSON.stringify({
+        Dimensions: {
+          Key: "ANOMALY_TOTAL_IMPACT_ABSOLUTE",
+          MatchOptions: ["GREATER_THAN_OR_EQUAL"],
+          Values: ["100"],
+        },
+      }),
+      subscribers: [
+        {
+          type: "EMAIL",
+          address: "alerts@isol8.co",
+        },
+      ],
+    });
   }
 
   // =========================================================================

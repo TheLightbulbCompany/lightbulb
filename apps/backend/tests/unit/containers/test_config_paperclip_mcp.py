@@ -191,4 +191,8 @@ def test_defaults_heartbeat_is_explicit_30m():
     )
     # Explicit cadence (not an empty dict) so the 30m internal heartbeat is
     # visible in our config, not silently inherited from upstream defaults.
-    assert cfg["agents"]["defaults"]["heartbeat"] == {"every": "30m"}
+    heartbeat = cfg["agents"]["defaults"]["heartbeat"]
+    assert heartbeat["every"] == "30m"
+    # The heartbeat is pure overhead and runs on the cheap tier — see
+    # test_aux_operations_routed_to_cheap_tier for the full per-provider matrix.
+    assert heartbeat["model"] == "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"

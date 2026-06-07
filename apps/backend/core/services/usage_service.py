@@ -14,6 +14,9 @@ def _current_period() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
+_BEDROCK_PROVIDER_PREFIX = "amazon-bedrock/"
+
+
 def _strip_provider_prefix(model: str) -> str:
     """Strip the provider prefix (e.g. ``amazon-bedrock/``) from the model id.
 
@@ -26,6 +29,19 @@ def _strip_provider_prefix(model: str) -> str:
     return model
 
 
+def _is_bedrock_model(model: str) -> bool:
+    """True when *model* is an ``amazon-bedrock/`` provider ref.
+
+    Pricing only knows Bedrock models, so a pricing miss is a genuine,
+    page-worthy gap only for Bedrock refs. OpenAI (``openai/``), Codex
+    (``openai-codex/``), and BYO-direct Anthropic (``anthropic/``) refs
+    are expected to miss and must not page. The check runs on the raw
+    model ref (before any prefix stripping) where the provider is still
+    visible.
+    """
+    return model.startswith(_BEDROCK_PROVIDER_PREFIX)
+
+
 async def record_usage(
     owner_id: str,
     user_id: str,
@@ -34,6 +50,7 @@ async def record_usage(
     output_tokens: int,
     cache_read: int,
     cache_write: int,
+    raw_cost_microcents: int | None = None,
 ) -> None:
     """Record a single LLM usage event for analytics.
 
@@ -45,22 +62,66 @@ async def record_usage(
     Microcents are stored in the same ``total_spend_microdollars``
     column the legacy code wrote to (DDB schema unchanged for backward
     compatibility — column name is a misnomer; values are microcents).
+
+    When ``raw_cost_microcents`` is supplied AND the model is a Bedrock ref
+    it is recorded verbatim as spend instead of recomputing from token counts.
+    The caller sources it from OpenClaw's ``estimatedCostUsd`` (cache-inclusive),
+    which is the authoritative cost: ``sessions.list`` omits cache token counts,
+    and cache tokens are ~99.99% of volume, so the token-based path captures
+    only ~3% of real cost. The override is gated to Bedrock because that is the
+    only provider path Isol8 bills; non-Bedrock sessions (ChatGPT OAuth / OpenAI
+    / BYO) are user-paid / flat-rate, so recording their ``estimatedCostUsd`` as
+    Isol8 spend would contradict the books — they record spend 0 even when the
+    override is present. Token counts are still recorded for analytics in both
+    cases. ``None`` (the default — no ``estimatedCostUsd`` on the row) falls back
+    to the token-based path unchanged.
     """
     bare_model = _strip_provider_prefix(model)
-    try:
-        spend_microcents = cost_microcents(
-            model_id=bare_model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read,
-            cache_write_tokens=cache_write,
-        )
-    except UnknownModelError:
-        put_metric("billing.pricing.missing_model")
-        logger.warning("No pricing for model %s — skipping for owner %s", model, owner_id)
-        return
+    # The raw-cost override (OpenClaw's cache-inclusive ``estimatedCostUsd``)
+    # is only authoritative Isol8 spend for the Bedrock path — that's the one
+    # Isol8 actually bills. Non-Bedrock sessions (ChatGPT OAuth / OpenAI / BYO)
+    # can carry ``estimatedCostUsd`` too, but those are user-paid / flat-rate,
+    # so recording that cost as Isol8 spend would contradict the books. Gate
+    # the override to Bedrock; a non-Bedrock model falls through to the token
+    # path → UnknownModelError → spend 0, even when the override is present.
+    if raw_cost_microcents is not None and raw_cost_microcents > 0 and _is_bedrock_model(model):
+        spend_microcents = raw_cost_microcents
+    else:
+        try:
+            spend_microcents = cost_microcents(
+                model_id=bare_model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+            )
+        except UnknownModelError:
+            # Non-Bedrock models (OpenAI/Codex/BYO Anthropic) have no Bedrock
+            # pricing entry. We still record token + request VOLUME (with spend 0)
+            # so usage is never invisible — a runaway loop on the Codex path must
+            # remain visible. spend 0 is correct for Isol8's books: byo_key is
+            # user-paid, Codex is flat-rate, so Isol8's per-token $ cost there is ~0.
+            #
+            # The page-tier metric fires ONLY for Bedrock refs, where a pricing
+            # miss is a genuine gap (a Bedrock model we forgot to price). Pricing
+            # only knows Bedrock, so emitting it for the expected non-Bedrock misses
+            # would spam the page-tier alarm on every non-Bedrock chat.
+            if _is_bedrock_model(model):
+                put_metric("billing.pricing.missing_model")
+            else:
+                put_metric("billing.usage.non_bedrock")
+            logger.warning(
+                "No pricing for model %s — recording volume with spend 0 for owner %s",
+                model,
+                owner_id,
+            )
+            spend_microcents = 0
 
-    if spend_microcents <= 0:
+    # Skip only a completely-empty event (no token volume AND no spend);
+    # otherwise record so spend-0 unknown-model volume is preserved. A
+    # cache-heavy turn can report ~0 input/output tokens with a positive
+    # ``raw_cost_microcents`` — the spend check keeps it from being dropped.
+    if spend_microcents <= 0 and not (input_tokens or output_tokens or cache_read or cache_write):
         return
 
     period = _current_period()

@@ -1044,19 +1044,40 @@ class GatewayConnection:
             cache_write = int(session.get("cacheWrite", 0) or 0)
             model = session.get("model") or "unknown"
 
+            # OpenClaw computes estimatedCostUsd INCLUDING cache tokens, from
+            # the same per-run snapshot as inputTokens (assigned, not
+            # accumulated — see upstream session-usage.ts). sessions.list does
+            # NOT serialize the cache token counts, so the token-based pricing
+            # path sees cacheRead/cacheWrite=0 and captures only ~3% of real
+            # cost (cache tokens are ~99.99% of volume). When present, bill on
+            # estimatedCostUsd as the authoritative raw cost; otherwise fall
+            # back to token-based pricing. 1 USD = 1_000_000 microcents.
+            estimated_cost_usd = session.get("estimatedCostUsd")
+            raw_cost_microcents: int | None = None
+            try:
+                if estimated_cost_usd is not None and float(estimated_cost_usd) > 0:
+                    raw_cost_microcents = round(float(estimated_cost_usd) * 1_000_000)
+            except (TypeError, ValueError):
+                raw_cost_microcents = None
+
             logger.info(
-                "Session %s tokens: in=%d out=%d cache_r=%d cache_w=%d model=%s",
+                "Session %s tokens: in=%d out=%d cache_r=%d cache_w=%d model=%s est_cost_usd=%s raw_microcents=%s",
                 session_key,
                 input_tokens,
                 output_tokens,
                 cache_read,
                 cache_write,
                 model,
+                estimated_cost_usd,
+                raw_cost_microcents,
             )
 
-            if input_tokens <= 0 and output_tokens <= 0:
+            # Drop only a run with no token volume AND no billable cost. A
+            # cache-heavy turn can report ~0 input/output tokens (cache counts
+            # are omitted by sessions.list) but a real positive cost — keep it.
+            if input_tokens <= 0 and output_tokens <= 0 and not raw_cost_microcents:
                 logger.warning(
-                    "Zero tokens in session %s for user %s — session keys: %s",
+                    "Zero tokens + no cost in session %s for user %s — session keys: %s",
                     session_key,
                     self.user_id,
                     list(session.keys()),
@@ -1075,6 +1096,7 @@ class GatewayConnection:
                     output_tokens=output_tokens,
                     cache_read=cache_read,
                     cache_write=cache_write,
+                    raw_cost_microcents=raw_cost_microcents,
                 )
                 logger.info(
                     "Recorded usage for user %s (member=%s): model=%s in=%d out=%d",
@@ -1101,6 +1123,7 @@ class GatewayConnection:
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read,
                     cache_write_tokens=cache_write,
+                    raw_cost_microcents=raw_cost_microcents,
                 )
             except Exception:
                 logger.exception(
@@ -1122,6 +1145,7 @@ class GatewayConnection:
         output_tokens: int,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
+        raw_cost_microcents: int | None = None,
     ) -> None:
         """Card-3 (bedrock_claude) credit deduct on chat completion.
 
@@ -1133,6 +1157,14 @@ class GatewayConnection:
         chat deducts correctly.
 
         Markup is applied here (1.4x raw) per the spec's pricing model.
+
+        When ``raw_cost_microcents`` is supplied it is used as the raw cost
+        verbatim (markup still applied on top) instead of recomputing from
+        token counts. The caller sources it from OpenClaw's cache-inclusive
+        ``estimatedCostUsd``; ``sessions.list`` omits cache token counts and
+        cache tokens are ~99.99% of volume, so the token-based path captures
+        only ~3% of real cost. ``None`` (no ``estimatedCostUsd`` on the row)
+        keeps the token-based path unchanged.
 
         Both provider_choice and the credit ledger key are owner-scoped —
         ``self.user_id`` IS the container owner (org_id for org members,
@@ -1155,22 +1187,27 @@ class GatewayConnection:
         # prefix before looking up rates.
         bare_model = model.split("/", 1)[-1] if "/" in model else model
 
-        try:
-            raw = cost_microcents(
-                model_id=bare_model,
-                input_tokens=int(input_tokens or 0),
-                output_tokens=int(output_tokens or 0),
-                cache_read_tokens=int(cache_read_tokens or 0),
-                cache_write_tokens=int(cache_write_tokens or 0),
-            )
-        except UnknownModelError:
-            logger.warning(
-                "Unknown Bedrock model %r in chat completion for user %s — skipping deduct",
-                bare_model,
-                self.user_id,
-            )
-            put_metric("credit.deduct.unknown_model", dimensions={"model": bare_model})
-            return
+        if raw_cost_microcents is not None and raw_cost_microcents > 0:
+            # Authoritative cache-inclusive cost from estimatedCostUsd — no
+            # rate-table lookup needed, so an unpriced model still deducts.
+            raw = raw_cost_microcents
+        else:
+            try:
+                raw = cost_microcents(
+                    model_id=bare_model,
+                    input_tokens=int(input_tokens or 0),
+                    output_tokens=int(output_tokens or 0),
+                    cache_read_tokens=int(cache_read_tokens or 0),
+                    cache_write_tokens=int(cache_write_tokens or 0),
+                )
+            except UnknownModelError:
+                logger.warning(
+                    "Unknown Bedrock model %r in chat completion for user %s — skipping deduct",
+                    bare_model,
+                    self.user_id,
+                )
+                put_metric("credit.deduct.unknown_model", dimensions={"model": bare_model})
+                return
 
         # Integer math — avoid IEEE-754 drift on the multiply.
         # `raw * 1.4` is not exact (10500 * 1.4 = 14699.999...) so we use

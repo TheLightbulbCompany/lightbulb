@@ -966,6 +966,7 @@ async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bed
         providers={},
         default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
         plugin_entries={},
+        ceo_model=None,
     )
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         result = json.load(f)
@@ -990,6 +991,7 @@ async def test_replace_provider_block_preserves_workflow_plugins(tmp_efs_with_be
         providers={},
         default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
         plugin_entries={},
+        ceo_model=None,
     )
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         entries = json.load(f)["plugins"]["entries"]
@@ -1008,6 +1010,7 @@ async def test_replace_provider_block_preserves_unrelated_subtrees(tmp_efs_with_
         providers={},
         default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
         plugin_entries={},
+        ceo_model=None,
     )
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         result = json.load(f)
@@ -1035,6 +1038,7 @@ async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock
         providers={},
         default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
         plugin_entries={},
+        ceo_model=None,
     )
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         entries = json.load(f)["plugins"]["entries"]
@@ -1070,6 +1074,7 @@ async def test_replace_provider_block_leaves_memory_search_enabled(tmp_efs_with_
         providers={},
         default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
         plugin_entries={},
+        ceo_model=None,
     )
     with open(config_path) as f:
         result = json.load(f)
@@ -1116,6 +1121,7 @@ async def test_replace_provider_block_swaps_chatgpt_for_bedrock():
                     "fallbacks": ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"],
                 },
                 plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
+                ceo_model="amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
             )
             with open(os.path.join(tmpdir, "user_c", "openclaw.json")) as f:
                 result = json.load(f)
@@ -1137,6 +1143,7 @@ async def test_replace_provider_block_missing_config_raises():
                     providers={},
                     default_model={"primary": "x", "fallbacks": []},
                     plugin_entries={},
+                    ceo_model=None,
                 )
 
 
@@ -1157,12 +1164,242 @@ async def test_replace_provider_block_creates_missing_intermediates(monkeypatch)
             providers={"amazon-bedrock": {"api": "bedrock-converse-stream"}},
             default_model={"primary": "amazon-bedrock/x", "fallbacks": []},
             plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
+            ceo_model="amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
         )
         with open(os.path.join(tmpdir, "user_legacy", "openclaw.json")) as f:
             result = json.load(f)
     assert "amazon-bedrock" in result["models"]["providers"]
     assert "amazon-bedrock" in result["plugins"]["entries"]
     assert result["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/x"
+
+
+@pytest.fixture
+def tmp_efs_with_ceo_premium_model(monkeypatch):
+    """Owner whose openclaw.json has a bedrock_claude provider block AND a CEO
+    (``default: true``) agent pinned to the premium Opus tier via a per-agent
+    ``model`` override — exactly what _build_agents_list(ceo_model=…) writes at
+    provision time. The bedrock → chatgpt switch must strip this stale ref."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_ceo")
+        os.makedirs(user_dir)
+        config = {
+            "models": {
+                "providers": {
+                    "amazon-bedrock": {"api": "bedrock-converse-stream"},
+                },
+            },
+            "agents": {
+                "defaults": {
+                    "model": {
+                        "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+                        "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"],
+                    },
+                    "workspace": "/home/node/.openclaw/workspaces",
+                },
+                "list": [
+                    {
+                        "id": "agent_friday",
+                        "default": True,
+                        "model": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
+                        "workspace": "/home/node/.openclaw/workspaces/agent_friday",
+                    },
+                    {
+                        "id": "agent_atlas",
+                        "workspace": "/home/node/.openclaw/workspaces/agent_atlas",
+                    },
+                ],
+            },
+            "plugins": {"entries": {"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}}},
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", tmpdir)
+        yield tmpdir
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_strips_ceo_model_when_none(tmp_efs_with_ceo_premium_model):
+    """Bedrock → ChatGPT OAuth (ceo_model=None): the CEO's stale per-agent
+    amazon-bedrock Opus ref MUST be deleted so Friday inherits the new
+    flat-rate default. Leaving it would leave Friday pointing at a provider
+    that's no longer in models.providers — Friday's chats break."""
+    await replace_provider_block(
+        "user_ceo",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+        ceo_model=None,
+    )
+    with open(os.path.join(tmp_efs_with_ceo_premium_model, "user_ceo", "openclaw.json")) as f:
+        result = json.load(f)
+    agents = result["agents"]["list"]
+    friday = next(a for a in agents if a.get("default") is True)
+    assert "model" not in friday, "stale amazon-bedrock CEO ref must be removed"
+    # Non-default agent untouched (it never had a model, still doesn't).
+    atlas = next(a for a in agents if a["id"] == "agent_atlas")
+    assert "model" not in atlas
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_sets_ceo_model_when_provided(tmp_efs_with_bedrock_provider):
+    """ChatGPT OAuth → Bedrock (ceo_model=<bedrock Opus>): the CEO must get the
+    premium per-agent override so Friday runs on Opus, not the cheap Sonnet
+    default. The fixture's default agent starts with no ``model``."""
+    ceo_model = "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
+    # Add a non-default sibling so we can assert it stays untouched.
+    config_path = os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")
+    with open(config_path) as f:
+        cfg = json.load(f)
+    cfg["agents"]["list"].append({"id": "agent_atlas", "workspace": "/home/node/.openclaw/workspaces/agent_atlas"})
+    with open(config_path, "w") as f:
+        json.dump(cfg, f)
+
+    await replace_provider_block(
+        "user_p",
+        providers={"amazon-bedrock": {"api": "bedrock-converse-stream"}},
+        default_model={
+            "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+            "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"],
+        },
+        plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
+        ceo_model=ceo_model,
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    agents = result["agents"]["list"]
+    friday = next(a for a in agents if a.get("default") is True)
+    assert friday["model"] == ceo_model
+    # Non-default agent never gets a per-agent model override.
+    atlas = next(a for a in agents if a["id"] == "agent_atlas")
+    assert "model" not in atlas
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_ceo_model_noop_when_no_agents_list(monkeypatch):
+    """A config with no ``agents.list`` (legacy / unseeded) accepts the swap
+    without erroring — the CEO-model step is a guarded no-op."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_no_list")
+        os.makedirs(user_dir)
+        config = {"agents": {"defaults": {}}}
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", tmpdir)
+        await replace_provider_block(
+            "user_no_list",
+            providers={},
+            default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+            plugin_entries={},
+            ceo_model=None,
+        )
+        with open(os.path.join(tmpdir, "user_no_list", "openclaw.json")) as f:
+            result = json.load(f)
+    assert "list" not in result["agents"]
+
+
+# ---------------------------------------------------------------------------
+# replace_provider_block — aux-model (compaction / memoryFlush / heartbeat)
+# overrides must also track the new provider on a hot swap, same as the CEO
+# model. Otherwise a Bedrock → ChatGPT swap leaves stale amazon-bedrock/...
+# refs under agents.defaults pointing at a provider no longer in
+# models.providers.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tmp_efs_with_aux_model_overrides(monkeypatch):
+    """Owner whose openclaw.json carries the aux-model overrides provisioning
+    writes for a Bedrock owner: ``agents.defaults.compaction.model``,
+    ``compaction.memoryFlush.model``, and ``heartbeat.model`` — all pinned to
+    the cheap Bedrock Haiku tier. The Bedrock → flat-rate swap (cheap_model=None)
+    must DELETE these so the aux slots inherit the new default. Sibling keys
+    (``heartbeat.every``, ``compaction.memoryFlush.enabled``) must survive."""
+    haiku = "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_aux")
+        os.makedirs(user_dir)
+        config = {
+            "models": {
+                "providers": {"amazon-bedrock": {"api": "bedrock-converse-stream"}},
+            },
+            "agents": {
+                "defaults": {
+                    "model": {
+                        "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+                        "fallbacks": [haiku],
+                    },
+                    "workspace": "/home/node/.openclaw/workspaces",
+                    "compaction": {
+                        "model": haiku,
+                        "memoryFlush": {"model": haiku, "enabled": True},
+                    },
+                    "heartbeat": {"every": "30m", "model": haiku},
+                },
+                "list": [
+                    {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspaces/main"},
+                ],
+            },
+            "plugins": {"entries": {"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}}},
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", tmpdir)
+        yield tmpdir
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_strips_aux_models_when_cheap_model_none(
+    tmp_efs_with_aux_model_overrides,
+):
+    """Bedrock → ChatGPT OAuth (cheap_model=None): the three aux-model overrides
+    holding stale amazon-bedrock Haiku refs MUST be removed so the aux slots
+    inherit the new flat-rate default. Sibling keys (heartbeat.every,
+    memoryFlush.enabled) must be preserved."""
+    await replace_provider_block(
+        "user_aux",
+        providers={},
+        default_model={"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+        plugin_entries={},
+        ceo_model=None,
+        cheap_model=None,
+    )
+    with open(os.path.join(tmp_efs_with_aux_model_overrides, "user_aux", "openclaw.json")) as f:
+        defaults = json.load(f)["agents"]["defaults"]
+
+    # The three aux model overrides are gone.
+    assert "model" not in defaults["compaction"]
+    assert "model" not in defaults["compaction"]["memoryFlush"]
+    assert "model" not in defaults["heartbeat"]
+    # Sibling keys preserved — we must not clobber the rest of the slot.
+    assert defaults["heartbeat"]["every"] == "30m"
+    assert defaults["compaction"]["memoryFlush"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_sets_aux_models_when_cheap_model_provided(
+    tmp_efs_with_bedrock_provider,
+):
+    """ChatGPT OAuth → Bedrock (cheap_model=<bedrock Haiku>): the three aux slots
+    must be (re)pinned to the cheap tier. The fixture starts with no aux model
+    overrides at all, so they must be created."""
+    cheap_model = "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    await replace_provider_block(
+        "user_p",
+        providers={"amazon-bedrock": {"api": "bedrock-converse-stream"}},
+        default_model={
+            "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+            "fallbacks": [cheap_model],
+        },
+        plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
+        ceo_model="amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
+        cheap_model=cheap_model,
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        defaults = json.load(f)["agents"]["defaults"]
+
+    assert defaults["compaction"]["model"] == cheap_model
+    assert defaults["compaction"]["memoryFlush"]["model"] == cheap_model
+    assert defaults["heartbeat"]["model"] == cheap_model
 
 
 @pytest.mark.asyncio

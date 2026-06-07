@@ -319,20 +319,22 @@ def build_provider_block(
         )
     if provider_choice == "byo_key":
         if byo_provider == "openai":
-            return ({}, {"primary": "openai/gpt-5.4", "fallbacks": ["openai/gpt-5.4"]}, {})
+            # gpt-5.4 primary (already the standard tier), gpt-5.4-mini
+            # fallback. gpt-5.5 is the premium tier, reserved for the CEO
+            # agent via a per-agent agents.list[*].model. Fallbacks are
+            # error-only, so the cheaper mini never raises cost on failover.
+            return ({}, {"primary": "openai/gpt-5.4", "fallbacks": ["openai/gpt-5.4-mini"]}, {})
         if byo_provider == "anthropic":
-            # Opus 4.6 primary, Sonnet 4.6 fallback. Opus 4.7 is omitted
-            # while AWS holds the cross-region TPM quota at applied=0
-            # (Service Quotas L-5DB28B7B); add it back here once the
-            # quota lifts. For byo_key the user pays Anthropic directly
-            # so the Bedrock quota doesn't bind, but we keep the catalog
-            # symmetric across paths to avoid divergent test/runtime
-            # behavior.
+            # Sonnet 4.6 primary, Haiku 4.5 fallback — the cheaper standard
+            # tier so the default agent never pays top-tier Opus rates on
+            # every turn. Opus 4.6 is reserved for the CEO agent via a
+            # per-agent agents.list[*].model. Kept symmetric with the Bedrock
+            # path to avoid divergent test/runtime behavior.
             return (
                 {},
                 {
-                    "primary": "anthropic/claude-opus-4-6-v1",
-                    "fallbacks": ["anthropic/claude-sonnet-4-6"],
+                    "primary": "anthropic/claude-sonnet-4-6",
+                    "fallbacks": ["anthropic/claude-haiku-4-5"],
                 },
                 {},
             )
@@ -353,13 +355,20 @@ def build_provider_block(
         # docs/providers/bedrock.md and keeps inference within US regions.
         # bedrock_pricing.get_rate strips the prefix before lookup so the
         # rate table stays keyed on the bare model id.
+        # cost blocks are the AWS-verified `us.` Regional (CRIS) rates in
+        # USD/MTok, with the 1-hour cacheWrite tier (cacheRetention is pinned
+        # to "long", so every write bills at the 1h rate; upstream's cost block
+        # carries a single cacheWrite rate, so it must be the 1h value). Kept
+        # in lockstep with bedrock_pricing._RATES — see
+        # test_config_cost_blocks_match_bedrock_pricing_rates. Task D7 will
+        # source these from the AWS rate card automatically.
         bedrock_models = [
             {
                 "id": "us.anthropic.claude-opus-4-6-v1",
                 "name": "Claude Opus 4.6",
                 "reasoning": True,
                 "input": ["text", "image"],
-                "cost": {"input": 15.0, "output": 75.0, "cacheRead": 1.5, "cacheWrite": 18.75},
+                "cost": {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 11.0},
                 "contextWindow": 1_000_000,
                 "maxTokens": 8192,
             },
@@ -368,8 +377,21 @@ def build_provider_block(
                 "name": "Claude Sonnet 4.6",
                 "reasoning": True,
                 "input": ["text", "image"],
-                "cost": {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+                "cost": {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 6.6},
                 "contextWindow": 1_000_000,
+                "maxTokens": 8192,
+            },
+            {
+                # Cheap aux-task tier — compaction / heartbeat / memory-flush.
+                # The date-stamped inference-profile id is the only valid Haiku
+                # 4.5 profile; the bare us.anthropic.claude-haiku-4-5 throws
+                # ValidationException on invoke.
+                "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "name": "Claude Haiku 4.5",
+                "reasoning": True,
+                "input": ["text", "image"],
+                "cost": {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 2.2},
+                "contextWindow": 200_000,
                 "maxTokens": 8192,
             },
         ]
@@ -383,28 +405,24 @@ def build_provider_block(
                 },
             },
             {
-                # Opus 4.6 primary, Sonnet 4.6 fallback.
+                # Sonnet 4.6 primary, Haiku 4.5 fallback. The default is the
+                # cheaper standard tier so a runaway agent loop never pays
+                # top-tier rates on every turn. Opus 4.6 is reserved for the
+                # CEO agent (Friday) via a per-agent agents.list[*].model
+                # (see premium_model_ref / _build_agents_list).
                 #
-                # Why 4.6 instead of 4.7: AWS ships Opus 4.7 with
+                # Why not Opus 4.7 anywhere: AWS ships Opus 4.7 with
                 # `applied = 0` TPM on most accounts pending capacity
                 # rollout (Service Quotas L-5DB28B7B), so 4.7 invokes
-                # throttle on the very first request. Until AWS lifts
-                # the applied limit, 4.6 is the only Opus we can
-                # actually invoke. Pricing is identical between 4.6
-                # and 4.7 on Bedrock list price, so swapping is
-                # cost-neutral. Add 4.7 back to the fallbacks (or
-                # promote to primary) once the quota lands.
+                # throttle on the very first request.
                 #
-                # Sonnet 4.6 stays as the capacity/throttling escape
-                # hatch (requires a Marketplace agreement first; see
-                # Bedrock Model Access console). Sonnet is ~5× cheaper
-                # than Opus so a failover quietly REDUCES spend rather
-                # than increasing it — safe direction for surprise
-                # bills.
+                # Fallbacks are error-only, not cost routing — Haiku 4.5 is
+                # the cheapest priced tier, so a failover quietly REDUCES
+                # spend rather than increasing it.
                 #
-                # Users can override per-agent via agents.list[*].model.
-                "primary": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
-                "fallbacks": ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"],
+                # Users can still override per-agent via agents.list[*].model.
+                "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+                "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"],
             },
             {
                 "amazon-bedrock": {
@@ -415,7 +433,58 @@ def build_provider_block(
     raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
 
 
-def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
+def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
+    """The premium model ref reserved for the CEO agent (Friday), per provider
+    path — or ``None`` when there is no premium tier to reserve.
+
+    The default agent runs on the cheaper standard tier (see
+    ``build_provider_block``); only the CEO is pinned to the top tier via a
+    per-agent ``agents.list[*].model``. ``chatgpt_oauth`` returns ``None``
+    because it's a flat-rate plan — there's no cheaper tier to demote the
+    default to, so the CEO inherits the same model as everyone else.
+
+    Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
+    """
+    if provider_choice == "bedrock_claude":
+        return "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp.
+            return "anthropic/claude-opus-4-6"
+        if byo_provider == "openai":
+            return "openai/gpt-5.5"
+    return None
+
+
+def cheap_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
+    """The cheapest model ref per provider path, routed to pure-overhead aux
+    operations — or ``None`` when there is no cheaper tier to route to.
+
+    History compaction (summarizing very large transcripts), memory-flush, and
+    OpenClaw's internal maintenance heartbeat are overhead that doesn't need the
+    premium default model. Routing them to the cheapest tier cuts spend —
+    compaction especially, since it processes the largest contexts.
+
+    Unlike ``premium_model_ref``, the flat-rate ``chatgpt_oauth`` path DOES get
+    a value: the openai-codex provider catalog carries a mini tier
+    (``gpt-5.4-mini``), and pushing aux work onto it buys rate-limit headroom on
+    the flat-rate plan.
+
+    Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
+    """
+    if provider_choice == "bedrock_claude":
+        return "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            return "anthropic/claude-haiku-4-5"
+        if byo_provider == "openai":
+            return "openai/gpt-5.4-mini"
+    if provider_choice == "chatgpt_oauth":
+        return "openai-codex/gpt-5.4-mini"
+    return None
+
+
+def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = None) -> list[dict]:
     """Build the openclaw.json agents.list entries from Paperclip agents.
 
     If paperclip_agents is empty, fall back to the legacy hardcoded 'main'
@@ -428,6 +497,11 @@ def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
     one in the list wins. Each agent's workspace is keyed by its
     Paperclip UUID so OpenClaw's session-key routing
     (agent:<uuid>:<rest>) lands in the right directory on EFS.
+
+    ``ceo_model`` (when provided) pins the CEO agent to the premium model
+    via a per-agent ``model`` override; every other agent omits ``model``
+    and inherits the cheaper ``agents.defaults.model``. ``None`` leaves the
+    CEO inheriting the default too (flat-rate provider paths).
     """
     if not paperclip_agents:
         return [
@@ -464,6 +538,12 @@ def _build_agents_list(paperclip_agents: list[dict]) -> list[dict]:
             entry["name"] = friendly_name
         if i == default_index:
             entry["default"] = True
+            # The CEO (Friday) runs on the premium tier; everyone else
+            # inherits the cheaper agents.defaults.model. ``ceo_model`` is
+            # None on flat-rate provider paths (chatgpt_oauth), where there
+            # is no premium tier to reserve.
+            if ceo_model is not None:
+                entry["model"] = ceo_model
         entries.append(entry)
     return entries
 
@@ -583,6 +663,14 @@ def build_openclaw_config_dict(
         user_id=user_id,
         byo_provider=byo_provider,
     )
+    # The default agent runs on the cheaper standard tier (above); the CEO
+    # (Friday) is pinned to the premium tier via a per-agent override below.
+    ceo_model = premium_model_ref(provider_choice, byo_provider)
+    # Pure-overhead aux operations (compaction / memory-flush / internal
+    # heartbeat) are routed to the cheapest tier — they don't need the
+    # premium default, and compaction in particular processes very large
+    # contexts where the cost difference is largest.
+    cheap_model = cheap_model_ref(provider_choice, byo_provider)
 
     # Token auth — shared secret between backend and container.
     # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
@@ -674,9 +762,34 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
+                # Global default provider params applied to all models before
+                # per-model/per-agent overrides (openclaw
+                # zod-schema.agent-defaults.ts is a free-form record). The
+                # Bedrock runtime reads `cacheRetention` from here; its default
+                # is "short" (5m TTL), but this agent's runs are spaced further
+                # apart than that, so cached prefixes expire before reuse and
+                # get re-written (write-heavy cache). "long" = 1h TTL widens the
+                # window so re-reads land within it, cutting input-token cost.
+                # openai/openai-codex ignore the key, so it's a global no-op
+                # there — set unconditionally rather than per-provider.
+                "params": {"cacheRetention": "long"},
                 # contextLimits is a no-op stub (its schema doesn't change
                 # behavior when empty); kept as an explicit default.
                 "contextLimits": {},
+                # Route compaction + memory-flush to the cheap tier: both are
+                # pure-overhead operations that don't need the premium default.
+                # Compaction summarizes very large transcripts, so the per-turn
+                # token cost is where the savings are largest. We set ONLY
+                # `.model` on each slot — never an enabled/mode flag — so this
+                # never turns on a feature that wasn't already running upstream
+                # (memoryFlush has its own opt-in). On flat-rate paths with no
+                # cheaper tier (`cheap_model` is None) the block is omitted so
+                # both inherit the default model. Both keys are valid under
+                # upstream's strict AgentDefaultsSchema (compaction.model,
+                # compaction.memoryFlush.model).
+                **(
+                    {"compaction": {"model": cheap_model, "memoryFlush": {"model": cheap_model}}} if cheap_model else {}
+                ),
                 # heartbeat is NOT a no-op: upstream treats a present
                 # `agents.defaults.heartbeat` as truthy and falls back to a
                 # 30m interval with `target: none`. That is OpenClaw's
@@ -686,7 +799,12 @@ def build_openclaw_config_dict(
                 # cadence is visible in our config rather than inherited from
                 # an upstream default. Event-driven waking (Paperclip issue
                 # assignment/comment) is independent of this.
-                "heartbeat": {"every": "30m"},
+                #
+                # `model` routes the heartbeat to the cheap tier — it's pure
+                # overhead and doesn't need the premium default. `None` on
+                # flat-rate paths with no cheaper tier omits the override so
+                # the heartbeat inherits the default model.
+                "heartbeat": {"every": "30m", **({"model": cheap_model} if cheap_model else {})},
                 "workspace": "/home/node/.openclaw/workspaces",
                 # Memory recall stays ON (matches main): memory-core registers
                 # memory_search/memory_get, and the "Memory Recall" prompt
@@ -726,7 +844,7 @@ def build_openclaw_config_dict(
             # Absolute workspace paths so path.resolve() returns them unchanged
             # regardless of process cwd (agent exec tools run with
             # cwd=workspaceDir, which breaks relative resolution).
-            "list": _build_agents_list(paperclip_agents or []),
+            "list": _build_agents_list(paperclip_agents or [], ceo_model=ceo_model),
         },
         # Memory backend: "builtin" = flat MEMORY.md files in the agent
         # workspace. Do NOT switch to the qmd backend: qmd's

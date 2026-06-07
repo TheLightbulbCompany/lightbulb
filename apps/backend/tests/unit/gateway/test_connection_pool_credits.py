@@ -15,6 +15,7 @@ owner_id), NOT from the ``users`` row. Credit balance + deduction stay
 keyed on the chatting member.
 """
 
+import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -275,8 +276,8 @@ def _make_connection(user_id: str = "u_1") -> GatewayConnection:
 
 @pytest.mark.asyncio
 async def test_deduct_for_card3_sonnet_with_markup():
-    """Sonnet 4.6 = $3 input / $15 output per MTok.
-    1000 input + 500 output → raw 10500 microcents → 1.4x markup → 14_700.
+    """Sonnet 4.6 = $3.3 input / $16.5 output per MTok (AWS-verified us. rates).
+    1000 input + 500 output → raw 11_550 microcents → 1.4x markup → 16_170.
     """
     conn = _make_connection()
     deduct_mock = AsyncMock(return_value=8_000_000)
@@ -296,16 +297,16 @@ async def test_deduct_for_card3_sonnet_with_markup():
 
     deduct_mock.assert_awaited_once()
     _, kwargs = deduct_mock.call_args
-    assert kwargs["amount_microcents"] == 14_700
-    assert kwargs["raw_cost_microcents"] == 10_500
+    assert kwargs["amount_microcents"] == 16_170
+    assert kwargs["raw_cost_microcents"] == 11_550
     assert kwargs["markup_multiplier"] == 1.4
     assert kwargs["chat_session_id"] == "sess_1"
 
 
 @pytest.mark.asyncio
 async def test_deduct_for_card3_opus_with_markup():
-    """Opus 4.7 = $15 input / $75 output per MTok.
-    1000 input + 500 output → raw 52_500 microcents → 1.4x → 73_500.
+    """Opus 4.6 = $5.5 input / $27.5 output per MTok (AWS-verified us. rates).
+    1000 input + 500 output → raw 19_250 microcents → 1.4x → 26_950.
     """
     conn = _make_connection()
     deduct_mock = AsyncMock(return_value=0)
@@ -323,8 +324,8 @@ async def test_deduct_for_card3_opus_with_markup():
             output_tokens=500,
         )
     _, kwargs = deduct_mock.call_args
-    assert kwargs["amount_microcents"] == 73_500
-    assert kwargs["raw_cost_microcents"] == 52_500
+    assert kwargs["amount_microcents"] == 26_950
+    assert kwargs["raw_cost_microcents"] == 19_250
 
 
 @pytest.mark.asyncio
@@ -465,3 +466,203 @@ async def test_missing_billing_row_skips_deduct():
             output_tokens=500,
         )
     deduct_mock.assert_not_called()
+
+
+# --------- D1: bill on OpenClaw's cache-inclusive estimatedCostUsd ---------
+
+
+@pytest.mark.asyncio
+async def test_deduct_uses_raw_cost_override_with_markup():
+    """When ``raw_cost_microcents`` is supplied (sourced from OpenClaw's
+    cache-inclusive ``estimatedCostUsd``), it is used as the raw cost — NOT
+    recomputed from the cache-blind token counts. Markup is still applied:
+    raw 1_000_000 → 1.4x → 1_400_000.
+    """
+    conn = _make_connection()
+    deduct_mock = AsyncMock(return_value=0)
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+        ),
+        patch("core.services.credit_ledger.deduct", new=deduct_mock),
+    ):
+        await conn._maybe_deduct_credits(
+            chat_session_id="sess_override",
+            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
+            # Tiny cache-blind token counts — the token-based path would
+            # deduct only ~16_170; the override must win.
+            input_tokens=1000,
+            output_tokens=500,
+            raw_cost_microcents=1_000_000,
+        )
+
+    deduct_mock.assert_awaited_once()
+    _, kwargs = deduct_mock.call_args
+    assert kwargs["raw_cost_microcents"] == 1_000_000
+    assert kwargs["amount_microcents"] == 1_400_000  # 1_000_000 * 14 // 10
+    assert kwargs["markup_multiplier"] == 1.4
+
+
+@pytest.mark.asyncio
+async def test_deduct_raw_cost_override_used_even_for_unpriced_model():
+    """A real ``estimatedCostUsd`` must deduct even when the model has no
+    rate-table entry — the override is the authoritative cost, so an unknown
+    model with a positive override is NOT skipped."""
+    conn = _make_connection()
+    deduct_mock = AsyncMock(return_value=0)
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+        ),
+        patch("core.services.credit_ledger.deduct", new=deduct_mock),
+    ):
+        await conn._maybe_deduct_credits(
+            chat_session_id="sess_unpriced_override",
+            model="amazon-bedrock/anthropic.claude-fake-99",
+            input_tokens=10,
+            output_tokens=5,
+            raw_cost_microcents=2_000_000,
+        )
+
+    deduct_mock.assert_awaited_once()
+    _, kwargs = deduct_mock.call_args
+    assert kwargs["raw_cost_microcents"] == 2_000_000
+    assert kwargs["amount_microcents"] == 2_800_000  # 2_000_000 * 14 // 10
+
+
+@pytest.mark.asyncio
+async def test_deduct_none_override_falls_back_to_token_pricing():
+    """``raw_cost_microcents=None`` (the default — no ``estimatedCostUsd`` on
+    the row) keeps the token-based bedrock_pricing path unchanged."""
+    conn = _make_connection()
+    deduct_mock = AsyncMock(return_value=0)
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+        ),
+        patch("core.services.credit_ledger.deduct", new=deduct_mock),
+    ):
+        await conn._maybe_deduct_credits(
+            chat_session_id="sess_fallback",
+            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+            raw_cost_microcents=None,
+        )
+
+    _, kwargs = deduct_mock.call_args
+    assert kwargs["raw_cost_microcents"] == 11_550  # token-based
+    assert kwargs["amount_microcents"] == 16_170
+
+
+# --------- D1: _fetch_and_record_usage threads estimatedCostUsd through ---------
+
+
+def _make_connection_with_rpc(session: dict, user_id: str = "u_1") -> GatewayConnection:
+    """A GatewayConnection whose sessions.list RPC returns one *session* row."""
+    conn = object.__new__(GatewayConnection)
+    conn.user_id = user_id
+    conn.send_rpc = AsyncMock()
+    conn.wait_for_response = AsyncMock(return_value={"sessions": [session]})
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_record_uses_estimated_cost_for_both_paths():
+    """The fix: ``estimatedCostUsd`` (cache-inclusive USD) is converted to
+    microcents and threaded into BOTH ``record_usage`` (analytics spend) and
+    ``_maybe_deduct_credits`` (credit deduction). Token counts are still
+    recorded for analytics. cacheRead/cacheWrite are absent (as in reality —
+    sessions.list omits them)."""
+    session_key = f"agent:main:{uuid.uuid4().hex}"
+    session = {
+        "key": session_key,
+        "inputTokens": 10,
+        "outputTokens": 5,
+        "model": "amazon-bedrock/anthropic.claude-sonnet-4-6",
+        "estimatedCostUsd": 1.5,  # → 1_500_000 microcents
+    }
+    conn = _make_connection_with_rpc(session)
+    deduct_calls = []
+
+    async def _capture_deduct(**kwargs):
+        deduct_calls.append(kwargs)
+
+    conn._maybe_deduct_credits = AsyncMock(side_effect=_capture_deduct)
+    record_mock = AsyncMock()
+
+    with patch("core.services.usage_service.record_usage", new=record_mock):
+        await conn._fetch_and_record_usage(session_key, member_user_id="member_1")
+
+    record_mock.assert_awaited_once()
+    _, rkwargs = record_mock.call_args
+    assert rkwargs["raw_cost_microcents"] == 1_500_000
+    assert rkwargs["input_tokens"] == 10
+    assert rkwargs["output_tokens"] == 5
+
+    assert len(deduct_calls) == 1
+    assert deduct_calls[0]["raw_cost_microcents"] == 1_500_000
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_record_without_estimated_cost_falls_back():
+    """No ``estimatedCostUsd`` on the row → both paths get
+    ``raw_cost_microcents=None`` and fall back to token-based pricing."""
+    session_key = f"agent:main:{uuid.uuid4().hex}"
+    session = {
+        "key": session_key,
+        "inputTokens": 1000,
+        "outputTokens": 500,
+        "model": "amazon-bedrock/anthropic.claude-sonnet-4-6",
+        # no estimatedCostUsd
+    }
+    conn = _make_connection_with_rpc(session)
+    deduct_calls = []
+
+    async def _capture_deduct(**kwargs):
+        deduct_calls.append(kwargs)
+
+    conn._maybe_deduct_credits = AsyncMock(side_effect=_capture_deduct)
+    record_mock = AsyncMock()
+
+    with patch("core.services.usage_service.record_usage", new=record_mock):
+        await conn._fetch_and_record_usage(session_key, member_user_id="member_1")
+
+    _, rkwargs = record_mock.call_args
+    assert rkwargs.get("raw_cost_microcents") is None
+    assert deduct_calls[0]["raw_cost_microcents"] is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_record_estimated_cost_with_zero_tokens_not_dropped():
+    """A cache-heavy turn reports ~0 input/output (sessions.list omits cache
+    counts) but a real positive ``estimatedCostUsd``. The zero-token guard
+    must NOT drop it — both billing paths must still fire."""
+    session_key = f"agent:main:{uuid.uuid4().hex}"
+    session = {
+        "key": session_key,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "model": "amazon-bedrock/anthropic.claude-sonnet-4-6",
+        "estimatedCostUsd": 0.9,  # → 900_000 microcents
+    }
+    conn = _make_connection_with_rpc(session)
+    deduct_calls = []
+
+    async def _capture_deduct(**kwargs):
+        deduct_calls.append(kwargs)
+
+    conn._maybe_deduct_credits = AsyncMock(side_effect=_capture_deduct)
+    record_mock = AsyncMock()
+
+    with patch("core.services.usage_service.record_usage", new=record_mock):
+        await conn._fetch_and_record_usage(session_key, member_user_id="member_1")
+
+    record_mock.assert_awaited_once()
+    _, rkwargs = record_mock.call_args
+    assert rkwargs["raw_cost_microcents"] == 900_000
+    assert len(deduct_calls) == 1
+    assert deduct_calls[0]["raw_cost_microcents"] == 900_000

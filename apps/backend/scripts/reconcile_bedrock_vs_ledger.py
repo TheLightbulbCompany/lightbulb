@@ -1,15 +1,25 @@
-"""Read-only reconciliation: AWS Bedrock metered tokens vs the usage-counters ledger.
+"""Read-only reconciliation: AWS Bedrock vs the usage-counters ledger.
 
 A safety net for the cost-metering pipeline. Isol8's ``usage-counters``
 ledger once captured ~3% of real Bedrock spend (cache tokens recorded as
 0) and the ~30x undercount went unnoticed for weeks because nothing ever
 compared the ledger to what AWS actually metered. This script is that
-missing comparison.
+missing comparison. It runs two independent reconciliations:
 
-It pulls the four ``AWS/Bedrock`` CloudWatch token metrics (Sum) for a
-window and compares them against the SUM of the matching
-``usage-counters`` PERIOD rows across every owner. A per-token-class
-divergence beyond ``--threshold-pct`` raises an ALERT and exits non-zero.
+1. **Tokens** — the four ``AWS/Bedrock`` CloudWatch token metrics (Sum)
+   vs the SUM of the matching ``usage-counters`` token columns. Catches a
+   dropped token class (the original incident).
+
+2. **Dollars** — AWS Cost Explorer's actual unblended Bedrock cost vs the
+   SUM of the ledger's recorded RAW spend. Catches a *wrong rate* or an
+   AWS price change that the token side cannot see: tokens can reconcile
+   perfectly while the dollar conversion is stale. Cost Explorer is the
+   only source that reflects the marketplace-billed Claude 4.x models
+   ("… (Amazon Bedrock Edition)") — the Price List and per-token APIs do
+   not cover the actual invoice (incl. any negotiated discount).
+
+A divergence beyond ``--threshold-pct`` in *either* reconciliation raises
+an ALERT and exits non-zero.
 
 Run via::
 
@@ -19,20 +29,26 @@ Run via::
     uv run python -m scripts.reconcile_bedrock_vs_ledger \\
         --env prod --start 2026-05-01 --end 2026-06-01 --threshold-pct 15
 
-READ-ONLY: pulls CloudWatch statistics + scans the ledger; writes
-nothing. The operator runs it with real AWS credentials; nothing here
-makes live calls during development or tests.
+READ-ONLY: pulls CloudWatch statistics + Cost Explorer + scans the
+ledger; writes nothing. The operator runs it with real AWS credentials;
+nothing here makes live calls during development or tests.
 
 Scope notes
 -----------
 
-* **Account-wide, not per-owner.** Bedrock's CloudWatch metrics are
-  emitted for the whole AWS account — Bedrock does not tag invocations
-  with an Isol8 owner unless model-invocation-logging with custom
-  dimensions is enabled (it is NOT). So the only meaningful comparison
-  is account-wide AWS totals vs the sum of *all* owners' ledger rows.
-  Per-owner attribution would require Bedrock invocation logging — a
-  future enhancement, deliberately not built here.
+* **Account-wide, not per-owner.** Bedrock's CloudWatch metrics AND Cost
+  Explorer's Bedrock cost are emitted for the whole AWS account — Bedrock
+  does not tag invocations with an Isol8 owner unless
+  model-invocation-logging with custom dimensions is enabled (it is NOT).
+  So the only meaningful comparison is account-wide AWS totals vs the sum
+  of *all* owners' ledger rows. Per-owner attribution would require
+  Bedrock invocation logging — a future enhancement, deliberately not
+  built here.
+
+* **Cost Explorer is ~24h delayed.** Bedrock cost lands in Cost Explorer
+  roughly a day after the invocation, so the dollar reconciliation is
+  only meaningful for windows that ended at least a day ago. A fresh
+  partial day will undercount the AWS side.
 
 * **Period rows only.** ``usage-counters`` has three SK shapes (see
   ``core/services/usage_service.record_usage``):
@@ -43,11 +59,22 @@ Scope notes
   We sum only the rows whose SK exactly equals one of the ``YYYY-MM``
   period strings the window spans.
 
+* **RAW spend, not the customer price.** The ledger's
+  ``total_spend_microdollars`` column (a misnomer — it stores microcents;
+  1 USD = 1e6 microcents) holds Isol8's RAW, un-marked-up cost: in
+  ``record_usage`` it is taken verbatim from OpenClaw's
+  ``estimatedCostUsd`` (or recomputed pre-markup from the Bedrock pricing
+  table). The 1.4× customer markup is applied only later in
+  ``credit_ledger.deduct``. The AWS bill is itself un-marked-up, so the
+  dollar reconciliation compares AWS $ against this RAW ledger spend — NOT
+  the 1.4× customer price.
+
 * **Month granularity.** The ledger buckets by calendar month, so the
   comparison is only apples-to-apples when the window aligns to whole
   months. For a partial month the ledger total covers the *entire*
-  month while CloudWatch covers only the requested days — the script
-  prints a warning when ``--start``/``--end`` are not month boundaries.
+  month while CloudWatch / Cost Explorer cover only the requested days —
+  the script prints a warning when ``--start``/``--end`` are not month
+  boundaries.
 """
 
 from __future__ import annotations
@@ -78,6 +105,13 @@ _CLASS_ORDER: list[tuple[str, str, str]] = [
 
 _BEDROCK_NAMESPACE = "AWS/Bedrock"
 
+# The ledger column holding RAW (un-marked-up) spend. Misnamed for legacy
+# reasons — values are microcents, not microdollars (see usage_repo).
+_LEDGER_SPEND_COLUMN = "total_spend_microdollars"
+
+# 1 USD = 100 cents = 1_000_000 microcents (1 cent = 10_000 microcents).
+_MICROCENTS_PER_USD = 1_000_000
+
 
 @dataclass
 class ClassResult:
@@ -102,6 +136,35 @@ class ClassResult:
         if self.aws_total == 0:
             return 0.0 if self.ledger_total == 0 else 100.0
         return self.abs_diff / self.aws_total * 100.0
+
+
+@dataclass
+class DollarResult:
+    """Dollar reconciliation outcome: AWS bill vs the ledger's RAW spend.
+
+    Both figures are USD. ``aws_usd`` is Cost Explorer's account-wide
+    unblended Bedrock cost; ``ledger_usd`` is the sum of the ledger's RAW
+    (un-marked-up) recorded spend across every owner's period rows.
+    """
+
+    aws_usd: float
+    ledger_usd: float
+
+    @property
+    def abs_diff(self) -> float:
+        return abs(self.aws_usd - self.ledger_usd)
+
+    @property
+    def divergence_pct(self) -> float:
+        """Percent divergence of the ledger from the AWS bill.
+
+        AWS is the denominator because the bill is the real cost. When the
+        bill is zero, divergence is 0 if the ledger also reads zero, else
+        100 (the ledger recorded spend the bill never charged).
+        """
+        if self.aws_usd == 0:
+            return 0.0 if self.ledger_usd == 0 else 100.0
+        return self.abs_diff / self.aws_usd * 100.0
 
 
 def _period_strings(start: date, end: date) -> list[str]:
@@ -213,6 +276,104 @@ async def fetch_ledger_period_totals(periods: list[str]) -> dict[str, int]:
     return totals
 
 
+async def fetch_ledger_spend_usd(periods: list[str]) -> float:
+    """Sum the ledger's RAW spend (``total_spend_microdollars``) → USD.
+
+    Scans ``usage-counters`` and sums only the ``YYYY-MM`` period rollup
+    rows for ``periods`` (skipping ``lifetime`` and ``member:*`` to avoid
+    double-count, same as the token side). The column stores microcents
+    (the name is a legacy misnomer); ``microcents / 1e6 = USD``.
+
+    This is Isol8's RAW, un-marked-up cost — comparable to the AWS bill.
+    See the module docstring's "RAW spend" note.
+    """
+    from core.dynamodb import get_table, run_in_thread
+
+    wanted = set(periods)
+    total_microcents = 0
+
+    table = get_table("usage-counters")
+    last_evaluated_key: dict | None = None
+    while True:
+        kwargs: dict[str, Any] = {}
+        if last_evaluated_key is not None:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        resp = await run_in_thread(table.scan, **kwargs)
+        for item in resp.get("Items", []):
+            if item.get("period") not in wanted:
+                continue
+            total_microcents += int(item.get(_LEDGER_SPEND_COLUMN, 0))
+        last_evaluated_key = resp.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+    return total_microcents / _MICROCENTS_PER_USD
+
+
+# --------------------------------------------------------------------------- #
+# AWS Cost Explorer — actual Bedrock $ (the only marketplace-billed truth).
+# --------------------------------------------------------------------------- #
+
+
+def _is_bedrock_service(service_name: str) -> bool:
+    """True when a Cost Explorer SERVICE value is a Bedrock cost line.
+
+    Matches both the base ``Amazon Bedrock`` service and the
+    per-model marketplace-billed lines ``… (Amazon Bedrock Edition)``.
+    Matched by substring rather than an exact list because the model
+    version strings (e.g. "Claude Opus 4.6") change as models ship.
+    Case- and whitespace-tolerant — Cost Explorer occasionally pads keys.
+    """
+    normalized = service_name.strip().lower()
+    return "bedrock edition" in normalized or normalized == "amazon bedrock"
+
+
+def sum_ce_bedrock_cost_usd(response: dict[str, Any]) -> float:
+    """Sum the Bedrock UnblendedCost across a SERVICE-grouped CE response.
+
+    Pure function (no boto3) so the filter + fold is testable. Walks every
+    ``ResultsByTime[].Groups[]`` entry, keeps groups whose SERVICE key is a
+    Bedrock line (``_is_bedrock_service``), and sums their
+    ``UnblendedCost.Amount`` (a USD string). Non-Bedrock services (S3,
+    EC2, …) are excluded.
+    """
+    total = 0.0
+    for bucket in response.get("ResultsByTime", []):
+        for group in bucket.get("Groups", []):
+            keys = group.get("Keys", [])
+            if not keys or not _is_bedrock_service(keys[0]):
+                continue
+            amount = group.get("Metrics", {}).get("UnblendedCost", {}).get("Amount", "0")
+            total += float(amount)
+    return total
+
+
+async def fetch_bedrock_actual_cost_usd(*, start: date, end: date, region: str) -> float:
+    """Account-wide actual Bedrock $ from Cost Explorer over ``[start, end)``.
+
+    Uses ``ce.get_cost_and_usage`` grouped by SERVICE on the UnblendedCost
+    metric, then sums the Bedrock-line groups. ``end`` is exclusive,
+    matching Cost Explorer's TimePeriod semantics. MONTHLY granularity is
+    used because the ledger buckets by calendar month; the parser folds
+    however many time buckets CE returns.
+
+    Cost Explorer's Bedrock data is account-wide and ~24h delayed — see
+    the module docstring's scope notes.
+    """
+    import boto3
+
+    # Cost Explorer is a global service; the endpoint lives in us-east-1.
+    # We still pass the configured region for parity / explicitness.
+    client = boto3.client("ce", region_name=region)
+    resp = await asyncio.to_thread(
+        client.get_cost_and_usage,
+        TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
+        Granularity="MONTHLY",
+        Metrics=["UnblendedCost"],
+        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+    )
+    return sum_ce_bedrock_cost_usd(resp)
+
+
 # --------------------------------------------------------------------------- #
 # Reconciliation + reporting (pure)
 # --------------------------------------------------------------------------- #
@@ -270,6 +431,27 @@ def format_report(results: list[ClassResult], *, threshold_pct: float) -> tuple[
     return "\n".join(lines), alerted
 
 
+def format_dollar_report(result: DollarResult, *, threshold_pct: float) -> tuple[str, bool]:
+    """Render the dollar comparison. Returns ``(text, alerted)``.
+
+    ``alerted`` is True when the divergence exceeds ``threshold_pct``.
+    Compares Cost Explorer's account-wide Bedrock $ against the ledger's
+    RAW (un-marked-up) recorded spend — see the module docstring.
+    """
+    alerted = result.divergence_pct > threshold_pct
+    flag = "  <== OVER THRESHOLD" if alerted else ""
+    lines = [
+        f"{'source':<28} {'amount (USD)':>16}",
+        "-" * 45,
+        f"{'AWS Bedrock (Cost Explorer)':<28} {result.aws_usd:>16,.2f}",
+        f"{'ledger RAW spend':<28} {result.ledger_usd:>16,.2f}",
+        "-" * 45,
+        f"{'abs diff':<28} ${result.abs_diff:>15,.2f}",
+        f"{'divergence':<28} {result.divergence_pct:>15.1f}%{flag}",
+    ]
+    return "\n".join(lines), alerted
+
+
 # --------------------------------------------------------------------------- #
 # Arg parsing + entrypoint
 # --------------------------------------------------------------------------- #
@@ -285,8 +467,9 @@ def _parse_iso_date(value: str) -> date:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Reconcile account-wide AWS/Bedrock metered tokens against the "
-            "sum of usage-counters period rows. Read-only."
+            "Reconcile account-wide AWS Bedrock usage against the ledger on "
+            "two axes: CloudWatch token counts vs ledger tokens, and Cost "
+            "Explorer Bedrock $ vs ledger RAW spend $. Read-only."
         ),
     )
     parser.add_argument(
@@ -315,7 +498,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--threshold-pct",
         type=float,
         default=20.0,
-        help="Per-class divergence percent that triggers an ALERT + non-zero exit (default: 20).",
+        help="Divergence percent (per token class OR total $) that triggers an ALERT + non-zero exit (default: 20).",
     )
     return parser
 
@@ -368,21 +551,41 @@ async def main(args: argparse.Namespace) -> int:
     start_dt = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
     end_dt = datetime(end.year, end.month, end.day, tzinfo=timezone.utc)
 
+    # --- Token reconciliation: CloudWatch counts vs ledger token columns ---
     aws_metrics = await fetch_bedrock_metrics(start=start_dt, end=end_dt, region=region)
     ledger_totals = await fetch_ledger_period_totals(periods)
 
     results = reconcile(aws_metrics, ledger_totals)
-    report, alerted = format_report(results, threshold_pct=args.threshold_pct)
-    print(report)
+    token_report, token_alerted = format_report(results, threshold_pct=args.threshold_pct)
+    print("TOKEN reconciliation (CloudWatch counts vs ledger):")
+    print(token_report)
     print()
 
+    # --- Dollar reconciliation: Cost Explorer $ vs ledger RAW spend $ ---
+    aws_usd = await fetch_bedrock_actual_cost_usd(start=start, end=end, region=region)
+    ledger_usd = await fetch_ledger_spend_usd(periods)
+
+    dollar_result = DollarResult(aws_usd=aws_usd, ledger_usd=ledger_usd)
+    dollar_report, dollar_alerted = format_dollar_report(dollar_result, threshold_pct=args.threshold_pct)
+    print("DOLLAR reconciliation (Cost Explorer Bedrock $ vs ledger RAW spend $):")
+    print(dollar_report)
+    print()
+
+    alerted = token_alerted or dollar_alerted
     if alerted:
-        print(
-            f"ALERT: at least one token class diverges beyond {args.threshold_pct:.1f}% — "
-            "the ledger may be under/over-recording Bedrock usage."
-        )
+        if token_alerted:
+            print(
+                f"ALERT: at least one token class diverges beyond {args.threshold_pct:.1f}% — "
+                "the ledger may be under/over-recording Bedrock usage."
+            )
+        if dollar_alerted:
+            print(
+                f"ALERT: ledger spend diverges from the AWS bill beyond "
+                f"{args.threshold_pct:.1f}% — the dollar rate may be wrong or "
+                "AWS pricing may have changed."
+            )
         return 1
-    print("OK: all token classes within threshold.")
+    print("OK: token classes and dollar spend within threshold.")
     return 0
 
 

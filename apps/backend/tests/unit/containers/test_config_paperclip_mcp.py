@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 
+from core import openclaw_version
 from core.containers.config import build_openclaw_config_dict
 
 
@@ -196,3 +197,36 @@ def test_defaults_heartbeat_is_explicit_30m():
     # The heartbeat is pure overhead and runs on the cheap tier — see
     # test_aux_operations_routed_to_cheap_tier for the full per-provider matrix.
     assert heartbeat["model"] == "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def test_mcp_runtime_scope_shared_when_deployed_image_supports_it(monkeypatch):
+    """When this env's deployed image is >= 2026.6.1, pin the bundled MCP
+    runtime to "shared" so connected servers are reused across sessions (single
+    owner per container, so no cross-session bleed)."""
+    monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: True)
+    cfg = build_openclaw_config_dict(
+        user_id="user_x",
+        gateway_token="t" * 32,
+        provider_choice="bedrock_claude",
+        paperclip_agents=[_ceo_agent("friday-uuid")],
+        paperclip_api_key="pcli_live_abc",
+        paperclip_company_id="comp-1",
+        paperclip_api_url="http://paperclip.internal:3100",
+    )
+    assert cfg["mcp"]["runtimeScope"] == "shared"
+
+
+def test_mcp_runtime_scope_omitted_on_pre_6_1_image(monkeypatch):
+    """A container still on the pre-6.1 image must NOT receive runtimeScope — its
+    strict MCP schema rejects the unknown key and crash-loops at boot."""
+    monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: False)
+    cfg = build_openclaw_config_dict(
+        user_id="user_x",
+        gateway_token="t" * 32,
+        provider_choice="bedrock_claude",
+        paperclip_agents=[_ceo_agent("friday-uuid")],
+        paperclip_api_key="pcli_live_abc",
+        paperclip_company_id="comp-1",
+        paperclip_api_url="http://paperclip.internal:3100",
+    )
+    assert "runtimeScope" not in cfg["mcp"]

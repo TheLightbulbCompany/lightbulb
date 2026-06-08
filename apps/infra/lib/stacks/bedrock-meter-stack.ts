@@ -5,6 +5,7 @@ import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as logsDestinations from "aws-cdk-lib/aws-logs-destinations";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
@@ -183,7 +184,83 @@ export class BedrockMeterStack extends cdk.Stack {
       ]),
     });
 
+    // Subscription filter — drive the meter Lambda, scoped to the Isol8
+    // AIP-ARN shape so unrelated traffic (e.g. GooseTown) is dropped at the
+    // source. Bedrock records carry the AIP ARN in `modelId`; the term filter
+    // requires the invocation-profile substring to be present.
+    new logs.SubscriptionFilter(this, "InvocationSubscription", {
+      logGroup: this.invocationLogGroup,
+      destination: new logsDestinations.LambdaDestination(this.meterFn),
+      filterPattern: logs.FilterPattern.literal('"application-inference-profile"'),
+    });
+
+    // Fan-out logging configs — Bedrock writes to a per-region invocation-log
+    // group, so enable logging in EVERY fan-out region. The home region
+    // (this.region) is configured by the Task-12 block above; this loop covers
+    // the remaining regions. Each is an account-level config in its region.
+    for (const region of props.fanoutRegions) {
+      if (region === this.region) continue;
+      new cr.AwsCustomResource(this, `BedrockLoggingConfig-${region}`, {
+        onCreate: {
+          service: "Bedrock",
+          action: "putModelInvocationLoggingConfiguration",
+          region,
+          parameters: { loggingConfig: this._regionLoggingConfig(region, props) },
+          physicalResourceId: cr.PhysicalResourceId.of(
+            `bedrock-logging-${region}`,
+          ),
+        },
+        onUpdate: {
+          service: "Bedrock",
+          action: "putModelInvocationLoggingConfiguration",
+          region,
+          parameters: { loggingConfig: this._regionLoggingConfig(region, props) },
+          physicalResourceId: cr.PhysicalResourceId.of(
+            `bedrock-logging-${region}`,
+          ),
+        },
+        onDelete: {
+          service: "Bedrock",
+          action: "deleteModelInvocationLoggingConfiguration",
+          region,
+        },
+        policy: cr.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              "bedrock:PutModelInvocationLoggingConfiguration",
+              "bedrock:DeleteModelInvocationLoggingConfiguration",
+            ],
+            resources: ["*"],
+          }),
+        ]),
+      });
+    }
+
     cdk.Tags.of(this).add("Project", "isol8");
     cdk.Tags.of(this).add("Environment", props.envName);
+  }
+
+  private _regionLoggingConfig(
+    region: string,
+    props: BedrockMeterStackProps,
+  ): Record<string, unknown> {
+    // The other-region groups/buckets are pre-provisioned out-of-band (one-time
+    // `aws logs create-log-group` + `aws s3 mb` per region) because a stack in
+    // us-east-1 cannot create resources in another region without a cross-region
+    // sub-stack. Phase 1 logs to S3 in those regions and sweeps daily until the
+    // per-region Lambda lands; the config below points Bedrock at those sinks.
+    const bucket = `isol8-${props.envName}-bedrock-invocation-${region}`;
+    return {
+      cloudWatchConfig: {
+        logGroupName: `/isol8/${props.envName}/bedrock-invocation`,
+        roleArn: `arn:aws:iam::${this.account}:role/isol8-${props.envName}-bedrock-logging-${region}`,
+        largeDataDeliveryS3Config: { bucketName: bucket },
+      },
+      s3Config: { bucketName: bucket },
+      textDataDeliveryEnabled: true,
+      embeddingDataDeliveryEnabled: true,
+      imageDataDeliveryEnabled: false,
+    };
   }
 }

@@ -28,7 +28,10 @@ describe("BedrockMeterStack", () => {
       albSecurityGroup: alb.connections.securityGroups[0],
       meterTokenSecretName: "isol8/prod/bedrock_meter_token",
       meterKmsKeyArn: "arn:aws:kms:us-east-1:877352799272:key/abc-123",
-      fanoutRegions: ["us-east-1"],
+      // The exact 3-region fan-out the prod stage deploys (Task 11): the home
+      // region (us-east-1) is configured by the Task-12 block; the other two
+      // get per-region AwsCustomResource logging configs (Task 13).
+      fanoutRegions: ["us-east-1", "us-east-2", "us-west-2"],
     };
 
     const stack = new BedrockMeterStack(app, "BedrockMeterStack", props);
@@ -96,5 +99,24 @@ describe("BedrockMeterStack", () => {
     expect(body).toContain('\\"textDataDeliveryEnabled\\":true');
     expect(body).toContain('\\"embeddingDataDeliveryEnabled\\":true');
     expect(body).toContain('\\"imageDataDeliveryEnabled\\":false');
+  });
+
+  test("subscription filter is scoped to the AIP-ARN shape", () => {
+    template.hasResourceProperties("AWS::Logs::SubscriptionFilter", {
+      FilterPattern: Match.stringLikeRegexp("application-inference-profile"),
+    });
+  });
+
+  test("the meter Lambda is the subscription destination", () => {
+    template.resourceCountIs("AWS::Logs::SubscriptionFilter", 1);
+  });
+
+  test("enables logging in all 3 fan-out regions", () => {
+    // One AwsCustomResource logging config per fan-out region.
+    const customResources = template.findResources("Custom::AWS");
+    const loggingConfigs = Object.values(customResources).filter((r: any) =>
+      JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
+    );
+    expect(loggingConfigs.length).toBe(3);
   });
 });

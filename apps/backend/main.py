@@ -46,6 +46,7 @@ from routers import (
     hooks_proxy,
     integrations,
     internal_usage,
+    metronome_webhook,
     oauth,
     orgs,
     paperclip_proxy,
@@ -625,6 +626,11 @@ app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
+
+# Metronome ledger webhook (low-balance -> local fast-gate flag, Phase 2).
+# Route is /webhooks/metronome; mounting under API_V1_STR yields
+# /api/v1/webhooks/metronome alongside the Clerk/Stripe webhook surface.
+app.include_router(metronome_webhook.router, prefix=settings.API_V1_STR, tags=["billing"])
 
 # Organization management (Gate A — invite-creation tenancy invariant)
 app.include_router(orgs.router, prefix="/api/v1/orgs", tags=["orgs"])

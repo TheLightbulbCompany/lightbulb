@@ -154,16 +154,17 @@ async def test_top_up_below_minimum_rejected(async_client, credit_ledger_tables)
 
 @pytest.mark.asyncio
 async def test_set_auto_reload_persists(async_client, credit_ledger_tables):
-    with patch("routers.billing.credit_ledger.set_auto_reload", new=AsyncMock()) as mock_set:
+    with patch("routers.billing.metronome_funding.set_auto_recharge", new=AsyncMock()) as mock_set:
         resp = await async_client.put(
             "/api/v1/billing/credits/auto_reload",
-            json={"enabled": True, "threshold_cents": 500, "amount_cents": 5000},
+            json={"enabled": True, "threshold_cents": 1000, "amount_cents": 2000},
         )
     assert resp.status_code == 200
+    mock_set.assert_awaited_once()
     _, kwargs = mock_set.call_args
     assert kwargs["enabled"] is True
-    assert kwargs["threshold_cents"] == 500
-    assert kwargs["amount_cents"] == 5000
+    assert kwargs["threshold_cents"] == 1000
+    assert kwargs["amount_cents"] == 2000
 
 
 @pytest.mark.asyncio
@@ -172,16 +173,16 @@ async def test_set_auto_reload_org_uses_owner_id(async_client_org_admin, credit_
     owner-keyed so they survive across org members."""
     captured: dict = {}
 
-    async def fake_set(key, *, enabled, threshold_cents, amount_cents):
-        captured["key"] = key
+    async def fake_set(*, owner_id, **kwargs):
+        captured["owner_id"] = owner_id
 
-    with patch("routers.billing.credit_ledger.set_auto_reload", new=fake_set):
+    with patch("routers.billing.metronome_funding.set_auto_recharge", new=fake_set):
         resp = await async_client_org_admin.put(
             "/api/v1/billing/credits/auto_reload",
-            json={"enabled": True, "threshold_cents": 500, "amount_cents": 5000},
+            json={"enabled": True, "threshold_cents": 1000, "amount_cents": 2000},
         )
     assert resp.status_code == 200
-    assert captured["key"] == "org_test_456"
+    assert captured["owner_id"] == "org_test_456"
 
 
 @pytest.mark.asyncio
@@ -209,7 +210,9 @@ async def test_checkout_session_completed_credits_ledger(async_client, monkeypat
         lambda body, sig, secret: fake_event,
     )
 
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=20_000_000)) as mock_top_up:
+    with patch(
+        "core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock(return_value=20_000_000)
+    ) as mock_top_up:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -251,7 +254,9 @@ async def test_checkout_session_completed_with_full_discount_still_credits(
         lambda body, sig, secret: fake_event,
     )
 
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)) as mock_top_up:
+    with patch(
+        "core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)
+    ) as mock_top_up:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -286,7 +291,7 @@ async def test_checkout_session_completed_ignores_non_credit_purposes(async_clie
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+    with patch("core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -323,7 +328,7 @@ async def test_checkout_session_completed_with_unpaid_status_defers_credit(
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+    with patch("core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -358,7 +363,9 @@ async def test_async_payment_succeeded_credits_after_ach_settles(async_client, m
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)) as mock_top_up:
+    with patch(
+        "core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)
+    ) as mock_top_up:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -394,7 +401,7 @@ async def test_async_payment_failed_does_not_credit(async_client, monkeypatch, c
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+    with patch("core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -452,7 +459,7 @@ async def test_webhook_metadata_without_owner_id_no_ops(async_client, monkeypatc
         },
     }
     monkeypatch.setattr("stripe.Webhook.construct_event", lambda body, sig, secret: fake_event)
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+    with patch("core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),

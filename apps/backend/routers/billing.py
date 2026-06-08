@@ -13,7 +13,7 @@ from core.auth import AuthContext, get_current_user, get_owner_type, resolve_own
 from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
-from core.services import clerk_admin, credit_ledger
+from core.services import clerk_admin
 from core.services.billing_service import BillingService
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
@@ -22,8 +22,10 @@ from core.services.provision_gate import (
     is_trial_blocked,
 )
 from core.services.usage_service import get_usage_summary
+from core.billing import metronome_funding
 from core.billing.bedrock_pricing import get_all_rates
 from core.billing.ledger_interface import get_ledger
+from core.billing.metronome_funding import FundingError
 from core.tenancy_codes import PENDING_ORG_INVITATION
 from schemas.billing import (
     BillingAccountResponse,
@@ -619,12 +621,16 @@ async def set_auto_reload(
             status_code=400,
             detail="threshold_cents and amount_cents required when enabling",
         )
-    await credit_ledger.set_auto_reload(
-        resolve_owner_id(ctx),
-        enabled=body.enabled,
-        threshold_cents=body.threshold_cents,
-        amount_cents=body.amount_cents,
-    )
+    try:
+        await metronome_funding.set_auto_recharge(
+            owner_id=resolve_owner_id(ctx),
+            enabled=body.enabled,
+            threshold_cents=body.threshold_cents,
+            amount_cents=body.amount_cents,
+            contract_id=settings.METRONOME_CREDITS_CONTRACT_ID,
+        )
+    except FundingError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     # Return JSON (not 204) — the frontend `useApi` helper unconditionally
     # parses successful responses with .json(), so an empty body is read as
     # a parse failure and surfaces as an error in CreditsPanel.

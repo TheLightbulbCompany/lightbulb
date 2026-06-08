@@ -33,6 +33,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly adminActionsTable: dynamodb.Table;
   public readonly creditsTable: dynamodb.Table;
   public readonly creditTransactionsTable: dynamodb.Table;
+  public readonly bedrockAipOwnersTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
   public readonly oauthStateTable: dynamodb.Table;
@@ -227,6 +228,19 @@ export class DatabaseStack extends cdk.Stack {
       tableName: `isol8-${env}-credit-transactions`,
       partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "tx_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    // Per-owner Bedrock AIP -> owner reverse index (Plan 2). PK aip_arn.
+    // Written by ensure_owner_aips; read by resolve_owner_from_aip_arn on the
+    // Plan-3 meter hot path (a single bounded GetItem per invocation record).
+    this.bedrockAipOwnersTable = new dynamodb.Table(this, "BedrockAipOwnersTable", {
+      tableName: `isol8-${env}-bedrock-aip-owners`,
+      partitionKey: { name: "aip_arn", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,

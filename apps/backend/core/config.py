@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     # Credit ledger + OAuth tables (set by CDK)
     CREDITS_TABLE: str = ""
     CREDIT_TRANSACTIONS_TABLE: str = ""
+    LEDGER_BACKEND: str = "ddb"  # ledger system-of-record: "ddb" (interim) | "metronome" (Phase 3)
     OAUTH_TOKENS_TABLE: str = ""
 
     # Billing / Stripe

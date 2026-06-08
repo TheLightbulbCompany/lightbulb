@@ -1,0 +1,25 @@
+{
+  "schemaType": "ModelInvocationLog",
+  "schemaVersion": "1.0",
+  "timestamp": "2026-06-07T12:05:30Z",
+  "accountId": "877352799272",
+  "identity": {
+    "arn": "arn:aws:sts::877352799272:assumed-role/isol8-dev-owner-bedrock-org_abc/ecs-task-session"
+  },
+  "region": "us-east-1",
+  "requestId": "66666666-7777-8888-9999-000000000000",
+  "operation": "InvokeModelWithResponseStream",
+  "modelId": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus-org_abc",
+  "input": {
+    "inputContentType": "application/json",
+    "inputBodyS3Path": "s3://isol8-dev-bedrock-invocation-capture/AWSLogs/877352799272/BedrockModelInvocationLogs/us-east-1/2026/06/07/input-66666666.json",
+    "inputTokenCount": 0,
+    "cacheReadInputTokenCount": 0,
+    "cacheWriteInputTokenCount": 0
+  },
+  "output": {
+    "outputContentType": "application/json",
+    "outputBodyS3Path": "s3://isol8-dev-bedrock-invocation-capture/AWSLogs/877352799272/BedrockModelInvocationLogs/us-east-1/2026/06/07/output-66666666.json",
+    "outputTokenCount": 0
+  }
+}

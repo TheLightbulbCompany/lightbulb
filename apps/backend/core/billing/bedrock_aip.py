@@ -22,6 +22,15 @@ Shared contracts other plans import:
 
 from __future__ import annotations
 
+import json
+import os
+
+import boto3
+from botocore.exceptions import ClientError
+
+from core.config import settings
+from core.repositories import container_repo
+
 # The three AIP tiers. Order matters only for deterministic iteration.
 TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")
 
@@ -96,3 +105,56 @@ def build_owner_bedrock_policy(
             },
         ],
     }
+
+
+def _aip_owners_table_name() -> str:
+    name = os.environ.get("BEDROCK_AIP_OWNERS_TABLE") or settings.BEDROCK_AIP_OWNERS_TABLE
+    if not name:
+        raise RuntimeError("BEDROCK_AIP_OWNERS_TABLE is empty — backend is misconfigured.")
+    return name
+
+
+def _aip_owners_table():
+    return boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(_aip_owners_table_name())
+
+
+async def persist_owner_aips(
+    owner_id: str,
+    aip_arns: dict[str, str],
+    *,
+    role_arn: str | None = None,
+) -> None:
+    """Persist the per-owner AIP map (and optional role ARN) to BOTH the
+    containers row and the bedrock-aip-owners reverse table.
+
+    The reverse table is the read path for resolve_owner_from_aip_arn (Plan 3);
+    the containers row is the read path for the config builder + resize/restart.
+    """
+    fields: dict = {"bedrock_aip_arns": aip_arns}
+    if role_arn is not None:
+        fields["bedrock_role_arn"] = role_arn
+    await container_repo.update_fields(owner_id, fields)
+
+    table = _aip_owners_table()
+    for tier, arn in aip_arns.items():
+        await _put_reverse_row(table, arn=arn, owner_id=owner_id, tier=tier)
+
+
+async def _put_reverse_row(table, *, arn: str, owner_id: str, tier: str) -> None:
+    from core.dynamodb import run_in_thread
+
+    await run_in_thread(
+        table.put_item,
+        Item={"aip_arn": arn, "owner_id": owner_id, "tier": tier},
+    )
+
+
+async def read_owner_aips(owner_id: str) -> dict[str, str] | None:
+    """Read the persisted per-owner AIP map from the containers row, or None."""
+    row = await container_repo.get_by_owner_id(owner_id)
+    if not row:
+        return None
+    arns = row.get("bedrock_aip_arns")
+    if not arns:
+        return None
+    return {str(tier): str(arn) for tier, arn in arns.items()}

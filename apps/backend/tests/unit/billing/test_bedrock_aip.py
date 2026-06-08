@@ -381,3 +381,110 @@ class TestEnsureAips:
         assert set(arns) == {"opus", "sonnet", "haiku"}
         # Adopted AIPs are persisted -> reverse lookup resolves.
         assert await mod.resolve_owner_from_aip_arn(arns["sonnet"]) == "org_abc"
+
+
+def _no_such_entity():
+    return ClientError({"Error": {"Code": "NoSuchEntity", "Message": "not found"}}, "GetRole")
+
+
+class TestEnsureRole:
+    @pytest.mark.asyncio
+    async def test_creates_role_with_boundary_base_and_scoped_policy(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
+        }
+        fake = MagicMock()
+        fake.get_role.side_effect = _no_such_entity()
+        fake.create_role.return_value = {
+            "Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}
+        }
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            mod.settings,
+            "BEDROCK_OWNER_BOUNDARY_ARN",
+            "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-boundary",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            mod.settings,
+            "BEDROCK_OWNER_BASE_POLICY_ARN",
+            "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base",
+            raising=False,
+        )
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2", raising=False)
+
+        role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns)
+
+        assert role_arn == "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
+        # create_role carries the permissions boundary.
+        ck = fake.create_role.call_args.kwargs
+        assert ck["RoleName"] == "isol8-dev-owner-bedrock-org_abc"
+        assert ck["PermissionsBoundary"] == "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-boundary"
+        # base policy attached.
+        fake.attach_role_policy.assert_called_once_with(
+            RoleName="isol8-dev-owner-bedrock-org_abc",
+            PolicyArn="arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base",
+        )
+        # scoped inline policy put with the 3 AIPs + deny.
+        pk = fake.put_role_policy.call_args.kwargs
+        assert pk["RoleName"] == "isol8-dev-owner-bedrock-org_abc"
+        doc = json.loads(pk["PolicyDocument"])
+        allow = next(s for s in doc["Statement"] if s["Effect"] == "Allow")
+        assert sorted(allow["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"]) == sorted(arns.values())
+        # role ARN persisted on the row.
+        row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
+        assert row["bedrock_role_arn"]["S"] == role_arn
+
+    @pytest.mark.asyncio
+    async def test_idempotent_existing_role_repts_policy_no_create(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
+        }
+        fake = MagicMock()
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
+        )
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2", raising=False)
+
+        role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns)
+        assert role_arn.endswith("isol8-dev-owner-bedrock-org_abc")
+        fake.create_role.assert_not_called()
+        fake.put_role_policy.assert_called_once()  # scope refreshed on existing role
+
+    @pytest.mark.asyncio
+    async def test_skip_bedrock_grant_does_not_put_scoped_policy(self, aip_tables, monkeypatch):
+        """skip_bedrock_grant=True keeps the role + base policy but does NOT
+        (re)put the scoped Bedrock inline policy — so a re-provision of a
+        revoked owner does not un-revoke (review C6)."""
+        import core.billing.bedrock_aip as mod
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
+        }
+        fake = MagicMock()
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
+        )
+
+        role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns, skip_bedrock_grant=True)
+        assert role_arn.endswith("isol8-dev-owner-bedrock-org_abc")
+        # base policy still attached (role is bootable), but Bedrock NOT granted.
+        fake.attach_role_policy.assert_called_once()
+        fake.put_role_policy.assert_not_called()

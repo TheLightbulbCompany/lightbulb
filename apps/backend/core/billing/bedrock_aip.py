@@ -339,3 +339,114 @@ async def _find_existing_aip_arn(client, name: str) -> str | None:
         token = resp.get("nextToken")
         if not token:
             return None
+
+
+def _iam_client():
+    return boto3.client("iam", region_name=settings.AWS_REGION)
+
+
+def _owner_role_name(owner_id: str) -> str:
+    """Per-owner role name. The CDK PassRole/CreateRole grants scope to the
+    'isol8-{env}-owner-bedrock-*' prefix, so this MUST start with it."""
+    return f"isol8-{_env()}-owner-bedrock-{owner_id}"
+
+
+def _fan_out_regions() -> tuple[str, ...]:
+    raw = settings.BEDROCK_AIP_FAN_OUT_REGIONS or "us-east-1,us-east-2,us-west-2"
+    return tuple(r.strip() for r in raw.split(",") if r.strip())
+
+
+_ASSUME_ROLE_DOC = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+            "Action": "sts:AssumeRole",
+        }
+    ],
+}
+
+
+async def ensure_owner_bedrock_role(
+    owner_id: str,
+    aip_arns: dict[str, str],
+    *,
+    skip_bedrock_grant: bool = False,
+) -> str:
+    """Idempotently create/update the per-owner IAM role scoped to those AIPs +
+    the foundation-model ARNs in every fan-out region; return its ARN.
+
+    Re-running refreshes the scoped inline policy (so a tier-ARN change is
+    picked up) but never re-creates an existing role.
+
+    skip_bedrock_grant=True creates/keeps the role + base (EFS/logs/ssm) policy
+    but does NOT (re)put the scoped Bedrock inline policy. Used by provision for
+    a revoked owner so a re-provision/restart does not silently un-revoke the
+    kill-switch (review C6). Plan 4's restore_owner_bedrock is the only path
+    that re-grants Bedrock.
+    """
+    from core.dynamodb import run_in_thread
+
+    client = _iam_client()
+    role_name = _owner_role_name(owner_id)
+
+    try:
+        got = await run_in_thread(client.get_role, RoleName=role_name)
+        role_arn = got["Role"]["Arn"]
+    except ClientError as e:
+        # boto3's typed iam NoSuchEntityException IS a ClientError subclass, so
+        # one `except ClientError` catches both the real-client typed raise and
+        # the unit test's generic ClientError. Do NOT use
+        # `except client.exceptions.NoSuchEntityException` — with a MagicMock
+        # client that attribute is a MagicMock (not an exception class), and
+        # `except <non-class>` raises TypeError at except-evaluation time.
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
+        role_arn = await _create_owner_role(client, role_name, owner_id)
+
+    # (Re)attach the CDK-managed EFS/logs/ssm base policy — idempotent.
+    if settings.BEDROCK_OWNER_BASE_POLICY_ARN:
+        await run_in_thread(
+            client.attach_role_policy,
+            RoleName=role_name,
+            PolicyArn=settings.BEDROCK_OWNER_BASE_POLICY_ARN,
+        )
+
+    # (Re)put the scoped Bedrock inline policy — refreshes on every call,
+    # UNLESS the owner is revoked (kill-switch held; Plan 4 restores it).
+    if not skip_bedrock_grant:
+        account = role_arn.split(":")[4]
+        doc = build_owner_bedrock_policy(
+            owner_id=owner_id,
+            aip_arns=aip_arns,
+            account=account,
+            regions=_fan_out_regions(),
+        )
+        await run_in_thread(
+            client.put_role_policy,
+            RoleName=role_name,
+            PolicyName="owner-bedrock",
+            PolicyDocument=json.dumps(doc),
+        )
+
+    await container_repo.update_fields(owner_id, {"bedrock_role_arn": role_arn})
+    return role_arn
+
+
+async def _create_owner_role(client, role_name: str, owner_id: str) -> str:
+    from core.dynamodb import run_in_thread
+
+    create_kwargs: dict = {
+        "RoleName": role_name,
+        "AssumeRolePolicyDocument": json.dumps(_ASSUME_ROLE_DOC),
+        "Description": f"Isol8 per-owner Bedrock role for {owner_id}",
+        "Tags": [
+            {"Key": "owner_id", "Value": owner_id},
+            {"Key": "ManagedBy", "Value": "isol8-backend"},
+        ],
+    }
+    if settings.BEDROCK_OWNER_BOUNDARY_ARN:
+        create_kwargs["PermissionsBoundary"] = settings.BEDROCK_OWNER_BOUNDARY_ARN
+    resp = await run_in_thread(client.create_role, **create_kwargs)
+    return resp["Role"]["Arn"]

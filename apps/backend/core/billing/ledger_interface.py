@@ -39,10 +39,18 @@ class LedgerBackend(Protocol):
 
 
 def get_ledger() -> LedgerBackend:
-    """Return the configured ledger backend. The swap seam for Phase 3."""
+    """Return the configured ledger backend. The swap seam for Phase 3.
+
+    Default stays "ddb" (Phase 1); "metronome" is wired (Phase 2) and validated
+    in dev against the sandbox before the Phase-3 prod cutover flips the default.
+    """
     backend = os.environ.get("LEDGER_BACKEND") or settings.LEDGER_BACKEND
     if backend == "ddb":
         from core.billing.ddb_ledger_backend import DdbLedgerBackend
 
         return DdbLedgerBackend()
-    raise ValueError(f"Unknown LEDGER_BACKEND {backend!r} (expected 'ddb'; 'metronome' lands in Phase 3)")
+    if backend == "metronome":
+        from core.billing.metronome_ledger_backend import MetronomeLedgerBackend
+
+        return MetronomeLedgerBackend()
+    raise ValueError(f"Unknown LEDGER_BACKEND {backend!r} (expected 'ddb' or 'metronome')")

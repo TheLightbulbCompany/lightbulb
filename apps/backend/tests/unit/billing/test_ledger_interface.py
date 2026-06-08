@@ -26,9 +26,24 @@ def test_get_ledger_honours_ddb_setting(monkeypatch):
     assert isinstance(get_ledger(), DdbLedgerBackend)
 
 
-def test_get_ledger_rejects_unknown_backend(monkeypatch):
+def test_get_ledger_returns_metronome_backend_when_selected(monkeypatch):
     monkeypatch.setenv("LEDGER_BACKEND", "metronome")
-    with pytest.raises(ValueError, match="metronome"):
+    from core.billing.metronome_ledger_backend import MetronomeLedgerBackend
+
+    ledger = get_ledger()
+    assert isinstance(ledger, MetronomeLedgerBackend)
+
+
+def test_get_ledger_still_defaults_to_ddb(monkeypatch):
+    # Phase 2 must NOT change the default — cutover is Phase 3.
+    monkeypatch.delenv("LEDGER_BACKEND", raising=False)
+    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "ddb")
+    assert isinstance(get_ledger(), DdbLedgerBackend)
+
+
+def test_get_ledger_still_rejects_unknown_backend(monkeypatch):
+    monkeypatch.setenv("LEDGER_BACKEND", "bogus")
+    with pytest.raises(ValueError, match="bogus"):
         get_ledger()
 
 

@@ -174,3 +174,52 @@ class TestPersistence:
         from core.billing.bedrock_aip import read_owner_aips
 
         assert await read_owner_aips("org_abc") is None
+
+
+class TestResolveOwner:
+    @pytest.mark.asyncio
+    async def test_round_trips_a_persisted_arn(self, aip_tables):
+        from core.billing.bedrock_aip import persist_owner_aips, resolve_owner_from_aip_arn
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-h",
+        }
+        await persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
+        assert await resolve_owner_from_aip_arn(arns["sonnet"]) == "org_abc"
+        assert await resolve_owner_from_aip_arn(arns["haiku"]) == "org_abc"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_unknown_arn(self, aip_tables):
+        from core.billing.bedrock_aip import resolve_owner_from_aip_arn
+
+        assert (
+            await resolve_owner_from_aip_arn(
+                "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/nope"
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_tier_round_trips_a_persisted_arn(self, aip_tables):
+        from core.billing.bedrock_aip import persist_owner_aips, resolve_tier_from_aip_arn
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-h",
+        }
+        await persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
+        assert await resolve_tier_from_aip_arn(arns["opus"]) == "opus"
+        assert await resolve_tier_from_aip_arn(arns["sonnet"]) == "sonnet"
+        assert await resolve_tier_from_aip_arn(arns["haiku"]) == "haiku"
+
+    @pytest.mark.asyncio
+    async def test_resolve_tier_returns_none_for_unknown_arn(self, aip_tables):
+        from core.billing.bedrock_aip import resolve_tier_from_aip_arn
+
+        assert (
+            await resolve_tier_from_aip_arn("arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/nope")
+            is None
+        )

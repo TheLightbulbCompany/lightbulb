@@ -158,3 +158,42 @@ async def read_owner_aips(owner_id: str) -> dict[str, str] | None:
     if not arns:
         return None
     return {str(tier): str(arn) for tier, arn in arns.items()}
+
+
+async def resolve_owner_from_aip_arn(aip_arn: str) -> str | None:
+    """SHARED CONTRACT (Plan 3 meter): given an AIP ARN from an invocation-log
+    record, return the owning owner_id, or None if unknown.
+
+    Reads the bedrock-aip-owners reverse table by PK — a single strongly
+    bounded GetItem, safe on the hot meter path. No name-parsing.
+    """
+    from core.dynamodb import run_in_thread
+
+    table = _aip_owners_table()
+    resp = await run_in_thread(table.get_item, Key={"aip_arn": aip_arn})
+    item = resp.get("Item")
+    if not item:
+        return None
+    owner = item.get("owner_id")
+    return str(owner) if owner else None
+
+
+async def resolve_tier_from_aip_arn(aip_arn: str) -> str | None:
+    """SHARED CONTRACT (Plan 3 pricing): given an AIP ARN from an invocation-log
+    record, return its model tier ("opus"/"sonnet"/"haiku"), or None if unknown.
+
+    Mirrors resolve_owner_from_aip_arn — same bedrock-aip-owners reverse-table
+    PK GetItem (a single bounded read, safe on the hot pricing path) — but
+    returns the `tier` attribute that _put_reverse_row stores on every row.
+    Plan 3's price_from_aip_arn maps the tier to the per-token rate; the AIP ARN
+    alone carries no model name, so the persisted tier is the only reliable key.
+    """
+    from core.dynamodb import run_in_thread
+
+    table = _aip_owners_table()
+    resp = await run_in_thread(table.get_item, Key={"aip_arn": aip_arn})
+    item = resp.get("Item")
+    if not item:
+        return None
+    tier = item.get("tier")
+    return str(tier) if tier else None

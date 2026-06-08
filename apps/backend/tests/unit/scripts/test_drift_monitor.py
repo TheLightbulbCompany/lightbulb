@@ -82,3 +82,30 @@ async def test_empty_table_is_zero():
         patch("core.dynamodb.run_in_thread", new=_passthrough_run_in_thread),
     ):
         assert await fetch_ledger_deduct_spend_usd(["2026-06"]) == 0.0
+
+
+def test_drift_exceeds_threshold_predicate():
+    from scripts.drift_monitor import drift_alerted
+
+    # 30% drift on a $100 AWS bill vs $70 ledger.
+    assert drift_alerted(aws_usd=100.0, ledger_usd=70.0, threshold_pct=20.0) is True
+
+
+def test_drift_within_threshold_predicate():
+    from scripts.drift_monitor import drift_alerted
+
+    # 5% drift is under the 20% threshold.
+    assert drift_alerted(aws_usd=100.0, ledger_usd=95.0, threshold_pct=20.0) is False
+
+
+def test_drift_zero_aws_zero_ledger_not_alerted():
+    from scripts.drift_monitor import drift_alerted
+
+    assert drift_alerted(aws_usd=0.0, ledger_usd=0.0, threshold_pct=20.0) is False
+
+
+def test_drift_zero_aws_nonzero_ledger_alerted():
+    from scripts.drift_monitor import drift_alerted
+
+    # AWS reported $0 but the ledger deducted — a real discrepancy.
+    assert drift_alerted(aws_usd=0.0, ledger_usd=5.0, threshold_pct=20.0) is True

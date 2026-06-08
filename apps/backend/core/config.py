@@ -108,6 +108,24 @@ class Settings(BaseSettings):
     METER_SERVICE_TOKEN_KEY: str = os.getenv("METER_SERVICE_TOKEN_KEY", "")
     OAUTH_TOKENS_TABLE: str = ""
 
+    # --- Metronome ledger adapter (Phase 2) ---
+    # Metronome is the future ledger system-of-record (spec §3.2.3). Phase 2
+    # wires the adapter behind the LedgerBackend interface and validates it in
+    # the dev environment against the Metronome SANDBOX. The environment is
+    # token-scoped: same base URL, the token decides sandbox vs prod, so a
+    # sandbox API key only ever touches sandbox data. Empty defaults keep the
+    # backend booting in non-Metronome contexts (unit tests + the DDB-default
+    # prod path) — get_ledger() only constructs the Metronome backend when
+    # LEDGER_BACKEND == "metronome".
+    METRONOME_BASE_URL: str = os.getenv("METRONOME_BASE_URL", "https://api.metronome.com/v1")
+    """Metronome API base, including the /v1 prefix. Same URL for sandbox + prod."""
+    METRONOME_API_KEY: str = os.getenv("METRONOME_API_KEY", "")
+    """Bearer token. Sandbox token in dev, prod token in prod. From Secrets Manager."""
+    METRONOME_WEBHOOK_SECRET: str = os.getenv("METRONOME_WEBHOOK_SECRET", "")
+    """HMAC-SHA256 key for verifying Metronome-Webhook-Signature on inbound webhooks."""
+    METRONOME_FAST_GATE_TABLE: str = os.getenv("METRONOME_FAST_GATE_TABLE", "")
+    """DDB table backing the local fast-gate flag the synchronous chat gate reads."""
+
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
     # keep the backend booting in non-AWS unit-test contexts.
     BEDROCK_AIP_OWNERS_TABLE: str = os.getenv("BEDROCK_AIP_OWNERS_TABLE", "")

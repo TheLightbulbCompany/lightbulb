@@ -33,6 +33,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly adminActionsTable: dynamodb.Table;
   public readonly creditsTable: dynamodb.Table;
   public readonly creditTransactionsTable: dynamodb.Table;
+  public readonly metronomeFastGateTable: dynamodb.Table;
   public readonly bedrockAipOwnersTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
@@ -228,6 +229,23 @@ export class DatabaseStack extends cdk.Stack {
       tableName: `isol8-${env}-credit-transactions`,
       partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "tx_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    // Metronome local fast-gate flag (Phase 2). A disposable per-owner
+    // projection of Metronome balance that the SYNCHRONOUS chat gate reads,
+    // since Metronome's balance read is async with no low-latency SLA. Fed by
+    // optimistic decrement on deplete + the Metronome low-balance webhook;
+    // carries no money-correctness burden (Metronome is the SoR). Also stashes
+    // the per-owner metronome_customer_id for provisioning idempotency. PK
+    // owner_id; mirrors creditsTable.
+    this.metronomeFastGateTable = new dynamodb.Table(this, "MetronomeFastGateTable", {
+      tableName: `isol8-${env}-metronome-fast-gate`,
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,

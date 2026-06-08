@@ -74,6 +74,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
       gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
+      metronomeApiKey: `isol8/${environment}/metronome_api_key`,
+      metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
     },
     kmsKeyArn: kmsKey.keyArn,
     container: {

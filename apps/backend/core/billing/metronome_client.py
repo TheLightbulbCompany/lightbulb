@@ -18,6 +18,12 @@ import httpx
 from core.config import settings
 
 
+class MetronomeError(Exception):
+    """A Metronome response was well-formed HTTP but semantically unusable
+    (e.g. a 2xx body missing the expected envelope). Distinct from
+    httpx.HTTPStatusError, which the caller raises on non-2xx."""
+
+
 class MetronomeClient:
     def __init__(self, *, api_key: str, base_url: str, http_client: httpx.AsyncClient):
         self._api_key = api_key
@@ -47,7 +53,10 @@ class MetronomeClient:
         ingest_aliases lets us send our owner_id directly as customer_id on
         every event (no translation table)."""
         body = await self._post("/customers/create", {"name": name, "ingest_aliases": ingest_aliases})
-        return body["data"]["id"]
+        customer_id = body.get("data", {}).get("id")
+        if not customer_id:
+            raise MetronomeError(f"create_customer: no data.id in Metronome response (got keys {sorted(body)})")
+        return customer_id
 
     async def set_stripe_billing_config(self, *, metronome_customer_id: str, stripe_customer_id: str) -> None:
         """POST /v1/customers/{id}/setCustomerBillingProviderConfigurations —

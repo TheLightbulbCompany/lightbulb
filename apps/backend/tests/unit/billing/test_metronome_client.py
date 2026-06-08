@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from core.billing.metronome_client import MetronomeClient
+from core.billing.metronome_client import MetronomeClient, MetronomeError
 
 
 def _resp(status_code: int = 200, json_body: dict | None = None) -> MagicMock:
@@ -57,6 +57,16 @@ async def test_create_customer_sends_name_and_ingest_aliases():
     args, kwargs = fake.post.call_args
     assert args[0] == "/customers/create"
     assert kwargs["json"] == {"name": "org_abc", "ingest_aliases": ["org_abc"]}
+
+
+@pytest.mark.asyncio
+async def test_create_customer_raises_on_missing_id():
+    # A well-formed-HTTP 2xx whose envelope lacks data.id raises a typed
+    # MetronomeError (not a bare KeyError -> 500) so provisioning surfaces a
+    # clean, attributable failure.
+    client, _ = _client_with(_resp(200, {"data": {}}))
+    with pytest.raises(MetronomeError, match="no data.id"):
+        await client.create_customer(name="org_abc", ingest_aliases=["org_abc"])
 
 
 @pytest.mark.asyncio

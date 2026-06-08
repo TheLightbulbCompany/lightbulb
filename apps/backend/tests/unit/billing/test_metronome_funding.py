@@ -35,6 +35,13 @@ def _fake_client():
 
 @pytest.mark.asyncio
 async def test_fund_adds_payment_gated_stripe_commit(provisioned_table):
+    # Pre-arm the cache as blocked so we can prove the top-up re-arms it.
+    provisioned_table.update_item(
+        TableName="test-metronome-fast-gate",
+        Key={"owner_id": {"S": "org_abc"}},
+        UpdateExpression="SET remaining_microcents = :z",
+        ExpressionAttributeValues={":z": {"N": "0"}},
+    )
     fake = _fake_client()
     await fund_top_up(
         owner_id="org_abc",
@@ -53,6 +60,37 @@ async def test_fund_adds_payment_gated_stripe_commit(provisioned_table):
     assert commit["amount"] == 25.0  # dollars
     assert commit["payment_gate_config"] == {"payment_gate_type": "STRIPE"}
     assert commit["metadata"]["stripe_session_id"] == "cs_test_123"
+    # The cache is optimistically re-armed so the owner's next chat message
+    # unblocks without waiting for a Metronome balance webhook (which won't
+    # fire on a top-up). get_balance reads this cache, so without the re-arm a
+    # paid top-up would never unblock chat.
+    item = provisioned_table.get_item(
+        TableName="test-metronome-fast-gate",
+        Key={"owner_id": {"S": "org_abc"}},
+    )["Item"]
+    assert item["remaining_microcents"]["N"] == "25000000"
+
+
+@pytest.mark.asyncio
+async def test_fund_rearm_failure_does_not_raise(provisioned_table, monkeypatch):
+    # The Metronome commit is what releases money; the cache re-arm is a
+    # best-effort convenience. A re-arm failure after a successful commit must
+    # not raise (the next low-balance webhook re-syncs the authoritative
+    # number), or the webhook would 500 back to Stripe AFTER the commit landed.
+    fake = _fake_client()
+    monkeypatch.setattr(
+        "core.billing.metronome_funding.MetronomeFastGate.add_credit",
+        AsyncMock(side_effect=RuntimeError("ddb down")),
+    )
+    await fund_top_up(
+        owner_id="org_abc",
+        amount_microcents=25_000_000,
+        contract_id="contract-1",
+        product_id="prod-credits",
+        stripe_session_id="cs_test_123",
+        client=fake,
+    )
+    fake.edit_contract_add_commits.assert_awaited_once()
 
 
 @pytest.mark.asyncio

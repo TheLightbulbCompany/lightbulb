@@ -30,12 +30,13 @@ def _event(**overrides) -> UsageEvent:
     return UsageEvent(**base)
 
 
-def _backend(*, ingest_return=None, net_balance_data=None, decrement_return=86_000):
+def _backend(*, ingest_return=None, net_balance_data=None, decrement_return=86_000, remaining_return=86_000):
     fake_client = MagicMock()
     fake_client.ingest = AsyncMock(return_value=ingest_return)
     fake_client.get_net_balance = AsyncMock(return_value=net_balance_data or {})
     fake_gate = MagicMock()
     fake_gate.decrement = AsyncMock(return_value=decrement_return)
+    fake_gate.get_remaining = AsyncMock(return_value=remaining_return)
     fake_gate.set_balance = AsyncMock()
 
     backend = MetronomeLedgerBackend(
@@ -100,17 +101,35 @@ class TestDeplete:
 
 class TestGetBalance:
     @pytest.mark.asyncio
-    async def test_get_balance_converts_dollars_to_microcents(self):
-        # 12.34 dollars -> 12_340_000 microcents (1 dollar = 1_000_000 mc).
-        backend, _, _ = _backend(net_balance_data={"net_balance": 12.34})
-        assert await backend.get_balance("org_abc") == 12_340_000
+    async def test_get_balance_reads_fast_gate_not_metronome(self):
+        # The two production get_balance callers are the synchronous chat +
+        # provision gates. They must read the LOCAL fast-gate cache, never
+        # Metronome's async, no-SLA getNetBalance (spec §3.2/§3.3: "the
+        # synchronous chat gate reads THIS [fast-gate]").
+        backend, client, gate = _backend(remaining_return=42_000)
+        assert await backend.get_balance("org_abc") == 42_000
+        gate.get_remaining.assert_awaited_once_with("org_abc")
+        client.get_net_balance.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_get_balance_zero_when_no_balance(self):
-        backend, _, _ = _backend(net_balance_data={})
+    async def test_get_balance_zero_when_no_cached_row(self):
+        backend, _, _ = _backend(remaining_return=0)
         assert await backend.get_balance("org_abc") == 0
 
     @pytest.mark.asyncio
-    async def test_get_balance_accepts_consistent_kwarg(self):
-        backend, _, _ = _backend(net_balance_data={"net_balance": 1.0})
+    async def test_get_balance_returns_negative_remaining(self):
+        # A metered-but-unfunded owner's optimistic decrement lands negative;
+        # the gate's `balance <= 0` check then blocks. get_balance must surface
+        # that negative value, not clamp it.
+        backend, _, _ = _backend(remaining_return=-3_000)
+        assert await backend.get_balance("org_abc") == -3_000
+
+    @pytest.mark.asyncio
+    async def test_get_balance_consistent_kwarg_still_reads_fast_gate(self):
+        # connection_pool passes consistent=True so a just-landed top-up
+        # unblocks the next message; the fast-gate read is strongly-consistent
+        # in DDB, so consistent=True is honored WITHOUT touching Metronome.
+        backend, client, gate = _backend(remaining_return=1_000_000)
         assert await backend.get_balance("org_abc", consistent=True) == 1_000_000
+        gate.get_remaining.assert_awaited_once_with("org_abc")
+        client.get_net_balance.assert_not_awaited()

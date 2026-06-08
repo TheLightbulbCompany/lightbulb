@@ -5,10 +5,16 @@ payment_gate_config STRIPE, so credits release only once Stripe confirms the
 payment (Metronome voids the commit on payment failure). Called from the
 Stripe webhook (already deduped by event.id), so this function does not
 re-dedup; it stamps the Stripe session id into the commit metadata for audit.
+
+After the commit lands it optimistically re-arms the local fast-gate cache
+(best-effort) so a previously-out-of-credits owner unblocks on their next
+message — the synchronous gate reads the cache, and the low-balance webhook
+never fires on a top-up.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 
 import boto3
@@ -16,7 +22,10 @@ import httpx
 
 from core.billing import metronome_client
 from core.billing.metronome_client import MetronomeClient
+from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
+
+logger = logging.getLogger(__name__)
 
 _MICROCENTS_PER_DOLLAR = 1_000_000
 
@@ -69,9 +78,30 @@ async def fund_top_up(
                 contract_id=contract_id,
                 add_commits=[commit],
             )
-        return
-    await client.edit_contract_add_commits(
-        metronome_customer_id=customer_id,
-        contract_id=contract_id,
-        add_commits=[commit],
-    )
+    else:
+        await client.edit_contract_add_commits(
+            metronome_customer_id=customer_id,
+            contract_id=contract_id,
+            add_commits=[commit],
+        )
+
+    # Optimistically re-arm the local fast-gate cache so the owner's NEXT chat
+    # message unblocks immediately. get_balance reads the cache (not Metronome's
+    # async getNetBalance), and the low-balance webhook only fires when balance
+    # crosses DOWN past a threshold — never on a top-up — so without this re-arm
+    # a paid top-up would never unblock a previously-out-of-credits owner
+    # (spec §3.3: "fund Metronome prepaid credit -> flag refreshed"). Safe
+    # direction: the commit above already landed against a CONFIRMED Stripe
+    # payment. Best-effort — the commit is what releases money; if the cache
+    # write fails the next low-balance webhook re-syncs the authoritative
+    # number, so we must not raise (that would 500 the webhook back to Stripe
+    # AFTER the commit succeeded and trigger a redelivery storm / double commit).
+    try:
+        await MetronomeFastGate().add_credit(owner_id, microcents=amount_microcents)
+    except Exception:
+        logger.exception(
+            "Metronome fast-gate re-arm failed after funding owner %s session %s "
+            "(commit landed; next low-balance webhook will re-sync)",
+            owner_id,
+            stripe_session_id,
+        )

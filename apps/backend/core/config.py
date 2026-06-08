@@ -101,6 +101,7 @@ class Settings(BaseSettings):
     CREDITS_TABLE: str = ""
     CREDIT_TRANSACTIONS_TABLE: str = ""
     LEDGER_BACKEND: str = "ddb"  # ledger system-of-record: "ddb" (interim) | "metronome" (Phase 3)
+    METER_IS_LIVE: bool = False  # cutover flag OWNED by Plan 4: when True, Plan 3's AWS meter deplete() is the sole biller (and Plan 3 then calls enforce_after_deplete) and the legacy connection_pool deduct is gated off; when False, Plan 3 is shadow-only (logs, no deplete, no enforce) and the legacy deduct is the live biller. Both paths read this ONE flag so the cutover is order-independent.
     OAUTH_TOKENS_TABLE: str = ""
 
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults

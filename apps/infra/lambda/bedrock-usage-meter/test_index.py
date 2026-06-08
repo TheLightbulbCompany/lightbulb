@@ -123,3 +123,39 @@ def test_handler_posts_each_record(monkeypatch):
     assert result == {"statusCode": 200}
     assert len(posted) == 1
     assert posted[0]["request_id"] == inline["requestId"]
+
+
+def test_post_to_backend_url_headers_and_body(monkeypatch):
+    import index
+
+    inline = _load("inline_record.json")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        captured["body"] = json.loads(req.data.decode())
+        return MagicMock()
+
+    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
+        index.handler(_awslogs_event(inline), None)
+
+    assert captured["url"] == "http://alb.test.local/api/v1/internal/usage/from-bedrock-log"
+    assert captured["headers"]["authorization"] == "Bearer meter-token-abc"
+    assert captured["headers"]["content-type"] == "application/json"
+    # Internal-only keys are stripped from the wire body.
+    assert "body_offloaded" not in captured["body"]
+    assert "s3_ref" not in captured["body"]
+    # The contract fields the backend BedrockLogRecord requires are present.
+    for key in (
+        "request_id",
+        "model_id",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "run_status",
+        "region",
+        "occurred_at",
+    ):
+        assert key in captured["body"]

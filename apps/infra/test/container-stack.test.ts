@@ -290,6 +290,46 @@ describe("ContainerStack — dev", () => {
       ]),
     });
   });
+
+  test("shared task role no longer carries the broad bedrock:* on Resource '*'", () => {
+    // The per-owner role supersedes it; the base task-def must have NO Bedrock
+    // access so every bedrock container is forced onto a per-owner role.
+    const policies = template.findResources("AWS::IAM::Policy");
+    const offending = Object.values(policies).filter((p: any) =>
+      (p.Properties.PolicyDocument.Statement as any[]).some(
+        (s) =>
+          s.Resource === "*" &&
+          JSON.stringify(s.Action).includes("bedrock:InvokeModel"),
+      ),
+    );
+    expect(offending).toHaveLength(0);
+  });
+
+  test("creates the OwnerBedrockBasePolicy managed policy (EFS/logs/ssm)", () => {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-owner-bedrock-base",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["elasticfilesystem:ClientMount"]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("creates the OwnerBedrockBoundary permissions-boundary policy", () => {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-owner-bedrock-boundary",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["bedrock:InvokeModel"]),
+          }),
+        ]),
+      }),
+    });
+  });
 });
 
 describe("ContainerStack — prod", () => {

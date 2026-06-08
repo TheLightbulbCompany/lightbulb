@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     """HMAC-SHA256 key for verifying Metronome-Webhook-Signature on inbound webhooks."""
     METRONOME_FAST_GATE_TABLE: str = os.getenv("METRONOME_FAST_GATE_TABLE", "")
     """DDB table backing the local fast-gate flag the synchronous chat gate reads."""
+    METRONOME_CREDITS_CONTRACT_ID: str = os.getenv("METRONOME_CREDITS_CONTRACT_ID", "")
+    """Metronome contract id that holds the owner's prepaid credit commits. Per-env."""
+    METRONOME_CREDITS_PRODUCT_ID: str = os.getenv("METRONOME_CREDITS_PRODUCT_ID", "")
+    """Metronome product id the prepaid credit commit draws against. Per-env."""
 
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
     # keep the backend booting in non-AWS unit-test contexts.

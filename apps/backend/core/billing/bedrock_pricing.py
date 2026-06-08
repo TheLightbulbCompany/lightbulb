@@ -25,6 +25,8 @@ from __future__ import annotations
 import re
 from typing import TypedDict
 
+from core.billing.bedrock_aip import resolve_tier_from_aip_arn
+
 
 class UnknownModelError(Exception):
     """Raised when a model id has no entry in the rate table.
@@ -81,6 +83,17 @@ _RATES: dict[str, ModelRate] = {
         "cache_write": 2.2,
         "cache_read": 0.11,
     },
+}
+
+
+# Tier (the AIP "lane" Plan 2 assigns per owner) -> canonical foundation-model
+# id used as the rate-table key. The three keys mirror _RATES above. The meter
+# receives an AIP ARN (modelId in the invocation log), which normalize_model_id
+# cannot turn into a foundation id; this map closes that gap.
+_TIER_TO_FM: dict[str, str] = {
+    "opus": "anthropic.claude-opus-4-6-v1",
+    "sonnet": "anthropic.claude-sonnet-4-6",
+    "haiku": "anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
 
@@ -164,4 +177,42 @@ def cost_microcents(
         + int(output_tokens * rate["output"])
         + int(cache_read_tokens * rate["cache_read"])
         + int(cache_write_tokens * rate["cache_write"])
+    )
+
+
+async def price_from_aip_arn(
+    *,
+    aip_arn: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> int:
+    """Price an invocation whose modelId is a per-owner AIP ARN.
+
+    The AIP ARN cannot be priced directly (it carries no foundation-model id),
+    so we resolve the owner's tier (Plan 2's AIP registry) and price the
+    canonical foundation-model id for that tier.
+
+    NOTE (plan/reality reconciliation): the Plan-3 doc declared this helper
+    synchronous and called ``resolve_tier_from_aip_arn`` without ``await``. The
+    merged Plan-2 ``resolve_tier_from_aip_arn`` is an ``async def`` (it does a
+    DynamoDB reverse-table GetItem), so this helper MUST be ``async`` and await
+    it — a sync call would only ever return an un-awaited coroutine, which the
+    tier map never matches, silently raising UnknownModelError on every record.
+    The Task-6 endpoint (out of this task's scope) consequently awaits this.
+
+    Raises:
+        UnknownModelError: the AIP ARN maps to no known tier.
+    """
+    tier = await resolve_tier_from_aip_arn(aip_arn)
+    fm_id = _TIER_TO_FM.get(tier) if tier else None
+    if fm_id is None:
+        raise UnknownModelError(aip_arn)
+    return cost_microcents(
+        model_id=fm_id,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
     )

@@ -124,6 +124,83 @@ class TestBedrockProvisionMint:
         assert start_svc.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_first_provision_persists_bedrock_fields_onto_the_row(self, manager, monkeypatch):
+        """C-1 regression: on a BRAND-NEW bedrock owner the AIP/role mint runs
+        BEFORE the containers row exists, so its container_repo.update_fields
+        calls no-op (update_fields writes nothing when the row is absent). The
+        row is first CREATED by create_user_service's upsert. If that upsert
+        does not fold in bedrock_aip_arns/bedrock_role_arn, the row carries
+        neither — and the next resize/restart re-register reads
+        bedrock_role_arn off the row, gets None, and reverts the container to
+        the shared (now Bedrock-less) task role -> every chat AccessDenies; and
+        restore_owner_bedrock can't recover the owner (it reads the AIP map off
+        the row). This test reproduces the real ordering with an in-memory
+        container_repo (update_fields no-ops on an absent row, exactly like DDB)
+        and asserts the row ends up carrying both fields.
+        """
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
+        }
+        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_new"
+
+        # In-memory container_repo that mirrors the real contract: update_fields
+        # NO-OPS (returns None, writes nothing) when the row is absent; upsert
+        # CREATES the row. Patched on the module both ecs_manager AND bedrock_aip
+        # import so the mint's persistence and the upsert hit the same store.
+        store: dict[str, dict] = {}
+
+        async def fake_get_by_owner_id(owner_id):
+            return store.get(owner_id)
+
+        async def fake_upsert(owner_id, fields):
+            row = store.get(owner_id) or {"owner_id": owner_id, "id": "c-1"}
+            row.update(fields)
+            row["owner_id"] = owner_id
+            store[owner_id] = row
+            return row
+
+        async def fake_update_fields(owner_id, fields):
+            row = store.get(owner_id)
+            if row is None:
+                return None  # exactly the DDB no-op that causes C-1
+            row.update(fields)
+            store[owner_id] = row
+            return row
+
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", fake_get_by_owner_id)
+        monkeypatch.setattr("core.repositories.container_repo.upsert", fake_upsert)
+        monkeypatch.setattr("core.repositories.container_repo.update_fields", fake_update_fields)
+
+        # The mint returns the arns/role; its own update_fields calls no-op
+        # because the row does not exist yet (the bug surface).
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value=arns))
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", AsyncMock(return_value=role_arn))
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+
+        # Let create_user_service run FOR REAL (it owns the row-creating upsert);
+        # stub only its AWS-side side effects + the post-create steps.
+        manager._service_exists = MagicMock(return_value=None)
+        manager._create_access_point = MagicMock(return_value="fsap-user")
+        manager._register_task_definition = MagicMock(
+            return_value="arn:aws:ecs:us-east-1:123456789:task-definition/isol8-dev-openclaw-user:9"
+        )
+        manager._ecs.create_service = MagicMock()
+        manager.write_user_configs = AsyncMock()
+        manager.start_user_service = AsyncMock()
+
+        await manager.provision_user_container("org_new", provider_choice="bedrock_claude", owner_type="org")
+
+        row = store["org_new"]
+        assert row.get("bedrock_role_arn") == role_arn
+        assert row.get("bedrock_aip_arns") == arns
+        # And the per-owner role was passed to the task-def register (first boot
+        # already correct in-memory; this guards the row-persist regression too).
+        reg_kwargs = manager._register_task_definition.call_args.kwargs
+        assert reg_kwargs["task_role_arn"] == role_arn
+
+    @pytest.mark.asyncio
     async def test_revoked_owner_provision_does_not_regrant_bedrock(self, manager, monkeypatch):
         """A re-provision of a kill-switched (bedrock_revoked=True) owner mints
         the AIPs + role SHELL but passes skip_bedrock_grant=True so the scoped

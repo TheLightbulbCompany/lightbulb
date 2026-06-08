@@ -476,6 +476,7 @@ class EcsManager:
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
         task_role_arn: str | None = None,
+        bedrock_aip_arns: dict[str, str] | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -502,6 +503,14 @@ class EcsManager:
                 below (atomically with the rest of the row, so brand-new
                 rows land with the token already set) and injected as
                 ``OPENCLAW_HOOK_TOKEN`` on the primary container.
+            task_role_arn: Optional per-owner ECS task-role ARN override (the
+                scoped per-owner Bedrock role for the ``bedrock_claude`` path).
+                Threaded into ``_register_task_definition`` AND, when present,
+                persisted onto the containers row as ``bedrock_role_arn`` by the
+                upsert below — see the bedrock-fields note there.
+            bedrock_aip_arns: Optional per-owner AIP map ({tier: aip_arn}) for
+                the ``bedrock_claude`` path. Persisted onto the containers row
+                as ``bedrock_aip_arns`` by the upsert below.
 
         Returns:
             The ECS service name.
@@ -537,6 +546,21 @@ class EcsManager:
             # the hooks block); backfill achieves it after refresh + config
             # patch. Both should stamp.
             upsert_fields["hook_token_provisioned_at"] = utc_now_iso()
+        # Persist the per-owner Bedrock role + AIP map here too, for the SAME
+        # reason as hook_token: the mint (ensure_owner_aips/ensure_owner_bedrock_role)
+        # ran BEFORE this upsert, so its container_repo.update_fields calls
+        # no-opped against a not-yet-existing row (update_fields returns None and
+        # writes nothing when the row is absent). Only the reverse table got
+        # written. Without folding them into this row-creating upsert, the row
+        # would carry no bedrock_role_arn, and the next resize/restart re-register
+        # (which reads bedrock_role_arn off the row) would silently revert the
+        # container to the shared all-models task role — which no longer carries
+        # any Bedrock grant — AccessDenying every subsequent chat. restore_owner_bedrock
+        # would also break (it reads the AIP map off the row).
+        if task_role_arn:
+            upsert_fields["bedrock_role_arn"] = task_role_arn
+        if bedrock_aip_arns:
+            upsert_fields["bedrock_aip_arns"] = bedrock_aip_arns
         await container_repo.upsert(user_id, upsert_fields)
 
         try:
@@ -1307,6 +1331,15 @@ class EcsManager:
                 user_id,
             )
 
+        # Read the row ONCE up front. Reused for the bedrock kill-switch check
+        # AND the state-machine routing below — no second round-trip. The mint
+        # block's update_fields calls do not change bedrock_revoked (only
+        # revoke_owner_bedrock does), so this pre-mint read is authoritative for
+        # the revoke guard; the freshly-minted bedrock_role_arn is carried in
+        # the in-memory `bedrock_role_arn` local (not re-read off the row), so a
+        # stale `existing` here cannot drop it.
+        existing = await container_repo.get_by_owner_id(user_id)
+
         bedrock_aip_arns: dict[str, str] | None = None
         bedrock_role_arn: str | None = None
         if provider_choice == "bedrock_claude":
@@ -1331,14 +1364,12 @@ class EcsManager:
             # role exists + carries EFS/logs/ssm), but do NOT re-grant the
             # Bedrock inline policy if the owner is revoked. Plan 4 owns
             # un-revoking (restore_owner_bedrock), not provision.
-            existing_row = await container_repo.get_by_owner_id(user_id)
-            is_revoked = bool(existing_row and existing_row.get("bedrock_revoked"))
+            is_revoked = bool(existing and existing.get("bedrock_revoked"))
             bedrock_role_arn = await ensure_owner_bedrock_role(user_id, bedrock_aip_arns, skip_bedrock_grant=is_revoked)
 
         service_name = self._service_name(user_id)
 
-        # Check current state
-        existing = await container_repo.get_by_owner_id(user_id)
+        # Check current state (`existing` was read above, before the mint).
         svc = self._service_exists(service_name)
 
         # --- Scenario: Service exists (ACTIVE or DRAINING) ---
@@ -1417,13 +1448,22 @@ class EcsManager:
                 access_point_id = existing.get("access_point_id") if existing else None
                 if access_point_id:
                     try:
+                        # Prefer the role just minted in THIS call (in-memory)
+                        # over the row's value: `existing` was read before the
+                        # mint, so for a re-provision its bedrock_role_arn may be
+                        # stale/absent. Fall back to the row for non-bedrock
+                        # providers (where bedrock_role_arn is None) so they keep
+                        # whatever per-owner role the row already carries.
+                        restart_task_role_arn = bedrock_role_arn or (
+                            existing.get("bedrock_role_arn") if existing else None
+                        )
                         new_task_def_arn = await asyncio.to_thread(
                             self._register_task_definition,
                             access_point_id,
                             secrets_for_task=secrets_for_task,
                             environment_for_task=environment_for_task,
                             hook_token=existing_hook_token,
-                            task_role_arn=(existing.get("bedrock_role_arn") if existing else None),
+                            task_role_arn=restart_task_role_arn,
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,
@@ -1595,6 +1635,7 @@ class EcsManager:
             environment_for_task=environment_for_task,
             hook_token=hook_token,
             task_role_arn=bedrock_role_arn,
+            bedrock_aip_arns=bedrock_aip_arns,
         )
 
         # Step 3: Write configs to EFS

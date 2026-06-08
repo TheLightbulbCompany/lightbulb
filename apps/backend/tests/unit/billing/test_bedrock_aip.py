@@ -488,3 +488,78 @@ class TestEnsureRole:
         # base policy still attached (role is bootable), but Bedrock NOT granted.
         fake.attach_role_policy.assert_called_once()
         fake.put_role_policy.assert_not_called()
+
+
+class TestKillSwitch:
+    @pytest.mark.asyncio
+    async def test_revoke_deletes_policy_and_sets_flag(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
+        }
+        await mod.persist_owner_aips(
+            "org_abc", arns, role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
+        )
+        fake = MagicMock()
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        await mod.revoke_owner_bedrock("org_abc")
+
+        fake.delete_role_policy.assert_called_once_with(
+            RoleName="isol8-dev-owner-bedrock-org_abc", PolicyName="owner-bedrock"
+        )
+        row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
+        assert row["bedrock_revoked"]["BOOL"] is True
+
+    @pytest.mark.asyncio
+    async def test_revoke_idempotent_on_missing_policy(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        await mod.persist_owner_aips(
+            "org_abc",
+            {"opus": "a", "sonnet": "b", "haiku": "c"},
+            role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc",
+        )
+        fake = MagicMock()
+        fake.delete_role_policy.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchEntity", "Message": "gone"}}, "DeleteRolePolicy"
+        )
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        await mod.revoke_owner_bedrock("org_abc")  # must not raise
+        row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
+        assert row["bedrock_revoked"]["BOOL"] is True
+
+    @pytest.mark.asyncio
+    async def test_restore_reputs_policy_and_clears_flag(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
+        }
+        await mod.persist_owner_aips(
+            "org_abc", arns, role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
+        )
+        fake = MagicMock()
+        # restore -> ensure_owner_bedrock_role -> get_role must return a REAL
+        # ARN string (a bare MagicMock would be written into DynamoDB and blow
+        # up boto3's deepcopy of the put-item params).
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2", raising=False)
+
+        await mod.restore_owner_bedrock("org_abc")
+
+        pk = fake.put_role_policy.call_args.kwargs
+        assert pk["RoleName"] == "isol8-dev-owner-bedrock-org_abc"
+        assert pk["PolicyName"] == "owner-bedrock"
+        row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
+        assert row["bedrock_revoked"]["BOOL"] is False

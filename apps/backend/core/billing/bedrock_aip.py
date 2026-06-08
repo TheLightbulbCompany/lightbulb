@@ -450,3 +450,51 @@ async def _create_owner_role(client, role_name: str, owner_id: str) -> str:
         create_kwargs["PermissionsBoundary"] = settings.BEDROCK_OWNER_BOUNDARY_ARN
     resp = await run_in_thread(client.create_role, **create_kwargs)
     return resp["Role"]["Arn"]
+
+
+async def revoke_owner_bedrock(owner_id: str) -> None:
+    """SHARED CONTRACT (Plan 4 kill-switch): remove the per-owner role's scoped
+    Bedrock inline policy so the container can no longer invoke any model, and
+    stamp bedrock_revoked=True.
+
+    IAM is ~5-15s eventually consistent — Plan 4 pairs this with ECS
+    desired-count=0 for the guaranteed instant stop. Idempotent: a missing
+    policy (NoSuchEntity) is treated as already-revoked.
+    """
+    from core.dynamodb import run_in_thread
+
+    client = _iam_client()
+    role_name = _owner_role_name(owner_id)
+    try:
+        await run_in_thread(
+            client.delete_role_policy,
+            RoleName=role_name,
+            PolicyName="owner-bedrock",
+        )
+    except ClientError as e:
+        # NoSuchEntity == already revoked (idempotent). A SINGLE `except
+        # ClientError` covers both the real iam typed exception (a ClientError
+        # subclass) and the test's generic ClientError. Do NOT use
+        # `except getattr(client.exceptions, "NoSuchEntityException", ClientError)`
+        # — with a MagicMock client that attribute resolves to a MagicMock, and
+        # `except <non-class>` raises TypeError at except-evaluation time before
+        # any fallback clause runs.
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
+    await container_repo.update_fields(owner_id, {"bedrock_revoked": True})
+
+
+async def restore_owner_bedrock(owner_id: str) -> None:
+    """SHARED CONTRACT (Plan 4): re-attach the per-owner role's scoped Bedrock
+    inline policy from the persisted AIP map, and clear bedrock_revoked.
+
+    Raises if the owner has no persisted AIPs (nothing to restore — caller
+    must re-provision first).
+    """
+    arns = await read_owner_aips(owner_id)
+    if not arns:
+        raise RuntimeError(
+            f"Cannot restore Bedrock for {owner_id}: no persisted AIP map (re-provision the container first)."
+        )
+    await ensure_owner_bedrock_role(owner_id, arns)
+    await container_repo.update_fields(owner_id, {"bedrock_revoked": False})

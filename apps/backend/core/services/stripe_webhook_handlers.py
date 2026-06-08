@@ -27,7 +27,6 @@ from fastapi import Response
 
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
-from core.services import credit_ledger
 from core.services.billing_service import BillingService
 
 logger = logging.getLogger(__name__)
@@ -312,43 +311,30 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     # ledger reflects the credits-promised side of the transaction.
     amount_cents = int(amount_cents_str)
     amount_microcents = amount_cents * 10_000
-    await credit_ledger.top_up(
-        owner_id,
-        amount_microcents=amount_microcents,
-        # Use session id as the idempotency key on the ledger side —
-        # one Checkout completion = one credit grant, even if Stripe
-        # retries the webhook delivery (or fires both completed +
-        # async_payment_succeeded back-to-back).
-        stripe_payment_intent_id=session.get("id"),
-    )
 
-    # Phase 2: when Metronome is the ledger backend, fund a Stripe-payment-
-    # gated Metronome prepaid commit from the SAME paid top-up. The DDB
-    # top_up above is retained as shadow data until Phase 3 deletes it; only
-    # the selected backend's get_balance is read by callers, so there is no
-    # double-gating. Best-effort — a Metronome outage must not 500 the webhook
+    # Fund a Stripe-payment-gated Metronome prepaid commit from this paid
+    # top-up. Metronome is the sole ledger (Phase 3), so this always runs on a
+    # paid session. Best-effort — a Metronome outage must not 500 the webhook
     # back to Stripe (which would trigger redelivery storms). The next top-up
     # or a manual reconcile recovers a missed commit.
-    from core.config import settings as _settings
+    from core.billing import metronome_funding
+    from core.config import settings
 
-    if _settings.LEDGER_BACKEND == "metronome":
-        from core.billing import metronome_funding
-
-        try:
-            await metronome_funding.fund_top_up(
-                owner_id=owner_id,
-                amount_microcents=amount_microcents,
-                contract_id=_settings.METRONOME_CREDITS_CONTRACT_ID,
-                product_id=_settings.METRONOME_CREDITS_PRODUCT_ID,
-                stripe_session_id=session.get("id"),
-            )
-        except Exception:
-            put_metric("metronome.fund.error", dimensions={"source": "stripe_checkout"})
-            logger.exception(
-                "Metronome funding failed for owner %s session %s",
-                owner_id,
-                session.get("id"),
-            )
+    try:
+        await metronome_funding.fund_top_up(
+            owner_id=owner_id,
+            amount_microcents=amount_microcents,
+            contract_id=settings.METRONOME_CREDITS_CONTRACT_ID,
+            product_id=settings.METRONOME_CREDITS_PRODUCT_ID,
+            stripe_session_id=session.get("id"),
+        )
+    except Exception:
+        put_metric("metronome.fund.error", dimensions={"source": "stripe_checkout"})
+        logger.exception(
+            "Metronome funding failed for owner %s session %s",
+            owner_id,
+            session.get("id"),
+        )
 
     amount_total = session.get("amount_total")
     put_metric(

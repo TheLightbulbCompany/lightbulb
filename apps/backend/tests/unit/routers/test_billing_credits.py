@@ -210,9 +210,7 @@ async def test_checkout_session_completed_credits_ledger(async_client, monkeypat
         lambda body, sig, secret: fake_event,
     )
 
-    with patch(
-        "core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock(return_value=20_000_000)
-    ) as mock_top_up:
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -220,9 +218,11 @@ async def test_checkout_session_completed_credits_ledger(async_client, monkeypat
         )
 
     assert resp.status_code == 200
-    _, kwargs = mock_top_up.call_args
+    mock_fund.assert_awaited_once()
+    _, kwargs = mock_fund.call_args
+    assert kwargs["owner_id"] == "u_buyer"
     assert kwargs["amount_microcents"] == 20_000_000
-    assert kwargs["stripe_payment_intent_id"] == "cs_test"
+    assert kwargs["stripe_session_id"] == "cs_test"
 
 
 @pytest.mark.asyncio
@@ -254,9 +254,7 @@ async def test_checkout_session_completed_with_full_discount_still_credits(
         lambda body, sig, secret: fake_event,
     )
 
-    with patch(
-        "core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)
-    ) as mock_top_up:
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -264,10 +262,12 @@ async def test_checkout_session_completed_with_full_discount_still_credits(
         )
 
     assert resp.status_code == 200
-    _, kwargs = mock_top_up.call_args
+    mock_fund.assert_awaited_once()
+    _, kwargs = mock_fund.call_args
     # Credit reflects the *requested* amount, not the (zero) Stripe charge.
+    assert kwargs["owner_id"] == "u_internal"
     assert kwargs["amount_microcents"] == 50_000_000
-    assert kwargs["stripe_payment_intent_id"] == "cs_internal"
+    assert kwargs["stripe_session_id"] == "cs_internal"
 
 
 @pytest.mark.asyncio
@@ -291,14 +291,14 @@ async def test_checkout_session_completed_ignores_non_credit_purposes(async_clie
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-    with patch("core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
             headers={"stripe-signature": "ignored"},
         )
     assert resp.status_code == 200
-    mock_top_up.assert_not_called()
+    mock_fund.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -328,14 +328,14 @@ async def test_checkout_session_completed_with_unpaid_status_defers_credit(
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-    with patch("core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
             headers={"stripe-signature": "ignored"},
         )
     assert resp.status_code == 200
-    mock_top_up.assert_not_called()
+    mock_fund.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -363,18 +363,18 @@ async def test_async_payment_succeeded_credits_after_ach_settles(async_client, m
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-    with patch(
-        "core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)
-    ) as mock_top_up:
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
             headers={"stripe-signature": "ignored"},
         )
     assert resp.status_code == 200
-    _, kwargs = mock_top_up.call_args
+    mock_fund.assert_awaited_once()
+    _, kwargs = mock_fund.call_args
+    assert kwargs["owner_id"] == "u_ach"
     assert kwargs["amount_microcents"] == 50_000_000
-    assert kwargs["stripe_payment_intent_id"] == "cs_ach_settled"
+    assert kwargs["stripe_session_id"] == "cs_ach_settled"
 
 
 @pytest.mark.asyncio
@@ -401,14 +401,14 @@ async def test_async_payment_failed_does_not_credit(async_client, monkeypatch, c
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-    with patch("core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
             headers={"stripe-signature": "ignored"},
         )
     assert resp.status_code == 200
-    mock_top_up.assert_not_called()
+    mock_fund.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -459,11 +459,11 @@ async def test_webhook_metadata_without_owner_id_no_ops(async_client, monkeypatc
         },
     }
     monkeypatch.setattr("stripe.Webhook.construct_event", lambda body, sig, secret: fake_event)
-    with patch("core.services.stripe_webhook_handlers.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
             headers={"stripe-signature": "ignored"},
         )
     assert resp.status_code == 200
-    mock_top_up.assert_not_called()
+    mock_fund.assert_not_awaited()

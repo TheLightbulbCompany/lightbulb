@@ -1,4 +1,9 @@
-"""handle_checkout_session funds a Metronome commit when LEDGER_BACKEND=metronome."""
+"""handle_checkout_session funds a Metronome commit on a paid top-up.
+
+Phase 3 cutover: Metronome is the SOLE ledger, so a paid top-up funds a
+Metronome prepaid commit UNCONDITIONALLY (no LEDGER_BACKEND gate). The legacy
+DDB credit_ledger.top_up shadow-write was deleted.
+"""
 
 from unittest.mock import AsyncMock, patch
 
@@ -27,17 +32,11 @@ def _session_event(payment_status="paid", purpose="credit_top_up"):
 
 
 @pytest.mark.asyncio
-async def test_funds_metronome_when_backend_metronome(monkeypatch):
-    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "metronome")
+async def test_funds_metronome_on_paid_top_up(monkeypatch):
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_CONTRACT_ID", "contract-1")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
-
-    with (
-        patch("core.services.credit_ledger.top_up", new=AsyncMock(return_value=0)),
-        patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund,
-    ):
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         await handle_checkout_session(_session_event(), BillingService())
-
     mock_fund.assert_awaited_once()
     _, kwargs = mock_fund.call_args
     assert kwargs["owner_id"] == "org_abc"
@@ -48,40 +47,20 @@ async def test_funds_metronome_when_backend_metronome(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_does_not_fund_metronome_when_backend_ddb(monkeypatch):
-    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "ddb")
-    with (
-        patch("core.services.credit_ledger.top_up", new=AsyncMock(return_value=0)),
-        patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund,
-    ):
-        await handle_checkout_session(_session_event(), BillingService())
-    mock_fund.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_metronome_funding_failure_does_not_raise(monkeypatch):
-    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "metronome")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_CONTRACT_ID", "contract-1")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
-    with (
-        patch("core.services.credit_ledger.top_up", new=AsyncMock(return_value=0)),
-        patch(
-            "core.billing.metronome_funding.fund_top_up",
-            new=AsyncMock(side_effect=RuntimeError("metronome down")),
-        ),
+    with patch(
+        "core.billing.metronome_funding.fund_top_up",
+        new=AsyncMock(side_effect=RuntimeError("metronome down")),
     ):
-        # Best-effort: a Metronome outage must not 500 the webhook.
+        # Best-effort: a Metronome outage must not 500 the webhook back to Stripe.
         result = await handle_checkout_session(_session_event(), BillingService())
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_unpaid_session_funds_nothing(monkeypatch):
-    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "metronome")
-    with (
-        patch("core.services.credit_ledger.top_up", new=AsyncMock()) as mock_topup,
-        patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund,
-    ):
+    with patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund:
         await handle_checkout_session(_session_event(payment_status="unpaid"), BillingService())
-    mock_topup.assert_not_awaited()
     mock_fund.assert_not_awaited()

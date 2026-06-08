@@ -29,6 +29,7 @@ export class AuthStack extends cdk.Stack {
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
+  public readonly bedrockMeterToken: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -99,6 +100,20 @@ export class AuthStack extends cdk.Stack {
       "paperclip_service_token_key",
       { passwordLength: 64, excludePunctuation: true },
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
+    );
+
+    // Bedrock meter service token (Plan 3 — the invocation-log meter). The
+    // VALUE is minted out-of-band (a one-time `service_token.mint_meter()` run,
+    // stored via `aws secretsmanager put-secret-value`) — the random value
+    // CDK generates is overwritten before the meter Lambda is wired. createSecret
+    // prepends `isol8/${env}/`, so pass the BARE name; the resulting secret name
+    // `isol8/${env}/bedrock_meter_token` matches BedrockMeterStack's
+    // meterTokenSecretName exactly.
+    this.bedrockMeterToken = createSecret(
+      "BedrockMeterToken",
+      "bedrock_meter_token",
+      { passwordLength: 64, excludePunctuation: true },
+      "Pre-minted bedrock_meter service-token JWT injected into the meter Lambda; overwritten out-of-band after mint_meter().",
     );
 
     // Bootstrap admin Better Auth credentials. CDK creates the secret

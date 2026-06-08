@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
+import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
@@ -178,6 +179,31 @@ export class Isol8Stage extends cdk.Stage {
       connectionsTableName: api.connectionsTableName,
       authorizerFunctionName: `isol8-${env}-ws-authorizer`,
     });
+
+    // BedrockMeterStack — account-scoped, SINGLE-OWNER usage meter. Bedrock
+    // model-invocation logging is account+region-global (one config per
+    // region, one invocation-log group per region per account), so this stack
+    // is instantiated ONCE — prod only — to avoid the dev/prod collision that
+    // retired Cost Anomaly Detection (observability-stack.ts:1609-1616). Dev
+    // validation uses the temporary manual capture path, not a second stack.
+    if (env === "prod") {
+      const bedrockMeter = new BedrockMeterStack(
+        this,
+        `isol8-${env}-bedrock-meter`,
+        {
+          stackName: `isol8-${env}-bedrock-meter`,
+          envName: env,
+          vpc: network.vpc,
+          alb: network.alb,
+          albSecurityGroup: network.albSecurityGroup,
+          meterTokenSecretName: `isol8/${env}/bedrock_meter_token`,
+          meterKmsKeyArn: auth.kmsKey.keyArn,
+          fanoutRegions: ["us-east-1", "us-east-2", "us-west-2"],
+        },
+      );
+      bedrockMeter.addDependency(network);
+      bedrockMeter.addDependency(auth);
+    }
 
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "isol8");

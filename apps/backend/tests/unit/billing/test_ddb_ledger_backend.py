@@ -139,7 +139,7 @@ class TestDeplete:
         assert await backend.get_balance("org_abc", consistent=True) == 100_000
 
     @pytest.mark.asyncio
-    async def test_deplete_reraises_non_dedup_cancellation(self, ledger_tables, monkeypatch):
+    async def test_deplete_reraises_non_dedup_cancellation(self, ledger_tables):
         # A TransactionCanceledException whose Put (dedup) item did NOT fail on
         # its condition is a REAL error (e.g. the balance Update was cancelled),
         # NOT a replay — it must propagate, never be silently swallowed as
@@ -164,8 +164,10 @@ class TestDeplete:
         )
         fake_client = MagicMock()
         fake_client.transact_write_items.side_effect = synthetic
-        monkeypatch.setattr("core.billing.ddb_ledger_backend._ddb_client", lambda: fake_client)
+        # The boto3 client is now cached per-instance, so inject the fake there.
+        backend = DdbLedgerBackend()
+        backend._client = fake_client
 
         with pytest.raises(ClientError) as exc_info:
-            await DdbLedgerBackend().deplete(_event(request_id="req-realerror"))
+            await backend.deplete(_event(request_id="req-realerror"))
         assert exc_info.value.response["Error"]["Code"] == "TransactionCanceledException"

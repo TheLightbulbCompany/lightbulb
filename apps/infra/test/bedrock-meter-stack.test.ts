@@ -173,6 +173,39 @@ describe("BedrockMeterStack", () => {
     expect(loggingConfigs.length).toBe(3);
   });
 
+  test("each fan-out region's custom resource can iam:PassRole its logging role", () => {
+    // PutModelInvocationLoggingConfiguration with a cloudWatchConfig.roleArn
+    // requires iam:PassRole on that role; without it the per-region deploy
+    // fails. Assert the PassRole statement exists, scoped to the per-region
+    // logging-role NAME the _regionLoggingConfig roleArn references.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "iam:PassRole",
+            Effect: "Allow",
+            Resource: Match.stringLikeRegexp(
+              "isol8-prod-bedrock-logging-us-east-2",
+            ),
+          }),
+        ]),
+      },
+    });
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "iam:PassRole",
+            Effect: "Allow",
+            Resource: Match.stringLikeRegexp(
+              "isol8-prod-bedrock-logging-us-west-2",
+            ),
+          }),
+        ]),
+      },
+    });
+  });
+
   test("GUARD: text+embedding stay enabled, image stays disabled in every config", () => {
     const customResources = template.findResources("Custom::AWS");
     const configs = Object.values(customResources).filter((r: any) =>

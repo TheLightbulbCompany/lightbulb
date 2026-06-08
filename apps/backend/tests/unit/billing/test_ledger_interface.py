@@ -8,6 +8,10 @@ from core.billing.ddb_ledger_backend import DdbLedgerBackend
 from core.billing.ledger_interface import DepleteResult, get_ledger
 from core.billing.usage_event import UsageEvent
 
+# NB: the ledger singleton is reset around every test by the autouse
+# _reset_ledger_singleton fixture in tests/conftest.py, so the per-test
+# LEDGER_BACKEND / moto-table changes below are honoured.
+
 
 def test_deplete_result_fields():
     r = DepleteResult(balance_microcents=500, applied=True)

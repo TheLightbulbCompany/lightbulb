@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 from core.billing.ledger_interface import DepleteResult
 from core.billing.usage_event import UsageEvent
 from core.config import settings
+from core.dynamodb import run_in_thread
 
 
 def _credits_table_name() -> str:
@@ -38,16 +39,19 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _ddb_client():
-    return boto3.client("dynamodb", region_name=settings.AWS_REGION)
-
-
 class DdbLedgerBackend:
     """LedgerBackend over DynamoDB. See module docstring."""
 
+    def __init__(self) -> None:
+        # Build the boto3 client + resource once per instance; the hot-path
+        # deplete()/get_balance() calls reuse them instead of constructing a
+        # fresh client/resource per call. get_ledger() caches this instance.
+        self._client = boto3.client("dynamodb", region_name=settings.AWS_REGION)
+        self._resource = boto3.resource("dynamodb", region_name=settings.AWS_REGION)
+
     async def get_balance(self, owner_id: str, *, consistent: bool = False) -> int:
-        table = boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(_credits_table_name())
-        resp = table.get_item(Key={"user_id": owner_id}, ConsistentRead=consistent)
+        table = self._resource.Table(_credits_table_name())
+        resp = await run_in_thread(table.get_item, Key={"user_id": owner_id}, ConsistentRead=consistent)
         item = resp.get("Item")
         if not item:
             return 0
@@ -58,9 +62,10 @@ class DdbLedgerBackend:
         event.request_id. Balance is allowed to go negative (post-hoc meter)."""
         now = _now_iso()
         tx_id = f"deduct#{event.request_id}"
-        client = _ddb_client()
+        client = self._client
         try:
-            client.transact_write_items(
+            await run_in_thread(
+                client.transact_write_items,
                 TransactItems=[
                     {
                         "Update": {
@@ -98,7 +103,7 @@ class DdbLedgerBackend:
                             "ConditionExpression": "attribute_not_exists(tx_id)",
                         }
                     },
-                ]
+                ],
             )
         except ClientError as e:
             if e.response["Error"]["Code"] != "TransactionCanceledException":

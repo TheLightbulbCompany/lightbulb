@@ -38,11 +38,18 @@ class LedgerBackend(Protocol):
         ...
 
 
-def get_ledger() -> LedgerBackend:
-    """Return the configured ledger backend. The swap seam for Phase 3."""
-    backend = os.environ.get("LEDGER_BACKEND") or settings.LEDGER_BACKEND
-    if backend == "ddb":
-        from core.billing.ddb_ledger_backend import DdbLedgerBackend
+_ledger: LedgerBackend | None = None
 
-        return DdbLedgerBackend()
-    raise ValueError(f"Unknown LEDGER_BACKEND {backend!r} (expected 'ddb'; 'metronome' lands in Phase 3)")
+
+def get_ledger() -> LedgerBackend:
+    """Return the configured ledger backend (cached singleton). The swap seam for Phase 3."""
+    global _ledger
+    if _ledger is None:
+        backend = os.environ.get("LEDGER_BACKEND") or settings.LEDGER_BACKEND
+        if backend == "ddb":
+            from core.billing.ddb_ledger_backend import DdbLedgerBackend
+
+            _ledger = DdbLedgerBackend()
+        else:
+            raise ValueError(f"Unknown LEDGER_BACKEND {backend!r} (expected 'ddb'; 'metronome' lands in Phase 3)")
+    return _ledger

@@ -250,6 +250,16 @@ export class BedrockMeterStack extends cdk.Stack {
             ],
             resources: ["*"],
           }),
+          // PutModelInvocationLoggingConfiguration with a cloudWatchConfig.roleArn
+          // requires iam:PassRole on that role (same as the home-region config
+          // above). The role ARN must match _regionLoggingConfig's roleArn.
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ["iam:PassRole"],
+            resources: [
+              `arn:aws:iam::${this.account}:role/isol8-${props.envName}-bedrock-logging-${region}`,
+            ],
+          }),
         ]),
       });
     }

@@ -40,6 +40,23 @@ def _reset_shutdown_flag():
     shutdown_aware.set_shutting_down(False)
 
 
+@pytest.fixture(autouse=True)
+def _reset_ledger_singleton():
+    """Clear the cached ledger backend around every test.
+
+    ``ledger_interface.get_ledger()`` caches a module-level singleton whose
+    boto3 client is built once. Tests select a backend via LEDGER_BACKEND and
+    drive it against moto-mocked tables; a backend cached by an earlier test
+    would otherwise leak (wrong env, or a client bound outside this test's
+    ``mock_aws()`` context). Reset before and after each test.
+    """
+    from core.billing import ledger_interface
+
+    ledger_interface._ledger = None
+    yield
+    ledger_interface._ledger = None
+
+
 def parse_sse_events(response_text: str) -> list[dict]:
     """Parse SSE events from response text into list of event dicts."""
     lines = [line for line in response_text.split("\n") if line.startswith("data:")]

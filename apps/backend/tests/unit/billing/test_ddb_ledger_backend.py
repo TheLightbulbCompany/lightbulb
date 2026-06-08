@@ -137,3 +137,35 @@ class TestDeplete:
         assert r1.applied is True
         assert r2.applied is False
         assert await backend.get_balance("org_abc", consistent=True) == 100_000
+
+    @pytest.mark.asyncio
+    async def test_deplete_reraises_non_dedup_cancellation(self, ledger_tables, monkeypatch):
+        # A TransactionCanceledException whose Put (dedup) item did NOT fail on
+        # its condition is a REAL error (e.g. the balance Update was cancelled),
+        # NOT a replay — it must propagate, never be silently swallowed as
+        # applied=False. This is the safety-critical "don't mask a real failure
+        # as a dedup" branch (ddb_ledger_backend.py: the `put_reason !=
+        # "ConditionalCheckFailed" -> raise` guard).
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        synthetic = ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException", "Message": "boom"},
+                # Index 0 = the balance Update (failed); index 1 = the Put, which
+                # did NOT fail its dedup condition -> this is not a replay.
+                "CancellationReasons": [
+                    {"Code": "ConditionalCheckFailed"},
+                    {"Code": "None"},
+                ],
+            },
+            "TransactWriteItems",
+        )
+        fake_client = MagicMock()
+        fake_client.transact_write_items.side_effect = synthetic
+        monkeypatch.setattr("core.billing.ddb_ledger_backend._ddb_client", lambda: fake_client)
+
+        with pytest.raises(ClientError) as exc_info:
+            await DdbLedgerBackend().deplete(_event(request_id="req-realerror"))
+        assert exc_info.value.response["Error"]["Code"] == "TransactionCanceledException"

@@ -1,6 +1,6 @@
 """Tests for the provision-gate helper."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -116,9 +116,11 @@ async def test_canceled_subscription_with_cleared_subscription_id_routes_to_bill
 
 @pytest.mark.asyncio
 async def test_active_subscription_bedrock_zero_balance_returns_credits_required():
+    ledger = MagicMock()
+    ledger.get_balance = AsyncMock(return_value=0)
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate.credit_ledger") as cl,
+        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -127,7 +129,6 @@ async def test_active_subscription_bedrock_zero_balance_returns_credits_required
                 "provider_choice": "bedrock_claude",
             },
         )
-        cl.get_balance = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(
             owner_id="user_x",
             clerk_user_id="user_x",
@@ -138,9 +139,11 @@ async def test_active_subscription_bedrock_zero_balance_returns_credits_required
 
 @pytest.mark.asyncio
 async def test_trialing_with_credits_returns_none():
+    ledger = MagicMock()
+    ledger.get_balance = AsyncMock(return_value=500_000)  # 50 cents in microcents
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate.credit_ledger") as cl,
+        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -149,7 +152,6 @@ async def test_trialing_with_credits_returns_none():
                 "provider_choice": "bedrock_claude",
             },
         )
-        cl.get_balance = AsyncMock(return_value=500_000)  # 50 cents in microcents
         gate = await evaluate_provision_gate(
             owner_id="user_x",
             clerk_user_id="user_x",
@@ -205,9 +207,12 @@ async def test_bedrock_balance_keyed_on_owner_id():
     """Org members hitting /onboarding's pre-provision check must read the
     pooled org balance, not their personal user_id row (which is empty
     after the org-pooled-credits cutover)."""
+    balance_mock = AsyncMock(return_value=5_000_000)
+    ledger = MagicMock()
+    ledger.get_balance = balance_mock
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate.credit_ledger") as cl,
+        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -216,8 +221,6 @@ async def test_bedrock_balance_keyed_on_owner_id():
                 "provider_choice": "bedrock_claude",
             },
         )
-        balance_mock = AsyncMock(return_value=5_000_000)
-        cl.get_balance = balance_mock
         gate = await evaluate_provision_gate(
             owner_id="org_Y",
             clerk_user_id="user_member_X",

@@ -200,8 +200,14 @@ async def fund_backfill_credit(
     """Grant a one-time, NON-payment-gated prepaid credit during the DDB->Metronome
     balance migration. The owner already paid for this balance in the old ledger,
     so we must NOT re-gate it on a new Stripe payment (that would double-charge).
-    Stamped with a deterministic backfill_key in metadata so a re-run is a
-    server-side-visible no-op partner to the script's own idempotency marker.
+
+    Stamped with a deterministic ``backfill_key`` in metadata for audit/trace
+    only — Metronome does NOT dedup on commit metadata (``/contracts/edit`` has
+    no idempotency key), so this commit is NOT inherently a no-op on re-run. The
+    sole double-grant guard lives in the backfill script: it claims a
+    ``backfill_done_at`` marker (conditional ``attribute_not_exists``) BEFORE
+    calling this helper, and releases it if this call fails. Do NOT call this
+    helper without that marker guard, or a retry will double-grant.
     """
     if amount_microcents <= 0:
         raise FundingError(f"amount_microcents must be positive, got {amount_microcents}")

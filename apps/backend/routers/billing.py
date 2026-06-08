@@ -549,8 +549,13 @@ class TopUpRequest(BaseModel):
 
 class AutoReloadRequest(BaseModel):
     enabled: bool
+    # threshold floor $5, recharge-increment floor $10 — Metronome requires the
+    # recharge-to target to exceed the threshold by at least $10 (mirrors
+    # metronome_funding._MIN_THRESHOLD_CENTS / _MIN_RECHARGE_OVER_THRESHOLD_CENTS).
+    # Keep these in sync with the CreditsPanel input mins so the constraint
+    # surfaces client-side instead of as a backend 400 FundingError.
     threshold_cents: int | None = Field(default=None, ge=500, le=_AUTO_RELOAD_MAX_CENTS)
-    amount_cents: int | None = Field(default=None, ge=500, le=_AUTO_RELOAD_MAX_CENTS)
+    amount_cents: int | None = Field(default=None, ge=1000, le=_AUTO_RELOAD_MAX_CENTS)
 
 
 @router.get(

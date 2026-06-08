@@ -48,3 +48,20 @@ def test_auto_reload_disabled_skips_amount_validation_when_none():
 
     req = AutoReloadRequest(enabled=False)
     assert req.enabled is False
+
+
+def test_auto_reload_rejects_recharge_amount_below_ten_dollars():
+    """Metronome requires the recharge-to target to exceed the threshold by at
+    least $10, so the schema floors amount_cents at 1000 — a $5-$9.99 amount is
+    rejected at the boundary instead of returning a backend 400 FundingError."""
+    from routers.billing import AutoReloadRequest
+
+    with pytest.raises(ValidationError):
+        AutoReloadRequest(enabled=True, threshold_cents=500, amount_cents=999)
+
+
+def test_auto_reload_accepts_min_recharge_amount_of_ten_dollars():
+    from routers.billing import AutoReloadRequest
+
+    req = AutoReloadRequest(enabled=True, threshold_cents=500, amount_cents=1000)
+    assert req.amount_cents == 1000

@@ -136,9 +136,12 @@ export function CreditsPanel() {
               <label className={EYEBROW}>Charge me</label>
               <div className="flex items-center gap-1">
                 <span className="text-sm text-[#8a8578]">$</span>
+                {/* min $10: Metronome requires the recharge-to target to exceed
+                    the threshold by at least $10 (backend rejects <$10 with a
+                    400). Mirror AutoReloadRequest.amount_cents ge=1000. */}
                 <Input
                   type="number"
-                  min={5}
+                  min={10}
                   step={5}
                   value={reloadCents / 100}
                   onChange={(e) =>

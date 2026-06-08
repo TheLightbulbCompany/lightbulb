@@ -90,15 +90,16 @@ describe("BedrockMeterStack", () => {
     expect(cfg).toBeDefined();
     // The Create payload carries CFN refs (log-group name, role ARN, bucket
     // name are tokens), so CDK emits it as an `Fn::Join`, NOT a plain string —
-    // the plan's documented fallback. Stringify the whole CR and assert the
-    // SDK-exact nested key path appears as adjacent substrings: the top-level
-    // wrapper is lowercase `loggingConfig` and the nested keys sit under it.
-    const body: string = JSON.stringify(cfg);
-    expect(body).toContain('\\"loggingConfig\\":{\\"cloudWatchConfig\\"');
-    expect(body).toContain('\\"s3Config\\"');
-    expect(body).toContain('\\"textDataDeliveryEnabled\\":true');
-    expect(body).toContain('\\"embeddingDataDeliveryEnabled\\":true');
-    expect(body).toContain('\\"imageDataDeliveryEnabled\\":false');
+    // the plan's documented fallback. Stringify the whole CR and strip the
+    // escaping so the SDK-exact nested key path can be asserted as adjacent
+    // substrings: the top-level wrapper is lowercase `loggingConfig` and the
+    // nested keys sit under it. Stripping backslashes is escaping-agnostic.
+    const body: string = JSON.stringify(cfg).replace(/\\/g, "");
+    expect(body).toContain('"loggingConfig":{"cloudWatchConfig"');
+    expect(body).toContain('"s3Config"');
+    expect(body).toContain('"textDataDeliveryEnabled":true');
+    expect(body).toContain('"embeddingDataDeliveryEnabled":true');
+    expect(body).toContain('"imageDataDeliveryEnabled":false');
   });
 
   test("subscription filter is scoped to the AIP-ARN shape", () => {
@@ -118,5 +119,23 @@ describe("BedrockMeterStack", () => {
       JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
     );
     expect(loggingConfigs.length).toBe(3);
+  });
+
+  test("GUARD: text+embedding stay enabled, image stays disabled in every config", () => {
+    const customResources = template.findResources("Custom::AWS");
+    const configs = Object.values(customResources).filter((r: any) =>
+      JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
+    );
+    expect(configs.length).toBeGreaterThanOrEqual(1);
+    for (const cfg of configs) {
+      // The home-region Create body is an `Fn::Join` carrying CFN refs, so its
+      // inner JSON quotes are multiply-escaped; the fan-out regions are plain
+      // strings. Strip backslashes so the modality assertion is escaping-
+      // agnostic — a modality flip would still be caught in either form.
+      const body = JSON.stringify(cfg).replace(/\\/g, "");
+      expect(body).toContain('"textDataDeliveryEnabled":true');
+      expect(body).toContain('"embeddingDataDeliveryEnabled":true');
+      expect(body).toContain('"imageDataDeliveryEnabled":false');
+    }
   });
 });

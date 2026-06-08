@@ -5,8 +5,10 @@ import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -35,6 +37,7 @@ export interface BedrockMeterStackProps extends cdk.StackProps {
 
 export class BedrockMeterStack extends cdk.Stack {
   public readonly meterFn: lambda.Function;
+  public readonly invocationLogGroup: logs.LogGroup;
 
   constructor(scope: Construct, id: string, props: BedrockMeterStackProps) {
     super(scope, id, props);
@@ -105,6 +108,80 @@ export class BedrockMeterStack extends cdk.Stack {
       }),
     );
     this.meterFn.addEnvironment("METER_TOKEN_SECRET_ARN", meterSecret.secretArn);
+
+    // --- Bedrock model-invocation logging sink (this stack's region) ---
+    // S3 sink for both the full log copy and the >100KB body offload.
+    const logSink = new s3.Bucket(this, "InvocationLogSink", {
+      bucketName: `isol8-${props.envName}-bedrock-invocation-${this.region}`,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+    });
+
+    this.invocationLogGroup = new logs.LogGroup(this, "InvocationLogGroup", {
+      logGroupName: `/isol8/${props.envName}/bedrock-invocation`,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Bedrock's delivery role — assumed by the bedrock.amazonaws.com service
+    // to write to the log group + S3 sink.
+    const deliveryRole = new iam.Role(this, "BedrockLoggingRole", {
+      assumedBy: new iam.ServicePrincipal("bedrock.amazonaws.com"),
+    });
+    this.invocationLogGroup.grantWrite(deliveryRole);
+    logSink.grantWrite(deliveryRole);
+
+    // No L1 for PutModelInvocationLoggingConfiguration — use AwsCustomResource.
+    const loggingConfig = {
+      cloudWatchConfig: {
+        logGroupName: this.invocationLogGroup.logGroupName,
+        roleArn: deliveryRole.roleArn,
+        largeDataDeliveryS3Config: { bucketName: logSink.bucketName },
+      },
+      s3Config: { bucketName: logSink.bucketName },
+      textDataDeliveryEnabled: true,
+      embeddingDataDeliveryEnabled: true,
+      imageDataDeliveryEnabled: false,
+    };
+    new cr.AwsCustomResource(this, "BedrockLoggingConfig", {
+      onCreate: {
+        service: "Bedrock",
+        action: "putModelInvocationLoggingConfiguration",
+        parameters: { loggingConfig },
+        physicalResourceId: cr.PhysicalResourceId.of(
+          `bedrock-logging-${this.region}`,
+        ),
+      },
+      onUpdate: {
+        service: "Bedrock",
+        action: "putModelInvocationLoggingConfiguration",
+        parameters: { loggingConfig },
+        physicalResourceId: cr.PhysicalResourceId.of(
+          `bedrock-logging-${this.region}`,
+        ),
+      },
+      onDelete: {
+        service: "Bedrock",
+        action: "deleteModelInvocationLoggingConfiguration",
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            "bedrock:PutModelInvocationLoggingConfiguration",
+            "bedrock:DeleteModelInvocationLoggingConfiguration",
+            "bedrock:GetModelInvocationLoggingConfiguration",
+          ],
+          resources: ["*"], // account-level config — no resource ARN exists
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["iam:PassRole"],
+          resources: [deliveryRole.roleArn],
+        }),
+      ]),
+    });
 
     cdk.Tags.of(this).add("Project", "isol8");
     cdk.Tags.of(this).add("Environment", props.envName);

@@ -79,3 +79,61 @@ class TestGetBalance:
     async def test_consistent_read_param_accepted(self, ledger_tables):
         _seed_balance(ledger_tables, "org_abc", 7)
         assert await DdbLedgerBackend().get_balance("org_abc", consistent=True) == 7
+
+
+class TestDeplete:
+    @pytest.mark.asyncio
+    async def test_deplete_applies_once(self, ledger_tables):
+        _seed_balance(ledger_tables, "org_abc", 100_000)
+        result = await DdbLedgerBackend().deplete(_event(billed_microcents=14_000))
+        assert result.applied is True
+        assert result.balance_microcents == 86_000
+        assert await DdbLedgerBackend().get_balance("org_abc", consistent=True) == 86_000
+
+    @pytest.mark.asyncio
+    async def test_deplete_writes_audit_row_keyed_on_request_id(self, ledger_tables):
+        _seed_balance(ledger_tables, "org_abc", 100_000)
+        await DdbLedgerBackend().deplete(_event(request_id="req-XYZ"))
+        resp = ledger_tables.get_item(
+            TableName="test-credit-txns",
+            Key={"user_id": {"S": "org_abc"}, "tx_id": {"S": "deduct#req-XYZ"}},
+        )
+        item = resp["Item"]
+        assert item["type"]["S"] == "deduct"
+        assert item["amount_microcents"]["N"] == "-14000"
+        assert item["raw_cost_microcents"]["N"] == "10000"
+        assert item["bedrock_invocation_id"]["S"] == "req-XYZ"
+        assert item["model_id"]["S"] == "aip-xyz"
+        assert item["input_tokens"]["N"] == "1000"
+        assert item["cache_read_tokens"]["N"] == "2000"
+
+    @pytest.mark.asyncio
+    async def test_deplete_is_idempotent_on_replay(self, ledger_tables):
+        _seed_balance(ledger_tables, "org_abc", 100_000)
+        backend = DdbLedgerBackend()
+        first = await backend.deplete(_event(request_id="req-dup", billed_microcents=14_000))
+        second = await backend.deplete(_event(request_id="req-dup", billed_microcents=14_000))
+        assert first.applied is True
+        assert second.applied is False
+        # Deducted exactly once.
+        assert second.balance_microcents == 86_000
+        assert await backend.get_balance("org_abc", consistent=True) == 86_000
+
+    @pytest.mark.asyncio
+    async def test_deplete_allows_negative_balance(self, ledger_tables):
+        _seed_balance(ledger_tables, "org_abc", 5_000)
+        result = await DdbLedgerBackend().deplete(_event(billed_microcents=14_000))
+        assert result.applied is True
+        assert result.balance_microcents == -9_000
+
+    @pytest.mark.asyncio
+    async def test_deplete_zero_billed_still_writes_dedup_row(self, ledger_tables):
+        # A genuinely free run (billed 0) still records its request_id so a
+        # replay is a no-op and the audit log is complete.
+        _seed_balance(ledger_tables, "org_abc", 100_000)
+        backend = DdbLedgerBackend()
+        r1 = await backend.deplete(_event(request_id="req-free", billed_microcents=0))
+        r2 = await backend.deplete(_event(request_id="req-free", billed_microcents=0))
+        assert r1.applied is True
+        assert r2.applied is False
+        assert await backend.get_balance("org_abc", consistent=True) == 100_000

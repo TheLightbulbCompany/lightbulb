@@ -110,10 +110,10 @@ from moto import mock_aws  # noqa: E402
 
 @pytest.fixture
 def ledger_tables():
-    """Provision moto credits + credit-transactions tables for the scan-only
-    shadow/skip tests. Phase 3: no LEDGER_BACKEND/CREDITS_TABLE env is set —
-    deplete is stubbed in the live tests, and these tables only back the
-    scan assertions."""
+    """Provision the moto credit-transactions table the scan-only shadow/skip
+    tests assert against. Phase 3: no ledger-backend/table env is set — deplete
+    is stubbed in the live tests, and these moto tables only back the scan
+    assertions (the legacy DDB ledger was deleted)."""
     with mock_aws():
         c = boto3.client("dynamodb", region_name="us-east-1")
         c.create_table(
@@ -139,9 +139,9 @@ def ledger_tables():
             Item={"user_id": {"S": "org_abc"}, "balance_microcents": {"N": "100000"}},
         )
         # Phase 3: the four live-deplete tests stub get_ledger directly, and the
-        # scan-only tests never call get_ledger's real path, so no
-        # CREDITS_TABLE / CREDIT_TRANSACTIONS_TABLE / LEDGER_BACKEND env is set.
-        # (The moto tables themselves stay so the scan assertions resolve.)
+        # scan-only tests never call get_ledger's real path, so no ledger-backend
+        # or table env is set. (The moto tables stay so the scan assertions
+        # resolve.)
         yield c
 
 

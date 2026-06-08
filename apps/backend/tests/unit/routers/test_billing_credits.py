@@ -10,42 +10,27 @@ from moto import mock_aws
 
 @pytest.fixture
 def credit_ledger_tables(monkeypatch):
-    """Provision moto-mocked credits + credit-transactions + webhook-dedup tables.
+    """Provision the moto-mocked webhook-dedup table the credit endpoints need.
 
     Plan 1 (Stripe webhook event dedup, merged in main as `c9113ca`) makes
     the Stripe webhook handler call record_event_or_skip first; that helper
     fails fast if WEBHOOK_DEDUP_TABLE is empty. The credit-top-up webhook
-    test routes through that path, so the fixture also provisions the
-    dedup table.
+    tests route through that path, so the fixture provisions the dedup table.
+
+    Phase 3: the legacy DDB credit tables are gone (Metronome is the sole
+    ledger), so this fixture no longer creates them — the balance/auto-reload
+    tests stub get_ledger / metronome_funding, and the webhook tests assert
+    metronome_funding.fund_top_up. The fixture name is retained because many
+    tests depend on it as a parameter.
     """
     with mock_aws():
         client = boto3.client("dynamodb", region_name="us-east-1")
-        client.create_table(
-            TableName="test-credits",
-            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        client.create_table(
-            TableName="test-credit-txns",
-            KeySchema=[
-                {"AttributeName": "user_id", "KeyType": "HASH"},
-                {"AttributeName": "tx_id", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "user_id", "AttributeType": "S"},
-                {"AttributeName": "tx_id", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
         client.create_table(
             TableName="test-webhook-event-dedup",
             KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        monkeypatch.setenv("CREDITS_TABLE", "test-credits")
-        monkeypatch.setenv("CREDIT_TRANSACTIONS_TABLE", "test-credit-txns")
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
         yield
 

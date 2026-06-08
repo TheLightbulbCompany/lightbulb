@@ -34,6 +34,26 @@ import boto3
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+_METER_TOKEN = None
+
+
+def _meter_token():
+    """Return the bedrock_meter service token, fetched once at cold-start.
+
+    Prefers the literal METER_TOKEN env (set by unit tests). In the deployed
+    Lambda the CDK injects only METER_TOKEN_SECRET_ARN, so we resolve the token
+    from Secrets Manager and cache it for the life of the container.
+    """
+    global _METER_TOKEN
+    if _METER_TOKEN is None:
+        literal = os.environ.get("METER_TOKEN")
+        if literal:
+            _METER_TOKEN = literal
+        else:
+            arn = os.environ["METER_TOKEN_SECRET_ARN"]
+            _METER_TOKEN = boto3.client("secretsmanager").get_secret_value(SecretId=arn)["SecretString"]
+    return _METER_TOKEN
+
 
 def _first_int(d, *paths):
     """Return the first int found at any (k1, k2, ...) path in dict d, else 0."""
@@ -134,7 +154,7 @@ def _post_to_backend(parsed):
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.environ['METER_TOKEN']}",
+            "Authorization": f"Bearer {_meter_token()}",
         },
         data=data,
     )

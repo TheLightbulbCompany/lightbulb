@@ -97,9 +97,7 @@ class Settings(BaseSettings):
     # api-stack's WebSocket stage URL.
     WS_GATEWAY_URL: str = os.getenv("WS_GATEWAY_URL", "wss://ws-dev.isol8.co")
 
-    # Credit ledger + OAuth tables (set by CDK)
-    CREDITS_TABLE: str = ""
-    CREDIT_TRANSACTIONS_TABLE: str = ""
+    # OAuth tables (set by CDK)
     LEDGER_BACKEND: str = "metronome"  # ledger system-of-record. Phase 3 cutover: Metronome is the SOLE ledger; the interim DDB backend + the hand-rolled DDB ledger module were deleted. "ddb" is no longer a valid value.
     METER_IS_LIVE: bool = True  # Phase 3 cutover: the AWS Bedrock invocation-log meter's get_ledger().deplete() is the SOLE biller (then enforce_after_deplete). The legacy connection_pool deduct was deleted. The env var can still force it off for a break-glass shadow run, but there is no longer a second biller to fall back to.
     # Internal Bedrock meter — the pre-minted bedrock_meter service token the

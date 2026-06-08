@@ -83,8 +83,6 @@ export interface ServiceStackProps extends cdk.StackProps {
     pendingUpdatesTable: dynamodb.Table;
     channelLinksTable: dynamodb.Table;
     adminActionsTable: dynamodb.Table;
-    creditsTable: dynamodb.Table;
-    creditTransactionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
     paperclipCompaniesTable: dynamodb.Table;
@@ -482,8 +480,6 @@ export class ServiceStack extends cdk.Stack {
     props.database.pendingUpdatesTable.grantReadWriteData(this.taskRole);
     props.database.channelLinksTable.grantReadWriteData(this.taskRole);
     props.database.adminActionsTable.grantReadWriteData(this.taskRole);
-    props.database.creditsTable.grantReadWriteData(this.taskRole);
-    props.database.creditTransactionsTable.grantReadWriteData(this.taskRole);
     props.database.oauthTokensTable.grantReadWriteData(this.taskRole);
     // The credential-layer integration tables are granted by NAME, not via
     // grantReadWriteData. grantReadWriteData would export each table's ARN from
@@ -1004,9 +1000,6 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
         CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
-        CREDITS_TABLE: props.database.creditsTable.tableName,
-        CREDIT_TRANSACTIONS_TABLE:
-          props.database.creditTransactionsTable.tableName,
         OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
         // Metronome ledger adapter (Phase 2). Base URL is the same for
         // sandbox + prod (token decides env). Fast-gate table backs the

@@ -691,6 +691,51 @@ class EcsManager:
 
         logger.info("Stopped ECS service %s for user %s", service_name, user_id)
 
+    async def kill_owner_bedrock(self, owner_id: str) -> None:
+        """Two-pronged Bedrock kill-switch for an owner who ran out of credits.
+
+        Fires BOTH:
+          1. IAM revoke (`revoke_owner_bedrock` from
+             `core.billing.bedrock_aip`, Plan 2's primitive) — detaches/denies
+             the per-owner Bedrock policy. Eventually-consistent (~5-15s), so it
+             is fired first to start the propagation clock.
+          2. ECS `desiredCount=0` (via `stop_user_service`) — the guaranteed
+             instant stop; the running container is the only live spend source.
+
+        The IAM revoke is best-effort: if it raises, the ECS stop MUST still
+        run (the container keeps invoking Bedrock until desired=0 lands). The
+        stop's DDB status flip to "stopped" is durable only because the now-<=0
+        balance keeps `evaluate_provision_gate` returning `credits_required`,
+        so the next `/container/status` poll cannot re-launch the service.
+        """
+        from core.billing.bedrock_aip import revoke_owner_bedrock
+        from core.observability.metrics import put_metric
+
+        put_metric("container.killswitch.invoke")
+        try:
+            await revoke_owner_bedrock(owner_id)
+        except Exception:
+            put_metric("container.killswitch.iam_revoke_error")
+            logger.exception(
+                "IAM revoke failed for owner %s during kill-switch — proceeding to ECS desired=0 (the guaranteed stop)",
+                owner_id,
+            )
+        await self.stop_user_service(owner_id)
+        logger.warning("Bedrock kill-switch completed for owner %s", owner_id)
+
+    async def is_owner_service_stopped(self, owner_id: str) -> bool:
+        """True when the owner's container is already stopped (or has no row).
+
+        Read by `enforce_after_deplete` to skip a redundant kill during the
+        ~5-15s IAM-propagation window. Mirrors the status `stop_user_service`
+        writes (`container_repo.update_status(owner_id, "stopped")`); a missing
+        row means there is nothing to kill, so it is treated as stopped.
+        """
+        container = await container_repo.get_by_owner_id(owner_id)
+        if container is None:
+            return True
+        return container.get("status") == "stopped"
+
     async def start_user_service(self, user_id: str) -> None:
         """Scale a user's ECS service to 1 (running).
 

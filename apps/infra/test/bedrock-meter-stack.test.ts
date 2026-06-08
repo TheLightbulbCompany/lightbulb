@@ -38,12 +38,14 @@ describe("BedrockMeterStack", () => {
     template = Template.fromStack(stack);
   });
 
-  test("creates the meter Lambda with ALB_DNS_NAME env", () => {
+  test("creates the meter Lambda with ALB_DNS_NAME + DLQ_URL env", () => {
     template.hasResourceProperties("AWS::Lambda::Function", {
       Runtime: "python3.12",
       Environment: {
         Variables: Match.objectLike({
           ALB_DNS_NAME: Match.anyValue(),
+          // The synchronous per-record fail-safe sink the Lambda code POSTs to.
+          DLQ_URL: Match.anyValue(),
         }),
       },
     });
@@ -51,6 +53,56 @@ describe("BedrockMeterStack", () => {
 
   test("creates an SQS DLQ", () => {
     template.resourceCountIs("AWS::SQS::Queue", 1);
+  });
+
+  test("the DLQ is WIRED as the Lambda async DLQ (not just present)", () => {
+    // review I1: resourceCountIs alone passes even on an orphan queue. Assert
+    // the function actually references the queue via DeadLetterConfig.TargetArn.
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      DeadLetterConfig: { TargetArn: Match.anyValue() },
+    });
+  });
+
+  test("the Lambda role can SendMessage to the DLQ (synchronous fail-safe path)", () => {
+    // review C1: the load-bearing durability is the Lambda code's per-record
+    // sqs:SendMessage to the DLQ (CW Logs invokes synchronously, so the async
+    // DLQ does not cover per-record failures). Assert the grant exists.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["sqs:SendMessage"]),
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
+  });
+
+  test("alarms on DLQ depth + skip/failure metrics (review I2)", () => {
+    // A silent revenue leak (DLQ'd transport/parse/S3-merge failures, or
+    // unattributed/unknown-model skips) must page, not hide. One DLQ-depth
+    // alarm + one alarm per skip/failure metric = 6 alarms total.
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 6);
+    // DLQ-depth alarm.
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "ApproximateNumberOfMessagesVisible",
+      Namespace: "AWS/SQS",
+      ComparisonOperator: "GreaterThanThreshold",
+      Threshold: 0,
+    });
+    // The unattributed-skip alarm (revenue-leak guard).
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "meter.unattributed",
+      Namespace: "Isol8",
+      ComparisonOperator: "GreaterThanThreshold",
+      Threshold: 0,
+    });
+    // The S3-merge-failure alarm (the I3 fail-safe path's observability).
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "meter.s3_merge_failed",
+      Namespace: "Isol8",
+    });
   });
 
   test("Lambda SG has egress to ALB on port 80", () => {

@@ -9,6 +9,7 @@ import * as logsDestinations from "aws-cdk-lib/aws-logs-destinations";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 
@@ -43,8 +44,17 @@ export class BedrockMeterStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: BedrockMeterStackProps) {
     super(scope, id, props);
 
-    // Dead-letter queue for at-least-once retries. The endpoint is idempotent
-    // (deplete() exactly-once on requestId) so replays are safe.
+    // Fail-safe durability queue. A CloudWatch Logs subscription invokes the
+    // meter Lambda SYNCHRONOUSLY, so Lambda's async-invocation DLQ (the
+    // `deadLetterQueue` prop below) NEVER fires on a per-record failure — a
+    // backend 5xx, an unparseable S3 ref, or an S3 fetch error would otherwise
+    // silently drop the record (or POST a zeroed-cache record → ~30× under-bill).
+    // So the Lambda code (index.handler) explicitly `sqs:SendMessage`s each
+    // failed raw log event here (via DLQ_URL) and continues. The endpoint is
+    // idempotent (deplete() exactly-once on requestId), so redriving this queue
+    // is safe. We ALSO wire it as the Lambda's async DLQ to catch the rare
+    // platform-level async failure path, but the synchronous per-record sends
+    // are the load-bearing durability mechanism.
     const dlq = new sqs.Queue(this, "MeterDlq", {
       queueName: `isol8-${props.envName}-bedrock-meter-dlq`,
       retentionPeriod: cdk.Duration.days(14),
@@ -83,9 +93,16 @@ export class BedrockMeterStack extends cdk.Stack {
       deadLetterQueue: dlq,
       environment: {
         ALB_DNS_NAME: props.alb.loadBalancerDnsName,
+        // The synchronous per-record fail-safe sink the Lambda code POSTs to.
+        DLQ_URL: dlq.queueUrl,
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
+
+    // The Lambda code sends failed records to the DLQ synchronously (the
+    // subscription-filter invocation is synchronous, so the async DLQ wiring
+    // above does not cover per-record failures). Grant the send.
+    dlq.grantSendMessages(this.meterFn);
 
     // Inject the pre-minted meter token from Secrets Manager (cold-start fetch
     // not needed — passing the secret ARN + an env mapping keeps the value out
@@ -234,6 +251,57 @@ export class BedrockMeterStack extends cdk.Stack {
             resources: ["*"],
           }),
         ]),
+      });
+    }
+
+    // --- Alarms (review I2) ---------------------------------------------------
+    // A silent revenue leak (records DLQ'd on transport/parse failure, or
+    // skipped as unattributed/unknown-model) would be invisible until a manual
+    // ledger-vs-Bedrock reconciliation. Alarm on BOTH the DLQ depth and the
+    // skip/failure metrics so a sustained miss-storm pages instead of hiding.
+    // These alarms live in this prod-only, account-scoped stack, so the W53
+    // account-global-collision constraint is honored (no per-env duplicate).
+    new cloudwatch.Alarm(this, "MeterDlqNotEmptyAlarm", {
+      alarmName: `isol8-${props.envName}-bedrock-meter-dlq-not-empty`,
+      alarmDescription:
+        "Bedrock meter DLQ has messages — a record failed transport/parse/S3-merge and was held for redrive. Investigate before billing reconciles.",
+      metric: dlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(5),
+        statistic: "Maximum",
+      }),
+      threshold: 0,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // One alarm per skip/failure metric. Each is emitted in the Isol8 EMF
+    // namespace (the backend emits unattributed/unknown_model; the Lambda emits
+    // s3_merge_failed/transport_error/parse_failed). Sum across dimensions so a
+    // burst from any region/service trips it.
+    const skipMetrics: Array<[string, string]> = [
+      ["meter.unattributed", "MeterUnattributedAlarm"],
+      ["meter.unknown_model", "MeterUnknownModelAlarm"],
+      ["meter.s3_merge_failed", "MeterS3MergeFailedAlarm"],
+      ["meter.transport_error", "MeterTransportErrorAlarm"],
+      ["meter.parse_failed", "MeterParseFailedAlarm"],
+    ];
+    for (const [metricName, alarmId] of skipMetrics) {
+      new cloudwatch.Alarm(this, alarmId, {
+        alarmName: `isol8-${props.envName}-${metricName.replace(/\./g, "-")}`,
+        alarmDescription: `Bedrock meter emitted ${metricName} — invocations are being skipped or failed in transport (potential revenue leak). Investigate.`,
+        metric: new cloudwatch.Metric({
+          namespace: "Isol8",
+          metricName,
+          period: cdk.Duration.minutes(15),
+          statistic: "Sum",
+        }),
+        threshold: 0,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       });
     }
 

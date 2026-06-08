@@ -10,6 +10,16 @@ Field paths are the ones recorded in FIELDS.md (Task 1). The extractor tries the
 primary path first, then documented fallbacks, so a Bedrock log-shape change
 degrades gracefully instead of silently zeroing cache tokens.
 
+FAIL-SAFE TRANSPORT. A CloudWatch Logs subscription filter invokes this Lambda
+SYNCHRONOUSLY, so the Lambda's async-invocation DLQ never fires on a per-record
+failure — a backend 5xx, an unparseable S3 ref, or an S3 fetch error would
+otherwise silently drop the record (or, worse, POST a zeroed-cache record and
+under-bill ~30×). So every per-record failure path here explicitly pushes the
+raw failed log event to the SQS DLQ (`_send_to_dlq`) + emits a metric +
+continues. A money-correctness regression surfaces on the DLQ / an alarm, never
+as a silent zero. The backend endpoint is idempotent (deplete() exactly-once on
+requestId), so DLQ redrive replays are safe.
+
 ⚠️ BUILD-GATE — UNVERIFIED FIELD PATHS. The FIELDS.md fixtures backing these
 paths are SYNTHETIC (hand-built from the AWS-documented Bedrock
 model-invocation-logging schema, NOT captured from a real dev invocation —
@@ -26,6 +36,7 @@ import gzip
 import json
 import logging
 import os
+import time
 import urllib.request
 from urllib.parse import urlparse
 
@@ -35,6 +46,14 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 _METER_TOKEN = None
+
+
+class _S3MergeError(Exception):
+    """An offloaded record whose S3 body could not be read.
+
+    Raised instead of returning a zeroed-cache record so the per-record handler
+    DLQs the line rather than silently POSTing a ~30×-under-billed zero.
+    """
 
 
 def _meter_token():
@@ -53,6 +72,52 @@ def _meter_token():
             arn = os.environ["METER_TOKEN_SECRET_ARN"]
             _METER_TOKEN = boto3.client("secretsmanager").get_secret_value(SecretId=arn)["SecretString"]
     return _METER_TOKEN
+
+
+def _emit_metric(name, **dimensions):
+    """Emit a CloudWatch metric via EMF (one JSON log line).
+
+    Mirrors the backend's core/observability/metrics.put_metric EMF shape so the
+    meter Lambda's failure metrics land in the same Isol8 namespace. Never raises
+    — observability must not be able to take down the fail-safe path.
+    """
+    try:
+        dims = {"service": "isol8-bedrock-meter", **dimensions}
+        line = {
+            "_aws": {
+                "Timestamp": int(time.time() * 1000),
+                "CloudWatchMetrics": [
+                    {
+                        "Namespace": "Isol8",
+                        "Dimensions": [list(dims.keys())],
+                        "Metrics": [{"Name": name, "Unit": "Count"}],
+                    }
+                ],
+            },
+            name: 1.0,
+            **dims,
+        }
+        print(json.dumps(line), flush=True)
+    except Exception:  # pragma: no cover - defensive; metrics must never raise
+        logger.exception("meter: failed to emit metric %s", name)
+
+
+def _send_to_dlq(log_event, reason):
+    """Push a failed raw log event to the SQS DLQ so it is never silently lost.
+
+    The CloudWatch Logs subscription invokes us SYNCHRONOUSLY, so Lambda's own
+    async DLQ does not fire on a per-record failure — we route durability here
+    explicitly. Best-effort: if the DLQ send itself fails we log + re-raise so
+    the whole batch fails (CW Logs retries) rather than dropping the record.
+    """
+    queue_url = os.environ.get("DLQ_URL", "")
+    if not queue_url:
+        logger.error("meter: no DLQ_URL configured, cannot durably hold failed record (reason=%s)", reason)
+        raise RuntimeError(f"meter transport failure with no DLQ: {reason}")
+    boto3.client("sqs").send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps({"reason": reason, "log_event": log_event}),
+    )
 
 
 def _first_int(d, *paths):
@@ -122,13 +187,21 @@ def _merge_s3_body(parsed, record):
 
     The cache tokens are the whole point of going to S3 — on offloaded records
     the inline counts read 0, so we MUST source them from the object body.
+
+    FAIL-SAFE: an offloaded record whose S3 body cannot be read (unparseable ref
+    OR a get_object error) raises `_S3MergeError` rather than returning `parsed`
+    with the inline-zero cache counts. Returning zeros would silently re-introduce
+    the ~30× cache-blind under-bill this meter exists to prevent. The per-record
+    handler catches `_S3MergeError`, DLQs the line, and emits meter.s3_merge_failed.
     """
     bucket, key = _parse_s3_ref(parsed["s3_ref"])
     if not bucket or not key:
-        logger.warning("meter: offloaded record but unparseable s3_ref=%s", parsed["s3_ref"])
-        return parsed
-    body_obj = boto3.client("s3").get_object(Bucket=bucket, Key=key)
-    body = json.loads(body_obj["Body"].read())
+        raise _S3MergeError(f"unparseable s3_ref={parsed['s3_ref']!r}")
+    try:
+        body_obj = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+        body = json.loads(body_obj["Body"].read())
+    except Exception as exc:  # noqa: BLE001 - any S3/parse error must fail safe, not zero
+        raise _S3MergeError(f"s3 get_object failed for s3://{bucket}/{key}: {exc}") from exc
     usage = body.get("usage", body)
     parsed["input_tokens"] = (
         _first_int({"u": usage}, ("u", "inputTokens"), ("u", "inputTokenCount")) or parsed["input_tokens"]
@@ -164,13 +237,32 @@ def _post_to_backend(parsed):
 def handler(event, context):
     payload = json.loads(gzip.decompress(base64.b64decode(event["awslogs"]["data"])))
     for log_event in payload.get("logEvents", []):
+        # Each record is handled independently and fails safe: a parse error, an
+        # S3-merge failure, or a backend POST failure DLQs that one record + emits
+        # a metric + continues, so one bad/under-billed record never silently
+        # drops and never poisons the rest of the batch.
         try:
             record = json.loads(log_event["message"])
         except (ValueError, KeyError):
-            logger.warning("meter: unparseable log event, skipping")
+            logger.warning("meter: unparseable log event, DLQ + skip")
+            _emit_metric("meter.parse_failed")
+            _send_to_dlq(log_event, "unparseable_log_event")
             continue
-        parsed = _extract(record)
-        if parsed["body_offloaded"]:
-            parsed = _merge_s3_body(parsed, record)
-        _post_to_backend(parsed)
+        try:
+            parsed = _extract(record)
+            if parsed["body_offloaded"]:
+                parsed = _merge_s3_body(parsed, record)
+        except _S3MergeError as exc:
+            # Offloaded body unreadable — do NOT POST a zeroed-cache record.
+            logger.error("meter: s3 merge failed, DLQ + skip: %s", exc)
+            _emit_metric("meter.s3_merge_failed")
+            _send_to_dlq(log_event, f"s3_merge_failed: {exc}")
+            continue
+        try:
+            _post_to_backend(parsed)
+        except Exception as exc:  # noqa: BLE001 - any transport error must DLQ, not drop
+            logger.error("meter: backend POST failed, DLQ + skip: %s", exc)
+            _emit_metric("meter.transport_error")
+            _send_to_dlq(log_event, f"transport_error: {exc}")
+            continue
     return {"statusCode": 200}

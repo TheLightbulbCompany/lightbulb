@@ -40,6 +40,7 @@ def _awslogs_event(*records):
 def lambda_env(monkeypatch):
     monkeypatch.setenv("ALB_DNS_NAME", "alb.test.local")
     monkeypatch.setenv("METER_TOKEN", "meter-token-abc")
+    monkeypatch.setenv("DLQ_URL", "https://sqs.test.local/dlq")
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
     sys.modules.pop("index", None)
@@ -159,3 +160,150 @@ def test_post_to_backend_url_headers_and_body(monkeypatch):
         "occurred_at",
     ):
         assert key in captured["body"]
+
+
+# ---------------------------------------------------------------------------
+# FAIL-SAFE TRANSPORT (review C1 / I3 / M2)
+#
+# A CloudWatch Logs subscription invokes the Lambda SYNCHRONOUSLY, so the
+# function's async DLQ never fires on a per-record failure. These tests prove
+# every per-record failure path durably routes to the SQS DLQ + emits a metric
+# instead of silently dropping the record (or POSTing a zeroed-cache record and
+# under-billing ~30×) — the precise "never silently bill 0 on a parse miss"
+# guarantee the meter exists to uphold.
+# ---------------------------------------------------------------------------
+
+
+def test_merge_s3_body_raises_on_unparseable_ref():
+    """I3: an offloaded record with an unparseable S3 ref must NOT silently
+    return the inline-zero cache counts — it raises so the handler DLQs it."""
+    import index
+
+    record = _load("s3_offloaded_record.json")
+    parsed = index._extract(record)
+    parsed["s3_ref"] = ""  # offloaded but ref cannot be parsed into bucket/key
+    with pytest.raises(index._S3MergeError):
+        index._merge_s3_body(parsed, record)
+
+
+def test_merge_s3_body_raises_on_s3_fetch_error():
+    """I3: a get_object failure must raise (fail safe), never return inline zeros."""
+    import index
+
+    record = _load("s3_offloaded_record.json")
+    parsed = index._extract(record)
+
+    fake_s3 = MagicMock()
+    fake_s3.get_object.side_effect = RuntimeError("AccessDenied")
+    with patch("index.boto3.client", return_value=fake_s3):
+        with pytest.raises(index._S3MergeError):
+            index._merge_s3_body(parsed, record)
+
+
+def test_handler_s3_merge_failure_dlqs_and_does_not_post():
+    """I3: when the offloaded body is unreadable, the handler DLQs the raw log
+    event + emits meter.s3_merge_failed and NEVER POSTs a zeroed-cache record."""
+    import index
+
+    offloaded = _load("s3_offloaded_record.json")
+    posted = []
+    dlqd = []
+    metrics = []
+
+    fake_s3 = MagicMock()
+    fake_s3.get_object.side_effect = RuntimeError("NoSuchKey")
+    with (
+        patch("index.boto3.client", return_value=fake_s3),
+        patch.object(index, "_post_to_backend", side_effect=lambda p: posted.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(offloaded), None)
+
+    assert result == {"statusCode": 200}
+    # The zeroed-cache record was NOT POSTed (the whole point of I3).
+    assert posted == []
+    # It WAS durably held on the DLQ with a descriptive reason.
+    assert len(dlqd) == 1
+    assert "s3_merge_failed" in dlqd[0][1]
+    assert "meter.s3_merge_failed" in metrics
+
+
+def test_handler_transport_error_dlqs_and_continues():
+    """C1: a backend POST failure DLQs that record + emits meter.transport_error
+    + continues the batch (does not raise / drop)."""
+    import index
+
+    inline = _load("inline_record.json")
+    second = _load("inline_record.json")
+    second["requestId"] = "second-record-id"
+    dlqd = []
+    metrics = []
+
+    def fail_post(_parsed):
+        raise RuntimeError("backend 503")
+
+    with (
+        patch.object(index, "_post_to_backend", side_effect=fail_post),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(inline, second), None)
+
+    assert result == {"statusCode": 200}
+    # BOTH records' transport failures were DLQ'd (batch continued past the first).
+    assert len(dlqd) == 2
+    assert all("transport_error" in r for _e, r in dlqd)
+    assert metrics.count("meter.transport_error") == 2
+
+
+def test_handler_unparseable_record_dlqs_and_emits_metric():
+    """M2: a per-record JSON-parse failure DLQs the line + emits a metric."""
+    import index
+
+    bad_event = {
+        "awslogs": {
+            "data": base64.b64encode(
+                gzip.compress(json.dumps({"logEvents": [{"message": "{not json"}]}).encode())
+            ).decode()
+        }
+    }
+    dlqd = []
+    metrics = []
+    with (
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(bad_event, None)
+
+    assert result == {"statusCode": 200}
+    assert len(dlqd) == 1
+    assert dlqd[0][1] == "unparseable_log_event"
+    assert "meter.parse_failed" in metrics
+
+
+def test_send_to_dlq_posts_message_to_queue():
+    """The DLQ helper sends the raw log event + reason to the configured queue."""
+    import index
+
+    fake_sqs = MagicMock()
+    log_event = {"message": "{}", "id": "abc"}
+    with patch("index.boto3.client", return_value=fake_sqs):
+        index._send_to_dlq(log_event, "transport_error: boom")
+
+    fake_sqs.send_message.assert_called_once()
+    kwargs = fake_sqs.send_message.call_args.kwargs
+    assert kwargs["QueueUrl"] == "https://sqs.test.local/dlq"
+    body = json.loads(kwargs["MessageBody"])
+    assert body["reason"] == "transport_error: boom"
+    assert body["log_event"] == log_event
+
+
+def test_send_to_dlq_raises_when_no_queue_configured(monkeypatch):
+    """With no DLQ_URL the helper re-raises so the batch fails (CW Logs retries)
+    rather than silently losing a record."""
+    import index
+
+    monkeypatch.delenv("DLQ_URL", raising=False)
+    with pytest.raises(RuntimeError):
+        index._send_to_dlq({"message": "{}"}, "transport_error: boom")

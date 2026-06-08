@@ -107,6 +107,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       taskExecutionRole: container.taskExecutionRole,
       taskRole: container.taskRole,
       openclawTaskDef: container.openclawTaskDef,
+      ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
+      ownerBedrockBoundary: container.ownerBedrockBoundary,
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",

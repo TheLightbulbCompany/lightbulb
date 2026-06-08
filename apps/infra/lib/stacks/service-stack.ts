@@ -105,6 +105,12 @@ export interface ServiceStackProps extends cdk.StackProps {
     taskExecutionRole: iam.IRole;
     taskRole: iam.IRole;
     openclawTaskDef: ecs.ITaskDefinition;
+    // Per-owner Bedrock enforcement (Plan 2): the backend reads these ARNs to
+    // condition iam:CreateRole on the boundary and to attach the base policy to
+    // every minted per-owner role. Live construct refs (same CDK stage), NOT
+    // CfnOutput/ImportValue — matching how taskRole is already passed through.
+    ownerBedrockBasePolicy: iam.IManagedPolicy;
+    ownerBedrockBoundary: iam.IManagedPolicy;
   };
   managementApiUrl: string;
   /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
@@ -247,7 +253,10 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // IAM PassRole for ECS task roles (both execution role and task role)
+    // IAM PassRole for ECS task roles (shared execution + task roles AND the
+    // per-owner Bedrock roles the backend mints at provision time). Without
+    // the owner-bedrock-* prefix, RegisterTaskDefinition/CreateService with a
+    // per-owner taskRoleArn fails AccessDenied on PassRole.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "IamPassRole",
@@ -255,9 +264,76 @@ export class ServiceStack extends cdk.Stack {
         resources: [
           props.container.taskExecutionRole.roleArn,
           props.container.taskRole.roleArn,
+          `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,
         ],
+        conditions: {
+          StringEquals: {
+            "iam:PassedToService": "ecs-tasks.amazonaws.com",
+          },
+        },
       }),
     );
+
+    // Backend mints + scopes + kills per-owner Bedrock roles (Plan 2). These
+    // three statements live in a dedicated ManagedPolicy attached to the task
+    // role, NOT in the inline default policy: the backend role's inline policy
+    // is already near CloudFormation's 10 KB inline-policy limit, and adding
+    // these inline would tip CDK into spilling statements (e.g. the by-name
+    // DynamoDbIntegrations grant) into an overflow ManagedPolicy — silently
+    // relocating them out of the AWS::IAM::Policy resource other features rely
+    // on. A standalone, explicitly named ManagedPolicy keeps the inline policy
+    // stable and is more auditable. CreateRole is boundary-conditioned so a
+    // backend that can CreateRole+PutRolePolicy cannot escalate beyond the
+    // OwnerBedrockBoundary (Bedrock+EFS+logs+ssm).
+    new iam.ManagedPolicy(this, "BackendOwnerBedrockManage", {
+      managedPolicyName: `isol8-${env}-backend-owner-bedrock-manage`,
+      roles: [this.taskRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "OwnerBedrockRoleManage",
+          actions: [
+            "iam:PutRolePolicy",
+            "iam:DeleteRolePolicy",
+            "iam:GetRolePolicy",
+            "iam:AttachRolePolicy",
+            "iam:DetachRolePolicy",
+            "iam:TagRole",
+            "iam:GetRole",
+          ],
+          resources: [
+            `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,
+          ],
+        }),
+        new iam.PolicyStatement({
+          sid: "OwnerBedrockRoleCreate",
+          actions: ["iam:CreateRole"],
+          resources: [
+            `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,
+          ],
+          conditions: {
+            StringEquals: {
+              "iam:PermissionsBoundary":
+                props.container.ownerBedrockBoundary.managedPolicyArn,
+            },
+          },
+        }),
+        // Bedrock control plane: AIP ARNs are created at runtime so cannot be
+        // pre-scoped; constrain via the runtime owner_id tag on create.
+        new iam.PolicyStatement({
+          sid: "OwnerBedrockProfileControlPlane",
+          actions: [
+            "bedrock:CreateInferenceProfile",
+            "bedrock:DeleteInferenceProfile",
+            "bedrock:GetInferenceProfile",
+            "bedrock:ListInferenceProfiles",
+            "bedrock:TagResource",
+            "bedrock:UntagResource",
+            "bedrock:ListTagsForResource",
+          ],
+          resources: ["*"],
+        }),
+      ],
+    });
 
     // Secrets Manager
     this.taskRole.addToPolicy(
@@ -399,6 +475,16 @@ export class ServiceStack extends cdk.Stack {
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections/index/*`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state/index/*`,
+          // Per-owner AIP reverse index (Plan 2). Folded into this by-name DDB
+          // statement (identical action set + condition-less shape) rather than
+          // added as a separate fourth statement: the backend role's inline
+          // policy is near CloudFormation's 10 KB limit, so a separate statement
+          // risks tipping CDK into an overflow ManagedPolicy that would relocate
+          // this very statement out of the AWS::IAM::Policy resource other
+          // features assert on. Same cross-stack-export-avoidance posture; the
+          // grant (GetItem/PutItem/UpdateItem/DeleteItem/Query) is identical.
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-aip-owners`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-aip-owners/index/*`,
         ],
       }),
     );
@@ -877,6 +963,16 @@ export class ServiceStack extends cdk.Stack {
         CREDIT_TRANSACTIONS_TABLE:
           props.database.creditTransactionsTable.tableName,
         OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
+        // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
+        // table is granted BY NAME above, so the env var is the literal name
+        // (not a cross-stack tableName ref). The boundary + base-policy ARNs
+        // come from the container stack's live members.
+        BEDROCK_AIP_OWNERS_TABLE: `isol8-${env}-bedrock-aip-owners`,
+        BEDROCK_OWNER_ROLE_PREFIX: `isol8-${env}-owner-bedrock`,
+        BEDROCK_OWNER_BOUNDARY_ARN:
+          props.container.ownerBedrockBoundary.managedPolicyArn,
+        BEDROCK_OWNER_BASE_POLICY_ARN:
+          props.container.ownerBedrockBasePolicy.managedPolicyArn,
         // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
         // env vars via core.config.settings; empty defaults keep the app
         // booting in non-marketplace contexts (unit tests, smoke tests).

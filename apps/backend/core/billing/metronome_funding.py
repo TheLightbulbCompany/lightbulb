@@ -105,3 +105,85 @@ async def fund_top_up(
             owner_id,
             stripe_session_id,
         )
+
+
+# Metronome documented auto-recharge minimums (research §2): the trigger
+# threshold must be at least $5, and the recharge-to target must exceed the
+# threshold by at least $10.
+_MIN_THRESHOLD_CENTS = 500
+_MIN_RECHARGE_OVER_THRESHOLD_CENTS = 1000
+
+
+async def set_auto_recharge(
+    *,
+    owner_id: str,
+    enabled: bool,
+    threshold_cents: int | None = None,
+    amount_cents: int | None = None,
+    contract_id: str,
+    client: MetronomeClient | None = None,
+) -> None:
+    """Configure Metronome auto-recharge for an owner (replaces the legacy
+    credit_ledger.set_auto_reload).
+
+    Maps the legacy (threshold_cents, amount_cents-as-increment) contract onto
+    Metronome's credit_balance_threshold_configuration, where recharge_to_amount
+    is a TARGET balance, not an increment: recharge_to = threshold + increment.
+    Enforces Metronome's documented minimums (research §2). Unlike fund_top_up's
+    best-effort re-arm, this is a user-initiated settings write, so failures
+    raise FundingError for the router to surface.
+    """
+    customer_id = _customer_id_for(owner_id)
+
+    if not enabled:
+        await _set_threshold(customer_id, contract_id, is_enabled=False, client=client)
+        return
+
+    if threshold_cents is None or amount_cents is None:
+        raise FundingError("threshold_cents and amount_cents are required when enabling auto-recharge")
+    if threshold_cents < _MIN_THRESHOLD_CENTS:
+        raise FundingError(f"threshold must be at least ${_MIN_THRESHOLD_CENTS / 100:.0f}")
+    if amount_cents < _MIN_RECHARGE_OVER_THRESHOLD_CENTS:
+        raise FundingError(
+            f"recharge increment must be at least ${_MIN_RECHARGE_OVER_THRESHOLD_CENTS / 100:.0f} "
+            "(Metronome requires recharge_to >= threshold + $10)"
+        )
+
+    threshold_dollars = threshold_cents / 100
+    recharge_to_dollars = (threshold_cents + amount_cents) / 100
+    await _set_threshold(
+        customer_id,
+        contract_id,
+        is_enabled=True,
+        threshold_amount=threshold_dollars,
+        recharge_to_amount=recharge_to_dollars,
+        client=client,
+    )
+
+
+async def _set_threshold(
+    customer_id: str,
+    contract_id: str,
+    *,
+    is_enabled: bool,
+    threshold_amount: float | None = None,
+    recharge_to_amount: float | None = None,
+    client: MetronomeClient | None = None,
+) -> None:
+    if client is not None:
+        await client.set_credit_balance_threshold(
+            metronome_customer_id=customer_id,
+            contract_id=contract_id,
+            is_enabled=is_enabled,
+            threshold_amount=threshold_amount,
+            recharge_to_amount=recharge_to_amount,
+        )
+        return
+    async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
+        await metronome_client.for_settings(http).set_credit_balance_threshold(
+            metronome_customer_id=customer_id,
+            contract_id=contract_id,
+            is_enabled=is_enabled,
+            threshold_amount=threshold_amount,
+            recharge_to_amount=recharge_to_amount,
+        )

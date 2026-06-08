@@ -120,3 +120,80 @@ async def test_fund_rejects_non_positive_amount(provisioned_table):
             stripe_session_id="cs_test_123",
             client=fake,
         )
+
+
+from core.billing.metronome_funding import set_auto_recharge  # noqa: E402
+
+
+def _fake_client_recharge():
+    fake = MagicMock()
+    fake.set_credit_balance_threshold = AsyncMock()
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_set_auto_recharge_enable_maps_cents_to_target_balance(provisioned_table):
+    fake = _fake_client_recharge()
+    await set_auto_recharge(
+        owner_id="org_abc",
+        enabled=True,
+        threshold_cents=500,  # $5.00 threshold
+        amount_cents=2000,  # $20.00 recharge increment
+        contract_id="contract-1",
+        client=fake,
+    )
+    fake.set_credit_balance_threshold.assert_awaited_once()
+    _, kwargs = fake.set_credit_balance_threshold.call_args
+    assert kwargs["metronome_customer_id"] == "cust-uuid-1"
+    assert kwargs["contract_id"] == "contract-1"
+    assert kwargs["is_enabled"] is True
+    assert kwargs["threshold_amount"] == 5.0
+    # recharge_to = threshold ($5) + increment ($20) = $25 target balance.
+    assert kwargs["recharge_to_amount"] == 25.0
+
+
+@pytest.mark.asyncio
+async def test_set_auto_recharge_disable_sends_only_is_enabled(provisioned_table):
+    fake = _fake_client_recharge()
+    await set_auto_recharge(owner_id="org_abc", enabled=False, contract_id="contract-1", client=fake)
+    _, kwargs = fake.set_credit_balance_threshold.call_args
+    assert kwargs["is_enabled"] is False
+    assert kwargs.get("threshold_amount") is None
+    assert kwargs.get("recharge_to_amount") is None
+
+
+@pytest.mark.asyncio
+async def test_set_auto_recharge_enable_requires_amounts(provisioned_table):
+    fake = _fake_client_recharge()
+    with pytest.raises(FundingError, match="required when enabling"):
+        await set_auto_recharge(owner_id="org_abc", enabled=True, contract_id="contract-1", client=fake)
+    fake.set_credit_balance_threshold.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_auto_recharge_enforces_threshold_minimum(provisioned_table):
+    fake = _fake_client_recharge()
+    with pytest.raises(FundingError, match="at least"):
+        await set_auto_recharge(
+            owner_id="org_abc",
+            enabled=True,
+            threshold_cents=100,  # $1 — below the $5 minimum
+            amount_cents=2000,
+            contract_id="contract-1",
+            client=fake,
+        )
+    fake.set_credit_balance_threshold.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_auto_recharge_raises_when_customer_not_provisioned(provisioned_table):
+    fake = _fake_client_recharge()
+    with pytest.raises(FundingError, match="not provisioned"):
+        await set_auto_recharge(
+            owner_id="org_unprovisioned",
+            enabled=True,
+            threshold_cents=500,
+            amount_cents=2000,
+            contract_id="contract-1",
+            client=fake,
+        )

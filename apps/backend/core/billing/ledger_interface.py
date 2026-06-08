@@ -1,10 +1,9 @@
-"""Thin ledger interface — the swap seam between the meter and the money store.
+"""Thin ledger interface — the per-event seam between the meter and the money store.
 
 `deplete(event)` applies one usage event to the owner's balance, exactly once.
-`get_balance(owner_id)` reads it. The concrete backend is chosen by the
-`LEDGER_BACKEND` setting: "ddb" (the interim hand-rolled ledger) now, and a
-Metronome adapter in Phase 3 — callers depend only on this interface, never on
-the backend, so the cutover is a one-line config flip with no caller changes.
+`get_balance(owner_id)` reads it. The backend is Metronome (the sole ledger
+system-of-record since the Phase-3 cutover) — callers depend only on this
+interface, never on the backend.
 """
 
 from __future__ import annotations
@@ -39,18 +38,17 @@ class LedgerBackend(Protocol):
 
 
 def get_ledger() -> LedgerBackend:
-    """Return the configured ledger backend. The swap seam for Phase 3.
+    """Return the configured ledger backend.
 
-    Default stays "ddb" (Phase 1); "metronome" is wired (Phase 2) and validated
-    in dev against the sandbox before the Phase-3 prod cutover flips the default.
+    Phase 3 cutover: Metronome is the SOLE ledger system-of-record. The interim
+    hand-rolled DDB ledger was deleted. The only valid LEDGER_BACKEND value is
+    "metronome".
     """
     backend = os.environ.get("LEDGER_BACKEND") or settings.LEDGER_BACKEND
-    if backend == "ddb":
-        from core.billing.ddb_ledger_backend import DdbLedgerBackend
-
-        return DdbLedgerBackend()
     if backend == "metronome":
         from core.billing.metronome_ledger_backend import MetronomeLedgerBackend
 
         return MetronomeLedgerBackend()
-    raise ValueError(f"Unknown LEDGER_BACKEND {backend!r} (expected 'ddb' or 'metronome')")
+    raise ValueError(
+        f"Unknown LEDGER_BACKEND {backend!r} (expected 'metronome'; the DDB ledger was deleted in Phase 3)"
+    )

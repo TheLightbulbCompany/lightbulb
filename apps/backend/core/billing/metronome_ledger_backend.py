@@ -9,11 +9,10 @@ it IS the synchronous chat/provision gate read path, so it must never block on
 the balance API. Metronome stays the system-of-record; the fast-gate is its
 disposable projection (fed by the low-balance webhook + this deplete decrement).
 
-Callers depend only on the LedgerBackend interface — swapping from
-DdbLedgerBackend to this is a one-line LEDGER_BACKEND flip (the Phase-3
-cutover), no caller changes. See docs/superpowers/research/
-2026-06-07-metronome-ingest-contract.md §6 for the UsageEvent->Metronome
-field mapping.
+Callers depend only on the LedgerBackend interface — since the Phase-3 cutover
+this is the SOLE backend (the interim hand-rolled DDB ledger was deleted). See
+docs/superpowers/research/2026-06-07-metronome-ingest-contract.md §6 for the
+UsageEvent->Metronome field mapping.
 """
 
 from __future__ import annotations

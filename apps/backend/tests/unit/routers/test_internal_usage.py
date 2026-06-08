@@ -18,8 +18,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from core.billing.ledger_interface import DepleteResult
 from core.services import service_token
 from main import app
+
+
+def _ledger_stub(deplete_result):
+    stub = MagicMock()
+    if isinstance(deplete_result, list):
+        stub.deplete = AsyncMock(side_effect=deplete_result)
+    else:
+        stub.deplete = AsyncMock(return_value=deplete_result)
+    return stub
 
 
 @pytest.fixture(autouse=True)
@@ -99,8 +109,11 @@ from moto import mock_aws  # noqa: E402
 
 
 @pytest.fixture
-def ledger_tables(monkeypatch):
-    """Mirror Plan 1's ledger_tables fixture (credits + credit-transactions)."""
+def ledger_tables():
+    """Provision moto credits + credit-transactions tables for the scan-only
+    shadow/skip tests. Phase 3: no LEDGER_BACKEND/CREDITS_TABLE env is set —
+    deplete is stubbed in the live tests, and these tables only back the
+    scan assertions."""
     with mock_aws():
         c = boto3.client("dynamodb", region_name="us-east-1")
         c.create_table(
@@ -125,9 +138,10 @@ def ledger_tables(monkeypatch):
             TableName="test-credits",
             Item={"user_id": {"S": "org_abc"}, "balance_microcents": {"N": "100000"}},
         )
-        monkeypatch.setenv("CREDITS_TABLE", "test-credits")
-        monkeypatch.setenv("CREDIT_TRANSACTIONS_TABLE", "test-credit-txns")
-        monkeypatch.setenv("LEDGER_BACKEND", "ddb")
+        # Phase 3: the four live-deplete tests stub get_ledger directly, and the
+        # scan-only tests never call get_ledger's real path, so no
+        # CREDITS_TABLE / CREDIT_TRANSACTIONS_TABLE / LEDGER_BACKEND env is set.
+        # (The moto tables themselves stay so the scan assertions resolve.)
         yield c
 
 
@@ -152,7 +166,7 @@ class TestDeplete:
             json=_body(**overrides),
         )
 
-    def test_prices_attributes_and_deplets(self, client, ledger_tables, meter_live):
+    def test_prices_attributes_and_deplets(self, client, meter_live):
         with (
             patch(
                 "routers.internal_usage.resolve_owner_from_aip_arn",
@@ -161,6 +175,10 @@ class TestDeplete:
             patch(
                 "routers.internal_usage.price_from_aip_arn",
                 AsyncMock(return_value=10_000),
+            ),
+            patch(
+                "routers.internal_usage.get_ledger",
+                return_value=_ledger_stub(DepleteResult(balance_microcents=86_000, applied=True)),
             ),
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
         ):
@@ -168,10 +186,9 @@ class TestDeplete:
         assert r.status_code == 200
         data = r.json()
         assert data["applied"] is True
-        # raw 10000 * 14 // 10 = 14000 marked up; 100000 - 14000 = 86000
         assert data["balance_microcents"] == 86_000
 
-    def test_replay_is_noop(self, client, ledger_tables, meter_live):
+    def test_replay_is_noop(self, client, meter_live):
         with (
             patch(
                 "routers.internal_usage.resolve_owner_from_aip_arn",
@@ -180,6 +197,15 @@ class TestDeplete:
             patch(
                 "routers.internal_usage.price_from_aip_arn",
                 AsyncMock(return_value=10_000),
+            ),
+            patch(
+                "routers.internal_usage.get_ledger",
+                return_value=_ledger_stub(
+                    [
+                        DepleteResult(balance_microcents=86_000, applied=True),
+                        DepleteResult(balance_microcents=86_000, applied=False),
+                    ]
+                ),
             ),
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
         ):
@@ -190,7 +216,7 @@ class TestDeplete:
         # Deducted exactly once.
         assert second.json()["balance_microcents"] == 86_000
 
-    def test_error_status_still_deplets(self, client, ledger_tables, meter_live):
+    def test_error_status_still_deplets(self, client, meter_live):
         with (
             patch(
                 "routers.internal_usage.resolve_owner_from_aip_arn",
@@ -200,6 +226,10 @@ class TestDeplete:
                 "routers.internal_usage.price_from_aip_arn",
                 AsyncMock(return_value=10_000),
             ),
+            patch(
+                "routers.internal_usage.get_ledger",
+                return_value=_ledger_stub(DepleteResult(balance_microcents=86_000, applied=True)),
+            ),
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
         ):
             r = self._post(client, request_id="req-err", run_status="error")
@@ -207,7 +237,7 @@ class TestDeplete:
         assert r.json()["applied"] is True
         assert r.json()["balance_microcents"] == 86_000
 
-    def test_identity_arn_fallback_attributes_when_aip_misses(self, client, ledger_tables, meter_live):
+    def test_identity_arn_fallback_attributes_when_aip_misses(self, client, meter_live):
         # AIP-ARN lookup misses (None) but the assumed-role ARN resolves the
         # owner — spec §3.2's fallback path must deplete, not skip.
         with (
@@ -222,6 +252,10 @@ class TestDeplete:
             patch(
                 "routers.internal_usage.price_from_aip_arn",
                 AsyncMock(return_value=10_000),
+            ),
+            patch(
+                "routers.internal_usage.get_ledger",
+                return_value=_ledger_stub(DepleteResult(balance_microcents=86_000, applied=True)),
             ),
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
         ):

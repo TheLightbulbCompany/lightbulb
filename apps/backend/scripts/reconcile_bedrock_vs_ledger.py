@@ -376,7 +376,7 @@ async def fetch_ledger_deduct_spend_usd(periods: list[str]) -> float:
     """Sum the NEW credit-transactions deduct rows (RAW spend) → USD.
 
     Post-cutover the authoritative money is the ``credit-transactions``
-    rows written by ``DdbLedgerBackend.deplete`` (``type == "deduct"``,
+    rows written by the legacy DDB ledger's deplete path (``type == "deduct"``,
     ``raw_cost_microcents`` in microcents, ``created_at`` ISO8601). This is
     what the AWS invocation-log meter actually deducts — NOT the
     ``usage-counters.total_spend_microdollars`` analytics column that

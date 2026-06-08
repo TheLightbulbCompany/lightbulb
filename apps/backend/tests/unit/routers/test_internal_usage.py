@@ -4,13 +4,14 @@ This router does NOT use Depends(get_current_user); auth is a bearer
 bedrock_meter service token (service_token.verify_meter). Mirrors the
 hooks_proxy 401 template.
 
-NOTE (plan/reality reconciliation): the Plan-3 doc patched the Plan-2 resolvers
-(`resolve_owner_from_aip_arn`, `resolve_owner_from_identity_arn`) and the
-pricing helper (`price_from_aip_arn`) with plain `return_value`s, assuming they
-were synchronous. The MERGED Plan-2 / Plan-3 reality is that all three are
-`async def` (they do DynamoDB GetItems), so the endpoint awaits them and the
-tests patch them with `AsyncMock`. Arithmetic + behavior are otherwise exactly
-as the plan specifies (raw 10000 * 14 // 10 = 14000; 100000 - 14000 = 86000).
+The endpoint resolves the owner AND the pricing tier in ONE reverse-table read
+(`resolve_owner_and_tier_from_aip_arn`, an `async def` DynamoDB GetItem) and
+prices the resolved tier with `price_from_tier` (a PURE, synchronous helper).
+The tests therefore patch the combined resolver with an `AsyncMock` returning an
+(owner, tier) tuple and `price_from_tier` with a plain `MagicMock`. The
+identity-ARN fallback resolver stays an `async def`. Arithmetic + behavior are
+otherwise exactly as the plan specifies (raw 10000 * 14 // 10 = 14000;
+100000 - 14000 = 86000).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -155,12 +156,12 @@ class TestDeplete:
     def test_prices_attributes_and_deplets(self, client, ledger_tables, meter_live):
         with (
             patch(
-                "routers.internal_usage.resolve_owner_from_aip_arn",
-                AsyncMock(return_value="org_abc"),
+                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+                AsyncMock(return_value=("org_abc", "opus")),
             ),
             patch(
-                "routers.internal_usage.price_from_aip_arn",
-                AsyncMock(return_value=10_000),
+                "routers.internal_usage.price_from_tier",
+                MagicMock(return_value=10_000),
             ),
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
         ):
@@ -174,12 +175,12 @@ class TestDeplete:
     def test_replay_is_noop(self, client, ledger_tables, meter_live):
         with (
             patch(
-                "routers.internal_usage.resolve_owner_from_aip_arn",
-                AsyncMock(return_value="org_abc"),
+                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+                AsyncMock(return_value=("org_abc", "opus")),
             ),
             patch(
-                "routers.internal_usage.price_from_aip_arn",
-                AsyncMock(return_value=10_000),
+                "routers.internal_usage.price_from_tier",
+                MagicMock(return_value=10_000),
             ),
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
         ):
@@ -193,12 +194,12 @@ class TestDeplete:
     def test_error_status_still_deplets(self, client, ledger_tables, meter_live):
         with (
             patch(
-                "routers.internal_usage.resolve_owner_from_aip_arn",
-                AsyncMock(return_value="org_abc"),
+                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+                AsyncMock(return_value=("org_abc", "opus")),
             ),
             patch(
-                "routers.internal_usage.price_from_aip_arn",
-                AsyncMock(return_value=10_000),
+                "routers.internal_usage.price_from_tier",
+                MagicMock(return_value=10_000),
             ),
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
         ):
@@ -212,16 +213,16 @@ class TestDeplete:
         # owner — spec §3.2's fallback path must deplete, not skip.
         with (
             patch(
-                "routers.internal_usage.resolve_owner_from_aip_arn",
-                AsyncMock(return_value=None),
+                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+                AsyncMock(return_value=(None, None)),
             ),
             patch(
                 "routers.internal_usage.resolve_owner_from_identity_arn",
                 AsyncMock(return_value="org_abc"),
             ),
             patch(
-                "routers.internal_usage.price_from_aip_arn",
-                AsyncMock(return_value=10_000),
+                "routers.internal_usage.price_from_tier",
+                MagicMock(return_value=10_000),
             ),
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
         ):
@@ -238,12 +239,12 @@ class TestDeplete:
         fake_result = MagicMock(applied=True, balance_microcents=86_000)
         with (
             patch(
-                "routers.internal_usage.resolve_owner_from_aip_arn",
-                AsyncMock(return_value="org_abc"),
+                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+                AsyncMock(return_value=("org_abc", "opus")),
             ),
             patch(
-                "routers.internal_usage.price_from_aip_arn",
-                AsyncMock(return_value=10_000),
+                "routers.internal_usage.price_from_tier",
+                MagicMock(return_value=10_000),
             ),
             patch("routers.internal_usage.get_ledger") as mock_get_ledger,
             patch(
@@ -268,12 +269,12 @@ class TestDeplete:
         monkeypatch.setattr("routers.internal_usage.settings.METER_IS_LIVE", False, raising=False)
         with (
             patch(
-                "routers.internal_usage.resolve_owner_from_aip_arn",
-                AsyncMock(return_value="org_abc"),
+                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+                AsyncMock(return_value=("org_abc", "opus")),
             ),
             patch(
-                "routers.internal_usage.price_from_aip_arn",
-                AsyncMock(return_value=10_000),
+                "routers.internal_usage.price_from_tier",
+                MagicMock(return_value=10_000),
             ),
             patch("routers.internal_usage.get_ledger") as mock_get_ledger,
             patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()) as mock_enforce,
@@ -303,8 +304,8 @@ class TestEdgeCases:
         # BOTH attribution paths miss → truly unattributed → skip, no deplete.
         with (
             patch(
-                "routers.internal_usage.resolve_owner_from_aip_arn",
-                AsyncMock(return_value=None),
+                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+                AsyncMock(return_value=(None, None)),
             ),
             patch(
                 "routers.internal_usage.resolve_owner_from_identity_arn",
@@ -323,12 +324,12 @@ class TestEdgeCases:
 
         with (
             patch(
-                "routers.internal_usage.resolve_owner_from_aip_arn",
-                AsyncMock(return_value="org_abc"),
+                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+                AsyncMock(return_value=("org_abc", "opus")),
             ),
             patch(
-                "routers.internal_usage.price_from_aip_arn",
-                AsyncMock(side_effect=UnknownModelError("aip-???")),
+                "routers.internal_usage.price_from_tier",
+                MagicMock(side_effect=UnknownModelError("aip-???")),
             ),
         ):
             r = self._post(client, request_id="req-unknown")

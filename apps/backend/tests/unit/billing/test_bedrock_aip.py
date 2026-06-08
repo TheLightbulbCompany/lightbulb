@@ -43,7 +43,6 @@ def test_policy_has_invoke_allow_with_3_aips_and_9_fm_arns():
     doc = build_owner_bedrock_policy(
         owner_id="org_abc",
         aip_arns=arns,
-        account="877352799272",
         regions=("us-east-1", "us-east-2", "us-west-2"),
     )
     allow = next(s for s in doc["Statement"] if s["Effect"] == "Allow" and "bedrock:InvokeModel" in s["Action"])
@@ -70,7 +69,6 @@ def test_policy_condition_scopes_to_owner_aips_only():
     doc = build_owner_bedrock_policy(
         owner_id="org_abc",
         aip_arns=arns,
-        account="877352799272",
         regions=("us-east-1", "us-east-2", "us-west-2"),
     )
     allow = next(s for s in doc["Statement"] if s["Effect"] == "Allow" and "bedrock:InvokeModel" in s["Action"])
@@ -82,7 +80,6 @@ def test_policy_explicitly_denies_create_inference_profile():
     doc = build_owner_bedrock_policy(
         owner_id="org_abc",
         aip_arns=_aip_arns(),
-        account="877352799272",
         regions=("us-east-1", "us-east-2", "us-west-2"),
     )
     deny = next(s for s in doc["Statement"] if s["Effect"] == "Deny")
@@ -94,7 +91,6 @@ def test_policy_is_iam_document_version():
     doc = build_owner_bedrock_policy(
         owner_id="org_abc",
         aip_arns=_aip_arns(),
-        account="877352799272",
         regions=("us-east-1", "us-east-2", "us-west-2"),
     )
     assert doc["Version"] == "2012-10-17"
@@ -227,6 +223,60 @@ class TestResolveOwner:
             await resolve_tier_from_aip_arn("arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/nope")
             is None
         )
+
+    @pytest.mark.asyncio
+    async def test_combined_resolver_round_trips_owner_and_tier(self, aip_tables):
+        from core.billing.bedrock_aip import (
+            persist_owner_aips,
+            resolve_owner_and_tier_from_aip_arn,
+        )
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-h",
+        }
+        await persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
+        assert await resolve_owner_and_tier_from_aip_arn(arns["sonnet"]) == ("org_abc", "sonnet")
+
+    @pytest.mark.asyncio
+    async def test_combined_resolver_returns_none_pair_for_unknown_arn(self, aip_tables):
+        from core.billing.bedrock_aip import resolve_owner_and_tier_from_aip_arn
+
+        assert await resolve_owner_and_tier_from_aip_arn(
+            "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/nope"
+        ) == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_combined_resolver_does_a_single_get_item(self, aip_tables, monkeypatch):
+        # Cleanup J: owner + tier come from ONE reverse-table read per record.
+        import core.billing.bedrock_aip as mod
+        from core.billing.bedrock_aip import (
+            persist_owner_aips,
+            resolve_owner_and_tier_from_aip_arn,
+        )
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-h",
+        }
+        await persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
+
+        real_table = mod._aip_owners_table()
+        calls = {"get_item": 0}
+        real_get_item = real_table.get_item
+
+        def _counting_get_item(*a, **k):
+            calls["get_item"] += 1
+            return real_get_item(*a, **k)
+
+        real_table.get_item = _counting_get_item
+        monkeypatch.setattr(mod, "_aip_owners_table", lambda: real_table)
+
+        owner, tier = await resolve_owner_and_tier_from_aip_arn(arns["opus"])
+        assert (owner, tier) == ("org_abc", "opus")
+        assert calls["get_item"] == 1
 
 
 class TestResolveOwnerFromIdentity:

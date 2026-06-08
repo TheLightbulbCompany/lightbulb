@@ -22,24 +22,24 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.billing.bedrock_aip import (
-    resolve_owner_from_aip_arn,
+    resolve_owner_and_tier_from_aip_arn,
     resolve_owner_from_identity_arn,
 )
-from core.billing.bedrock_pricing import UnknownModelError, price_from_aip_arn
+from core.billing.bedrock_pricing import UnknownModelError, price_from_tier
 from core.billing.ledger_interface import get_ledger
 from core.billing.usage_event import UsageEvent
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.services import service_token
 
-# NOTE (plan/reality reconciliation): the Plan-3 doc called the Plan-2 resolvers
-# (resolve_owner_from_aip_arn / resolve_owner_from_identity_arn) and the pricing
-# helper (price_from_aip_arn) synchronously. The MERGED Plan-2 / Plan-3 reality
-# is that all three are `async def` (each does a DynamoDB GetItem), so this
-# endpoint awaits them. `enforce_after_deplete` is imported at FUNCTION level
-# inside the endpoint (NOT here) to break an import cycle: core/services/
-# bedrock_enforcement.py imports container/ledger services that transitively
-# import routers.
+# NOTE: owner + pricing tier are resolved together in ONE reverse-table read
+# (resolve_owner_and_tier_from_aip_arn, an async DynamoDB GetItem), then the
+# tier is priced by price_from_tier (a PURE, synchronous helper) — so the hot
+# meter path does exactly one reverse-table read per record. The identity-ARN
+# fallback resolver is also async (its own GetItem). `enforce_after_deplete` is
+# imported at FUNCTION level inside the endpoint (NOT here) to break an import
+# cycle: core/services/bedrock_enforcement.py imports container/ledger services
+# that transitively import routers.
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -86,12 +86,14 @@ async def from_bedrock_log(
     """
     put_metric("meter.received", dimensions={"status": body.run_status})
 
-    # Primary attribution: the per-owner AIP ARN in `modelId`. Fallback: the
-    # assumed-role ARN in `identity.arn` (spec §3.2 mandates BOTH paths — the
-    # role ARN attributes records whose AIP-ARN lookup misses, e.g. a stale AIP
-    # the registry hasn't indexed yet). Without the fallback the captured
-    # identity_arn would be dead code.
-    owner_id = await resolve_owner_from_aip_arn(body.model_id)
+    # Primary attribution: the per-owner AIP ARN in `modelId`. ONE reverse-table
+    # read returns the owner AND the pricing tier together (both live on the same
+    # row). Fallback: the assumed-role ARN in `identity.arn` (spec §3.2 mandates
+    # BOTH paths — the role ARN attributes records whose AIP-ARN lookup misses,
+    # e.g. a stale AIP the registry hasn't indexed yet; that path has no tier, so
+    # pricing then raises UnknownModelError below, same as before). Without the
+    # fallback the captured identity_arn would be dead code.
+    owner_id, tier = await resolve_owner_and_tier_from_aip_arn(body.model_id)
     if owner_id is None and body.identity_arn:
         owner_id = await resolve_owner_from_identity_arn(body.identity_arn)
     if owner_id is None:
@@ -104,8 +106,8 @@ async def from_bedrock_log(
         return {"applied": False, "balance_microcents": 0}
 
     try:
-        raw = await price_from_aip_arn(
-            aip_arn=body.model_id,
+        raw = price_from_tier(
+            tier,
             input_tokens=body.input_tokens,
             output_tokens=body.output_tokens,
             cache_read_tokens=body.cache_read_tokens,
@@ -118,7 +120,10 @@ async def from_bedrock_log(
         logger.warning("meter: unknown model %s req=%s", body.model_id, body.request_id)
         return {"applied": False, "balance_microcents": 0}
 
-    billed = raw * 14 // 10  # markup 1.4, integer math (matches connection_pool)
+    # 1.4x markup over the raw Bedrock cost, integer math (x14//10) so the
+    # microcents ledger never accrues float drift. markup_multiplier=1.4 below is
+    # the same factor, recorded for the audit row.
+    billed = raw * 14 // 10
     event = UsageEvent(
         owner_id=owner_id,
         request_id=body.request_id,

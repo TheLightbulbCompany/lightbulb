@@ -43,15 +43,6 @@ from scripts.reconcile_bedrock_vs_ledger import (
 )
 
 
-def drift_alerted(*, aws_usd: float, ledger_usd: float, threshold_pct: float) -> bool:
-    """True when the AWS-vs-ledger divergence exceeds ``threshold_pct``.
-
-    Uses the same divergence math as ``DollarResult.divergence_pct``: 0% when
-    both are zero, 100% when AWS is zero but the ledger isn't.
-    """
-    return DollarResult(aws_usd=aws_usd, ledger_usd=ledger_usd).divergence_pct > threshold_pct
-
-
 def _emit_drift_metric(env: str, divergence_pct: float) -> None:
     """Emit the per-env drift gauge to CloudWatch (no account-global resource)."""
     import boto3

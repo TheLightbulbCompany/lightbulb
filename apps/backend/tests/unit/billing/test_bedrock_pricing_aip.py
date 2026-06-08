@@ -13,9 +13,35 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from core.billing import bedrock_pricing
-from core.billing.bedrock_pricing import UnknownModelError, price_from_aip_arn
+from core.billing.bedrock_pricing import UnknownModelError, price_from_aip_arn, price_from_tier
 
 OPUS_AIP = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus-org_abc"
+
+
+def test_price_from_tier_opus():
+    # 1000 input * 5.5 + 500 output * 27.5 = 5500 + 13750 = 19250 microcents
+    cost = price_from_tier("opus", input_tokens=1000, output_tokens=500)
+    assert cost == 19250
+
+
+def test_price_from_tier_haiku_with_cache():
+    # haiku: 100*1.1 + 100*5.5 + 50*0.11(cache_read) + 20*2.2(cache_write)
+    #      = 110 + 550 + 5 + 44 = 709
+    cost = price_from_tier(
+        "haiku",
+        input_tokens=100,
+        output_tokens=100,
+        cache_read_tokens=50,
+        cache_write_tokens=20,
+    )
+    assert cost == 709
+
+
+def test_price_from_tier_unknown_tier_raises():
+    with pytest.raises(UnknownModelError):
+        price_from_tier("nope", input_tokens=10, output_tokens=10)
+    with pytest.raises(UnknownModelError):
+        price_from_tier(None, input_tokens=10, output_tokens=10)
 
 
 @pytest.mark.asyncio

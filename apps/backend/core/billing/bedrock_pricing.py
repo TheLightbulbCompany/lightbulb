@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from typing import TypedDict
 
-from core.billing.bedrock_aip import resolve_tier_from_aip_arn
+from core.billing.bedrock_aip import TIER_TO_FM, resolve_tier_from_aip_arn
 
 
 class UnknownModelError(Exception):
@@ -87,14 +87,10 @@ _RATES: dict[str, ModelRate] = {
 
 
 # Tier (the AIP "lane" Plan 2 assigns per owner) -> canonical foundation-model
-# id used as the rate-table key. The three keys mirror _RATES above. The meter
-# receives an AIP ARN (modelId in the invocation log), which normalize_model_id
-# cannot turn into a foundation id; this map closes that gap.
-_TIER_TO_FM: dict[str, str] = {
-    "opus": "anthropic.claude-opus-4-6-v1",
-    "sonnet": "anthropic.claude-sonnet-4-6",
-    "haiku": "anthropic.claude-haiku-4-5-20251001-v1:0",
-}
+# id used as the rate-table key. The meter receives an AIP ARN (modelId in the
+# invocation log), which normalize_model_id cannot turn into a foundation id;
+# this map closes that gap. SINGLE SOURCE: imported from core.billing.bedrock_aip
+# (TIER_TO_FM) — the IAM-policy FM ARNs and these rate keys never drift.
 
 
 # Region prefixes used by Bedrock cross-region inference profiles. Mirrors
@@ -180,6 +176,36 @@ def cost_microcents(
     )
 
 
+def price_from_tier(
+    tier: str | None,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> int:
+    """Price an invocation from an already-resolved per-owner tier.
+
+    Maps the tier ("opus"/"sonnet"/"haiku") to its canonical foundation-model id
+    (TIER_TO_FM) and prices that. PURE — no DynamoDB read. The meter resolves the
+    tier once (alongside the owner) and passes it here, so there is exactly one
+    reverse-table read per metered record.
+
+    Raises:
+        UnknownModelError: the tier maps to no known foundation model.
+    """
+    fm_id = TIER_TO_FM.get(tier) if tier else None
+    if fm_id is None:
+        raise UnknownModelError(tier)
+    return cost_microcents(
+        model_id=fm_id,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
+
+
 async def price_from_aip_arn(
     *,
     aip_arn: str,
@@ -191,8 +217,10 @@ async def price_from_aip_arn(
     """Price an invocation whose modelId is a per-owner AIP ARN.
 
     The AIP ARN cannot be priced directly (it carries no foundation-model id),
-    so we resolve the owner's tier (Plan 2's AIP registry) and price the
-    canonical foundation-model id for that tier.
+    so we resolve the owner's tier (Plan 2's AIP registry) and delegate to
+    ``price_from_tier``. The meter endpoint prefers ``price_from_tier`` directly
+    (it resolves the tier alongside the owner in one read); this helper remains
+    for callers that hold only the AIP ARN.
 
     NOTE (plan/reality reconciliation): the Plan-3 doc declared this helper
     synchronous and called ``resolve_tier_from_aip_arn`` without ``await``. The
@@ -200,19 +228,19 @@ async def price_from_aip_arn(
     DynamoDB reverse-table GetItem), so this helper MUST be ``async`` and await
     it — a sync call would only ever return an un-awaited coroutine, which the
     tier map never matches, silently raising UnknownModelError on every record.
-    The Task-6 endpoint (out of this task's scope) consequently awaits this.
 
     Raises:
         UnknownModelError: the AIP ARN maps to no known tier.
     """
     tier = await resolve_tier_from_aip_arn(aip_arn)
-    fm_id = _TIER_TO_FM.get(tier) if tier else None
-    if fm_id is None:
-        raise UnknownModelError(aip_arn)
-    return cost_microcents(
-        model_id=fm_id,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_write_tokens,
-    )
+    try:
+        return price_from_tier(
+            tier,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+        )
+    except UnknownModelError:
+        # Surface the AIP ARN (the caller's input) in the error, not the tier.
+        raise UnknownModelError(aip_arn) from None

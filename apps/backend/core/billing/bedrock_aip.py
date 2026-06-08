@@ -1,0 +1,98 @@
+"""Per-owner Bedrock application inference profiles (AIPs) + scoped IAM role.
+
+This module is the Plan-2 enforcement boundary. It mints three per-owner AIPs
+(one per tier: opus/sonnet/haiku), each ``copyFrom`` the corresponding system
+regional inference profile (which fans out to the foundation model in
+us-east-1/us-east-2/us-west-2), and a per-owner IAM role scoped by the
+``bedrock:InferenceProfileArn`` condition key to ONLY that owner's AIPs plus the
+underlying foundation-model ARNs in every fan-out region. An explicit
+``Deny bedrock:CreateInferenceProfile`` stops a tenant from minting a wider
+profile to escape the scope.
+
+Everything is a FREE FUNCTION (not a method on EcsManager) so the reverse
+lookup (Plan 3) and the kill-switch (Plan 4) can import these without
+constructing EcsManager, which eagerly builds boto3 clients in __init__.
+
+Shared contracts other plans import:
+  * resolve_owner_from_aip_arn(aip_arn) -> str | None   (Plan 3, meter)
+  * resolve_tier_from_aip_arn(aip_arn) -> str | None     (Plan 3, pricing)
+  * resolve_owner_from_identity_arn(identity_arn) -> str | None  (Plan 3, fallback attribution)
+  * revoke_owner_bedrock(owner_id) / restore_owner_bedrock(owner_id)  (Plan 4)
+"""
+
+from __future__ import annotations
+
+# The three AIP tiers. Order matters only for deterministic iteration.
+TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")
+
+# Bedrock cross-region inference fans out to these regions; the per-owner role
+# must permit the foundation-model ARN in EACH of them.
+FAN_OUT_REGIONS: tuple[str, str, str] = ("us-east-1", "us-east-2", "us-west-2")
+
+# Foundation-model ids (LIVE-CONFIRMED). opus carries the "-v1" suffix; haiku
+# carries the full date-stamp + ":0". An off-by-one suffix breaks invocation.
+FM_IDS: tuple[str, str, str] = (
+    "anthropic.claude-opus-4-6-v1",
+    "anthropic.claude-sonnet-4-6",
+    "anthropic.claude-haiku-4-5-20251001-v1:0",
+)
+
+# System (source) regional inference-profile ids to copyFrom, per tier.
+SYSTEM_PROFILE_ID: dict[str, str] = {
+    "opus": "us.anthropic.claude-opus-4-6-v1",
+    "sonnet": "us.anthropic.claude-sonnet-4-6",
+    "haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+
+def _foundation_model_arns(regions: tuple[str, ...]) -> list[str]:
+    """The 9 (len(FM_IDS) x len(regions)) foundation-model ARNs.
+
+    Invoking THROUGH an inference profile requires BOTH the profile ARN AND the
+    underlying foundation-model ARN to be permitted — AWS evaluates both. The
+    foundation-model ARN omits the account segment (it is AWS-owned):
+    arn:aws:bedrock:<region>::foundation-model/<model>.
+    """
+    return [f"arn:aws:bedrock:{region}::foundation-model/{model}" for region in regions for model in FM_IDS]
+
+
+def build_owner_bedrock_policy(
+    *,
+    owner_id: str,
+    aip_arns: dict[str, str],
+    account: str,
+    regions: tuple[str, ...],
+) -> dict:
+    """Build the per-owner Bedrock inline IAM policy document (PURE — no boto3).
+
+    Allows InvokeModel/InvokeModelWithResponseStream on this owner's 3 AIP ARNs
+    plus the 9 foundation-model ARNs, conditioned on
+    bedrock:InferenceProfileArn == {this owner's AIPs}. Explicitly denies
+    bedrock:CreateInferenceProfile so the tenant cannot widen its own scope.
+    """
+    owner_aip_list = sorted(aip_arns.values())
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "OwnerScopedBedrockInvoke",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                ],
+                "Resource": owner_aip_list + _foundation_model_arns(regions),
+                "Condition": {
+                    "ArnEquals": {
+                        "bedrock:InferenceProfileArn": owner_aip_list,
+                    }
+                },
+            },
+            {
+                "Sid": "DenyTenantProfileEscalation",
+                "Effect": "Deny",
+                "Action": "bedrock:CreateInferenceProfile",
+                "Resource": "*",
+            },
+        ],
+    }

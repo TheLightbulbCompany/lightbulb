@@ -75,8 +75,8 @@ Scope notes
   1 USD = 1e6 microcents) holds Isol8's RAW, un-marked-up cost: in
   ``record_usage`` it is taken verbatim from OpenClaw's
   ``estimatedCostUsd`` (or recomputed pre-markup from the Bedrock pricing
-  table). The 1.4× customer markup is applied only later in
-  ``credit_ledger.deduct``. The AWS bill is itself un-marked-up, so the
+  table). The 1.4× customer markup is applied only later at metering time
+  (the AWS invocation-log meter). The AWS bill is itself un-marked-up, so the
   dollar reconciliation compares AWS $ against this RAW ledger spend — NOT
   the 1.4× customer price.
 

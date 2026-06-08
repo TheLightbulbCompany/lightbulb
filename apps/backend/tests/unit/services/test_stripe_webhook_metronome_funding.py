@@ -2,7 +2,7 @@
 
 Phase 3 cutover: Metronome is the SOLE ledger, so a paid top-up funds a
 Metronome prepaid commit UNCONDITIONALLY (no LEDGER_BACKEND gate). The legacy
-DDB credit_ledger.top_up shadow-write was deleted.
+DDB ledger's top-up shadow-write was deleted.
 """
 
 from unittest.mock import AsyncMock, patch

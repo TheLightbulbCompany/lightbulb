@@ -1,5 +1,5 @@
-"""The provision-time balance gate must read through the ledger interface,
-not core.services.credit_ledger directly — so the chat gate and the
+"""The provision-time balance gate must read through the ledger interface
+(get_ledger), not any concrete backend directly — so the chat gate and the
 provision gate read one money source. A top-up that unblocks chat must
 also let the container re-provision (and a runaway that drained the
 balance must keep it down)."""

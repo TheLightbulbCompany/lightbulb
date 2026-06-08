@@ -124,7 +124,7 @@ async def set_auto_recharge(
     client: MetronomeClient | None = None,
 ) -> None:
     """Configure Metronome auto-recharge for an owner (replaces the legacy
-    credit_ledger.set_auto_reload).
+    DDB ledger's set_auto_reload).
 
     Maps the legacy (threshold_cents, amount_cents-as-increment) contract onto
     Metronome's credit_balance_threshold_configuration, where recharge_to_amount

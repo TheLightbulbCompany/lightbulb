@@ -152,7 +152,8 @@ def cost_microcents(
 ) -> int:
     """Compute the un-marked-up cost in microcents for an inference call.
 
-    Markup is applied separately by ``credit_ledger.deduct``. Cache tokens
+    Markup is applied separately at metering time (the AWS invocation-log
+    meter builds the billed amount from this raw cost). Cache tokens
     default to 0 so older callers that don't pass them keep working —
     new callers should pass them so cache-write surcharge and cache-read
     discount land in the ledger.

@@ -1214,6 +1214,30 @@ class GatewayConnection:
         # `raw * 14 // 10` instead. Spec §6.3 mandates microcents-as-int
         # throughout the credit ledger.
         marked_up = raw * 14 // 10
+        # Shadow phase: log what THIS legacy path would deduct so the
+        # operator can diff it against the AWS invocation-log meter's
+        # deductions for the same window before the meter becomes the sole
+        # biller. raw*14//10 matches the meter's markup exactly, so a
+        # non-zero diff is a real discrepancy, not float drift. This does
+        # NOT add a second decrement — the deduct below is still the live one.
+        #
+        # The metric carries ONLY the low-cardinality `model` dimension; the
+        # raw/marked-up amounts are unbounded-cardinality (every distinct cost
+        # is a new dimension value), so they go in the structured log line, not
+        # as CloudWatch dimensions (per core/observability/metrics.py:put_metric
+        # — high-cardinality values must be log fields, not metric dimensions).
+        put_metric(
+            "billing.legacy_deduct.shadow",
+            dimensions={"model": bare_model},
+        )
+        logger.info(
+            "SHADOW legacy deduct owner=%s session=%s raw=%d marked_up=%d model=%s",
+            self.user_id,
+            chat_session_id,
+            raw,
+            marked_up,
+            bare_model,
+        )
         await credit_ledger.deduct(
             self.user_id,
             amount_microcents=marked_up,

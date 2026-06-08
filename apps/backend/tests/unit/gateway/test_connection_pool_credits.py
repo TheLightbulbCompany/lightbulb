@@ -668,3 +668,55 @@ async def test_fetch_and_record_estimated_cost_with_zero_tokens_not_dropped():
     assert rkwargs["raw_cost_microcents"] == 900_000
     assert len(deduct_calls) == 1
     assert deduct_calls[0]["raw_cost_microcents"] == 900_000
+
+
+# --------- Task 5: shadow-log the legacy deduct ---------
+
+
+@pytest.mark.asyncio
+async def test_legacy_deduct_emits_shadow_metric(caplog):
+    """Before deleting the legacy biller, _maybe_deduct_credits emits a
+    low-cardinality shadow metric (model only) PLUS a structured log line
+    carrying the would-be raw + marked_up amounts so the operator can diff
+    the legacy path against the AWS meter's deductions. The raw/marked-up
+    amounts are unbounded-cardinality, so they live in the log, NOT as
+    CloudWatch dimensions."""
+    import logging
+
+    conn = _make_connection(user_id="org_Y")
+    deduct_mock = AsyncMock(return_value=0)
+    metric_calls = []
+
+    def _capture_metric(name, **kwargs):
+        metric_calls.append((name, kwargs))
+
+    with (
+        caplog.at_level(logging.INFO, logger="core.gateway.connection_pool"),
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+        ),
+        patch("core.services.credit_ledger.deduct", new=deduct_mock),
+        patch("core.gateway.connection_pool.put_metric", new=_capture_metric),
+    ):
+        await conn._maybe_deduct_credits(
+            chat_session_id="sess_shadow",
+            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+    # Legacy deduct still fires (shadow does not replace it yet).
+    deduct_mock.assert_awaited_once()
+    shadow = [c for c in metric_calls if c[0] == "billing.legacy_deduct.shadow"]
+    assert len(shadow) == 1
+    dims = shadow[0][1]["dimensions"]
+    assert dims["model"] == "anthropic.claude-sonnet-4-6"
+    # The unbounded-cardinality amounts must NOT be metric dimensions.
+    assert "raw_microcents" not in dims
+    assert "marked_up_microcents" not in dims
+    # They are in the structured log line instead. raw 11_550 -> 1.4x ->
+    # 16_170 (matches the AWS meter's raw*14//10).
+    shadow_log = next(r.getMessage() for r in caplog.records if "SHADOW legacy deduct" in r.getMessage())
+    assert "raw=11550" in shadow_log
+    assert "marked_up=16170" in shadow_log

@@ -392,6 +392,13 @@ async def fetch_ledger_deduct_spend_usd(periods: list[str]) -> float:
     wanted = tuple(periods)
     total_microcents = 0
 
+    # Full-table scan: credit-transactions is keyed PK=user_id / SK=tx_id with
+    # no GSI on ``type`` or ``created_at`` (database-stack.ts), so a cross-owner
+    # time-windowed sum has no alternative access pattern. This is an accepted
+    # tradeoff for a daily batch job over an interim, low-volume ledger (and
+    # mirrors fetch_ledger_spend_usd). Rows are immutable audit, so scan cost
+    # grows with total table size — if the table grows large, add a
+    # ``created_at`` GSI and query the window instead of scanning.
     table = get_table("credit-transactions")
     last_evaluated_key: dict | None = None
     while True:

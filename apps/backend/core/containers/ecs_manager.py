@@ -707,6 +707,14 @@ class EcsManager:
         stop's DDB status flip to "stopped" is durable only because the now-<=0
         balance keeps `evaluate_provision_gate` returning `credits_required`,
         so the next `/container/status` poll cannot re-launch the service.
+
+        The ECS stop is the durable half, but it is NOT individually guarded:
+        if `stop_user_service` raises (e.g. `update_service` flakes before the
+        status flip), that exception propagates to `enforce_after_deplete`'s
+        catch-all, which logs and swallows it. The container then keeps
+        spending until the NEXT applied deplete re-fires this kill — because
+        the status never became "stopped", `is_owner_service_stopped` does not
+        short-circuit, so the retry path self-heals.
         """
         from core.billing.bedrock_aip import revoke_owner_bedrock
         from core.observability.metrics import put_metric

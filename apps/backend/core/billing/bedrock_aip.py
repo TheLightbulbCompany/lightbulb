@@ -245,3 +245,97 @@ async def resolve_owner_from_identity_arn(identity_arn: str) -> str | None:
         return None
     owner_id = role_name[len(prefix) :]
     return owner_id or None
+
+
+def _bedrock_client():
+    """Bedrock CONTROL-PLANE client (create/list/tag inference profiles).
+    NB: 'bedrock', not 'bedrock-runtime' (which is the invoke client)."""
+    return boto3.client("bedrock", region_name=settings.AWS_REGION)
+
+
+def _env() -> str:
+    return settings.ENVIRONMENT or "dev"
+
+
+def _aip_name(owner_id: str, tier: str) -> str:
+    """Env-prefixed AIP name so dev/prod never collide on a global name."""
+    return f"isol8-{_env()}-{owner_id}-{tier}"
+
+
+async def ensure_owner_aips(owner_id: str) -> dict[str, str]:
+    """Idempotently create the 3 per-owner AIPs (one per tier); return
+    {tier: aip_arn}. Persists to the containers row + reverse table.
+
+    Idempotent: if all 3 tiers are already persisted, returns them without any
+    Bedrock control-plane call — but STILL re-puts the reverse-index rows
+    (review C1). The row update and the reverse PutItems in persist_owner_aips
+    are NOT atomic; a prior partial failure (row written, one reverse PutItem
+    failed) leaves resolve_owner_from_aip_arn unable to attribute that AIP. The
+    reverse PutItems are idempotent (same key, same value), so re-running them
+    on the short-circuit path is cheap and self-heals the index.
+    """
+    from core.dynamodb import run_in_thread
+
+    existing = await read_owner_aips(owner_id)
+    if existing and all(tier in existing for tier in TIERS):
+        # Self-heal the reverse index in case a prior run's reverse PutItems
+        # partially failed after the row was written (C1 inconsistency window).
+        table = _aip_owners_table()
+        for tier, arn in existing.items():
+            await _put_reverse_row(table, arn=arn, owner_id=owner_id, tier=tier)
+        return existing
+
+    client = _bedrock_client()
+    arns: dict[str, str] = dict(existing or {})
+    for tier in TIERS:
+        if tier in arns:
+            continue
+        name = _aip_name(owner_id, tier)
+        try:
+            resp = await run_in_thread(
+                client.create_inference_profile,
+                inferenceProfileName=name,
+                modelSource={"copyFrom": SYSTEM_PROFILE_ID[tier]},
+                tags=[
+                    {"key": "owner_id", "value": owner_id},
+                    {"key": "tier", "value": tier},
+                    {"key": "ManagedBy", "value": "isol8-backend"},
+                ],
+            )
+            arns[tier] = resp["inferenceProfileArn"]
+        except ClientError as e:
+            # ConflictException == a same-named AIP already exists from a prior
+            # crashed run (created in Bedrock but never persisted to the row).
+            # Adopt it instead of hard-failing — makes the mint converge rather
+            # than 500 a restart/re-provision. NB: boto3's bedrock typed
+            # ConflictException is a ClientError subclass, so this one clause
+            # covers both real and unit-test (generic ClientError) raises.
+            if e.response["Error"]["Code"] != "ConflictException":
+                raise
+            adopted = await _find_existing_aip_arn(client, name)
+            if not adopted:
+                raise  # conflict but we can't find it — surface the real error
+            arns[tier] = adopted
+
+    await persist_owner_aips(owner_id, arns)
+    return arns
+
+
+async def _find_existing_aip_arn(client, name: str) -> str | None:
+    """List application inference profiles and return the ARN of the one whose
+    name matches `name`, or None. Used to recover from a ConflictException on a
+    re-mint where the AIP exists in Bedrock but the row was never persisted."""
+    from core.dynamodb import run_in_thread
+
+    token: str | None = None
+    while True:
+        kwargs: dict = {"typeEquals": "APPLICATION", "maxResults": 100}
+        if token:
+            kwargs["nextToken"] = token
+        resp = await run_in_thread(client.list_inference_profiles, **kwargs)
+        for prof in resp.get("inferenceProfileSummaries", []):
+            if prof.get("inferenceProfileName") == name:
+                return prof.get("inferenceProfileArn")
+        token = resp.get("nextToken")
+        if not token:
+            return None

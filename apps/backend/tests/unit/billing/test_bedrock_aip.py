@@ -1,7 +1,11 @@
 """Unit tests for core.billing.bedrock_aip — per-owner AIP + scoped IAM role."""
 
+import json
+from unittest.mock import MagicMock
+
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.billing.bedrock_aip import (
@@ -278,3 +282,102 @@ class TestResolveOwnerFromIdentity:
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         arn = "arn:aws:sts::877352799272:assumed-role/isol8-prod-owner-bedrock-org_abc/sess"
         assert await mod.resolve_owner_from_identity_arn(arn) is None
+
+
+class TestEnsureAips:
+    @pytest.mark.asyncio
+    async def test_creates_one_aip_per_tier_and_persists(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        created = {}
+
+        def _create(**kwargs):
+            # Map the copyFrom source profile back to a tier for assertion.
+            src = kwargs["modelSource"]["copyFrom"]
+            tier = next(t for t, p in mod.SYSTEM_PROFILE_ID.items() if p == src)
+            created[tier] = kwargs
+            arn = f"arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/{tier}-aip"
+            return {"inferenceProfileArn": arn}
+
+        fake = MagicMock()
+        fake.create_inference_profile.side_effect = _create
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        arns = await mod.ensure_owner_aips("org_abc")
+
+        assert set(arns) == {"opus", "sonnet", "haiku"}
+        assert fake.create_inference_profile.call_count == 3
+        # Env-prefixed name, tag carries owner_id.
+        assert created["opus"]["inferenceProfileName"] == "isol8-dev-org_abc-opus"
+        tags = {t["key"]: t["value"] for t in created["opus"]["tags"]}
+        assert tags["owner_id"] == "org_abc"
+        assert tags["tier"] == "opus"
+        # Persisted: reverse lookup resolves.
+        assert await mod.resolve_owner_from_aip_arn(arns["opus"]) == "org_abc"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_no_recreate_when_already_present(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
+        }
+        await mod.persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
+
+        fake = MagicMock()
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        got = await mod.ensure_owner_aips("org_abc")
+        assert got == arns
+        fake.create_inference_profile.assert_not_called()
+        # C1 self-heal: short-circuit re-puts reverse rows so the index is
+        # consistent even if a prior run's reverse PutItem partially failed.
+        assert await mod.resolve_owner_from_aip_arn(arns["haiku"]) == "org_abc"
+
+    @pytest.mark.asyncio
+    async def test_conflict_adopts_existing_aip_instead_of_failing(self, aip_tables, monkeypatch):
+        """A crashed prior run left the AIP in Bedrock but never persisted the
+        row. The re-mint hits ConflictException and must ADOPT the existing AIP
+        (via list_inference_profiles) rather than raise (review C2/C3)."""
+        import core.billing.bedrock_aip as mod
+
+        def _create(**kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ConflictException", "Message": "exists"}},
+                "CreateInferenceProfile",
+            )
+
+        def _list(**kwargs):
+            return {
+                "inferenceProfileSummaries": [
+                    {
+                        "inferenceProfileName": "isol8-dev-org_abc-opus",
+                        "inferenceProfileArn": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/opus-exist",
+                    },
+                    {
+                        "inferenceProfileName": "isol8-dev-org_abc-sonnet",
+                        "inferenceProfileArn": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/sonnet-exist",
+                    },
+                    {
+                        "inferenceProfileName": "isol8-dev-org_abc-haiku",
+                        "inferenceProfileArn": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/haiku-exist",
+                    },
+                ]
+            }
+
+        fake = MagicMock()
+        fake.create_inference_profile.side_effect = _create
+        fake.list_inference_profiles.side_effect = _list
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        arns = await mod.ensure_owner_aips("org_abc")
+
+        assert arns["opus"].endswith("opus-exist")
+        assert set(arns) == {"opus", "sonnet", "haiku"}
+        # Adopted AIPs are persisted -> reverse lookup resolves.
+        assert await mod.resolve_owner_from_aip_arn(arns["sonnet"]) == "org_abc"

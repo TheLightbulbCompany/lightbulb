@@ -288,3 +288,63 @@ class TestDeplete:
         # ...and nothing was written to the txns table.
         resp = ledger_tables.scan(TableName="test-credit-txns")
         assert resp["Count"] == 0
+
+
+class TestEdgeCases:
+    def _post(self, client, **overrides):
+        token = service_token.mint_meter()
+        return client.post(
+            "/api/v1/internal/usage/from-bedrock-log",
+            headers={"Authorization": f"Bearer {token}"},
+            json=_body(**overrides),
+        )
+
+    def test_unattributed_owner_skips_without_deplete(self, client, ledger_tables):
+        # BOTH attribution paths miss → truly unattributed → skip, no deplete.
+        with (
+            patch(
+                "routers.internal_usage.resolve_owner_from_aip_arn",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "routers.internal_usage.resolve_owner_from_identity_arn",
+                AsyncMock(return_value=None),
+            ),
+        ):
+            r = self._post(client, request_id="req-orphan")
+        assert r.status_code == 200
+        assert r.json() == {"applied": False, "balance_microcents": 0}
+        # Nothing was written to the txns table.
+        resp = ledger_tables.scan(TableName="test-credit-txns")
+        assert resp["Count"] == 0
+
+    def test_unknown_model_skips_without_deplete(self, client, ledger_tables):
+        from core.billing.bedrock_pricing import UnknownModelError
+
+        with (
+            patch(
+                "routers.internal_usage.resolve_owner_from_aip_arn",
+                AsyncMock(return_value="org_abc"),
+            ),
+            patch(
+                "routers.internal_usage.price_from_aip_arn",
+                AsyncMock(side_effect=UnknownModelError("aip-???")),
+            ),
+        ):
+            r = self._post(client, request_id="req-unknown")
+        assert r.status_code == 200
+        assert r.json()["applied"] is False
+        resp = ledger_tables.scan(TableName="test-credit-txns")
+        assert resp["Count"] == 0
+
+    def test_route_is_mounted_but_hidden_from_openapi(self, client):
+        # Mounted: a POST with no auth hits the auth dep (401), not a 404.
+        assert client.post("/api/v1/internal/usage/from-bedrock-log", json=_body()).status_code == 401
+        # Hidden: not in the public schema (schemathesis posture).
+        # NOTE (plan/reality reconciliation): the Plan-3 doc fetched "/openapi.json",
+        # but this app serves the schema at f"{settings.API_V1_STR}/openapi.json"
+        # (main.py:423 sets openapi_url="/api/v1/openapi.json"), so "/openapi.json"
+        # 404s. Hitting the real schema URL is what actually exercises the
+        # include_in_schema=False posture.
+        schema = client.get("/api/v1/openapi.json").json()
+        assert "/api/v1/internal/usage/from-bedrock-log" not in schema["paths"]

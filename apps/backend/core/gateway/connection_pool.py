@@ -1876,8 +1876,8 @@ class GatewayConnectionPool:
         Reads use ``ConsistentRead=True`` so a top-up that just landed
         via Stripe webhook unblocks the next message immediately.
         """
+        from core.billing.ledger_interface import get_ledger
         from core.repositories import billing_repo
-        from core.services import credit_ledger
         from core.services.provision_gate import is_subscription_active
 
         # --- Layer 1: subscription status ----------------------------
@@ -1902,7 +1902,7 @@ class GatewayConnectionPool:
         if account is None or account.get("provider_choice") != "bedrock_claude":
             return {"blocked": False}
 
-        balance = await credit_ledger.get_balance(owner_id, consistent=True)
+        balance = await get_ledger().get_balance(owner_id, consistent=True)
         if balance <= 0:
             return {
                 "blocked": True,

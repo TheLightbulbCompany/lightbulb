@@ -15,10 +15,13 @@ def test_deplete_result_fields():
     assert r.applied is True
 
 
-def test_get_ledger_returns_ddb_backend_by_default(monkeypatch):
+def test_get_ledger_returns_metronome_backend_by_default(monkeypatch):
+    # Phase 3 cutover: the config default flipped to "metronome".
     monkeypatch.delenv("LEDGER_BACKEND", raising=False)
+    from core.billing.metronome_ledger_backend import MetronomeLedgerBackend
+
     ledger = get_ledger()
-    assert isinstance(ledger, DdbLedgerBackend)
+    assert isinstance(ledger, MetronomeLedgerBackend)
 
 
 def test_get_ledger_honours_ddb_setting(monkeypatch):

@@ -12,5 +12,5 @@ def test_metronome_settings_present_with_defaults():
     assert settings.METRONOME_API_KEY == ""
     assert settings.METRONOME_WEBHOOK_SECRET == ""
     assert settings.METRONOME_FAST_GATE_TABLE == ""
-    # Default ledger backend MUST still be ddb in Phase 2 (cutover is Phase 3).
-    assert settings.LEDGER_BACKEND == "ddb"
+    # Phase 3 cutover: Metronome is the sole ledger; "ddb" is no longer valid.
+    assert settings.LEDGER_BACKEND == "metronome"

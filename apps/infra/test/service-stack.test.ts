@@ -175,7 +175,11 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend role can mint Bedrock application inference profiles", () => {
+  test("backend role can mint Bedrock application inference profiles, scoped by the ManagedBy request tag", () => {
+    // CreateInferenceProfile is gated on aws:RequestTag/ManagedBy so the
+    // backend can only mint profiles it marks as its own (the AIP ARN cannot be
+    // pre-scoped at synth time). Without the condition this would be an
+    // unconditioned Resource:"*" create grant — see I-1.
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
       PolicyDocument: Match.objectLike({
@@ -183,6 +187,30 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
           Match.objectLike({
             Action: Match.arrayWith(["bedrock:CreateInferenceProfile"]),
             Resource: "*",
+            Condition: Match.objectLike({
+              StringEquals: Match.objectLike({
+                "aws:RequestTag/ManagedBy": "isol8-backend",
+              }),
+            }),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("backend role can act on its own Bedrock profiles, scoped by the ManagedBy resource tag", () => {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["bedrock:DeleteInferenceProfile"]),
+            Resource: "*",
+            Condition: Match.objectLike({
+              StringEquals: Match.objectLike({
+                "aws:ResourceTag/ManagedBy": "isol8-backend",
+              }),
+            }),
           }),
         ]),
       }),

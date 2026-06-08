@@ -317,19 +317,51 @@ export class ServiceStack extends cdk.Stack {
             },
           },
         }),
-        // Bedrock control plane: AIP ARNs are created at runtime so cannot be
-        // pre-scoped; constrain via the runtime owner_id tag on create.
+        // Bedrock control plane. AIP ARNs are created at runtime so cannot be
+        // pre-scoped by ARN; we constrain by tag instead. The mint stamps every
+        // AIP with ManagedBy=isol8-backend (see bedrock_aip.ensure_owner_aips),
+        // so:
+        //   - create + tag-on-create are gated on aws:RequestTag/ManagedBy, so
+        //     the backend can only mint profiles it marks as its own;
+        //   - delete/get/untag/list-tags are gated on aws:ResourceTag/ManagedBy,
+        //     so the backend can only act on profiles it minted;
+        //   - ListInferenceProfiles is a collection-level read with no resource
+        //     to tag, so it stays unconditioned (read-only; leaks no access).
+        // The actions are split across three statements because not every
+        // action supports the same condition key (RequestTag applies only to
+        // create/tag; ResourceTag applies only to actions that name a resource;
+        // List supports neither).
         new iam.PolicyStatement({
-          sid: "OwnerBedrockProfileControlPlane",
+          sid: "OwnerBedrockProfileCreate",
           actions: [
             "bedrock:CreateInferenceProfile",
+            "bedrock:TagResource",
+          ],
+          resources: ["*"],
+          conditions: {
+            StringEquals: {
+              "aws:RequestTag/ManagedBy": "isol8-backend",
+            },
+          },
+        }),
+        new iam.PolicyStatement({
+          sid: "OwnerBedrockProfileMutate",
+          actions: [
             "bedrock:DeleteInferenceProfile",
             "bedrock:GetInferenceProfile",
-            "bedrock:ListInferenceProfiles",
-            "bedrock:TagResource",
             "bedrock:UntagResource",
             "bedrock:ListTagsForResource",
           ],
+          resources: ["*"],
+          conditions: {
+            StringEquals: {
+              "aws:ResourceTag/ManagedBy": "isol8-backend",
+            },
+          },
+        }),
+        new iam.PolicyStatement({
+          sid: "OwnerBedrockProfileList",
+          actions: ["bedrock:ListInferenceProfiles"],
           resources: ["*"],
         }),
       ],

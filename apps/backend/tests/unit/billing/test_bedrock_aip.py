@@ -223,3 +223,58 @@ class TestResolveOwner:
             await resolve_tier_from_aip_arn("arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/nope")
             is None
         )
+
+
+class TestResolveOwnerFromIdentity:
+    @pytest.mark.asyncio
+    async def test_parses_owner_from_assumed_role_arn(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        # Invocation logs carry the STS assumed-role form, not the bare IAM role.
+        arn = "arn:aws:sts::877352799272:assumed-role/isol8-dev-owner-bedrock-org_abc/abc-session-1234"
+        assert await mod.resolve_owner_from_identity_arn(arn) == "org_abc"
+
+    @pytest.mark.asyncio
+    async def test_parses_owner_from_bare_iam_role_arn(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        arn = "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-user_xyz"
+        assert await mod.resolve_owner_from_identity_arn(arn) == "user_xyz"
+
+    @pytest.mark.asyncio
+    async def test_owner_id_with_embedded_hyphen_survives(self, aip_tables, monkeypatch):
+        """Clerk ids can contain hyphens; the prefix-strip (not a -split) must
+        return the FULL owner_id, not a truncated first segment."""
+        import core.billing.bedrock_aip as mod
+
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        arn = "arn:aws:sts::877352799272:assumed-role/isol8-dev-owner-bedrock-org_a-b-c/sess"
+        assert await mod.resolve_owner_from_identity_arn(arn) == "org_a-b-c"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_non_owner_role(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        # The shared task role, an exec role, an account root — none match the
+        # per-owner prefix, so attribution must fall through to None (the caller
+        # treats None as "unattributable").
+        for arn in (
+            "arn:aws:sts::877352799272:assumed-role/isol8-dev-container-SharedTaskRole/sess",
+            "arn:aws:iam::877352799272:role/some-other-role",
+            "arn:aws:iam::877352799272:root",
+            "not-an-arn",
+        ):
+            assert await mod.resolve_owner_from_identity_arn(arn) is None
+
+    @pytest.mark.asyncio
+    async def test_env_scoped_prefix_rejects_wrong_env(self, aip_tables, monkeypatch):
+        """A prod identity ARN must NOT resolve under a dev backend (the prefix
+        is env-scoped), so cross-env log bleed cannot misattribute."""
+        import core.billing.bedrock_aip as mod
+
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        arn = "arn:aws:sts::877352799272:assumed-role/isol8-prod-owner-bedrock-org_abc/sess"
+        assert await mod.resolve_owner_from_identity_arn(arn) is None

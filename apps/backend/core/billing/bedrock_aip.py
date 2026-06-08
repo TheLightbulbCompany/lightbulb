@@ -197,3 +197,51 @@ async def resolve_tier_from_aip_arn(aip_arn: str) -> str | None:
         return None
     tier = item.get("tier")
     return str(tier) if tier else None
+
+
+async def resolve_owner_from_identity_arn(identity_arn: str) -> str | None:
+    """SHARED CONTRACT (Plan 3 fallback attribution): given an invocation-log
+    `identity.arn` (the per-owner role the ECS task assumed), return the owning
+    owner_id, or None if the ARN is not a per-owner Bedrock role.
+
+    Used by Plan 3 ONLY when resolve_owner_from_aip_arn misses (legacy/cleared
+    reverse row, or a record whose modelId is not an AIP). No extra storage:
+    the per-owner role name is deterministic — isol8-{env}-owner-bedrock-{owner}
+    (matches _owner_role_name, see ensure_owner_bedrock_role) — so the owner_id
+    is the role-name suffix after the env-scoped prefix.
+
+    Accepts BOTH the assumed-role STS form an invocation log records
+    (arn:aws:sts::<acct>:assumed-role/<role-name>/<session>) AND the bare IAM
+    role form (arn:aws:iam::<acct>:role/<role-name>). Uses a single prefix-strip
+    (not a '-'-split) so an owner_id containing hyphens (Clerk ids can) is
+    returned in full. Env-scoped: a wrong-env prefix returns None (no cross-env
+    misattribution). This function does NOT touch DynamoDB — it is pure string
+    parsing — but is async to match the sibling resolvers' call shape.
+    """
+    if not identity_arn or ":" not in identity_arn:
+        return None
+
+    # Extract the IAM role NAME from either ARN form.
+    resource = identity_arn.split(":", 5)[-1]  # everything after the 5th ':'
+    if resource.startswith("assumed-role/"):
+        # assumed-role/<role-name>/<session-name>
+        parts = resource.split("/")
+        if len(parts) < 2:
+            return None
+        role_name = parts[1]
+    elif resource.startswith("role/"):
+        # role/<role-name>  (role names can themselves contain '/', so keep the
+        # remainder after the first segment).
+        role_name = resource.split("/", 1)[1]
+    else:
+        return None
+
+    # Inline env (identical to the _env helper Task 4 adds) keeps this resolver
+    # independent of later-task helpers; the prefix still matches the mint's
+    # _owner_role_name.
+    env = settings.ENVIRONMENT or "dev"
+    prefix = f"isol8-{env}-owner-bedrock-"
+    if not role_name.startswith(prefix):
+        return None
+    owner_id = role_name[len(prefix) :]
+    return owner_id or None

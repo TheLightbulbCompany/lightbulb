@@ -250,3 +250,52 @@ class TestCreateFlatFeeCheckout:
         ):
             with pytest.raises(BillingServiceError, match="No Stripe customer"):
                 await billing_service.create_flat_fee_checkout(owner_id="u_missing")
+
+
+@pytest.mark.asyncio
+async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
+    """A switch INTO bedrock_claude must NOT take the hot path (which would
+    call build_provider_block(bedrock, aip_arns=None) and raise), and must
+    NOT raise — it dispatches background_provision (cold path)."""
+    # No prior provider_choice -> none of the OLD-provider side-effect cleanup
+    # blocks (oauth, byo) fire, keeping the test free of oauth/key I/O while
+    # still exercising the bedrock hot-vs-cold selector.
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_1",
+            }
+        ),
+    )
+    # change_provider imports is_subscription_active LAZILY from
+    # core.services.provision_gate, so patch it at the source module.
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
+    hot = AsyncMock()
+    monkeypatch.setattr(billing_service, "_hot_swap_provider", hot)
+    bg = AsyncMock()
+    monkeypatch.setattr("core.services.container_provision.background_provision", bg)
+    created = []
+    monkeypatch.setattr(
+        billing_service.asyncio,
+        "create_task",
+        lambda coro: created.append(coro) or MagicMock(),
+    )
+
+    result = await billing_service.change_provider(
+        owner_id="user_x",
+        clerk_user_id="user_x",
+        owner_type="personal",
+        is_org_context=False,
+        provider_choice="bedrock_claude",
+    )
+
+    hot.assert_not_awaited()  # hot path skipped for bedrock target
+    assert result["restart"] is True
+    # background_provision (cold path) was scheduled.
+    assert created, "expected background_provision to be dispatched"
+    for coro in created:
+        coro.close()

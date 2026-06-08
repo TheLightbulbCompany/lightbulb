@@ -227,6 +227,7 @@ class EcsManager:
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
+        task_role_arn: str | None = None,
     ) -> dict:
         """Build register_task_definition kwargs by cloning the CDK-managed base.
 
@@ -306,7 +307,7 @@ class EcsManager:
             # simple and removes the SSM-pin dance that #299 had to add when
             # the two kinds of revisions co-mingled.
             family=f"{base['family']}{self._PER_USER_FAMILY_SUFFIX}",
-            taskRoleArn=base.get("taskRoleArn", ""),
+            taskRoleArn=task_role_arn or base.get("taskRoleArn", ""),
             executionRoleArn=base.get("executionRoleArn", ""),
             networkMode=base.get("networkMode", "awsvpc"),
             containerDefinitions=container_defs,
@@ -331,6 +332,7 @@ class EcsManager:
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
+        task_role_arn: str | None = None,
     ) -> str:
         """Clone the CDK base for a new per-user container.
 
@@ -359,6 +361,7 @@ class EcsManager:
                 secrets_for_task=secrets_for_task,
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
+                task_role_arn=task_role_arn,
             )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
@@ -472,6 +475,7 @@ class EcsManager:
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
+        task_role_arn: str | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -554,6 +558,7 @@ class EcsManager:
                 secrets_for_task=secrets_for_task,
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
+                task_role_arn=task_role_arn,
             )
             await self._update_container(
                 user_id,
@@ -782,6 +787,10 @@ class EcsManager:
                         "hook_token_provisioned_at": utc_now_iso(),
                     },
                 )
+            # Per-owner Bedrock role: a resize that re-registers from the CDK
+            # base would otherwise revert the container to the shared
+            # all-models task role (same self-heal class as hook_token above).
+            owner_task_role_arn = container.get("bedrock_role_arn")
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -789,6 +798,7 @@ class EcsManager:
                 new_cpu=new_cpu,
                 new_memory=new_memory,
                 hook_token=hook_token,
+                task_role_arn=owner_task_role_arn,
             )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
@@ -1387,6 +1397,7 @@ class EcsManager:
                             secrets_for_task=secrets_for_task,
                             environment_for_task=environment_for_task,
                             hook_token=existing_hook_token,
+                            task_role_arn=(existing.get("bedrock_role_arn") if existing else None),
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,

@@ -187,3 +187,36 @@ async def _set_threshold(
             threshold_amount=threshold_amount,
             recharge_to_amount=recharge_to_amount,
         )
+
+
+async def fund_backfill_credit(
+    *,
+    owner_id: str,
+    amount_microcents: int,
+    contract_id: str,
+    product_id: str,
+    client: MetronomeClient | None = None,
+) -> None:
+    """Grant a one-time, NON-payment-gated prepaid credit during the DDB->Metronome
+    balance migration. The owner already paid for this balance in the old ledger,
+    so we must NOT re-gate it on a new Stripe payment (that would double-charge).
+    Stamped with a deterministic backfill_key in metadata so a re-run is a
+    server-side-visible no-op partner to the script's own idempotency marker.
+    """
+    if amount_microcents <= 0:
+        raise FundingError(f"amount_microcents must be positive, got {amount_microcents}")
+    customer_id = _customer_id_for(owner_id)
+    commit = {
+        "product_id": product_id,
+        "amount": amount_microcents / _MICROCENTS_PER_DOLLAR,
+        "metadata": {"backfill_key": f"ddb-balance-backfill:{owner_id}", "owner_id": owner_id},
+    }
+    if client is not None:
+        await client.edit_contract_add_commits(
+            metronome_customer_id=customer_id, contract_id=contract_id, add_commits=[commit]
+        )
+        return
+    async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
+        await metronome_client.for_settings(http).edit_contract_add_commits(
+            metronome_customer_id=customer_id, contract_id=contract_id, add_commits=[commit]
+        )

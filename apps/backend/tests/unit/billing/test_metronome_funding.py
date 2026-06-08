@@ -197,3 +197,37 @@ async def test_set_auto_recharge_raises_when_customer_not_provisioned(provisione
             contract_id="contract-1",
             client=fake,
         )
+
+
+from core.billing.metronome_funding import fund_backfill_credit  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_fund_backfill_credit_is_not_payment_gated(provisioned_table):
+    fake = _fake_client()
+    await fund_backfill_credit(
+        owner_id="org_abc",
+        amount_microcents=12_000_000,  # $12.00
+        contract_id="contract-1",
+        product_id="prod-credits",
+        client=fake,
+    )
+    _, kwargs = fake.edit_contract_add_commits.call_args
+    commit = kwargs["add_commits"][0]
+    assert commit["amount"] == 12.0
+    # NON-payment-gated: the owner already paid in the old system.
+    assert "payment_gate_config" not in commit
+    assert commit["metadata"]["backfill_key"] == "ddb-balance-backfill:org_abc"
+
+
+@pytest.mark.asyncio
+async def test_fund_backfill_credit_rejects_non_positive(provisioned_table):
+    fake = _fake_client()
+    with pytest.raises(FundingError, match="positive"):
+        await fund_backfill_credit(
+            owner_id="org_abc",
+            amount_microcents=0,
+            contract_id="contract-1",
+            product_id="prod-credits",
+            client=fake,
+        )

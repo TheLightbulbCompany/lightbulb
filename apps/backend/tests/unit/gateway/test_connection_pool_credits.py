@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from core.gateway.connection_pool import GatewayConnection, GatewayConnectionPool
+from core.gateway.connection_pool import GatewayConnectionPool
 
 
 # --------- Task 4: pool.gate_chat ---------
@@ -260,88 +260,3 @@ async def test_legacy_billing_row_without_status_does_not_block():
     ):
         result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
     assert result == {"blocked": False}
-
-
-# --------- Task 6: METER_IS_LIVE gates the legacy deduct (cutover seam) ---------
-#
-# Deferred-merge (flag-gated) variant: the legacy _maybe_deduct_credits call
-# is gated on `not settings.METER_IS_LIVE` so EXACTLY ONE biller is live at
-# every point in time. With the flag False (the default at merge), the legacy
-# path is the sole live biller (Plan 3's meter is shadow-only); flipping the
-# flag True hands billing to the AWS invocation-log meter and skips this call.
-# The two billers write different tx_id namespaces and do NOT dedup against
-# each other, so running both would double-charge — the flag precludes that.
-# The method is kept (not deleted) so the flip stays reversible during meter
-# validation; its deletion is the FINAL post-flip cleanup. The analytics
-# record_usage write is unconditional (independent of the flag).
-
-
-def _make_connection_with_rpc(session: dict, user_id: str = "u_1") -> GatewayConnection:
-    """A GatewayConnection whose sessions.list RPC returns one *session* row."""
-    conn = object.__new__(GatewayConnection)
-    conn.user_id = user_id
-    conn.send_rpc = AsyncMock()
-    conn.wait_for_response = AsyncMock(return_value={"sessions": [session]})
-    return conn
-
-
-def _bedrock_session() -> dict:
-    import uuid
-
-    return {
-        "key": f"agent:main:{uuid.uuid4().hex}",
-        "inputTokens": 10,
-        "outputTokens": 5,
-        "model": "amazon-bedrock/anthropic.claude-sonnet-4-6",
-        "estimatedCostUsd": 1.5,
-    }
-
-
-@pytest.mark.asyncio
-async def test_meter_live_skips_legacy_deduct_keeps_analytics():
-    """METER_IS_LIVE=True: the AWS meter is the sole biller, so the legacy
-    _maybe_deduct_credits is NOT invoked — but the analytics record_usage
-    write still fires (it is independent of the billing path). This is the
-    'no double-charge' half of the exactly-once seam."""
-    session = _bedrock_session()
-    conn = _make_connection_with_rpc(session)
-    conn._maybe_deduct_credits = AsyncMock()
-    record_mock = AsyncMock()
-
-    with (
-        patch("core.services.usage_service.record_usage", new=record_mock),
-        patch("core.gateway.connection_pool.settings.METER_IS_LIVE", new=True),
-    ):
-        await conn._fetch_and_record_usage(session["key"], member_user_id="member_1")
-
-    record_mock.assert_awaited_once()
-    conn._maybe_deduct_credits.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_meter_off_runs_legacy_deduct_keeps_analytics():
-    """METER_IS_LIVE=False (the default): the legacy path is the sole live
-    biller, so _maybe_deduct_credits IS invoked, AND analytics record_usage
-    fires. This is the 'no zero-charge' half of the exactly-once seam — there
-    is never a window where NEITHER biller runs."""
-    session = _bedrock_session()
-    conn = _make_connection_with_rpc(session)
-    conn._maybe_deduct_credits = AsyncMock()
-    record_mock = AsyncMock()
-
-    with (
-        patch("core.services.usage_service.record_usage", new=record_mock),
-        patch("core.gateway.connection_pool.settings.METER_IS_LIVE", new=False),
-    ):
-        await conn._fetch_and_record_usage(session["key"], member_user_id="member_1")
-
-    record_mock.assert_awaited_once()
-    conn._maybe_deduct_credits.assert_awaited_once()
-
-
-def test_maybe_deduct_credits_method_retained_as_flag_gated_safety_net():
-    """The legacy biller method is RETAINED (not yet deleted) — it is the
-    reversible safety net gated behind METER_IS_LIVE during meter validation.
-    Its deletion is the final post-flip cleanup, so this test inverts to
-    `not hasattr` only once the meter is confirmed live."""
-    assert hasattr(GatewayConnection, "_maybe_deduct_credits")

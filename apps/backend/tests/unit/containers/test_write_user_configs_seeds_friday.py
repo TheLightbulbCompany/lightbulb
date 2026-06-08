@@ -6,6 +6,12 @@ import pytest
 
 from core.config import settings
 
+_AIPS = {
+    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus",
+    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-sonnet",
+    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-haiku",
+}
+
 
 @pytest.fixture(autouse=True)
 def _local_environment(monkeypatch):
@@ -81,6 +87,7 @@ async def test_invokes_seeder_after_write_openclaw_config(monkeypatch, tmp_path,
             gateway_token="t" * 32,
             provider_choice="bedrock_claude",
             byo_provider=None,
+            aip_arns=_AIPS,
         )
 
     write_oc_mock.assert_awaited_once()
@@ -132,6 +139,7 @@ async def test_swallows_seeder_failure_and_continues(monkeypatch, tmp_path, mana
             gateway_token="t" * 32,
             provider_choice="bedrock_claude",
             byo_provider=None,
+            aip_arns=_AIPS,
         )
 
     seeder_mock.assert_awaited_once()

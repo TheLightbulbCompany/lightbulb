@@ -205,6 +205,23 @@ async def test_provision_generates_hook_token_and_persists_it(manager, mock_ecs_
         patch("core.containers.ecs_manager.container_repo") as mock_repo,
         patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
         patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        # The bedrock_claude provision branch now mints per-owner AIPs + a
+        # scoped IAM role (Task 9); stub both so this hook-token test doesn't
+        # hit the real Bedrock/IAM control plane.
+        patch(
+            "core.billing.bedrock_aip.ensure_owner_aips",
+            new=AsyncMock(
+                return_value={
+                    "opus": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/o",
+                    "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
+                    "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
+                }
+            ),
+        ),
+        patch(
+            "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+            new=AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_test_123"),
+        ),
     ):
         mock_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))

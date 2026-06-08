@@ -1,6 +1,6 @@
 """Tests for per-owner task-role threading + bedrock AIP provision wiring."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -82,3 +82,84 @@ def test_register_task_definition_passes_owner_role(manager, mock_ecs_client):
     )
     reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
     assert reg_kwargs["taskRoleArn"] == "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_abc"
+
+
+class TestBedrockProvisionMint:
+    @pytest.mark.asyncio
+    async def test_bedrock_branch_mints_aips_role_and_threads_them(self, manager, monkeypatch):
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
+        }
+        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_abc"
+
+        ensure_aips = AsyncMock(return_value=arns)
+        ensure_role = AsyncMock(return_value=role_arn)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", ensure_aips)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", ensure_role)
+        # EMF metric emit -> no-op in tests (see Task 9 mock-surface note).
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+
+        # No existing service -> fresh-provision path.
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+        manager._service_exists = MagicMock(return_value=None)
+        create_svc = AsyncMock(return_value="openclaw-org_abc-hash")
+        write_cfg = AsyncMock()
+        start_svc = AsyncMock()
+        manager.create_user_service = create_svc
+        manager.write_user_configs = write_cfg
+        manager.start_user_service = start_svc
+
+        await manager.provision_user_container("org_abc", provider_choice="bedrock_claude", owner_type="org")
+
+        ensure_aips.assert_awaited_once_with("org_abc")
+        # Fresh (non-revoked) owner -> role minted WITH the Bedrock grant.
+        ensure_role.assert_awaited_once_with("org_abc", arns, skip_bedrock_grant=False)
+        # create_user_service got the per-owner role.
+        assert create_svc.call_args.kwargs["task_role_arn"] == role_arn
+        # write_user_configs got the AIP map.
+        assert write_cfg.call_args.kwargs["aip_arns"] == arns
+        # mint ran before start.
+        assert start_svc.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_revoked_owner_provision_does_not_regrant_bedrock(self, manager, monkeypatch):
+        """A re-provision of a kill-switched (bedrock_revoked=True) owner mints
+        the AIPs + role SHELL but passes skip_bedrock_grant=True so the scoped
+        Bedrock policy is NOT re-put — the kill-switch holds (review C6)."""
+        arns = {
+            "opus": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/o",
+            "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
+        }
+        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_rev"
+        ensure_aips = AsyncMock(return_value=arns)
+        ensure_role = AsyncMock(return_value=role_arn)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", ensure_aips)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", ensure_role)
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+
+        # Revoked owner row. The C6 guard reads bedrock_revoked via its own
+        # get_by_owner_id inside the mint block (runs before the main fetch);
+        # _service_exists -> None routes to the fresh-provision branch, which is
+        # fine — the load-bearing assertion is skip_bedrock_grant=True.
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "org_rev",
+                    "bedrock_revoked": True,
+                    "service_name": "openclaw-org_rev-hash",
+                    "hook_token": "ht",
+                }
+            ),
+        )
+        manager._service_exists = MagicMock(return_value=None)
+        manager.create_user_service = AsyncMock(return_value="openclaw-org_rev-hash")
+        manager.write_user_configs = AsyncMock()
+        manager.start_user_service = AsyncMock()
+
+        await manager.provision_user_container("org_rev", provider_choice="bedrock_claude", owner_type="org")
+
+        ensure_role.assert_awaited_once_with("org_rev", arns, skip_bedrock_grant=True)

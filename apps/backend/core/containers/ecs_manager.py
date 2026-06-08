@@ -1300,15 +1300,40 @@ class EcsManager:
                     user_id,
                 )
             secrets_for_task = await self._build_byo_secrets_for_user(user_id, byo_provider)
-        elif provider_choice == "bedrock_claude":
-            # No extra setup — auth comes from the ECS task IAM role granted
-            # bedrock:InvokeModel by the container stack.
-            pass
-        else:
+
+        if provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
             raise EcsManagerError(
                 f"Unknown provider_choice: {provider_choice!r}",
                 user_id,
             )
+
+        bedrock_aip_arns: dict[str, str] | None = None
+        bedrock_role_arn: str | None = None
+        if provider_choice == "bedrock_claude":
+            # Mint the per-owner AIPs + scoped IAM role SYNCHRONOUSLY here,
+            # before the service starts. The container's openclaw.json model
+            # ids become the AIP ARNs and the task role is the scoped per-owner
+            # role; if either were absent at first boot the container would
+            # either run on the shared all-models role or AccessDenied on the
+            # AIP-scoped role. Lazy import to avoid pulling bedrock_aip's boto3
+            # clients into module load.
+            from core.billing.bedrock_aip import (
+                ensure_owner_aips,
+                ensure_owner_bedrock_role,
+            )
+
+            bedrock_aip_arns = await ensure_owner_aips(user_id)
+
+            # KILL-SWITCH GUARD: ensure_owner_bedrock_role always re-puts the
+            # scoped inline policy, so calling it for a revoked owner would
+            # silently RESTORE Bedrock access — defeating the kill-switch on
+            # any re-provision/restart. Mint the AIPs + role SHELL (so the task
+            # role exists + carries EFS/logs/ssm), but do NOT re-grant the
+            # Bedrock inline policy if the owner is revoked. Plan 4 owns
+            # un-revoking (restore_owner_bedrock), not provision.
+            existing_row = await container_repo.get_by_owner_id(user_id)
+            is_revoked = bool(existing_row and existing_row.get("bedrock_revoked"))
+            bedrock_role_arn = await ensure_owner_bedrock_role(user_id, bedrock_aip_arns, skip_bedrock_grant=is_revoked)
 
         service_name = self._service_name(user_id)
 
@@ -1374,6 +1399,7 @@ class EcsManager:
                         byo_provider=byo_provider,
                         hook_token=existing_hook_token,
                         owner_type=owner_type,
+                        aip_arns=bedrock_aip_arns,
                     )
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
@@ -1568,6 +1594,7 @@ class EcsManager:
             secrets_for_task=secrets_for_task,
             environment_for_task=environment_for_task,
             hook_token=hook_token,
+            task_role_arn=bedrock_role_arn,
         )
 
         # Step 3: Write configs to EFS
@@ -1579,6 +1606,7 @@ class EcsManager:
                 byo_provider=byo_provider,
                 hook_token=hook_token,
                 owner_type=owner_type,
+                aip_arns=bedrock_aip_arns,
             )
         except Exception as e:
             put_metric("container.provision", dimensions={"status": "error"})
@@ -1769,6 +1797,7 @@ class EcsManager:
         byo_provider: str | None = None,
         hook_token: str | None = None,
         owner_type: str = "personal",
+        aip_arns: dict[str, str] | None = None,
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
@@ -1921,6 +1950,7 @@ class EcsManager:
             paperclip_company_id=paperclip_company_id,
             paperclip_api_url=settings.PAPERCLIP_INTERNAL_URL or None,
             integration_mcp_servers=integration_mcp_servers,
+            aip_arns=aip_arns,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

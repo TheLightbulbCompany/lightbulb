@@ -126,3 +126,44 @@ async def test_raises_on_http_error():
     client, _ = _client_with(bad)
     with pytest.raises(httpx.HTTPStatusError):
         await client.ingest([{"transaction_id": "x"}])
+
+
+@pytest.mark.asyncio
+async def test_set_credit_balance_threshold_shape():
+    client, fake = _client_with(_resp(200, {}))
+    await client.set_credit_balance_threshold(
+        metronome_customer_id="cust-uuid-1",
+        contract_id="contract-1",
+        is_enabled=True,
+        threshold_amount=5.0,
+        recharge_to_amount=25.0,
+    )
+
+    args, kwargs = fake.post.call_args
+    assert args[0] == "/contracts/edit"
+    assert kwargs["json"] == {
+        "customer_id": "cust-uuid-1",
+        "contract_id": "contract-1",
+        "credit_balance_threshold_configuration": {
+            "is_enabled": True,
+            "threshold_amount": 5.0,
+            "recharge_to_amount": 25.0,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_credit_balance_threshold_disable_omits_amounts():
+    client, fake = _client_with(_resp(200, {}))
+    await client.set_credit_balance_threshold(
+        metronome_customer_id="cust-uuid-1",
+        contract_id="contract-1",
+        is_enabled=False,
+    )
+    args, kwargs = fake.post.call_args
+    assert args[0] == "/contracts/edit"
+    assert kwargs["json"] == {
+        "customer_id": "cust-uuid-1",
+        "contract_id": "contract-1",
+        "credit_balance_threshold_configuration": {"is_enabled": False},
+    }

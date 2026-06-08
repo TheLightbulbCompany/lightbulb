@@ -89,6 +89,33 @@ class MetronomeClient:
             },
         )
 
+    async def set_credit_balance_threshold(
+        self,
+        *,
+        metronome_customer_id: str,
+        contract_id: str,
+        is_enabled: bool,
+        threshold_amount: float | None = None,
+        recharge_to_amount: float | None = None,
+    ) -> None:
+        """POST /v1/contracts/edit — configure auto-recharge via
+        credit_balance_threshold_configuration (research §2). When enabling,
+        Metronome auto-funds a commit up to recharge_to_amount once the balance
+        crosses below threshold_amount (it runs the recharge asynchronously
+        based on usage). When disabling, the amounts are omitted."""
+        config: dict[str, object] = {"is_enabled": is_enabled}
+        if is_enabled:
+            config["threshold_amount"] = threshold_amount
+            config["recharge_to_amount"] = recharge_to_amount
+        await self._post(
+            "/contracts/edit",
+            {
+                "customer_id": metronome_customer_id,
+                "contract_id": contract_id,
+                "credit_balance_threshold_configuration": config,
+            },
+        )
+
     async def get_net_balance(self, *, customer_id: str) -> dict:
         """POST /v1/contracts/customerBalances/getNetBalance — aggregated
         remaining balance. Returns the `data` sub-object. NOT for the

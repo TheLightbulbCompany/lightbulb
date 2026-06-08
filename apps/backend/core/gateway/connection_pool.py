@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
+from core.config import settings
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 from core.services.connection_service import ConnectionService
@@ -1109,28 +1110,44 @@ class GatewayConnection:
             except Exception:
                 logger.exception("Failed to record usage for user %s", self.user_id)
 
-            # Card-3 (bedrock_claude) deducts credits in addition to the
-            # legacy usage_service path. Other cards skip.
-            # Synchronous so the next chat sees the updated balance. The
-            # ledger is owner-scoped — _maybe_deduct_credits keys on
-            # self.user_id (the container owner), so org members share
-            # one pooled balance.
-            try:
-                await self._maybe_deduct_credits(
-                    chat_session_id=session_key,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read_tokens=cache_read,
-                    cache_write_tokens=cache_write,
-                    raw_cost_microcents=raw_cost_microcents,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to deduct credits for user %s session %s",
-                    self.user_id,
-                    session_key,
-                )
+            # Single-deduct cutover seam (METER_IS_LIVE, owned by Plan 4).
+            # When the flag is False (the default), this legacy in-container
+            # path is the sole live biller: card-3 (bedrock_claude) deducts
+            # credits in addition to the analytics usage_service write above;
+            # other cards skip. Synchronous so the next chat sees the updated
+            # balance. The ledger is owner-scoped — _maybe_deduct_credits keys
+            # on self.user_id (the container owner), so org members share one
+            # pooled balance.
+            #
+            # When the flag is True, billing has been handed to the AWS Bedrock
+            # invocation-log meter (Plan 3 calls get_ledger().deplete(), the
+            # sole biller, then enforce_after_deplete). This legacy deduct must
+            # then NOT fire — both billers write different tx_id namespaces, so
+            # they do NOT dedup against each other; running both would
+            # double-charge the same balance row. Gating both paths on this one
+            # flag guarantees exactly one biller at every point in time and
+            # makes the cutover order-independent (no co-deploy race) and
+            # reversible by toggling the flag back. The analytics record_usage
+            # write above always runs regardless of the flag. The method itself
+            # is deleted only as a FINAL post-flip cleanup once the meter is
+            # validated live.
+            if not settings.METER_IS_LIVE:
+                try:
+                    await self._maybe_deduct_credits(
+                        chat_session_id=session_key,
+                        model=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read,
+                        cache_write_tokens=cache_write,
+                        raw_cost_microcents=raw_cost_microcents,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to deduct credits for user %s session %s",
+                        self.user_id,
+                        session_key,
+                    )
 
         except Exception:
             put_metric("chat.session_usage.fetch.error")

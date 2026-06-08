@@ -5,17 +5,17 @@ Two surfaces:
 - Pool-level ``GatewayConnectionPool.gate_chat`` — pre-chat hard-stop for
   card-3 users when balance ≤ 0; cards 1+2 + legacy users always pass.
 
-- Connection-level ``GatewayConnection._maybe_deduct_credits`` — invoked
-  from ``_fetch_and_record_usage`` after token counts come back from
-  ``sessions.list``; deducts from credit_ledger for card-3 only with
-  1.4x markup.
+- Connection-level ``GatewayConnection._fetch_and_record_usage`` — invoked
+  on the chat-end lifecycle event; after the meter cutover it records the
+  analytics usage counters ONLY. Credit deduction moved OUT of the
+  container path: the AWS Bedrock invocation-log meter is now the sole
+  biller (every-run, cache-correct, exactly-once on requestId).
 
 ``provider_choice`` is read from the ``billing_accounts`` row (per
-owner_id), NOT from the ``users`` row. Credit balance + deduction stay
-keyed on the chatting member.
+owner_id), NOT from the ``users`` row. Credit balance reads stay keyed on
+the container owner.
 """
 
-import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -262,305 +262,18 @@ async def test_legacy_billing_row_without_status_does_not_block():
     assert result == {"blocked": False}
 
 
-# --------- Task 5: connection._maybe_deduct_credits ---------
-
-
-def _make_connection(user_id: str = "u_1") -> GatewayConnection:
-    """Construct a GatewayConnection without opening a real WebSocket.
-
-    The deduct path only touches self.user_id; the WebSocket fields are
-    irrelevant. We bypass __init__ side-effects with object.__new__.
-    """
-    conn = object.__new__(GatewayConnection)
-    conn.user_id = user_id
-    return conn
-
-
-@pytest.mark.asyncio
-async def test_deduct_for_card3_sonnet_with_markup():
-    """Sonnet 4.6 = $3.3 input / $16.5 output per MTok (AWS-verified us. rates).
-    1000 input + 500 output → raw 11_550 microcents → 1.4x markup → 16_170.
-    """
-    conn = _make_connection()
-    deduct_mock = AsyncMock(return_value=8_000_000)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_1",
-            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
-            input_tokens=1000,
-            output_tokens=500,
-        )
-
-    deduct_mock.assert_awaited_once()
-    _, kwargs = deduct_mock.call_args
-    assert kwargs["amount_microcents"] == 16_170
-    assert kwargs["raw_cost_microcents"] == 11_550
-    assert kwargs["markup_multiplier"] == 1.4
-    assert kwargs["chat_session_id"] == "sess_1"
-
-
-@pytest.mark.asyncio
-async def test_deduct_for_card3_opus_with_markup():
-    """Opus 4.6 = $5.5 input / $27.5 output per MTok (AWS-verified us. rates).
-    1000 input + 500 output → raw 19_250 microcents → 1.4x → 26_950.
-    """
-    conn = _make_connection()
-    deduct_mock = AsyncMock(return_value=0)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_opus",
-            model="amazon-bedrock/anthropic.claude-opus-4-6-v1",
-            input_tokens=1000,
-            output_tokens=500,
-        )
-    _, kwargs = deduct_mock.call_args
-    assert kwargs["amount_microcents"] == 26_950
-    assert kwargs["raw_cost_microcents"] == 19_250
-
-
-@pytest.mark.asyncio
-async def test_deduct_keyed_on_owner_credits_pool():
-    """After the org-pooled-credits fix, both provider_choice (from
-    billing_repo) AND deduct (from credit_ledger.deduct) are keyed on
-    the connection's owner — self.user_id IS the container owner per
-    GatewayConnectionPool._create_connection. Without this, an org
-    member's chat would draw against their personal user_id row instead
-    of the org pool, leaving the admin's funded balance untouched.
-
-    The member_user_id passed in is the actual chatting Clerk user — it
-    must NOT be used as the ledger key (that was the bug pre-fix).
-    """
-    conn = _make_connection(user_id="org_Y")
-    billing_mock = AsyncMock(return_value={"provider_choice": "bedrock_claude"})
-    deduct_mock = AsyncMock(return_value=0)
-    with (
-        patch("core.repositories.billing_repo.get_by_owner_id", new=billing_mock),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="agent:main:member_X",
-            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
-            input_tokens=1000,
-            output_tokens=500,
-        )
-
-    billing_mock.assert_awaited_once_with("org_Y")
-    deduct_mock.assert_awaited_once()
-    args, _ = deduct_mock.call_args
-    # Owner-keyed: the chatting member_X is parseable from the session
-    # key, but the deduct key MUST be the connection's owner (org_Y).
-    assert args[0] == "org_Y"
-
-
-@pytest.mark.asyncio
-async def test_skip_deduct_for_card1():
-    conn = _make_connection()
-    deduct_mock = AsyncMock()
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_x",
-            model="openai-codex/gpt-5.5",
-            input_tokens=999,
-            output_tokens=999,
-        )
-    deduct_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_skip_deduct_for_card2():
-    conn = _make_connection()
-    deduct_mock = AsyncMock()
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "byo_key"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_byo",
-            model="openai/gpt-5.4",
-            input_tokens=100,
-            output_tokens=100,
-        )
-    deduct_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_unknown_model_skips_deduct():
-    """A new Claude model not yet in bedrock_pricing must not crash —
-    log + skip; operator updates the rate table and the next chat is fine."""
-    conn = _make_connection()
-    deduct_mock = AsyncMock()
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_unknown",
-            model="amazon-bedrock/anthropic.claude-fake-99",
-            input_tokens=100,
-            output_tokens=100,
-        )
-    deduct_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_model_id_without_provider_prefix_works():
-    """sessions.list may return a bare model id without the
-    "amazon-bedrock/" prefix — bedrock_pricing accepts the bare form."""
-    conn = _make_connection()
-    deduct_mock = AsyncMock(return_value=0)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_bare",
-            model="anthropic.claude-sonnet-4-6",  # no prefix
-            input_tokens=1000,
-            output_tokens=500,
-        )
-    deduct_mock.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_missing_billing_row_skips_deduct():
-    """No billing row for owner → skip credit deduction (no provider
-    choice to gate on)."""
-    conn = _make_connection()
-    deduct_mock = AsyncMock()
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=None),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_x",
-            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
-            input_tokens=1000,
-            output_tokens=500,
-        )
-    deduct_mock.assert_not_called()
-
-
-# --------- D1: bill on OpenClaw's cache-inclusive estimatedCostUsd ---------
-
-
-@pytest.mark.asyncio
-async def test_deduct_uses_raw_cost_override_with_markup():
-    """When ``raw_cost_microcents`` is supplied (sourced from OpenClaw's
-    cache-inclusive ``estimatedCostUsd``), it is used as the raw cost — NOT
-    recomputed from the cache-blind token counts. Markup is still applied:
-    raw 1_000_000 → 1.4x → 1_400_000.
-    """
-    conn = _make_connection()
-    deduct_mock = AsyncMock(return_value=0)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_override",
-            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
-            # Tiny cache-blind token counts — the token-based path would
-            # deduct only ~16_170; the override must win.
-            input_tokens=1000,
-            output_tokens=500,
-            raw_cost_microcents=1_000_000,
-        )
-
-    deduct_mock.assert_awaited_once()
-    _, kwargs = deduct_mock.call_args
-    assert kwargs["raw_cost_microcents"] == 1_000_000
-    assert kwargs["amount_microcents"] == 1_400_000  # 1_000_000 * 14 // 10
-    assert kwargs["markup_multiplier"] == 1.4
-
-
-@pytest.mark.asyncio
-async def test_deduct_raw_cost_override_used_even_for_unpriced_model():
-    """A real ``estimatedCostUsd`` must deduct even when the model has no
-    rate-table entry — the override is the authoritative cost, so an unknown
-    model with a positive override is NOT skipped."""
-    conn = _make_connection()
-    deduct_mock = AsyncMock(return_value=0)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_unpriced_override",
-            model="amazon-bedrock/anthropic.claude-fake-99",
-            input_tokens=10,
-            output_tokens=5,
-            raw_cost_microcents=2_000_000,
-        )
-
-    deduct_mock.assert_awaited_once()
-    _, kwargs = deduct_mock.call_args
-    assert kwargs["raw_cost_microcents"] == 2_000_000
-    assert kwargs["amount_microcents"] == 2_800_000  # 2_000_000 * 14 // 10
-
-
-@pytest.mark.asyncio
-async def test_deduct_none_override_falls_back_to_token_pricing():
-    """``raw_cost_microcents=None`` (the default — no ``estimatedCostUsd`` on
-    the row) keeps the token-based bedrock_pricing path unchanged."""
-    conn = _make_connection()
-    deduct_mock = AsyncMock(return_value=0)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-    ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_fallback",
-            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
-            input_tokens=1000,
-            output_tokens=500,
-            raw_cost_microcents=None,
-        )
-
-    _, kwargs = deduct_mock.call_args
-    assert kwargs["raw_cost_microcents"] == 11_550  # token-based
-    assert kwargs["amount_microcents"] == 16_170
-
-
-# --------- D1: _fetch_and_record_usage threads estimatedCostUsd through ---------
+# --------- Task 6: METER_IS_LIVE gates the legacy deduct (cutover seam) ---------
+#
+# Deferred-merge (flag-gated) variant: the legacy _maybe_deduct_credits call
+# is gated on `not settings.METER_IS_LIVE` so EXACTLY ONE biller is live at
+# every point in time. With the flag False (the default at merge), the legacy
+# path is the sole live biller (Plan 3's meter is shadow-only); flipping the
+# flag True hands billing to the AWS invocation-log meter and skips this call.
+# The two billers write different tx_id namespaces and do NOT dedup against
+# each other, so running both would double-charge — the flag precludes that.
+# The method is kept (not deleted) so the flip stays reversible during meter
+# validation; its deletion is the FINAL post-flip cleanup. The analytics
+# record_usage write is unconditional (independent of the flag).
 
 
 def _make_connection_with_rpc(session: dict, user_id: str = "u_1") -> GatewayConnection:
@@ -572,151 +285,63 @@ def _make_connection_with_rpc(session: dict, user_id: str = "u_1") -> GatewayCon
     return conn
 
 
-@pytest.mark.asyncio
-async def test_fetch_and_record_uses_estimated_cost_for_both_paths():
-    """The fix: ``estimatedCostUsd`` (cache-inclusive USD) is converted to
-    microcents and threaded into BOTH ``record_usage`` (analytics spend) and
-    ``_maybe_deduct_credits`` (credit deduction). Token counts are still
-    recorded for analytics. cacheRead/cacheWrite are absent (as in reality —
-    sessions.list omits them)."""
-    session_key = f"agent:main:{uuid.uuid4().hex}"
-    session = {
-        "key": session_key,
+def _bedrock_session() -> dict:
+    import uuid
+
+    return {
+        "key": f"agent:main:{uuid.uuid4().hex}",
         "inputTokens": 10,
         "outputTokens": 5,
         "model": "amazon-bedrock/anthropic.claude-sonnet-4-6",
-        "estimatedCostUsd": 1.5,  # → 1_500_000 microcents
+        "estimatedCostUsd": 1.5,
     }
-    conn = _make_connection_with_rpc(session)
-    deduct_calls = []
-
-    async def _capture_deduct(**kwargs):
-        deduct_calls.append(kwargs)
-
-    conn._maybe_deduct_credits = AsyncMock(side_effect=_capture_deduct)
-    record_mock = AsyncMock()
-
-    with patch("core.services.usage_service.record_usage", new=record_mock):
-        await conn._fetch_and_record_usage(session_key, member_user_id="member_1")
-
-    record_mock.assert_awaited_once()
-    _, rkwargs = record_mock.call_args
-    assert rkwargs["raw_cost_microcents"] == 1_500_000
-    assert rkwargs["input_tokens"] == 10
-    assert rkwargs["output_tokens"] == 5
-
-    assert len(deduct_calls) == 1
-    assert deduct_calls[0]["raw_cost_microcents"] == 1_500_000
 
 
 @pytest.mark.asyncio
-async def test_fetch_and_record_without_estimated_cost_falls_back():
-    """No ``estimatedCostUsd`` on the row → both paths get
-    ``raw_cost_microcents=None`` and fall back to token-based pricing."""
-    session_key = f"agent:main:{uuid.uuid4().hex}"
-    session = {
-        "key": session_key,
-        "inputTokens": 1000,
-        "outputTokens": 500,
-        "model": "amazon-bedrock/anthropic.claude-sonnet-4-6",
-        # no estimatedCostUsd
-    }
+async def test_meter_live_skips_legacy_deduct_keeps_analytics():
+    """METER_IS_LIVE=True: the AWS meter is the sole biller, so the legacy
+    _maybe_deduct_credits is NOT invoked — but the analytics record_usage
+    write still fires (it is independent of the billing path). This is the
+    'no double-charge' half of the exactly-once seam."""
+    session = _bedrock_session()
     conn = _make_connection_with_rpc(session)
-    deduct_calls = []
-
-    async def _capture_deduct(**kwargs):
-        deduct_calls.append(kwargs)
-
-    conn._maybe_deduct_credits = AsyncMock(side_effect=_capture_deduct)
+    conn._maybe_deduct_credits = AsyncMock()
     record_mock = AsyncMock()
-
-    with patch("core.services.usage_service.record_usage", new=record_mock):
-        await conn._fetch_and_record_usage(session_key, member_user_id="member_1")
-
-    _, rkwargs = record_mock.call_args
-    assert rkwargs.get("raw_cost_microcents") is None
-    assert deduct_calls[0]["raw_cost_microcents"] is None
-
-
-@pytest.mark.asyncio
-async def test_fetch_and_record_estimated_cost_with_zero_tokens_not_dropped():
-    """A cache-heavy turn reports ~0 input/output (sessions.list omits cache
-    counts) but a real positive ``estimatedCostUsd``. The zero-token guard
-    must NOT drop it — both billing paths must still fire."""
-    session_key = f"agent:main:{uuid.uuid4().hex}"
-    session = {
-        "key": session_key,
-        "inputTokens": 0,
-        "outputTokens": 0,
-        "model": "amazon-bedrock/anthropic.claude-sonnet-4-6",
-        "estimatedCostUsd": 0.9,  # → 900_000 microcents
-    }
-    conn = _make_connection_with_rpc(session)
-    deduct_calls = []
-
-    async def _capture_deduct(**kwargs):
-        deduct_calls.append(kwargs)
-
-    conn._maybe_deduct_credits = AsyncMock(side_effect=_capture_deduct)
-    record_mock = AsyncMock()
-
-    with patch("core.services.usage_service.record_usage", new=record_mock):
-        await conn._fetch_and_record_usage(session_key, member_user_id="member_1")
-
-    record_mock.assert_awaited_once()
-    _, rkwargs = record_mock.call_args
-    assert rkwargs["raw_cost_microcents"] == 900_000
-    assert len(deduct_calls) == 1
-    assert deduct_calls[0]["raw_cost_microcents"] == 900_000
-
-
-# --------- Task 5: shadow-log the legacy deduct ---------
-
-
-@pytest.mark.asyncio
-async def test_legacy_deduct_emits_shadow_metric(caplog):
-    """Before deleting the legacy biller, _maybe_deduct_credits emits a
-    low-cardinality shadow metric (model only) PLUS a structured log line
-    carrying the would-be raw + marked_up amounts so the operator can diff
-    the legacy path against the AWS meter's deductions. The raw/marked-up
-    amounts are unbounded-cardinality, so they live in the log, NOT as
-    CloudWatch dimensions."""
-    import logging
-
-    conn = _make_connection(user_id="org_Y")
-    deduct_mock = AsyncMock(return_value=0)
-    metric_calls = []
-
-    def _capture_metric(name, **kwargs):
-        metric_calls.append((name, kwargs))
 
     with (
-        caplog.at_level(logging.INFO, logger="core.gateway.connection_pool"),
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
-        ),
-        patch("core.services.credit_ledger.deduct", new=deduct_mock),
-        patch("core.gateway.connection_pool.put_metric", new=_capture_metric),
+        patch("core.services.usage_service.record_usage", new=record_mock),
+        patch("core.gateway.connection_pool.settings.METER_IS_LIVE", new=True),
     ):
-        await conn._maybe_deduct_credits(
-            chat_session_id="sess_shadow",
-            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
-            input_tokens=1000,
-            output_tokens=500,
-        )
+        await conn._fetch_and_record_usage(session["key"], member_user_id="member_1")
 
-    # Legacy deduct still fires (shadow does not replace it yet).
-    deduct_mock.assert_awaited_once()
-    shadow = [c for c in metric_calls if c[0] == "billing.legacy_deduct.shadow"]
-    assert len(shadow) == 1
-    dims = shadow[0][1]["dimensions"]
-    assert dims["model"] == "anthropic.claude-sonnet-4-6"
-    # The unbounded-cardinality amounts must NOT be metric dimensions.
-    assert "raw_microcents" not in dims
-    assert "marked_up_microcents" not in dims
-    # They are in the structured log line instead. raw 11_550 -> 1.4x ->
-    # 16_170 (matches the AWS meter's raw*14//10).
-    shadow_log = next(r.getMessage() for r in caplog.records if "SHADOW legacy deduct" in r.getMessage())
-    assert "raw=11550" in shadow_log
-    assert "marked_up=16170" in shadow_log
+    record_mock.assert_awaited_once()
+    conn._maybe_deduct_credits.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_meter_off_runs_legacy_deduct_keeps_analytics():
+    """METER_IS_LIVE=False (the default): the legacy path is the sole live
+    biller, so _maybe_deduct_credits IS invoked, AND analytics record_usage
+    fires. This is the 'no zero-charge' half of the exactly-once seam — there
+    is never a window where NEITHER biller runs."""
+    session = _bedrock_session()
+    conn = _make_connection_with_rpc(session)
+    conn._maybe_deduct_credits = AsyncMock()
+    record_mock = AsyncMock()
+
+    with (
+        patch("core.services.usage_service.record_usage", new=record_mock),
+        patch("core.gateway.connection_pool.settings.METER_IS_LIVE", new=False),
+    ):
+        await conn._fetch_and_record_usage(session["key"], member_user_id="member_1")
+
+    record_mock.assert_awaited_once()
+    conn._maybe_deduct_credits.assert_awaited_once()
+
+
+def test_maybe_deduct_credits_method_retained_as_flag_gated_safety_net():
+    """The legacy biller method is RETAINED (not yet deleted) — it is the
+    reversible safety net gated behind METER_IS_LIVE during meter validation.
+    Its deletion is the final post-flip cleanup, so this test inverts to
+    `not hasattr` only once the meter is confirmed live."""
+    assert hasattr(GatewayConnection, "_maybe_deduct_credits")

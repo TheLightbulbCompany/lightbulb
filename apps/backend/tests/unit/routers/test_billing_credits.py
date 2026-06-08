@@ -1,7 +1,7 @@
 """Tests for the credit-management endpoints."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -50,11 +50,17 @@ def credit_ledger_tables(monkeypatch):
         yield
 
 
+def _ledger_stub(get_balance):
+    stub = MagicMock()
+    stub.get_balance = get_balance
+    return stub
+
+
 @pytest.mark.asyncio
 async def test_get_balance_returns_microcents(async_client, credit_ledger_tables):
     with patch(
-        "routers.billing.credit_ledger.get_balance",
-        new=AsyncMock(return_value=12_345_678),
+        "routers.billing.get_ledger",
+        return_value=_ledger_stub(AsyncMock(return_value=12_345_678)),
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
@@ -76,7 +82,7 @@ async def test_get_balance_org_member_reads_owner_id(async_client_org_member, cr
         captured["key"] = key
         return 9_876_543
 
-    with patch("routers.billing.credit_ledger.get_balance", new=fake_get_balance):
+    with patch("routers.billing.get_ledger", return_value=_ledger_stub(fake_get_balance)):
         resp = await async_client_org_member.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
     assert resp.json() == {"balance_microcents": 9_876_543, "balance_dollars": "9.88"}
@@ -92,7 +98,7 @@ async def test_get_balance_personal_uses_user_id(async_client, credit_ledger_tab
         captured["key"] = key
         return 1_000_000
 
-    with patch("routers.billing.credit_ledger.get_balance", new=fake_get_balance):
+    with patch("routers.billing.get_ledger", return_value=_ledger_stub(fake_get_balance)):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
     assert captured["key"] == "user_test_123"

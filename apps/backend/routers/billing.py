@@ -23,6 +23,7 @@ from core.services.provision_gate import (
 )
 from core.services.usage_service import get_usage_summary
 from core.billing.bedrock_pricing import get_all_rates
+from core.billing.ledger_interface import get_ledger
 from core.tenancy_codes import PENDING_ORG_INVITATION
 from schemas.billing import (
     BillingAccountResponse,
@@ -559,7 +560,7 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
     # Credits pool at the owner level (org_id for org context, user_id for
     # personal). Keying on ctx.user_id meant org members couldn't see the
     # admin-funded balance and got blocked at chat with out_of_credits.
-    balance_uc = await credit_ledger.get_balance(resolve_owner_id(ctx))
+    balance_uc = await get_ledger().get_balance(resolve_owner_id(ctx))
     dollars = f"{balance_uc / 1_000_000:.2f}"
     return {"balance_microcents": balance_uc, "balance_dollars": dollars}
 

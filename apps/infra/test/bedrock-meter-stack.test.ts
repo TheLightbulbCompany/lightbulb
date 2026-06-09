@@ -106,6 +106,22 @@ describe("BedrockMeterStack", () => {
     });
   });
 
+  test("alarms actually page — DLQ + unattributed wired to an SNS action (I1)", () => {
+    // I1: an alarm with no action only flips a console dot. Assert the alarms
+    // carry an AlarmActions entry (the SNS topic) so a miss-storm reaches oncall.
+    template.resourceCountIs("AWS::SNS::Topic", 1);
+    // DLQ-depth alarm has an action.
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "ApproximateNumberOfMessagesVisible",
+      AlarmActions: Match.arrayWith([Match.objectLike({ Ref: Match.anyValue() })]),
+    });
+    // The unattributed revenue-leak alarm has an action.
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "meter.unattributed",
+      AlarmActions: Match.arrayWith([Match.objectLike({ Ref: Match.anyValue() })]),
+    });
+  });
+
   test("Lambda SG has egress to ALB on port 80", () => {
     template.hasResourceProperties("AWS::EC2::SecurityGroupEgress", {
       FromPort: 80,

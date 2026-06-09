@@ -9,6 +9,9 @@ import * as logsDestinations from "aws-cdk-lib/aws-logs-destinations";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 
@@ -270,14 +273,28 @@ export class BedrockMeterStack extends cdk.Stack {
       });
     }
 
-    // --- Alarms (review I2) ---------------------------------------------------
+    // --- Alarms (review I2 + I1) ----------------------------------------------
     // A silent revenue leak (records DLQ'd on transport/parse failure, or
     // skipped as unattributed/unknown-model) would be invisible until a manual
     // ledger-vs-Bedrock reconciliation. Alarm on BOTH the DLQ depth and the
     // skip/failure metrics so a sustained miss-storm pages instead of hiding.
     // These alarms live in this prod-only, account-scoped stack, so the W53
     // account-global-collision constraint is honored (no per-env duplicate).
-    new cloudwatch.Alarm(this, "MeterDlqNotEmptyAlarm", {
+    //
+    // I1: an alarm with no action only flips a console dot — it never pages. Wire
+    // every alarm to an SNS topic so a sustained miss-storm actually reaches
+    // oncall. This stack is prod-only and account-scoped, and the observability
+    // stack's page/warn topics are not exported across stacks (the codebase
+    // deliberately avoids cross-stack export coupling), so the topic is created
+    // here and subscribed to the same oncall address.
+    const alarmTopic = new sns.Topic(this, "MeterAlerts", {
+      topicName: `isol8-${props.envName}-bedrock-meter-alerts`,
+      displayName: "Isol8 Bedrock Meter Alerts",
+    });
+    alarmTopic.addSubscription(new subs.EmailSubscription("oncall@isol8.co"));
+    const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
+
+    const dlqAlarm = new cloudwatch.Alarm(this, "MeterDlqNotEmptyAlarm", {
       alarmName: `isol8-${props.envName}-bedrock-meter-dlq-not-empty`,
       alarmDescription:
         "Bedrock meter DLQ has messages - a record failed transport/parse or had a truncated output body and was held for redrive. Investigate before billing reconciles.",
@@ -291,6 +308,7 @@ export class BedrockMeterStack extends cdk.Stack {
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+    dlqAlarm.addAlarmAction(alarmAction);
 
     // One alarm per skip/failure metric. Each is emitted in the Isol8 EMF
     // namespace (the backend emits unattributed/unknown_model; the Lambda emits
@@ -304,7 +322,7 @@ export class BedrockMeterStack extends cdk.Stack {
       ["meter.parse_failed", "MeterParseFailedAlarm"],
     ];
     for (const [metricName, alarmId] of skipMetrics) {
-      new cloudwatch.Alarm(this, alarmId, {
+      const alarm = new cloudwatch.Alarm(this, alarmId, {
         alarmName: `isol8-${props.envName}-${metricName.replace(/\./g, "-")}`,
         alarmDescription: `Bedrock meter emitted ${metricName} - invocations are being skipped or failed in transport (potential revenue leak). Investigate.`,
         metric: new cloudwatch.Metric({
@@ -319,6 +337,7 @@ export class BedrockMeterStack extends cdk.Stack {
         evaluationPeriods: 1,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       });
+      alarm.addAlarmAction(alarmAction);
     }
 
     cdk.Tags.of(this).add("Project", "isol8");

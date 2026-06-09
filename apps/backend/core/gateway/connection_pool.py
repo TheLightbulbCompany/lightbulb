@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
+from core.config import settings
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 from core.services.connection_service import ConnectionService
@@ -1109,28 +1110,44 @@ class GatewayConnection:
             except Exception:
                 logger.exception("Failed to record usage for user %s", self.user_id)
 
-            # Card-3 (bedrock_claude) deducts credits in addition to the
-            # legacy usage_service path. Other cards skip.
-            # Synchronous so the next chat sees the updated balance. The
-            # ledger is owner-scoped — _maybe_deduct_credits keys on
-            # self.user_id (the container owner), so org members share
-            # one pooled balance.
-            try:
-                await self._maybe_deduct_credits(
-                    chat_session_id=session_key,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read_tokens=cache_read,
-                    cache_write_tokens=cache_write,
-                    raw_cost_microcents=raw_cost_microcents,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to deduct credits for user %s session %s",
-                    self.user_id,
-                    session_key,
-                )
+            # Single-deduct cutover seam (METER_IS_LIVE, owned by Plan 4).
+            # When the flag is False (the default), this legacy in-container
+            # path is the sole live biller: card-3 (bedrock_claude) deducts
+            # credits in addition to the analytics usage_service write above;
+            # other cards skip. Synchronous so the next chat sees the updated
+            # balance. The ledger is owner-scoped — _maybe_deduct_credits keys
+            # on self.user_id (the container owner), so org members share one
+            # pooled balance.
+            #
+            # When the flag is True, billing has been handed to the AWS Bedrock
+            # invocation-log meter (Plan 3 calls get_ledger().deplete(), the
+            # sole biller, then enforce_after_deplete). This legacy deduct must
+            # then NOT fire — both billers write different tx_id namespaces, so
+            # they do NOT dedup against each other; running both would
+            # double-charge the same balance row. Gating both paths on this one
+            # flag guarantees exactly one biller at every point in time and
+            # makes the cutover order-independent (no co-deploy race) and
+            # reversible by toggling the flag back. The analytics record_usage
+            # write above always runs regardless of the flag. The method itself
+            # is deleted only as a FINAL post-flip cleanup once the meter is
+            # validated live.
+            if not settings.METER_IS_LIVE:
+                try:
+                    await self._maybe_deduct_credits(
+                        chat_session_id=session_key,
+                        model=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read,
+                        cache_write_tokens=cache_write,
+                        raw_cost_microcents=raw_cost_microcents,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to deduct credits for user %s session %s",
+                        self.user_id,
+                        session_key,
+                    )
 
         except Exception:
             put_metric("chat.session_usage.fetch.error")
@@ -1214,6 +1231,30 @@ class GatewayConnection:
         # `raw * 14 // 10` instead. Spec §6.3 mandates microcents-as-int
         # throughout the credit ledger.
         marked_up = raw * 14 // 10
+        # Shadow phase: log what THIS legacy path would deduct so the
+        # operator can diff it against the AWS invocation-log meter's
+        # deductions for the same window before the meter becomes the sole
+        # biller. raw*14//10 matches the meter's markup exactly, so a
+        # non-zero diff is a real discrepancy, not float drift. This does
+        # NOT add a second decrement — the deduct below is still the live one.
+        #
+        # The metric carries ONLY the low-cardinality `model` dimension; the
+        # raw/marked-up amounts are unbounded-cardinality (every distinct cost
+        # is a new dimension value), so they go in the structured log line, not
+        # as CloudWatch dimensions (per core/observability/metrics.py:put_metric
+        # — high-cardinality values must be log fields, not metric dimensions).
+        put_metric(
+            "billing.legacy_deduct.shadow",
+            dimensions={"model": bare_model},
+        )
+        logger.info(
+            "SHADOW legacy deduct owner=%s session=%s raw=%d marked_up=%d model=%s",
+            self.user_id,
+            chat_session_id,
+            raw,
+            marked_up,
+            bare_model,
+        )
         await credit_ledger.deduct(
             self.user_id,
             amount_microcents=marked_up,
@@ -1876,8 +1917,8 @@ class GatewayConnectionPool:
         Reads use ``ConsistentRead=True`` so a top-up that just landed
         via Stripe webhook unblocks the next message immediately.
         """
+        from core.billing.ledger_interface import get_ledger
         from core.repositories import billing_repo
-        from core.services import credit_ledger
         from core.services.provision_gate import is_subscription_active
 
         # --- Layer 1: subscription status ----------------------------
@@ -1902,7 +1943,7 @@ class GatewayConnectionPool:
         if account is None or account.get("provider_choice") != "bedrock_claude":
             return {"blocked": False}
 
-        balance = await credit_ledger.get_balance(owner_id, consistent=True)
+        balance = await get_ledger().get_balance(owner_id, consistent=True)
         if balance <= 0:
             return {
                 "blocked": True,

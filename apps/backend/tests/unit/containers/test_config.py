@@ -15,12 +15,20 @@ from core.containers.config import (
 )
 
 
+_AIPS = {
+    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus",
+    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-sonnet",
+    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-haiku",
+}
+
+
 def _cfg(provider_choice: str = "bedrock_claude", **kwargs) -> dict:
     """Build a config dict with sensible defaults for the per-section tests."""
     defaults = {
         "user_id": "u_1",
         "gateway_token": "test-token",
         "provider_choice": provider_choice,
+        "aip_arns": _AIPS,
     }
     defaults.update(kwargs)
     return build_openclaw_config_dict(**defaults)
@@ -368,6 +376,7 @@ class TestWriteOpenclawConfigAsync:
             gateway_token="t-1",
             provider_choice="bedrock_claude",
             user_id="u_1",
+            aip_arns=_AIPS,
         )
         cfg = json.loads(out.read_text())
         # Sanity-check one field from each major section.
@@ -387,6 +396,7 @@ class TestWriteOpenclawConfigAsync:
             gateway_token="t",
             provider_choice="bedrock_claude",
             user_id="u_1",
+            aip_arns=_AIPS,
         )
         assert nested.exists()
 

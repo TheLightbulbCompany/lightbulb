@@ -443,9 +443,16 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
 
 
 @pytest.mark.asyncio
-async def test_change_provider_chatgpt_to_bedrock_hot_path_no_restart(async_client):
-    """ChatGPT OAuth → Bedrock: revoke + delete auth-profiles.json first
-    (existing side-effect cleanup), then hot-swap. No container restart."""
+async def test_change_provider_chatgpt_to_bedrock_takes_cold_path(async_client):
+    """ChatGPT OAuth → Bedrock: a switch INTO bedrock_claude must take the
+    COLD path, NOT the hot path (Plan 2 Task 6). The per-owner scoped task
+    role is attached only by a task-def re-register in provision_user_container,
+    which the hot path never does; the config builder also fails closed on
+    bedrock without aip_arns, so the hot path could not synthesize a bedrock
+    block anyway. The existing chatgpt-leaving side-effect cleanup (revoke +
+    delete auth-profiles.json) must still run, and restart=True so the UI
+    shows the cutover banner.
+    """
     chatgpt_account = {
         "owner_id": "user_test_123",
         "owner_type": "personal",
@@ -453,23 +460,6 @@ async def test_change_provider_chatgpt_to_bedrock_hot_path_no_restart(async_clie
         "subscription_status": "active",
         "provider_choice": "chatgpt_oauth",
     }
-
-    async def _replace(owner_id, *, providers, default_model, plugin_entries, ceo_model, cheap_model):
-        # Pin the Bedrock-bound contract. amazon-bedrock provider entry +
-        # discovery=false + us. inference-profile model IDs.
-        assert "amazon-bedrock" in providers
-        assert providers["amazon-bedrock"]["api"] == "bedrock-converse-stream"
-        assert default_model["primary"].startswith("amazon-bedrock/us.")
-        assert plugin_entries["amazon-bedrock"]["config"]["discovery"]["enabled"] is False
-        # Bedrock reserves the premium Opus tier for the CEO via a per-agent
-        # override — the swap must re-pin it (the chatgpt-provisioned CEO had
-        # none, so it would otherwise stay on the cheap Sonnet default).
-        assert ceo_model == "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
-        # Bedrock routes aux ops (compaction / memory-flush / heartbeat) to the
-        # cheap Haiku tier — the swap must re-pin those aux slots too, otherwise
-        # the chatgpt-provisioned config leaves them on the (now removed) flat
-        # default with no cheap routing.
-        assert cheap_model == "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
     with (
         patch(
@@ -490,7 +480,7 @@ async def test_change_provider_chatgpt_to_bedrock_hot_path_no_restart(async_clie
         ) as mock_delete_auth,
         patch(
             "core.services.config_patcher.replace_provider_block",
-            new=AsyncMock(side_effect=_replace),
+            new=AsyncMock(),
         ) as mock_replace,
         patch(
             "core.services.container_provision.background_provision",
@@ -504,10 +494,12 @@ async def test_change_provider_chatgpt_to_bedrock_hot_path_no_restart(async_clie
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["restart"] is False
-    mock_bg.assert_not_awaited()
-    mock_replace.assert_awaited_once()
-    # Side-effect cleanup must still run on the hot path.
+    # Cold path: container restarts (task-def re-register attaches the scoped
+    # per-owner role), background_provision dispatched, hot helper NOT called.
+    assert body["restart"] is True
+    mock_bg.assert_awaited_once()
+    mock_replace.assert_not_awaited()
+    # Side-effect cleanup for leaving chatgpt_oauth must still run.
     mock_revoke.assert_awaited_once()
     mock_delete_auth.assert_awaited_once()
 

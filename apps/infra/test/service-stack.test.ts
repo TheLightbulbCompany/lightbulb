@@ -86,6 +86,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       taskExecutionRole: container.taskExecutionRole,
       taskRole: container.taskRole,
       openclawTaskDef: container.openclawTaskDef,
+      ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
+      ownerBedrockBoundary: container.ownerBedrockBoundary,
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
@@ -123,6 +125,109 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({ Name: "backend", StopTimeout: 30 }),
+      ]),
+    });
+  });
+
+  test("backend role can pass per-owner bedrock roles to ECS", () => {
+    // The owner-bedrock prefix ARN is built from ${this.account}; in this
+    // concrete-account synth CDK renders it as a literal string (it becomes an
+    // Fn::Join only when the account is an unresolved token). The PassRole
+    // statement is also PassedToService-conditioned to ecs-tasks.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "iam:PassRole",
+            Condition: Match.objectLike({
+              StringEquals: Match.objectLike({
+                "iam:PassedToService": "ecs-tasks.amazonaws.com",
+              }),
+            }),
+            Resource: Match.arrayWith([
+              "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-*",
+            ]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  // The per-owner role-management + Bedrock-control-plane grants live in a
+  // dedicated ManagedPolicy (isol8-dev-backend-owner-bedrock-manage), NOT the
+  // inline default policy, so the inline policy stays under CloudFormation's
+  // 10 KB limit and does not spill other statements into an overflow policy.
+  test("backend role can create boundary-bounded per-owner roles", () => {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "iam:CreateRole",
+            Condition: Match.objectLike({
+              StringEquals: Match.objectLike({
+                "iam:PermissionsBoundary": Match.anyValue(),
+              }),
+            }),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("backend role can mint Bedrock application inference profiles, scoped by the ManagedBy request tag", () => {
+    // CreateInferenceProfile is gated on aws:RequestTag/ManagedBy so the
+    // backend can only mint profiles it marks as its own (the AIP ARN cannot be
+    // pre-scoped at synth time). Without the condition this would be an
+    // unconditioned Resource:"*" create grant — see I-1.
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["bedrock:CreateInferenceProfile"]),
+            Resource: "*",
+            Condition: Match.objectLike({
+              StringEquals: Match.objectLike({
+                "aws:RequestTag/ManagedBy": "isol8-backend",
+              }),
+            }),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("backend role can act on its own Bedrock profiles, scoped by the ManagedBy resource tag", () => {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["bedrock:DeleteInferenceProfile"]),
+            Resource: "*",
+            Condition: Match.objectLike({
+              StringEquals: Match.objectLike({
+                "aws:ResourceTag/ManagedBy": "isol8-backend",
+              }),
+            }),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("backend container has the BEDROCK_OWNER_ROLE_PREFIX env var", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({
+              Name: "BEDROCK_OWNER_ROLE_PREFIX",
+              Value: "isol8-dev-owner-bedrock",
+            }),
+          ]),
+        }),
       ]),
     });
   });

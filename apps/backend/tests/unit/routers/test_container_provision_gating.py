@@ -91,6 +91,9 @@ async def test_provision_rejects_bedrock_with_zero_balance():
     """
     from routers.container import container_provision
 
+    ledger = MagicMock()
+    ledger.get_balance = AsyncMock(return_value=0)
+
     with (
         patch(
             "routers.container.container_repo.get_by_owner_id",
@@ -109,9 +112,8 @@ async def test_provision_rejects_bedrock_with_zero_balance():
             },
         ),
         patch(
-            "core.services.credit_ledger.get_balance",
-            new_callable=AsyncMock,
-            return_value=0,
+            "core.billing.ledger_interface.get_ledger",
+            return_value=ledger,
         ),
     ):
         with pytest.raises(HTTPException) as exc:
@@ -127,6 +129,9 @@ async def test_provision_allows_bedrock_with_positive_balance():
     fake_ecs = MagicMock()
     fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
 
+    ledger = MagicMock()
+    ledger.get_balance = AsyncMock(return_value=10_000_000)
+
     with (
         patch(
             "routers.container.container_repo.get_by_owner_id",
@@ -145,9 +150,8 @@ async def test_provision_allows_bedrock_with_positive_balance():
             },
         ),
         patch(
-            "core.services.credit_ledger.get_balance",
-            new_callable=AsyncMock,
-            return_value=10_000_000,
+            "core.billing.ledger_interface.get_ledger",
+            return_value=ledger,
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
     ):

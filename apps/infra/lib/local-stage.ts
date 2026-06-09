@@ -126,6 +126,8 @@ export class LocalStage extends cdk.Stage {
         taskExecutionRole: container.taskExecutionRole,
         taskRole: container.taskRole,
         openclawTaskDef: container.openclawTaskDef,
+        ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
+        ownerBedrockBoundary: container.ownerBedrockBoundary,
       },
       managementApiUrl: api.managementApiUrl,
       webSocketUrl: api.webSocketUrl,

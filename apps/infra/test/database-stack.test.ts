@@ -228,3 +228,21 @@ describe("DatabaseStack — paperclip-companies table", () => {
     });
   });
 });
+
+describe("DatabaseStack — bedrock-aip-owners reverse table", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates the bedrock-aip-owners reverse table keyed on aip_arn", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-bedrock-aip-owners",
+      KeySchema: [{ AttributeName: "aip_arn", KeyType: "HASH" }],
+      AttributeDefinitions: Match.arrayWith([
+        { AttributeName: "aip_arn", AttributeType: "S" },
+      ]),
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+});

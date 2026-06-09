@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.repositories import billing_repo
-from core.services import credit_ledger
 
 
 # Stripe statuses that grant platform use right now. Trialing is included
@@ -258,7 +257,9 @@ async def evaluate_provision_gate(
         # Credits pool at the owner level — org members all draw from one
         # balance funded by the admin. clerk_user_id stays per-user for
         # the OAuth-tokens probe below.
-        balance = await credit_ledger.get_balance(owner_id)
+        from core.billing.ledger_interface import get_ledger
+
+        balance = await get_ledger().get_balance(owner_id)
         if balance <= 0:
             return Gate(
                 code="credits_required",

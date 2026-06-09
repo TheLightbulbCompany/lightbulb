@@ -15,6 +15,12 @@ import json
 
 from core.containers.config import build_openclaw_config_dict
 
+_AIPS = {
+    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus",
+    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-sonnet",
+    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-haiku",
+}
+
 
 def _cfg(**kwargs) -> dict:
     """Build a config dict with sensible test defaults."""
@@ -23,6 +29,7 @@ def _cfg(**kwargs) -> dict:
         "gateway_token": "gw-token",
         "hook_token": "hk-token",
         "provider_choice": "bedrock_claude",
+        "aip_arns": _AIPS,
     }
     defaults.update(kwargs)
     return build_openclaw_config_dict(**defaults)
@@ -88,12 +95,14 @@ def test_hook_token_param_does_not_leak_into_rendered_config():
         gateway_token="gw-token",
         provider_choice="bedrock_claude",
         hook_token=secret,
+        aip_arns=_AIPS,
     )
     cfg_without = build_openclaw_config_dict(
         user_id="u_1",
         gateway_token="gw-token",
         provider_choice="bedrock_claude",
         hook_token=None,
+        aip_arns=_AIPS,
     )
     # Byte-identical: hook_token has zero observable effect on the rendered
     # config. The placeholder is what's rendered, not the token value.

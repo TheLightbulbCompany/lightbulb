@@ -100,7 +100,23 @@ class Settings(BaseSettings):
     # Credit ledger + OAuth tables (set by CDK)
     CREDITS_TABLE: str = ""
     CREDIT_TRANSACTIONS_TABLE: str = ""
+    LEDGER_BACKEND: str = "ddb"  # ledger system-of-record: "ddb" (interim) | "metronome" (Phase 3)
+    METER_IS_LIVE: bool = False  # cutover flag OWNED by Plan 4: when True, Plan 3's AWS meter deplete() is the sole biller (and Plan 3 then calls enforce_after_deplete) and the legacy connection_pool deduct is gated off; when False, Plan 3 is shadow-only (logs, no deplete, no enforce) and the legacy deduct is the live biller. Both paths read this ONE flag so the cutover is order-independent.
     OAUTH_TOKENS_TABLE: str = ""
+
+    # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
+    # keep the backend booting in non-AWS unit-test contexts.
+    BEDROCK_AIP_OWNERS_TABLE: str = os.getenv("BEDROCK_AIP_OWNERS_TABLE", "")
+    """Reverse index PK aip_arn -> owner_id. Read by resolve_owner_from_aip_arn."""
+    BEDROCK_OWNER_ROLE_PREFIX: str = os.getenv("BEDROCK_OWNER_ROLE_PREFIX", "")
+    """IAM role-name prefix for backend-minted per-owner roles, e.g.
+    'isol8-dev-owner-bedrock'. Set by CDK; matches the PassRole/CreateRole scope."""
+    BEDROCK_OWNER_BOUNDARY_ARN: str = os.getenv("BEDROCK_OWNER_BOUNDARY_ARN", "")
+    """Permissions-boundary policy ARN every backend-minted role must carry."""
+    BEDROCK_OWNER_BASE_POLICY_ARN: str = os.getenv("BEDROCK_OWNER_BASE_POLICY_ARN", "")
+    """CDK-managed EFS/logs/ssm managed-policy ARN attached to every per-owner role."""
+    BEDROCK_AIP_FAN_OUT_REGIONS: str = os.getenv("BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2")
+    """Comma-separated regions the per-owner role permits the FM ARN in."""
 
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")

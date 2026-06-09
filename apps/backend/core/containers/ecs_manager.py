@@ -227,6 +227,7 @@ class EcsManager:
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
+        task_role_arn: str | None = None,
     ) -> dict:
         """Build register_task_definition kwargs by cloning the CDK-managed base.
 
@@ -306,7 +307,7 @@ class EcsManager:
             # simple and removes the SSM-pin dance that #299 had to add when
             # the two kinds of revisions co-mingled.
             family=f"{base['family']}{self._PER_USER_FAMILY_SUFFIX}",
-            taskRoleArn=base.get("taskRoleArn", ""),
+            taskRoleArn=task_role_arn or base.get("taskRoleArn", ""),
             executionRoleArn=base.get("executionRoleArn", ""),
             networkMode=base.get("networkMode", "awsvpc"),
             containerDefinitions=container_defs,
@@ -331,6 +332,7 @@ class EcsManager:
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
+        task_role_arn: str | None = None,
     ) -> str:
         """Clone the CDK base for a new per-user container.
 
@@ -359,6 +361,7 @@ class EcsManager:
                 secrets_for_task=secrets_for_task,
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
+                task_role_arn=task_role_arn,
             )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
@@ -472,6 +475,8 @@ class EcsManager:
         secrets_for_task: list[dict] | None = None,
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
+        task_role_arn: str | None = None,
+        bedrock_aip_arns: dict[str, str] | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -498,6 +503,14 @@ class EcsManager:
                 below (atomically with the rest of the row, so brand-new
                 rows land with the token already set) and injected as
                 ``OPENCLAW_HOOK_TOKEN`` on the primary container.
+            task_role_arn: Optional per-owner ECS task-role ARN override (the
+                scoped per-owner Bedrock role for the ``bedrock_claude`` path).
+                Threaded into ``_register_task_definition`` AND, when present,
+                persisted onto the containers row as ``bedrock_role_arn`` by the
+                upsert below — see the bedrock-fields note there.
+            bedrock_aip_arns: Optional per-owner AIP map ({tier: aip_arn}) for
+                the ``bedrock_claude`` path. Persisted onto the containers row
+                as ``bedrock_aip_arns`` by the upsert below.
 
         Returns:
             The ECS service name.
@@ -533,6 +546,21 @@ class EcsManager:
             # the hooks block); backfill achieves it after refresh + config
             # patch. Both should stamp.
             upsert_fields["hook_token_provisioned_at"] = utc_now_iso()
+        # Persist the per-owner Bedrock role + AIP map here too, for the SAME
+        # reason as hook_token: the mint (ensure_owner_aips/ensure_owner_bedrock_role)
+        # ran BEFORE this upsert, so its container_repo.update_fields calls
+        # no-opped against a not-yet-existing row (update_fields returns None and
+        # writes nothing when the row is absent). Only the reverse table got
+        # written. Without folding them into this row-creating upsert, the row
+        # would carry no bedrock_role_arn, and the next resize/restart re-register
+        # (which reads bedrock_role_arn off the row) would silently revert the
+        # container to the shared all-models task role — which no longer carries
+        # any Bedrock grant — AccessDenying every subsequent chat. restore_owner_bedrock
+        # would also break (it reads the AIP map off the row).
+        if task_role_arn:
+            upsert_fields["bedrock_role_arn"] = task_role_arn
+        if bedrock_aip_arns:
+            upsert_fields["bedrock_aip_arns"] = bedrock_aip_arns
         await container_repo.upsert(user_id, upsert_fields)
 
         try:
@@ -554,6 +582,7 @@ class EcsManager:
                 secrets_for_task=secrets_for_task,
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
+                task_role_arn=task_role_arn,
             )
             await self._update_container(
                 user_id,
@@ -661,6 +690,59 @@ class EcsManager:
             await container_repo.update_status(user_id, "stopped")
 
         logger.info("Stopped ECS service %s for user %s", service_name, user_id)
+
+    async def kill_owner_bedrock(self, owner_id: str) -> None:
+        """Two-pronged Bedrock kill-switch for an owner who ran out of credits.
+
+        Fires BOTH:
+          1. IAM revoke (`revoke_owner_bedrock` from
+             `core.billing.bedrock_aip`, Plan 2's primitive) — detaches/denies
+             the per-owner Bedrock policy. Eventually-consistent (~5-15s), so it
+             is fired first to start the propagation clock.
+          2. ECS `desiredCount=0` (via `stop_user_service`) — the guaranteed
+             instant stop; the running container is the only live spend source.
+
+        The IAM revoke is best-effort: if it raises, the ECS stop MUST still
+        run (the container keeps invoking Bedrock until desired=0 lands). The
+        stop's DDB status flip to "stopped" is durable only because the now-<=0
+        balance keeps `evaluate_provision_gate` returning `credits_required`,
+        so the next `/container/status` poll cannot re-launch the service.
+
+        The ECS stop is the durable half, but it is NOT individually guarded:
+        if `stop_user_service` raises (e.g. `update_service` flakes before the
+        status flip), that exception propagates to `enforce_after_deplete`'s
+        catch-all, which logs and swallows it. The container then keeps
+        spending until the NEXT applied deplete re-fires this kill — because
+        the status never became "stopped", `is_owner_service_stopped` does not
+        short-circuit, so the retry path self-heals.
+        """
+        from core.billing.bedrock_aip import revoke_owner_bedrock
+        from core.observability.metrics import put_metric
+
+        put_metric("container.killswitch.invoke")
+        try:
+            await revoke_owner_bedrock(owner_id)
+        except Exception:
+            put_metric("container.killswitch.iam_revoke_error")
+            logger.exception(
+                "IAM revoke failed for owner %s during kill-switch — proceeding to ECS desired=0 (the guaranteed stop)",
+                owner_id,
+            )
+        await self.stop_user_service(owner_id)
+        logger.warning("Bedrock kill-switch completed for owner %s", owner_id)
+
+    async def is_owner_service_stopped(self, owner_id: str) -> bool:
+        """True when the owner's container is already stopped (or has no row).
+
+        Read by `enforce_after_deplete` to skip a redundant kill during the
+        ~5-15s IAM-propagation window. Mirrors the status `stop_user_service`
+        writes (`container_repo.update_status(owner_id, "stopped")`); a missing
+        row means there is nothing to kill, so it is treated as stopped.
+        """
+        container = await container_repo.get_by_owner_id(owner_id)
+        if container is None:
+            return True
+        return container.get("status") == "stopped"
 
     async def start_user_service(self, user_id: str) -> None:
         """Scale a user's ECS service to 1 (running).
@@ -782,6 +864,10 @@ class EcsManager:
                         "hook_token_provisioned_at": utc_now_iso(),
                     },
                 )
+            # Per-owner Bedrock role: a resize that re-registers from the CDK
+            # base would otherwise revert the container to the shared
+            # all-models task role (same self-heal class as hook_token above).
+            owner_task_role_arn = container.get("bedrock_role_arn")
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -789,6 +875,7 @@ class EcsManager:
                 new_cpu=new_cpu,
                 new_memory=new_memory,
                 hook_token=hook_token,
+                task_role_arn=owner_task_role_arn,
             )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
@@ -1290,20 +1377,52 @@ class EcsManager:
                     user_id,
                 )
             secrets_for_task = await self._build_byo_secrets_for_user(user_id, byo_provider)
-        elif provider_choice == "bedrock_claude":
-            # No extra setup — auth comes from the ECS task IAM role granted
-            # bedrock:InvokeModel by the container stack.
-            pass
-        else:
+
+        if provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
             raise EcsManagerError(
                 f"Unknown provider_choice: {provider_choice!r}",
                 user_id,
             )
 
+        # Read the row ONCE up front. Reused for the bedrock kill-switch check
+        # AND the state-machine routing below — no second round-trip. The mint
+        # block's update_fields calls do not change bedrock_revoked (only
+        # revoke_owner_bedrock does), so this pre-mint read is authoritative for
+        # the revoke guard; the freshly-minted bedrock_role_arn is carried in
+        # the in-memory `bedrock_role_arn` local (not re-read off the row), so a
+        # stale `existing` here cannot drop it.
+        existing = await container_repo.get_by_owner_id(user_id)
+
+        bedrock_aip_arns: dict[str, str] | None = None
+        bedrock_role_arn: str | None = None
+        if provider_choice == "bedrock_claude":
+            # Mint the per-owner AIPs + scoped IAM role SYNCHRONOUSLY here,
+            # before the service starts. The container's openclaw.json model
+            # ids become the AIP ARNs and the task role is the scoped per-owner
+            # role; if either were absent at first boot the container would
+            # either run on the shared all-models role or AccessDenied on the
+            # AIP-scoped role. Lazy import to avoid pulling bedrock_aip's boto3
+            # clients into module load.
+            from core.billing.bedrock_aip import (
+                ensure_owner_aips,
+                ensure_owner_bedrock_role,
+            )
+
+            bedrock_aip_arns = await ensure_owner_aips(user_id)
+
+            # KILL-SWITCH GUARD: ensure_owner_bedrock_role always re-puts the
+            # scoped inline policy, so calling it for a revoked owner would
+            # silently RESTORE Bedrock access — defeating the kill-switch on
+            # any re-provision/restart. Mint the AIPs + role SHELL (so the task
+            # role exists + carries EFS/logs/ssm), but do NOT re-grant the
+            # Bedrock inline policy if the owner is revoked. Plan 4 owns
+            # un-revoking (restore_owner_bedrock), not provision.
+            is_revoked = bool(existing and existing.get("bedrock_revoked"))
+            bedrock_role_arn = await ensure_owner_bedrock_role(user_id, bedrock_aip_arns, skip_bedrock_grant=is_revoked)
+
         service_name = self._service_name(user_id)
 
-        # Check current state
-        existing = await container_repo.get_by_owner_id(user_id)
+        # Check current state (`existing` was read above, before the mint).
         svc = self._service_exists(service_name)
 
         # --- Scenario: Service exists (ACTIVE or DRAINING) ---
@@ -1364,6 +1483,7 @@ class EcsManager:
                         byo_provider=byo_provider,
                         hook_token=existing_hook_token,
                         owner_type=owner_type,
+                        aip_arns=bedrock_aip_arns,
                     )
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
@@ -1381,12 +1501,22 @@ class EcsManager:
                 access_point_id = existing.get("access_point_id") if existing else None
                 if access_point_id:
                     try:
+                        # Prefer the role just minted in THIS call (in-memory)
+                        # over the row's value: `existing` was read before the
+                        # mint, so for a re-provision its bedrock_role_arn may be
+                        # stale/absent. Fall back to the row for non-bedrock
+                        # providers (where bedrock_role_arn is None) so they keep
+                        # whatever per-owner role the row already carries.
+                        restart_task_role_arn = bedrock_role_arn or (
+                            existing.get("bedrock_role_arn") if existing else None
+                        )
                         new_task_def_arn = await asyncio.to_thread(
                             self._register_task_definition,
                             access_point_id,
                             secrets_for_task=secrets_for_task,
                             environment_for_task=environment_for_task,
                             hook_token=existing_hook_token,
+                            task_role_arn=restart_task_role_arn,
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,
@@ -1557,6 +1687,8 @@ class EcsManager:
             secrets_for_task=secrets_for_task,
             environment_for_task=environment_for_task,
             hook_token=hook_token,
+            task_role_arn=bedrock_role_arn,
+            bedrock_aip_arns=bedrock_aip_arns,
         )
 
         # Step 3: Write configs to EFS
@@ -1568,6 +1700,7 @@ class EcsManager:
                 byo_provider=byo_provider,
                 hook_token=hook_token,
                 owner_type=owner_type,
+                aip_arns=bedrock_aip_arns,
             )
         except Exception as e:
             put_metric("container.provision", dimensions={"status": "error"})
@@ -1758,6 +1891,7 @@ class EcsManager:
         byo_provider: str | None = None,
         hook_token: str | None = None,
         owner_type: str = "personal",
+        aip_arns: dict[str, str] | None = None,
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
@@ -1910,6 +2044,7 @@ class EcsManager:
             paperclip_company_id=paperclip_company_id,
             paperclip_api_url=settings.PAPERCLIP_INTERNAL_URL or None,
             integration_mcp_servers=integration_mcp_servers,
+            aip_arns=aip_arns,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

@@ -13,6 +13,15 @@ import pytest
 
 from core.containers.config import write_openclaw_config
 
+# Per-owner AIP ARNs (Plan 2). The config builder fails closed on the
+# bedrock_claude branch unless these are threaded through, so every bedrock
+# write_openclaw_config call below must pass aip_arns=_AIPS.
+_AIPS = {
+    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus",
+    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-sonnet",
+    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-haiku",
+}
+
 
 @pytest.mark.asyncio
 async def test_provision_writes_paperclip_agents_into_config():
@@ -29,6 +38,7 @@ async def test_provision_writes_paperclip_agents_into_config():
             provider_choice="bedrock_claude",
             user_id="user_abc",
             paperclip_agents=paperclip_agents,
+            aip_arns=_AIPS,
         )
         cfg = json.loads(path.read_text())
         agents = cfg["agents"]["list"]
@@ -58,6 +68,7 @@ async def test_provision_then_chat_create_yields_single_uuid_per_agent():
             paperclip_agents=[
                 {"id": main_uuid, "name": "Friday", "role": "ceo"},
             ],
+            aip_arns=_AIPS,
         )
         cfg1 = json.loads(path.read_text())
         assert [a["id"] for a in cfg1["agents"]["list"]] == [main_uuid]
@@ -74,6 +85,7 @@ async def test_provision_then_chat_create_yields_single_uuid_per_agent():
                 {"id": main_uuid, "name": "Friday", "role": "ceo"},
                 {"id": second_uuid, "name": "Code Reviewer", "role": "engineer"},
             ],
+            aip_arns=_AIPS,
         )
         cfg2 = json.loads(path.read_text())
         assert sorted(a["id"] for a in cfg2["agents"]["list"]) == sorted([main_uuid, second_uuid])

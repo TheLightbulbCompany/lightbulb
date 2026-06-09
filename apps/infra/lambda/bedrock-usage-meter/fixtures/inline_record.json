@@ -1,0 +1,25 @@
+{
+  "schemaType": "ModelInvocationLog",
+  "schemaVersion": "1.0",
+  "timestamp": "2026-06-07T12:00:00Z",
+  "accountId": "877352799272",
+  "identity": {
+    "arn": "arn:aws:sts::877352799272:assumed-role/isol8-dev-owner-bedrock-org_abc/ecs-task-session"
+  },
+  "region": "us-east-1",
+  "requestId": "11111111-2222-3333-4444-555555555555",
+  "operation": "InvokeModelWithResponseStream",
+  "modelId": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus-org_abc",
+  "input": {
+    "inputContentType": "application/json",
+    "inputBodyJson": "<redacted>",
+    "inputTokenCount": 1200,
+    "cacheReadInputTokenCount": 800,
+    "cacheWriteInputTokenCount": 64
+  },
+  "output": {
+    "outputContentType": "application/json",
+    "outputBodyJson": "<redacted>",
+    "outputTokenCount": 350
+  }
+}

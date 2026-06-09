@@ -669,7 +669,14 @@ async def change_provider(
     # file gets written from scratch by ``provision_user_container``.
     involves_byo = current_choice == "byo_key" or provider_choice == "byo_key"
 
-    if not involves_byo:
+    # A switch INTO bedrock_claude must take the COLD path: the per-owner
+    # scoped task role is attached only by a task-def re-register
+    # (provision_user_container, Task 9), which the hot path never does. The
+    # config builder now fails closed on bedrock without aip_arns, so the hot
+    # path cannot synthesize a bedrock provider block anyway.
+    targets_bedrock = provider_choice == "bedrock_claude"
+
+    if not involves_byo and not targets_bedrock:
         try:
             await _hot_swap_provider(
                 owner_id=owner_id,

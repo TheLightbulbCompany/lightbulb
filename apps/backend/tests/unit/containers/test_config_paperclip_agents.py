@@ -8,6 +8,12 @@ import pytest
 
 from core.containers.config import build_openclaw_config_dict, write_openclaw_config
 
+_AIPS = {
+    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus",
+    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-sonnet",
+    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-haiku",
+}
+
 
 def test_empty_paperclip_agents_falls_back_to_main():
     """When paperclip_agents=[] (provision before any Paperclip agents seeded),
@@ -16,6 +22,7 @@ def test_empty_paperclip_agents_falls_back_to_main():
         user_id="user_abc",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[],
     )
     agents = cfg["agents"]["list"]
@@ -31,6 +38,7 @@ def test_single_paperclip_agent_replaces_main():
         user_id="user_abc",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[
             {"id": pc_uuid, "name": "Friday", "role": "ceo"},
         ],
@@ -56,6 +64,7 @@ def test_paperclip_agent_without_name_omits_field():
         user_id="user_abc",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[
             {"id": pc_uuid, "role": "ceo"},  # no name
         ],
@@ -74,6 +83,7 @@ def test_multiple_paperclip_agents_ceo_is_default():
         user_id="user_abc",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[
             {"id": other_uuid, "name": "Code Reviewer", "role": "engineer"},
             {"id": ceo_uuid, "name": "Friday", "role": "ceo"},
@@ -95,6 +105,7 @@ def test_multiple_agents_no_ceo_first_is_default():
         user_id="user_abc",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[
             {"id": a_uuid, "name": "First", "role": "engineer"},
             {"id": b_uuid, "name": "Second", "role": "engineer"},
@@ -117,6 +128,7 @@ async def test_write_openclaw_config_persists_paperclip_agents():
             gateway_token="t" * 32,
             provider_choice="bedrock_claude",
             user_id="user_abc",
+            aip_arns=_AIPS,
             paperclip_agents=[
                 {"id": pc_uuid, "name": "Friday", "role": "ceo"},
             ],
@@ -138,6 +150,7 @@ async def test_write_openclaw_config_omitted_paperclip_agents_keeps_main():
             gateway_token="t" * 32,
             provider_choice="bedrock_claude",
             user_id="user_abc",
+            aip_arns=_AIPS,
         )
         cfg = json.loads(path.read_text())
         assert cfg["agents"]["list"][0]["id"] == "main"

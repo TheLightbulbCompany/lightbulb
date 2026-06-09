@@ -290,6 +290,83 @@ describe("ContainerStack — dev", () => {
       ]),
     });
   });
+
+  test("shared task role no longer carries the broad bedrock:* on Resource '*'", () => {
+    // The per-owner role supersedes it; the base task-def must have NO Bedrock
+    // access so every bedrock container is forced onto a per-owner role.
+    const policies = template.findResources("AWS::IAM::Policy");
+    const offending = Object.values(policies).filter((p: any) =>
+      (p.Properties.PolicyDocument.Statement as any[]).some(
+        (s) =>
+          s.Resource === "*" &&
+          JSON.stringify(s.Action).includes("bedrock:InvokeModel"),
+      ),
+    );
+    expect(offending).toHaveLength(0);
+  });
+
+  test("creates the OwnerBedrockBasePolicy managed policy (EFS/logs/ssm)", () => {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-owner-bedrock-base",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["elasticfilesystem:ClientMount"]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("creates the OwnerBedrockBoundary permissions-boundary policy", () => {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-owner-bedrock-boundary",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["bedrock:InvokeModel"]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("boundary invoke statement carries all 9 FM ARNs + the AIP wildcard", () => {
+    // Guards against FM_IDS/FAN_OUT_REGIONS drift between this stack and the
+    // Python mint (core/billing/bedrock_aip.py). A region/model added on one
+    // side but not the other would silently make the boundary too narrow
+    // (AccessDenied on invoke) or too wide. 3 regions x 3 models = 9 ARNs.
+    const FAN_OUT_REGIONS = ["us-east-1", "us-east-2", "us-west-2"];
+    const FM_IDS = [
+      "anthropic.claude-opus-4-6-v1",
+      "anthropic.claude-sonnet-4-6",
+      "anthropic.claude-haiku-4-5-20251001-v1:0",
+    ];
+    const expectedFmArns = FAN_OUT_REGIONS.flatMap((region) =>
+      FM_IDS.map((model) => `arn:aws:bedrock:${region}::foundation-model/${model}`),
+    );
+    expect(expectedFmArns).toHaveLength(9);
+
+    const policies = template.findResources("AWS::IAM::ManagedPolicy");
+    const boundary = Object.values(policies).find(
+      (p: any) => p.Properties.ManagedPolicyName === "isol8-dev-owner-bedrock-boundary",
+    ) as any;
+    expect(boundary).toBeDefined();
+
+    const invokeStatement = (boundary.Properties.PolicyDocument.Statement as any[]).find(
+      (s) => JSON.stringify(s.Action).includes("bedrock:InvokeModel"),
+    );
+    expect(invokeStatement).toBeDefined();
+
+    const resources: string[] = invokeStatement.Resource;
+    for (const arn of expectedFmArns) {
+      expect(resources).toContain(arn);
+    }
+    // The AIP wildcard must also be present (the profile ARNs are runtime-minted).
+    expect(
+      resources.some((r) => r.includes("application-inference-profile/*")),
+    ).toBe(true);
+  });
 });
 
 describe("ContainerStack — prod", () => {

@@ -17,6 +17,32 @@ from core.containers.ecs_manager import EcsManager, EcsManagerError, GATEWAY_POR
 # ---------------------------------------------------------------------------
 
 
+_TEST_AIP_ARNS = {
+    "opus": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/o",
+    "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
+    "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
+}
+
+
+@pytest.fixture(autouse=True)
+def _mock_bedrock_mint(monkeypatch):
+    """Stub the synchronous per-owner AIP + scoped-role mint that the
+    bedrock_claude provision branch now runs (Task 9). These tests drive that
+    branch as the simplest provider path but don't exercise the Bedrock/IAM
+    control plane — without this they'd hit real boto3 and 500 on the
+    bedrock-aip-owners table. Mirrors TestBedrockProvisionMint's patching."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    monkeypatch.setattr(
+        "core.billing.bedrock_aip.ensure_owner_aips",
+        _AsyncMock(return_value=dict(_TEST_AIP_ARNS)),
+    )
+    monkeypatch.setattr(
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_test_123"),
+    )
+
+
 @pytest.fixture
 def mock_ecs_client():
     """Create a mock ECS boto3 client."""

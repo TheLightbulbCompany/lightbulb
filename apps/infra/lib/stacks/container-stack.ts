@@ -61,6 +61,8 @@ export class ContainerStack extends cdk.Stack {
   public readonly containerSecurityGroup: ec2.SecurityGroup;
   public readonly taskExecutionRole: iam.Role;
   public readonly taskRole: iam.Role;
+  public readonly ownerBedrockBasePolicy: iam.ManagedPolicy;
+  public readonly ownerBedrockBoundary: iam.ManagedPolicy;
   public readonly openclawExtendedRepo: ecr.IRepository;
   // Exposed so service-stack can pin the backend's ECS_TASK_DEFINITION env to
   // a specific revision ARN — never the family name. The backend cloner
@@ -188,16 +190,6 @@ export class ContainerStack extends cdk.Stack {
       description: `Isol8 ${props.environment} ECS task role`,
     });
 
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream",
-        ],
-        resources: ["*"],
-      }),
-    );
-
     // EFS client access — required for IAM-authenticated EFS mounts
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -236,6 +228,104 @@ export class ContainerStack extends cdk.Stack {
         resources: ["*"],
       }),
     );
+
+    // The 3 fan-out regions x 3 foundation models = 9 FM ARNs. Mirrors
+    // core/billing/bedrock_aip.py FM_IDS/FAN_OUT_REGIONS — keep in lockstep.
+    const FAN_OUT_REGIONS = ["us-east-1", "us-east-2", "us-west-2"];
+    const FM_IDS = [
+      "anthropic.claude-opus-4-6-v1",
+      "anthropic.claude-sonnet-4-6",
+      "anthropic.claude-haiku-4-5-20251001-v1:0",
+    ];
+    const foundationModelArns = FAN_OUT_REGIONS.flatMap((region) =>
+      FM_IDS.map((model) => `arn:aws:bedrock:${region}::foundation-model/${model}`),
+    );
+
+    // EFS/logs/ssm grants the backend attaches to every per-owner role. Keeps
+    // the non-Bedrock grants in IaC (auditable); only the per-owner-varying
+    // scoped-Bedrock inline policy lives in backend code.
+    this.ownerBedrockBasePolicy = new iam.ManagedPolicy(this, "OwnerBedrockBasePolicy", {
+      managedPolicyName: `isol8-${props.environment}-owner-bedrock-base`,
+      statements: [
+        new iam.PolicyStatement({
+          sid: "EfsClientAccess",
+          actions: [
+            "elasticfilesystem:ClientMount",
+            "elasticfilesystem:ClientWrite",
+            "elasticfilesystem:ClientRootAccess",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "CloudWatchLogs",
+          actions: [
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "SsmExec",
+          actions: [
+            "ssmmessages:CreateControlChannel",
+            "ssmmessages:CreateDataChannel",
+            "ssmmessages:OpenControlChannel",
+            "ssmmessages:OpenDataChannel",
+          ],
+          resources: ["*"],
+        }),
+      ],
+    });
+
+    // Permissions boundary capping every backend-minted per-owner role to the
+    // UNION of what it may ever hold: scoped Bedrock invoke (on inference
+    // profiles + the 9 FM ARNs) + EFS + logs + ssm. A backend that can
+    // CreateRole+PutRolePolicy cannot escalate a per-owner role past this.
+    this.ownerBedrockBoundary = new iam.ManagedPolicy(this, "OwnerBedrockBoundary", {
+      managedPolicyName: `isol8-${props.environment}-owner-bedrock-boundary`,
+      statements: [
+        new iam.PolicyStatement({
+          sid: "BoundaryBedrockInvoke",
+          actions: [
+            "bedrock:InvokeModel",
+            "bedrock:InvokeModelWithResponseStream",
+          ],
+          resources: [
+            `arn:aws:bedrock:*:${this.account}:application-inference-profile/*`,
+            ...foundationModelArns,
+          ],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundaryEfs",
+          actions: [
+            "elasticfilesystem:ClientMount",
+            "elasticfilesystem:ClientWrite",
+            "elasticfilesystem:ClientRootAccess",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundaryLogs",
+          actions: [
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundarySsm",
+          actions: [
+            "ssmmessages:CreateControlChannel",
+            "ssmmessages:CreateDataChannel",
+            "ssmmessages:OpenControlChannel",
+            "ssmmessages:OpenDataChannel",
+          ],
+          resources: ["*"],
+        }),
+      ],
+    });
 
     // Extended OpenClaw image — built and pushed by
     // .github/workflows/build-openclaw-image.yml. Per-env tags live in

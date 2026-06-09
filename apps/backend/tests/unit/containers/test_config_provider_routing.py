@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from core.billing.bedrock_pricing import get_rate, normalize_model_id
+from core.billing.bedrock_pricing import get_rate
 from core.containers.config import (
     build_provider_block,
     cheap_model_ref,
@@ -12,16 +12,18 @@ from core.containers.config import (
     write_openclaw_config,
 )
 
-# The known-valid Bedrock inference-profile ids. Pins what the catalog emits
-# so a bad id (e.g. the bare us.anthropic.claude-haiku-4-5, which is NOT a
-# valid profile and throws ValidationException on invoke) can't slip back in.
-# Live list-inference-profiles validation lands in a later task; this just
-# locks the expected set.
-_VALID_BEDROCK_IDS = {
-    "us.anthropic.claude-opus-4-6-v1",
-    "us.anthropic.claude-sonnet-4-6",
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+# Per-owner AIP ARNs (Plan 2). The config builder now fails closed on the
+# bedrock_claude branch unless these are threaded through, so every bedrock
+# call below must pass aip_arns=_AIPS and the catalog ids become these ARNs.
+_AIPS = {
+    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus",
+    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-sonnet",
+    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-haiku",
 }
+
+# The catalog ids the bedrock branch emits once the owner's AIP ARNs are
+# threaded in — the per-tier AIP ARN, not the system us.anthropic.* profile.
+_VALID_BEDROCK_IDS = set(_AIPS.values())
 
 # camelCase (config.py cost block) → snake_case (bedrock_pricing._RATES).
 _COST_KEY_MAP = {
@@ -113,34 +115,29 @@ async def test_bedrock_claude_branch(tmp_path):
         gateway_token="test-token",
         provider_choice="bedrock_claude",
         user_id="u_1",
+        aip_arns=_AIPS,
     )
     cfg = json.loads(out.read_text())
 
     # Default tier is the cheaper Sonnet 4.6, with Haiku 4.5 as the cheap
     # error-failover. Opus 4.6 is reserved for the CEO agent (Friday) via a
     # per-agent agents.list[*].model — see test_ceo_agent_gets_premium_model.
-    # Opus 4.7 is intentionally absent from the catalog: it ships with
-    # applied=0 TPM on most accounts (Service Quotas L-5DB28B7B), which
-    # throttles the very first invocation.
+    # Model ids are now the per-owner AIP ARNs (Plan 2), not the system
+    # us.anthropic.* profiles.
     model_block = cfg["agents"]["defaults"]["model"]
-    assert model_block["primary"] == "amazon-bedrock/us.anthropic.claude-sonnet-4-6"
-    assert model_block["fallbacks"] == ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"]
+    assert model_block["primary"] == f"amazon-bedrock/{_AIPS['sonnet']}"
+    assert model_block["fallbacks"] == [f"amazon-bedrock/{_AIPS['haiku']}"]
 
     # Static provider catalog — Opus 4.6 + Sonnet 4.6 + Haiku 4.5 (the
     # cheap aux-task tier). New entries land here in lockstep with
     # bedrock_pricing._RATES; otherwise the credit ledger would either
-    # skip billing or 500 with UnknownModelError. Haiku carries the
-    # date-stamped inference-profile id — the bare us.anthropic.claude-haiku-4-5
-    # is NOT a valid Bedrock profile and throws ValidationException on invoke.
+    # skip billing or 500 with UnknownModelError. The model ids are the
+    # per-owner AIP ARNs the IAM role is scoped to.
     provider = cfg["models"]["providers"]["amazon-bedrock"]
     assert provider["api"] == "bedrock-converse-stream"
     assert provider["auth"] == "aws-sdk"
     model_ids = {m["id"] for m in provider["models"]}
-    assert model_ids == {
-        "us.anthropic.claude-opus-4-6-v1",
-        "us.anthropic.claude-sonnet-4-6",
-        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    }
+    assert model_ids == set(_AIPS.values())
     # Cost shape matches upstream ModelDefinitionConfig.cost (USD/MTok).
     for model in provider["models"]:
         assert set(model["cost"].keys()) == {"input", "output", "cacheRead", "cacheWrite"}
@@ -155,7 +152,6 @@ async def test_bedrock_claude_branch(tmp_path):
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected",
     [
-        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"),
         # Anthropic-DIRECT id — no Bedrock "-v1" suffix.
         ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
         ("byo_key", "openai", "openai/gpt-5.5"),
@@ -166,7 +162,11 @@ async def test_bedrock_claude_branch(tmp_path):
 )
 def test_premium_model_ref_matrix(provider_choice, byo_provider, expected):
     """The CEO premium ref is the top-tier model per provider path, or None
-    for the flat-rate chatgpt_oauth plan where there's nothing to reserve."""
+    for the flat-rate chatgpt_oauth plan where there's nothing to reserve.
+
+    The bedrock_claude row lives in test_config_aip.py
+    (test_premium_and_cheap_refs_use_aip_arns) now that the ref is the
+    per-owner AIP ARN rather than a hardcoded us.anthropic.* id."""
     assert premium_model_ref(provider_choice, byo_provider) == expected
 
 
@@ -174,7 +174,7 @@ def test_premium_model_ref_matrix(provider_choice, byo_provider, expected):
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected_ceo_model",
     [
-        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"),
+        ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['opus']}"),
         ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
         ("byo_key", "openai", "openai/gpt-5.5"),
     ],
@@ -189,6 +189,7 @@ async def test_ceo_agent_gets_premium_model(tmp_path, provider_choice, byo_provi
         "gateway_token": "test-token",
         "provider_choice": provider_choice,
         "user_id": "u_1",
+        "aip_arns": _AIPS,
         "paperclip_agents": [
             {"id": "agent_friday", "role": "ceo", "name": "Friday"},
             {"id": "agent_atlas", "role": "recruiter", "name": "Atlas"},
@@ -242,6 +243,7 @@ async def test_meta_shim_present_to_defeat_auto_restore(tmp_path):
         gateway_token="test-token",
         provider_choice="bedrock_claude",
         user_id="u_1",
+        aip_arns=_AIPS,
     )
     cfg = json.loads(out.read_text())
     meta = cfg.get("meta")
@@ -270,6 +272,7 @@ async def test_memory_search_pinned_to_bedrock_across_auth_paths(tmp_path, provi
         "gateway_token": "test-token",
         "provider_choice": provider_choice,
         "user_id": "u_1",
+        "aip_arns": _AIPS,
     }
     if byo_provider is not None:
         kwargs["byo_provider"] = byo_provider
@@ -305,6 +308,7 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
         "gateway_token": "test-token",
         "provider_choice": provider_choice,
         "user_id": "u_1",
+        "aip_arns": _AIPS,
     }
     if byo_provider is not None:
         kwargs["byo_provider"] = byo_provider
@@ -316,7 +320,6 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected",
     [
-        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         # chatgpt_oauth is flat-rate, but the codex provider DOES carry a
@@ -327,7 +330,11 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
 )
 def test_cheap_model_ref_matrix(provider_choice, byo_provider, expected):
     """The cheap aux ref is the cheapest model per provider path, routed to
-    pure-overhead operations (compaction / memory-flush / heartbeat)."""
+    pure-overhead operations (compaction / memory-flush / heartbeat).
+
+    The bedrock_claude row lives in test_config_aip.py
+    (test_premium_and_cheap_refs_use_aip_arns) now that the ref is the
+    per-owner AIP ARN rather than a hardcoded us.anthropic.* id."""
     assert cheap_model_ref(provider_choice, byo_provider) == expected
 
 
@@ -335,7 +342,7 @@ def test_cheap_model_ref_matrix(provider_choice, byo_provider, expected):
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected_cheap",
     [
-        ("bedrock_claude", None, "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+        ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         ("chatgpt_oauth", None, "openai-codex/gpt-5.4-mini"),
@@ -353,6 +360,7 @@ async def test_aux_operations_routed_to_cheap_tier(tmp_path, provider_choice, by
         "gateway_token": "test-token",
         "provider_choice": provider_choice,
         "user_id": "u_1",
+        "aip_arns": _AIPS,
     }
     if byo_provider is not None:
         kwargs["byo_provider"] = byo_provider
@@ -416,28 +424,43 @@ def _bedrock_catalog_models() -> list[dict]:
         provider_choice="bedrock_claude",
         user_id="u_1",
         byo_provider=None,
+        aip_arns=_AIPS,
     )
     return providers["amazon-bedrock"]["models"]
 
 
 def test_bedrock_catalog_ids_are_the_known_valid_set():
-    """The catalog ids must equal the known-valid Bedrock inference-profile
-    set. The bare us.anthropic.claude-haiku-4-5 is NOT a valid profile — it
-    throws ValidationException on invoke, breaking the Sonnet→Haiku fallback
-    and every aux op (compaction/heartbeat/memoryFlush)."""
+    """The catalog ids must equal the per-owner AIP ARN set threaded through
+    the builder. With aip_arns supplied, each model id is the owner's AIP
+    ARN (Plan 2), not the system us.anthropic.* profile."""
     ids = {m["id"] for m in _bedrock_catalog_models()}
     assert ids == _VALID_BEDROCK_IDS
 
 
+# With per-owner AIP ARNs threaded in, the catalog model ids are opaque AIP
+# ARNs (Plan 2), not the us.anthropic.* profile ids the rate table keys on.
+# The catalog order is fixed (opus, sonnet, haiku) and each AIP ARN maps back
+# to a tier via _AIPS; this maps the catalog id -> the bare foundation-model
+# rate-table key so the cost-block drift check still works.
+_AIP_ARN_TO_RATE_KEY = {
+    _AIPS["opus"]: "anthropic.claude-opus-4-6-v1",
+    _AIPS["sonnet"]: "anthropic.claude-sonnet-4-6",
+    _AIPS["haiku"]: "anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+
 def test_config_cost_blocks_match_bedrock_pricing_rates():
     """config.py cost blocks and bedrock_pricing._RATES must agree per model
-    so the two rate tables can't drift. Maps camelCase ↔ snake_case keys and
-    normalizes the catalog id to the bare foundation-model key the rate table
-    uses."""
+    so the two rate tables can't drift. Maps camelCase ↔ snake_case keys.
+
+    The model id is now the per-owner AIP ARN (Plan 2), which is opaque to the
+    rate table, so the AIP ARN is mapped back to the bare foundation-model
+    rate-table key before lookup. The cost blocks themselves are unchanged
+    (still the per-tier values keyed in the builder)."""
     for model in _bedrock_catalog_models():
-        bare = normalize_model_id(model["id"])
-        rate = get_rate(model["id"])
+        rate_key = _AIP_ARN_TO_RATE_KEY[model["id"]]
+        rate = get_rate(rate_key)
         for camel, snake in _COST_KEY_MAP.items():
             assert model["cost"][camel] == rate[snake], (
-                f"{bare}: cost.{camel}={model['cost'][camel]} != _RATES[{snake}]={rate[snake]}"
+                f"{rate_key}: cost.{camel}={model['cost'][camel]} != _RATES[{snake}]={rate[snake]}"
             )

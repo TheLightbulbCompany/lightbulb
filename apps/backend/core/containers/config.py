@@ -285,6 +285,7 @@ def build_provider_block(
     provider_choice: str,
     user_id: str,
     byo_provider: str | None,
+    aip_arns: dict[str, str] | None = None,
 ) -> tuple[dict, dict, dict]:
     """Build (models.providers, agents.defaults.model, plugins.entries) for the
     user's signup choice.
@@ -362,9 +363,23 @@ def build_provider_block(
         # in lockstep with bedrock_pricing._RATES — see
         # test_config_cost_blocks_match_bedrock_pricing_rates. Task D7 will
         # source these from the AWS rate card automatically.
+        #
+        # FAIL-CLOSED: once the per-owner IAM role is scoped to AIP ARNs only,
+        # emitting the system us.anthropic.* ids produces a config the role
+        # cannot invoke -> every chat AccessDeniedException. Require the owner's
+        # AIP ARNs here; raise loud at provision rather than silently at first
+        # chat. ensure_owner_aips (bedrock_aip.py) is the upstream producer.
+        if not aip_arns or not all(t in aip_arns for t in ("opus", "sonnet", "haiku")):
+            raise ValueError(
+                "bedrock_claude requires aip_arns with opus/sonnet/haiku keys "
+                "(per-owner AIP ARNs). Run ensure_owner_aips before write_user_configs."
+            )
+        opus_id = aip_arns["opus"]
+        sonnet_id = aip_arns["sonnet"]
+        haiku_id = aip_arns["haiku"]
         bedrock_models = [
             {
-                "id": "us.anthropic.claude-opus-4-6-v1",
+                "id": opus_id,
                 "name": "Claude Opus 4.6",
                 "reasoning": True,
                 "input": ["text", "image"],
@@ -373,7 +388,7 @@ def build_provider_block(
                 "maxTokens": 8192,
             },
             {
-                "id": "us.anthropic.claude-sonnet-4-6",
+                "id": sonnet_id,
                 "name": "Claude Sonnet 4.6",
                 "reasoning": True,
                 "input": ["text", "image"],
@@ -386,7 +401,7 @@ def build_provider_block(
                 # The date-stamped inference-profile id is the only valid Haiku
                 # 4.5 profile; the bare us.anthropic.claude-haiku-4-5 throws
                 # ValidationException on invoke.
-                "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "id": haiku_id,
                 "name": "Claude Haiku 4.5",
                 "reasoning": True,
                 "input": ["text", "image"],
@@ -421,8 +436,8 @@ def build_provider_block(
                 # spend rather than increasing it.
                 #
                 # Users can still override per-agent via agents.list[*].model.
-                "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
-                "fallbacks": ["amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"],
+                "primary": f"amazon-bedrock/{sonnet_id}",
+                "fallbacks": [f"amazon-bedrock/{haiku_id}"],
             },
             {
                 "amazon-bedrock": {
@@ -433,7 +448,9 @@ def build_provider_block(
     raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
 
 
-def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
+def premium_model_ref(
+    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
+) -> str | None:
     """The premium model ref reserved for the CEO agent (Friday), per provider
     path — or ``None`` when there is no premium tier to reserve.
 
@@ -446,7 +463,9 @@ def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | N
     Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
     """
     if provider_choice == "bedrock_claude":
-        return "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
+        if not aip_arns or "opus" not in aip_arns:
+            raise ValueError("bedrock_claude premium_model_ref requires aip_arns['opus']")
+        return f"amazon-bedrock/{aip_arns['opus']}"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp.
@@ -456,7 +475,9 @@ def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | N
     return None
 
 
-def cheap_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
+def cheap_model_ref(
+    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
+) -> str | None:
     """The cheapest model ref per provider path, routed to pure-overhead aux
     operations — or ``None`` when there is no cheaper tier to route to.
 
@@ -473,7 +494,9 @@ def cheap_model_ref(provider_choice: str, byo_provider: str | None) -> str | Non
     Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
     """
     if provider_choice == "bedrock_claude":
-        return "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        if not aip_arns or "haiku" not in aip_arns:
+            raise ValueError("bedrock_claude cheap_model_ref requires aip_arns['haiku']")
+        return f"amazon-bedrock/{aip_arns['haiku']}"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             return "anthropic/claude-haiku-4-5"
@@ -626,6 +649,7 @@ def build_openclaw_config_dict(
     paperclip_company_id: str | None = None,
     paperclip_api_url: str | None = None,
     integration_mcp_servers: dict | None = None,
+    aip_arns: dict[str, str] | None = None,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -662,15 +686,16 @@ def build_openclaw_config_dict(
         provider_choice=provider_choice,
         user_id=user_id,
         byo_provider=byo_provider,
+        aip_arns=aip_arns,
     )
     # The default agent runs on the cheaper standard tier (above); the CEO
     # (Friday) is pinned to the premium tier via a per-agent override below.
-    ceo_model = premium_model_ref(provider_choice, byo_provider)
+    ceo_model = premium_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
     # Pure-overhead aux operations (compaction / memory-flush / internal
     # heartbeat) are routed to the cheapest tier — they don't need the
     # premium default, and compaction in particular processes very large
     # contexts where the cost difference is largest.
-    cheap_model = cheap_model_ref(provider_choice, byo_provider)
+    cheap_model = cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
 
     # Token auth — shared secret between backend and container.
     # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
@@ -1148,6 +1173,7 @@ async def write_openclaw_config(
     paperclip_company_id: str | None = None,
     paperclip_api_url: str | None = None,
     integration_mcp_servers: dict | None = None,
+    aip_arns: dict[str, str] | None = None,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -1196,6 +1222,7 @@ async def write_openclaw_config(
         paperclip_company_id=paperclip_company_id,
         paperclip_api_url=paperclip_api_url,
         integration_mcp_servers=integration_mcp_servers,
+        aip_arns=aip_arns,
     )
 
     def _write() -> None:

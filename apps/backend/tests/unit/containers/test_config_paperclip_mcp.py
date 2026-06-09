@@ -18,6 +18,12 @@ import pytest
 from core import openclaw_version
 from core.containers.config import build_openclaw_config_dict
 
+_AIPS = {
+    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus",
+    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-sonnet",
+    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-haiku",
+}
+
 
 def _ceo_agent(uuid: str = "f47ac10b-58cc-4372-a567-0e02b2c3d479") -> dict:
     return {"id": uuid, "name": "Friday", "role": "ceo"}
@@ -28,6 +34,7 @@ def test_mcp_block_emitted_when_all_inputs_present():
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[_ceo_agent("friday-uuid")],
         paperclip_api_key="pcli_live_abc",
         paperclip_company_id="comp-1",
@@ -54,6 +61,7 @@ def test_mcp_block_omitted_when_api_key_missing():
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[_ceo_agent()],
         paperclip_api_key=None,
         paperclip_company_id="comp-1",
@@ -71,6 +79,7 @@ def test_mcp_block_omitted_when_any_required_input_missing(missing: str):
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[_ceo_agent()],
         paperclip_api_key="pcli_live_abc",
         paperclip_company_id="comp-1",
@@ -90,6 +99,7 @@ def test_mcp_block_omitted_when_no_ceo_in_roster():
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[
             {"id": "atlas-uuid", "name": "Atlas", "role": "recruiter"},
         ],
@@ -107,6 +117,7 @@ def test_mcp_block_picks_ceo_not_first_agent():
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[
             {"id": "atlas-uuid", "name": "Atlas", "role": "recruiter"},
             {"id": "friday-uuid", "name": "Friday", "role": "ceo"},
@@ -125,6 +136,7 @@ def test_mcp_block_omitted_when_paperclip_agents_empty():
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[],
         paperclip_api_key="pcli_live_abc",
         paperclip_company_id="comp-1",
@@ -142,6 +154,7 @@ def test_integration_mcp_servers_merged_alongside_paperclip():
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[_ceo_agent("friday-uuid")],
         paperclip_api_key="pcli_live_abc",
         paperclip_company_id="comp-1",
@@ -170,6 +183,7 @@ def test_integration_mcp_servers_merged_when_paperclip_absent():
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[],
         integration_mcp_servers={
             "stripe": {
@@ -189,6 +203,7 @@ def test_defaults_heartbeat_is_explicit_30m():
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
     )
     # Explicit cadence (not an empty dict) so the 30m internal heartbeat is
     # visible in our config, not silently inherited from upstream defaults.
@@ -196,7 +211,7 @@ def test_defaults_heartbeat_is_explicit_30m():
     assert heartbeat["every"] == "30m"
     # The heartbeat is pure overhead and runs on the cheap tier — see
     # test_aux_operations_routed_to_cheap_tier for the full per-provider matrix.
-    assert heartbeat["model"] == "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert heartbeat["model"] == f"amazon-bedrock/{_AIPS['haiku']}"
 
 
 def test_mcp_runtime_scope_shared_when_deployed_image_supports_it(monkeypatch):
@@ -208,6 +223,7 @@ def test_mcp_runtime_scope_shared_when_deployed_image_supports_it(monkeypatch):
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[_ceo_agent("friday-uuid")],
         paperclip_api_key="pcli_live_abc",
         paperclip_company_id="comp-1",
@@ -224,6 +240,7 @@ def test_mcp_runtime_scope_omitted_on_pre_6_1_image(monkeypatch):
         user_id="user_x",
         gateway_token="t" * 32,
         provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
         paperclip_agents=[_ceo_agent("friday-uuid")],
         paperclip_api_key="pcli_live_abc",
         paperclip_company_id="comp-1",

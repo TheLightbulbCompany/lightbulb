@@ -38,11 +38,13 @@ function assertAscii(template: Template, resourceType: string, descKey: string) 
 }
 
 /**
- * Synthesizes the dev Isol8 stage with the static cdk.context.json
- * lookups inlined so DnsStack's HostedZone.fromLookup resolves without
- * an AWS API call.
+ * Synthesizes an Isol8 stage with the static cdk.context.json lookups
+ * inlined so DnsStack's HostedZone.fromLookup resolves without an AWS API
+ * call. BOTH dev and prod are synthesized: some stacks are prod-only
+ * (e.g. BedrockMeterStack), and an em-dash in its SG GroupDescription was
+ * the prod CREATE_FAILED root cause — a dev-only guard never covered it.
  */
-function synthDevStageTemplates(): Template[] {
+function synthStageTemplates(environment: "dev" | "prod"): Template[] {
   const app = new App({
     context: {
       "availability-zones:account=877352799272:region=us-east-1": [
@@ -59,8 +61,8 @@ function synthDevStageTemplates(): Template[] {
       },
     },
   });
-  const stage = new Isol8Stage(app, "dev", {
-    environment: "dev",
+  const stage = new Isol8Stage(app, environment, {
+    environment,
     env: { account: "877352799272", region: "us-east-1" },
   });
   // Stage children are Stacks (and possibly nested constructs). Filter
@@ -76,7 +78,11 @@ describe("EC2 description fields are ASCII-only", () => {
   let templates: Template[];
 
   beforeAll(() => {
-    templates = synthDevStageTemplates();
+    // Cover both stages so prod-only stacks (BedrockMeterStack) are guarded.
+    templates = [
+      ...synthStageTemplates("dev"),
+      ...synthStageTemplates("prod"),
+    ];
     expect(templates.length).toBeGreaterThan(0);
   });
 

@@ -198,7 +198,6 @@ export class Isol8Stage extends cdk.Stage {
           albSecurityGroup: network.albSecurityGroup,
           meterTokenSecretName: `isol8/${env}/bedrock_meter_token`,
           meterKmsKeyArn: auth.kmsKey.keyArn,
-          fanoutRegions: ["us-east-1", "us-east-2", "us-west-2"],
         },
       );
       bedrockMeter.addDependency(network);

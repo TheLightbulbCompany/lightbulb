@@ -152,13 +152,17 @@ From the code audit (file:line refs verified by the explore pass):
 
 Last 30 days of prod events (queried via HogQL):
 
-- **Chronic completion gap:** every active day, ~50% of `chat_message_sent`
-  never gets a `chat_completed` (06-02: 136→65; 05-29: 164→76; 06-03:
-  72→35) with near-zero `chat_aborted`. Production users hit the
-  lost-response failure mode constantly — consistent with the
-  crash-loop/lost-messages incident and the silent-loss repro in #1.
-  (Caveat: multi-bubble turns may inflate `sent`, but a stable 2:1 ratio
-  across all days is not explained by that alone.)
+- ~~**Chronic completion gap:** ~50% of `chat_message_sent` never gets a
+  `chat_completed`.~~ **CORRECTION: instrumentation artifact.**
+  `capture("chat_message_sent")` fires TWICE per send — once in
+  `ChatInput.handleSend` (ChatInput.tsx:121, `{has_files}`) and once in
+  `dispatchNow` (useAgentChat.ts:1241, `{agent_id, message_length}`) —
+  both since PR #383 (2026-04-24), so `sent` is double-counted for the
+  whole window. Corrected ratio: ~334 actual sends → 287 completed + 15
+  aborted ≈ **90% accounted for**. The residual ~10% is the real
+  loss/error rate — still worth chasing, but not a 50% catastrophe.
+  Fix: dedupe (drop one call site or rename ChatInput's to
+  `chat_send_clicked`).
 - **59 rage clicks**, 42 of them on `/chat` against unlabeled elements,
   plus rage clicks on "Retry", "Restart Gateway", "Cancel", "Control" —
   users hammering recovery controls.
@@ -171,9 +175,15 @@ Last 30 days of prod events (queried via HogQL):
   property, so the onboarding funnel can't be localized. **Session
   replay: 0 recordings in 30 days** — replay is not enabled; the saved
   recording views are empty shells.
-- Chat events stop after 06-05 while pageviews continue through 06-09 —
-  matches the founders' container being wedged (crash-loop) rather than
-  a capture break.
+- Chat events stop after 06-05: VERIFIED a usage stop, not a capture
+  break. `/chat` pageviews collapsed in lockstep (84/day on 06-02 →
+  0–2/day from 06-06), other prod pageviews keep flowing, and the
+  analytics diff in the suspected window (#821) is type-only. One user
+  (`user_3DBS55…`, the founders' account) produced 620 of 668 sends and
+  last chatted on prod web 06-05 13:09 — exactly when the prod container
+  crash-loop investigation started. Subsequent chatting happens on
+  dev/desktop (both dev.isol8.co, no PostHog key) and channels, none of
+  which emit prod web events.
 
 ## Priority order (impact × effort)
 

@@ -155,6 +155,19 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   const eventHandlersRef = useRef<Set<(event: string, data: unknown) => void>>(new Set());
   const chatHandlersRef = useRef<Set<(msg: ChatIncomingMessage) => void>>(new Set());
   const connectRef = useRef<(() => Promise<void>) | undefined>(undefined);
+  // Clerk's `getToken` changes identity as auth state resolves on mount.
+  // Routing it through a ref keeps `connect` referentially stable so the
+  // auto-connect effect runs exactly once — otherwise the effect re-fires
+  // mid-handshake and the page ends up with two live sockets (observed as
+  // same-second `WS connect` pairs in the backend logs on every page load,
+  // with every broadcast event delivered twice through the orphan).
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  // Single-flight gate for connect(): the token fetch suspends BEFORE
+  // wsRef is assigned, so the readyState guard alone cannot see an
+  // in-flight attempt. Concurrent callers (mount effect, sendReq,
+  // reconnect) share one handshake.
+  const connectInFlightRef = useRef<Promise<void> | null>(null);
 
   // ---- Cleanup helpers ----
 
@@ -277,72 +290,101 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     ) {
       return;
     }
-
-    try {
-      const token = await getToken();
-      if (!token) throw new Error("Not authenticated");
-
-      // NOTE: the Tauri `send_auth_token` IPC used to fire from here too,
-      // but that tied `connect` to `user.*` and tore the WebSocket down
-      // every time Clerk resolved the user on mount — which silently
-      // killed in-flight RPCs (notably agents.list on a returning user).
-      // The desktop-identity push now runs in its own effect below,
-      // keyed on user.id — so identity and token are always fetched
-      // together and the WS lifecycle is decoupled from user changes.
-
-      const ws = new WebSocket(`${WS_URL}?token=${token}`);
-
-      ws.onopen = () => {
-        reconnectAttemptRef.current = 0;
-        setReconnectAttempt(0);
-        setIsConnected(true);
-        setError(null);
-
-        clearPingInterval();
-        pingIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "ping" }));
-          }
-        }, PING_INTERVAL_MS);
-      };
-
-      ws.onclose = (event) => {
-        wsRef.current = null;
-        setIsConnected(false);
-        clearPingInterval();
-
-        // Reject all pending RPCs
-        for (const [, pending] of pendingRpcsRef.current) {
-          clearTimeout(pending.timeout);
-          pending.reject(new Error("WebSocket closed"));
-        }
-        pendingRpcsRef.current.clear();
-
-        if (event.code === 1000 || event.code === 4001) {
-          if (event.code === 4001) {
-            setError("Authentication failed. Please refresh the page.");
-          }
-          return;
-        }
-
-        if (reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
-          const delay =
-            RECONNECT_DELAYS[reconnectAttemptRef.current] || 16000;
-          reconnectAttemptRef.current++;
-          setReconnectAttempt(reconnectAttemptRef.current);
-          reconnectTimeoutRef.current = setTimeout(() => connectRef.current?.(), delay);
-        } else {
-          setError("Connection lost. Waiting for container...");
-        }
-      };
-
-      ws.onerror = () => {};
-      ws.onmessage = handleMessage;
-      wsRef.current = ws;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to connect");
+    if (connectInFlightRef.current) {
+      return connectInFlightRef.current;
     }
-  }, [getToken, handleMessage, clearPingInterval]);
+
+    const attempt = (async () => {
+      try {
+        const token = await getTokenRef.current();
+        if (!token) throw new Error("Not authenticated");
+
+        // NOTE: the Tauri `send_auth_token` IPC used to fire from here too,
+        // but that tied `connect` to `user.*` and tore the WebSocket down
+        // every time Clerk resolved the user on mount — which silently
+        // killed in-flight RPCs (notably agents.list on a returning user).
+        // The desktop-identity push now runs in its own effect below,
+        // keyed on user.id — so identity and token are always fetched
+        // together and the WS lifecycle is decoupled from user changes.
+
+        const ws = new WebSocket(`${WS_URL}?token=${token}`);
+
+        ws.onopen = () => {
+          if (wsRef.current !== ws) return; // superseded while opening
+          console.info("[gateway] ws open");
+          reconnectAttemptRef.current = 0;
+          setReconnectAttempt(0);
+          setIsConnected(true);
+          setError(null);
+
+          clearPingInterval();
+          pingIntervalRef.current = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "ping" }));
+            }
+          }, PING_INTERVAL_MS);
+        };
+
+        ws.onclose = (event) => {
+          // A socket that is no longer the live one (superseded by a newer
+          // connection) must not tear down state or schedule a reconnect
+          // over it. wsRef === null means an explicit local teardown
+          // (unmount / manual reconnect) — that close still runs the
+          // cleanup body so pending RPCs reject promptly.
+          if (wsRef.current !== null && wsRef.current !== ws) return;
+          console.info(`[gateway] ws close code=${event.code} reason=${event.reason || "-"}`);
+          wsRef.current = null;
+          setIsConnected(false);
+          clearPingInterval();
+
+          // Reject all pending RPCs
+          for (const [, pending] of pendingRpcsRef.current) {
+            clearTimeout(pending.timeout);
+            pending.reject(new Error("WebSocket closed"));
+          }
+          pendingRpcsRef.current.clear();
+
+          if (event.code === 1000 || event.code === 4001) {
+            if (event.code === 4001) {
+              setError("Authentication failed. Please refresh the page.");
+            }
+            return;
+          }
+
+          if (reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
+            const delay =
+              RECONNECT_DELAYS[reconnectAttemptRef.current] || 16000;
+            reconnectAttemptRef.current++;
+            setReconnectAttempt(reconnectAttemptRef.current);
+            console.info(`[gateway] reconnect #${reconnectAttemptRef.current} in ${delay}ms`);
+            reconnectTimeoutRef.current = setTimeout(() => connectRef.current?.(), delay);
+          } else {
+            setError("Connection lost. Waiting for container...");
+          }
+        };
+
+        ws.onerror = () => {};
+        ws.onmessage = handleMessage;
+        if (wsRef.current && wsRef.current !== ws) {
+          // Should be unreachable under the single-flight gate, but never
+          // orphan a previous socket — an orphan keeps its handlers and
+          // double-delivers every broadcast event.
+          wsRef.current.close(1000, "Superseded by newer connection");
+        }
+        wsRef.current = ws;
+      } catch (err) {
+        console.info(`[gateway] connect failed: ${err instanceof Error ? err.message : err}`);
+        setError(err instanceof Error ? err.message : "Failed to connect");
+      }
+    })();
+
+    connectInFlightRef.current = attempt;
+    try {
+      await attempt;
+    } finally {
+      connectInFlightRef.current = null;
+    }
+  }, [handleMessage, clearPingInterval]);
 
   // Keep ref in sync for stable reconnect closure
   connectRef.current = connect;

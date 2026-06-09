@@ -80,7 +80,7 @@ describe("BedrockMeterStack", () => {
   });
 
   test("alarms on DLQ depth + skip/failure metrics (review I2)", () => {
-    // A silent revenue leak (DLQ'd transport/parse/S3-merge failures, or
+    // A silent revenue leak (DLQ'd transport/parse/truncated-output failures, or
     // unattributed/unknown-model skips) must page, not hide. One DLQ-depth
     // alarm + one alarm per skip/failure metric = 6 alarms total.
     template.resourceCountIs("AWS::CloudWatch::Alarm", 6);
@@ -98,9 +98,10 @@ describe("BedrockMeterStack", () => {
       ComparisonOperator: "GreaterThanThreshold",
       Threshold: 0,
     });
-    // The S3-merge-failure alarm (the I3 fail-safe path's observability).
+    // The truncated-output-body alarm (the >100KB-completion fail-safe's
+    // observability — renamed from s3_merge_failed in the CW-only cutover).
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "meter.s3_merge_failed",
+      MetricName: "meter.output_body_truncated",
       Namespace: "Isol8",
     });
   });
@@ -112,14 +113,25 @@ describe("BedrockMeterStack", () => {
     });
   });
 
-  test("creates a Bedrock invocation-log group + S3 sink", () => {
+  test("creates a Bedrock invocation-log group (CloudWatch destination)", () => {
     // The Bedrock invocation-log group, by name (the Lambda log-retention
     // construct also provisions its own group, so do not count to exactly 1).
     template.hasResourceProperties("AWS::Logs::LogGroup", {
       LogGroupName: Match.stringLikeRegexp("/isol8/prod/bedrock-invocation"),
     });
-    // The S3 sink bucket for >100KB body offload.
-    template.resourceCountIs("AWS::S3::Bucket", 1);
+  });
+
+  test("CloudWatch-only: no S3 sink bucket (meter never touches S3)", () => {
+    // The meter reads token + cache counts from the inline CloudWatch record;
+    // the S3 sink + >100KB body-offload path were removed in the CW-only cutover.
+    template.resourceCountIs("AWS::S3::Bucket", 0);
+  });
+
+  test("CloudWatch-only: the Lambda role has NO s3:GetObject grant", () => {
+    // A surviving s3:GetObject grant would signal a lingering S3-fetch path.
+    const policies = template.findResources("AWS::IAM::Policy");
+    const json = JSON.stringify(policies);
+    expect(json).not.toContain("s3:GetObject");
   });
 
   test("AwsCustomResource sets logging config with text+embedding modalities", () => {
@@ -134,24 +146,25 @@ describe("BedrockMeterStack", () => {
     expect(bodies).toContain("embeddingDataDeliveryEnabled");
   });
 
-  test("logging-config custom resource uses the SDK-exact nested key path", () => {
+  test("logging-config custom resource is CloudWatch-only (no S3 destination)", () => {
     const customResources = template.findResources("Custom::AWS");
     const cfg = Object.values(customResources).find((r: any) =>
       JSON.stringify(r).includes("putModelInvocationLoggingConfiguration"),
     ) as any;
     expect(cfg).toBeDefined();
-    // The Create payload carries CFN refs (log-group name, role ARN, bucket
-    // name are tokens), so CDK emits it as an `Fn::Join`, NOT a plain string —
-    // the plan's documented fallback. Stringify the whole CR and strip the
-    // escaping so the SDK-exact nested key path can be asserted as adjacent
-    // substrings: the top-level wrapper is lowercase `loggingConfig` and the
-    // nested keys sit under it. Stripping backslashes is escaping-agnostic.
+    // The Create payload carries CFN refs (log-group name, role ARN are
+    // tokens), so CDK emits it as an `Fn::Join`, NOT a plain string. Stringify
+    // the whole CR and strip the escaping so the SDK-exact nested key path can
+    // be asserted as adjacent substrings. Stripping backslashes is
+    // escaping-agnostic.
     const body: string = JSON.stringify(cfg).replace(/\\/g, "");
     expect(body).toContain('"loggingConfig":{"cloudWatchConfig"');
-    expect(body).toContain('"s3Config"');
     expect(body).toContain('"textDataDeliveryEnabled":true');
     expect(body).toContain('"embeddingDataDeliveryEnabled":true');
     expect(body).toContain('"imageDataDeliveryEnabled":false');
+    // CW-only: no S3 large-data offload and no S3 destination at all.
+    expect(body).not.toContain("largeDataDeliveryS3Config");
+    expect(body).not.toContain('"s3Config"');
   });
 
   test("subscription filter is scoped to the AIP-ARN shape", () => {

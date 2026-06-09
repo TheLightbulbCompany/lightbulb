@@ -63,6 +63,37 @@ describe("useTeamsApi cookie opt-ins", () => {
     expect(mockDel).toHaveBeenCalledWith("/teams/agents/1", EXPECTED_OPTS);
   });
 
+  it("uses a unique SWR cache key per path", async () => {
+    mockGet.mockImplementation((p: string) =>
+      Promise.resolve(p === "/teams/agents" ? { list: "agents" } : { list: "issues" }),
+    );
+
+    function Both() {
+      const api = useTeamsApi();
+      const a = api.read<{ list: string }>("/agents");
+      const b = api.read<{ list: string }>("/issues");
+      return { a, b };
+    }
+
+    const { result } = renderHook(Both, { wrapper });
+
+    await waitFor(() => expect(result.current.a.data).toEqual({ list: "agents" }));
+    await waitFor(() => expect(result.current.b.data).toEqual({ list: "issues" }));
+    expect(mockGet).toHaveBeenCalledWith("/teams/agents", EXPECTED_OPTS);
+    expect(mockGet).toHaveBeenCalledWith("/teams/issues", EXPECTED_OPTS);
+  });
+
+  it("propagates fetcher errors to SWR.error", async () => {
+    const boom = new Error("boom");
+    mockGet.mockRejectedValueOnce(boom);
+    const { result } = renderHook(
+      () => useTeamsApi().read("/agents", { shouldRetryOnError: false }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.error).toBe(boom));
+  });
+
   it("still re-throws the 202 provisioning sentinel from a read body", async () => {
     mockGet.mockResolvedValue({ detail: "team workspace provisioning" });
 

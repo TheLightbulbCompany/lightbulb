@@ -27,10 +27,13 @@ describe("ChatGPTOAuthStep", () => {
     stateRef.current = initialState();
   });
 
-  it("auto-starts the device-code request on mount (no Connect ChatGPT button)", () => {
+  it("renders no Connect CTA while idle — auto-start is owned by the hook", () => {
+    // The on-mount status probe + auto-start moved INTO useChatGPTOAuth
+    // (run-once effect), so the component never calls start() itself; the
+    // hook-level tests cover the auto-start. The component's remaining
+    // obligation is that the legacy idle-state CTA stays gone.
     render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
-    expect(startMock).toHaveBeenCalledTimes(1);
-    // Idle-state CTA must not exist anymore.
+    expect(startMock).not.toHaveBeenCalled();
     expect(
       screen.queryByRole("button", { name: /connect chatgpt/i }),
     ).not.toBeInTheDocument();

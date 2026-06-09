@@ -31,7 +31,9 @@ describe("useChatGPTOAuth.start", () => {
     // out of the wizard and strip ?provider= via providerStepDone — instead
     // of dead-ending the user on the "User already has active OAuth tokens"
     // error message.
-    global.fetch = vi.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockImplementation(async () =>
+      // Fresh Response per call — the hook's mount-time SWR fetches share
+      // this mock with start(), and a Response body can only be read once.
       new Response(
         JSON.stringify({
           detail: "User user_xyz already has active OAuth tokens — revoke before starting again",
@@ -50,7 +52,9 @@ describe("useChatGPTOAuth.start", () => {
     // 502 (OAuthExchangeFailedError) and other non-409 failures must not
     // be silently treated as completion — they're real failures the user
     // needs to see and retry.
-    global.fetch = vi.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockImplementation(async () =>
+      // Fresh Response per call — the hook's mount-time SWR fetches share
+      // this mock with start(), and a Response body can only be read once.
       new Response(JSON.stringify({ detail: "OpenAI device-code failed" }), {
         status: 502,
         headers: { "Content-Type": "application/json" },
@@ -64,7 +68,9 @@ describe("useChatGPTOAuth.start", () => {
   });
 
   it("transitions to pending on a normal 200 device-code response", async () => {
-    global.fetch = vi.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockImplementation(async () =>
+      // Fresh Response per call — the hook's mount-time SWR fetches share
+      // this mock with start(), and a Response body can only be read once.
       new Response(
         JSON.stringify({
           user_code: "ABCD-1234",
@@ -82,6 +88,33 @@ describe("useChatGPTOAuth.start", () => {
     await waitFor(() => expect(result.current.state.status).toBe("pending"));
     if (result.current.state.status === "pending") {
       expect(result.current.state.userCode).toBe("ABCD-1234");
+    }
+  });
+
+  it("auto-starts on mount when the status probe reports not-connected", async () => {
+    // The on-mount probe + auto-start live in the hook (run-once effect),
+    // not in ChatGPTOAuthStep — the wizard never calls start() itself.
+    global.fetch = vi.fn().mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/oauth/chatgpt/status")) {
+        return new Response(JSON.stringify({ connected: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          user_code: "AUTO-5678",
+          verification_uri: "https://chatgpt.com/auth/device",
+          expires_in: 900,
+          interval: 5,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    const { result } = renderHook(() => useChatGPTOAuth(), { wrapper });
+    await waitFor(() => expect(result.current.state.status).toBe("pending"));
+    if (result.current.state.status === "pending") {
+      expect(result.current.state.userCode).toBe("AUTO-5678");
     }
   });
 });

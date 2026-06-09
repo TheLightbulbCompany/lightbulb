@@ -45,12 +45,15 @@ def test_policy_has_invoke_allow_with_3_aips_and_9_fm_arns():
         aip_arns=arns,
         regions=("us-east-1", "us-east-2", "us-west-2"),
     )
-    allow = next(s for s in doc["Statement"] if s["Effect"] == "Allow" and "bedrock:InvokeModel" in s["Action"])
-    assert "bedrock:InvokeModelWithResponseStream" in allow["Action"]
-    # 3 AIP ARNs are in Resource.
+    # The 3 AIP ARNs + 9 FM ARNs are split across two Allow statements (AIPs
+    # unconditional, FMs gated) — assert the UNION covers them all.
+    allows = [s for s in doc["Statement"] if s["Effect"] == "Allow" and "bedrock:InvokeModel" in s["Action"]]
+    for s in allows:
+        assert "bedrock:InvokeModelWithResponseStream" in s["Action"]
+    all_resources = {r for s in allows for r in s["Resource"]}
     for arn in arns.values():
-        assert arn in allow["Resource"]
-    # 9 FM ARNs (3 models x 3 regions) are in Resource.
+        assert arn in all_resources
+    # 9 FM ARNs (3 models x 3 regions).
     expected_fm = {
         f"arn:aws:bedrock:{region}::foundation-model/{model}"
         for region in ("us-east-1", "us-east-2", "us-west-2")
@@ -60,20 +63,32 @@ def test_policy_has_invoke_allow_with_3_aips_and_9_fm_arns():
             "anthropic.claude-haiku-4-5-20251001-v1:0",
         )
     }
-    assert expected_fm.issubset(set(allow["Resource"]))
+    assert expected_fm.issubset(all_resources)
     assert len(expected_fm) == 9
 
 
-def test_policy_condition_scopes_to_owner_aips_only():
+def test_aip_invoke_unconditional_fm_invoke_gated_to_owner_aips():
+    # REGRESSION GUARD: conditioning the AIP-resource Allow on
+    # bedrock:InferenceProfileArn denies the invoke — AWS does NOT set that key
+    # when authorizing the profile RESOURCE itself, so the invoke fails closed
+    # with AccessDeniedException (verified live + simulate-principal-policy). The
+    # AIP statement MUST be unconditional; only the FM statement carries the
+    # condition (so the raw FMs can be reached ONLY via this owner's profile).
     arns = _aip_arns()
     doc = build_owner_bedrock_policy(
         owner_id="org_abc",
         aip_arns=arns,
         regions=("us-east-1", "us-east-2", "us-west-2"),
     )
-    allow = next(s for s in doc["Statement"] if s["Effect"] == "Allow" and "bedrock:InvokeModel" in s["Action"])
-    cond = allow["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"]
-    assert sorted(cond) == sorted(arns.values())
+    aip_stmt = next(s for s in doc["Statement"] if s.get("Sid") == "OwnerScopedProfileInvoke")
+    fm_stmt = next(s for s in doc["Statement"] if s.get("Sid") == "OwnerScopedFmViaProfile")
+    # AIP statement: exactly the owner's AIP ARNs, and NO condition.
+    assert sorted(aip_stmt["Resource"]) == sorted(arns.values())
+    assert "Condition" not in aip_stmt
+    # FM statement: condition scopes to the owner's AIPs, and carries no AIP ARNs.
+    assert fm_stmt["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"] == sorted(arns.values())
+    for arn in arns.values():
+        assert arn not in fm_stmt["Resource"]
 
 
 def test_policy_explicitly_denies_create_inference_profile():
@@ -439,8 +454,12 @@ class TestEnsureRole:
         pk = fake.put_role_policy.call_args.kwargs
         assert pk["RoleName"] == "isol8-dev-owner-bedrock-org_abc"
         doc = json.loads(pk["PolicyDocument"])
-        allow = next(s for s in doc["Statement"] if s["Effect"] == "Allow")
-        assert sorted(allow["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"]) == sorted(arns.values())
+        # The AIP-invoke Allow is unconditional; the FM-invoke Allow carries the
+        # owner-scoped condition (split-statement fix for the AccessDenied bug).
+        aip_allow = next(s for s in doc["Statement"] if s.get("Sid") == "OwnerScopedProfileInvoke")
+        assert "Condition" not in aip_allow
+        fm_allow = next(s for s in doc["Statement"] if s.get("Sid") == "OwnerScopedFmViaProfile")
+        assert sorted(fm_allow["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"]) == sorted(arns.values())
         # role ARN persisted on the row.
         row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
         assert row["bedrock_role_arn"]["S"] == role_arn

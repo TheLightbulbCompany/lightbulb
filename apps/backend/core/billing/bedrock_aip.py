@@ -81,23 +81,44 @@ def build_owner_bedrock_policy(
 ) -> dict:
     """Build the per-owner Bedrock inline IAM policy document (PURE — no boto3).
 
-    Allows InvokeModel/InvokeModelWithResponseStream on this owner's 3 AIP ARNs
-    plus the 9 foundation-model ARNs, conditioned on
-    bedrock:InferenceProfileArn == {this owner's AIPs}. Explicitly denies
-    bedrock:CreateInferenceProfile so the tenant cannot widen its own scope.
+    Invoking THROUGH an application inference profile authorizes TWO resources on
+    each call: the profile (AIP) ARN itself, and the underlying foundation-model
+    ARN. These need DIFFERENT treatment:
+
+    - The AIP ARN is allowed UNCONDITIONALLY. AWS does NOT populate the
+      ``bedrock:InferenceProfileArn`` condition key when authorizing the profile
+      RESOURCE itself, so conditioning that statement denies the invoke outright
+      (``AccessDeniedException`` — verified live + via simulate-principal-policy).
+      Tenant isolation still holds: only THIS owner's AIP ARNs are listed.
+    - The foundation-model ARNs ARE gated on
+      ``bedrock:InferenceProfileArn == {this owner's AIPs}`` so the raw FMs can be
+      reached ONLY via this owner's profile — no direct-FM invoke that would
+      bypass the AIP and escape per-owner metering attribution.
+
+    An explicit ``Deny bedrock:CreateInferenceProfile`` stops the tenant from
+    minting a wider profile to escape the scope.
     """
     owner_aip_list = sorted(aip_arns.values())
     return {
         "Version": "2012-10-17",
         "Statement": [
             {
-                "Sid": "OwnerScopedBedrockInvoke",
+                "Sid": "OwnerScopedProfileInvoke",
                 "Effect": "Allow",
                 "Action": [
                     "bedrock:InvokeModel",
                     "bedrock:InvokeModelWithResponseStream",
                 ],
-                "Resource": owner_aip_list + _foundation_model_arns(regions),
+                "Resource": owner_aip_list,
+            },
+            {
+                "Sid": "OwnerScopedFmViaProfile",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                ],
+                "Resource": _foundation_model_arns(regions),
                 "Condition": {
                     "ArnEquals": {
                         "bedrock:InferenceProfileArn": owner_aip_list,

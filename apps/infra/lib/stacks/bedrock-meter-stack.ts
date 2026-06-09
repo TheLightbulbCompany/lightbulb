@@ -63,7 +63,7 @@ export class BedrockMeterStack extends cdk.Stack {
     // Lambda SG: egress to the ALB on 80 (internal endpoint) + 443 (S3 fetch).
     const meterSg = new ec2.SecurityGroup(this, "MeterLambdaSg", {
       vpc: props.vpc,
-      description: "Bedrock meter Lambda — egress to ALB + S3",
+      description: "Bedrock meter Lambda - egress to ALB + S3",
       allowAllOutbound: false,
     });
     meterSg.addEgressRule(
@@ -274,7 +274,7 @@ export class BedrockMeterStack extends cdk.Stack {
     new cloudwatch.Alarm(this, "MeterDlqNotEmptyAlarm", {
       alarmName: `isol8-${props.envName}-bedrock-meter-dlq-not-empty`,
       alarmDescription:
-        "Bedrock meter DLQ has messages — a record failed transport/parse/S3-merge and was held for redrive. Investigate before billing reconciles.",
+        "Bedrock meter DLQ has messages - a record failed transport/parse/S3-merge and was held for redrive. Investigate before billing reconciles.",
       metric: dlq.metricApproximateNumberOfMessagesVisible({
         period: cdk.Duration.minutes(5),
         statistic: "Maximum",
@@ -300,7 +300,7 @@ export class BedrockMeterStack extends cdk.Stack {
     for (const [metricName, alarmId] of skipMetrics) {
       new cloudwatch.Alarm(this, alarmId, {
         alarmName: `isol8-${props.envName}-${metricName.replace(/\./g, "-")}`,
-        alarmDescription: `Bedrock meter emitted ${metricName} — invocations are being skipped or failed in transport (potential revenue leak). Investigate.`,
+        alarmDescription: `Bedrock meter emitted ${metricName} - invocations are being skipped or failed in transport (potential revenue leak). Investigate.`,
         metric: new cloudwatch.Metric({
           namespace: "Isol8",
           metricName,

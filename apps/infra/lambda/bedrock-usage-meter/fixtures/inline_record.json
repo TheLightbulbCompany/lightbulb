@@ -8,18 +8,26 @@
   },
   "region": "us-east-1",
   "requestId": "11111111-2222-3333-4444-555555555555",
-  "operation": "InvokeModelWithResponseStream",
+  "operation": "Converse",
   "modelId": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus-org_abc",
   "input": {
     "inputContentType": "application/json",
     "inputBodyJson": "<redacted>",
-    "inputTokenCount": 1200,
-    "cacheReadInputTokenCount": 800,
-    "cacheWriteInputTokenCount": 64
+    "inputTokenCount": 1200
   },
   "output": {
     "outputContentType": "application/json",
-    "outputBodyJson": "<redacted>",
+    "outputBodyJson": {
+      "output": "<redacted>",
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 1200,
+        "outputTokens": 350,
+        "cacheReadInputTokens": 142000,
+        "cacheWriteInputTokens": 9800,
+        "totalTokens": 153350
+      }
+    },
     "outputTokenCount": 350
   }
 }

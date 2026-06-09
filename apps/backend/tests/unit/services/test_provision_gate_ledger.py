@@ -34,8 +34,13 @@ async def test_zero_balance_returns_credits_required_gate_via_ledger():
         gate = await evaluate_provision_gate(owner_id="org_Y", clerk_user_id="user_X", is_admin=True)
     assert gate is not None
     assert gate.code == "credits_required"
-    balance_args, _ = ledger.get_balance.call_args
+    balance_args, balance_kwargs = ledger.get_balance.call_args
     assert balance_args[0] == "org_Y"
+    # Strongly-consistent read: this gate authorizes real spend and the
+    # credit kill-switch's durability depends on it reflecting the latest
+    # depletion (matches the chat gate). An eventually-consistent read could
+    # re-open a just-drained balance.
+    assert balance_kwargs.get("consistent") is True
 
 
 @pytest.mark.asyncio

@@ -1,14 +1,17 @@
-"""Tests for the Bedrock usage-meter Lambda — parse + S3 fallback + transport.
+"""Tests for the Bedrock usage-meter Lambda — parse + cache extraction + transport.
 
-Uses the captured fixtures from Task 1 as ground truth.
+CloudWatch-only: the meter never touches S3. Token counts are top-level inline
+(`input.inputTokenCount` / `output.outputTokenCount`); cache counts live in the
+inline output body (`output.outputBodyJson.usage.{cacheReadInputTokens,
+cacheWriteInputTokens}`). The huge thing on cache-heavy turns is the cached
+INPUT prompt, which we never need, so the OUTPUT body is <100KB and inline in
+practice. The one rare edge — a >100KB completion offloaded to S3 so the output
+body (and its usage block) is absent — is handled by failing safe to the DLQ
+rather than POSTing a zeroed-cache (~30×-under-billed) record.
 
-NOTE: the Task-1 fixtures are SYNTHETIC (hand-built from the AWS-documented
-Bedrock model-invocation-logging schema — see fixtures/ + FIELDS.md), because
-this plan was executed under an autonomous run with no live AWS/SSO access. The
-parser is written DEFENSIVELY (multi-path token/cache extraction + S3-offload
-fallback) so a shape mismatch degrades rather than silently zeroing the cache
-tokens — but the EXACT field paths MUST be confirmed against a REAL dev record
-(FIELDS.md's build-gate checklist) before METER_IS_LIVE is flipped to true.
+NOTE: confirm the exact field paths against ONE real cached-Converse
+invocation-log record (FIELDS.md's pre-flip gate) before METER_IS_LIVE is
+flipped to true.
 """
 
 import base64
@@ -50,64 +53,68 @@ def lambda_env(monkeypatch):
     sys.modules.pop("index", None)
 
 
-def test_extract_inline_record_reads_tokens_and_cache():
+def test_extract_reads_top_level_tokens():
     import index
 
     record = _load("inline_record.json")
     parsed = index._extract(record)
     assert parsed["request_id"] == record["requestId"]
     assert parsed["model_id"] == record["modelId"]
-    # cache tokens are present and >= 0 (the inline record carries them)
-    assert parsed["cache_read_tokens"] >= 0
-    assert parsed["cache_write_tokens"] >= 0
-    assert parsed["body_offloaded"] is False
+    # Token counts come from the top-level inline counts.
+    assert parsed["input_tokens"] == record["input"]["inputTokenCount"]
+    assert parsed["output_tokens"] == record["output"]["outputTokenCount"]
 
 
-def test_extract_offloaded_record_flags_offload():
+def test_extract_reads_cache_tokens_from_output_body_usage():
+    """The cache counts come from output.outputBodyJson.usage — NOT from the
+    top-level input block. Read the expected values straight out of the fixture
+    so the assertion fails if the path silently yields 0 (the #1 correctness
+    landmine this meter exists to prevent — a `>= 0` assertion would pass even
+    on a wrong path)."""
     import index
 
-    record = _load("s3_offloaded_record.json")
-    parsed = index._extract(record)
-    assert parsed["body_offloaded"] is True
-    assert parsed["s3_ref"]  # a non-empty S3 reference was found
-
-
-def _s3_usage(s3_body):
-    """Pull the usage block from the committed S3 body fixture the same way
-    _merge_s3_body does, so the test asserts against the FIXTURE's real values
-    (not a hardcoded literal that could drift from the captured fixture)."""
-    return s3_body.get("usage", s3_body)
-
-
-def test_merge_s3_body_pulls_cache_tokens_from_s3():
-    import index
-
-    record = _load("s3_offloaded_record.json")
-    s3_body = _load("s3_body.json")
-    parsed = index._extract(record)
-
-    # The committed fixture MUST carry NON-ZERO cache counts — that is the
-    # entire point of the S3 path (Task 1 Step 5/6 guarantees this). Read the
-    # expected values straight out of the fixture so the assertion fails if the
-    # merge silently yields 0 (the #1 correctness landmine this plan exists to
-    # prevent — a `>= 0` assertion would pass even on a wrong S3 path).
-    usage = _s3_usage(s3_body)
-    expected_read = int(usage.get("cacheReadInputTokens", usage.get("cacheReadInputTokenCount", 0)))
-    expected_write = int(usage.get("cacheWriteInputTokens", usage.get("cacheWriteInputTokenCount", 0)))
+    record = _load("inline_record.json")
+    usage = record["output"]["outputBodyJson"]["usage"]
+    expected_read = int(usage["cacheReadInputTokens"])
+    expected_write = int(usage["cacheWriteInputTokens"])
     assert expected_read > 0, (
-        "s3_body.json fixture must retain a non-zero cacheRead count "
-        "(Task 1 Step 5/6) — a zero fixture makes this test vacuous."
+        "inline_record.json fixture must retain a non-zero cacheRead count — "
+        "a zero fixture makes this test vacuous (it is the ~30× undercount the "
+        "meter exists to fix)."
     )
 
-    fake_s3 = MagicMock()
-    fake_s3.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(s3_body).encode())}
-    with patch("index.boto3.client", return_value=fake_s3):
-        merged = index._merge_s3_body(parsed, record)
-    # The cache tokens come from the S3 body and EQUAL the fixture's real
-    # values — not 0, not the inline (offloaded ⇒ inline-zero) count.
-    assert merged["cache_read_tokens"] == expected_read
-    assert merged["cache_write_tokens"] == expected_write
-    assert fake_s3.get_object.called
+    parsed = index._extract(record)
+    assert parsed["cache_read_tokens"] == expected_read
+    assert parsed["cache_write_tokens"] == expected_write
+
+
+def test_extract_falls_back_to_usage_tokens_when_top_level_absent():
+    """If a delivery omits the top-level token counts, fall back to the output
+    body's usage block (documented resilience path)."""
+    import index
+
+    record = _load("inline_record.json")
+    del record["input"]["inputTokenCount"]
+    del record["output"]["outputTokenCount"]
+    usage = record["output"]["outputBodyJson"]["usage"]
+
+    parsed = index._extract(record)
+    assert parsed["input_tokens"] == int(usage["inputTokens"])
+    assert parsed["output_tokens"] == int(usage["outputTokens"])
+
+
+def test_extract_parses_output_body_when_serialized_as_string():
+    """Some deliveries may serialize outputBodyJson as a JSON string; the
+    extractor parses it once so the usage block is still reachable."""
+    import index
+
+    record = _load("inline_record.json")
+    usage = record["output"]["outputBodyJson"]["usage"]
+    record["output"]["outputBodyJson"] = json.dumps(record["output"]["outputBodyJson"])
+
+    parsed = index._extract(record)
+    assert parsed["cache_read_tokens"] == int(usage["cacheReadInputTokens"])
+    assert parsed["cache_write_tokens"] == int(usage["cacheWriteInputTokens"])
 
 
 def test_handler_posts_each_record(monkeypatch):
@@ -144,10 +151,10 @@ def test_post_to_backend_url_headers_and_body(monkeypatch):
     assert captured["url"] == "http://alb.test.local/api/v1/internal/usage/from-bedrock-log"
     assert captured["headers"]["authorization"] == "Bearer meter-token-abc"
     assert captured["headers"]["content-type"] == "application/json"
-    # Internal-only keys are stripped from the wire body.
+    # The wire body carries ONLY the contract fields the backend BedrockLogRecord
+    # requires — no internal-only S3 plumbing keys (removed in the CW-only cutover).
     assert "body_offloaded" not in captured["body"]
     assert "s3_ref" not in captured["body"]
-    # The contract fields the backend BedrockLogRecord requires are present.
     for key in (
         "request_id",
         "model_id",
@@ -174,59 +181,43 @@ def test_post_to_backend_url_headers_and_body(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_merge_s3_body_raises_on_unparseable_ref():
-    """I3: an offloaded record with an unparseable S3 ref must NOT silently
-    return the inline-zero cache counts — it raises so the handler DLQs it."""
+def test_extract_raises_when_output_body_truncated():
+    """A >100KB completion offloaded to S3 leaves output.outputBodyJson absent —
+    the cache counts can't be read, so _extract raises rather than returning
+    inline-zero cache counts."""
     import index
 
-    record = _load("s3_offloaded_record.json")
-    parsed = index._extract(record)
-    parsed["s3_ref"] = ""  # offloaded but ref cannot be parsed into bucket/key
-    with pytest.raises(index._S3MergeError):
-        index._merge_s3_body(parsed, record)
+    record = _load("truncated_output_record.json")
+    assert "outputBodyJson" not in record["output"]  # fixture sanity
+    with pytest.raises(index._OutputBodyTruncatedError):
+        index._extract(record)
 
 
-def test_merge_s3_body_raises_on_s3_fetch_error():
-    """I3: a get_object failure must raise (fail safe), never return inline zeros."""
+def test_handler_truncated_output_dlqs_and_does_not_post():
+    """When the output body is offloaded (cache counts unreadable), the handler
+    DLQs the raw log event + emits meter.output_body_truncated and NEVER POSTs a
+    zeroed-cache record."""
     import index
 
-    record = _load("s3_offloaded_record.json")
-    parsed = index._extract(record)
-
-    fake_s3 = MagicMock()
-    fake_s3.get_object.side_effect = RuntimeError("AccessDenied")
-    with patch("index.boto3.client", return_value=fake_s3):
-        with pytest.raises(index._S3MergeError):
-            index._merge_s3_body(parsed, record)
-
-
-def test_handler_s3_merge_failure_dlqs_and_does_not_post():
-    """I3: when the offloaded body is unreadable, the handler DLQs the raw log
-    event + emits meter.s3_merge_failed and NEVER POSTs a zeroed-cache record."""
-    import index
-
-    offloaded = _load("s3_offloaded_record.json")
+    truncated = _load("truncated_output_record.json")
     posted = []
     dlqd = []
     metrics = []
 
-    fake_s3 = MagicMock()
-    fake_s3.get_object.side_effect = RuntimeError("NoSuchKey")
     with (
-        patch("index.boto3.client", return_value=fake_s3),
         patch.object(index, "_post_to_backend", side_effect=lambda p: posted.append(p)),
         patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
-        result = index.handler(_awslogs_event(offloaded), None)
+        result = index.handler(_awslogs_event(truncated), None)
 
     assert result == {"statusCode": 200}
-    # The zeroed-cache record was NOT POSTed (the whole point of I3).
+    # The zeroed-cache record was NOT POSTed (the whole point of the fail-safe).
     assert posted == []
     # It WAS durably held on the DLQ with a descriptive reason.
     assert len(dlqd) == 1
-    assert "s3_merge_failed" in dlqd[0][1]
-    assert "meter.s3_merge_failed" in metrics
+    assert "output_body_truncated" in dlqd[0][1]
+    assert "meter.output_body_truncated" in metrics
 
 
 def test_handler_transport_error_dlqs_and_continues():

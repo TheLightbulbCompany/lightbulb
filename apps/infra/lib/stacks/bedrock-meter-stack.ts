@@ -11,7 +11,6 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
-import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 
@@ -282,16 +281,17 @@ export class BedrockMeterStack extends cdk.Stack {
     // account-global-collision constraint is honored (no per-env duplicate).
     //
     // I1: an alarm with no action only flips a console dot — it never pages. Wire
-    // every alarm to an SNS topic so a sustained miss-storm actually reaches
-    // oncall. This stack is prod-only and account-scoped, and the observability
-    // stack's page/warn topics are not exported across stacks (the codebase
-    // deliberately avoids cross-stack export coupling), so the topic is created
-    // here and subscribed to the same oncall address.
-    const alarmTopic = new sns.Topic(this, "MeterAlerts", {
-      topicName: `isol8-${props.envName}-bedrock-meter-alerts`,
-      displayName: "Isol8 Bedrock Meter Alerts",
-    });
-    alarmTopic.addSubscription(new subs.EmailSubscription("oncall@isol8.co"));
+    // every alarm to the shared per-env warn topic so a sustained miss-storm
+    // reaches the EXISTING alerting destination. The platform already owns
+    // isol8-{env}-alerts-warn (created by the observability stack, with its
+    // subscriptions already wired); we reference it BY ARN rather than minting a
+    // new topic + a placeholder address. ARN reference (not a cross-stack
+    // export) keeps the codebase's no-export-coupling posture.
+    const alarmTopic = sns.Topic.fromTopicArn(
+      this,
+      "MeterAlerts",
+      `arn:aws:sns:${this.region}:${this.account}:isol8-${props.envName}-alerts-warn`,
+    );
     const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
 
     const dlqAlarm = new cloudwatch.Alarm(this, "MeterDlqNotEmptyAlarm", {

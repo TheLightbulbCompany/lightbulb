@@ -20,6 +20,12 @@ interface ChatInputProps {
   centered?: boolean;
   isUploading?: boolean;
   isStreaming?: boolean;
+  /**
+   * Gateway socket state. Sends while disconnected still queue (by
+   * design, mirroring upstream) — this only drives the "Reconnecting…"
+   * hint so the user knows WHY a send is parked.
+   */
+  isConnected?: boolean;
   suggestedMessage?: string;
   queuedMessages?: {
     id: string;
@@ -46,6 +52,7 @@ export function ChatInput({
   centered,
   isUploading,
   isStreaming,
+  isConnected = true,
   suggestedMessage,
   queuedMessages = [],
   onRemoveQueued,
@@ -210,6 +217,13 @@ export function ChatInput({
             >
               <X className="h-3 w-3" />
             </button>
+          </div>
+        )}
+
+        {!isConnected && (
+          <div className="flex items-center gap-2 mb-2 px-2 py-1 rounded-md bg-[#fdf6e3] border border-[#ede3c4] text-xs text-[#8a7340]">
+            <span className="h-1.5 w-1.5 rounded-full bg-[#c9a227] animate-pulse" />
+            <span>Reconnecting to your agent — messages you send will be delivered once back online.</span>
           </div>
         )}
 

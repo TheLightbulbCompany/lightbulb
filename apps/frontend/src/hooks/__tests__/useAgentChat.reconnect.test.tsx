@@ -146,4 +146,37 @@ describe("useAgentChat — F-RECONNECT", () => {
     expect(abortCalls()).toHaveLength(2);
     expect(abortCalls()[1]?.[0]).toMatchObject({ type: "agent_abort", runId });
   });
+
+  it("re-parks a drained item instead of dropping it when dispatch is refused pre-wire", async () => {
+    // Park a send while disconnected, then reconnect with NO agent selected.
+    // The rising-edge replay dequeues the item and calls dispatchNow, whose
+    // pre-wire guard refuses (no agent). The item must come back as a
+    // visible failed/parked entry — never vanish.
+    isConnected = false;
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result, rerender } = renderHook(
+      ({ agentId }: { agentId: string | null }) => useAgentChat(agentId, "session-1"),
+      { initialProps: { agentId: "agent-X" as string | null } },
+    );
+
+    await act(async () => {
+      await result.current.sendMessage("must not vanish");
+    });
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0].sendState).toBe("waiting-reconnect");
+
+    // Agent deselected, then the socket comes back.
+    act(() => rerender({ agentId: null }));
+    isConnected = true;
+    await act(async () => {
+      rerender({ agentId: null });
+    });
+
+    // Nothing went over the wire, and the message is still visible in the
+    // queue (failed → retryable), not silently dropped.
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0].text).toBe("must not vanish");
+    expect(result.current.queuedMessages[0].sendState).toBe("failed");
+  });
 });

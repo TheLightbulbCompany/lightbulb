@@ -1,18 +1,28 @@
-"""Bedrock invocation-log usage meter — dumb transport Lambda.
+"""Bedrock invocation-log usage meter — dumb transport Lambda (CloudWatch-only).
 
-CloudWatch Logs subscription delivers gzipped+base64 records of Bedrock
-model-invocation logs. This Lambda parses each record, fetches the S3-offloaded
-body when present (>100KB → cache tokens live in S3), and POSTs the extracted
-record to the backend internal meter endpoint. It does NOT price, attribute, or
-deplete — that is the backend's single source of truth.
+A CloudWatch Logs subscription delivers gzipped+base64 records of Bedrock
+model-invocation logs. This Lambda parses each record and POSTs the extracted
+token/cache counts to the backend internal meter endpoint. It does NOT price,
+attribute, or deplete — that is the backend's single source of truth.
 
-Field paths are the ones recorded in FIELDS.md (Task 1). The extractor tries the
-primary path first, then documented fallbacks, so a Bedrock log-shape change
-degrades gracefully instead of silently zeroing cache tokens.
+CLOUDWATCH-ONLY (no S3). The prompt/cached-input body (`inputBodyJson`) is the
+huge thing on cache-heavy turns, and we never need it. The OUTPUT body
+(completion + the Converse `usage` block) is almost always <100KB, so Bedrock
+inlines it in the CloudWatch record. We therefore read everything we need from
+CloudWatch and never touch S3:
+  - input_tokens       : `input.inputTokenCount`  (top-level, inline)
+  - output_tokens      : `output.outputTokenCount` (top-level, inline)
+  - cache_read_tokens  : `output.outputBodyJson.usage.cacheReadInputTokens`
+  - cache_write_tokens : `output.outputBodyJson.usage.cacheWriteInputTokens`
+
+Field paths are the ones recorded in FIELDS.md (confirmed against a real
+cached-Converse record before flipping the meter live). The extractor keeps the
+`_first_int` multi-path helper so a documented Bedrock log-shape change degrades
+gracefully instead of silently zeroing cache tokens.
 
 FAIL-SAFE TRANSPORT. A CloudWatch Logs subscription filter invokes this Lambda
 SYNCHRONOUSLY, so the Lambda's async-invocation DLQ never fires on a per-record
-failure — a backend 5xx, an unparseable S3 ref, or an S3 fetch error would
+failure — a backend 5xx, an unparseable record, or a truncated output body would
 otherwise silently drop the record (or, worse, POST a zeroed-cache record and
 under-bill ~30×). So every per-record failure path here explicitly pushes the
 raw failed log event to the SQS DLQ (`_send_to_dlq`) + emits a metric +
@@ -20,15 +30,12 @@ continues. A money-correctness regression surfaces on the DLQ / an alarm, never
 as a silent zero. The backend endpoint is idempotent (deplete() exactly-once on
 requestId), so DLQ redrive replays are safe.
 
-⚠️ BUILD-GATE — UNVERIFIED FIELD PATHS. The FIELDS.md fixtures backing these
-paths are SYNTHETIC (hand-built from the AWS-documented Bedrock
-model-invocation-logging schema, NOT captured from a real dev invocation —
-this plan ran with no live AWS/SSO access). The cache-token paths and the
-S3-offload reference field are the two highest-risk unknowns in the whole meter
-(a wrong cache path silently zeroes the ~30× cache undercount the meter exists
-to fix). The parser is DEFENSIVE on purpose, but the EXACT paths MUST be
-confirmed against a real dev record (FIELDS.md's build-gate checklist) BEFORE
-`METER_IS_LIVE` is flipped to true. Do NOT treat any path below as confirmed.
+The one rare edge: a >100KB completion body. Bedrock offloads only bodies
+>100KB to S3, and the cached INPUT prompt (not the output) is what's huge on
+cache-heavy turns, so the output body is inline in practice. But if a completion
+IS large enough to be offloaded, `output.outputBodyJson` is absent and the cache
+counts can't be read — rather than POST an under-billed (cache=0) record we DLQ
+it + emit `meter.output_body_truncated` so the gap is visible and redrivable.
 """
 
 import base64
@@ -38,7 +45,6 @@ import logging
 import os
 import time
 import urllib.request
-from urllib.parse import urlparse
 
 import boto3
 
@@ -48,11 +54,13 @@ logger.setLevel(logging.INFO)
 _METER_TOKEN = None
 
 
-class _S3MergeError(Exception):
-    """An offloaded record whose S3 body could not be read.
+class _OutputBodyTruncatedError(Exception):
+    """An output body too large to inline (>100KB → offloaded to S3).
 
     Raised instead of returning a zeroed-cache record so the per-record handler
-    DLQs the line rather than silently POSTing a ~30×-under-billed zero.
+    DLQs the line rather than silently POSTing a ~30×-under-billed zero. This is
+    the rare large-completion edge; the cached INPUT prompt is what's normally
+    huge, and we never need it, so the output body is inline in practice.
     """
 
 
@@ -136,23 +144,48 @@ def _first_int(d, *paths):
     return 0
 
 
-def _find_s3_ref(record):
-    """Return the S3 reference (key or s3:// URI) if the body was offloaded, else ''."""
-    inp = record.get("input", {})
-    for key in ("inputBodyS3Path", "s3Location", "inputBodyS3Location", "bodyS3Path"):
-        ref = inp.get(key)
-        if isinstance(ref, str) and ref:
-            return ref
-        if isinstance(ref, dict):
-            uri = ref.get("uri") or ref.get("s3Uri") or ""
-            if uri:
-                return uri
-    return ""
+def _output_usage(record):
+    """Return the Converse `usage` block from the inline output body, or None.
+
+    The cache counts live in the RESPONSE body (`output.outputBodyJson.usage`),
+    which Bedrock inlines in CloudWatch when the body is <100KB (the normal case
+    — the huge thing on cache-heavy turns is the cached INPUT prompt, not the
+    completion). Returns None when the output body is absent (>100KB completion
+    offloaded to S3) so the caller can fail safe rather than zero the cache.
+
+    `outputBodyJson` is an embedded JSON object in the CloudWatch record; if a
+    given delivery serializes it as a JSON string we parse it once.
+    """
+    output = record.get("output")
+    if not isinstance(output, dict):
+        return None
+    body = output.get("outputBodyJson")
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except ValueError:
+            return None
+    if not isinstance(body, dict):
+        return None
+    usage = body.get("usage")
+    return usage if isinstance(usage, dict) else None
 
 
 def _extract(record):
-    """Extract the billing-relevant fields from one Bedrock log record."""
-    s3_ref = _find_s3_ref(record)
+    """Extract the billing-relevant fields from one Bedrock log record.
+
+    Token counts are top-level inline (`input.inputTokenCount` /
+    `output.outputTokenCount`); cache counts live in the inline output body's
+    `usage` block. Raises `_OutputBodyTruncatedError` when the output body is
+    absent (>100KB completion offloaded to S3) so the handler DLQs the record
+    instead of POSTing a zeroed-cache (~30×-under-billed) row.
+    """
+    usage = _output_usage(record)
+    if usage is None:
+        raise _OutputBodyTruncatedError(
+            f"output.outputBodyJson.usage missing for requestId={record.get('requestId', '')!r} "
+            "(likely a >100KB completion offloaded to S3)"
+        )
     error_code = record.get("errorCode")
     run_status = "end"
     if error_code:
@@ -161,67 +194,30 @@ def _extract(record):
         "request_id": record.get("requestId", ""),
         "model_id": record.get("modelId", ""),
         "identity_arn": (record.get("identity") or {}).get("arn"),
-        "input_tokens": _first_int(record, ("input", "inputTokenCount")),
-        "output_tokens": _first_int(record, ("output", "outputTokenCount")),
-        "cache_read_tokens": _first_int(record, ("input", "cacheReadInputTokenCount")),
-        "cache_write_tokens": _first_int(record, ("input", "cacheWriteInputTokenCount")),
+        # Token counts are top-level inline; fall back to the output body's
+        # usage block if a delivery omits the top-level counts.
+        "input_tokens": _first_int(
+            record,
+            ("input", "inputTokenCount"),
+            ("output", "outputBodyJson", "usage", "inputTokens"),
+        ),
+        "output_tokens": _first_int(
+            record,
+            ("output", "outputTokenCount"),
+            ("output", "outputBodyJson", "usage", "outputTokens"),
+        ),
+        # Cache counts live ONLY in the response body's usage block.
+        "cache_read_tokens": _first_int({"u": usage}, ("u", "cacheReadInputTokens")),
+        "cache_write_tokens": _first_int({"u": usage}, ("u", "cacheWriteInputTokens")),
         "run_status": run_status,
         "region": record.get("region", ""),
         "occurred_at": record.get("timestamp", ""),
-        "body_offloaded": bool(s3_ref),
-        "s3_ref": s3_ref,
     }
-
-
-def _parse_s3_ref(s3_ref):
-    """Return (bucket, key) from a key or an s3://bucket/key URI."""
-    if s3_ref.startswith("s3://"):
-        p = urlparse(s3_ref)
-        return p.netloc, p.path.lstrip("/")
-    # Bare key — the bucket is the configured large-data sink.
-    return os.environ.get("LARGE_DATA_BUCKET", ""), s3_ref
-
-
-def _merge_s3_body(parsed, record):
-    """Fetch the offloaded S3 body and overwrite token/cache counts from it.
-
-    The cache tokens are the whole point of going to S3 — on offloaded records
-    the inline counts read 0, so we MUST source them from the object body.
-
-    FAIL-SAFE: an offloaded record whose S3 body cannot be read (unparseable ref
-    OR a get_object error) raises `_S3MergeError` rather than returning `parsed`
-    with the inline-zero cache counts. Returning zeros would silently re-introduce
-    the ~30× cache-blind under-bill this meter exists to prevent. The per-record
-    handler catches `_S3MergeError`, DLQs the line, and emits meter.s3_merge_failed.
-    """
-    bucket, key = _parse_s3_ref(parsed["s3_ref"])
-    if not bucket or not key:
-        raise _S3MergeError(f"unparseable s3_ref={parsed['s3_ref']!r}")
-    try:
-        body_obj = boto3.client("s3").get_object(Bucket=bucket, Key=key)
-        body = json.loads(body_obj["Body"].read())
-    except Exception as exc:  # noqa: BLE001 - any S3/parse error must fail safe, not zero
-        raise _S3MergeError(f"s3 get_object failed for s3://{bucket}/{key}: {exc}") from exc
-    usage = body.get("usage", body)
-    parsed["input_tokens"] = (
-        _first_int({"u": usage}, ("u", "inputTokens"), ("u", "inputTokenCount")) or parsed["input_tokens"]
-    )
-    parsed["output_tokens"] = (
-        _first_int({"u": usage}, ("u", "outputTokens"), ("u", "outputTokenCount")) or parsed["output_tokens"]
-    )
-    parsed["cache_read_tokens"] = _first_int(
-        {"u": usage}, ("u", "cacheReadInputTokens"), ("u", "cacheReadInputTokenCount")
-    )
-    parsed["cache_write_tokens"] = _first_int(
-        {"u": usage}, ("u", "cacheWriteInputTokens"), ("u", "cacheWriteInputTokenCount")
-    )
-    return parsed
 
 
 def _post_to_backend(parsed):
     """POST one extracted record to the backend internal meter endpoint."""
-    payload = {k: v for k, v in parsed.items() if k not in ("body_offloaded", "s3_ref")}
-    data = json.dumps(payload).encode()
+    data = json.dumps(parsed).encode()
     req = urllib.request.Request(
         f"http://{os.environ['ALB_DNS_NAME']}/api/v1/internal/usage/from-bedrock-log",
         method="POST",
@@ -237,10 +233,10 @@ def _post_to_backend(parsed):
 def handler(event, context):
     payload = json.loads(gzip.decompress(base64.b64decode(event["awslogs"]["data"])))
     for log_event in payload.get("logEvents", []):
-        # Each record is handled independently and fails safe: a parse error, an
-        # S3-merge failure, or a backend POST failure DLQs that one record + emits
-        # a metric + continues, so one bad/under-billed record never silently
-        # drops and never poisons the rest of the batch.
+        # Each record is handled independently and fails safe: a parse error, a
+        # truncated/absent output body, or a backend POST failure DLQs that one
+        # record + emits a metric + continues, so one bad/under-billed record
+        # never silently drops and never poisons the rest of the batch.
         try:
             record = json.loads(log_event["message"])
         except (ValueError, KeyError):
@@ -250,13 +246,12 @@ def handler(event, context):
             continue
         try:
             parsed = _extract(record)
-            if parsed["body_offloaded"]:
-                parsed = _merge_s3_body(parsed, record)
-        except _S3MergeError as exc:
-            # Offloaded body unreadable — do NOT POST a zeroed-cache record.
-            logger.error("meter: s3 merge failed, DLQ + skip: %s", exc)
-            _emit_metric("meter.s3_merge_failed")
-            _send_to_dlq(log_event, f"s3_merge_failed: {exc}")
+        except _OutputBodyTruncatedError as exc:
+            # Output body offloaded (>100KB completion) — cache counts unreadable.
+            # Do NOT POST a zeroed-cache record.
+            logger.error("meter: output body truncated, DLQ + skip: %s", exc)
+            _emit_metric("meter.output_body_truncated")
+            _send_to_dlq(log_event, f"output_body_truncated: {exc}")
             continue
         try:
             _post_to_backend(parsed)

@@ -28,10 +28,6 @@ describe("BedrockMeterStack", () => {
       albSecurityGroup: alb.connections.securityGroups[0],
       meterTokenSecretName: "isol8/prod/bedrock_meter_token",
       meterKmsKeyArn: "arn:aws:kms:us-east-1:877352799272:key/abc-123",
-      // The exact 3-region fan-out the prod stage deploys (Task 11): the home
-      // region (us-east-1) is configured by the Task-12 block; the other two
-      // get per-region AwsCustomResource logging configs (Task 13).
-      fanoutRegions: ["us-east-1", "us-east-2", "us-west-2"],
     };
 
     const stack = new BedrockMeterStack(app, "BedrockMeterStack", props);
@@ -202,49 +198,26 @@ describe("BedrockMeterStack", () => {
     template.resourceCountIs("AWS::Logs::SubscriptionFilter", 1);
   });
 
-  test("enables logging in all 3 fan-out regions", () => {
-    // One AwsCustomResource logging config per fan-out region.
+  test("home-region only: exactly one Bedrock logging config, no cross-region CRs", () => {
+    // Single region is COMPLETE, not a stopgap: Bedrock writes invocation logs
+    // only in the SOURCE region (the region of the bedrock-runtime endpoint the
+    // caller hits), never the destination region that serviced a cross-region
+    // request. Every container pins baseUrl to bedrock-runtime.us-east-1, so all
+    // logs land here. us-east-2 / us-west-2 are inference destinations only and
+    // emit no logs — so there must be exactly ONE
+    // putModelInvocationLoggingConfiguration CR (the home region) and no
+    // per-region PassRole grant for those regions.
     const customResources = template.findResources("Custom::AWS");
     const loggingConfigs = Object.values(customResources).filter((r: any) =>
       JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
     );
-    expect(loggingConfigs.length).toBe(3);
+    expect(loggingConfigs.length).toBe(1);
+    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
+    expect(policies).not.toContain("isol8-prod-bedrock-logging-us-east-2");
+    expect(policies).not.toContain("isol8-prod-bedrock-logging-us-west-2");
   });
 
-  test("each fan-out region's custom resource can iam:PassRole its logging role", () => {
-    // PutModelInvocationLoggingConfiguration with a cloudWatchConfig.roleArn
-    // requires iam:PassRole on that role; without it the per-region deploy
-    // fails. Assert the PassRole statement exists, scoped to the per-region
-    // logging-role NAME the _regionLoggingConfig roleArn references.
-    template.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: {
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: "iam:PassRole",
-            Effect: "Allow",
-            Resource: Match.stringLikeRegexp(
-              "isol8-prod-bedrock-logging-us-east-2",
-            ),
-          }),
-        ]),
-      },
-    });
-    template.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: {
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: "iam:PassRole",
-            Effect: "Allow",
-            Resource: Match.stringLikeRegexp(
-              "isol8-prod-bedrock-logging-us-west-2",
-            ),
-          }),
-        ]),
-      },
-    });
-  });
-
-  test("GUARD: text+embedding stay enabled, image stays disabled in every config", () => {
+  test("GUARD: text+embedding stay enabled, image stays disabled in the config", () => {
     const customResources = template.findResources("Custom::AWS");
     const configs = Object.values(customResources).filter((r: any) =>
       JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
@@ -252,13 +225,26 @@ describe("BedrockMeterStack", () => {
     expect(configs.length).toBeGreaterThanOrEqual(1);
     for (const cfg of configs) {
       // The home-region Create body is an `Fn::Join` carrying CFN refs, so its
-      // inner JSON quotes are multiply-escaped; the fan-out regions are plain
-      // strings. Strip backslashes so the modality assertion is escaping-
-      // agnostic — a modality flip would still be caught in either form.
+      // inner JSON quotes are multiply-escaped. Strip backslashes so the
+      // modality assertion is escaping-agnostic — a modality flip is still
+      // caught.
       const body = JSON.stringify(cfg).replace(/\\/g, "");
       expect(body).toContain('"textDataDeliveryEnabled":true');
       expect(body).toContain('"embeddingDataDeliveryEnabled":true');
       expect(body).toContain('"imageDataDeliveryEnabled":false');
     }
+  });
+
+  test("invocation log group is DESTROY (re-creatable), not RETAIN (orphan-brick)", () => {
+    // A RETAIN policy on a fixed-name log group orphans it on rollback/delete,
+    // and the orphan then blocks every subsequent CREATE with AlreadyExists
+    // (this bricked two prod deploys). It must be DESTROY.
+    template.hasResource("AWS::Logs::LogGroup", {
+      Properties: Match.objectLike({
+        LogGroupName: "/isol8/prod/bedrock-invocation",
+      }),
+      DeletionPolicy: "Delete",
+      UpdateReplacePolicy: "Delete",
+    });
   });
 });

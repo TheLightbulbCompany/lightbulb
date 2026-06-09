@@ -34,8 +34,6 @@ export interface BedrockMeterStackProps extends cdk.StackProps {
   meterTokenSecretName: string;
   /** AuthStack KMS key ARN — the Lambda needs kms:Decrypt to read the token. */
   meterKmsKeyArn: string;
-  /** Bedrock fan-out regions to enable logging + a filter in (Task 13). */
-  fanoutRegions: string[];
 }
 
 export class BedrockMeterStack extends cdk.Stack {
@@ -139,10 +137,16 @@ export class BedrockMeterStack extends cdk.Stack {
     // turns is the cached INPUT prompt (which we never need), so there is no S3
     // sink and no largeDataDeliveryS3Config / s3Config — the meter never touches
     // S3.
+    // DESTROY (not RETAIN): the log group has a FIXED name, so a RETAIN policy
+    // orphans it on any CREATE-rollback or stack delete, and the orphan then
+    // blocks every subsequent CREATE with AlreadyExists (this bricked two prod
+    // deploys). It is metering plumbing, not a system of record — the metering
+    // happens in near-real-time via the subscription filter, and DESTROY only
+    // acts on stack delete / CREATE-rollback (never on a steady-state UPDATE).
     this.invocationLogGroup = new logs.LogGroup(this, "InvocationLogGroup", {
       logGroupName: `/isol8/${props.envName}/bedrock-invocation`,
       retention: logs.RetentionDays.ONE_MONTH,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // Bedrock's delivery role — assumed by the bedrock.amazonaws.com service
@@ -211,66 +215,18 @@ export class BedrockMeterStack extends cdk.Stack {
       filterPattern: logs.FilterPattern.literal('"application-inference-profile"'),
     });
 
-    // Fan-out logging configs — Bedrock writes to a per-region invocation-log
-    // group, so enable CloudWatch logging in EVERY fan-out region. The home
-    // region (this.region) is configured by the block above and its log group is
-    // wired to the meter Lambda via the subscription filter; this loop only
-    // ENABLES per-region CloudWatch logging.
-    //
-    // FOLLOW-UP (documented): the fan-out regions (us-east-2 / us-west-2) still
-    // need their OWN per-region CloudWatch subscription filter + meter Lambda to
-    // get full multi-region metering coverage — a stack in us-east-1 cannot
-    // create a subscription/Lambda in another region without a cross-region
-    // sub-stack. This PR covers the home region end-to-end. Do NOT re-introduce
-    // S3 for the fan-out — the per-region Lambda is the path, not an S3 sweep.
-    for (const region of props.fanoutRegions) {
-      if (region === this.region) continue;
-      new cr.AwsCustomResource(this, `BedrockLoggingConfig-${region}`, {
-        onCreate: {
-          service: "Bedrock",
-          action: "putModelInvocationLoggingConfiguration",
-          region,
-          parameters: { loggingConfig: this._regionLoggingConfig(region, props) },
-          physicalResourceId: cr.PhysicalResourceId.of(
-            `bedrock-logging-${region}`,
-          ),
-        },
-        onUpdate: {
-          service: "Bedrock",
-          action: "putModelInvocationLoggingConfiguration",
-          region,
-          parameters: { loggingConfig: this._regionLoggingConfig(region, props) },
-          physicalResourceId: cr.PhysicalResourceId.of(
-            `bedrock-logging-${region}`,
-          ),
-        },
-        onDelete: {
-          service: "Bedrock",
-          action: "deleteModelInvocationLoggingConfiguration",
-          region,
-        },
-        policy: cr.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              "bedrock:PutModelInvocationLoggingConfiguration",
-              "bedrock:DeleteModelInvocationLoggingConfiguration",
-            ],
-            resources: ["*"],
-          }),
-          // PutModelInvocationLoggingConfiguration with a cloudWatchConfig.roleArn
-          // requires iam:PassRole on that role (same as the home-region config
-          // above). The role ARN must match _regionLoggingConfig's roleArn.
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: ["iam:PassRole"],
-            resources: [
-              `arn:aws:iam::${this.account}:role/isol8-${props.envName}-bedrock-logging-${region}`,
-            ],
-          }),
-        ]),
-      });
-    }
+    // SINGLE REGION IS COMPLETE — no fan-out needed.
+    // Owner AIPs copyFrom the `us.` cross-region profile, so Bedrock may RUN
+    // inference in us-east-2 / us-west-2 for capacity. But model-invocation logs
+    // are written ONLY in the SOURCE region — the region whose bedrock-runtime
+    // endpoint the caller hit — never the destination region that serviced the
+    // request (AWS: "CloudWatch, CloudTrail and Model Invocation Logging
+    // continue to record log entries only in the source Region"). Every Isol8
+    // container pins its Bedrock baseUrl to bedrock-runtime.us-east-1 (see
+    // core/containers/config.py build_provider_block), so ALL invocation logs
+    // land here regardless of where inference physically ran. us-east-2 /
+    // us-west-2 are inference destinations only — they never source a request,
+    // so they emit no logs and need no per-region group/subscription/Lambda.
 
     // --- Alarms (review I2 + I1) ----------------------------------------------
     // A silent revenue leak (records DLQ'd on transport/parse failure, or
@@ -342,27 +298,5 @@ export class BedrockMeterStack extends cdk.Stack {
 
     cdk.Tags.of(this).add("Project", "isol8");
     cdk.Tags.of(this).add("Environment", props.envName);
-  }
-
-  private _regionLoggingConfig(
-    region: string,
-    props: BedrockMeterStackProps,
-  ): Record<string, unknown> {
-    // The other-region log group + delivery role are pre-provisioned out-of-band
-    // (one-time `aws logs create-log-group` + role create per region) because a
-    // stack in us-east-1 cannot create resources in another region without a
-    // cross-region sub-stack. CloudWatch-only, like the home region: no S3 sink,
-    // no largeDataDeliveryS3Config / s3Config. Full per-region metering still
-    // needs a per-region subscription + meter Lambda (the FOLLOW-UP noted at the
-    // fan-out loop above); this config only ENABLES CloudWatch logging there.
-    return {
-      cloudWatchConfig: {
-        logGroupName: `/isol8/${props.envName}/bedrock-invocation`,
-        roleArn: `arn:aws:iam::${this.account}:role/isol8-${props.envName}-bedrock-logging-${region}`,
-      },
-      textDataDeliveryEnabled: true,
-      embeddingDataDeliveryEnabled: true,
-      imageDataDeliveryEnabled: false,
-    };
   }
 }

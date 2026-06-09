@@ -8,9 +8,8 @@ The endpoint resolves the owner AND the pricing tier in ONE reverse-table read
 (`resolve_owner_and_tier_from_aip_arn`, an `async def` DynamoDB GetItem) and
 prices the resolved tier with `price_from_tier` (a PURE, synchronous helper).
 The tests therefore patch the combined resolver with an `AsyncMock` returning an
-(owner, tier) tuple and `price_from_tier` with a plain `MagicMock`. The
-identity-ARN fallback resolver stays an `async def`. Arithmetic + behavior are
-otherwise exactly as the plan specifies (raw 10000 * 14 // 10 = 14000;
+(owner, tier) tuple and `price_from_tier` with a plain `MagicMock`. Arithmetic +
+behavior are exactly as the plan specifies (raw 10000 * 14 // 10 = 14000;
 100000 - 14000 = 86000).
 """
 
@@ -208,29 +207,6 @@ class TestDeplete:
         assert r.json()["applied"] is True
         assert r.json()["balance_microcents"] == 86_000
 
-    def test_identity_arn_fallback_attributes_when_aip_misses(self, client, ledger_tables, meter_live):
-        # AIP-ARN lookup misses (None) but the assumed-role ARN resolves the
-        # owner — spec §3.2's fallback path must deplete, not skip.
-        with (
-            patch(
-                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
-                AsyncMock(return_value=(None, None)),
-            ),
-            patch(
-                "routers.internal_usage.resolve_owner_from_identity_arn",
-                AsyncMock(return_value="org_abc"),
-            ),
-            patch(
-                "routers.internal_usage.price_from_tier",
-                MagicMock(return_value=10_000),
-            ),
-            patch("core.services.bedrock_enforcement.enforce_after_deplete", AsyncMock()),
-        ):
-            r = self._post(client, request_id="req-fallback")
-        assert r.status_code == 200
-        assert r.json()["applied"] is True
-        assert r.json()["balance_microcents"] == 86_000
-
     def test_meter_live_calls_deplete_and_enforce(self, client, ledger_tables, meter_live):
         # GAP 4 + GAP 5: when METER_IS_LIVE is True the endpoint MUST deplete
         # the ledger AND fire the kill-switch (enforce_after_deplete) with the
@@ -301,16 +277,10 @@ class TestEdgeCases:
         )
 
     def test_unattributed_owner_skips_without_deplete(self, client, ledger_tables):
-        # BOTH attribution paths miss → truly unattributed → skip, no deplete.
-        with (
-            patch(
-                "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
-                AsyncMock(return_value=(None, None)),
-            ),
-            patch(
-                "routers.internal_usage.resolve_owner_from_identity_arn",
-                AsyncMock(return_value=None),
-            ),
+        # AIP-ARN lookup misses → owner None → unattributed → skip, no deplete.
+        with patch(
+            "routers.internal_usage.resolve_owner_and_tier_from_aip_arn",
+            AsyncMock(return_value=(None, None)),
         ):
             r = self._post(client, request_id="req-orphan")
         assert r.status_code == 200

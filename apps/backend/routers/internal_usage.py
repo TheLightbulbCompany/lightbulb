@@ -21,10 +21,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core.billing.bedrock_aip import (
-    resolve_owner_and_tier_from_aip_arn,
-    resolve_owner_from_identity_arn,
-)
+from core.billing.bedrock_aip import resolve_owner_and_tier_from_aip_arn
 from core.billing.bedrock_pricing import UnknownModelError, price_from_tier
 from core.billing.ledger_interface import get_ledger
 from core.billing.usage_event import UsageEvent
@@ -35,9 +32,8 @@ from core.services import service_token
 # NOTE: owner + pricing tier are resolved together in ONE reverse-table read
 # (resolve_owner_and_tier_from_aip_arn, an async DynamoDB GetItem), then the
 # tier is priced by price_from_tier (a PURE, synchronous helper) — so the hot
-# meter path does exactly one reverse-table read per record. The identity-ARN
-# fallback resolver is also async (its own GetItem). `enforce_after_deplete` is
-# imported at FUNCTION level inside the endpoint (NOT here) to break an import
+# meter path does exactly one reverse-table read per record. `enforce_after_deplete`
+# is imported at FUNCTION level inside the endpoint (NOT here) to break an import
 # cycle: core/services/bedrock_enforcement.py imports container/ledger services
 # that transitively import routers.
 
@@ -62,7 +58,7 @@ class BedrockLogRecord(BaseModel):
 
     request_id: str = Field(min_length=1)
     model_id: str = Field(min_length=1)  # the AIP ARN from log `modelId`
-    identity_arn: str | None = None  # log `identity.arn` (fallback attribution)
+    identity_arn: str | None = None  # log `identity.arn` (audit/debug only; not used for attribution)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cache_read_tokens: int = Field(default=0, ge=0)
@@ -86,21 +82,23 @@ async def from_bedrock_log(
     """
     put_metric("meter.received", dimensions={"status": body.run_status})
 
-    # Primary attribution: the per-owner AIP ARN in `modelId`. ONE reverse-table
-    # read returns the owner AND the pricing tier together (both live on the same
-    # row). Fallback: the assumed-role ARN in `identity.arn` (spec §3.2 mandates
-    # BOTH paths — the role ARN attributes records whose AIP-ARN lookup misses,
-    # e.g. a stale AIP the registry hasn't indexed yet; that path has no tier, so
-    # pricing then raises UnknownModelError below, same as before). Without the
-    # fallback the captured identity_arn would be dead code.
+    # Attribution: the per-owner AIP ARN in `modelId`. ONE reverse-table read
+    # returns the owner AND the pricing tier together (both written atomically on
+    # the same row at provision by persist_owner_aips). The per-owner IAM role can
+    # ONLY invoke this owner's own AIPs (the bedrock:InferenceProfileArn condition
+    # denies bare foundation models and every other profile), so every logged
+    # modelId is one of OUR known AIP ARNs and this lookup cannot legitimately
+    # miss. A miss therefore means the reverse row is absent — a provisioning gap
+    # — which the alarmed meter.unattributed metric surfaces for repair. There is
+    # deliberately NO identity-ARN fallback: the role ARN could recover an owner
+    # but never a tier, so it cannot price the record — it was dead weight.
     owner_id, tier = await resolve_owner_and_tier_from_aip_arn(body.model_id)
-    if owner_id is None and body.identity_arn:
-        owner_id = await resolve_owner_from_identity_arn(body.identity_arn)
     if owner_id is None:
-        # Unattributed (e.g. GooseTown spillover the filter let through, or an
-        # AIP/role we don't own). Do NOT deplete a random owner — skip + observe.
-        # model_id (AIP ARN) is a structured log field, NOT a metric dimension
-        # (per-owner-per-tier cardinality blows up CloudWatch cost).
+        # Not attributable: the AIP reverse row is missing (our provisioning gap
+        # — this metric is alarmed) or the record is genuinely not ours (foreign
+        # spillover the AIP-scoped subscription filter let through). Either way do
+        # NOT deplete a random owner. model_id (AIP ARN) is a structured log field,
+        # NOT a metric dimension (per-owner-per-tier cardinality blows up cost).
         put_metric("meter.unattributed", dimensions={"region": body.region})
         logger.warning("meter: unattributed record model=%s req=%s", body.model_id, body.request_id)
         return {"applied": False, "balance_microcents": 0}

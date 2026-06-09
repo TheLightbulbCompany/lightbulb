@@ -3,8 +3,8 @@
 Plan 4 owns this module — the post-deplete enforcement policy
 (`enforce_after_deplete`). The IAM kill-switch PRIMITIVES it relies on
 (`revoke_owner_bedrock` / `restore_owner_bedrock`) plus the AIP resolvers
-(`resolve_owner_from_aip_arn` / `resolve_tier_from_aip_arn` /
-`resolve_owner_from_identity_arn`) live in `core/billing/bedrock_aip.py`
+(`resolve_owner_from_aip_arn` / `resolve_tier_from_aip_arn`) live in
+`core/billing/bedrock_aip.py`
 (owned by Plan 2) and are imported lazily on the kill path — never
 redefined here. This module is the orchestrator; `bedrock_aip` is the
 primitive layer.

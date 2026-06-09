@@ -1,56 +1,76 @@
-# Bedrock invocation-log record — field paths (SYNTHETIC fixtures, NOT yet confirmed)
+# Bedrock invocation-log record — field paths (CloudWatch-only meter)
 
-> ## ⚠️ BUILD-GATE NOT YET SATISFIED — confirm against a REAL dev record before `METER_IS_LIVE=true`
+> ## PRE-FLIP GATE — confirm against a REAL cached-Converse record before `METER_IS_LIVE=true`
 >
-> The three fixtures in `fixtures/` (`inline_record.json`, `s3_offloaded_record.json`,
-> `s3_body.json`) and the field paths in the table below are **SYNTHETIC** — hand-built
-> from the AWS-documented Bedrock model-invocation-logging schema, **NOT captured from a
-> real dev invocation**. They were created under an autonomous run with no live AWS/SSO
-> access, so the plan's Task 1 live-capture steps (1–7) could not be executed.
+> The field paths below match the AWS-documented Bedrock model-invocation-logging
+> schema and the synthetic fixture in `fixtures/inline_record.json`, but the EXACT
+> shape MUST be confirmed against **one real dev record** before the meter goes
+> live. The cache-token path is the single highest-risk unknown (a wrong path
+> silently zeroes the ~30× cache undercount the meter exists to fix). The parser
+> in `index.py` is DEFENSIVE (multi-path `_first_int` extraction + a top-level →
+> output-body fallback) so a documented shape change degrades rather than silently
+> mis-bills — but do not flip the meter live on synthetic ground truth.
 >
-> **These paths are UNVERIFIED.** The cache-token paths and the S3-offload reference field
-> are the two highest-risk unknowns in the whole meter (the #1 correctness landmine: a wrong
-> cache path silently zeroes the ~30× cache undercount the meter exists to fix). The parser
-> in `index.py` is written DEFENSIVELY (tries each candidate path, falls back to S3) so a
-> shape mismatch degrades rather than silently mis-bills — but the meter MUST NOT go live on
-> synthetic ground truth.
->
-> **Before flipping `METER_IS_LIVE` to `true` (Plan 4 cutover), someone with dev AWS access
-> MUST run the original Task 1 live-capture (plan steps 1–7):**
+> Before flipping `METER_IS_LIVE` to `true`, someone with dev AWS access MUST:
 > 1. `aws sso login --profile isol8-admin`; pick a live dev `$OWNER` + its AIP ARN.
-> 2. Temporarily enable model-invocation logging in DEV (manual, account+region-global — NOT
->    via the per-env stack; tear it down after).
-> 3. Generate a short run (inline record) AND a >100KB-cached-prefix run (S3-offloaded record).
-> 4. Pull one inline + one offloaded record from CloudWatch Logs.
-> 5. Overwrite the three fixtures with the REAL records (scrub prompt/output TEXT to
->    `"<redacted>"`, but **NEVER zero the token/cache numbers** — the offloaded `s3_body.json`
->    MUST keep its real non-zero `cacheReadInputTokens` or the merge test is vacuous).
+> 2. Temporarily enable model-invocation logging in DEV (manual, account+region-global —
+>    NOT via the per-env stack; tear it down after).
+> 3. Generate ONE cached-Converse run (cache-heavy turn so the cache counts are
+>    non-zero) and pull its record from CloudWatch Logs.
+> 4. ALSO confirm the rare edge: a run whose COMPLETION body exceeds 100KB. When
+>    that happens the output body is offloaded to S3, `output.outputBodyJson` is
+>    absent, and the cache counts can't be read — the Lambda DLQs the record +
+>    emits `meter.output_body_truncated` rather than POSTing an under-billed
+>    cache=0 row. Confirm this is rare in practice (the cached INPUT prompt is the
+>    big thing, and we never need it; the output body is normally <100KB inline).
+> 5. Overwrite `fixtures/inline_record.json` with the REAL record (scrub prompt/
+>    output TEXT to `"<redacted>"`, but **NEVER zero the token/cache numbers** —
+>    the fixture MUST keep its real non-zero `cacheReadInputTokens` or the cache
+>    test is vacuous).
 > 6. Reconcile the table below + the candidate-path tuples in
->    `index.py::_extract` / `_find_s3_ref` / `_merge_s3_body` against the captured shape — the
+>    `index.py::_extract` / `_output_usage` against the captured shape — the
 >    **FIXTURE wins** over any candidate guess.
 > 7. Tear down the temporary dev logging config (leave nothing account-global behind).
 >
-> Then delete this warning block, change the title to "(captured dev, <date>)", and re-run
-> `python -m pytest test_index.py -v`.
+> Then delete this warning block, change the title to "(captured dev, <date>)", and
+> re-run `python -m pytest test_index.py -v`.
 
-Source: AWS-documented Bedrock model-invocation-logging schema (SYNTHETIC; pending dev capture).
+## No S3 — CloudWatch-only
+
+The meter is **CloudWatch-only** and never touches S3. The S3-offload merge path
+(and the synthetic S3 fixtures) were removed. Rationale:
+
+- Token counts (`input.inputTokenCount`, `output.outputTokenCount`) are TOP-LEVEL
+  inline in the CloudWatch record.
+- The CACHE counts (`cacheReadInputTokens`/`cacheWriteInputTokens`, the Converse
+  `TokenUsage`) live in the RESPONSE body at `output.outputBodyJson.usage`.
+- Bedrock offloads only bodies **>100KB** to S3. The huge thing on cache-heavy
+  turns is the cached INPUT prompt (`inputBodyJson`), which the meter does NOT
+  need. The OUTPUT body (completion + `usage`) is almost always <100KB, so Bedrock
+  inlines it in CloudWatch → the cache counts are inline in practice.
+- The one rare edge (a >100KB completion body offloaded to S3, so
+  `output.outputBodyJson` is absent) is handled by failing safe: DLQ the record +
+  emit `meter.output_body_truncated`, never POST a zeroed-cache (under-billed) row.
+
+Source: AWS-documented Bedrock model-invocation-logging schema (pending dev capture).
 Each CloudWatch log event `message` is ONE JSON object of this shape.
 
-| Logical field          | JSON path (inline)                           | JSON path (S3-offloaded body)            |
-|------------------------|----------------------------------------------|------------------------------------------|
-| requestId              | record["requestId"]                          | (same — always in the CW record)         |
-| modelId (AIP ARN)      | record["modelId"]                            | (same)                                   |
-| identity.arn           | record["identity"]["arn"]                    | (same)                                   |
-| region                 | record["region"]                             | (same)                                   |
-| timestamp              | record["timestamp"]                          | (same)                                   |
-| run status / errorCode | record["errorCode"] (absent ⇒ success)       | (same)                                   |
-| input_tokens           | record["input"]["inputTokenCount"]           | s3_body["usage"]["inputTokens"]          |
-| output_tokens          | record["output"]["outputTokenCount"]         | s3_body["usage"]["outputTokens"]         |
-| cache_read_tokens      | record["input"]["cacheReadInputTokenCount"]  | s3_body["usage"]["cacheReadInputTokens"] |
-| cache_write_tokens     | record["input"]["cacheWriteInputTokenCount"] | s3_body["usage"]["cacheWriteInputTokens"]|
-| S3-offload reference   | record["input"]["inputBodyS3Path"] (s3:// URI) | n/a                                    |
+| Logical field          | JSON path (CloudWatch record)                                 |
+|------------------------|---------------------------------------------------------------|
+| requestId              | record["requestId"]                                           |
+| modelId (AIP ARN)      | record["modelId"]                                             |
+| identity.arn           | record["identity"]["arn"]                                     |
+| region                 | record["region"]                                              |
+| timestamp              | record["timestamp"]                                           |
+| run status / errorCode | record["errorCode"] (absent ⇒ success)                        |
+| input_tokens           | record["input"]["inputTokenCount"]  (fallback: output usage)  |
+| output_tokens          | record["output"]["outputTokenCount"] (fallback: output usage) |
+| cache_read_tokens      | record["output"]["outputBodyJson"]["usage"]["cacheReadInputTokens"]  |
+| cache_write_tokens     | record["output"]["outputBodyJson"]["usage"]["cacheWriteInputTokens"] |
+| (fallback) input usage | record["output"]["outputBodyJson"]["usage"]["inputTokens"]    |
+| (fallback) output usage| record["output"]["outputBodyJson"]["usage"]["outputTokens"]   |
 
-NOTE: the paths above are the AWS-documented CANDIDATE shape, mirrored into the SYNTHETIC
-fixtures so the parser's primary candidate path matches them. If a captured real fixture
-disagrees, the FIXTURE wins — edit this table and the candidate-path lists in
-index.py::_extract / _find_s3_ref / _merge_s3_body to match.
+NOTE: pricing stays token × rate via the existing backend rate table — Bedrock
+returns token counts, NOT dollars, so the rate table is NOT removed. If a captured
+real fixture disagrees with the paths above, the FIXTURE wins — edit this table and
+the candidate-path lists in `index.py::_extract` / `_output_usage` to match.

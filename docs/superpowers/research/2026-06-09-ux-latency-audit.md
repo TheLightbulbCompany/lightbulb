@@ -148,6 +148,33 @@ From the code audit (file:line refs verified by the explore pass):
 - Agent error bubbles render raw strings ("Error: LLM request failed."),
   duplicated, with no retry affordance.
 
+## 7. PostHog prod data pass (added same day, admin session, project 380894)
+
+Last 30 days of prod events (queried via HogQL):
+
+- **Chronic completion gap:** every active day, ~50% of `chat_message_sent`
+  never gets a `chat_completed` (06-02: 136→65; 05-29: 164→76; 06-03:
+  72→35) with near-zero `chat_aborted`. Production users hit the
+  lost-response failure mode constantly — consistent with the
+  crash-loop/lost-messages incident and the silent-loss repro in #1.
+  (Caveat: multi-bubble turns may inflate `sent`, but a stable 2:1 ratio
+  across all days is not explained by that alone.)
+- **59 rage clicks**, 42 of them on `/chat` against unlabeled elements,
+  plus rage clicks on "Retry", "Restart Gateway", "Cancel", "Control" —
+  users hammering recovery controls.
+- **Exceptions:** `ApiError` ×22 (top values: "deploy failed" ×15,
+  "PATCH /api/issues/… → 422" ×6), React minified error #418 (hydration
+  mismatch) ×5, Clerk chunk-load failures ×2.
+- **Telemetry gaps:** `chat_completed` carries ONLY `agent_id` — no
+  latency/duration property, so turn latency is unmeasurable from prod
+  data; `onboarding_step_completed` (343 events) has a null `step`
+  property, so the onboarding funnel can't be localized. **Session
+  replay: 0 recordings in 30 days** — replay is not enabled; the saved
+  recording views are empty shells.
+- Chat events stop after 06-05 while pageviews continue through 06-09 —
+  matches the founders' container being wedged (crash-loop) rather than
+  a capture break.
+
 ## Priority order (impact × effort)
 
 1. **#1 silent message loss** — add branch logging to sendMessage/dispatchNow,

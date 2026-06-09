@@ -222,6 +222,27 @@ def _bedrock_client():
     return boto3.client("bedrock", region_name=settings.AWS_REGION)
 
 
+async def _caller_account_id() -> str:
+    """The AWS account id, via STS (sts:GetCallerIdentity needs no IAM grant).
+    Used to build the system inference-profile ARN for
+    CreateInferenceProfile.copyFrom. Resolved on the create-pass only (not the
+    idempotent short-circuit), so the common no-op path makes zero AWS calls."""
+    from core.dynamodb import run_in_thread
+
+    sts = boto3.client("sts", region_name=settings.AWS_REGION)
+    ident = await run_in_thread(sts.get_caller_identity)
+    return ident["Account"]
+
+
+def _system_profile_arn(tier: str, account_id: str) -> str:
+    """CreateInferenceProfile.copyFrom requires the FULL inference-profile ARN of
+    the source system profile, NOT the bare id (`us.anthropic...`): AWS rejects
+    the bare id with a ValidationException (regex demands an
+    inference-profile|foundation-model ARN). SYSTEM_DEFINED profile ARNs are
+    account-qualified: arn:aws:bedrock:<region>:<account>:inference-profile/<id>."""
+    return f"arn:aws:bedrock:{settings.AWS_REGION}:{account_id}:inference-profile/{SYSTEM_PROFILE_ID[tier]}"
+
+
 def _env() -> str:
     return settings.ENVIRONMENT or "dev"
 
@@ -255,6 +276,7 @@ async def ensure_owner_aips(owner_id: str) -> dict[str, str]:
         return existing
 
     client = _bedrock_client()
+    account_id = await _caller_account_id()
     arns: dict[str, str] = dict(existing or {})
     for tier in TIERS:
         if tier in arns:
@@ -264,7 +286,7 @@ async def ensure_owner_aips(owner_id: str) -> dict[str, str]:
             resp = await run_in_thread(
                 client.create_inference_profile,
                 inferenceProfileName=name,
-                modelSource={"copyFrom": SYSTEM_PROFILE_ID[tier]},
+                modelSource={"copyFrom": _system_profile_arn(tier, account_id)},
                 tags=[
                     {"key": "owner_id", "value": owner_id},
                     {"key": "tier", "value": tier},

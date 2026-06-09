@@ -1,7 +1,7 @@
 """Unit tests for core.billing.bedrock_aip — per-owner AIP + scoped IAM role."""
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import boto3
 import pytest
@@ -287,9 +287,11 @@ class TestEnsureAips:
         created = {}
 
         def _create(**kwargs):
-            # Map the copyFrom source profile back to a tier for assertion.
+            # copyFrom is the FULL system inference-profile ARN (not the bare id);
+            # parse the tier off the ARN's profile-id suffix for assertion.
             src = kwargs["modelSource"]["copyFrom"]
-            tier = next(t for t, p in mod.SYSTEM_PROFILE_ID.items() if p == src)
+            profile_id = src.split(":inference-profile/")[1]
+            tier = next(t for t, p in mod.SYSTEM_PROFILE_ID.items() if p == profile_id)
             created[tier] = kwargs
             arn = f"arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/{tier}-aip"
             return {"inferenceProfileArn": arn}
@@ -297,12 +299,20 @@ class TestEnsureAips:
         fake = MagicMock()
         fake.create_inference_profile.side_effect = _create
         monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        # Pin the account so the copyFrom ARN is deterministic (no real STS).
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
 
         arns = await mod.ensure_owner_aips("org_abc")
 
         assert set(arns) == {"opus", "sonnet", "haiku"}
         assert fake.create_inference_profile.call_count == 3
+        # REGRESSION GUARD: copyFrom must be the account-qualified system
+        # inference-profile ARN, not the bare id. AWS rejects the bare id with a
+        # ValidationException, which silently aborted all AIP provisioning.
+        assert created["opus"]["modelSource"]["copyFrom"] == (
+            "arn:aws:bedrock:us-east-1:877352799272:inference-profile/us.anthropic.claude-opus-4-6-v1"
+        )
         # Env-prefixed name, tag carries owner_id.
         assert created["opus"]["inferenceProfileName"] == "isol8-dev-org_abc-opus"
         tags = {t["key"]: t["value"] for t in created["opus"]["tags"]}

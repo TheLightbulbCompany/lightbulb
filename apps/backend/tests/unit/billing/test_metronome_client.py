@@ -242,13 +242,15 @@ async def test_create_prepaid_commit_forwards_payment_gate_config():
 
 @pytest.mark.asyncio
 async def test_get_net_balance_returns_parsed_data():
-    client, fake = _client_with(_resp(200, {"data": {"net_balance": 12.34}}))
+    # Live-verified response shape (sandbox, 2026-06-10): the cents number
+    # rides under "balance" in the data sub-object the client passes through.
+    client, fake = _client_with(_resp(200, {"data": {"balance": 1960.6684, "credit_type_id": "ct-usd-cents"}}))
     body = await client.get_net_balance(customer_id="org_abc")
 
     args, kwargs = fake.post.call_args
     assert args[0] == "/contracts/customerBalances/getNetBalance"
     assert kwargs["json"] == {"customer_id": "org_abc"}
-    assert body == {"net_balance": 12.34}
+    assert body == {"balance": 1960.6684, "credit_type_id": "ct-usd-cents"}
 
 
 @pytest.mark.asyncio

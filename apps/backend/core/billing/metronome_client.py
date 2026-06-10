@@ -206,8 +206,11 @@ class MetronomeClient:
 
     async def get_net_balance(self, *, customer_id: str) -> dict:
         """POST /v1/contracts/customerBalances/getNetBalance — aggregated
-        remaining balance. Returns the `data` sub-object. NOT for the
-        synchronous chat hot path (no low-latency SLA)."""
+        remaining balance. Returns the `data` sub-object, whose live-verified
+        shape (sandbox, 2026-06-10) is {"balance": <number-in-CENTS>,
+        "credit_type_id": …} — the number is under "balance", NOT
+        "net_balance". NOT for the synchronous chat hot path (no low-latency
+        SLA)."""
         body = await self._post("/contracts/customerBalances/getNetBalance", {"customer_id": customer_id})
         return body.get("data", {})
 

@@ -143,8 +143,10 @@ From the code audit (file:line refs verified by the explore pass):
 
 - Send button ignores connection state (`isDisabled = disabled ||
   isUploading`, ChatInput.tsx:170) — clickable while disconnected.
-- Subscribe/provider CTA has no in-button loading state; Stripe redirect
-  gives no feedback between click and page swap (ProvisioningStepper.tsx:1414).
+- ~~Subscribe/provider CTA has no in-button loading state.~~ **CORRECTION:
+  not real on main** — ProviderPicker disables all cards and shows an
+  in-button `Loader2` spinner from click through the Stripe redirect
+  (cleared only on error). The audit's code pass misread this.
 - Agent error bubbles render raw strings ("Error: LLM request failed."),
   duplicated, with no retry affordance.
 
@@ -175,8 +177,11 @@ Last 30 days of prod events (queried via HogQL):
   predates it, so historical turn latency is unmeasurable; the
   double-capture of `chat_message_sent` is removed in the remediation
   branch (dispatchNow is now the single capture point).
-  `onboarding_step_completed` (343 events) has a null `step` property,
-  so the onboarding funnel can't be localized. **Session replay: 0
+  ~~`onboarding_step_completed` has a null `step` property.~~
+  **CORRECTION: likely fine** — the property is `step_name` (built by
+  `onboardingAnalytics.nextOnboardingCompletion`); the audit's HogQL query
+  selected the nonexistent `properties.step`, which is null by definition.
+  (Pending a `step_name` distribution query to confirm the values flow.) **Session replay: 0
   recordings in 30 days** — replay is not enabled; the saved recording
   views are empty shells.
 - Chat events stop after 06-05: VERIFIED a usage stop, not a capture

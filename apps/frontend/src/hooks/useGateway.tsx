@@ -185,6 +185,20 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // RPCs in flight on a socket that is going away can never complete —
+  // reject them promptly rather than letting them sit until the 30s RPC
+  // timeout. Called from the live socket's onclose AND from every path
+  // that retires a socket locally (manual reconnect, supersede): those
+  // paths assign a new socket before the old one's async close event
+  // fires, so the onclose stale-socket guard would skip this cleanup.
+  const rejectPendingRpcs = useCallback((reason: string) => {
+    for (const [, pending] of pendingRpcsRef.current) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(reason));
+    }
+    pendingRpcsRef.current.clear();
+  }, []);
+
   // ---- Message router ----
 
   const handleMessage = useCallback((event: MessageEvent) => {
@@ -337,12 +351,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
           setIsConnected(false);
           clearPingInterval();
 
-          // Reject all pending RPCs
-          for (const [, pending] of pendingRpcsRef.current) {
-            clearTimeout(pending.timeout);
-            pending.reject(new Error("WebSocket closed"));
-          }
-          pendingRpcsRef.current.clear();
+          rejectPendingRpcs("WebSocket closed");
 
           if (event.code === 1000 || event.code === 4001) {
             if (event.code === 4001) {
@@ -370,6 +379,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
           // orphan a previous socket — an orphan keeps its handlers and
           // double-delivers every broadcast event.
           wsRef.current.close(1000, "Superseded by newer connection");
+          rejectPendingRpcs("WebSocket closed");
         }
         wsRef.current = ws;
       } catch (err) {
@@ -384,7 +394,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     } finally {
       connectInFlightRef.current = null;
     }
-  }, [handleMessage, clearPingInterval]);
+  }, [handleMessage, clearPingInterval, rejectPendingRpcs]);
 
   // Keep ref in sync for stable reconnect closure
   connectRef.current = connect;
@@ -393,13 +403,14 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     if (wsRef.current) {
       wsRef.current.close(1000, "Manual reconnect");
       wsRef.current = null;
+      rejectPendingRpcs("WebSocket closed");
     }
     reconnectAttemptRef.current = 0;
     setReconnectAttempt(0);
     setError(null);
     clearReconnectTimeout();
     connect();
-  }, [connect, clearReconnectTimeout]);
+  }, [connect, clearReconnectTimeout, rejectPendingRpcs]);
 
   // ---- Auto-connect on mount ----
 

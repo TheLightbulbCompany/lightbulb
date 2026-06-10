@@ -57,15 +57,12 @@ function UpdateBanner() {
   // window instead of refetching on every mount.
   const { data, mutate: refetchUpdates } = useSWR<{ updates: PendingUpdate[] }>(
     "/container/updates",
-    async (url: string) => {
-      try {
-        return (await api.get(url)) as { updates: PendingUpdate[] };
-      } catch {
-        // Endpoint may not exist yet -- silently ignore
-        return { updates: [] };
-      }
-    },
-    { revalidateOnFocus: false, dedupingInterval: 15_000 },
+    async (url: string) => (await api.get(url)) as { updates: PendingUpdate[] },
+    // Errors are left to throw (endpoint may not exist yet) so SWR keeps
+    // the PREVIOUS data — swallowing them into {updates: []} would make a
+    // transient network error hide an already-visible banner. No retry:
+    // update_available events drive refetches.
+    { revalidateOnFocus: false, dedupingInterval: 15_000, shouldRetryOnError: false },
   );
 
   const updates = useMemo(

@@ -1804,6 +1804,17 @@ class EcsManager:
                         task_arn.split("/")[-1],
                     )
                     return
+                if task_arn and ip and container.get("substatus") != "task_running":
+                    # Task is RUNNING with an IP but the gateway port isn't
+                    # open yet — image pulled, OpenClaw still booting. This
+                    # window is minutes long; surface it so the frontend
+                    # stepper can render a real phase for it instead of a
+                    # time-based guess. Guarded on the fetched row so it
+                    # writes once, not once per poll iteration.
+                    await container_repo.update_fields(
+                        user_id,
+                        {"substatus": "task_running"},
+                    )
 
             except asyncio.CancelledError:
                 raise

@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useProvisioningState, type ColdStartPhase } from "@/hooks/useProvisioningState";
+import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
@@ -41,19 +42,6 @@ type Phase =
   | "agent"
   | "channels"
   | "ready";
-
-// Sub-phase boundaries within backend phase="starting" (frontend
-// gateway/channels-sidecars/agent split). Tuned to cold-start traces:
-// gateway-ready ~30 s, sidecars resolves around T+5–6 min, qmd memory
-// armed shortly after.
-//
-// TODO(cold-start-signals): replace this time-based heuristic once we
-// pipe openclaw's startup-trace events through the gateway pool to a
-// real backend signal. Today the frontend can lie ("Wiring up your
-// channels..." while the gateway is actually still booting); a real
-// signal would let us advance the stepper on the actual transition.
-const SUBPHASE_GATEWAY_MS = 45_000;
-const SUBPHASE_CHANNELS_MS = 180_000;
 
 type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
 
@@ -315,6 +303,20 @@ export function ProvisioningStepper({
     if (container?.phase === "ready" && !reachedReady) setReachedReady(true);
   }, [container?.phase, reachedReady]);
 
+  // Instant-ready: the backend's connection pool pushes
+  // status_change("HEALTHY") over the WebSocket at the exact moment the
+  // container handshake completes. Revalidate /container/status right then
+  // so the stepper flips to ready in one round trip instead of waiting out
+  // the remainder of the 3s poll interval.
+  const { onEvent } = useGateway();
+  useEffect(() => {
+    return onEvent((event, payload) => {
+      if (event !== "status_change") return;
+      if ((payload as { state?: string } | null)?.state !== "HEALTHY") return;
+      refresh();
+    });
+  }, [onEvent, refresh]);
+
   // Provisioning is now driven by /container/status: when the gate clears
   // and no container exists, the backend's status endpoint fires
   // ensure_user_ready itself. The frontend stepper is purely passive — it
@@ -397,17 +399,20 @@ export function ProvisioningStepper({
 
     if (!container) return "container";
     if (container.status === "error") return "container";
-    if (backendPhase === "provisioning") return "container";
+    if (backendPhase === "provisioning") {
+      // substatus "task_running" = the ECS task is RUNNING with an IP but
+      // the gateway port hasn't opened yet (image pulled, OpenClaw
+      // booting) — the real "gateway" window.
+      return container.substatus === "task_running" ? "gateway" : "container";
+    }
     if (backendPhase === undefined && !containerReady) return "container";
 
     if (backendPhase === "starting" || (backendPhase === undefined && !gatewayHealth)) {
-      // Split the long "starting" window into three sub-steps by elapsed
-      // time so the stepper visibly advances. The transitions are
-      // estimates (we have no real-time signal for gateway-ready or
-      // channels-loaded today) — they're calibrated to cold-start traces.
-      if (elapsedMs < SUBPHASE_GATEWAY_MS) return "gateway";
-      if (elapsedMs < SUBPHASE_CHANNELS_MS) return "channels-sidecars";
-      return "agent";
+      // phase="starting" means the gateway port answered the TCP probe:
+      // the gateway is up and OpenClaw is loading channels/sidecars.
+      // Once the health RPC answers, only the pool handshake remains —
+      // the "agent" step. Every transition here is a real signal.
+      return gatewayHealth ? "agent" : "channels-sidecars";
     }
 
     // backend phase="ready" (or legacy: gatewayHealth present) — fall
@@ -427,7 +432,7 @@ export function ProvisioningStepper({
       return hasMainBot(linksData) ? "ready" : "channels";
     }
     return memberLinkTarget !== null ? "channels" : "ready";
-  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget, needsProviderStep, elapsedMs]);
+  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget, needsProviderStep]);
 
   // Analytics: fire `onboarding_step_completed` once per step transition.
   const prevPhaseRef = useRef<Phase | null>(null);

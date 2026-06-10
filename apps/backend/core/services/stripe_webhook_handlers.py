@@ -9,13 +9,15 @@ functions.
 
 Each handler returns either:
 - `None`     → the router responds with the default `{"status": "ok"}`
-- `Response` → the router returns that response verbatim (used by
-                credit-top-up validation guards that need to early-exit
-                with `200` before the credit grant)
+- `Response` → the router returns that response verbatim
 
 Handlers receive an `Event` envelope so they can read `event["data"]`
-or `event["type"]` if they need to disambiguate (the credit handler
-emits per-event-type metrics).
+or `event["type"]` if they need to disambiguate.
+
+Credit top-ups no longer pass through Stripe webhooks at all: funding is a
+Metronome payment-gated commit (core/billing/metronome_funding.py) that
+Metronome collects via the customer's billing-provider configuration, so
+only the subscription lifecycle remains here.
 """
 
 from __future__ import annotations
@@ -27,7 +29,6 @@ from fastapi import Response
 
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
-from core.services import credit_ledger
 from core.services.billing_service import BillingService
 
 logger = logging.getLogger(__name__)
@@ -252,150 +253,6 @@ async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingSer
     return None
 
 
-async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
-    """`checkout.session.completed` + `checkout.session.async_payment_succeeded`.
-
-    We piggyback on the same webhook for two distinct flows; only
-    credit-top-up sessions need ledger work here. Trial-checkout
-    sessions get their state from customer.subscription.created
-    / .updated above.
-    """
-    event_type = event["type"]
-    session = event["data"]["object"]
-    if session.get("metadata", {}).get("purpose") != "credit_top_up":
-        return Response(status_code=200)
-
-    # Only grant credits when Stripe has actually collected payment.
-    #   - "paid"               : card payment cleared synchronously.
-    #   - "no_payment_required": 100%-off coupon → $0 charge → still
-    #                            a valid credit grant (we absorb the
-    #                            cost via the coupon).
-    #   - "unpaid"             : delayed-payment method (ACH /
-    #                            bank transfer / Klarna) hasn't
-    #                            settled yet. Stripe fires
-    #                            checkout.session.completed
-    #                            immediately for these, then later
-    #                            fires async_payment_succeeded
-    #                            (or async_payment_failed). We
-    #                            wait for the async event before
-    #                            crediting so a failed ACH doesn't
-    #                            leave the user with free credits.
-    payment_status = session.get("payment_status")
-    if payment_status not in ("paid", "no_payment_required"):
-        put_metric(
-            "credit.top_up.deferred",
-            dimensions={"payment_status": payment_status or "unknown"},
-        )
-        logger.info(
-            "Credit top-up deferred for session %s — payment_status=%s",
-            session.get("id"),
-            payment_status,
-        )
-        return Response(status_code=200)
-
-    # owner_id is the credit ledger key — org_id for org context,
-    # user_id for personal. See create_credit_top_up_checkout for
-    # where we write it.
-    metadata = session["metadata"]
-    owner_id = metadata.get("owner_id")
-    amount_cents_str = metadata.get("amount_cents")
-    if not owner_id or not amount_cents_str:
-        logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
-        return Response(status_code=200)
-
-    # Credit the *requested* amount, not what Stripe actually charged.
-    # If the user redeemed a 100%-off internal coupon, Stripe charged
-    # nothing but we still grant the full credit balance — the coupon
-    # is effectively us absorbing the cost so internal teams can fund
-    # their own usage without per-transaction Stripe fees. For partial
-    # discounts the same rule applies: the user paid less, but the
-    # ledger reflects the credits-promised side of the transaction.
-    amount_cents = int(amount_cents_str)
-    amount_microcents = amount_cents * 10_000
-    await credit_ledger.top_up(
-        owner_id,
-        amount_microcents=amount_microcents,
-        # Use session id as the idempotency key on the ledger side —
-        # one Checkout completion = one credit grant, even if Stripe
-        # retries the webhook delivery (or fires both completed +
-        # async_payment_succeeded back-to-back).
-        stripe_payment_intent_id=session.get("id"),
-    )
-
-    # Mirror the SAME paid top-up into Metronome as a Stripe-payment-gated
-    # prepaid commit. During the transition the DDB top_up above is what
-    # actually bills (it stays first and untouched), while Metronome shadows
-    # — and there is deliberately NO balance backfill at cutover, so any
-    # top-up that doesn't ALSO land as a Metronome commit is money simply
-    # missing from the Metronome balance the day it becomes the sole ledger.
-    # Gate on the owner's lifecycle, not config: a metronome_customer_id on
-    # the billing row means this owner is provisioned in Metronome, so the
-    # top-up must be mirrored. Best-effort — a Metronome outage must not 500
-    # the webhook back to Stripe (which would trigger redelivery storms).
-    # The next top-up or a manual reconcile recovers a missed commit.
-    from core.billing import metronome_funding
-    from core.config import settings as _settings
-
-    try:
-        account = await billing_repo.get_by_owner_id(owner_id)
-        metronome_customer_id = (account or {}).get("metronome_customer_id")
-        if metronome_customer_id:
-            await metronome_funding.fund_top_up(
-                owner_id=owner_id,
-                amount_microcents=amount_microcents,
-                product_id=_settings.METRONOME_CREDITS_PRODUCT_ID,
-                stripe_session_id=session.get("id"),
-                metronome_customer_id=metronome_customer_id,
-                metronome_contract_id=(account or {}).get("metronome_contract_id"),
-                provider_choice=(account or {}).get("provider_choice"),
-            )
-    except Exception:
-        put_metric("metronome.fund.error", dimensions={"source": "stripe_checkout"})
-        logger.exception(
-            "Metronome funding failed for owner %s session %s",
-            owner_id,
-            session.get("id"),
-        )
-
-    amount_total = session.get("amount_total")
-    put_metric(
-        "credit.top_up",
-        value=(amount_total or 0) / 100.0,
-        unit="None",
-        dimensions={
-            "source": "stripe_checkout",
-            "discounted": "true" if amount_total != amount_cents else "false",
-            "event": event_type.split(".")[-1],
-        },
-    )
-    return None
-
-
-async def handle_checkout_session_async_failed(
-    event: dict[str, Any], billing_service: BillingService
-) -> Response | None:
-    """`checkout.session.async_payment_failed`.
-
-    Delayed-payment method (ACH / bank transfer) was rejected after
-    checkout.session.completed had already fired with payment_status
-    = "unpaid". Because we *gate* the credit grant on payment_status,
-    nothing was ever credited — but emit a metric so we can see the
-    fail rate.
-    """
-    session = event["data"]["object"]
-    if session.get("metadata", {}).get("purpose") == "credit_top_up":
-        put_metric(
-            "credit.top_up.payment_failed",
-            dimensions={"source": "stripe_checkout"},
-        )
-        logger.warning(
-            "Credit top-up payment failed for session %s (user=%s)",
-            session.get("id"),
-            session.get("metadata", {}).get("user_id"),
-        )
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -409,7 +266,4 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "customer.subscription.deleted": handle_subscription_deleted,
     "invoice.payment_failed": handle_invoice_payment_failed,
     "invoice.paid": handle_invoice_paid,
-    "checkout.session.completed": handle_checkout_session,
-    "checkout.session.async_payment_succeeded": handle_checkout_session,
-    "checkout.session.async_payment_failed": handle_checkout_session_async_failed,
 }

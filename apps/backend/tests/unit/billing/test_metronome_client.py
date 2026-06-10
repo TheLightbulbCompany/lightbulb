@@ -210,7 +210,7 @@ async def test_create_prepaid_commit_flat_body_shape():
     assert body["applicable_contract_ids"] == ["contract-1"]
     assert body["invoice_contract_id"] == "contract-1"
     assert body["description"] == "isol8 top-up stripe_session=cs_test_123 owner=org_abc"
-    # UNGATED: our Stripe Checkout already collected the money.
+    # No gate requested ⇒ none in the body (an ungated commit grants now).
     assert "payment_gate_config" not in body
     schedule = body["access_schedule"]
     assert schedule["credit_type_id"] == "ct-usd-cents"
@@ -218,6 +218,26 @@ async def test_create_prepaid_commit_flat_body_shape():
     assert item["amount"] == 2573  # CENTS (Metronome's USD credit type)
     assert item["starting_at"].endswith("Z")
     assert item["ending_before"] == "9999-12-31T00:00:00.000Z"
+
+
+@pytest.mark.asyncio
+async def test_create_prepaid_commit_forwards_payment_gate_config():
+    """The Metronome-native funding path: a STRIPE payment gate makes
+    Metronome collect through the customer's billing-provider config before
+    releasing the credits."""
+    client, fake = _client_with(_resp(200, {}))
+    await client.create_prepaid_commit(
+        customer_id="cust-uuid-1",
+        contract_id="contract-1",
+        product_id="prod-credits",
+        credit_type_id="ct-usd-cents",
+        amount_cents=2500,
+        description="isol8 top-up owner=org_abc",
+        payment_gate_config={"payment_gate_type": "STRIPE"},
+    )
+
+    _, kwargs = fake.post.call_args
+    assert kwargs["json"]["payment_gate_config"] == {"payment_gate_type": "STRIPE"}
 
 
 @pytest.mark.asyncio

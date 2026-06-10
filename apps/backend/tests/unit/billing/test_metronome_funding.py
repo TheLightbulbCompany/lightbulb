@@ -1,34 +1,19 @@
-"""Unit tests for Metronome top-up funding (mocked client + moto DDB)."""
+"""request_top_up creates a PAYMENT-GATED Metronome prepaid commit — no
+local balance write, no restore call (the gate's lazy refresh re-arms), no
+Stripe Checkout. Metronome + Stripe collect the money and release credits."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import boto3
 import pytest
-from moto import mock_aws
 
-from core.billing.metronome_funding import FundingError, fund_top_up
+from core.billing.metronome_funding import FundingError, request_top_up
 
 
 @pytest.fixture(autouse=True)
 def lifecycle_enabled(monkeypatch):
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
-
-
-@pytest.fixture
-def fast_gate_table(monkeypatch):
-    """The fast-gate projection table the top-up re-arm writes to. The
-    Metronome customer UUID itself lives on the billing row (mocked via
-    billing_repo below), not here."""
-    with mock_aws():
-        client = boto3.client("dynamodb", region_name="us-east-1")
-        client.create_table(
-            TableName="test-metronome-fast-gate",
-            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        monkeypatch.setenv("METRONOME_FAST_GATE_TABLE", "test-metronome-fast-gate")
-        yield client
+    monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
+    monkeypatch.setattr("core.config.settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID", "ct-usd-cents")
 
 
 def _billing_row(owner_id="org_abc", **overrides):
@@ -51,14 +36,6 @@ def provisioned_billing_row():
         yield
 
 
-@pytest.fixture(autouse=True)
-def restore_bedrock_mock():
-    """fund_top_up lazily imports restore_owner_bedrock (the post-top-up
-    un-kill); stub it so these tests never touch IAM/container repos."""
-    with patch("core.billing.bedrock_aip.restore_owner_bedrock", new=AsyncMock()) as mock:
-        yield mock
-
-
 def _fake_client():
     fake = MagicMock()
     fake.create_prepaid_commit = AsyncMock()
@@ -66,216 +43,67 @@ def _fake_client():
 
 
 @pytest.mark.asyncio
-async def test_fund_adds_ungated_prepaid_commit_in_cents(fast_gate_table, provisioned_billing_row, monkeypatch):
-    monkeypatch.setattr("core.config.settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID", "ct-usd-cents")
-    # Pre-arm the cache as blocked so we can prove the top-up re-arms it.
-    fast_gate_table.put_item(
-        TableName="test-metronome-fast-gate",
-        Item={"owner_id": {"S": "org_abc"}, "remaining_microcents": {"N": "0"}},
-    )
+async def test_request_creates_payment_gated_commit_in_cents(provisioned_billing_row):
     fake = _fake_client()
-    await fund_top_up(
-        owner_id="org_abc",
-        amount_microcents=25_730_000,  # $25.73 — a value that exposes a 100x slip
-        product_id="prod-credits",
-        stripe_session_id="cs_test_123",
-        client=fake,
-    )
-    # The commit body itself (flat customerCommits/create shape, ungated) is
-    # owned by MetronomeClient.create_prepaid_commit; funding hands it the
-    # contract linkage, the credit type, and the money in CENTS.
+    await request_top_up("org_abc", 2573, client=fake)
+
     fake.create_prepaid_commit.assert_awaited_once()
     _, kwargs = fake.create_prepaid_commit.call_args
     assert kwargs["customer_id"] == "cust-uuid-1"
     assert kwargs["contract_id"] == "contract-1"
     assert kwargs["product_id"] == "prod-credits"
     assert kwargs["credit_type_id"] == "ct-usd-cents"
-    assert kwargs["amount_cents"] == 2573  # CENTS (Metronome's USD credit type), not dollars
-    assert "cs_test_123" in kwargs["description"]
-    # The cache is optimistically re-armed so the owner's next chat message
-    # unblocks without waiting for a Metronome balance webhook (which won't
-    # fire on a top-up). get_balance reads this cache, so without the re-arm a
-    # paid top-up would never unblock chat.
-    item = fast_gate_table.get_item(
-        TableName="test-metronome-fast-gate",
-        Key={"owner_id": {"S": "org_abc"}},
-    )["Item"]
-    assert item["remaining_microcents"]["N"] == "25730000"
+    assert kwargs["amount_cents"] == 2573
+    assert "org_abc" in kwargs["description"]
+    # The whole point: Metronome collects via Stripe before releasing the
+    # credits — the backend never touches the money.
+    assert kwargs["payment_gate_config"] == {"payment_gate_type": "STRIPE"}
 
 
 @pytest.mark.asyncio
-async def test_fund_noop_when_lifecycle_disabled(fast_gate_table, provisioned_billing_row, monkeypatch):
+async def test_request_writes_no_local_balance(provisioned_billing_row):
+    """No DDB credit write of any kind: credits are released by Metronome on
+    payment, and the gate's lazy refresh is the only re-arm path."""
+    fake = _fake_client()
+    with patch("core.billing.metronome_fast_gate.MetronomeFastGate") as gate_cls:
+        await request_top_up("org_abc", 2500, client=fake)
+    gate_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_request_raises_when_lifecycle_disabled(provisioned_billing_row, monkeypatch):
+    """A purchase request must fail loudly (the endpoint surfaces a 400),
+    never silently drop, when Metronome isn't wired for the env yet."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
     fake = _fake_client()
-    await fund_top_up(
-        owner_id="org_abc",
-        amount_microcents=25_000_000,
-        product_id="prod-credits",
-        stripe_session_id="cs_test_123",
-        client=fake,
-    )
+    with pytest.raises(FundingError, match="lifecycle is disabled"):
+        await request_top_up("org_abc", 2500, client=fake)
     fake.create_prepaid_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_fund_uses_passed_through_ids_without_rereading_billing_row(fast_gate_table):
-    """The Stripe webhook already read the billing row; passing both ids
-    through must skip the duplicate read."""
-    fake = _fake_client()
-    with patch(
-        "core.billing.metronome_funding.billing_repo.get_by_owner_id",
-        new=AsyncMock(),
-    ) as get_mock:
-        await fund_top_up(
-            owner_id="org_abc",
-            amount_microcents=25_000_000,
-            product_id="prod-credits",
-            stripe_session_id="cs_test_123",
-            client=fake,
-            metronome_customer_id="cust-uuid-1",
-            metronome_contract_id="contract-1",
-        )
-    get_mock.assert_not_awaited()
-    fake.create_prepaid_commit.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_fund_rearm_failure_does_not_raise(fast_gate_table, provisioned_billing_row, monkeypatch):
-    # The Metronome commit is what releases money; the cache re-arm is a
-    # best-effort convenience. A re-arm failure after a successful commit must
-    # not raise (the next low-balance webhook re-syncs the authoritative
-    # number), or the webhook would 500 back to Stripe AFTER the commit landed.
-    fake = _fake_client()
-    monkeypatch.setattr(
-        "core.billing.metronome_funding.MetronomeFastGate.add_credit",
-        AsyncMock(side_effect=RuntimeError("ddb down")),
-    )
-    await fund_top_up(
-        owner_id="org_abc",
-        amount_microcents=25_000_000,
-        product_id="prod-credits",
-        stripe_session_id="cs_test_123",
-        client=fake,
-    )
-    fake.create_prepaid_commit.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_fund_raises_when_customer_not_provisioned(fast_gate_table, provisioned_billing_row):
+async def test_request_raises_when_customer_not_provisioned(provisioned_billing_row):
     fake = _fake_client()
     with pytest.raises(FundingError, match="customer not provisioned"):
-        await fund_top_up(
-            owner_id="org_unprovisioned",
-            amount_microcents=25_000_000,
-            product_id="prod-credits",
-            stripe_session_id="cs_test_123",
-            client=fake,
-        )
+        await request_top_up("org_unprovisioned", 2500, client=fake)
     fake.create_prepaid_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_fund_raises_when_contract_not_provisioned(fast_gate_table):
+async def test_request_raises_when_contract_not_provisioned():
     fake = _fake_client()
     with patch(
         "core.billing.metronome_funding.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value=_billing_row(metronome_contract_id=None)),
     ):
         with pytest.raises(FundingError, match="contract not provisioned"):
-            await fund_top_up(
-                owner_id="org_abc",
-                amount_microcents=25_000_000,
-                product_id="prod-credits",
-                stripe_session_id="cs_test_123",
-                client=fake,
-            )
+            await request_top_up("org_abc", 2500, client=fake)
     fake.create_prepaid_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_fund_rejects_non_positive_amount(fast_gate_table, provisioned_billing_row):
+async def test_request_rejects_non_positive_amount(provisioned_billing_row):
     fake = _fake_client()
     with pytest.raises(FundingError, match="positive"):
-        await fund_top_up(
-            owner_id="org_abc",
-            amount_microcents=0,
-            product_id="prod-credits",
-            stripe_session_id="cs_test_123",
-            client=fake,
-        )
-
-
-@pytest.mark.asyncio
-async def test_fund_restores_bedrock_and_rearms_flag(fast_gate_table, provisioned_billing_row, restore_bedrock_mock):
-    """A confirmed top-up must undo the kill-switch (restore the per-owner
-    Bedrock policy) AND re-arm the fast-gate flag — Metronome fires no
-    recovery webhook, so this is the only automatic un-block path."""
-    fast_gate_table.put_item(
-        TableName="test-metronome-fast-gate",
-        Item={"owner_id": {"S": "org_abc"}, "remaining_microcents": {"N": "-500"}},
-    )
-    await fund_top_up(
-        owner_id="org_abc",
-        amount_microcents=25_000_000,
-        product_id="prod-credits",
-        stripe_session_id="cs_test_123",
-        client=_fake_client(),
-    )
-    restore_bedrock_mock.assert_awaited_once_with("org_abc")
-    item = fast_gate_table.get_item(
-        TableName="test-metronome-fast-gate",
-        Key={"owner_id": {"S": "org_abc"}},
-    )["Item"]
-    assert item["remaining_microcents"]["N"] == "24999500"
-
-
-@pytest.mark.asyncio
-async def test_fund_skips_restore_for_non_bedrock_provider(fast_gate_table, restore_bedrock_mock):
-    """BYO/OAuth owners have no per-owner AIP map — restoring would only log
-    noise on every top-up, so the un-kill is gated on provider_choice."""
-    fake = _fake_client()
-    with patch(
-        "core.billing.metronome_funding.billing_repo.get_by_owner_id",
-        new=AsyncMock(return_value=_billing_row(provider_choice="byo_key")),
-    ):
-        await fund_top_up(
-            owner_id="org_abc",
-            amount_microcents=25_000_000,
-            product_id="prod-credits",
-            stripe_session_id="cs_test_123",
-            client=fake,
-        )
-    fake.create_prepaid_commit.assert_awaited_once()
-    restore_bedrock_mock.assert_not_awaited()
-    # The fast-gate re-arm is provider-independent (the gate blocks chat for
-    # every provider path) and must still land.
-    item = fast_gate_table.get_item(
-        TableName="test-metronome-fast-gate",
-        Key={"owner_id": {"S": "org_abc"}},
-    )["Item"]
-    assert item["remaining_microcents"]["N"] == "25000000"
-
-
-@pytest.mark.asyncio
-async def test_fund_restore_failure_does_not_raise_and_still_rearms(
-    fast_gate_table, provisioned_billing_row, restore_bedrock_mock
-):
-    """restore_owner_bedrock raises for owners with no persisted AIP map
-    (container never provisioned) and on IAM flakes — the commit already
-    landed against a confirmed payment, so neither may 500 the Stripe
-    webhook, and the fast-gate re-arm must still proceed."""
-    restore_bedrock_mock.side_effect = RuntimeError("no persisted AIP map")
-    fake = _fake_client()
-    await fund_top_up(
-        owner_id="org_abc",
-        amount_microcents=25_000_000,
-        product_id="prod-credits",
-        stripe_session_id="cs_test_123",
-        client=fake,
-    )
-    fake.create_prepaid_commit.assert_awaited_once()
-    item = fast_gate_table.get_item(
-        TableName="test-metronome-fast-gate",
-        Key={"owner_id": {"S": "org_abc"}},
-    )["Item"]
-    assert item["remaining_microcents"]["N"] == "25000000"
+        await request_top_up("org_abc", 0, client=fake)
+    fake.create_prepaid_commit.assert_not_awaited()

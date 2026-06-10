@@ -604,42 +604,28 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
 
 @router.post(
     "/credits/top_up",
-    summary="Start a Stripe Checkout session for a credit top-up",
+    summary="Request a credit top-up (Metronome payment-gated commit)",
     description=(
-        "Creates a Stripe Checkout session in mode=payment for a one-shot "
-        "credit purchase. Returns ``checkout_url`` — the frontend redirects "
-        "the browser to it. Stripe handles card collection, 3DS, Apple Pay, "
-        "saved cards, and promotion-code application. The credit grant "
-        "happens asynchronously when Stripe fires checkout.session.completed."
+        "Creates a PAYMENT-GATED Metronome prepaid commit. Metronome invoices "
+        "the owner's saved Stripe card (charge_automatically) and releases the "
+        "credits when the payment collects — there is no checkout redirect and "
+        "no local balance write. The balance updates asynchronously; the gate's "
+        "lazy refresh picks it up."
     ),
-    operation_id="credits_top_up_checkout",
+    operation_id="credits_top_up",
 )
 async def top_up_credits(
     body: TopUpRequest,
     ctx: AuthContext = Depends(get_current_user),
 ):
-    """Replaces the previous inline-Elements PaymentIntent flow.
-
-    Why Checkout > Elements for our usage:
-      - Native promotion-code support → internal 100%-off coupon works.
-      - Auto-reload (off-session) is unaffected — that path stays
-        on direct PaymentIntents because there's no UI step.
-      - No client-side Stripe SDK / publishable key required.
-    """
-    from core.services.billing_service import (
-        BillingServiceError,
-        create_credit_top_up_checkout,
-    )
+    from core.billing.metronome_funding import FundingError, request_top_up
 
     owner_id = resolve_owner_id(ctx)
     try:
-        session = await create_credit_top_up_checkout(
-            owner_id=owner_id,
-            amount_cents=body.amount_cents,
-        )
-    except BillingServiceError as e:
+        await request_top_up(owner_id, body.amount_cents)
+    except FundingError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"checkout_url": session.url}
+    return {"status": "requested", "amount_cents": body.amount_cents}
 
 
 @router.put(

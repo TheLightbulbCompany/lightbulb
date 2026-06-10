@@ -65,29 +65,19 @@ async def ensure_metronome_customer(
     if existing and account.get("metronome_contract_id"):
         return existing
 
-    stripe_customer_id = account.get("stripe_customer_id")
-    if not stripe_customer_id:
-        # The provision gate requires an active subscription before this
-        # runs, so a missing Stripe customer is a data bug — surface it
-        # rather than minting a Metronome customer that can't invoice.
-        raise ProvisioningError(f"Billing row for owner_id={owner_id} has no stripe_customer_id")
-
     if client is None:
         async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
-            return await _provision(owner_id, account, stripe_customer_id, metronome_client.for_settings(http))
-    return await _provision(owner_id, account, stripe_customer_id, client)
+            return await _provision(owner_id, account, metronome_client.for_settings(http))
+    return await _provision(owner_id, account, client)
 
 
-async def _provision(owner_id: str, account: dict, stripe_customer_id: str, client: MetronomeClient) -> str:
+async def _provision(owner_id: str, account: dict, client: MetronomeClient) -> str:
     # Re-use ids a prior partial run already persisted (e.g. a customer
     # provisioned before contracts existed): only the missing pieces are
     # created, and the conflict-adopt paths converge the rest.
     customer_id = account.get("metronome_customer_id") or await _create_or_adopt_customer(owner_id, client)
     contract_id = account.get("metronome_contract_id") or await _create_or_adopt_contract(customer_id, client)
-    await client.set_stripe_billing_config(
-        metronome_customer_id=customer_id,
-        stripe_customer_id=stripe_customer_id,
-    )
+    await _maybe_link_stripe(owner_id, account, customer_id, client)
     await _ensure_low_balance_alerts(owner_id, customer_id, client)
     # Persist LAST: the short-circuit keys on these attributes, so persisting
     # before the alerts exist would silently leave the owner alert-less
@@ -98,6 +88,40 @@ async def _provision(owner_id: str, account: dict, stripe_customer_id: str, clie
         metronome_contract_id=contract_id,
     )
     return customer_id
+
+
+async def _maybe_link_stripe(owner_id: str, account: dict, customer_id: str, client: MetronomeClient) -> None:
+    """Set the customer's billing-provider configuration (Stripe customer +
+    charge_automatically) when the billing row carries a stripe_customer_id.
+
+    Payment-gated top-up commits collect through this link, so it matters —
+    but it is BEST-EFFORT here: a failure (or a row with no Stripe customer
+    yet) must not block provisioning the Metronome customer/contract/alerts.
+    A missed link fails loudly at the first top-up's payment gate (never
+    silently), and the metric below makes the gap operator-visible; the fix
+    is a console/manual re-link, not a blocked owner.
+    """
+    stripe_customer_id = account.get("stripe_customer_id")
+    if not stripe_customer_id:
+        logger.info(
+            "Billing row for owner %s has no stripe_customer_id — skipping Metronome billing-provider link",
+            owner_id,
+        )
+        return
+    try:
+        await client.set_stripe_billing_config(
+            metronome_customer_id=customer_id,
+            stripe_customer_id=stripe_customer_id,
+        )
+    except Exception:
+        from core.observability.metrics import put_metric
+
+        put_metric("metronome.provision.stripe_link_error")
+        logger.exception(
+            "Failed to set Stripe billing-provider config for owner %s (Metronome customer %s)",
+            owner_id,
+            customer_id,
+        )
 
 
 async def _create_or_adopt_customer(owner_id: str, client: MetronomeClient) -> str:

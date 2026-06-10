@@ -1,13 +1,18 @@
-"""POST /webhooks/metronome — sync the local fast-gate flag from Metronome alerts.
+"""POST /webhooks/metronome — the authoritative feed for the local fast-gate flag.
 
 Metronome's balance is async (no low-latency SLA), so the synchronous chat
-gate reads the local fast-gate flag. This webhook is the AUTHORITATIVE feed
-for that flag: on alerts.low_remaining_credit_balance_reached, set the flag
-from the alert's remaining_balance. Optimistic local decrement on deplete()
-covers the gap before this fires.
+gate reads the local fast-gate flag instead. This webhook sets that flag on
+alerts.low_remaining_credit_balance_reached and — when enforcement is armed
+(settings.BEDROCK_ENFORCEMENT_LIVE) — fires the Bedrock kill-switch via
+enforce_on_low_balance. There is no backend deplete; between webhook fires
+the flag simply holds its last value, with the kill-switch as the backstop.
 
 Signature: Metronome-Webhook-Signature = hex HMAC_SHA256(secret, Date + "\n" +
 raw_body). Deduped by event id via the shared webhook_dedup helper.
+
+Every handled-but-unprocessable shape returns 200: a non-2xx makes Metronome
+redeliver the same event forever, and none of these gaps (missing fields,
+unknown customer) are fixable by redelivery.
 """
 
 from __future__ import annotations
@@ -22,7 +27,9 @@ from fastapi import APIRouter, Header, Request, Response
 from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
 from core.observability.metrics import put_metric
+from core.repositories import billing_repo
 from core.services import webhook_dedup
+from core.services.bedrock_enforcement import enforce_on_low_balance
 from core.services.webhook_dedup import WebhookDedupResult
 
 logger = logging.getLogger(__name__)
@@ -70,13 +77,25 @@ async def handle_metronome_webhook(
         return Response(status_code=200)
 
     props = event.get("properties") or {}
-    # owner_id is carried in the alert properties (set at alert-create time in
-    # Phase 3); fall back to customer_id, which equals owner_id in the
-    # ingest-alias model.
-    owner_id = props.get("owner_id") or props.get("customer_id")
-    if not owner_id:
-        logger.warning("Metronome low-balance webhook with no owner_id/customer_id: %s", event_id)
+    # The alert payload identifies the customer by the METRONOME UUID — the
+    # ingest-alias trick (customer_id == owner_id) applies to /ingest events
+    # only, never to alert webhooks — so the owner is resolved through the
+    # billing row where ensure_metronome_customer persisted the UUID.
+    customer_id = props.get("customer_id")
+    if not customer_id:
+        logger.warning("Metronome low-balance webhook with no customer_id: %s", event_id)
         return Response(status_code=200)
+
+    account = await billing_repo.get_by_metronome_customer_id(customer_id)
+    if account is None:
+        put_metric("metronome.webhook", dimensions={"result": "unknown_customer"})
+        logger.warning(
+            "Metronome low-balance webhook for unknown customer %s (event %s) — no billing row carries this UUID",
+            customer_id,
+            event_id,
+        )
+        return Response(status_code=200)
+    owner_id = account["owner_id"]
 
     remaining_dollars = props.get("remaining_balance")
     if remaining_dollars is None:
@@ -89,4 +108,7 @@ async def handle_metronome_webhook(
         "metronome.webhook",
         dimensions={"result": "fast_gate_set", "blocked": str(remaining_microcents <= 0)},
     )
+    # Flag first, kill second: even if the kill path errors out (it swallows
+    # internally, but belt-and-braces), the gate already blocks new sends.
+    await enforce_on_low_balance(owner_id, remaining_microcents)
     return Response(status_code=200)

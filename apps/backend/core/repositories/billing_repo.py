@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
@@ -52,6 +52,29 @@ async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
         KeyConditionExpression=Key("stripe_customer_id").eq(stripe_customer_id),
     )
     return response.get("Items", [])
+
+
+async def get_by_metronome_customer_id(metronome_customer_id: str) -> dict | None:
+    """Resolve the billing row from a Metronome customer UUID.
+
+    Used by the Metronome webhook, whose payloads identify the customer by
+    the Metronome UUID — not our owner_id. A paginated scan with a filter is
+    acceptable here: webhook volume is one event per threshold crossing, far
+    off any hot path, and the table carries no GSI on this attribute.
+    """
+    table = _get_table()
+    kwargs: dict = {
+        "FilterExpression": Attr("metronome_customer_id").eq(metronome_customer_id),
+    }
+    while True:
+        response = await run_in_thread(table.scan, **kwargs)
+        items = response.get("Items", [])
+        if items:
+            return items[0]
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return None
+        kwargs["ExclusiveStartKey"] = last_key
 
 
 async def set_metronome_customer_id(owner_id: str, metronome_customer_id: str) -> None:

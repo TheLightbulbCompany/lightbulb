@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     created at provision time. When an owner's prepaid balance crosses below
     this, Metronome fires the webhook that sets the fast-gate flag."""
 
+    BEDROCK_ENFORCEMENT_LIVE: bool = os.getenv("BEDROCK_ENFORCEMENT_LIVE", "false").lower() == "true"
+    """Arms gate + kill-switch enforcement off the Metronome low-balance
+    webhook. When False (default) the webhook still sets the fast-gate flag —
+    ingest is always-on shadow — but never fires the kill-switch, so the
+    Metronome pipeline can be validated end-to-end with zero blast radius."""
+
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
     # keep the backend booting in non-AWS unit-test contexts.
     BEDROCK_AIP_OWNERS_TABLE: str = os.getenv("BEDROCK_AIP_OWNERS_TABLE", "")

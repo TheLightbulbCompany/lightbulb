@@ -39,6 +39,14 @@ def provisioned_billing_row():
         yield
 
 
+@pytest.fixture(autouse=True)
+def restore_bedrock_mock():
+    """fund_top_up lazily imports restore_owner_bedrock (the post-top-up
+    un-kill); stub it so these tests never touch IAM/container repos."""
+    with patch("core.billing.bedrock_aip.restore_owner_bedrock", new=AsyncMock()) as mock:
+        yield mock
+
+
 def _fake_client():
     fake = MagicMock()
     fake.edit_contract_add_commits = AsyncMock()
@@ -130,3 +138,54 @@ async def test_fund_rejects_non_positive_amount(fast_gate_table, provisioned_bil
             stripe_session_id="cs_test_123",
             client=fake,
         )
+
+
+@pytest.mark.asyncio
+async def test_fund_restores_bedrock_and_rearms_flag(fast_gate_table, provisioned_billing_row, restore_bedrock_mock):
+    """A confirmed top-up must undo the kill-switch (restore the per-owner
+    Bedrock policy) AND re-arm the fast-gate flag — Metronome fires no
+    recovery webhook, so this is the only automatic un-block path."""
+    fast_gate_table.put_item(
+        TableName="test-metronome-fast-gate",
+        Item={"owner_id": {"S": "org_abc"}, "remaining_microcents": {"N": "-500"}},
+    )
+    await fund_top_up(
+        owner_id="org_abc",
+        amount_microcents=25_000_000,
+        contract_id="contract-1",
+        product_id="prod-credits",
+        stripe_session_id="cs_test_123",
+        client=_fake_client(),
+    )
+    restore_bedrock_mock.assert_awaited_once_with("org_abc")
+    item = fast_gate_table.get_item(
+        TableName="test-metronome-fast-gate",
+        Key={"owner_id": {"S": "org_abc"}},
+    )["Item"]
+    assert item["remaining_microcents"]["N"] == "24999500"
+
+
+@pytest.mark.asyncio
+async def test_fund_restore_failure_does_not_raise_and_still_rearms(
+    fast_gate_table, provisioned_billing_row, restore_bedrock_mock
+):
+    """restore_owner_bedrock raises for owners with no persisted AIP map
+    (non-Bedrock providers) and on IAM flakes — the commit already landed
+    against a confirmed payment, so neither may 500 the Stripe webhook, and
+    the fast-gate re-arm must still proceed."""
+    restore_bedrock_mock.side_effect = RuntimeError("no persisted AIP map")
+    fake = _fake_client()
+    await fund_top_up(
+        owner_id="org_abc",
+        amount_microcents=25_000_000,
+        contract_id="contract-1",
+        product_id="prod-credits",
+        stripe_session_id="cs_test_123",
+        client=fake,
+    )
+    fake.edit_contract_add_commits.assert_awaited_once()
+    item = fast_gate_table.get_item(
+        TableName="test-metronome-fast-gate",
+        Key={"owner_id": {"S": "org_abc"}},
+    )["Item"]
+    assert item["remaining_microcents"]["N"] == "25000000"

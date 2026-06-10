@@ -3,6 +3,32 @@
 
 # Metronome Ingestion Contract & UsageEvent Mapping — Research Report
 
+> ## ⚠️ CORRECTIONS (2026-06-10, live-sandbox-verified — trust these over the body below)
+> Five claims below were transcription/inference errors (SDK method names read
+> as URL paths; a webhook event-type string reused as the alert-create enum).
+> The DOCS AGREE WITH THE API — this report misread them. Verified live:
+> 1. Customer create is **`POST /v1/customers`** (plain REST collection POST).
+>    `/v1/customers/create` 404s — §1 below inferred it from
+>    `client.v1.customers.create(...)`.
+> 2. Prepaid commits: **`POST /v1/contracts/customerCommits/create`** (flat
+>    body: customer_id, type=PREPAID, product_id, priority,
+>    applicable_contract_ids, invoice_contract_id, access_schedule) — verified
+>    200. The docs' `contracts/edit` + `add_commits` exists at **`/v2/`**
+>    contracts/edit (also verified 200); §2 below dropped the version.
+> 3. Alert-create `alert_type` enum does NOT contain
+>    `low_remaining_credit_balance_reached` — that string is a WEBHOOK event
+>    type. For prepaid-commit balances use
+>    **`low_remaining_commit_balance_reached`**.
+> 4. **`credit_type_id` is REQUIRED** on balance-style alert creates.
+> 5. Denomination SETTLED: the USD credit type is **"USD (cents)"**
+>    (id `2714e483-4ff1-48e4-9e25-ac732e8f24f2`, same in sandbox + docs
+>    example). A 2000-cent commit reads back as `getNetBalance = 2000`.
+> Also verified clean: `/v1/ingest` with stringified properties (200; duplicate
+> `transaction_id` silently deduped), `/v1/contracts/create` minimal body
+> (rate_card_id optional), `GET /v1/customers?ingest_alias=`, getNetBalance.
+> Lesson: paths inferred from SDK method names are guesses until hit against
+> the live API.
+
 **Researched:** 2026-06-07 against live `docs.metronome.com` + Metronome SDK repos. Anything not confirmable from live docs is marked **UNVERIFIED (sandbox/sales-gated)**.
 **Aligns with:** spec `docs/superpowers/specs/2026-06-07-bedrock-metering-enforcement-metronome-design.md` §3.2.3, §3.4, §3.5 (Phases 2/3).
 

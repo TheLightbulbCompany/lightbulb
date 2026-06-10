@@ -199,20 +199,26 @@ export class BedrockMeterStack extends cdk.Stack {
 
       // grantRead only adds GetSecretValue — the secrets are CMK-encrypted
       // with each env's auth-stack key, and the dev CMK's ARN is unknowable
-      // from this prod-stage stack (cross-stage). Grant kms:Decrypt broadly
-      // but confined by kms:ViaService to decryption mediated by Secrets
-      // Manager in this region — the role holds no GetSecretValue beyond its
-      // own metronome_api_key secret, so the effective reach is just that
-      // secret's CMK.
+      // from this prod-stage stack (cross-stage). The aip-owners DynamoDB
+      // tables are encrypted with the SAME per-env CMKs, so GetItem needs
+      // kms:Decrypt mediated by DynamoDB too (live-verified: without it the
+      // attribution read dies with KMS AccessDenied and the batch sits in
+      // CW Logs retry). Grant kms:Decrypt broadly but confined by
+      // kms:ViaService to Secrets Manager + DynamoDB in this region — the
+      // role can only read its own metronome_api_key secret and its env's
+      // aip-owners table, so the effective reach is just those CMKs.
       fn.addToRolePolicy(
         new iam.PolicyStatement({
-          sid: "KmsDecryptViaSecretsManager",
+          sid: "KmsDecryptViaServices",
           effect: iam.Effect.ALLOW,
           actions: ["kms:Decrypt"],
           resources: ["*"],
           conditions: {
             StringEquals: {
-              "kms:ViaService": `secretsmanager.${this.region}.amazonaws.com`,
+              "kms:ViaService": [
+                `secretsmanager.${this.region}.amazonaws.com`,
+                `dynamodb.${this.region}.amazonaws.com`,
+              ],
             },
           },
         }),

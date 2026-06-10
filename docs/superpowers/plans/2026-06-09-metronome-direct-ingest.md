@@ -179,15 +179,23 @@ keeps running as today's biller until PR-C.
       ACTIVE until PR-C — only renamed).
 - [ ] Full backend pytest + jest + synth. Commit. Open PR-B.
 
-### Task B5: post-merge runbook (PR-B body)
+### Task B5: post-merge runbook (PR-B body) — per env (sandbox first)
 - [ ] Operator: `aws secretsmanager put-secret-value` the sandbox token into
       `isol8/dev/metronome_api_key`, prod token into `isol8/prod/metronome_api_key`
-      (user runs via `!` — tokens never in chat).
+      + the webhook signing secrets (user runs via `!` — tokens never in chat).
 - [ ] Metronome console per env: 4 SUM billable metrics (grouped by `tier`,
       filtered `event_type=bedrock_invocation`) + rate card (AWS `us.` CRIS ×
-      1.4) + webhook endpoint/secret (spec §4).
-- [ ] Validate in dev: send chat → sandbox Metronome event visible (correct
-      tokens incl. cache) → balance moves once rate card live.
+      1.4) + webhook endpoint (spec §4).
+- [ ] Wire `METRONOME_RATE_CARD_ID` env (from the console rate card) and flip
+      `METRONOME_LIFECYCLE_ENABLED=true` for that env (service-stack env vars —
+      via CDK, never console edits).
+- [ ] Validate in dev sandbox (these are the review-flagged UNVERIFIED items):
+      chat → event visible with correct tokens incl. cache; **denomination is
+      cents** at all four boundaries (alert threshold, commit amount, webhook
+      remaining_balance, getNetBalance); **add_commits schema** (PREPAID +
+      access_schedule + description) accepted; contract-create schema accepted;
+      alert fire-once behavior + whether `-zero` fires after `-warn` for the
+      same burn-down; balance/alert webhook latency (sizes kill-switch lag).
 
 ## PR-C — delete the DDB ledger (branch `metronome-cutover`, off main after PR-B; ⛔ gated)
 

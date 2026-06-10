@@ -106,11 +106,34 @@ secretsmanager:GetSecretValue + kms:Decrypt for its token secret. No
    `enforce_after_deplete` does today (revoke + desired=0 via
    `kill_owner_bedrock`); `restore_owner_bedrock` wired into top-up success.
 3. **Lifecycle**: at provision, create Metronome customer with
-   `ingest_aliases=[owner_id]` + per-customer low-balance alert
-   (`POST /v1/alerts/create`) + Stripe billing-provider link; on Stripe top-up
-   webhook, `add_commits` with `payment_gate_config: STRIPE`. Salvaged from
-   #833's `metronome_provisioning.py` / `metronome_funding.py` /
-   `metronome_webhook.py` / `metronome_client.py`.
+   `ingest_aliases=[owner_id]` + a **per-customer contract** (contracts are
+   per-customer objects referencing the rate card — commits have nowhere to
+   land without one; `metronome_customer_id` + `metronome_contract_id` persist
+   on the billing row) + **two** per-customer alerts: `-warn` at
+   `METRONOME_LOW_BALANCE_THRESHOLD_CENTS` (sets the gate flag early) and
+   `-zero` at threshold 0 (Metronome alerts fire ONCE on crossing with
+   remaining≈threshold, so only a zero-threshold alert ever delivers
+   `remaining <= 0` — without it the kill-switch is unreachable) + Stripe
+   billing-provider link. On Stripe top-up webhook: **UNGATED** PREPAID commit
+   (`access_schedule` shape) — our Checkout already collected the money; a
+   `payment_gate_config: STRIPE` commit would make Metronome invoice the card
+   a SECOND time. Salvaged from #833's `metronome_provisioning.py` /
+   `metronome_funding.py` / `metronome_webhook.py` / `metronome_client.py`,
+   reworked per review.
+
+   Cross-cutting decisions (review-driven, 2026-06-09):
+   - **Denomination pinned to CENTS** for the USD credit type (per Metronome's
+     documented example payload); all conversions go through
+     `core/billing/metronome_units.py`. Sandbox validation re-confirms.
+   - **`METRONOME_LIFECYCLE_ENABLED` (default False)** master switch: until
+     the per-env runbook is done (tokens in secrets, rate card created,
+     webhook secret set), provisioning/funding/display no-op — otherwise every
+     ~3s status poll would spam doomed 401s against placeholder secrets.
+   - **Webhook safety**: dedup row is rolled back (`delete_event`) when
+     processing fails so Metronome's redelivery can re-attempt (alerts do NOT
+     re-fire — dropping the one signal would be permanent); a stale webhook
+     (older than the fast-gate row's last update) is skipped so a late
+     redelivery can't stomp a top-up re-arm and re-kill a paid-up owner.
 
 Balance display (Credits panel): backend reads `getNetBalance` (not hot-path).
 

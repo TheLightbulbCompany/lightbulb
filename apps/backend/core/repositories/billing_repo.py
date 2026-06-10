@@ -54,6 +54,25 @@ async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
+async def set_metronome_customer_id(owner_id: str, metronome_customer_id: str) -> None:
+    """Persist the Metronome customer UUID on the billing row.
+
+    Written once at provision time; ``ensure_metronome_customer`` keys its
+    short-circuit on this attribute, so the write must land on an EXISTING
+    row — an unconditional update would upsert a phantom
+    ``{owner_id, metronome_customer_id}`` row with no stripe_customer_id
+    (same trap documented on ``clear_provider_choice``).
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET metronome_customer_id = :m, updated_at = :t",
+        ExpressionAttributeValues={":m": metronome_customer_id, ":t": utc_now_iso()},
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
 async def create_if_not_exists(
     owner_id: str,
     stripe_customer_id: str,

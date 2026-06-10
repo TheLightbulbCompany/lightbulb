@@ -25,6 +25,7 @@ def _resp(status_code: int = 200, json_body: dict | None = None) -> MagicMock:
 def _client_with(response: MagicMock) -> tuple[MetronomeClient, MagicMock]:
     fake = MagicMock()
     fake.post = AsyncMock(return_value=response)
+    fake.get = AsyncMock(return_value=response)
     return MetronomeClient(api_key="tok_sandbox", base_url="https://api.metronome.com/v1", http_client=fake), fake
 
 
@@ -67,6 +68,44 @@ async def test_create_customer_raises_on_missing_id():
     client, _ = _client_with(_resp(200, {"data": {}}))
     with pytest.raises(MetronomeError, match="no data.id"):
         await client.create_customer(name="org_abc", ingest_aliases=["org_abc"])
+
+
+@pytest.mark.asyncio
+async def test_get_customer_id_by_ingest_alias_returns_first_match():
+    client, fake = _client_with(_resp(200, {"data": [{"id": "cust-uuid-1", "name": "org_abc"}]}))
+    cust_id = await client.get_customer_id_by_ingest_alias("org_abc")
+
+    assert cust_id == "cust-uuid-1"
+    args, kwargs = fake.get.call_args
+    assert args[0] == "/customers"
+    assert kwargs["params"] == {"ingest_alias": "org_abc"}
+    assert kwargs["headers"]["Authorization"] == "Bearer tok_sandbox"
+
+
+@pytest.mark.asyncio
+async def test_get_customer_id_by_ingest_alias_returns_none_when_no_match():
+    client, _ = _client_with(_resp(200, {"data": []}))
+    assert await client.get_customer_id_by_ingest_alias("org_unknown") is None
+
+
+@pytest.mark.asyncio
+async def test_create_alert_shape():
+    client, fake = _client_with(_resp(200, {}))
+    await client.create_alert(
+        customer_id="cust-uuid-1",
+        name="isol8-low-balance-org_abc",
+        alert_type="low_remaining_credit_balance_reached",
+        threshold_cents=500,
+    )
+
+    args, kwargs = fake.post.call_args
+    assert args[0] == "/alerts/create"
+    assert kwargs["json"] == {
+        "customer_id": "cust-uuid-1",
+        "name": "isol8-low-balance-org_abc",
+        "alert_type": "low_remaining_credit_balance_reached",
+        "threshold": 500,
+    }
 
 
 @pytest.mark.asyncio

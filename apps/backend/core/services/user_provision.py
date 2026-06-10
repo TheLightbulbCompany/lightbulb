@@ -23,6 +23,7 @@ import logging
 from collections import defaultdict
 
 from core.auth import AuthContext
+from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
 from core.services.container_provision import background_provision
 from core.services.paperclip_admin_client import PaperclipApiError
@@ -80,6 +81,24 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
             gate.code,
         )
         return
+
+    # Metronome customer lifecycle rides the owner path: once the gate
+    # clears, the billing row (Stripe customer + active subscription) exists,
+    # which is all ensure_metronome_customer needs. Best-effort — a Metronome
+    # outage must never block provisioning. The short-circuit keys on the
+    # persisted metronome_customer_id, so the next /container/status poll
+    # simply retries until it lands. Org members never run this: the org's
+    # Metronome customer belongs to the org owner_id and an admin poll
+    # creates it.
+    if not auth.is_org_context or auth.is_org_admin:
+        try:
+            await ensure_metronome_customer(owner_id=owner_id)
+        except Exception:
+            put_metric("metronome.provision.error")
+            logger.exception(
+                "Metronome customer provisioning failed for owner %s — will retry on next status poll",
+                owner_id,
+            )
 
     if auth.is_org_context:
         # JOIN is role-blind — a co-admin (or member) of an

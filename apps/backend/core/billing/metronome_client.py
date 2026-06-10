@@ -1,4 +1,4 @@
-"""Thin httpx client for the four Metronome HTTP shapes we use.
+"""Thin httpx client for the handful of Metronome HTTP shapes we use.
 
 No business logic, no UsageEvent knowledge, no DDB — just request marshalling
 and auth. Grounded in docs/superpowers/research/2026-06-07-metronome-ingest-
@@ -42,6 +42,11 @@ class MetronomeClient:
         resp.raise_for_status()
         return resp.json() or {}
 
+    async def _get(self, path: str, params: dict | None = None) -> dict:
+        resp = await self._http.get(path, params=params, headers=self._headers)
+        resp.raise_for_status()
+        return resp.json() or {}
+
     async def ingest(self, events: list[dict]) -> None:
         """POST /v1/ingest — body is a JSON array of event objects. The
         transaction_id on each event is the 34-day idempotency key, so
@@ -57,6 +62,31 @@ class MetronomeClient:
         if not customer_id:
             raise MetronomeError(f"create_customer: no data.id in Metronome response (got keys {sorted(body)})")
         return customer_id
+
+    async def get_customer_id_by_ingest_alias(self, ingest_alias: str) -> str | None:
+        """GET /v1/customers?ingest_alias=… — adoption lookup for when
+        create_customer conflicts on an alias already claimed (e.g. a prior
+        provision attempt that crashed before persisting the UUID). Returns
+        the first match's customer UUID, or None when nothing matches."""
+        body = await self._get("/customers", params={"ingest_alias": ingest_alias})
+        matches = body.get("data") or []
+        if not matches:
+            return None
+        return matches[0].get("id")
+
+    async def create_alert(self, *, customer_id: str, name: str, alert_type: str, threshold_cents: int) -> None:
+        """POST /v1/alerts/create — per-customer threshold alert. The threshold
+        passes through in cents: Metronome's default USD credit type is
+        cents-denominated, so no conversion belongs here."""
+        await self._post(
+            "/alerts/create",
+            {
+                "customer_id": customer_id,
+                "name": name,
+                "alert_type": alert_type,
+                "threshold": threshold_cents,
+            },
+        )
 
     async def set_stripe_billing_config(self, *, metronome_customer_id: str, stripe_customer_id: str) -> None:
         """POST /v1/customers/{id}/setCustomerBillingProviderConfigurations —

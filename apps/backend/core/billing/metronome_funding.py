@@ -15,15 +15,14 @@ never fires on a top-up.
 from __future__ import annotations
 
 import logging
-import os
 
-import boto3
 import httpx
 
 from core.billing import metronome_client
 from core.billing.metronome_client import MetronomeClient
 from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
+from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
@@ -34,17 +33,12 @@ class FundingError(Exception):
     pass
 
 
-def _fast_gate_table_name() -> str:
-    name = os.environ.get("METRONOME_FAST_GATE_TABLE") or settings.METRONOME_FAST_GATE_TABLE
-    if not name:
-        raise RuntimeError("METRONOME_FAST_GATE_TABLE is empty — funding is misconfigured.")
-    return name
-
-
-def _customer_id_for(owner_id: str) -> str:
-    table = boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(_fast_gate_table_name())
-    item = table.get_item(Key={"owner_id": owner_id}, ConsistentRead=True).get("Item")
-    customer_id = (item or {}).get("metronome_customer_id")
+async def _customer_id_for(owner_id: str) -> str:
+    # The Metronome customer UUID lives on the billing row (where
+    # ensure_metronome_customer persists it at provision time), not on the
+    # fast-gate projection — the projection is disposable cache state.
+    account = await billing_repo.get_by_owner_id(owner_id)
+    customer_id = (account or {}).get("metronome_customer_id")
     if not customer_id:
         raise FundingError(f"Metronome customer not provisioned for owner_id={owner_id}")
     return customer_id
@@ -63,7 +57,7 @@ async def fund_top_up(
     if amount_microcents <= 0:
         raise FundingError(f"amount_microcents must be positive, got {amount_microcents}")
 
-    customer_id = _customer_id_for(owner_id)
+    customer_id = await _customer_id_for(owner_id)
     commit = {
         "product_id": product_id,
         "amount": amount_microcents / _MICROCENTS_PER_DOLLAR,

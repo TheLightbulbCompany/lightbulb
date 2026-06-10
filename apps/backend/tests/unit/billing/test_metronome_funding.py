@@ -1,6 +1,6 @@
 """Unit tests for Metronome payment-gated funding (mocked client + moto DDB)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -10,7 +10,10 @@ from core.billing.metronome_funding import FundingError, fund_top_up
 
 
 @pytest.fixture
-def provisioned_table(monkeypatch):
+def fast_gate_table(monkeypatch):
+    """The fast-gate projection table the top-up re-arm writes to. The
+    Metronome customer UUID itself lives on the billing row (mocked via
+    billing_repo below), not here."""
     with mock_aws():
         client = boto3.client("dynamodb", region_name="us-east-1")
         client.create_table(
@@ -19,12 +22,21 @@ def provisioned_table(monkeypatch):
             AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        client.put_item(
-            TableName="test-metronome-fast-gate",
-            Item={"owner_id": {"S": "org_abc"}, "metronome_customer_id": {"S": "cust-uuid-1"}},
-        )
         monkeypatch.setenv("METRONOME_FAST_GATE_TABLE", "test-metronome-fast-gate")
         yield client
+
+
+@pytest.fixture
+def provisioned_billing_row():
+    with patch(
+        "core.billing.metronome_funding.billing_repo.get_by_owner_id",
+        new=AsyncMock(
+            side_effect=lambda owner_id: (
+                {"owner_id": "org_abc", "metronome_customer_id": "cust-uuid-1"} if owner_id == "org_abc" else None
+            )
+        ),
+    ):
+        yield
 
 
 def _fake_client():
@@ -34,13 +46,11 @@ def _fake_client():
 
 
 @pytest.mark.asyncio
-async def test_fund_adds_payment_gated_stripe_commit(provisioned_table):
+async def test_fund_adds_payment_gated_stripe_commit(fast_gate_table, provisioned_billing_row):
     # Pre-arm the cache as blocked so we can prove the top-up re-arms it.
-    provisioned_table.update_item(
+    fast_gate_table.put_item(
         TableName="test-metronome-fast-gate",
-        Key={"owner_id": {"S": "org_abc"}},
-        UpdateExpression="SET remaining_microcents = :z",
-        ExpressionAttributeValues={":z": {"N": "0"}},
+        Item={"owner_id": {"S": "org_abc"}, "remaining_microcents": {"N": "0"}},
     )
     fake = _fake_client()
     await fund_top_up(
@@ -64,7 +74,7 @@ async def test_fund_adds_payment_gated_stripe_commit(provisioned_table):
     # unblocks without waiting for a Metronome balance webhook (which won't
     # fire on a top-up). get_balance reads this cache, so without the re-arm a
     # paid top-up would never unblock chat.
-    item = provisioned_table.get_item(
+    item = fast_gate_table.get_item(
         TableName="test-metronome-fast-gate",
         Key={"owner_id": {"S": "org_abc"}},
     )["Item"]
@@ -72,7 +82,7 @@ async def test_fund_adds_payment_gated_stripe_commit(provisioned_table):
 
 
 @pytest.mark.asyncio
-async def test_fund_rearm_failure_does_not_raise(provisioned_table, monkeypatch):
+async def test_fund_rearm_failure_does_not_raise(fast_gate_table, provisioned_billing_row, monkeypatch):
     # The Metronome commit is what releases money; the cache re-arm is a
     # best-effort convenience. A re-arm failure after a successful commit must
     # not raise (the next low-balance webhook re-syncs the authoritative
@@ -94,7 +104,7 @@ async def test_fund_rearm_failure_does_not_raise(provisioned_table, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_fund_raises_when_customer_not_provisioned(provisioned_table):
+async def test_fund_raises_when_customer_not_provisioned(fast_gate_table, provisioned_billing_row):
     fake = _fake_client()
     with pytest.raises(FundingError, match="not provisioned"):
         await fund_top_up(
@@ -109,7 +119,7 @@ async def test_fund_raises_when_customer_not_provisioned(provisioned_table):
 
 
 @pytest.mark.asyncio
-async def test_fund_rejects_non_positive_amount(provisioned_table):
+async def test_fund_rejects_non_positive_amount(fast_gate_table, provisioned_billing_row):
     fake = _fake_client()
     with pytest.raises(FundingError, match="positive"):
         await fund_top_up(

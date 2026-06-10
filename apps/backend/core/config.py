@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     """Metronome contract id that holds the owner's prepaid credit commits. Per-env."""
     METRONOME_CREDITS_PRODUCT_ID: str = os.getenv("METRONOME_CREDITS_PRODUCT_ID", "")
     """Metronome product id the prepaid credit commit draws against. Per-env."""
+    METRONOME_LOW_BALANCE_THRESHOLD_CENTS: int = int(os.getenv("METRONOME_LOW_BALANCE_THRESHOLD_CENTS", "500"))
+    """Threshold for the per-customer low_remaining_credit_balance_reached alert
+    created at provision time. When an owner's prepaid balance crosses below
+    this, Metronome fires the webhook that sets the fast-gate flag."""
 
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
     # keep the backend booting in non-AWS unit-test contexts.

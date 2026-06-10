@@ -169,12 +169,16 @@ Last 30 days of prod events (queried via HogQL):
 - **Exceptions:** `ApiError` ×22 (top values: "deploy failed" ×15,
   "PATCH /api/issues/… → 422" ×6), React minified error #418 (hydration
   mismatch) ×5, Clerk chunk-load failures ×2.
-- **Telemetry gaps:** `chat_completed` carries ONLY `agent_id` — no
-  latency/duration property, so turn latency is unmeasurable from prod
-  data; `onboarding_step_completed` (343 events) has a null `step`
-  property, so the onboarding funnel can't be localized. **Session
-  replay: 0 recordings in 30 days** — replay is not enabled; the saved
-  recording views are empty shells.
+- **Telemetry gaps:** prod's `chat_completed` events carry ONLY
+  `agent_id` — though main already emits `duration_ms` +
+  `assistant_message_length` (useAgentChat.ts:1082), the prod build
+  predates it, so historical turn latency is unmeasurable; the
+  double-capture of `chat_message_sent` is removed in the remediation
+  branch (dispatchNow is now the single capture point).
+  `onboarding_step_completed` (343 events) has a null `step` property,
+  so the onboarding funnel can't be localized. **Session replay: 0
+  recordings in 30 days** — replay is not enabled; the saved recording
+  views are empty shells.
 - Chat events stop after 06-05: VERIFIED a usage stop, not a capture
   break. `/chat` pageviews collapsed in lockstep (84/day on 06-02 →
   0–2/day from 06-06), other prod pageviews keep flowing, and the

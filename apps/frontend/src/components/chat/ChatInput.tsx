@@ -118,7 +118,10 @@ export function ChatInput({
   const handleSend = () => {
     if (input.trim() || pendingFiles.length > 0) {
       const files = pendingFiles.map((pf) => pf.file);
-      capture("chat_message_sent", { has_files: files.length > 0 });
+      // No chat_message_sent capture here: useAgentChat.dispatchNow is the
+      // SINGLE capture point, firing only when a message actually goes on
+      // the wire (direct and queue-drained sends alike). A click is not a
+      // send — parked/queued messages must not count until they dispatch.
       onSend(input, files.length > 0 ? files : undefined);
       setInput("");
       setPendingFiles([]);

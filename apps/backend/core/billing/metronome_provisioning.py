@@ -6,15 +6,15 @@ table), creates the per-customer contract referencing the env's rate card
 (contracts are per-customer objects in Metronome — commits and balances hang
 off them), links the EXISTING Stripe customer so Metronome pushes
 usage/credit invoices onto the same Stripe Customer as the $50/mo
-subscription, and creates the per-customer low-balance alert that feeds the
-fast-gate webhook. The Metronome customer UUID + contract id are persisted
+subscription, and creates the per-customer low-balance alerts
+(warn + zero-crossing) that feed the fast-gate webhook. The Metronome customer UUID + contract id are persisted
 on the billing row so a re-call short-circuits all the HTTP calls.
 
 Gated on METRONOME_LIFECYCLE_ENABLED: until the runbook (API tokens + rate
 card + webhook secret) is done, the ~3s /container/status poll must not spam
 doomed calls against placeholder secrets.
 
-Crash-safety: the ids are persisted LAST, after the alert exists. A retry
+Crash-safety: the ids are persisted LAST, after the alerts exist. A retry
 after any partial failure re-enters via create_customer/create_contract,
 whose conflict responses are adopted (lookup by ingest alias / contract
 list) instead of failing — so a half-provisioned customer converges instead
@@ -84,9 +84,9 @@ async def _provision(owner_id: str, account: dict, stripe_customer_id: str, clie
         metronome_customer_id=customer_id,
         stripe_customer_id=stripe_customer_id,
     )
-    await _ensure_low_balance_alert(owner_id, customer_id, client)
+    await _ensure_low_balance_alerts(owner_id, customer_id, client)
     # Persist LAST: the short-circuit keys on these attributes, so persisting
-    # before the alert exists would silently leave the owner alert-less
+    # before the alerts exist would silently leave the owner alert-less
     # (no webhook -> the fast gate never learns about a depleted balance).
     await billing_repo.set_metronome_ids(
         owner_id,
@@ -137,17 +137,36 @@ async def _create_or_adopt_contract(customer_id: str, client: MetronomeClient) -
         return adopted
 
 
-async def _ensure_low_balance_alert(owner_id: str, customer_id: str, client: MetronomeClient) -> None:
-    try:
-        await client.create_alert(
-            customer_id=customer_id,
-            name=f"isol8-low-balance-{owner_id}",
-            alert_type=_LOW_BALANCE_ALERT_TYPE,
-            threshold_cents=settings.METRONOME_LOW_BALANCE_THRESHOLD_CENTS,
-        )
-    except httpx.HTTPStatusError as exc:
-        # A duplicate alert (re-entry after a crash between alert-create and
-        # the ids persist) is success — the alert we want already exists.
-        if exc.response.status_code != 409:
-            raise
-        logger.info("Low-balance alert already exists for Metronome customer %s", customer_id)
+async def _ensure_low_balance_alerts(owner_id: str, customer_id: str, client: MetronomeClient) -> None:
+    """Arm BOTH the warning alert and the zero-crossing alert.
+
+    Metronome alerts fire once on crossing into in_alarm, with
+    remaining_balance ≈ the alert's threshold — so the warn alert always
+    delivers a POSITIVE remaining and the ≤0 kill in enforce_on_low_balance
+    would never fire off it. The -zero alert (threshold 0) is the one that
+    actually delivers remaining ≤ 0; the webhook handler itself needs no
+    special-casing.
+    """
+    alerts = (
+        ("warn", settings.METRONOME_LOW_BALANCE_THRESHOLD_CENTS),
+        ("zero", 0),
+    )
+    for suffix, threshold_cents in alerts:
+        try:
+            await client.create_alert(
+                customer_id=customer_id,
+                name=f"isol8-low-balance-{owner_id}-{suffix}",
+                alert_type=_LOW_BALANCE_ALERT_TYPE,
+                threshold_cents=threshold_cents,
+            )
+        except httpx.HTTPStatusError as exc:
+            # A duplicate alert (re-entry after a crash between alert-create
+            # and the ids persist) is success — the alert we want already
+            # exists.
+            if exc.response.status_code != 409:
+                raise
+            logger.info(
+                "Low-balance alert %s already exists for Metronome customer %s",
+                suffix,
+                customer_id,
+            )

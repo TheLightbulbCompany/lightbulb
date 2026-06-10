@@ -66,7 +66,24 @@ async def test_creates_customer_contract_links_stripe_arms_alert_and_persists(bi
         metronome_customer_id="cust-uuid-1",
         stripe_customer_id="cus_123",
     )
-    fake.create_alert.assert_awaited()
+    # Two alerts: the warn alert fires with a POSITIVE remaining (Metronome
+    # reports remaining ≈ threshold on crossing), so only the zero-crossing
+    # alert can ever deliver the remaining ≤ 0 that fires the kill-switch.
+    alert_kwargs = [call.kwargs for call in fake.create_alert.await_args_list]
+    assert alert_kwargs == [
+        {
+            "customer_id": "cust-uuid-1",
+            "name": "isol8-low-balance-org_abc-warn",
+            "alert_type": "low_remaining_credit_balance_reached",
+            "threshold_cents": 500,
+        },
+        {
+            "customer_id": "cust-uuid-1",
+            "name": "isol8-low-balance-org_abc-zero",
+            "alert_type": "low_remaining_credit_balance_reached",
+            "threshold_cents": 0,
+        },
+    ]
     set_mock.assert_awaited_once_with(
         "org_abc",
         metronome_customer_id="cust-uuid-1",

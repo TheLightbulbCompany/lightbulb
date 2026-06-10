@@ -12,7 +12,9 @@ raw_body). Deduped by event id via the shared webhook_dedup helper.
 
 Every handled-but-unprocessable shape returns 200: a non-2xx makes Metronome
 redeliver the same event forever, and none of these gaps (missing fields,
-unknown customer) are fixable by redelivery.
+unknown customer) are fixable by redelivery. A processing EXCEPTION is the
+opposite case — transient and fixable — so it rolls the dedup row back and
+re-raises, letting redelivery re-attempt instead of dropping the signal.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, Request, Response
 
@@ -48,6 +51,21 @@ def _verify_signature(*, secret: str, date_header: str, body: bytes, signature: 
     return hmac.compare_digest(expected, signature)
 
 
+def _parse_timestamp(value: object) -> datetime | None:
+    """Best-effort ISO-8601 parse for the staleness comparison. None on any
+    unparseable shape — the caller then processes the event normally (a
+    garbled timestamp must not drop the one low-balance signal)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 @router.post("/webhooks/metronome")
 async def handle_metronome_webhook(
     request: Request,
@@ -73,6 +91,19 @@ async def handle_metronome_webhook(
     if dedup == WebhookDedupResult.ALREADY_SEEN:
         return Response(status_code=200)
 
+    try:
+        return await _process_event(event, event_id)
+    except Exception:
+        # Alerts fire ONCE per threshold crossing — a processing failure
+        # (transient DDB/billing-repo blip) would otherwise permanently drop
+        # the one low-balance signal, because the dedup row already marks the
+        # event as seen. Roll the dedup row back so Metronome's redelivery
+        # gets to re-attempt.
+        await webhook_dedup.delete_event(event_id)
+        raise
+
+
+async def _process_event(event: dict, event_id: str) -> Response:
     if event.get("type") != _LOW_BALANCE_EVENT:
         return Response(status_code=200)
 
@@ -105,7 +136,31 @@ async def handle_metronome_webhook(
         return Response(status_code=200)
 
     remaining_microcents = cents_to_microcents(remaining_cents)
-    await MetronomeFastGate().set_balance(owner_id, remaining_microcents=remaining_microcents)
+    gate = MetronomeFastGate()
+
+    # Staleness guard: a low-balance webhook delivered LATE (Metronome
+    # redelivery after our earlier non-2xx, or plain network delay) can
+    # arrive after a confirmed top-up already re-armed the flag. Applying it
+    # would stomp the re-arm and re-kill a paid-up owner — and a blocked
+    # owner emits no usage, so no corrective webhook would ever come. The
+    # fast-gate row's updated_at moves on every set_balance/add_credit, so a
+    # row newer than the event's own timestamp means the event is old news.
+    event_ts = _parse_timestamp(props.get("timestamp"))
+    if event_ts is not None:
+        row = await gate.get_row(owner_id)
+        row_ts = _parse_timestamp((row or {}).get("updated_at"))
+        if row_ts is not None and row_ts > event_ts:
+            put_metric("metronome.webhook.stale_skipped")
+            logger.info(
+                "Skipping stale Metronome low-balance event %s for owner %s (event ts %s predates fast-gate row ts %s)",
+                event_id,
+                owner_id,
+                event_ts.isoformat(),
+                row_ts.isoformat(),
+            )
+            return Response(status_code=200)
+
+    await gate.set_balance(owner_id, remaining_microcents=remaining_microcents)
     put_metric(
         "metronome.webhook",
         dimensions={"result": "fast_gate_set", "blocked": str(remaining_microcents <= 0)},

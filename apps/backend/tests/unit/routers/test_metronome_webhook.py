@@ -186,6 +186,101 @@ def test_replay_is_acked_without_processing(client, known_customer):
     gate.set_balance.assert_not_awaited()
 
 
+def test_processing_failure_rolls_back_dedup_and_reraises(client, known_customer):
+    """Alerts fire once per crossing — a transient processing failure must
+    NOT leave the dedup row in place, or Metronome's redelivery would be
+    silently skipped and the one low-balance signal lost forever."""
+    body = _low_balance_body()
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch(
+            "routers.metronome_webhook.webhook_dedup.delete_event",
+            new=AsyncMock(),
+        ) as delete_mock,
+        patch(
+            "routers.metronome_webhook.billing_repo.get_by_metronome_customer_id",
+            new=AsyncMock(side_effect=RuntimeError("ddb blip")),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="ddb blip"):
+            _post(client, body)
+    delete_mock.assert_awaited_once_with("evt-1")
+
+
+def test_stale_event_skips_set_balance_and_kill(client, known_customer, monkeypatch):
+    """A late-delivered low-balance event (older than the fast-gate row's
+    updated_at, e.g. a redelivery racing an add_credit re-arm) must not stomp
+    a top-up re-arm — a re-killed paid-up owner emits no usage, so no
+    corrective webhook would ever come."""
+    monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
+    body = _low_balance_body(remaining_balance=-100, timestamp="2026-06-08T00:00:00+00:00")
+    killer = _killer()
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
+        patch("routers.metronome_webhook.put_metric") as metric_mock,
+        patch("core.containers.get_ecs_manager", return_value=killer),
+    ):
+        gate = gate_cls.return_value
+        gate.set_balance = AsyncMock()
+        # Row re-armed AFTER the event was emitted (top-up landed at 00:05).
+        gate.get_row = AsyncMock(return_value={"owner_id": OWNER_ID, "updated_at": "2026-06-08T00:05:00Z"})
+        resp = _post(client, body)
+    assert resp.status_code == 200
+    gate.set_balance.assert_not_awaited()
+    killer.kill_owner_bedrock.assert_not_called()
+    assert any(call.args[0] == "metronome.webhook.stale_skipped" for call in metric_mock.call_args_list)
+
+
+def test_fresh_event_with_older_row_is_processed(client, known_customer):
+    """The staleness guard only skips when the row is NEWER than the event —
+    the normal case (row from a previous webhook) still applies the update."""
+    body = _low_balance_body(remaining_balance=123, timestamp="2026-06-08T00:10:00+00:00")
+    killer = _killer()
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
+        patch("core.containers.get_ecs_manager", return_value=killer),
+    ):
+        gate = gate_cls.return_value
+        gate.set_balance = AsyncMock()
+        gate.get_row = AsyncMock(return_value={"owner_id": OWNER_ID, "updated_at": "2026-06-08T00:00:00Z"})
+        resp = _post(client, body)
+    assert resp.status_code == 200
+    gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=1_230_000)
+
+
+def test_event_without_timestamp_is_processed_without_row_read(client, known_customer):
+    """No event timestamp ⇒ staleness can't be assessed ⇒ process normally
+    (dropping the one low-balance signal is the worse failure mode)."""
+    body = _low_balance_body(remaining_balance=123)
+    killer = _killer()
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
+        patch("core.containers.get_ecs_manager", return_value=killer),
+    ):
+        gate = gate_cls.return_value
+        gate.set_balance = AsyncMock()
+        gate.get_row = AsyncMock()
+        resp = _post(client, body)
+    assert resp.status_code == 200
+    gate.get_row.assert_not_awaited()
+    gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=1_230_000)
+
+
 def test_ignores_unrelated_event_type(client, known_customer):
     body = json.dumps(
         {

@@ -610,6 +610,9 @@ async def top_up_credits(
     body: TopUpRequest,
     ctx: AuthContext = Depends(get_current_user),
 ):
+    import httpx
+
+    from core.billing.metronome_client import MetronomeError
     from core.billing.metronome_funding import FundingError, request_top_up
 
     owner_id = resolve_owner_id(ctx)
@@ -617,6 +620,11 @@ async def top_up_credits(
         await request_top_up(owner_id, body.amount_cents)
     except FundingError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except (MetronomeError, httpx.HTTPError) as e:
+        # A provider-side rejection/outage is not the caller's fault and must
+        # not surface as an unhandled 500 — money endpoints answer precisely.
+        logger.exception("Metronome top-up failed for owner %s", owner_id)
+        raise HTTPException(status_code=502, detail="billing provider error") from e
     return {"status": "requested", "amount_cents": body.amount_cents}
 
 

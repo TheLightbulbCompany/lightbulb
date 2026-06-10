@@ -1,7 +1,8 @@
 """Unit tests for the Metronome local fast-gate flag (moto-mocked DDB).
 
-The flag is webhook-fed (set_balance) + top-up re-armed (add_credit); there
-is no backend deplete, so no decrement path exists to test.
+The flag is webhook-fed + lazily refreshed (set_balance is the only writer);
+there is no backend deplete and no optimistic top-up bump (payment-gated
+commits have no synchronous confirmation), so neither path exists to test.
 """
 
 import time
@@ -103,28 +104,6 @@ class TestGetRow:
         assert int(row["remaining_microcents"]) == 7_000
         # updated_at rides along so the caller can feed is_stale.
         assert isinstance(row["updated_at"], str)
-
-
-class TestAddCredit:
-    @pytest.mark.asyncio
-    async def test_add_credit_rearms_a_blocked_owner(self, fast_gate_table):
-        # A confirmed Stripe top-up optimistically re-arms the cache so the
-        # owner's NEXT chat message unblocks immediately, without waiting for a
-        # Metronome balance webhook (which won't fire on a top-up). Safe
-        # direction: the payment is already confirmed when this is called.
-        gate = MetronomeFastGate()
-        await gate.set_balance("org_abc", remaining_microcents=0)  # blocked
-        assert await gate.is_blocked("org_abc") is True
-        new_remaining = await gate.add_credit("org_abc", microcents=25_000_000)
-        assert new_remaining == 25_000_000
-        assert await gate.is_blocked("org_abc") is False
-
-    @pytest.mark.asyncio
-    async def test_add_credit_missing_owner_creates_positive_row(self, fast_gate_table):
-        gate = MetronomeFastGate()
-        new_remaining = await gate.add_credit("org_first_topup", microcents=10_000)
-        assert new_remaining == 10_000
-        assert await gate.is_blocked("org_first_topup") is False
 
 
 class TestIsStale:

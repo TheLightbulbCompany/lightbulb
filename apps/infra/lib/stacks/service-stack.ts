@@ -1025,7 +1025,13 @@ export class ServiceStack extends cdk.Stack {
         // is set after the prod Metronome console setup.
         METRONOME_RATE_CARD_ID:
           env === "dev" ? "99576f5a-37d2-4983-ba64-fea9bad96e08" : "",
-        METRONOME_CREDITS_PRODUCT_ID: "",
+        // The FIXED-type product top-up commits land on. Dev = the sandbox
+        // credits product (created 2026-06-10). Payment-gated invoicing
+        // additionally requires a stripe_product_id custom field on it
+        // (console runbook); until that lands, top-ups 400 loudly rather
+        // than silently no-op. Prod is set with the prod console runbook.
+        METRONOME_CREDITS_PRODUCT_ID:
+          env === "dev" ? "6dab1634-020d-4288-b5e6-99568a30404c" : "",
         // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
         // table is granted BY NAME above, so the env var is the literal name
         // (not a cross-stack tableName ref). The boundary + base-policy ARNs

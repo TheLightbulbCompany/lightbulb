@@ -222,6 +222,20 @@ corrections:
   (sandbox pairs with Stripe TEST mode); credits product needs a
   `stripe_product_id` custom field mapped to a Stripe Product.
 
+**Implementation amendments (ratified post-review 2026-06-10):**
+- Reconcile DEVIATION: `reconcile_bedrock_vs_ledger.py` compares CE
+  marketplace totals against the local `usage-counters` analytics sum, NOT a
+  Metronome total — the thin client exposes no account-wide spend total.
+  AWS-vs-Metronome stays a console check until a Metronome-side total
+  (invoice-totals aggregation) is worth building. Accepted interim.
+- PROD ORPHAN TABLES (runbook): prod DDB tables are RETAIN, so deleting the
+  CDK constructs orphans the live `isol8-prod-credits` +
+  `isol8-prod-credit-transactions` tables (they keep accruing PITR cost,
+  outside CDK). Delete them manually after the cutover settles.
+- `kill_owner_bedrock` keeps its `container.killswitch.*` metrics (it IS the
+  break-glass kill) and currently has no admin-router entry point — shell-only
+  by design until an admin surface wants it.
+
 ### Task C2: flip + delete
 - [ ] `BEDROCK_ENFORCEMENT_LIVE` default True. Swap `provision_gate` + pre-chat
       reads from the DDB ledger to the fast-gate flag, with lazy `getNetBalance`

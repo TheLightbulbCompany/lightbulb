@@ -33,6 +33,7 @@ def _billing_row_mock(metronome_customer_id):
     row = {"owner_id": "org_abc"}
     if metronome_customer_id:
         row["metronome_customer_id"] = metronome_customer_id
+        row["metronome_contract_id"] = "contract-1"
     return patch(
         "core.services.stripe_webhook_handlers.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value=row),
@@ -44,7 +45,6 @@ async def test_funds_metronome_when_billing_row_has_customer_id(monkeypatch):
     # LEDGER_BACKEND stays "ddb" during the transition — funding must key off
     # the owner's provisioned lifecycle, not the ledger flag.
     monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "ddb")
-    monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_CONTRACT_ID", "contract-1")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
 
     with (
@@ -58,12 +58,12 @@ async def test_funds_metronome_when_billing_row_has_customer_id(monkeypatch):
     _, kwargs = mock_fund.call_args
     assert kwargs["owner_id"] == "org_abc"
     assert kwargs["amount_microcents"] == 25_000_000  # 2500 cents * 10_000
-    assert kwargs["contract_id"] == "contract-1"
     assert kwargs["product_id"] == "prod-credits"
     assert kwargs["stripe_session_id"] == "cs_test_123"
     # The handler already read the billing row to decide whether to fund —
-    # the customer id is passed through so fund_top_up skips a second read.
+    # both ids are passed through so fund_top_up skips a second read.
     assert kwargs["metronome_customer_id"] == "cust-uuid-1"
+    assert kwargs["metronome_contract_id"] == "contract-1"
 
 
 @pytest.mark.asyncio
@@ -79,7 +79,6 @@ async def test_does_not_fund_when_no_metronome_customer(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_metronome_funding_failure_does_not_raise(monkeypatch):
-    monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_CONTRACT_ID", "contract-1")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
     with (
         patch("core.services.credit_ledger.top_up", new=AsyncMock(return_value=0)),

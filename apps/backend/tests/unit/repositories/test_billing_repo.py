@@ -130,10 +130,13 @@ async def test_set_and_get_by_metronome_customer_id(dynamodb_table):
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists("org_m", "cus_m")
-    await billing_repo.set_metronome_customer_id("org_m", "cust-uuid-1")
+    await billing_repo.set_metronome_ids(
+        "org_m", metronome_customer_id="cust-uuid-1", metronome_contract_id="contract-1"
+    )
 
     item = await billing_repo.get_by_owner_id("org_m")
     assert item["metronome_customer_id"] == "cust-uuid-1"
+    assert item["metronome_contract_id"] == "contract-1"
 
     # The webhook resolves owner via the Metronome UUID.
     resolved = await billing_repo.get_by_metronome_customer_id("cust-uuid-1")
@@ -144,7 +147,7 @@ async def test_set_and_get_by_metronome_customer_id(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_set_metronome_customer_id_requires_existing_row(dynamodb_table):
+async def test_set_metronome_ids_requires_existing_row(dynamodb_table):
     """The conditional write must not upsert a phantom billing row (same trap
     documented on clear_provider_choice)."""
     from botocore.exceptions import ClientError
@@ -152,5 +155,7 @@ async def test_set_metronome_customer_id_requires_existing_row(dynamodb_table):
     from core.repositories import billing_repo
 
     with pytest.raises(ClientError):
-        await billing_repo.set_metronome_customer_id("org_ghost", "cust-uuid-1")
+        await billing_repo.set_metronome_ids(
+            "org_ghost", metronome_customer_id="cust-uuid-1", metronome_contract_id="contract-1"
+        )
     assert await billing_repo.get_by_owner_id("org_ghost") is None

@@ -11,6 +11,7 @@ fresh client per logical operation via `for_settings()`.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -74,10 +75,39 @@ class MetronomeClient:
             return None
         return matches[0].get("id")
 
+    async def create_contract(self, *, customer_id: str, rate_card_id: str) -> str:
+        """POST /v1/contracts/create — per-customer contract referencing the
+        env's rate card. Returns the contract id; prepaid commits and
+        balances hang off it. ``starting_at`` must be a UTC-midnight date
+        (Metronome rejects mid-day contract starts); today's midnight makes
+        the contract live immediately. Exact schema is sandbox-validated
+        before cutover."""
+        starting_at = time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime())
+        body = await self._post(
+            "/contracts/create",
+            {
+                "customer_id": customer_id,
+                "rate_card_id": rate_card_id,
+                "starting_at": starting_at,
+            },
+        )
+        contract_id = body.get("data", {}).get("id")
+        if not contract_id:
+            raise MetronomeError(f"create_contract: no data.id in Metronome response (got keys {sorted(body)})")
+        return contract_id
+
+    async def list_contracts(self, *, customer_id: str) -> list[dict]:
+        """POST /v1/contracts/list — all contracts for one customer. Adoption
+        lookup for when create_contract conflicts (a prior provision attempt
+        created the contract but crashed before persisting its id)."""
+        body = await self._post("/contracts/list", {"customer_id": customer_id})
+        return body.get("data") or []
+
     async def create_alert(self, *, customer_id: str, name: str, alert_type: str, threshold_cents: int) -> None:
         """POST /v1/alerts/create — per-customer threshold alert. The threshold
-        passes through in cents: Metronome's default USD credit type is
-        cents-denominated, so no conversion belongs here."""
+        passes through in cents: Metronome's USD credit type is
+        cents-denominated (see core/billing/metronome_units.py), so no
+        conversion belongs here."""
         await self._post(
             "/alerts/create",
             {
@@ -107,9 +137,10 @@ class MetronomeClient:
     async def edit_contract_add_commits(
         self, *, metronome_customer_id: str, contract_id: str, add_commits: list[dict]
     ) -> None:
-        """POST /v1/contracts/edit — add prepaid commits (credits). Each commit
-        carries payment_gate_config STRIPE upstream so credits release only on
-        a confirmed Stripe payment."""
+        """POST /v1/contracts/edit — add prepaid commits (credits). Commits
+        are UNGATED: our own Stripe Checkout already collected the money, so
+        a Metronome payment gate would invoice the customer a second time
+        (or never release the credits)."""
         await self._post(
             "/contracts/edit",
             {

@@ -25,6 +25,7 @@ import logging
 from fastapi import APIRouter, Header, Request, Response
 
 from core.billing.metronome_fast_gate import MetronomeFastGate
+from core.billing.metronome_units import cents_to_microcents
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
@@ -37,7 +38,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _LOW_BALANCE_EVENT = "alerts.low_remaining_credit_balance_reached"
-_MICROCENTS_PER_DOLLAR = 1_000_000
 
 
 def _verify_signature(*, secret: str, date_header: str, body: bytes, signature: str) -> bool:
@@ -97,12 +97,14 @@ async def handle_metronome_webhook(
         return Response(status_code=200)
     owner_id = account["owner_id"]
 
-    remaining_dollars = props.get("remaining_balance")
-    if remaining_dollars is None:
+    # remaining_balance is Metronome's USD credit type, denominated in CENTS
+    # (see core/billing/metronome_units.py).
+    remaining_cents = props.get("remaining_balance")
+    if remaining_cents is None:
         logger.warning("Metronome low-balance webhook with no remaining_balance: %s", event_id)
         return Response(status_code=200)
 
-    remaining_microcents = round(float(remaining_dollars) * _MICROCENTS_PER_DOLLAR)
+    remaining_microcents = cents_to_microcents(remaining_cents)
     await MetronomeFastGate().set_balance(owner_id, remaining_microcents=remaining_microcents)
     put_metric(
         "metronome.webhook",

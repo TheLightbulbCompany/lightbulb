@@ -77,11 +77,17 @@ async def get_by_metronome_customer_id(metronome_customer_id: str) -> dict | Non
         kwargs["ExclusiveStartKey"] = last_key
 
 
-async def set_metronome_customer_id(owner_id: str, metronome_customer_id: str) -> None:
-    """Persist the Metronome customer UUID on the billing row.
+async def set_metronome_ids(
+    owner_id: str,
+    *,
+    metronome_customer_id: str,
+    metronome_contract_id: str,
+) -> None:
+    """Persist the Metronome customer UUID + per-customer contract id on the
+    billing row.
 
     Written once at provision time; ``ensure_metronome_customer`` keys its
-    short-circuit on this attribute, so the write must land on an EXISTING
+    short-circuit on these attributes, so the write must land on an EXISTING
     row — an unconditional update would upsert a phantom
     ``{owner_id, metronome_customer_id}`` row with no stripe_customer_id
     (same trap documented on ``clear_provider_choice``).
@@ -90,8 +96,12 @@ async def set_metronome_customer_id(owner_id: str, metronome_customer_id: str) -
     await run_in_thread(
         table.update_item,
         Key={"owner_id": owner_id},
-        UpdateExpression="SET metronome_customer_id = :m, updated_at = :t",
-        ExpressionAttributeValues={":m": metronome_customer_id, ":t": utc_now_iso()},
+        UpdateExpression="SET metronome_customer_id = :m, metronome_contract_id = :c, updated_at = :t",
+        ExpressionAttributeValues={
+            ":m": metronome_customer_id,
+            ":c": metronome_contract_id,
+            ":t": utc_now_iso(),
+        },
         ConditionExpression="attribute_exists(owner_id)",
     )
 

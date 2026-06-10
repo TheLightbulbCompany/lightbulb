@@ -1022,7 +1022,13 @@ export class ServiceStack extends cdk.Stack {
         // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
         // DynamoDbIntegrations statement, so no cross-stack export is created.
         METRONOME_FAST_GATE_TABLE: `isol8-${env}-metronome-fast-gate`,
-        METRONOME_CREDITS_CONTRACT_ID: "",
+        // Master switch for the Metronome customer lifecycle (provisioning,
+        // funding, balance display). Stays "false" until the per-env runbook
+        // is done — real API tokens in Secrets Manager, the rate card created
+        // in the Metronome console (its id wired below), and the webhook
+        // secret registered — then it is flipped to "true" per environment.
+        METRONOME_LIFECYCLE_ENABLED: "false",
+        METRONOME_RATE_CARD_ID: "",
         METRONOME_CREDITS_PRODUCT_ID: "",
         // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
         // table is granted BY NAME above, so the env var is the literal name

@@ -54,7 +54,8 @@ def _killer(*, already_stopped: bool = False) -> MagicMock:
     return killer
 
 
-def _low_balance_body(customer_id=METRONOME_CUSTOMER_ID, remaining_balance=0.5):
+def _low_balance_body(customer_id=METRONOME_CUSTOMER_ID, remaining_balance=123, **extra_props):
+    # remaining_balance / threshold are Metronome's USD credit type: CENTS.
     return json.dumps(
         {
             "id": "evt-1",
@@ -62,7 +63,8 @@ def _low_balance_body(customer_id=METRONOME_CUSTOMER_ID, remaining_balance=0.5):
             "properties": {
                 "customer_id": customer_id,
                 "remaining_balance": remaining_balance,
-                "threshold": 2.0,
+                "threshold": 500,
+                **extra_props,
             },
         }
     ).encode("utf-8")
@@ -87,7 +89,7 @@ def test_rejects_bad_signature(client):
 
 
 def test_sets_fast_gate_flag_resolving_owner_from_billing_row(client, known_customer):
-    body = _low_balance_body(remaining_balance=0.5)  # $0.50 -> 500_000 microcents
+    body = _low_balance_body(remaining_balance=123)  # 123 cents -> 1_230_000 microcents (a 100x slip would show)
     killer = _killer()
     with (
         patch(
@@ -101,7 +103,7 @@ def test_sets_fast_gate_flag_resolving_owner_from_billing_row(client, known_cust
         gate.set_balance = AsyncMock()
         resp = _post(client, body)
     assert resp.status_code == 200
-    gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=500_000)
+    gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=1_230_000)
     # Positive balance: alert fired early (threshold crossing), no kill.
     killer.kill_owner_bedrock.assert_not_called()
 
@@ -129,7 +131,7 @@ def test_non_positive_balance_fires_kill_when_enforcement_live(client, known_cus
 def test_non_positive_balance_no_kill_when_enforcement_off(client, known_customer, monkeypatch):
     """Shadow mode (the default): flag still set, kill never fires."""
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", False)
-    body = _low_balance_body(remaining_balance=-1.0)
+    body = _low_balance_body(remaining_balance=-100)
     killer = _killer()
     with (
         patch(

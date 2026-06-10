@@ -554,25 +554,30 @@ async def _metronome_balance_microcents(owner_id: str) -> int | None:
     """Display-only Metronome balance for the Credits panel.
 
     Strictly informational: the gate and the DDB-ledger number are untouched
-    by whatever this returns. None on ANY failure or when the owner has no
-    Metronome customer yet — a Metronome outage (or an unprovisioned owner)
-    must never 500 or slow-fail the balance endpoint into an error state.
+    by whatever this returns. None when the Metronome lifecycle switch is
+    off, on ANY failure, or when the owner has no Metronome customer yet —
+    a Metronome outage (or an unprovisioned owner) must never 500 or
+    slow-fail the balance endpoint into an error state.
     """
+    if not settings.METRONOME_LIFECYCLE_ENABLED:
+        return None
     try:
         account = await billing_repo.get_by_owner_id(owner_id)
         customer_id = (account or {}).get("metronome_customer_id")
         if not customer_id:
             return None
         from core.billing import metronome_client
+        from core.billing.metronome_units import cents_to_microcents
 
         async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
             data = await metronome_client.for_settings(http).get_net_balance(customer_id=customer_id)
         net_balance = data.get("net_balance")
         if net_balance is None:
             return None
-        # getNetBalance reports dollars (same denomination as the funding
-        # commit's `amount`); the API surface speaks microcents.
-        return round(float(net_balance) * 1_000_000)
+        # getNetBalance reports Metronome's USD credit type, denominated in
+        # CENTS (see core/billing/metronome_units.py); the API surface
+        # speaks microcents.
+        return cents_to_microcents(float(net_balance))
     except Exception:
         logger.warning("Metronome balance read failed for owner %s — omitting from response", owner_id, exc_info=True)
         return None

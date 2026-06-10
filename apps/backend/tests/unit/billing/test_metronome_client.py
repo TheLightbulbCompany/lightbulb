@@ -89,6 +89,45 @@ async def test_get_customer_id_by_ingest_alias_returns_none_when_no_match():
 
 
 @pytest.mark.asyncio
+async def test_create_contract_sends_rate_card_and_returns_id():
+    client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
+    contract_id = await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1")
+
+    assert contract_id == "contract-uuid-1"
+    args, kwargs = fake.post.call_args
+    assert args[0] == "/contracts/create"
+    body = kwargs["json"]
+    assert body["customer_id"] == "cust-uuid-1"
+    assert body["rate_card_id"] == "rc-1"
+    # Contracts must start at UTC midnight — Metronome rejects mid-day starts.
+    assert body["starting_at"].endswith("T00:00:00.000Z")
+
+
+@pytest.mark.asyncio
+async def test_create_contract_raises_on_missing_id():
+    client, _ = _client_with(_resp(200, {"data": {}}))
+    with pytest.raises(MetronomeError, match="no data.id"):
+        await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1")
+
+
+@pytest.mark.asyncio
+async def test_list_contracts_shape():
+    client, fake = _client_with(_resp(200, {"data": [{"id": "contract-uuid-1"}]}))
+    contracts = await client.list_contracts(customer_id="cust-uuid-1")
+
+    assert contracts == [{"id": "contract-uuid-1"}]
+    args, kwargs = fake.post.call_args
+    assert args[0] == "/contracts/list"
+    assert kwargs["json"] == {"customer_id": "cust-uuid-1"}
+
+
+@pytest.mark.asyncio
+async def test_list_contracts_empty():
+    client, _ = _client_with(_resp(200, {"data": []}))
+    assert await client.list_contracts(customer_id="cust-uuid-1") == []
+
+
+@pytest.mark.asyncio
 async def test_create_alert_shape():
     client, fake = _client_with(_resp(200, {}))
     await client.create_alert(

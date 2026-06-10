@@ -343,10 +343,10 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
             await metronome_funding.fund_top_up(
                 owner_id=owner_id,
                 amount_microcents=amount_microcents,
-                contract_id=_settings.METRONOME_CREDITS_CONTRACT_ID,
                 product_id=_settings.METRONOME_CREDITS_PRODUCT_ID,
                 stripe_session_id=session.get("id"),
                 metronome_customer_id=metronome_customer_id,
+                metronome_contract_id=(account or {}).get("metronome_contract_id"),
             )
     except Exception:
         put_metric("metronome.fund.error", dimensions={"source": "stripe_checkout"})

@@ -1,12 +1,29 @@
-"""Bedrock invocation-log usage meter — dumb transport Lambda (CloudWatch-only).
+"""Bedrock invocation-log usage meter — direct Metronome ingest.
 
 A CloudWatch Logs subscription delivers gzipped+base64 records of Bedrock
-model-invocation logs. This Lambda parses each record and POSTs the extracted
-token/cache counts to the backend internal meter endpoint. It does NOT price,
-attribute, or deplete — that is the backend's single source of truth.
+model-invocation logs. This Lambda parses each record, attributes it to an
+owner via the per-env aip-owners reverse table, and POSTs one event per record
+straight to Metronome's /v1/ingest. Metronome rates the event (rate card),
+maintains the prepaid balance, and dedups exactly-once on ``transaction_id``
+(the Bedrock requestId, 34-day window) — so DLQ redrives and CW-Logs batch
+retries are always safe to replay. There is no backend hop and no JWT: the
+only credential is the vendor-issued Metronome API key.
 
-CLOUDWATCH-ONLY (no S3), and never even needs the response body. EVERY count we
-bill on is recorded at the TOP LEVEL of the CloudWatch record and read inline:
+ONE CODEBASE, TWO FUNCTION INSTANCES. The account-scoped meter stack deploys
+this asset twice — a dev instance and a prod instance — because Bedrock
+invocation logging is account+region-level and ONE log group receives BOTH
+envs' records. The env split happens at the subscription filters: every record
+carries ``identity.arn`` = the per-owner role
+(``…assumed-role/isol8-{env}-owner-bedrock-{owner}/…``), so a CloudWatch term
+filter routes dev records to the dev instance and prod records to the prod
+instance. The instances differ ONLY in env vars (never code conditionals):
+  - METRONOME_API_KEY_SECRET_ARN : dev -> sandbox token, prod -> live token
+  - AIP_OWNERS_TABLE             : isol8-{env}-bedrock-aip-owners
+  - DLQ_URL                      : that instance's own SQS DLQ
+  - METER_ENV                    : the env dimension on emitted metrics
+
+CLOUDWATCH-ONLY, and never even needs the response body. EVERY count we bill
+on is recorded at the TOP LEVEL of the CloudWatch record and read inline:
   - input_tokens       : `input.inputTokenCount`
   - output_tokens      : `output.outputTokenCount`
   - cache_read_tokens  : `input.cacheReadInputTokenCount`
@@ -15,20 +32,21 @@ bill on is recorded at the TOP LEVEL of the CloudWatch record and read inline:
 Confirmed against live cached-Converse records (the top-level
 `input.cache*InputTokenCount` counts equal the response body's
 `usage.cache*InputTokens`). Bedrock only ever offloads a body >100KB to S3, and
-that affects the output BODY alone — the token + cache COUNTS stay inline at the
-top level regardless. So there is NO large-completion edge case here: we read
-the counts directly and never touch `output.outputBodyJson` (kept only as a
-defensive `_first_int` fallback should a delivery variant omit a top-level
+that affects the output BODY alone — the token + cache COUNTS stay inline at
+the top level regardless. So there is NO large-completion edge case here: we
+read the counts directly and never touch `output.outputBodyJson` (kept only as
+a defensive `_first_int` fallback should a delivery variant omit a top-level
 count).
 
 FAIL-SAFE TRANSPORT. A CloudWatch Logs subscription filter invokes this Lambda
 SYNCHRONOUSLY, so the Lambda's async-invocation DLQ never fires on a per-record
-failure — a backend 5xx or an unparseable record would otherwise silently drop
-the record. So every per-record failure path here explicitly pushes the raw
-failed log event to the SQS DLQ (`_send_to_dlq`) + emits a metric + continues. A
-money-correctness regression surfaces on the DLQ / an alarm, never as a silent
-drop. The backend endpoint is idempotent (deplete() exactly-once on requestId),
-so DLQ redrive replays are safe.
+failure — a Metronome non-2xx, an unattributable record, or an unparseable
+record would otherwise silently drop. So every per-record failure path here
+explicitly pushes the raw failed log event to the SQS DLQ (`_send_to_dlq`) +
+emits a metric + continues. A money-correctness regression surfaces on the
+DLQ / an alarm, never as a silent drop. An unattributed record is NEVER
+ingested (it would land in Metronome's unmatched-events bin and vanish — a
+revenue leak must alarm instead).
 """
 
 import base64
@@ -44,36 +62,68 @@ import boto3
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-_METER_TOKEN = None
+METRONOME_INGEST_URL_DEFAULT = "https://api.metronome.com/v1/ingest"
+
+# Cold-start caches: the Metronome bearer token and the boto3 clients are
+# fetched/built once per Lambda container and reused across invocations.
+_METRONOME_TOKEN = None
+_DDB = None
+_SQS = None
 
 
-def _meter_token():
-    """Return the bedrock_meter service token, fetched once at cold-start.
+def _ddb():
+    global _DDB
+    if _DDB is None:
+        _DDB = boto3.client("dynamodb")
+    return _DDB
 
-    Prefers the literal METER_TOKEN env (set by unit tests). In the deployed
-    Lambda the CDK injects only METER_TOKEN_SECRET_ARN, so we resolve the token
-    from Secrets Manager and cache it for the life of the container.
+
+def _sqs():
+    global _SQS
+    if _SQS is None:
+        _SQS = boto3.client("sqs")
+    return _SQS
+
+
+def _metronome_token():
+    """Return the Metronome API bearer token, fetched once at cold-start.
+
+    Prefers the literal METRONOME_API_KEY env (set by unit tests). In the
+    deployed Lambda the CDK injects only METRONOME_API_KEY_SECRET_ARN, so we
+    resolve the token from Secrets Manager and cache it for the life of the
+    container. The secret is per-env: the dev instance holds a sandbox token,
+    the prod instance a live token (Metronome is token-scoped — same base URL,
+    the key decides sandbox vs prod).
     """
-    global _METER_TOKEN
-    if _METER_TOKEN is None:
-        literal = os.environ.get("METER_TOKEN")
+    global _METRONOME_TOKEN
+    if _METRONOME_TOKEN is None:
+        literal = os.environ.get("METRONOME_API_KEY")
         if literal:
-            _METER_TOKEN = literal
+            _METRONOME_TOKEN = literal
         else:
-            arn = os.environ["METER_TOKEN_SECRET_ARN"]
-            _METER_TOKEN = boto3.client("secretsmanager").get_secret_value(SecretId=arn)["SecretString"]
-    return _METER_TOKEN
+            arn = os.environ["METRONOME_API_KEY_SECRET_ARN"]
+            _METRONOME_TOKEN = boto3.client("secretsmanager").get_secret_value(SecretId=arn)["SecretString"]
+    return _METRONOME_TOKEN
 
 
-def _emit_metric(name, **dimensions):
+def _emit_metric(name, **properties):
     """Emit a CloudWatch metric via EMF (one JSON log line).
 
     Mirrors the backend's core/observability/metrics.put_metric EMF shape so the
-    meter Lambda's failure metrics land in the same Isol8 namespace. Never raises
-    — observability must not be able to take down the fail-safe path.
+    meter Lambda's failure metrics land in the same Isol8 namespace. The
+    dimension set is always exactly {service, env}: both function instances
+    share the namespace + service name, so the env dimension is what keeps dev
+    noise from tripping the prod alarms (each alarm scopes to its env). Extra
+    keyword args become plain log-line properties (Logs-Insights-queryable),
+    NOT dimensions — unbounded values like region/model would blow up metric
+    cardinality. Never raises — observability must not be able to take down
+    the fail-safe path.
     """
     try:
-        dims = {"service": "isol8-bedrock-meter", **dimensions}
+        dims = {
+            "service": "isol8-bedrock-meter",
+            "env": os.environ.get("METER_ENV", "unknown"),
+        }
         line = {
             "_aws": {
                 "Timestamp": int(time.time() * 1000),
@@ -87,6 +137,7 @@ def _emit_metric(name, **dimensions):
             },
             name: 1.0,
             **dims,
+            **properties,
         }
         print(json.dumps(line), flush=True)
     except Exception:  # pragma: no cover - defensive; metrics must never raise
@@ -100,12 +151,13 @@ def _send_to_dlq(log_event, reason):
     async DLQ does not fire on a per-record failure — we route durability here
     explicitly. Best-effort: if the DLQ send itself fails we log + re-raise so
     the whole batch fails (CW Logs retries) rather than dropping the record.
+    Redriving the queue is safe: Metronome dedups on transaction_id.
     """
     queue_url = os.environ.get("DLQ_URL", "")
     if not queue_url:
         logger.error("meter: no DLQ_URL configured, cannot durably hold failed record (reason=%s)", reason)
         raise RuntimeError(f"meter transport failure with no DLQ: {reason}")
-    boto3.client("sqs").send_message(
+    _sqs().send_message(
         QueueUrl=queue_url,
         MessageBody=json.dumps({"reason": reason, "log_event": log_event}),
     )
@@ -180,17 +232,68 @@ def _extract(record):
     }
 
 
-def _post_to_backend(parsed):
-    """POST one extracted record to the backend internal meter endpoint."""
-    data = json.dumps(parsed).encode()
+def _resolve_owner_and_tier(record):
+    """Resolve (owner_id, tier) from the record's AIP ARN, or (None, None).
+
+    The record's ``modelId`` is the per-owner application-inference-profile
+    ARN; the aip-owners reverse table (written atomically per row at provision
+    by bedrock_aip.persist_owner_aips) maps it to ``owner_id`` + ``tier`` in
+    ONE GetItem. The per-owner IAM role can only invoke that owner's own AIPs,
+    so every record reaching this instance's subscription filter should
+    resolve — a miss means the reverse row is absent (a provisioning gap) and
+    must surface on the alarmed meter.unattributed metric, never be ingested.
+
+    A DDB transport error deliberately propagates: the whole batch fails and
+    CloudWatch Logs retries it, which is safe because Metronome dedups any
+    already-ingested records on transaction_id.
+    """
+    resp = _ddb().get_item(
+        TableName=os.environ["AIP_OWNERS_TABLE"],
+        Key={"aip_arn": {"S": record.get("modelId", "")}},
+    )
+    item = resp.get("Item")
+    if not item:
+        return (None, None)
+    owner = (item.get("owner_id") or {}).get("S")
+    tier = (item.get("tier") or {}).get("S")
+    return (owner or None, tier or None)
+
+
+def _ingest_to_metronome(parsed):
+    """POST one usage event to Metronome's ingest endpoint.
+
+    The body is a JSON ARRAY of one event. ``transaction_id`` (the Bedrock
+    requestId) gives native exactly-once over a 34-day window; ``customer_id``
+    is the owner_id, matched via the Metronome customer's ingest_aliases.
+    Every property value is stringified per Metronome's ingest docs.
+    """
+    event = {
+        "transaction_id": parsed["request_id"],
+        "customer_id": parsed["owner_id"],
+        "timestamp": parsed["occurred_at"],
+        "event_type": "bedrock_invocation",
+        "properties": {
+            k: str(v)
+            for k, v in {
+                "tier": parsed["tier"],
+                "model_id": parsed["model_id"],
+                "input_tokens": parsed["input_tokens"],
+                "output_tokens": parsed["output_tokens"],
+                "cache_read_tokens": parsed["cache_read_tokens"],
+                "cache_write_tokens": parsed["cache_write_tokens"],
+                "region": parsed["region"],
+                "run_status": parsed["run_status"],
+            }.items()
+        },
+    }
     req = urllib.request.Request(
-        f"http://{os.environ['ALB_DNS_NAME']}/api/v1/internal/usage/from-bedrock-log",
+        os.environ.get("METRONOME_INGEST_URL", METRONOME_INGEST_URL_DEFAULT),
         method="POST",
+        data=json.dumps([event]).encode(),
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {_meter_token()}",
+            "Authorization": f"Bearer {_metronome_token()}",
         },
-        data=data,
     )
     urllib.request.urlopen(req, timeout=10)
 
@@ -198,10 +301,10 @@ def _post_to_backend(parsed):
 def handler(event, context):
     payload = json.loads(gzip.decompress(base64.b64decode(event["awslogs"]["data"])))
     for log_event in payload.get("logEvents", []):
-        # Each record is handled independently and fails safe: a parse error, a
-        # truncated/absent output body, or a backend POST failure DLQs that one
-        # record + emits a metric + continues, so one bad/under-billed record
-        # never silently drops and never poisons the rest of the batch.
+        # Each record is handled independently and fails safe: a parse error,
+        # an unattributable record, or a Metronome ingest failure DLQs that one
+        # record + emits a metric + continues, so one bad record never silently
+        # drops and never poisons the rest of the batch.
         try:
             record = json.loads(log_event["message"])
         except (ValueError, KeyError):
@@ -210,10 +313,30 @@ def handler(event, context):
             _send_to_dlq(log_event, "unparseable_log_event")
             continue
         parsed = _extract(record)
+        owner_id, tier = _resolve_owner_and_tier(record)
+        if owner_id is None:
+            # NEVER ingest unattributed: a customer-less event lands in
+            # Metronome's unmatched-events bin and silently vanishes from
+            # revenue. model_id is a log field, not a metric dimension
+            # (per-owner cardinality).
+            logger.warning("meter: unattributed record model=%s req=%s", parsed["model_id"], parsed["request_id"])
+            _emit_metric("meter.unattributed")
+            _send_to_dlq(log_event, "unattributed")
+            continue
+        if tier is None:
+            # Owner resolved but the row carries no tier: the event could be
+            # ingested but never rated (the billable metrics group by tier).
+            # Same posture as unattributed — alarm + hold, never half-bill.
+            logger.warning("meter: no tier on reverse row model=%s req=%s", parsed["model_id"], parsed["request_id"])
+            _emit_metric("meter.unknown_model")
+            _send_to_dlq(log_event, "missing_tier")
+            continue
+        parsed["owner_id"] = owner_id
+        parsed["tier"] = tier
         try:
-            _post_to_backend(parsed)
+            _ingest_to_metronome(parsed)
         except Exception as exc:  # noqa: BLE001 - any transport error must DLQ, not drop
-            logger.error("meter: backend POST failed, DLQ + skip: %s", exc)
+            logger.error("meter: Metronome ingest failed, DLQ + skip: %s", exc)
             _emit_metric("meter.transport_error")
             _send_to_dlq(log_event, f"transport_error: {exc}")
             continue

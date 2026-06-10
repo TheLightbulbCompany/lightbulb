@@ -107,10 +107,12 @@ describe("BedrockMeterStack", () => {
     expect(policies).toContain("table/isol8-prod-bedrock-aip-owners");
   });
 
-  test("kms:Decrypt is confined to SecretsManager-mediated decryption", () => {
-    // The per-env secrets are CMK-encrypted with each env's auth-stack key;
-    // the dev CMK ARN is unknowable from this prod-stage stack, so the grant
-    // is resource-* but condition-scoped to kms:ViaService.
+  test("kms:Decrypt is confined to SecretsManager+DynamoDB-mediated decryption", () => {
+    // The per-env secrets AND the aip-owners tables are CMK-encrypted with
+    // each env's auth-stack key; the dev CMK ARN is unknowable from this
+    // prod-stage stack, so the grant is resource-* but condition-scoped to
+    // kms:ViaService. DynamoDB MUST be in the list — without it the
+    // attribution GetItem dies with KMS AccessDenied (live-verified).
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
@@ -118,7 +120,10 @@ describe("BedrockMeterStack", () => {
             Action: "kms:Decrypt",
             Condition: {
               StringEquals: {
-                "kms:ViaService": "secretsmanager.us-east-1.amazonaws.com",
+                "kms:ViaService": [
+                  "secretsmanager.us-east-1.amazonaws.com",
+                  "dynamodb.us-east-1.amazonaws.com",
+                ],
               },
             },
           }),

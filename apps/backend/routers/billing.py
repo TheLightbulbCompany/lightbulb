@@ -551,22 +551,12 @@ async def _metronome_balance_microcents(owner_id: str) -> int | None:
     if not settings.METRONOME_LIFECYCLE_ENABLED:
         return None
     try:
-        account = await billing_repo.get_by_owner_id(owner_id)
-        customer_id = (account or {}).get("metronome_customer_id")
-        if not customer_id:
-            return None
-        from core.billing import metronome_client
-        from core.billing.metronome_units import cents_to_microcents
+        # Shared with the gate's lazy refresh — one place owns the
+        # live-verified getNetBalance response shape and the cents →
+        # microcents conversion.
+        from core.services.metronome_gate import read_net_balance_microcents
 
-        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
-            data = await metronome_client.for_settings(http).get_net_balance(customer_id=customer_id)
-        net_balance = data.get("net_balance")
-        if net_balance is None:
-            return None
-        # getNetBalance reports Metronome's USD credit type, denominated in
-        # CENTS (see core/billing/metronome_units.py); the API surface
-        # speaks microcents.
-        return cents_to_microcents(float(net_balance))
+        return await read_net_balance_microcents(owner_id)
     except Exception:
         logger.warning("Metronome balance read failed for owner %s — omitting from response", owner_id, exc_info=True)
         return None
@@ -579,7 +569,8 @@ async def _metronome_balance_microcents(owner_id: str) -> int | None:
         "Returns the owner's Metronome prepaid balance in microcents and "
         "dollars (formatted). Both fields are null when the balance is "
         "unavailable (Metronome outage, or the owner has no Metronome "
-        "customer yet)."
+        "customer yet). lifecycle_enabled reflects whether the Metronome "
+        "credits lifecycle is wired for this environment at all."
     ),
 )
 async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
@@ -588,9 +579,20 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
     # admin-funded balance and got blocked at chat with out_of_credits.
     owner_id = resolve_owner_id(ctx)
     balance_uc = await _metronome_balance_microcents(owner_id)
+    if balance_uc is not None:
+        # Write the live read through the fast-gate projection and run the
+        # same restore/re-enforce hook as the gate's lazy refresh: a paid-up
+        # owner polling this endpoint (the onboarding wizard does, every few
+        # seconds) un-blocks the provision gate immediately instead of after
+        # the staleness window expires. Best-effort by contract — it never
+        # raises into this endpoint.
+        from core.services.metronome_gate import apply_fresh_balance
+
+        await apply_fresh_balance(owner_id, balance_uc)
     return {
         "balance_microcents": balance_uc,
         "balance_dollars": f"{balance_uc / 1_000_000:.2f}" if balance_uc is not None else None,
+        "lifecycle_enabled": settings.METRONOME_LIFECYCLE_ENABLED,
     }
 
 

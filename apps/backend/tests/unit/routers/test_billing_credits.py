@@ -1,6 +1,7 @@
 """Tests for the credit endpoints — Metronome is the only balance source."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
@@ -29,9 +30,11 @@ def webhook_dedup_table(monkeypatch):
         yield
 
 
-def _fake_metronome_client(net_balance=12.34):
+def _fake_metronome_client(balance=12.34):
+    # Live-verified getNetBalance shape (sandbox, 2026-06-10): the cents
+    # number rides under "balance" in the data sub-object the client returns.
     fake = MagicMock()
-    fake.get_net_balance = AsyncMock(return_value={"net_balance": net_balance})
+    fake.get_net_balance = AsyncMock(return_value={"balance": balance, "credit_type_id": "ct-usd-cents"})
     return fake
 
 
@@ -39,21 +42,55 @@ def _fake_metronome_client(net_balance=12.34):
 async def test_get_balance_returns_metronome_balance(async_client, monkeypatch):
     """1234 cents (Metronome's USD credit type) -> 12_340_000 microcents."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
-    fake = _fake_metronome_client(net_balance=1234)
+    fake = _fake_metronome_client(balance=1234)
     with (
         patch(
             "routers.billing.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
         ),
         patch("core.billing.metronome_client.for_settings", return_value=fake),
+        patch("core.services.metronome_gate.apply_fresh_balance", new=AsyncMock()) as write_through,
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
     assert resp.json() == {
         "balance_microcents": 12_340_000,
         "balance_dollars": "12.34",
+        "lifecycle_enabled": True,
     }
     fake.get_net_balance.assert_awaited_once_with(customer_id="cust-uuid-1")
+    # The successful live read is written through the fast-gate projection so
+    # the provision gate un-blocks immediately instead of after the staleness
+    # window.
+    write_through.assert_awaited_once_with("user_test_123", 12_340_000)
+
+
+@pytest.mark.asyncio
+async def test_get_balance_write_through_restores_revoked_owner(async_client, monkeypatch):
+    """End-to-end through the real apply_fresh_balance: a revoked owner whose
+    live read (and confirming re-read) comes back positive gets the fast-gate
+    row rewritten AND the Bedrock IAM grant restored from the balance poll."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    fake = _fake_metronome_client(balance=1234)
+    restore = AsyncMock()
+    with (
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
+        ),
+        patch("core.billing.metronome_client.for_settings", return_value=fake),
+        patch("core.services.metronome_gate.MetronomeFastGate") as gate_cls,
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "bedrock_revoked": True}),
+        ),
+        patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
+    ):
+        gate_cls.return_value.set_balance = AsyncMock()
+        resp = await async_client.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    gate_cls.return_value.set_balance.assert_awaited_once_with("user_test_123", remaining_microcents=12_340_000)
+    restore.assert_awaited_once_with("user_test_123")
 
 
 @pytest.mark.asyncio
@@ -63,11 +100,12 @@ async def test_get_balance_org_member_reads_owner_id(async_client_org_member, mo
     user_id has no Metronome customer — the bug that blocked org members at
     chat with code=out_of_credits in prod."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
-    fake = _fake_metronome_client(net_balance=988)
+    fake = _fake_metronome_client(balance=988)
     row_mock = AsyncMock(return_value={"owner_id": "org_test_456", "metronome_customer_id": "cust-org-1"})
     with (
         patch("routers.billing.billing_repo.get_by_owner_id", new=row_mock),
         patch("core.billing.metronome_client.for_settings", return_value=fake),
+        patch("core.services.metronome_gate.apply_fresh_balance", new=AsyncMock()),
     ):
         resp = await async_client_org_member.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
@@ -108,6 +146,42 @@ async def test_top_up_funding_error_maps_to_400(async_client, webhook_dedup_tabl
         )
     assert resp.status_code == 400
     assert "not provisioned" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_top_up_double_submit_maps_to_400(async_client, webhook_dedup_table, monkeypatch):
+    """Two identical submits inside the dedup window: the first creates the
+    payment-gated commit, the second is rejected 400 — never a second card
+    charge. Runs the REAL request_top_up against the moto dedup table."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
+    fake = MagicMock()
+    fake.create_prepaid_commit = AsyncMock()
+    billing_row = {
+        "owner_id": "user_test_123",
+        "metronome_customer_id": "cust-uuid-1",
+        "metronome_contract_id": "contract-1",
+    }
+    # Pin the 60s dedup window so the two calls can't straddle a real minute
+    # boundary and flake past the guard. Swaps the module's `time` binding
+    # (not the global time module) so nothing else is frozen.
+    import time as _time
+
+    frozen = SimpleNamespace(time=lambda: 1_780_000_000.0, strftime=_time.strftime, gmtime=_time.gmtime)
+    monkeypatch.setattr("core.billing.metronome_funding.time", frozen)
+    with (
+        patch(
+            "core.billing.metronome_funding.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=billing_row),
+        ),
+        patch("core.billing.metronome_client.for_settings", return_value=fake),
+    ):
+        first = await async_client.post("/api/v1/billing/credits/top_up", json={"amount_cents": 2000})
+        second = await async_client.post("/api/v1/billing/credits/top_up", json={"amount_cents": 2000})
+    assert first.status_code == 200
+    assert second.status_code == 400
+    assert "duplicate top-up" in second.json()["detail"]
+    fake.create_prepaid_commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -208,7 +282,9 @@ async def test_get_balance_null_when_lifecycle_disabled(async_client, monkeypatc
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    assert resp.json() == {"balance_microcents": None, "balance_dollars": None}
+    # lifecycle_enabled lets the frontend distinguish "credits product not
+    # wired in this environment" from a transient balance outage.
+    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": False}
     for_settings_mock.assert_not_called()
     row_mock.assert_not_awaited()
 
@@ -229,7 +305,7 @@ async def test_get_balance_metronome_error_yields_null(async_client, monkeypatch
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    assert resp.json() == {"balance_microcents": None, "balance_dollars": None}
+    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": True}
 
 
 @pytest.mark.asyncio
@@ -246,5 +322,5 @@ async def test_get_balance_no_metronome_customer_yields_null(async_client, monke
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    assert resp.json() == {"balance_microcents": None, "balance_dollars": None}
+    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": True}
     fake.get_net_balance.assert_not_awaited()

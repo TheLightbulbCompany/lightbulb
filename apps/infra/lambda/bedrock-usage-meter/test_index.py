@@ -1,22 +1,21 @@
-"""Tests for the Bedrock usage-meter Lambda — parse + cache extraction + transport.
+"""Tests for the Bedrock usage-meter Lambda — extraction, attribution, ingest.
 
-CloudWatch-only: the meter never touches S3. Token counts are top-level inline
-(`input.inputTokenCount` / `output.outputTokenCount`); cache counts live in the
-inline output body (`output.outputBodyJson.usage.{cacheReadInputTokens,
-cacheWriteInputTokens}`). The huge thing on cache-heavy turns is the cached
-INPUT prompt, which we never need, so the OUTPUT body is <100KB and inline in
-practice. The one rare edge — a >100KB completion offloaded to S3 so the output
-body (and its usage block) is absent — is handled by failing safe to the DLQ
-rather than POSTing a zeroed-cache (~30×-under-billed) record.
+Direct-Metronome design: the Lambda parses each CloudWatch invocation-log
+record, resolves (owner_id, tier) with one GetItem on the per-env aip-owners
+reverse table, and POSTs a single-event JSON array to Metronome /v1/ingest.
+ALL billable counts are read from the TOP LEVEL of the record
+(`input.inputTokenCount` / `output.outputTokenCount` /
+`input.cacheReadInputTokenCount` / `input.cacheWriteInputTokenCount`); the
+nested `output.outputBodyJson.usage` block is a defensive fallback only.
 
-NOTE: confirm the exact field paths against ONE real cached-Converse
-invocation-log record (FIELDS.md's pre-flip gate) before METER_IS_LIVE is
-flipped to true.
+Failure posture under test: every per-record failure (unparseable record,
+unattributed owner, missing tier, Metronome transport error) DLQs the raw log
+event + emits a metric + continues the batch — never a silent drop, and an
+unattributed record is NEVER ingested.
 """
 
 import base64
 import gzip
-import importlib  # noqa: F401  (kept to mirror the sibling ws-* lambda test shape)
 import json
 import os
 import sys
@@ -26,6 +25,14 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "fixtures")
+
+OWNER_ITEM = {
+    "Item": {
+        "aip_arn": {"S": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus-org_abc"},
+        "owner_id": {"S": "org_abc"},
+        "tier": {"S": "opus"},
+    }
+}
 
 
 def _load(name):
@@ -41,16 +48,28 @@ def _awslogs_event(*records):
 
 @pytest.fixture(autouse=True)
 def lambda_env(monkeypatch):
-    monkeypatch.setenv("ALB_DNS_NAME", "alb.test.local")
-    monkeypatch.setenv("METER_TOKEN", "meter-token-abc")
+    monkeypatch.setenv("METRONOME_API_KEY", "metronome-token-abc")
+    monkeypatch.setenv("AIP_OWNERS_TABLE", "isol8-dev-bedrock-aip-owners")
     monkeypatch.setenv("DLQ_URL", "https://sqs.test.local/dlq")
+    monkeypatch.setenv("METER_ENV", "dev")
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
+    # Re-import fresh per test so the module-global cold-start caches (token,
+    # boto3 clients) never leak state between tests.
     sys.modules.pop("index", None)
     import index  # noqa: F401
 
     yield
     sys.modules.pop("index", None)
+
+
+def _stub_resolver(owner="org_abc", tier="opus"):
+    return patch("index._resolve_owner_and_tier", return_value=(owner, tier))
+
+
+# ---------------------------------------------------------------------------
+# Extraction: every billable count comes from the TOP LEVEL of the record.
+# ---------------------------------------------------------------------------
 
 
 def test_extract_reads_top_level_tokens():
@@ -60,83 +79,136 @@ def test_extract_reads_top_level_tokens():
     parsed = index._extract(record)
     assert parsed["request_id"] == record["requestId"]
     assert parsed["model_id"] == record["modelId"]
-    # Token counts come from the top-level inline counts.
+    assert parsed["identity_arn"] == record["identity"]["arn"]
     assert parsed["input_tokens"] == record["input"]["inputTokenCount"]
     assert parsed["output_tokens"] == record["output"]["outputTokenCount"]
 
 
-def test_extract_reads_cache_tokens_from_output_body_usage():
-    """The cache counts come from output.outputBodyJson.usage — NOT from the
-    top-level input block. Read the expected values straight out of the fixture
-    so the assertion fails if the path silently yields 0 (the #1 correctness
-    landmine this meter exists to prevent — a `>= 0` assertion would pass even
-    on a wrong path)."""
+def test_extract_reads_cache_tokens_from_top_level():
+    """The cache counts come from the TOP-LEVEL input block. The nested usage
+    block is DELETED first so a wrong (nested-path-first) implementation cannot
+    pass by accident, and the expected values are read straight from the
+    fixture with non-zero guards — a zeroed fixture would make this vacuous
+    (the ~30x cache undercount is the landmine this meter exists to prevent).
+    """
     import index
 
     record = _load("inline_record.json")
-    usage = record["output"]["outputBodyJson"]["usage"]
-    expected_read = int(usage["cacheReadInputTokens"])
-    expected_write = int(usage["cacheWriteInputTokens"])
-    assert expected_read > 0, (
-        "inline_record.json fixture must retain a non-zero cacheRead count — "
-        "a zero fixture makes this test vacuous (it is the ~30× undercount the "
-        "meter exists to fix)."
-    )
+    expected_read = int(record["input"]["cacheReadInputTokenCount"])
+    expected_write = int(record["input"]["cacheWriteInputTokenCount"])
+    assert expected_read > 0, "fixture must keep a non-zero top-level cacheRead count"
+    assert expected_write > 0, "fixture must keep a non-zero top-level cacheWrite count"
+    del record["output"]["outputBodyJson"]
 
     parsed = index._extract(record)
     assert parsed["cache_read_tokens"] == expected_read
     assert parsed["cache_write_tokens"] == expected_write
 
 
-def test_extract_falls_back_to_usage_tokens_when_top_level_absent():
-    """If a delivery omits the top-level token counts, fall back to the output
-    body's usage block (documented resilience path)."""
+def test_extract_falls_back_to_nested_usage_when_top_level_absent():
+    """If a delivery variant omits the top-level counts, fall back to the
+    output body's usage block (documented resilience path)."""
     import index
 
     record = _load("inline_record.json")
-    del record["input"]["inputTokenCount"]
-    del record["output"]["outputTokenCount"]
     usage = record["output"]["outputBodyJson"]["usage"]
+    del record["input"]["inputTokenCount"]
+    del record["input"]["cacheReadInputTokenCount"]
+    del record["input"]["cacheWriteInputTokenCount"]
+    del record["output"]["outputTokenCount"]
 
     parsed = index._extract(record)
     assert parsed["input_tokens"] == int(usage["inputTokens"])
     assert parsed["output_tokens"] == int(usage["outputTokens"])
-
-
-def test_extract_parses_output_body_when_serialized_as_string():
-    """Some deliveries may serialize outputBodyJson as a JSON string; the
-    extractor parses it once so the usage block is still reachable."""
-    import index
-
-    record = _load("inline_record.json")
-    usage = record["output"]["outputBodyJson"]["usage"]
-    record["output"]["outputBodyJson"] = json.dumps(record["output"]["outputBodyJson"])
-
-    parsed = index._extract(record)
     assert parsed["cache_read_tokens"] == int(usage["cacheReadInputTokens"])
     assert parsed["cache_write_tokens"] == int(usage["cacheWriteInputTokens"])
 
 
-def test_handler_posts_each_record(monkeypatch):
+# ---------------------------------------------------------------------------
+# Attribution: one GetItem on the per-env aip-owners reverse table.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_owner_and_tier_reads_reverse_table():
     import index
 
-    inline = _load("inline_record.json")
-    posted = []
+    record = _load("inline_record.json")
+    fake_ddb = MagicMock()
+    fake_ddb.get_item.return_value = OWNER_ITEM
 
-    def fake_post(parsed):
-        posted.append(parsed)
+    with patch("index._ddb", return_value=fake_ddb):
+        owner, tier = index._resolve_owner_and_tier(record)
 
-    with patch.object(index, "_post_to_backend", side_effect=fake_post):
-        result = index.handler(_awslogs_event(inline), None)
+    assert (owner, tier) == ("org_abc", "opus")
+    fake_ddb.get_item.assert_called_once_with(
+        TableName="isol8-dev-bedrock-aip-owners",
+        Key={"aip_arn": {"S": record["modelId"]}},
+    )
+
+
+def test_resolve_owner_miss_returns_none_pair():
+    import index
+
+    fake_ddb = MagicMock()
+    fake_ddb.get_item.return_value = {}
+    with patch("index._ddb", return_value=fake_ddb):
+        assert index._resolve_owner_and_tier(_load("inline_record.json")) == (None, None)
+
+
+def test_handler_unattributed_dlqs_and_never_ingests():
+    """A reverse-table miss is a provisioning gap (alarmed) — the record is
+    held on the DLQ and NEVER ingested (a customer-less event would vanish
+    into Metronome's unmatched-events bin: a silent revenue leak)."""
+    import index
+
+    record = _load("inline_record.json")
+    ingested, dlqd, metrics = [], [], []
+
+    with (
+        _stub_resolver(owner=None, tier=None),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(record), None)
+
     assert result == {"statusCode": 200}
-    assert len(posted) == 1
-    assert posted[0]["request_id"] == inline["requestId"]
+    assert ingested == []
+    assert len(dlqd) == 1
+    assert dlqd[0][1] == "unattributed"
+    assert "meter.unattributed" in metrics
 
 
-def test_post_to_backend_url_headers_and_body(monkeypatch):
+def test_handler_missing_tier_dlqs_and_never_ingests():
+    """Owner resolved but no tier on the row: the event could ingest but never
+    rate (billable metrics group by tier) — same hold-and-alarm posture."""
     import index
 
-    inline = _load("inline_record.json")
+    record = _load("inline_record.json")
+    ingested, dlqd, metrics = [], [], []
+
+    with (
+        _stub_resolver(owner="org_abc", tier=None),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index.handler(_awslogs_event(record), None)
+
+    assert ingested == []
+    assert dlqd[0][1] == "missing_tier"
+    assert "meter.unknown_model" in metrics
+
+
+# ---------------------------------------------------------------------------
+# Ingest: array-of-one event, everything stringified, Bearer auth.
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_payload_shape_and_auth():
+    import index
+
+    record = _load("inline_record.json")
     captured = {}
 
     def fake_urlopen(req, timeout=None):
@@ -145,101 +217,90 @@ def test_post_to_backend_url_headers_and_body(monkeypatch):
         captured["body"] = json.loads(req.data.decode())
         return MagicMock()
 
-    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
-        index.handler(_awslogs_event(inline), None)
-
-    assert captured["url"] == "http://alb.test.local/api/v1/internal/usage/from-bedrock-log"
-    assert captured["headers"]["authorization"] == "Bearer meter-token-abc"
-    assert captured["headers"]["content-type"] == "application/json"
-    # The wire body carries ONLY the contract fields the backend BedrockLogRecord
-    # requires — no internal-only S3 plumbing keys (removed in the CW-only cutover).
-    assert "body_offloaded" not in captured["body"]
-    assert "s3_ref" not in captured["body"]
-    for key in (
-        "request_id",
-        "model_id",
-        "input_tokens",
-        "output_tokens",
-        "cache_read_tokens",
-        "cache_write_tokens",
-        "run_status",
-        "region",
-        "occurred_at",
+    with (
+        _stub_resolver(),
+        patch("index.urllib.request.urlopen", side_effect=fake_urlopen),
     ):
-        assert key in captured["body"]
+        index.handler(_awslogs_event(record), None)
+
+    assert captured["url"] == "https://api.metronome.com/v1/ingest"
+    assert captured["headers"]["authorization"] == "Bearer metronome-token-abc"
+    assert captured["headers"]["content-type"] == "application/json"
+
+    # The body is a JSON ARRAY of exactly one event.
+    assert isinstance(captured["body"], list)
+    assert len(captured["body"]) == 1
+    event = captured["body"][0]
+    assert event["transaction_id"] == record["requestId"]
+    assert event["customer_id"] == "org_abc"
+    assert event["event_type"] == "bedrock_invocation"
+    assert event["timestamp"] == record["timestamp"]
+
+    # EVERY property value is stringified (Metronome ingest docs) and the
+    # numeric values are the exact top-level fixture counts.
+    props = event["properties"]
+    assert all(isinstance(v, str) for v in props.values())
+    assert props == {
+        "tier": "opus",
+        "model_id": record["modelId"],
+        "input_tokens": str(record["input"]["inputTokenCount"]),
+        "output_tokens": str(record["output"]["outputTokenCount"]),
+        "cache_read_tokens": str(record["input"]["cacheReadInputTokenCount"]),
+        "cache_write_tokens": str(record["input"]["cacheWriteInputTokenCount"]),
+        "region": record["region"],
+        "run_status": "end",
+    }
 
 
-# ---------------------------------------------------------------------------
-# FAIL-SAFE TRANSPORT (review C1 / I3 / M2)
-#
-# A CloudWatch Logs subscription invokes the Lambda SYNCHRONOUSLY, so the
-# function's async DLQ never fires on a per-record failure. These tests prove
-# every per-record failure path durably routes to the SQS DLQ + emits a metric
-# instead of silently dropping the record (or POSTing a zeroed-cache record and
-# under-billing ~30×) — the precise "never silently bill 0 on a parse miss"
-# guarantee the meter exists to uphold.
-# ---------------------------------------------------------------------------
-
-
-def test_extract_raises_when_output_body_truncated():
-    """A >100KB completion offloaded to S3 leaves output.outputBodyJson absent —
-    the cache counts can't be read, so _extract raises rather than returning
-    inline-zero cache counts."""
+def test_ingest_url_env_override(monkeypatch):
     import index
 
-    record = _load("truncated_output_record.json")
-    assert "outputBodyJson" not in record["output"]  # fixture sanity
-    with pytest.raises(index._OutputBodyTruncatedError):
-        index._extract(record)
+    monkeypatch.setenv("METRONOME_INGEST_URL", "https://sandbox.test.local/v1/ingest")
+    record = _load("inline_record.json")
+    captured = {}
 
-
-def test_handler_truncated_output_dlqs_and_does_not_post():
-    """When the output body is offloaded (cache counts unreadable), the handler
-    DLQs the raw log event + emits meter.output_body_truncated and NEVER POSTs a
-    zeroed-cache record."""
-    import index
-
-    truncated = _load("truncated_output_record.json")
-    posted = []
-    dlqd = []
-    metrics = []
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return MagicMock()
 
     with (
-        patch.object(index, "_post_to_backend", side_effect=lambda p: posted.append(p)),
-        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
-        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+        _stub_resolver(),
+        patch("index.urllib.request.urlopen", side_effect=fake_urlopen),
     ):
-        result = index.handler(_awslogs_event(truncated), None)
+        index.handler(_awslogs_event(record), None)
 
-    assert result == {"statusCode": 200}
-    # The zeroed-cache record was NOT POSTed (the whole point of the fail-safe).
-    assert posted == []
-    # It WAS durably held on the DLQ with a descriptive reason.
-    assert len(dlqd) == 1
-    assert "output_body_truncated" in dlqd[0][1]
-    assert "meter.output_body_truncated" in metrics
+    assert captured["url"] == "https://sandbox.test.local/v1/ingest"
+
+
+# ---------------------------------------------------------------------------
+# FAIL-SAFE TRANSPORT. A CloudWatch Logs subscription invokes the Lambda
+# SYNCHRONOUSLY, so the function's async DLQ never fires on a per-record
+# failure. Every per-record failure path must durably route to the SQS DLQ +
+# emit a metric and continue the batch — retry-safe because Metronome dedups
+# on transaction_id (34-day window).
+# ---------------------------------------------------------------------------
 
 
 def test_handler_transport_error_dlqs_and_continues():
-    """C1: a backend POST failure DLQs that record + emits meter.transport_error
-    + continues the batch (does not raise / drop)."""
+    """A Metronome ingest failure DLQs that record + emits
+    meter.transport_error + continues the batch (does not raise / drop)."""
     import index
 
-    inline = _load("inline_record.json")
+    first = _load("inline_record.json")
     second = _load("inline_record.json")
     second["requestId"] = "second-record-id"
-    dlqd = []
-    metrics = []
+    dlqd, metrics = [], []
 
-    def fail_post(_parsed):
-        raise RuntimeError("backend 503")
+    def fail_ingest(_parsed):
+        raise RuntimeError("metronome 503")
 
     with (
-        patch.object(index, "_post_to_backend", side_effect=fail_post),
+        _stub_resolver(),
+        patch.object(index, "_ingest_to_metronome", side_effect=fail_ingest),
         patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
-        result = index.handler(_awslogs_event(inline, second), None)
+        result = index.handler(_awslogs_event(first, second), None)
 
     assert result == {"statusCode": 200}
     # BOTH records' transport failures were DLQ'd (batch continued past the first).
@@ -249,7 +310,6 @@ def test_handler_transport_error_dlqs_and_continues():
 
 
 def test_handler_unparseable_record_dlqs_and_emits_metric():
-    """M2: a per-record JSON-parse failure DLQs the line + emits a metric."""
     import index
 
     bad_event = {
@@ -259,8 +319,7 @@ def test_handler_unparseable_record_dlqs_and_emits_metric():
             ).decode()
         }
     }
-    dlqd = []
-    metrics = []
+    dlqd, metrics = [], []
     with (
         patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
@@ -279,7 +338,7 @@ def test_send_to_dlq_posts_message_to_queue():
 
     fake_sqs = MagicMock()
     log_event = {"message": "{}", "id": "abc"}
-    with patch("index.boto3.client", return_value=fake_sqs):
+    with patch("index._sqs", return_value=fake_sqs):
         index._send_to_dlq(log_event, "transport_error: boom")
 
     fake_sqs.send_message.assert_called_once()

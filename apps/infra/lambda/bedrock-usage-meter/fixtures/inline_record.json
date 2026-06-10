@@ -13,7 +13,9 @@
   "input": {
     "inputContentType": "application/json",
     "inputBodyJson": "<redacted>",
-    "inputTokenCount": 1200
+    "inputTokenCount": 1200,
+    "cacheReadInputTokenCount": 142000,
+    "cacheWriteInputTokenCount": 9800
   },
   "output": {
     "outputContentType": "application/json",

@@ -1,6 +1,4 @@
 import * as cdk from "aws-cdk-lib";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import {
   BedrockMeterStack,
@@ -13,56 +11,84 @@ describe("BedrockMeterStack", () => {
   beforeAll(() => {
     const app = new cdk.App();
     const env = { account: "877352799272", region: "us-east-1" };
-    const support = new cdk.Stack(app, "Support", { env });
-    const vpc = new ec2.Vpc(support, "Vpc");
-    const alb = new elbv2.ApplicationLoadBalancer(support, "Alb", {
-      vpc,
-      internetFacing: false,
-    });
-
     const props: BedrockMeterStackProps = {
       env,
       envName: "prod",
-      vpc,
-      alb,
-      albSecurityGroup: alb.connections.securityGroups[0],
-      meterTokenSecretName: "isol8/prod/bedrock_meter_token",
-      meterKmsKeyArn: "arn:aws:kms:us-east-1:877352799272:key/abc-123",
     };
-
     const stack = new BedrockMeterStack(app, "BedrockMeterStack", props);
     template = Template.fromStack(stack);
   });
 
-  test("creates the meter Lambda with ALB_DNS_NAME + DLQ_URL env", () => {
-    template.hasResourceProperties("AWS::Lambda::Function", {
-      Runtime: "python3.12",
-      Environment: {
-        Variables: Match.objectLike({
-          ALB_DNS_NAME: Match.anyValue(),
-          // The synchronous per-record fail-safe sink the Lambda code POSTs to.
-          DLQ_URL: Match.anyValue(),
-        }),
-      },
+  /** The two meter Lambda resources, identified by their METER_ENV env var
+   *  (the CR-provider and log-retention helper fns also use index.handler). */
+  function meterFunctions(): any[] {
+    return Object.values(
+      template.findResources("AWS::Lambda::Function"),
+    ).filter(
+      (fn: any) => fn.Properties?.Environment?.Variables?.METER_ENV != null,
+    );
+  }
+
+  test("creates TWO meter function instances from one codebase", () => {
+    const fns = meterFunctions();
+    expect(fns.length).toBe(2);
+    const envs = fns
+      .map((fn: any) => fn.Properties.Environment.Variables.METER_ENV)
+      .sort();
+    expect(envs).toEqual(["dev", "prod"]);
+  });
+
+  test("each instance is configured purely via env vars (table, DLQ, secret)", () => {
+    for (const meterEnv of ["dev", "prod"]) {
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Runtime: "python3.12",
+        Environment: {
+          Variables: Match.objectLike({
+            METER_ENV: meterEnv,
+            AIP_OWNERS_TABLE: `isol8-${meterEnv}-bedrock-aip-owners`,
+            DLQ_URL: Match.anyValue(),
+            METRONOME_API_KEY_SECRET_ARN: Match.anyValue(),
+          }),
+        },
+      });
+    }
+  });
+
+  test("no VPC anywhere: zero security groups, no VpcConfig on either fn", () => {
+    // The VPC existed only for the deleted internal-ALB hop; Metronome, DDB,
+    // SQS and Secrets Manager are all public HTTPS endpoints.
+    template.resourceCountIs("AWS::EC2::SecurityGroup", 0);
+    for (const fn of meterFunctions()) {
+      expect(fn.Properties.VpcConfig).toBeUndefined();
+    }
+  });
+
+  test("no fixed function names (a fixed name would CREATE-collide on replace)", () => {
+    for (const fn of meterFunctions()) {
+      expect(fn.Properties.FunctionName).toBeUndefined();
+    }
+  });
+
+  test("creates one SQS DLQ per instance", () => {
+    template.resourceCountIs("AWS::SQS::Queue", 2);
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "isol8-dev-bedrock-meter-dlq",
+    });
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "isol8-prod-bedrock-meter-dlq",
     });
   });
 
-  test("creates an SQS DLQ", () => {
-    template.resourceCountIs("AWS::SQS::Queue", 1);
+  test("DLQs are WIRED as each Lambda's async DLQ (not just present)", () => {
+    for (const fn of meterFunctions()) {
+      expect(fn.Properties.DeadLetterConfig?.TargetArn).toBeDefined();
+    }
   });
 
-  test("the DLQ is WIRED as the Lambda async DLQ (not just present)", () => {
-    // review I1: resourceCountIs alone passes even on an orphan queue. Assert
-    // the function actually references the queue via DeadLetterConfig.TargetArn.
-    template.hasResourceProperties("AWS::Lambda::Function", {
-      DeadLetterConfig: { TargetArn: Match.anyValue() },
-    });
-  });
-
-  test("the Lambda role can SendMessage to the DLQ (synchronous fail-safe path)", () => {
-    // review C1: the load-bearing durability is the Lambda code's per-record
-    // sqs:SendMessage to the DLQ (CW Logs invokes synchronously, so the async
-    // DLQ does not cover per-record failures). Assert the grant exists.
+  test("Lambda roles can SendMessage to a DLQ (synchronous fail-safe path)", () => {
+    // The load-bearing durability is the Lambda code's per-record
+    // sqs:SendMessage to its DLQ (CW Logs invokes synchronously, so the async
+    // DLQ does not cover per-record failures).
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
@@ -75,84 +101,72 @@ describe("BedrockMeterStack", () => {
     });
   });
 
-  test("alarms on DLQ depth + skip/failure metrics (review I2)", () => {
-    // A silent revenue leak (DLQ'd transport/parse/truncated-output failures, or
-    // unattributed/unknown-model skips) must page, not hide. One DLQ-depth
-    // alarm + one alarm per skip/failure metric = 6 alarms total.
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 6);
-    // DLQ-depth alarm.
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "ApproximateNumberOfMessagesVisible",
-      Namespace: "AWS/SQS",
-      ComparisonOperator: "GreaterThanThreshold",
-      Threshold: 0,
-    });
-    // The unattributed-skip alarm (revenue-leak guard).
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "meter.unattributed",
-      Namespace: "Isol8",
-      ComparisonOperator: "GreaterThanThreshold",
-      Threshold: 0,
-    });
-    // The truncated-output-body alarm (the >100KB-completion fail-safe's
-    // observability — renamed from s3_merge_failed in the CW-only cutover).
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "meter.output_body_truncated",
-      Namespace: "Isol8",
+  test("each instance can GetItem its own env's aip-owners table only", () => {
+    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
+    expect(policies).toContain("table/isol8-dev-bedrock-aip-owners");
+    expect(policies).toContain("table/isol8-prod-bedrock-aip-owners");
+  });
+
+  test("kms:Decrypt is confined to SecretsManager-mediated decryption", () => {
+    // The per-env secrets are CMK-encrypted with each env's auth-stack key;
+    // the dev CMK ARN is unknowable from this prod-stage stack, so the grant
+    // is resource-* but condition-scoped to kms:ViaService.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "kms:Decrypt",
+            Condition: {
+              StringEquals: {
+                "kms:ViaService": "secretsmanager.us-east-1.amazonaws.com",
+              },
+            },
+          }),
+        ]),
+      },
     });
   });
 
-  test("alarms actually page — DLQ + unattributed wired to the existing alerts-warn topic (I1)", () => {
-    // I1: an alarm with no action only flips a console dot. The alarms must
-    // carry an AlarmActions entry so a miss-storm reaches the existing alerting
-    // destination. We REUSE the platform's isol8-{env}-alerts-warn topic (by
-    // ARN), so this stack mints NO new SNS topic.
-    template.resourceCountIs("AWS::SNS::Topic", 0);
-    // DLQ-depth alarm has an action (anyValue cannot nest in arrayWith, so
-    // assert the property is present, then verify the target below).
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "ApproximateNumberOfMessagesVisible",
-      AlarmActions: Match.anyValue(),
-    });
-    // The unattributed revenue-leak alarm has an action.
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "meter.unattributed",
-      AlarmActions: Match.anyValue(),
-    });
-    // ...and every AlarmActions entry targets the shared warn topic (the ARN is
-    // an Fn::Join over region/account tokens, so assert on the stringified
-    // template rather than a brittle nested-structure matcher). This proves the
-    // action points at isol8-{env}-alerts-warn, not some unrelated sink.
-    const alarms = template.findResources("AWS::CloudWatch::Alarm");
-    expect(JSON.stringify(alarms)).toContain("isol8-prod-alerts-warn");
+  test("per-env Metronome secrets referenced by name; NO bedrock_meter_token anywhere", () => {
+    const all = JSON.stringify(template.toJSON());
+    expect(all).toContain("isol8/dev/metronome_api_key");
+    expect(all).toContain("isol8/prod/metronome_api_key");
+    // The meter JWT is deleted outright — no resource may reference it.
+    expect(all).not.toContain("bedrock_meter_token");
+    expect(all).not.toContain("METER_TOKEN");
+    expect(all).not.toContain("ALB_DNS_NAME");
   });
 
-  test("Lambda SG has egress to ALB on port 80", () => {
-    template.hasResourceProperties("AWS::EC2::SecurityGroupEgress", {
-      FromPort: 80,
-      ToPort: 80,
+  test("env-neutral invocation log group, DESTROY (re-creatable) not RETAIN", () => {
+    // The single group receives BOTH envs' records, so its name carries no
+    // env. A RETAIN policy on a fixed-name group orphans it on
+    // rollback/delete, and the orphan then blocks every subsequent CREATE
+    // with AlreadyExists (this bricked two prod deploys).
+    template.hasResource("AWS::Logs::LogGroup", {
+      Properties: Match.objectLike({
+        LogGroupName: "/isol8/bedrock-invocation",
+      }),
+      DeletionPolicy: "Delete",
+      UpdateReplacePolicy: "Delete",
     });
   });
 
-  test("creates a Bedrock invocation-log group (CloudWatch destination)", () => {
-    // The Bedrock invocation-log group, by name (the Lambda log-retention
-    // construct also provisions its own group, so do not count to exactly 1).
-    template.hasResourceProperties("AWS::Logs::LogGroup", {
-      LogGroupName: Match.stringLikeRegexp("/isol8/prod/bedrock-invocation"),
+  test("TWO subscription filters split the envs by identity.arn role marker", () => {
+    template.resourceCountIs("AWS::Logs::SubscriptionFilter", 2);
+    template.hasResourceProperties("AWS::Logs::SubscriptionFilter", {
+      FilterPattern:
+        '"application-inference-profile" "isol8-dev-owner-bedrock"',
+    });
+    template.hasResourceProperties("AWS::Logs::SubscriptionFilter", {
+      FilterPattern:
+        '"application-inference-profile" "isol8-prod-owner-bedrock"',
     });
   });
 
-  test("CloudWatch-only: no S3 sink bucket (meter never touches S3)", () => {
-    // The meter reads token + cache counts from the inline CloudWatch record;
-    // the S3 sink + >100KB body-offload path were removed in the CW-only cutover.
+  test("CloudWatch-only: no S3 bucket, no s3 grants", () => {
     template.resourceCountIs("AWS::S3::Bucket", 0);
-  });
-
-  test("CloudWatch-only: the Lambda role has NO s3:GetObject grant", () => {
-    // A surviving s3:GetObject grant would signal a lingering S3-fetch path.
-    const policies = template.findResources("AWS::IAM::Policy");
-    const json = JSON.stringify(policies);
-    expect(json).not.toContain("s3:GetObject");
+    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
+    expect(policies).not.toContain("s3:GetObject");
   });
 
   test("AwsCustomResource sets logging config with text+embedding modalities", () => {
@@ -188,33 +202,16 @@ describe("BedrockMeterStack", () => {
     expect(body).not.toContain('"s3Config"');
   });
 
-  test("subscription filter is scoped to the AIP-ARN shape", () => {
-    template.hasResourceProperties("AWS::Logs::SubscriptionFilter", {
-      FilterPattern: Match.stringLikeRegexp("application-inference-profile"),
-    });
-  });
-
-  test("the meter Lambda is the subscription destination", () => {
-    template.resourceCountIs("AWS::Logs::SubscriptionFilter", 1);
-  });
-
-  test("home-region only: exactly one Bedrock logging config, no cross-region CRs", () => {
-    // Single region is COMPLETE, not a stopgap: Bedrock writes invocation logs
-    // only in the SOURCE region (the region of the bedrock-runtime endpoint the
-    // caller hits), never the destination region that serviced a cross-region
-    // request. Every container pins baseUrl to bedrock-runtime.us-east-1, so all
-    // logs land here. us-east-2 / us-west-2 are inference destinations only and
-    // emit no logs — so there must be exactly ONE
-    // putModelInvocationLoggingConfiguration CR (the home region) and no
-    // per-region PassRole grant for those regions.
+  test("home-region only: exactly one Bedrock logging config", () => {
+    // Bedrock writes invocation logs only in the SOURCE region (the region of
+    // the bedrock-runtime endpoint the caller hits). Every container pins
+    // baseUrl to bedrock-runtime.us-east-1, so all logs land here — exactly
+    // ONE putModelInvocationLoggingConfiguration CR, no cross-region copies.
     const customResources = template.findResources("Custom::AWS");
     const loggingConfigs = Object.values(customResources).filter((r: any) =>
       JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
     );
     expect(loggingConfigs.length).toBe(1);
-    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
-    expect(policies).not.toContain("isol8-prod-bedrock-logging-us-east-2");
-    expect(policies).not.toContain("isol8-prod-bedrock-logging-us-west-2");
   });
 
   test("GUARD: text+embedding stay enabled, image stays disabled in the config", () => {
@@ -224,10 +221,6 @@ describe("BedrockMeterStack", () => {
     );
     expect(configs.length).toBeGreaterThanOrEqual(1);
     for (const cfg of configs) {
-      // The home-region Create body is an `Fn::Join` carrying CFN refs, so its
-      // inner JSON quotes are multiply-escaped. Strip backslashes so the
-      // modality assertion is escaping-agnostic — a modality flip is still
-      // caught.
       const body = JSON.stringify(cfg).replace(/\\/g, "");
       expect(body).toContain('"textDataDeliveryEnabled":true');
       expect(body).toContain('"embeddingDataDeliveryEnabled":true');
@@ -235,16 +228,107 @@ describe("BedrockMeterStack", () => {
     }
   });
 
-  test("invocation log group is DESTROY (re-creatable), not RETAIN (orphan-brick)", () => {
-    // A RETAIN policy on a fixed-name log group orphans it on rollback/delete,
-    // and the orphan then blocks every subsequent CREATE with AlreadyExists
-    // (this bricked two prod deploys). It must be DESTROY.
-    template.hasResource("AWS::Logs::LogGroup", {
-      Properties: Match.objectLike({
-        LogGroupName: "/isol8/prod/bedrock-invocation",
-      }),
-      DeletionPolicy: "Delete",
-      UpdateReplacePolicy: "Delete",
-    });
+  test("alarms per instance: DLQ depth + 4 skip metrics + fn errors, env-scoped dimensions", () => {
+    // (1 DLQ + 4 skip-metric + 1 fn-Errors) alarms x 2 instances = 12. Each
+    // skip-metric alarm scopes to its instance via the env dimension so dev
+    // noise never pages prod (both Lambdas share namespace Isol8 + the
+    // service name).
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 12);
+    for (const meterEnv of ["dev", "prod"]) {
+      for (const metricName of [
+        "meter.unattributed",
+        "meter.unknown_model",
+        "meter.transport_error",
+        "meter.parse_failed",
+      ]) {
+        template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+          AlarmName: `isol8-${meterEnv}-${metricName.replace(/\./g, "-")}`,
+          MetricName: metricName,
+          Namespace: "Isol8",
+          Dimensions: Match.arrayWith([
+            Match.objectLike({ Name: "env", Value: meterEnv }),
+            Match.objectLike({ Name: "service", Value: "isol8-bedrock-meter" }),
+          ]),
+          ComparisonOperator: "GreaterThanThreshold",
+          Threshold: 0,
+        });
+      }
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: `isol8-${meterEnv}-bedrock-meter-dlq-not-empty`,
+        MetricName: "ApproximateNumberOfMessagesVisible",
+        Namespace: "AWS/SQS",
+      });
+    }
+    // The truncation path is gone — no truncated-output alarm may survive.
+    const alarms = JSON.stringify(template.findResources("AWS::CloudWatch::Alarm"));
+    expect(alarms).not.toContain("output_body_truncated");
+  });
+
+  test("per-instance Lambda Errors alarm catches whole-batch failures", () => {
+    // A whole-batch failure (cold-start import error, timeout,
+    // transport-retry exhaustion) raises out of the handler and never reaches
+    // the per-record DLQ path — the function's Errors metric is the only
+    // signal, so each instance must alarm on it and the alarm must page.
+    const alarms = Object.values(
+      template.findResources("AWS::CloudWatch::Alarm"),
+    ) as any[];
+    for (const meterEnv of ["dev", "prod"]) {
+      const errorsAlarm = alarms.find(
+        (a: any) =>
+          a.Properties.AlarmName ===
+          `isol8-${meterEnv}-bedrock-meter-fn-errors`,
+      );
+      expect(errorsAlarm).toBeDefined();
+      expect(errorsAlarm.Properties.MetricName).toBe("Errors");
+      expect(errorsAlarm.Properties.Namespace).toBe("AWS/Lambda");
+      expect(errorsAlarm.Properties.Statistic).toBe("Sum");
+      expect(errorsAlarm.Properties.Threshold).toBe(0);
+      expect(errorsAlarm.Properties.ComparisonOperator).toBe(
+        "GreaterThanThreshold",
+      );
+      expect(errorsAlarm.Properties.TreatMissingData).toBe("notBreaching");
+      expect(errorsAlarm.Properties.AlarmActions?.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("logging-config CR depends on BOTH subscription filters (cutover ordering)", () => {
+    // When the log group is replaced, the CR repoints Bedrock at the new
+    // group. Records delivered before the new group's filters exist are
+    // unrecoverable (filters only forward events ingested after creation), so
+    // the repoint must be ordered AFTER both filters.
+    const json = template.toJSON();
+    const filterIds = Object.entries(json.Resources)
+      .filter(([, r]: [string, any]) => r.Type === "AWS::Logs::SubscriptionFilter")
+      .map(([id]) => id);
+    expect(filterIds.length).toBe(2);
+
+    const crEntry = Object.entries(json.Resources).find(
+      ([, r]: [string, any]) =>
+        r.Type === "Custom::AWS" &&
+        JSON.stringify(r).includes("putModelInvocationLoggingConfiguration"),
+    ) as [string, any];
+    expect(crEntry).toBeDefined();
+    const dependsOn: string[] = crEntry[1].DependsOn ?? [];
+    for (const filterId of filterIds) {
+      expect(dependsOn).toContain(filterId);
+    }
+  });
+
+  test("alarms page to each env's OWN alerts-warn topic; no topics minted", () => {
+    // An alarm with no action only flips a console dot. Each instance's
+    // alarms must target its env's existing isol8-{env}-alerts-warn topic so
+    // dev pages dev and prod pages prod — and this stack mints NO new topic.
+    template.resourceCountIs("AWS::SNS::Topic", 0);
+    const alarms = Object.values(
+      template.findResources("AWS::CloudWatch::Alarm"),
+    ) as any[];
+    for (const alarm of alarms) {
+      expect(alarm.Properties.AlarmActions?.length).toBeGreaterThan(0);
+      const name: string = alarm.Properties.AlarmName;
+      const expectedEnv = name.startsWith("isol8-dev-") ? "dev" : "prod";
+      expect(JSON.stringify(alarm.Properties.AlarmActions)).toContain(
+        `isol8-${expectedEnv}-alerts-warn`,
+      );
+    }
   });
 });

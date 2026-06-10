@@ -1,8 +1,7 @@
-"""Tests for service_token: the paperclip kind AND the new bedrock_meter kind.
+"""Tests for service_token: the paperclip_service kind (the only kind).
 
-The meter kind MUST NOT be accepted by verify() (the paperclip path the WS
-authorizer trusts), and a paperclip token MUST NOT be accepted by
-verify_meter() — a leaked meter token must never authorize container access.
+The WS authorizer trusts exactly kind="paperclip_service"; verify() must
+reject any other kind and any malformed token.
 """
 
 import jwt
@@ -16,24 +15,33 @@ def _signing_key(monkeypatch):
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "test-signing-key-32-bytes-long-xx")
 
 
-def test_mint_meter_round_trips():
-    token = service_token.mint_meter()
-    claims = service_token.verify_meter(token)
-    assert claims["kind"] == service_token.METER_TOKEN_KIND
+def test_mint_round_trips():
+    token = service_token.mint("user_abc")
+    claims = service_token.verify(token)
+    assert claims["kind"] == service_token.SERVICE_TOKEN_KIND
+    assert claims["sub"] == "user_abc"
 
 
-def test_meter_token_rejected_by_paperclip_verify():
-    token = service_token.mint_meter()
+def test_verify_rejects_wrong_kind():
+    """A token signed with the right key but a foreign kind claim must never
+    pass — kind is the privilege boundary, not the signature alone."""
+    import os
+
+    payload = {"sub": "user_abc", "kind": "some_other_kind"}
+    token = jwt.encode(payload, os.environ["PAPERCLIP_SERVICE_TOKEN_KEY"], algorithm="HS256")
     with pytest.raises(jwt.InvalidTokenError):
         service_token.verify(token)
 
 
-def test_paperclip_token_rejected_by_verify_meter():
-    token = service_token.mint("user_abc")
+def test_verify_rejects_missing_sub():
+    import os
+
+    payload = {"kind": service_token.SERVICE_TOKEN_KIND}
+    token = jwt.encode(payload, os.environ["PAPERCLIP_SERVICE_TOKEN_KEY"], algorithm="HS256")
     with pytest.raises(jwt.InvalidTokenError):
-        service_token.verify_meter(token)
+        service_token.verify(token)
 
 
-def test_verify_meter_rejects_garbage():
+def test_verify_rejects_garbage():
     with pytest.raises(jwt.PyJWTError):
-        service_token.verify_meter("not-a-jwt")
+        service_token.verify("not-a-jwt")

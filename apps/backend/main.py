@@ -45,7 +45,6 @@ from routers import (
     hooks_credentials,
     hooks_proxy,
     integrations,
-    internal_usage,
     metronome_webhook,
     oauth,
     orgs,
@@ -694,16 +693,6 @@ app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Settings → Webhooks panel; the user's own browser fetches their own
 # webhook URL + token. See routers/hooks_credentials.py.
 app.include_router(hooks_credentials.router, prefix="/api/v1/hooks", tags=["hooks"])
-
-# Internal Bedrock meter — the AWS invocation-log Lambda POSTs extracted
-# records here. Bearer bedrock_meter service-token auth (NOT Clerk). Kept out
-# of /openapi.json (include_in_schema=False) so CI's schemathesis fuzzer never
-# hammers it without a valid token — same posture as the paperclip proxy.
-app.include_router(
-    internal_usage.router,
-    prefix="/api/v1/internal",
-    include_in_schema=False,
-)
 
 # Admin dashboard — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

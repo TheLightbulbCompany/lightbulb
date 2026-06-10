@@ -1110,28 +1110,25 @@ class GatewayConnection:
             except Exception:
                 logger.exception("Failed to record usage for user %s", self.user_id)
 
-            # Single-deduct cutover seam (METER_IS_LIVE, owned by Plan 4).
-            # When the flag is False (the default), this legacy in-container
-            # path is the sole live biller: card-3 (bedrock_claude) deducts
-            # credits in addition to the analytics usage_service write above;
-            # other cards skip. Synchronous so the next chat sees the updated
-            # balance. The ledger is owner-scoped — _maybe_deduct_credits keys
-            # on self.user_id (the container owner), so org members share one
-            # pooled balance.
+            # Single-biller cutover seam, keyed on BEDROCK_ENFORCEMENT_LIVE.
+            # While the flag is False (the default), this legacy in-container
+            # path is TODAY'S biller: card-3 (bedrock_claude) deducts credits
+            # from the interim DDB ledger in addition to the analytics
+            # usage_service write above; other cards skip. Synchronous so the
+            # next chat sees the updated balance. The ledger is owner-scoped —
+            # _maybe_deduct_credits keys on self.user_id (the container
+            # owner), so org members share one pooled balance.
             #
-            # When the flag is True, billing has been handed to the AWS Bedrock
-            # invocation-log meter (Plan 3 calls get_ledger().deplete(), the
-            # sole biller, then enforce_after_deplete). This legacy deduct must
-            # then NOT fire — both billers write different tx_id namespaces, so
-            # they do NOT dedup against each other; running both would
-            # double-charge the same balance row. Gating both paths on this one
-            # flag guarantees exactly one biller at every point in time and
-            # makes the cutover order-independent (no co-deploy race) and
-            # reversible by toggling the flag back. The analytics record_usage
-            # write above always runs regardless of the flag. The method itself
-            # is deleted only as a FINAL post-flip cleanup once the meter is
-            # validated live.
-            if not settings.METER_IS_LIVE:
+            # Meanwhile the meter Lambda ingests every Bedrock invocation
+            # straight to Metronome unconditionally (always-on shadow). The
+            # two ledgers run in PARALLEL but only the DDB number gates/bills
+            # pre-cutover, so there is no double-charge. Flipping the flag
+            # True hands gating + enforcement to the Metronome pipeline and
+            # silences this deduct; the method itself (and the whole DDB
+            # ledger) is deleted in the ledger-deletion PR once the Metronome
+            # path is validated end-to-end. The analytics record_usage write
+            # above always runs regardless of the flag.
+            if not settings.BEDROCK_ENFORCEMENT_LIVE:
                 try:
                     await self._maybe_deduct_credits(
                         chat_session_id=session_key,

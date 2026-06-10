@@ -22,7 +22,6 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 SERVICE_TOKEN_KIND = "paperclip_service"
-METER_TOKEN_KIND = "bedrock_meter"
 DEFAULT_TTL_DAYS = 365
 
 
@@ -56,35 +55,4 @@ def verify(token: str) -> dict:
         raise jwt.InvalidTokenError(f"Wrong kind claim: {claims.get('kind')!r}")
     if not claims.get("sub"):
         raise jwt.InvalidTokenError("Missing sub claim")
-    return claims
-
-
-def mint_meter(ttl_days: int = DEFAULT_TTL_DAYS) -> str:
-    """Mint a meter→backend service token.
-
-    Distinct kind from the paperclip service token: a leaked meter token must
-    NEVER pass the WS authorizer's `kind == "paperclip_service"` check, so it
-    cannot authorize container access. No `sub` is needed (the meter is not a
-    user); a fixed sentinel sub keeps the JWT well-formed.
-    """
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": "__bedrock_meter__",
-        "kind": METER_TOKEN_KIND,
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(days=ttl_days)).timestamp()),
-        "jti": secrets.token_urlsafe(16),
-    }
-    return jwt.encode(payload, _signing_key(), algorithm="HS256")
-
-
-def verify_meter(token: str) -> dict:
-    """Verify a meter service token. Returns the claims dict on success.
-
-    Raises jwt.ExpiredSignatureError / jwt.InvalidTokenError on failure, incl.
-    when the token is a paperclip-kind token (wrong kind for this surface).
-    """
-    claims = jwt.decode(token, _signing_key(), algorithms=["HS256"])
-    if claims.get("kind") != METER_TOKEN_KIND:
-        raise jwt.InvalidTokenError(f"Wrong kind claim: {claims.get('kind')!r}")
     return claims

@@ -35,6 +35,7 @@ def _billing_row(**overrides):
 def lifecycle_enabled(monkeypatch):
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     monkeypatch.setattr("core.config.settings.METRONOME_RATE_CARD_ID", "rc-1")
+    monkeypatch.setattr("core.config.settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID", "ct-usd-cents")
 
 
 @pytest.fixture
@@ -69,19 +70,24 @@ async def test_creates_customer_contract_links_stripe_arms_alert_and_persists(bi
     # Two alerts: the warn alert fires with a POSITIVE remaining (Metronome
     # reports remaining ≈ threshold on crossing), so only the zero-crossing
     # alert can ever deliver the remaining ≤ 0 that fires the kill-switch.
+    # Both use the commit-balance alert type (our balance is prepaid commits;
+    # sandbox-verified: the credit-balance type is not in the create enum)
+    # and carry the credit_type_id the validator requires for that type.
     alert_kwargs = [call.kwargs for call in fake.create_alert.await_args_list]
     assert alert_kwargs == [
         {
             "customer_id": "cust-uuid-1",
             "name": "isol8-low-balance-org_abc-warn",
-            "alert_type": "low_remaining_credit_balance_reached",
+            "alert_type": "low_remaining_commit_balance_reached",
             "threshold_cents": 500,
+            "credit_type_id": "ct-usd-cents",
         },
         {
             "customer_id": "cust-uuid-1",
             "name": "isol8-low-balance-org_abc-zero",
-            "alert_type": "low_remaining_credit_balance_reached",
+            "alert_type": "low_remaining_commit_balance_reached",
             "threshold_cents": 0,
+            "credit_type_id": "ct-usd-cents",
         },
     ]
     set_mock.assert_awaited_once_with(
@@ -89,6 +95,17 @@ async def test_creates_customer_contract_links_stripe_arms_alert_and_persists(bi
         metronome_customer_id="cust-uuid-1",
         metronome_contract_id="contract-uuid-1",
     )
+
+
+@pytest.mark.asyncio
+async def test_unset_rate_card_is_passed_as_none(billing_repo_mock, monkeypatch):
+    """rate_card_id is optional on contract create (sandbox-verified minimal
+    body) — an env without a configured rate card must pass None so the
+    client omits the field instead of sending an empty string."""
+    monkeypatch.setattr("core.config.settings.METRONOME_RATE_CARD_ID", "")
+    fake = _fake_client()
+    await ensure_metronome_customer(owner_id="org_abc", client=fake)
+    fake.create_contract.assert_awaited_once_with(customer_id="cust-uuid-1", rate_card_id=None)
 
 
 @pytest.mark.asyncio

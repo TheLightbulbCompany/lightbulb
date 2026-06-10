@@ -17,7 +17,6 @@ a top-up, so this is the only re-arm path besides the lazy poll.
 from __future__ import annotations
 
 import logging
-import time
 
 import httpx
 
@@ -29,10 +28,6 @@ from core.config import settings
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
-
-# Prepaid credits never expire on our side; the schedule item still needs an
-# end, so it gets one far past any plausible product lifetime.
-_NO_EXPIRY = "9999-12-31T00:00:00.000Z"
 
 
 class FundingError(Exception):
@@ -75,39 +70,31 @@ async def fund_top_up(
     if not metronome_contract_id:
         raise FundingError(f"Metronome contract not provisioned for owner_id={owner_id}")
 
-    commit = {
-        # Documented add_commits shape: PREPAID + product + an access
-        # schedule whose single item carries the amount, in CENTS (Metronome's
-        # USD credit type — see core/billing/metronome_units.py). No
-        # payment_gate_config: the money was already collected by our Stripe
-        # Checkout. Exact schema is sandbox-validated before cutover (this
-        # path ships dormant behind METRONOME_LIFECYCLE_ENABLED).
-        "type": "PREPAID",
-        "product_id": product_id,
-        "access_schedule": {
-            "schedule_items": [
-                {
-                    "amount": microcents_to_cents(amount_microcents),
-                    "starting_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
-                    "ending_before": _NO_EXPIRY,
-                }
-            ]
-        },
-        "description": f"isol8 top-up stripe_session={stripe_session_id} owner={owner_id}",
-    }
+    # The commit body itself (flat customerCommits/create shape, no
+    # payment_gate_config) is owned by the client layer; this module only
+    # supplies the money in CENTS (Metronome's USD credit type — see
+    # core/billing/metronome_units.py) and the audit description.
+    amount_cents = microcents_to_cents(amount_microcents)
+    description = f"isol8 top-up stripe_session={stripe_session_id} owner={owner_id}"
 
     if client is None:
         async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
-            await metronome_client.for_settings(http).edit_contract_add_commits(
-                metronome_customer_id=metronome_customer_id,
+            await metronome_client.for_settings(http).create_prepaid_commit(
+                customer_id=metronome_customer_id,
                 contract_id=metronome_contract_id,
-                add_commits=[commit],
+                product_id=product_id,
+                credit_type_id=settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID,
+                amount_cents=amount_cents,
+                description=description,
             )
     else:
-        await client.edit_contract_add_commits(
-            metronome_customer_id=metronome_customer_id,
+        await client.create_prepaid_commit(
+            customer_id=metronome_customer_id,
             contract_id=metronome_contract_id,
-            add_commits=[commit],
+            product_id=product_id,
+            credit_type_id=settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID,
+            amount_cents=amount_cents,
+            description=description,
         )
 
     # Un-kill: re-attach the per-owner scoped Bedrock policy now that the

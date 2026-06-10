@@ -135,8 +135,15 @@ class Settings(BaseSettings):
     Created once per env in the Metronome console (runbook step)."""
     METRONOME_CREDITS_PRODUCT_ID: str = os.getenv("METRONOME_CREDITS_PRODUCT_ID", "")
     """Metronome product id the prepaid credit commit draws against. Per-env."""
+    METRONOME_USD_CENTS_CREDIT_TYPE_ID: str = "2714e483-4ff1-48e4-9e25-ac732e8f24f2"
+    """Metronome's global USD-(cents) credit-type id — identical in our
+    sandbox and in Metronome's own docs example, hence a constant default
+    rather than per-env wiring. The cents denomination is sandbox-confirmed
+    (a 2000-cent commit reads back as getNetBalance 2000). Required on the
+    low-balance alert create (the validator rejects commit-balance alert
+    types without a credit_type_id) and on commit access schedules."""
     METRONOME_LOW_BALANCE_THRESHOLD_CENTS: int = int(os.getenv("METRONOME_LOW_BALANCE_THRESHOLD_CENTS", "500"))
-    """Threshold for the per-customer low_remaining_credit_balance_reached alert
+    """Threshold for the per-customer low-remaining-commit-balance alert
     created at provision time. When an owner's prepaid balance crosses below
     this, Metronome fires the webhook that sets the fast-gate flag."""
 

@@ -18,6 +18,10 @@ def test_metronome_settings_present_with_defaults():
     assert settings.METRONOME_LIFECYCLE_ENABLED is False
     # Rate card is created per-env in the Metronome console; wired via env.
     assert settings.METRONOME_RATE_CARD_ID == ""
+    # Metronome's global USD-(cents) credit-type id — identical in our
+    # sandbox and Metronome's own docs example, so it ships as a constant
+    # default rather than per-env wiring.
+    assert settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID == "2714e483-4ff1-48e4-9e25-ac732e8f24f2"
     # Contracts are per-customer objects persisted on the billing row — an
     # env-wide contract id setting must not creep back in.
     assert not hasattr(settings, "METRONOME_CREDITS_CONTRACT_ID")

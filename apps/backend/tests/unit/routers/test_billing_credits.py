@@ -1,7 +1,6 @@
 """Tests for the credit endpoints — Metronome is the only balance source."""
 
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
@@ -114,7 +113,7 @@ async def test_get_balance_org_member_reads_owner_id(async_client_org_member, mo
 
 
 @pytest.mark.asyncio
-async def test_top_up_requests_metronome_payment_gated_commit(async_client, webhook_dedup_table):
+async def test_top_up_requests_metronome_payment_gated_commit(async_client):
     """The top-up endpoint hands the request straight to
     metronome_funding.request_top_up — no Stripe Checkout session, no
     redirect URL. Metronome collects via the customer's saved card."""
@@ -128,12 +127,42 @@ async def test_top_up_requests_metronome_payment_gated_commit(async_client, webh
         )
     assert resp.status_code == 200
     assert resp.json() == {"status": "requested", "amount_cents": 2000}
-    # Personal users have owner_id == user_id.
-    mock_request.assert_awaited_once_with("user_test_123", 2000)
+    # Personal users have owner_id == user_id. No request_id in the body ⇒
+    # no key from the endpoint (the funding layer falls back).
+    mock_request.assert_awaited_once_with("user_test_123", 2000, idempotency_key=None)
 
 
 @pytest.mark.asyncio
-async def test_top_up_funding_error_maps_to_400(async_client, webhook_dedup_table):
+async def test_top_up_namespaces_client_request_id_with_owner(async_client):
+    """The client's request_id is attacker-chosen, so the endpoint prefixes
+    it with the authenticated owner id before it becomes a Metronome
+    Idempotency-Key — one user must never be able to replay or collide
+    another user's in-flight commit."""
+    with patch(
+        "core.billing.metronome_funding.request_top_up",
+        new=AsyncMock(),
+    ) as mock_request:
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000, "request_id": "9d1f4c2e-uuid"},
+        )
+    assert resp.status_code == 200
+    mock_request.assert_awaited_once_with("user_test_123", 2000, idempotency_key="topup-user_test_123-9d1f4c2e-uuid")
+
+
+@pytest.mark.asyncio
+async def test_top_up_overlong_request_id_rejected(async_client):
+    """max_length=64 on the schema — an unbounded client token would flow
+    into Metronome headers verbatim."""
+    resp = await async_client.post(
+        "/api/v1/billing/credits/top_up",
+        json={"amount_cents": 2000, "request_id": "x" * 65},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_top_up_funding_error_maps_to_400(async_client):
     from core.billing.metronome_funding import FundingError
 
     with patch(
@@ -149,43 +178,7 @@ async def test_top_up_funding_error_maps_to_400(async_client, webhook_dedup_tabl
 
 
 @pytest.mark.asyncio
-async def test_top_up_double_submit_maps_to_400(async_client, webhook_dedup_table, monkeypatch):
-    """Two identical submits inside the dedup window: the first creates the
-    payment-gated commit, the second is rejected 400 — never a second card
-    charge. Runs the REAL request_top_up against the moto dedup table."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
-    monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
-    fake = MagicMock()
-    fake.create_prepaid_commit = AsyncMock()
-    billing_row = {
-        "owner_id": "user_test_123",
-        "metronome_customer_id": "cust-uuid-1",
-        "metronome_contract_id": "contract-1",
-    }
-    # Pin the 60s dedup window so the two calls can't straddle a real minute
-    # boundary and flake past the guard. Swaps the module's `time` binding
-    # (not the global time module) so nothing else is frozen.
-    import time as _time
-
-    frozen = SimpleNamespace(time=lambda: 1_780_000_000.0, strftime=_time.strftime, gmtime=_time.gmtime)
-    monkeypatch.setattr("core.billing.metronome_funding.time", frozen)
-    with (
-        patch(
-            "core.billing.metronome_funding.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=billing_row),
-        ),
-        patch("core.billing.metronome_client.for_settings", return_value=fake),
-    ):
-        first = await async_client.post("/api/v1/billing/credits/top_up", json={"amount_cents": 2000})
-        second = await async_client.post("/api/v1/billing/credits/top_up", json={"amount_cents": 2000})
-    assert first.status_code == 200
-    assert second.status_code == 400
-    assert "duplicate top-up" in second.json()["detail"]
-    fake.create_prepaid_commit.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_top_up_below_minimum_rejected(async_client, webhook_dedup_table):
+async def test_top_up_below_minimum_rejected(async_client):
     resp = await async_client.post(
         "/api/v1/billing/credits/top_up",
         json={"amount_cents": 100},
@@ -252,19 +245,20 @@ async def test_checkout_session_completed_is_acked_without_processing(async_clie
 
 
 @pytest.mark.asyncio
-async def test_top_up_org_admin_uses_org_owner_id(async_client_org_admin, webhook_dedup_table):
+async def test_top_up_org_admin_uses_org_owner_id(async_client_org_admin):
     """Org admin top-up funds the org's Metronome customer (owner_id =
-    org_id) so every member draws from the shared balance."""
+    org_id) so every member draws from the shared balance — and the
+    idempotency namespace is the org, not the admin's personal user_id."""
     with patch(
         "core.billing.metronome_funding.request_top_up",
         new=AsyncMock(),
     ) as mock_request:
         resp = await async_client_org_admin.post(
             "/api/v1/billing/credits/top_up",
-            json={"amount_cents": 5000},
+            json={"amount_cents": 5000, "request_id": "intent-1"},
         )
     assert resp.status_code == 200
-    mock_request.assert_awaited_once_with("org_test_456", 5000)
+    mock_request.assert_awaited_once_with("org_test_456", 5000, idempotency_key="topup-org_test_456-intent-1")
 
 
 @pytest.mark.asyncio

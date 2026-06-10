@@ -537,6 +537,16 @@ class TopUpRequest(BaseModel):
         le=_TOP_UP_MAX_CENTS,
         description="Min $5 (500 cents), max $1,000 (100000 cents).",
     )
+    request_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Client-generated idempotency token — one per user intent, "
+            "stable across retries. Feeds Metronome's Idempotency-Key so a "
+            "retried POST replays the original commit instead of charging "
+            "twice."
+        ),
+    )
 
 
 async def _metronome_balance_microcents(owner_id: str) -> int | None:
@@ -618,8 +628,12 @@ async def top_up_credits(
     from core.billing.metronome_funding import FundingError, request_top_up
 
     owner_id = resolve_owner_id(ctx)
+    # Namespace the client token with the owner id: the raw request_id is
+    # attacker-chosen, and an un-namespaced key would let one user replay or
+    # collide another user's in-flight commit at Metronome.
+    idempotency_key = f"topup-{owner_id}-{body.request_id}" if body.request_id else None
     try:
-        await request_top_up(owner_id, body.amount_cents)
+        await request_top_up(owner_id, body.amount_cents, idempotency_key=idempotency_key)
     except FundingError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (MetronomeError, httpx.HTTPError) as e:

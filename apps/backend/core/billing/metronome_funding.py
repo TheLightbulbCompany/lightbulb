@@ -22,8 +22,6 @@ from core.billing import metronome_client
 from core.billing.metronome_client import MetronomeClient
 from core.config import settings
 from core.repositories import billing_repo
-from core.services import webhook_dedup
-from core.services.webhook_dedup import WebhookDedupResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +39,7 @@ async def request_top_up(
     owner_id: str,
     amount_cents: int,
     *,
+    idempotency_key: str | None = None,
     client: MetronomeClient | None = None,
 ) -> None:
     """Create a payment-gated prepaid commit for ``amount_cents``.
@@ -50,6 +49,13 @@ async def request_top_up(
     FundingError when the owner isn't Metronome-provisioned or the
     lifecycle switch is off — the caller (the top-up endpoint) surfaces
     that to the user instead of silently dropping a purchase request.
+
+    ``idempotency_key`` is the double-charge guard: it rides to Metronome
+    as the native Idempotency-Key header, so a replayed request returns
+    the original commit instead of creating (and charging) a second one.
+    Vendor-side idempotency replaces the old time-windowed dedup row —
+    a windowed key had a boundary hole (two clicks straddling the window
+    edge both passed), unacceptable for an unconditional card charge.
 
     settings.METRONOME_CREDITS_PRODUCT_ID must reference a Metronome
     product carrying a ``stripe_product_id`` custom field (console setup,
@@ -74,49 +80,41 @@ async def request_top_up(
     if not metronome_contract_id:
         raise FundingError(f"Metronome contract not provisioned for owner_id={owner_id}")
 
-    # Server-side double-submit guard. Each accepted request becomes a
-    # payment-gated commit that CHARGES THE SAVED CARD, so a double-click /
-    # retried POST must not become a duplicate charge. Durable by necessity:
-    # the in-memory idempotency decorator (core/services/idempotency.py)
-    # is per-process and would miss a duplicate landing on another backend
-    # task. The webhook-dedup table's conditional PutItem is the existing
-    # durable primitive, and its event_id key accepts this deterministic
-    # shape: one identical top-up per owner + amount per 60s window.
-    dedup_key = f"topup#{owner_id}#{int(time.time() // 60)}#{amount_cents}"
-    dedup = await webhook_dedup.record_event_or_skip(event_id=dedup_key, source="metronome_topup")
-    if dedup is WebhookDedupResult.ALREADY_SEEN:
-        raise FundingError("duplicate top-up request — wait a minute before retrying")
+    # Fallback for callers that don't carry a client-generated token: a
+    # deterministic owner+amount+minute key. NOTE this retains the window-
+    # boundary hole (two submits straddling the minute edge get distinct
+    # keys, so both charge) — real clients pass a per-intent UUID through
+    # ``idempotency_key`` and only get here when one is genuinely absent.
+    key = idempotency_key or f"topup-{owner_id}-{amount_cents}-{int(time.time() // 60)}"
 
     # The commit body itself (flat customerCommits/create shape) is owned by
     # the client layer; this module supplies the money in CENTS (Metronome's
     # USD credit type — see core/billing/metronome_units.py), the payment
-    # gate, and an audit description.
-    description = f"isol8 top-up owner={owner_id} requested_at={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
+    # gate, and an audit description. The description carries NO timestamp:
+    # Metronome's idempotent replay requires the retried body to be identical
+    # (same key + different body → 409), and Metronome stamps the commit's
+    # creation time itself.
+    description = f"isol8 top-up owner={owner_id} amount_cents={amount_cents}"
 
-    try:
-        if client is None:
-            async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
-                await _create_gated_commit(
-                    metronome_client.for_settings(http),
-                    customer_id=metronome_customer_id,
-                    contract_id=metronome_contract_id,
-                    amount_cents=amount_cents,
-                    description=description,
-                )
-        else:
+    if client is None:
+        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
             await _create_gated_commit(
-                client,
+                metronome_client.for_settings(http),
                 customer_id=metronome_customer_id,
                 contract_id=metronome_contract_id,
                 amount_cents=amount_cents,
                 description=description,
+                idempotency_key=key,
             )
-    except Exception:
-        # The commit never reached Metronome — release the guard so a retry
-        # after a transient provider failure isn't spuriously rejected as a
-        # duplicate for the rest of the window.
-        await webhook_dedup.delete_event(dedup_key)
-        raise
+    else:
+        await _create_gated_commit(
+            client,
+            customer_id=metronome_customer_id,
+            contract_id=metronome_contract_id,
+            amount_cents=amount_cents,
+            description=description,
+            idempotency_key=key,
+        )
 
     logger.info(
         "Requested payment-gated Metronome top-up for owner %s: %d cents",
@@ -132,6 +130,7 @@ async def _create_gated_commit(
     contract_id: str,
     amount_cents: int,
     description: str,
+    idempotency_key: str,
 ) -> None:
     await client.create_prepaid_commit(
         customer_id=customer_id,
@@ -140,5 +139,6 @@ async def _create_gated_commit(
         credit_type_id=settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID,
         amount_cents=amount_cents,
         description=description,
+        idempotency_key=idempotency_key,
         payment_gate_config=_STRIPE_PAYMENT_GATE,
     )

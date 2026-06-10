@@ -49,8 +49,9 @@ class MetronomeClient:
             "Content-Type": "application/json",
         }
 
-    async def _post(self, path: str, payload: Any) -> dict:
-        resp = await self._http.post(path, json=payload, headers=self._headers)
+    async def _post(self, path: str, payload: Any, *, extra_headers: dict[str, str] | None = None) -> dict:
+        headers = {**self._headers, **extra_headers} if extra_headers else self._headers
+        resp = await self._http.post(path, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json() or {}
 
@@ -166,6 +167,7 @@ class MetronomeClient:
         credit_type_id: str,
         amount_cents: int,
         description: str,
+        idempotency_key: str,
         payment_gate_config: dict | None = None,
     ) -> None:
         """POST /v1/contracts/customerCommits/create — add a prepaid commit
@@ -175,6 +177,16 @@ class MetronomeClient:
         invoice_contract_id) — this exact shape returned 200. The amount is
         in CENTS: Metronome's USD credit type is cents-denominated (see
         core/billing/metronome_units.py).
+
+        ``idempotency_key`` rides as Metronome's native ``Idempotency-Key``
+        request header — the exactly-once guarantee at the money source.
+        Live-verified (sandbox, 2026-06-10): same key + same body → 200
+        replaying the SAME commit id (one commit, one charge); same key +
+        different body → 409 {"message": "The provided idempotency key has
+        been used on a request with different parameters."}. Keys are
+        retained ~24h per the Metronome docs. Required (not optional)
+        because every commit we create charges or grants money — a caller
+        without a key is a caller with a double-charge bug.
 
         ``payment_gate_config`` (e.g. {"payment_gate_type": "STRIPE"}) makes
         Metronome collect the money itself through the customer's linked
@@ -193,8 +205,14 @@ class MetronomeClient:
                 "credit_type_id": credit_type_id,
                 "schedule_items": [
                     {
+                        # Today's UTC midnight, not now(): the schedule start
+                        # must be deterministic within the idempotency-key
+                        # retention window, or a retried request carries a
+                        # different body and 409s instead of replaying.
+                        # Midnight is already in the past, so the credits are
+                        # live immediately either way.
                         "amount": amount_cents,
-                        "starting_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                        "starting_at": time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime()),
                         "ending_before": _NO_EXPIRY,
                     }
                 ],
@@ -202,7 +220,11 @@ class MetronomeClient:
         }
         if payment_gate_config is not None:
             payload["payment_gate_config"] = payment_gate_config
-        await self._post("/contracts/customerCommits/create", payload)
+        await self._post(
+            "/contracts/customerCommits/create",
+            payload,
+            extra_headers={"Idempotency-Key": idempotency_key},
+        )
 
     async def get_net_balance(self, *, customer_id: str) -> dict:
         """POST /v1/contracts/customerBalances/getNetBalance — aggregated

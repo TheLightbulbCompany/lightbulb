@@ -194,7 +194,8 @@ async def test_create_prepaid_commit_flat_body_shape():
         product_id="prod-credits",
         credit_type_id="ct-usd-cents",
         amount_cents=2573,
-        description="isol8 top-up stripe_session=cs_test_123 owner=org_abc",
+        description="isol8 top-up owner=org_abc amount_cents=2573",
+        idempotency_key="topup-org_abc-uuid-1",
     )
 
     args, kwargs = fake.post.call_args
@@ -209,15 +210,39 @@ async def test_create_prepaid_commit_flat_body_shape():
     assert body["priority"] == 100
     assert body["applicable_contract_ids"] == ["contract-1"]
     assert body["invoice_contract_id"] == "contract-1"
-    assert body["description"] == "isol8 top-up stripe_session=cs_test_123 owner=org_abc"
+    assert body["description"] == "isol8 top-up owner=org_abc amount_cents=2573"
     # No gate requested ⇒ none in the body (an ungated commit grants now).
     assert "payment_gate_config" not in body
     schedule = body["access_schedule"]
     assert schedule["credit_type_id"] == "ct-usd-cents"
     [item] = schedule["schedule_items"]
     assert item["amount"] == 2573  # CENTS (Metronome's USD credit type)
-    assert item["starting_at"].endswith("Z")
+    # UTC midnight, not now(): the body must be byte-identical on a retried
+    # request or Metronome 409s instead of replaying the original commit.
+    assert item["starting_at"].endswith("T00:00:00.000Z")
     assert item["ending_before"] == "9999-12-31T00:00:00.000Z"
+
+
+@pytest.mark.asyncio
+async def test_create_prepaid_commit_sends_idempotency_key_header():
+    """The exactly-once guard lives at the money source: Metronome's native
+    Idempotency-Key header. Live-verified (sandbox, 2026-06-10): same key +
+    same body replays the SAME commit (one charge); same key + different
+    body → 409. The Bearer auth must survive the header merge."""
+    client, fake = _client_with(_resp(200, {}))
+    await client.create_prepaid_commit(
+        customer_id="cust-uuid-1",
+        contract_id="contract-1",
+        product_id="prod-credits",
+        credit_type_id="ct-usd-cents",
+        amount_cents=2500,
+        description="isol8 top-up owner=org_abc amount_cents=2500",
+        idempotency_key="topup-org_abc-3f1d2c",
+    )
+
+    _, kwargs = fake.post.call_args
+    assert kwargs["headers"]["Idempotency-Key"] == "topup-org_abc-3f1d2c"
+    assert kwargs["headers"]["Authorization"] == "Bearer tok_sandbox"
 
 
 @pytest.mark.asyncio
@@ -233,6 +258,7 @@ async def test_create_prepaid_commit_forwards_payment_gate_config():
         credit_type_id="ct-usd-cents",
         amount_cents=2500,
         description="isol8 top-up owner=org_abc",
+        idempotency_key="topup-org_abc-uuid-2",
         payment_gate_config={"payment_gate_type": "STRIPE"},
     )
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 
@@ -37,9 +38,21 @@ export function useCredits() {
     },
   );
 
+  // One idempotency token per form session (hook mount), DELIBERATELY stable
+  // across retries: if the response is lost in transit, the user's retry
+  // carries the same request_id, so the backend's Metronome Idempotency-Key
+  // replays the original commit instead of charging the card twice. No
+  // regeneration after success is needed — the consuming surfaces latch
+  // their submit button once a top-up is accepted.
+  const requestIdRef = useRef<string | null>(null);
+  if (requestIdRef.current === null) {
+    requestIdRef.current = crypto.randomUUID();
+  }
+
   const startTopUp = async (amountCents: number): Promise<TopUpResult> => {
     return (await api.post("/billing/credits/top_up", {
       amount_cents: amountCents,
+      request_id: requestIdRef.current,
     })) as TopUpResult;
   };
 

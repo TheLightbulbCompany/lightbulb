@@ -5,37 +5,30 @@ model-invocation logs. This Lambda parses each record and POSTs the extracted
 token/cache counts to the backend internal meter endpoint. It does NOT price,
 attribute, or deplete — that is the backend's single source of truth.
 
-CLOUDWATCH-ONLY (no S3). The prompt/cached-input body (`inputBodyJson`) is the
-huge thing on cache-heavy turns, and we never need it. The OUTPUT body
-(completion + the Converse `usage` block) is almost always <100KB, so Bedrock
-inlines it in the CloudWatch record. We therefore read everything we need from
-CloudWatch and never touch S3:
-  - input_tokens       : `input.inputTokenCount`  (top-level, inline)
-  - output_tokens      : `output.outputTokenCount` (top-level, inline)
-  - cache_read_tokens  : `output.outputBodyJson.usage.cacheReadInputTokens`
-  - cache_write_tokens : `output.outputBodyJson.usage.cacheWriteInputTokens`
+CLOUDWATCH-ONLY (no S3), and never even needs the response body. EVERY count we
+bill on is recorded at the TOP LEVEL of the CloudWatch record and read inline:
+  - input_tokens       : `input.inputTokenCount`
+  - output_tokens      : `output.outputTokenCount`
+  - cache_read_tokens  : `input.cacheReadInputTokenCount`
+  - cache_write_tokens : `input.cacheWriteInputTokenCount`
 
-Field paths are the ones recorded in FIELDS.md (confirmed against a real
-cached-Converse record before flipping the meter live). The extractor keeps the
-`_first_int` multi-path helper so a documented Bedrock log-shape change degrades
-gracefully instead of silently zeroing cache tokens.
+Confirmed against live cached-Converse records (the top-level
+`input.cache*InputTokenCount` counts equal the response body's
+`usage.cache*InputTokens`). Bedrock only ever offloads a body >100KB to S3, and
+that affects the output BODY alone — the token + cache COUNTS stay inline at the
+top level regardless. So there is NO large-completion edge case here: we read
+the counts directly and never touch `output.outputBodyJson` (kept only as a
+defensive `_first_int` fallback should a delivery variant omit a top-level
+count).
 
 FAIL-SAFE TRANSPORT. A CloudWatch Logs subscription filter invokes this Lambda
 SYNCHRONOUSLY, so the Lambda's async-invocation DLQ never fires on a per-record
-failure — a backend 5xx, an unparseable record, or a truncated output body would
-otherwise silently drop the record (or, worse, POST a zeroed-cache record and
-under-bill ~30×). So every per-record failure path here explicitly pushes the
-raw failed log event to the SQS DLQ (`_send_to_dlq`) + emits a metric +
-continues. A money-correctness regression surfaces on the DLQ / an alarm, never
-as a silent zero. The backend endpoint is idempotent (deplete() exactly-once on
-requestId), so DLQ redrive replays are safe.
-
-The one rare edge: a >100KB completion body. Bedrock offloads only bodies
->100KB to S3, and the cached INPUT prompt (not the output) is what's huge on
-cache-heavy turns, so the output body is inline in practice. But if a completion
-IS large enough to be offloaded, `output.outputBodyJson` is absent and the cache
-counts can't be read — rather than POST an under-billed (cache=0) record we DLQ
-it + emit `meter.output_body_truncated` so the gap is visible and redrivable.
+failure — a backend 5xx or an unparseable record would otherwise silently drop
+the record. So every per-record failure path here explicitly pushes the raw
+failed log event to the SQS DLQ (`_send_to_dlq`) + emits a metric + continues. A
+money-correctness regression surfaces on the DLQ / an alarm, never as a silent
+drop. The backend endpoint is idempotent (deplete() exactly-once on requestId),
+so DLQ redrive replays are safe.
 """
 
 import base64
@@ -52,16 +45,6 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 _METER_TOKEN = None
-
-
-class _OutputBodyTruncatedError(Exception):
-    """An output body too large to inline (>100KB → offloaded to S3).
-
-    Raised instead of returning a zeroed-cache record so the per-record handler
-    DLQs the line rather than silently POSTing a ~30×-under-billed zero. This is
-    the rare large-completion edge; the cached INPUT prompt is what's normally
-    huge, and we never need it, so the output body is inline in practice.
-    """
 
 
 def _meter_token():
@@ -144,48 +127,23 @@ def _first_int(d, *paths):
     return 0
 
 
-def _output_usage(record):
-    """Return the Converse `usage` block from the inline output body, or None.
-
-    The cache counts live in the RESPONSE body (`output.outputBodyJson.usage`),
-    which Bedrock inlines in CloudWatch when the body is <100KB (the normal case
-    — the huge thing on cache-heavy turns is the cached INPUT prompt, not the
-    completion). Returns None when the output body is absent (>100KB completion
-    offloaded to S3) so the caller can fail safe rather than zero the cache.
-
-    `outputBodyJson` is an embedded JSON object in the CloudWatch record; if a
-    given delivery serializes it as a JSON string we parse it once.
-    """
-    output = record.get("output")
-    if not isinstance(output, dict):
-        return None
-    body = output.get("outputBodyJson")
-    if isinstance(body, str):
-        try:
-            body = json.loads(body)
-        except ValueError:
-            return None
-    if not isinstance(body, dict):
-        return None
-    usage = body.get("usage")
-    return usage if isinstance(usage, dict) else None
-
-
 def _extract(record):
     """Extract the billing-relevant fields from one Bedrock log record.
 
-    Token counts are top-level inline (`input.inputTokenCount` /
-    `output.outputTokenCount`); cache counts live in the inline output body's
-    `usage` block. Raises `_OutputBodyTruncatedError` when the output body is
-    absent (>100KB completion offloaded to S3) so the handler DLQs the record
-    instead of POSTing a zeroed-cache (~30×-under-billed) row.
+    EVERY count is top-level inline in the CloudWatch record and read directly:
+      - input_tokens  : `input.inputTokenCount`
+      - output_tokens : `output.outputTokenCount`
+      - cache_read    : `input.cacheReadInputTokenCount`
+      - cache_write   : `input.cacheWriteInputTokenCount`
+
+    The meter therefore NEVER needs the (offloadable) response body. Only a
+    completion >100KB gets offloaded to S3, and that affects the output BODY
+    only — the token + cache COUNTS stay inline at the top level regardless
+    (verified against live records: the top-level `input.cache*InputTokenCount`
+    counts equal the response body's `usage.cache*InputTokens`). The nested
+    usage block is kept ONLY as a defensive fallback in case a future delivery
+    variant omits a top-level count.
     """
-    usage = _output_usage(record)
-    if usage is None:
-        raise _OutputBodyTruncatedError(
-            f"output.outputBodyJson.usage missing for requestId={record.get('requestId', '')!r} "
-            "(likely a >100KB completion offloaded to S3)"
-        )
     error_code = record.get("errorCode")
     run_status = "end"
     if error_code:
@@ -194,8 +152,6 @@ def _extract(record):
         "request_id": record.get("requestId", ""),
         "model_id": record.get("modelId", ""),
         "identity_arn": (record.get("identity") or {}).get("arn"),
-        # Token counts are top-level inline; fall back to the output body's
-        # usage block if a delivery omits the top-level counts.
         "input_tokens": _first_int(
             record,
             ("input", "inputTokenCount"),
@@ -206,9 +162,18 @@ def _extract(record):
             ("output", "outputTokenCount"),
             ("output", "outputBodyJson", "usage", "outputTokens"),
         ),
-        # Cache counts live ONLY in the response body's usage block.
-        "cache_read_tokens": _first_int({"u": usage}, ("u", "cacheReadInputTokens")),
-        "cache_write_tokens": _first_int({"u": usage}, ("u", "cacheWriteInputTokens")),
+        # Cache counts: top-level inline (always present, never offloaded);
+        # nested usage block is the defensive fallback only.
+        "cache_read_tokens": _first_int(
+            record,
+            ("input", "cacheReadInputTokenCount"),
+            ("output", "outputBodyJson", "usage", "cacheReadInputTokens"),
+        ),
+        "cache_write_tokens": _first_int(
+            record,
+            ("input", "cacheWriteInputTokenCount"),
+            ("output", "outputBodyJson", "usage", "cacheWriteInputTokens"),
+        ),
         "run_status": run_status,
         "region": record.get("region", ""),
         "occurred_at": record.get("timestamp", ""),
@@ -244,15 +209,7 @@ def handler(event, context):
             _emit_metric("meter.parse_failed")
             _send_to_dlq(log_event, "unparseable_log_event")
             continue
-        try:
-            parsed = _extract(record)
-        except _OutputBodyTruncatedError as exc:
-            # Output body offloaded (>100KB completion) — cache counts unreadable.
-            # Do NOT POST a zeroed-cache record.
-            logger.error("meter: output body truncated, DLQ + skip: %s", exc)
-            _emit_metric("meter.output_body_truncated")
-            _send_to_dlq(log_event, f"output_body_truncated: {exc}")
-            continue
+        parsed = _extract(record)
         try:
             _post_to_backend(parsed)
         except Exception as exc:  # noqa: BLE001 - any transport error must DLQ, not drop

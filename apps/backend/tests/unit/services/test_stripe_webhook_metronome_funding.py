@@ -1,4 +1,7 @@
-"""handle_checkout_session funds a Metronome commit when LEDGER_BACKEND=metronome."""
+"""handle_checkout_session mirrors a paid top-up into Metronome whenever the
+owner's billing row carries a metronome_customer_id (lifecycle exists ⇒ fund),
+regardless of LEDGER_BACKEND — there is no balance backfill at cutover, so an
+unmirrored top-up would be missing from the Metronome balance later."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -26,14 +29,27 @@ def _session_event(payment_status="paid", purpose="credit_top_up"):
     }
 
 
+def _billing_row_mock(metronome_customer_id):
+    row = {"owner_id": "org_abc"}
+    if metronome_customer_id:
+        row["metronome_customer_id"] = metronome_customer_id
+    return patch(
+        "core.services.stripe_webhook_handlers.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value=row),
+    )
+
+
 @pytest.mark.asyncio
-async def test_funds_metronome_when_backend_metronome(monkeypatch):
-    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "metronome")
+async def test_funds_metronome_when_billing_row_has_customer_id(monkeypatch):
+    # LEDGER_BACKEND stays "ddb" during the transition — funding must key off
+    # the owner's provisioned lifecycle, not the ledger flag.
+    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "ddb")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_CONTRACT_ID", "contract-1")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
 
     with (
         patch("core.services.credit_ledger.top_up", new=AsyncMock(return_value=0)),
+        _billing_row_mock("cust-uuid-1"),
         patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund,
     ):
         await handle_checkout_session(_session_event(), BillingService())
@@ -45,13 +61,16 @@ async def test_funds_metronome_when_backend_metronome(monkeypatch):
     assert kwargs["contract_id"] == "contract-1"
     assert kwargs["product_id"] == "prod-credits"
     assert kwargs["stripe_session_id"] == "cs_test_123"
+    # The handler already read the billing row to decide whether to fund —
+    # the customer id is passed through so fund_top_up skips a second read.
+    assert kwargs["metronome_customer_id"] == "cust-uuid-1"
 
 
 @pytest.mark.asyncio
-async def test_does_not_fund_metronome_when_backend_ddb(monkeypatch):
-    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "ddb")
+async def test_does_not_fund_when_no_metronome_customer(monkeypatch):
     with (
         patch("core.services.credit_ledger.top_up", new=AsyncMock(return_value=0)),
+        _billing_row_mock(None),
         patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund,
     ):
         await handle_checkout_session(_session_event(), BillingService())
@@ -60,11 +79,11 @@ async def test_does_not_fund_metronome_when_backend_ddb(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_metronome_funding_failure_does_not_raise(monkeypatch):
-    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "metronome")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_CONTRACT_ID", "contract-1")
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
     with (
         patch("core.services.credit_ledger.top_up", new=AsyncMock(return_value=0)),
+        _billing_row_mock("cust-uuid-1"),
         patch(
             "core.billing.metronome_funding.fund_top_up",
             new=AsyncMock(side_effect=RuntimeError("metronome down")),
@@ -77,9 +96,9 @@ async def test_metronome_funding_failure_does_not_raise(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unpaid_session_funds_nothing(monkeypatch):
-    monkeypatch.setattr("core.config.settings.LEDGER_BACKEND", "metronome")
     with (
         patch("core.services.credit_ledger.top_up", new=AsyncMock()) as mock_topup,
+        _billing_row_mock("cust-uuid-1"),
         patch("core.billing.metronome_funding.fund_top_up", new=AsyncMock()) as mock_fund,
     ):
         await handle_checkout_session(_session_event(payment_status="unpaid"), BillingService())

@@ -236,13 +236,15 @@ export class DatabaseStack extends cdk.Stack {
       encryptionKey: props.kmsKey,
     });
 
-    // Metronome local fast-gate flag (Phase 2). A disposable per-owner
-    // projection of Metronome balance that the SYNCHRONOUS chat gate reads,
-    // since Metronome's balance read is async with no low-latency SLA. Fed by
-    // optimistic decrement on deplete + the Metronome low-balance webhook;
-    // carries no money-correctness burden (Metronome is the SoR). Also stashes
-    // the per-owner metronome_customer_id for provisioning idempotency. PK
-    // owner_id; mirrors creditsTable.
+    // Metronome local fast-gate flag. A disposable per-owner projection of
+    // Metronome balance that the SYNCHRONOUS chat gate reads, since
+    // Metronome's balance read is async with no low-latency SLA. Webhook-fed
+    // only: the Metronome low-balance webhook sets it, and the top-up funding
+    // path optimistically re-arms it (Metronome fires no recovery webhook on
+    // a top-up). Carries no money-correctness burden (Metronome is the SoR).
+    // The per-owner metronome_customer_id lives on the billing row, not here
+    // — this projection is wipeable cache state. PK owner_id; mirrors
+    // creditsTable.
     this.metronomeFastGateTable = new dynamodb.Table(this, "MetronomeFastGateTable", {
       tableName: `isol8-${env}-metronome-fast-gate`,
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },

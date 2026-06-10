@@ -104,15 +104,17 @@ class Settings(BaseSettings):
     METER_IS_LIVE: bool = False  # cutover flag OWNED by Plan 4: when True, Plan 3's AWS meter deplete() is the sole biller (and Plan 3 then calls enforce_after_deplete) and the legacy connection_pool deduct is gated off; when False, Plan 3 is shadow-only (logs, no deplete, no enforce) and the legacy deduct is the live biller. Both paths read this ONE flag so the cutover is order-independent.
     OAUTH_TOKENS_TABLE: str = ""
 
-    # --- Metronome ledger adapter (Phase 2) ---
-    # Metronome is the future ledger system-of-record (spec §3.2.3). Phase 2
-    # wires the adapter behind the LedgerBackend interface and validates it in
-    # the dev environment against the Metronome SANDBOX. The environment is
-    # token-scoped: same base URL, the token decides sandbox vs prod, so a
-    # sandbox API key only ever touches sandbox data. Empty defaults keep the
-    # backend booting in non-Metronome contexts (unit tests + the DDB-default
-    # prod path) — get_ledger() only constructs the Metronome backend when
-    # LEDGER_BACKEND == "metronome".
+    # --- Metronome lifecycle + gating ---
+    # Metronome is the usage ledger; the backend never ingests usage into it
+    # (the meter Lambda does that directly). These settings serve the
+    # backend's lifecycle/gating modules: customer provisioning, payment-
+    # gated top-up funding, the low-balance webhook, and balance display.
+    # The environment is token-scoped: same base URL, the token decides
+    # sandbox vs prod, so a sandbox API key only ever touches sandbox data.
+    # Empty defaults keep the backend booting in non-Metronome contexts
+    # (unit tests, local dev). LEDGER_BACKEND stays "ddb" — the DDB ledger
+    # remains the billed truth until it is deleted outright; there is no
+    # config flip that makes the backend read balances from Metronome.
     METRONOME_BASE_URL: str = os.getenv("METRONOME_BASE_URL", "https://api.metronome.com/v1")
     """Metronome API base, including the /v1 prefix. Same URL for sandbox + prod."""
     METRONOME_API_KEY: str = os.getenv("METRONOME_API_KEY", "")

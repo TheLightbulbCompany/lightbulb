@@ -53,12 +53,19 @@ async def fund_top_up(
     product_id: str,
     stripe_session_id: str,
     client: MetronomeClient | None = None,
+    metronome_customer_id: str | None = None,
 ) -> None:
-    """Add a Stripe-payment-gated prepaid commit for amount_microcents."""
+    """Add a Stripe-payment-gated prepaid commit for amount_microcents.
+
+    Callers that already hold the owner's billing row (e.g. the Stripe
+    webhook, which reads it to decide whether the owner is Metronome-
+    provisioned at all) pass metronome_customer_id through to skip the
+    duplicate billing-row read.
+    """
     if amount_microcents <= 0:
         raise FundingError(f"amount_microcents must be positive, got {amount_microcents}")
 
-    customer_id = await _customer_id_for(owner_id)
+    customer_id = metronome_customer_id or await _customer_id_for(owner_id)
     commit = {
         "product_id": product_id,
         "amount": amount_microcents / _MICROCENTS_PER_DOLLAR,

@@ -83,8 +83,6 @@ export interface ServiceStackProps extends cdk.StackProps {
     pendingUpdatesTable: dynamodb.Table;
     channelLinksTable: dynamodb.Table;
     adminActionsTable: dynamodb.Table;
-    creditsTable: dynamodb.Table;
-    creditTransactionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
     paperclipCompaniesTable: dynamodb.Table;
@@ -482,8 +480,6 @@ export class ServiceStack extends cdk.Stack {
     props.database.pendingUpdatesTable.grantReadWriteData(this.taskRole);
     props.database.channelLinksTable.grantReadWriteData(this.taskRole);
     props.database.adminActionsTable.grantReadWriteData(this.taskRole);
-    props.database.creditsTable.grantReadWriteData(this.taskRole);
-    props.database.creditTransactionsTable.grantReadWriteData(this.taskRole);
     props.database.oauthTokensTable.grantReadWriteData(this.taskRole);
     // The credential-layer integration tables are granted by NAME, not via
     // grantReadWriteData. grantReadWriteData would export each table's ARN from
@@ -1004,31 +1000,31 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
         CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
-        CREDITS_TABLE: props.database.creditsTable.tableName,
-        CREDIT_TRANSACTIONS_TABLE:
-          props.database.creditTransactionsTable.tableName,
         OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
-        // Metronome lifecycle + gating settings. The backend provisions
-        // Metronome customers, funds payment-gated top-up commits, handles
-        // the low-balance webhook, and displays balances — it never ingests
-        // usage (the meter Lambda does). Base URL is the same for sandbox +
-        // prod (token decides env). Fast-gate table backs the synchronous
-        // chat gate's balance projection. LEDGER_BACKEND is NOT set here —
-        // it stays the code default "ddb" (the billed truth) until the DDB
-        // ledger is deleted; the backend has no Metronome ledger backend to
-        // flip to, so overriding it would fail boot.
+        // Metronome lifecycle + gating settings. Metronome is the ONLY
+        // billing ledger: the backend provisions Metronome customers, funds
+        // payment-gated top-up commits, handles the low-balance webhook,
+        // lazily refreshes the gate, and displays balances — it never
+        // ingests usage (the meter Lambda does). Base URL is the same for
+        // sandbox + prod (token decides env). Fast-gate table backs the
+        // synchronous chat gate's balance projection.
         METRONOME_BASE_URL: "https://api.metronome.com/v1",
         // Literal name (not a cross-stack tableName Ref) — same posture as
         // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
         // DynamoDbIntegrations statement, so no cross-stack export is created.
         METRONOME_FAST_GATE_TABLE: `isol8-${env}-metronome-fast-gate`,
         // Master switch for the Metronome customer lifecycle (provisioning,
-        // funding, balance display). Stays "false" until the per-env runbook
-        // is done — real API tokens in Secrets Manager, the rate card created
-        // in the Metronome console (its id wired below), and the webhook
-        // secret registered — then it is flipped to "true" per environment.
-        METRONOME_LIFECYCLE_ENABLED: "false",
-        METRONOME_RATE_CARD_ID: "",
+        // funding, balance display). Dev is LIVE: the sandbox runbook is done
+        // (sandbox token in Secrets Manager, sandbox rate card created
+        // 2026-06-10, webhook secret set). Prod stays "false" until the prod
+        // console runbook completes — flipping it earlier would spam doomed
+        // calls against the placeholder prod secrets on every status poll.
+        METRONOME_LIFECYCLE_ENABLED: env === "dev" ? "true" : "false",
+        // Per-env rate card the per-customer contract references at
+        // provision. Dev = the sandbox rate card (created 2026-06-10); prod
+        // is set after the prod Metronome console setup.
+        METRONOME_RATE_CARD_ID:
+          env === "dev" ? "99576f5a-37d2-4983-ba64-fea9bad96e08" : "",
         METRONOME_CREDITS_PRODUCT_ID: "",
         // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
         // table is granted BY NAME above, so the env var is the literal name

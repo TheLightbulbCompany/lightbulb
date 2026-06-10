@@ -3,8 +3,6 @@
 import { useState } from "react";
 import { Wallet, RefreshCw } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 
 const CARD = "rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3";
 const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
@@ -12,42 +10,37 @@ const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
 const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
 /**
- * Control-panel surface for managing Claude credits. Top-ups go through
- * Stripe Checkout — the user is redirected to checkout.stripe.com and
- * returned to /chat?credits=success on completion. No publishable key
- * needed in the bundle; coupon codes work natively on the Checkout page.
+ * Control-panel surface for managing Claude credits. The balance comes from
+ * Metronome (the billing ledger); a top-up creates a payment-gated Metronome
+ * commit that charges the saved Stripe card automatically — no checkout
+ * redirect. Credits release when the payment collects, so the balance
+ * updates asynchronously (the hook polls).
  */
 export function CreditsPanel() {
-  const { balance, refresh, startTopUp, setAutoReload } = useCredits();
+  const { balance, refresh, startTopUp } = useCredits();
   const [topUpAmount, setTopUpAmount] = useState(2000);
   const [topUpSubmitting, setTopUpSubmitting] = useState(false);
   const [topUpError, setTopUpError] = useState<string | null>(null);
-  const [autoEnabled, setAutoEnabled] = useState(false);
-  const [thresholdCents, setThresholdCents] = useState(500);
-  const [reloadCents, setReloadCents] = useState(2000);
+  const [topUpRequested, setTopUpRequested] = useState<number | null>(null);
 
   const handleTopUp = async () => {
     setTopUpSubmitting(true);
     setTopUpError(null);
+    setTopUpRequested(null);
     try {
       const r = await startTopUp(topUpAmount);
-      if (!r?.checkout_url) throw new Error("No checkout_url returned");
-      window.location.href = r.checkout_url;
+      if (r?.status !== "requested") throw new Error("Top-up was not accepted");
+      setTopUpRequested(r.amount_cents);
+      void refresh();
     } catch (err) {
       setTopUpError(err instanceof Error ? err.message : "Couldn't start top-up");
+    } finally {
       setTopUpSubmitting(false);
     }
   };
 
-  const handleAutoReloadSave = async () => {
-    await setAutoReload({
-      enabled: autoEnabled,
-      threshold_cents: autoEnabled ? thresholdCents : undefined,
-      amount_cents: autoEnabled ? reloadCents : undefined,
-    });
-  };
-
-  const balanceDisplay = balance ? `$${balance.balance_dollars}` : "$0.00";
+  const balanceDisplay =
+    balance && balance.balance_dollars !== null ? `$${balance.balance_dollars}` : "—";
 
   return (
     <div className="p-6 space-y-6">
@@ -69,6 +62,11 @@ export function CreditsPanel() {
           </button>
         </div>
         <div className="text-3xl font-semibold font-mono text-[#1a1a1a]">{balanceDisplay}</div>
+        {balance && balance.balance_dollars === null && (
+          <p className="text-xs text-[#8a8578]">
+            Balance unavailable right now — try refreshing in a moment.
+          </p>
+        )}
       </div>
 
       <div className={CARD}>
@@ -93,6 +91,12 @@ export function CreditsPanel() {
           })}
         </div>
         {topUpError && <p className="text-sm text-red-600">{topUpError}</p>}
+        {topUpRequested !== null && (
+          <p className="text-sm text-[#2d8a4e]">
+            Top-up of ${topUpRequested / 100} requested — your card on file will be
+            charged and the balance updates shortly.
+          </p>
+        )}
         <button
           onClick={handleTopUp}
           disabled={topUpSubmitting || topUpAmount < 500}
@@ -101,61 +105,8 @@ export function CreditsPanel() {
           {topUpSubmitting ? "Loading…" : `Add $${topUpAmount / 100}`}
         </button>
         <p className="text-xs text-[#8a8578]">
-          Have a promotion code? Apply it on the Stripe Checkout page after clicking above.
+          Charged automatically to your card on file — no checkout page.
         </p>
-      </div>
-
-      <div className={CARD}>
-        <span className={EYEBROW}>AUTO-RELOAD</span>
-        <label className="flex items-center gap-2 text-sm cursor-pointer">
-          <Checkbox
-            checked={autoEnabled}
-            onCheckedChange={(v) => setAutoEnabled(v === true)}
-          />
-          Automatically top up when balance is low
-        </label>
-        {autoEnabled && (
-          <div className="space-y-3 pt-1">
-            <div className="space-y-1">
-              <label className={EYEBROW}>When balance drops below</label>
-              <div className="flex items-center gap-1">
-                <span className="text-sm text-[#8a8578]">$</span>
-                <Input
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={thresholdCents / 100}
-                  onChange={(e) =>
-                    setThresholdCents(Math.round(Number(e.target.value) * 100))
-                  }
-                  className="w-24"
-                />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <label className={EYEBROW}>Charge me</label>
-              <div className="flex items-center gap-1">
-                <span className="text-sm text-[#8a8578]">$</span>
-                <Input
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={reloadCents / 100}
-                  onChange={(e) =>
-                    setReloadCents(Math.round(Number(e.target.value) * 100))
-                  }
-                  className="w-24"
-                />
-              </div>
-            </div>
-          </div>
-        )}
-        <button
-          onClick={handleAutoReloadSave}
-          className="rounded-md bg-secondary px-4 py-2 text-sm hover:bg-secondary/90"
-        >
-          Save
-        </button>
       </div>
     </div>
   );

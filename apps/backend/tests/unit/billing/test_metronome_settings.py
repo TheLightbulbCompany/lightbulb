@@ -25,5 +25,12 @@ def test_metronome_settings_present_with_defaults():
     # Contracts are per-customer objects persisted on the billing row — an
     # env-wide contract id setting must not creep back in.
     assert not hasattr(settings, "METRONOME_CREDITS_CONTRACT_ID")
-    # Default ledger backend MUST still be ddb in Phase 2 (cutover is Phase 3).
-    assert settings.LEDGER_BACKEND == "ddb"
+    # The DDB ledger is deleted — none of its settings may creep back in.
+    assert not hasattr(settings, "LEDGER_BACKEND")
+    assert not hasattr(settings, "CREDITS_TABLE")
+    assert not hasattr(settings, "CREDIT_TRANSACTIONS_TABLE")
+    # Metronome is the only ledger, so enforcement defaults ARMED: a
+    # depleted balance revokes the owner's Bedrock IAM grant.
+    assert settings.BEDROCK_ENFORCEMENT_LIVE is True
+    # The gate's lazy-refresh window (see core/services/metronome_gate.py).
+    assert settings.METRONOME_GATE_STALENESS_S == 900

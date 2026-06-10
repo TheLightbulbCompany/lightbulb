@@ -75,10 +75,18 @@ Scope notes
   1 USD = 1e6 microcents) holds Isol8's RAW, un-marked-up cost: in
   ``record_usage`` it is taken verbatim from OpenClaw's
   ``estimatedCostUsd`` (or recomputed pre-markup from the Bedrock pricing
-  table). The 1.4× customer markup is applied only later in
-  ``credit_ledger.deduct``. The AWS bill is itself un-marked-up, so the
-  dollar reconciliation compares AWS $ against this RAW ledger spend — NOT
-  the 1.4× customer price.
+  table). The 1.4× customer markup is applied only by Metronome's rate
+  card. The AWS bill is itself un-marked-up, so the dollar reconciliation
+  compares AWS $ against this RAW ledger spend — NOT the marked-up
+  customer price.
+
+* **The "ledger" here is the analytics counters, not the biller.** The
+  biller is Metronome (the meter Lambda ingests every invocation
+  directly); its per-customer balances/invoices have no cheap account-wide
+  total in our thin client, so the AWS-bill-vs-BILLED comparison is a
+  Metronome-console check for now. This script reconciles AWS truth
+  against the ``usage-counters`` analytics writes — the layer whose
+  cache-token blindness caused the original incident.
 
 * **Month granularity.** The ledger buckets by calendar month, so the
   comparison is only apples-to-apples when the window aligns to whole
@@ -366,53 +374,6 @@ async def fetch_ledger_spend_usd(periods: list[str]) -> float:
             if item.get("period") not in wanted:
                 continue
             total_microcents += int(item.get(_LEDGER_SPEND_COLUMN, 0))
-        last_evaluated_key = resp.get("LastEvaluatedKey")
-        if not last_evaluated_key:
-            break
-    return total_microcents / _MICROCENTS_PER_USD
-
-
-async def fetch_ledger_deduct_spend_usd(periods: list[str]) -> float:
-    """Sum the NEW credit-transactions deduct rows (RAW spend) → USD.
-
-    Post-cutover the authoritative money is the ``credit-transactions``
-    rows written by ``DdbLedgerBackend.deplete`` (``type == "deduct"``,
-    ``raw_cost_microcents`` in microcents, ``created_at`` ISO8601). This is
-    what the AWS invocation-log meter actually deducts — NOT the
-    ``usage-counters.total_spend_microdollars`` analytics column that
-    ``fetch_ledger_spend_usd`` reads. The drift monitor compares Cost
-    Explorer against THIS number once the meter is the sole biller.
-
-    Filters to rows whose ``created_at`` falls in one of ``periods``
-    (``YYYY-MM`` prefixes). RAW (un-marked-up) cost, comparable to the AWS
-    bill. microcents / 1e6 = USD.
-    """
-    from core.dynamodb import get_table, run_in_thread
-
-    wanted = tuple(periods)
-    total_microcents = 0
-
-    # Full-table scan: credit-transactions is keyed PK=user_id / SK=tx_id with
-    # no GSI on ``type`` or ``created_at`` (database-stack.ts), so a cross-owner
-    # time-windowed sum has no alternative access pattern. This is an accepted
-    # tradeoff for a daily batch job over an interim, low-volume ledger (and
-    # mirrors fetch_ledger_spend_usd). Rows are immutable audit, so scan cost
-    # grows with total table size — if the table grows large, add a
-    # ``created_at`` GSI and query the window instead of scanning.
-    table = get_table("credit-transactions")
-    last_evaluated_key: dict | None = None
-    while True:
-        kwargs: dict[str, Any] = {}
-        if last_evaluated_key is not None:
-            kwargs["ExclusiveStartKey"] = last_evaluated_key
-        resp = await run_in_thread(table.scan, **kwargs)
-        for item in resp.get("Items", []):
-            if item.get("type") != "deduct":
-                continue
-            created_at = str(item.get("created_at", ""))
-            if not created_at.startswith(wanted):
-                continue
-            total_microcents += int(item.get("raw_cost_microcents", 0))
         last_evaluated_key = resp.get("LastEvaluatedKey")
         if not last_evaluated_key:
             break

@@ -18,7 +18,6 @@ from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
-from core.config import settings
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 from core.services.connection_service import ConnectionService
@@ -1110,163 +1109,14 @@ class GatewayConnection:
             except Exception:
                 logger.exception("Failed to record usage for user %s", self.user_id)
 
-            # Single-biller cutover seam, keyed on BEDROCK_ENFORCEMENT_LIVE.
-            # While the flag is False (the default), this legacy in-container
-            # path is TODAY'S biller: card-3 (bedrock_claude) deducts credits
-            # from the interim DDB ledger in addition to the analytics
-            # usage_service write above; other cards skip. Synchronous so the
-            # next chat sees the updated balance. The ledger is owner-scoped —
-            # _maybe_deduct_credits keys on self.user_id (the container
-            # owner), so org members share one pooled balance.
-            #
-            # Meanwhile the meter Lambda ingests every Bedrock invocation
-            # straight to Metronome unconditionally (always-on shadow). The
-            # two ledgers run in PARALLEL but only the DDB number gates/bills
-            # pre-cutover, so there is no double-charge. Flipping the flag
-            # True hands gating + enforcement to the Metronome pipeline and
-            # silences this deduct; the method itself (and the whole DDB
-            # ledger) is deleted in the ledger-deletion PR once the Metronome
-            # path is validated end-to-end. The analytics record_usage write
-            # above always runs regardless of the flag.
-            if not settings.BEDROCK_ENFORCEMENT_LIVE:
-                try:
-                    await self._maybe_deduct_credits(
-                        chat_session_id=session_key,
-                        model=model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        cache_read_tokens=cache_read,
-                        cache_write_tokens=cache_write,
-                        raw_cost_microcents=raw_cost_microcents,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to deduct credits for user %s session %s",
-                        self.user_id,
-                        session_key,
-                    )
+            # Billing never happens here: the meter Lambda ingests every
+            # Bedrock invocation straight to Metronome (rated, balanced,
+            # enforced there). The record_usage write above is analytics
+            # only — counters for the usage panel + the CE reconciliation.
 
         except Exception:
             put_metric("chat.session_usage.fetch.error")
             logger.exception("Failed to fetch session usage for user %s", self.user_id)
-
-    async def _maybe_deduct_credits(
-        self,
-        *,
-        chat_session_id: str,
-        model: str,
-        input_tokens: int,
-        output_tokens: int,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
-        raw_cost_microcents: int | None = None,
-    ) -> None:
-        """Card-3 (bedrock_claude) credit deduct on chat completion.
-
-        Per spec §6.3: card-3 users prepay for Claude inference; we deduct
-        from credit_ledger after each session ends. Cards 1 + 2 skip this
-        entirely. Unknown model_id (e.g. a new Claude model not yet in
-        bedrock_pricing) is logged + skipped — no overdraft, no error to
-        the user; the operator updates bedrock_pricing.py and the next
-        chat deducts correctly.
-
-        Markup is applied here (1.4x raw) per the spec's pricing model.
-
-        When ``raw_cost_microcents`` is supplied it is used as the raw cost
-        verbatim (markup still applied on top) instead of recomputing from
-        token counts. The caller sources it from OpenClaw's cache-inclusive
-        ``estimatedCostUsd``; ``sessions.list`` omits cache token counts and
-        cache tokens are ~99.99% of volume, so the token-based path captures
-        only ~3% of real cost. ``None`` (no ``estimatedCostUsd`` on the row)
-        keeps the token-based path unchanged.
-
-        Both provider_choice and the credit ledger key are owner-scoped —
-        ``self.user_id`` IS the container owner (org_id for org members,
-        user_id for personal). Org members sharing a container all draw
-        from one pooled balance.
-        """
-        from core.billing.bedrock_pricing import (
-            UnknownModelError,
-            cost_microcents,
-        )
-        from core.repositories import billing_repo
-        from core.services import credit_ledger
-
-        account = await billing_repo.get_by_owner_id(self.user_id)
-        if not account or account.get("provider_choice") != "bedrock_claude":
-            return
-
-        # Bedrock model ids may be passed with or without a provider prefix
-        # (e.g. "amazon-bedrock/anthropic.claude-sonnet-4-6"). Strip the
-        # prefix before looking up rates.
-        bare_model = model.split("/", 1)[-1] if "/" in model else model
-
-        if raw_cost_microcents is not None and raw_cost_microcents > 0:
-            # Authoritative cache-inclusive cost from estimatedCostUsd — no
-            # rate-table lookup needed, so an unpriced model still deducts.
-            raw = raw_cost_microcents
-        else:
-            try:
-                raw = cost_microcents(
-                    model_id=bare_model,
-                    input_tokens=int(input_tokens or 0),
-                    output_tokens=int(output_tokens or 0),
-                    cache_read_tokens=int(cache_read_tokens or 0),
-                    cache_write_tokens=int(cache_write_tokens or 0),
-                )
-            except UnknownModelError:
-                logger.warning(
-                    "Unknown Bedrock model %r in chat completion for user %s — skipping deduct",
-                    bare_model,
-                    self.user_id,
-                )
-                put_metric("credit.deduct.unknown_model", dimensions={"model": bare_model})
-                return
-
-        # Integer math — avoid IEEE-754 drift on the multiply.
-        # `raw * 1.4` is not exact (10500 * 1.4 = 14699.999...) so we use
-        # `raw * 14 // 10` instead. Spec §6.3 mandates microcents-as-int
-        # throughout the credit ledger.
-        marked_up = raw * 14 // 10
-        # Shadow phase: log what THIS legacy path would deduct so the
-        # operator can diff it against the AWS invocation-log meter's
-        # deductions for the same window before the meter becomes the sole
-        # biller. raw*14//10 matches the meter's markup exactly, so a
-        # non-zero diff is a real discrepancy, not float drift. This does
-        # NOT add a second decrement — the deduct below is still the live one.
-        #
-        # The metric carries ONLY the low-cardinality `model` dimension; the
-        # raw/marked-up amounts are unbounded-cardinality (every distinct cost
-        # is a new dimension value), so they go in the structured log line, not
-        # as CloudWatch dimensions (per core/observability/metrics.py:put_metric
-        # — high-cardinality values must be log fields, not metric dimensions).
-        put_metric(
-            "billing.legacy_deduct.shadow",
-            dimensions={"model": bare_model},
-        )
-        logger.info(
-            "SHADOW legacy deduct owner=%s session=%s raw=%d marked_up=%d model=%s",
-            self.user_id,
-            chat_session_id,
-            raw,
-            marked_up,
-            bare_model,
-        )
-        await credit_ledger.deduct(
-            self.user_id,
-            amount_microcents=marked_up,
-            chat_session_id=chat_session_id,
-            raw_cost_microcents=raw,
-            markup_multiplier=1.4,
-        )
-        logger.info(
-            "Deducted credits for owner %s session %s: raw=%d marked_up=%d model=%s",
-            self.user_id,
-            chat_session_id,
-            raw,
-            marked_up,
-            bare_model,
-        )
 
     async def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.

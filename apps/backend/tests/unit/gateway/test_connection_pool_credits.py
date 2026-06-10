@@ -229,17 +229,7 @@ async def test_legacy_billing_row_without_status_does_not_block():
     assert result == {"blocked": False}
 
 
-# ------ BEDROCK_ENFORCEMENT_LIVE gates the legacy deduct (cutover seam) ------
-#
-# The legacy _maybe_deduct_credits call is gated on
-# `not settings.BEDROCK_ENFORCEMENT_LIVE` so the DDB ledger stays the sole
-# BILLED truth while the flag is False (the default): the meter Lambda's
-# direct-to-Metronome ingest runs in parallel as always-on shadow, but only
-# the DDB number gates/bills pre-cutover, so there is no double-charge.
-# Flipping the flag True hands gating + enforcement to the Metronome pipeline
-# and silences this deduct; the method (and the whole DDB ledger) is deleted
-# in the ledger-deletion PR once Metronome is validated end-to-end. The
-# analytics record_usage write is unconditional (independent of the flag).
+# ------ _fetch_and_record_usage is analytics-only (Metronome bills) ------
 
 
 def _make_connection_with_rpc(session: dict, user_id: str = "u_1") -> GatewayConnection:
@@ -264,51 +254,24 @@ def _bedrock_session() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_enforcement_live_skips_legacy_deduct_keeps_analytics():
-    """BEDROCK_ENFORCEMENT_LIVE=True: Metronome is the billed truth, so the
-    legacy _maybe_deduct_credits is NOT invoked — but the analytics
-    record_usage write still fires (it is independent of the billing path).
-    This is the 'no double-charge' half of the exactly-once seam."""
+async def test_fetch_and_record_usage_writes_analytics_only():
+    """Chat completion records the analytics counters and nothing else —
+    billing flows from the meter Lambda straight to Metronome, so no
+    deduct/ledger call can exist on this path."""
     session = _bedrock_session()
     conn = _make_connection_with_rpc(session)
-    conn._maybe_deduct_credits = AsyncMock()
     record_mock = AsyncMock()
 
-    with (
-        patch("core.services.usage_service.record_usage", new=record_mock),
-        patch("core.gateway.connection_pool.settings.BEDROCK_ENFORCEMENT_LIVE", new=True),
-    ):
+    with patch("core.services.usage_service.record_usage", new=record_mock):
         await conn._fetch_and_record_usage(session["key"], member_user_id="member_1")
 
     record_mock.assert_awaited_once()
-    conn._maybe_deduct_credits.assert_not_called()
+    _, kwargs = record_mock.call_args
+    assert kwargs["owner_id"] == "u_1"
+    assert kwargs["user_id"] == "member_1"
 
 
-@pytest.mark.asyncio
-async def test_enforcement_off_runs_legacy_deduct_keeps_analytics():
-    """BEDROCK_ENFORCEMENT_LIVE=False (the default): the legacy path is the
-    sole BILLED biller (Metronome ingest is shadow), so _maybe_deduct_credits
-    IS invoked, AND analytics record_usage fires. This is the 'no zero-charge'
-    half of the exactly-once seam — there is never a window where NEITHER
-    biller runs."""
-    session = _bedrock_session()
-    conn = _make_connection_with_rpc(session)
-    conn._maybe_deduct_credits = AsyncMock()
-    record_mock = AsyncMock()
-
-    with (
-        patch("core.services.usage_service.record_usage", new=record_mock),
-        patch("core.gateway.connection_pool.settings.BEDROCK_ENFORCEMENT_LIVE", new=False),
-    ):
-        await conn._fetch_and_record_usage(session["key"], member_user_id="member_1")
-
-    record_mock.assert_awaited_once()
-    conn._maybe_deduct_credits.assert_awaited_once()
-
-
-def test_maybe_deduct_credits_method_retained_as_flag_gated_safety_net():
-    """The legacy biller method is RETAINED (not yet deleted) — it is the
-    reversible safety net gated behind BEDROCK_ENFORCEMENT_LIVE during
-    Metronome validation. It is deleted with the whole DDB ledger in the
-    ledger-deletion PR, so this test inverts to `not hasattr` then."""
-    assert hasattr(GatewayConnection, "_maybe_deduct_credits")
+def test_legacy_deduct_method_is_deleted():
+    """The DDB-ledger deduct died with the cutover — the method must not
+    creep back onto the connection."""
+    assert not hasattr(GatewayConnection, "_maybe_deduct_credits")

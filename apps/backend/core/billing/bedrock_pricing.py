@@ -1,14 +1,16 @@
 """Bedrock Claude pricing constants - input/output/cache token rates per model.
 
-Rates are the AWS-verified `us.` Regional (CRIS) rate card
-(list-foundation-model-agreement-offers). Update this file when AWS changes
-pricing; no other code should hardcode rates. Per spec §6.3. Task D7 will
-source these from AWS automatically.
+DISPLAY + RECONCILIATION ONLY — never the money path. The billing rates
+live in Metronome's rate card (AWS rate × markup, configured per env in
+the console); this table exists for the ``/billing/pricing`` UI surface,
+the analytics counters' cost estimates, and the CE-vs-ledger
+reconciliation script. Rates are the AWS-verified `us.` Regional (CRIS)
+rate card (list-foundation-model-agreement-offers); keep it in lockstep
+with the Metronome console when AWS changes pricing.
 
-Microcents arithmetic is used everywhere in the credit ledger so we
-avoid float drift on deduction. 1 dollar = 100 cents = 1,000,000
-microcents. ``cost_microcents`` returns microcents directly; the
-``get_all_rates`` helper returns USD-per-token floats for the
+Microcents arithmetic avoids float drift. 1 dollar = 100 cents =
+1,000,000 microcents. ``cost_microcents`` returns microcents directly;
+the ``get_all_rates`` helper returns USD-per-token floats for the
 ``/billing/pricing`` UI surface.
 
 Rate keys are bare foundation-model ids (e.g. ``anthropic.claude-sonnet-4-6``).
@@ -148,10 +150,11 @@ def cost_microcents(
 ) -> int:
     """Compute the un-marked-up cost in microcents for an inference call.
 
-    Markup is applied separately by ``credit_ledger.deduct``. Cache tokens
+    A RAW-cost ESTIMATE for analytics/reconciliation — the billed price
+    (markup included) is computed by Metronome's rate card. Cache tokens
     default to 0 so older callers that don't pass them keep working —
     new callers should pass them so cache-write surcharge and cache-read
-    discount land in the ledger.
+    discount land in the estimate.
 
     Args:
         model_id: bare Bedrock model id (e.g. "anthropic.claude-sonnet-4-6").

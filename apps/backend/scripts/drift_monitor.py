@@ -1,10 +1,14 @@
-"""Daily Bedrock drift monitor — Cost Explorer $ vs the ledger's deduct rows.
+"""Daily Bedrock drift monitor — Cost Explorer $ vs the analytics counters.
 
-The standing reconciliation reduced to its lightweight Phase-1 form: a daily
-comparison of Cost Explorer's account-wide Bedrock cost against the SUM of the
-NEW ``credit-transactions`` deduct rows (the meter's actual deductions, via
-``fetch_ledger_deduct_spend_usd``). Reuses the reconciler's pure dollar
-machinery (``DollarResult`` / ``format_dollar_report``) and CE plumbing
+A daily comparison of Cost Explorer's account-wide Bedrock cost against
+the SUM of the ``usage-counters`` RAW recorded spend (via
+``fetch_ledger_spend_usd``). The BILLED side now lives in Metronome (the
+meter Lambda ingests every invocation directly) and has no cheap
+account-wide total in our thin client, so this monitor watches the
+analytics layer — the layer whose cache-token blindness caused the
+original undercount incident — while AWS-bill-vs-Metronome stays a
+console check. Reuses the reconciler's pure dollar machinery
+(``DollarResult`` / ``format_dollar_report``) and CE plumbing
 (``fetch_bedrock_actual_cost_usd`` / ``_period_strings``) — no duplicated
 boto3.
 
@@ -37,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 from scripts.reconcile_bedrock_vs_ledger import (
     DollarResult,
     fetch_bedrock_actual_cost_usd,
-    fetch_ledger_deduct_spend_usd,
+    fetch_ledger_spend_usd,
     format_dollar_report,
     _period_strings,
 )
@@ -67,7 +71,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Daily Bedrock drift monitor: Cost Explorer Bedrock $ vs the "
-            "credit-transactions deduct-row sum. Emits a per-env CloudWatch "
+            "usage-counters RAW spend sum. Emits a per-env CloudWatch "
             "metric and exits non-zero on drift."
         ),
     )
@@ -97,7 +101,7 @@ async def main(args: argparse.Namespace) -> int:
     region = getattr(settings, "AWS_REGION", "us-east-1")
 
     aws_usd = await fetch_bedrock_actual_cost_usd(start=start, end=end, region=region)
-    ledger_usd = await fetch_ledger_deduct_spend_usd(periods)
+    ledger_usd = await fetch_ledger_spend_usd(periods)
     result = DollarResult(aws_usd=aws_usd, ledger_usd=ledger_usd)
 
     report, alerted = format_dollar_report(result, threshold_pct=args.threshold_pct)
@@ -111,11 +115,11 @@ async def main(args: argparse.Namespace) -> int:
     if alerted:
         print(
             f"ALERT: Bedrock ledger drift {result.divergence_pct:.1f}% exceeds "
-            f"{args.threshold_pct:.1f}% — the meter may be missing or "
-            "over-counting deductions vs the AWS bill."
+            f"{args.threshold_pct:.1f}% — the analytics counters may be "
+            "missing or over-counting spend vs the AWS bill."
         )
         return 1
-    print("OK: ledger deductions within threshold of the AWS bill.")
+    print("OK: analytics counters within threshold of the AWS bill.")
     return 0
 
 

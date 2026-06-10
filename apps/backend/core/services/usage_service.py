@@ -1,4 +1,4 @@
-"""Usage tracking — counter writes for analytics. Billing flows through credit_ledger."""
+"""Usage tracking — counter writes for analytics. Billing flows through Metronome."""
 
 import logging
 from datetime import datetime, timezone
@@ -54,10 +54,10 @@ async def record_usage(
 ) -> None:
     """Record a single LLM usage event for analytics.
 
-    Writes per-period + lifetime + per-member counters to DynamoDB. The
-    credit ledger (core/services/credit_ledger.py) handles authoritative
-    billing for card-3 (bedrock_claude) users; this is a counter-only
-    side-write surfaced via the admin /usage endpoint.
+    Writes per-period + lifetime + per-member counters to DynamoDB.
+    Authoritative billing lives in Metronome (the meter Lambda ingests
+    every Bedrock invocation directly); this is a counter-only side-write
+    surfaced via the usage panels + the CE reconciliation script.
 
     Microcents are stored in the same ``total_spend_microdollars``
     column the legacy code wrote to (DDB schema unchanged for backward

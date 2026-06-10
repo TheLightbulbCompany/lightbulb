@@ -4,19 +4,17 @@ import useSWR from "swr";
 import { useApi } from "@/lib/api";
 
 export type CreditsBalance = {
-  balance_microcents: number;
-  balance_dollars: string;
-};
-
-export type AutoReloadConfig = {
-  enabled: boolean;
-  threshold_cents?: number;
-  amount_cents?: number;
+  /** Metronome prepaid balance in microcents — null when unavailable
+   *  (Metronome outage, or the owner has no Metronome customer yet). */
+  balance_microcents: number | null;
+  balance_dollars: string | null;
 };
 
 export type TopUpResult = {
-  /** Stripe-hosted Checkout URL — frontend should `window.location.href = checkout_url`. */
-  checkout_url: string;
+  /** "requested" — Metronome charges the saved card and releases the
+   *  credits asynchronously; there is no checkout redirect. */
+  status: string;
+  amount_cents: number;
 };
 
 export function useCredits() {
@@ -26,8 +24,9 @@ export function useCredits() {
     "/billing/credits/balance",
     (path: string) => api.get(path) as Promise<CreditsBalance>,
     {
-      // Top-ups land via Stripe webhook, so revalidate quickly to surface the
-      // new balance without forcing the user to refresh the page manually.
+      // Top-ups release asynchronously (Metronome collects via the saved
+      // card), so revalidate quickly to surface the new balance without
+      // forcing the user to refresh the page manually.
       refreshInterval: 30_000,
       revalidateOnFocus: true,
     },
@@ -39,10 +38,6 @@ export function useCredits() {
     })) as TopUpResult;
   };
 
-  const setAutoReload = async (params: AutoReloadConfig): Promise<void> => {
-    await api.put("/billing/credits/auto_reload", params);
-  };
-
   return {
     balance: data,
     // SWR v2 exposes a native `isLoading` flag that correctly reports
@@ -52,6 +47,5 @@ export function useCredits() {
     error,
     refresh: mutate,
     startTopUp,
-    setAutoReload,
   };
 }

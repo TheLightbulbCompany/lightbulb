@@ -53,8 +53,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       pendingUpdatesTable: database.pendingUpdatesTable,
       channelLinksTable: database.channelLinksTable,
       adminActionsTable: database.adminActionsTable,
-      creditsTable: database.creditsTable,
-      creditTransactionsTable: database.creditTransactionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,
       paperclipCompaniesTable: database.paperclipCompaniesTable,
@@ -227,6 +225,50 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Match.objectLike({
               Name: "BEDROCK_OWNER_ROLE_PREFIX",
               Value: "isol8-dev-owner-bedrock",
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+});
+
+describe("ServiceStack — Metronome lifecycle env split", () => {
+  test("dev runs the lifecycle live against the sandbox rate card", () => {
+    // Dev's runbook is done (sandbox token + rate card + webhook secret), so
+    // the lifecycle switch is on and the contract references the sandbox
+    // rate card created 2026-06-10.
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({
+              Name: "METRONOME_LIFECYCLE_ENABLED",
+              Value: "true",
+            }),
+            Match.objectLike({
+              Name: "METRONOME_RATE_CARD_ID",
+              Value: "99576f5a-37d2-4983-ba64-fea9bad96e08",
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("prod lifecycle stays off until the prod console runbook", () => {
+    const prodTemplate = buildServiceStack("prod");
+    prodTemplate.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({
+              Name: "METRONOME_LIFECYCLE_ENABLED",
+              Value: "false",
+            }),
+            Match.objectLike({
+              Name: "METRONOME_RATE_CARD_ID",
+              Value: "",
             }),
           ]),
         }),

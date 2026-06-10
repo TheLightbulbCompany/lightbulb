@@ -1,4 +1,4 @@
-"""Billing API endpoints — flat-fee model with credit ledger."""
+"""Billing API endpoints — flat-fee subscription + Metronome-backed credits."""
 
 import asyncio
 import logging
@@ -13,7 +13,7 @@ from core.auth import AuthContext, get_current_user, get_owner_type, resolve_own
 from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
-from core.services import clerk_admin, credit_ledger
+from core.services import clerk_admin
 from core.services.billing_service import BillingService
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
@@ -518,21 +518,16 @@ async def change_provider(
 
 
 # ---------------------------------------------------------------------------
-# Credit ledger endpoints (Plan 2 §6.2 / §6.4)
+# Credit endpoints — Metronome is the only balance source
 # ---------------------------------------------------------------------------
 
 
-# Hard caps on credit-purchase amounts. These exist as a safety rail
-# (audit C4 / M4) — without an upper bound, a malicious or compromised
-# user could (a) request a $99k off-session auto-reload that locks in a
-# disputable charge, or (b) trick a phished user into pre-paying an
-# unreasonable amount via Elements. Stripe will likely reject extremes
-# itself, but defense in depth says we cap server-side too.
-#
-# Values are deliberately conservative; raise via a code change + a
-# pricing-tier conversation rather than user-facing input.
+# Hard cap on credit-purchase amounts — a safety rail: without an upper
+# bound, a compromised session could lock in an unreasonable
+# charge-automatically payment against the saved card. Metronome/Stripe
+# would likely reject extremes too, but defense in depth says we cap
+# server-side. Raise via a code change + a pricing-tier conversation.
 _TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
-_AUTO_RELOAD_MAX_CENTS = 20_000  # $200.00 — recurring off-session ceiling
 
 
 class TopUpRequest(BaseModel):
@@ -544,20 +539,14 @@ class TopUpRequest(BaseModel):
     )
 
 
-class AutoReloadRequest(BaseModel):
-    enabled: bool
-    threshold_cents: int | None = Field(default=None, ge=500, le=_AUTO_RELOAD_MAX_CENTS)
-    amount_cents: int | None = Field(default=None, ge=500, le=_AUTO_RELOAD_MAX_CENTS)
-
-
 async def _metronome_balance_microcents(owner_id: str) -> int | None:
-    """Display-only Metronome balance for the Credits panel.
+    """The owner's Metronome prepaid balance, in microcents.
 
-    Strictly informational: the gate and the DDB-ledger number are untouched
-    by whatever this returns. None when the Metronome lifecycle switch is
-    off, on ANY failure, or when the owner has no Metronome customer yet —
-    a Metronome outage (or an unprovisioned owner) must never 500 or
-    slow-fail the balance endpoint into an error state.
+    None when the Metronome lifecycle switch is off, on ANY failure, or
+    when the owner has no Metronome customer yet — a Metronome outage (or
+    an unprovisioned owner) must never 500 or slow-fail the balance
+    endpoint into an error state. The synchronous gates never read this
+    (they use the fast-gate projection — core/services/metronome_gate.py).
     """
     if not settings.METRONOME_LIFECYCLE_ENABLED:
         return None
@@ -586,19 +575,22 @@ async def _metronome_balance_microcents(owner_id: str) -> int | None:
 @router.get(
     "/credits/balance",
     summary="Get the user's prepaid credit balance",
-    description=("Returns the user's current prepaid Claude credit balance in microcents and dollars (formatted)."),
+    description=(
+        "Returns the owner's Metronome prepaid balance in microcents and "
+        "dollars (formatted). Both fields are null when the balance is "
+        "unavailable (Metronome outage, or the owner has no Metronome "
+        "customer yet)."
+    ),
 )
 async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
     # Credits pool at the owner level (org_id for org context, user_id for
     # personal). Keying on ctx.user_id meant org members couldn't see the
     # admin-funded balance and got blocked at chat with out_of_credits.
     owner_id = resolve_owner_id(ctx)
-    balance_uc = await credit_ledger.get_balance(owner_id)
-    dollars = f"{balance_uc / 1_000_000:.2f}"
+    balance_uc = await _metronome_balance_microcents(owner_id)
     return {
         "balance_microcents": balance_uc,
-        "balance_dollars": dollars,
-        "metronome_balance_microcents": await _metronome_balance_microcents(owner_id),
+        "balance_dollars": f"{balance_uc / 1_000_000:.2f}" if balance_uc is not None else None,
     }
 
 
@@ -626,32 +618,6 @@ async def top_up_credits(
     except FundingError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "requested", "amount_cents": body.amount_cents}
-
-
-@router.put(
-    "/credits/auto_reload",
-    summary="Configure auto-reload",
-    description=("Configure auto-reload: when balance drops below threshold_cents, charge amount_cents off-session."),
-)
-async def set_auto_reload(
-    body: AutoReloadRequest,
-    ctx: AuthContext = Depends(get_current_user),
-):
-    if body.enabled and (body.threshold_cents is None or body.amount_cents is None):
-        raise HTTPException(
-            status_code=400,
-            detail="threshold_cents and amount_cents required when enabling",
-        )
-    await credit_ledger.set_auto_reload(
-        resolve_owner_id(ctx),
-        enabled=body.enabled,
-        threshold_cents=body.threshold_cents,
-        amount_cents=body.amount_cents,
-    )
-    # Return JSON (not 204) — the frontend `useApi` helper unconditionally
-    # parses successful responses with .json(), so an empty body is read as
-    # a parse failure and surfaces as an error in CreditsPanel.
-    return {"status": "ok"}
 
 
 @router.post(

@@ -30,6 +30,8 @@ export class AuthStack extends cdk.Stack {
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
   public readonly bedrockMeterToken: secretsmanager.Secret;
+  public readonly metronomeApiKey: secretsmanager.Secret;
+  public readonly metronomeWebhookSecret: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -114,6 +116,31 @@ export class AuthStack extends cdk.Stack {
       "bedrock_meter_token",
       { passwordLength: 64, excludePunctuation: true },
       "Pre-minted bedrock_meter service-token JWT injected into the meter Lambda; overwritten out-of-band after mint_meter().",
+    );
+
+    // Metronome API key for the backend's lifecycle + gating modules:
+    // customer/contract provisioning, top-up funding, the low-balance
+    // webhook's owner resolution, and balance display. The backend never
+    // ingests usage — the meter Lambda does, and gets its own per-env twin
+    // of this secret when it is wired. The api key is a SANDBOX token in
+    // dev (Metronome is token-scoped: same base URL, the token decides
+    // sandbox vs prod); prod gets a prod token after the sales engagement.
+    // CDK generates a random placeholder on first create; the operator
+    // overwrites it out-of-band via `aws secretsmanager put-secret-value`
+    // with the real Metronome token. Same CMK as the other auth secrets, so
+    // the backend task role's KmsDecryptForSecrets + wildcard SecretsAccess
+    // already cover read.
+    this.metronomeApiKey = createSecret(
+      "MetronomeApiKey",
+      "metronome_api_key",
+      { passwordLength: 48, excludePunctuation: true },
+      "Metronome API bearer token (sandbox in dev, prod after sales). Overwritten out-of-band with the real token.",
+    );
+    this.metronomeWebhookSecret = createSecret(
+      "MetronomeWebhookSecret",
+      "metronome_webhook_secret",
+      { passwordLength: 48, excludePunctuation: true },
+      "HMAC key for verifying Metronome-Webhook-Signature. Overwritten out-of-band with the value from the Metronome dashboard webhook config.",
     );
 
     // Bootstrap admin Better Auth credentials. CDK creates the secret

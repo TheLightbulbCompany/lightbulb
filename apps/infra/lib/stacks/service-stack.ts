@@ -64,6 +64,10 @@ export interface SecretNames {
    * and is encrypted under the same CMK, so `KmsDecryptForSecrets` covers it.
    */
   gogKeyringPassword: string;
+  /** Metronome API bearer token (sandbox/prod by token). Read by the lifecycle/gating modules. */
+  metronomeApiKey: string;
+  /** HMAC key verifying inbound Metronome webhook signatures. */
+  metronomeWebhookSecret: string;
 }
 
 export interface ServiceStackProps extends cdk.StackProps {
@@ -517,6 +521,15 @@ export class ServiceStack extends cdk.Stack {
           // grant (GetItem/PutItem/UpdateItem/DeleteItem/Query) is identical.
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-aip-owners`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-aip-owners/index/*`,
+          // Metronome local fast-gate flag (Phase 2). Folded into this by-name
+          // statement for the SAME reason as bedrock-aip-owners above: a separate
+          // grantReadWriteData would both bloat the near-10 KB inline policy
+          // (tipping CDK into an overflow ManagedPolicy that relocates this very
+          // statement) AND export the table ARN cross-stack. The action set
+          // (GetItem/PutItem/UpdateItem/Query) matches MetronomeFastGate +
+          // metronome_provisioning + metronome_funding.
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-metronome-fast-gate`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-metronome-fast-gate/index/*`,
         ],
       }),
     );
@@ -995,6 +1008,28 @@ export class ServiceStack extends cdk.Stack {
         CREDIT_TRANSACTIONS_TABLE:
           props.database.creditTransactionsTable.tableName,
         OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
+        // Metronome lifecycle + gating settings. The backend provisions
+        // Metronome customers, funds payment-gated top-up commits, handles
+        // the low-balance webhook, and displays balances — it never ingests
+        // usage (the meter Lambda does). Base URL is the same for sandbox +
+        // prod (token decides env). Fast-gate table backs the synchronous
+        // chat gate's balance projection. LEDGER_BACKEND is NOT set here —
+        // it stays the code default "ddb" (the billed truth) until the DDB
+        // ledger is deleted; the backend has no Metronome ledger backend to
+        // flip to, so overriding it would fail boot.
+        METRONOME_BASE_URL: "https://api.metronome.com/v1",
+        // Literal name (not a cross-stack tableName Ref) — same posture as
+        // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
+        // DynamoDbIntegrations statement, so no cross-stack export is created.
+        METRONOME_FAST_GATE_TABLE: `isol8-${env}-metronome-fast-gate`,
+        // Master switch for the Metronome customer lifecycle (provisioning,
+        // funding, balance display). Stays "false" until the per-env runbook
+        // is done — real API tokens in Secrets Manager, the rate card created
+        // in the Metronome console (its id wired below), and the webhook
+        // secret registered — then it is flipped to "true" per environment.
+        METRONOME_LIFECYCLE_ENABLED: "false",
+        METRONOME_RATE_CARD_ID: "",
+        METRONOME_CREDITS_PRODUCT_ID: "",
         // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
         // table is granted BY NAME above, so the env var is the literal name
         // (not a cross-stack tableName ref). The boundary + base-policy ARNs
@@ -1112,6 +1147,21 @@ export class ServiceStack extends cdk.Stack {
             this,
             "ImportGogKeyringPassword",
             props.secretNames.gogKeyringPassword,
+          ),
+        ),
+        // Read via settings.METRONOME_API_KEY by the Metronome lifecycle
+        // modules (customer provisioning, top-up funding, balance display)
+        // unconditionally — Metronome shadows even while the DDB ledger
+        // still bills, so the key is live in every environment.
+        // KMS decrypt covered by the wildcard SecretsAccess + same CMK.
+        METRONOME_API_KEY: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportMetronomeApiKey", props.secretNames.metronomeApiKey),
+        ),
+        METRONOME_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportMetronomeWebhookSecret",
+            props.secretNames.metronomeWebhookSecret,
           ),
         ),
       },

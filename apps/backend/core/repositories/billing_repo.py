@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
@@ -52,6 +52,58 @@ async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
         KeyConditionExpression=Key("stripe_customer_id").eq(stripe_customer_id),
     )
     return response.get("Items", [])
+
+
+async def get_by_metronome_customer_id(metronome_customer_id: str) -> dict | None:
+    """Resolve the billing row from a Metronome customer UUID.
+
+    Used by the Metronome webhook, whose payloads identify the customer by
+    the Metronome UUID — not our owner_id. A paginated scan with a filter is
+    acceptable here: webhook volume is one event per threshold crossing, far
+    off any hot path, and the table carries no GSI on this attribute.
+    """
+    table = _get_table()
+    kwargs: dict = {
+        "FilterExpression": Attr("metronome_customer_id").eq(metronome_customer_id),
+    }
+    while True:
+        response = await run_in_thread(table.scan, **kwargs)
+        items = response.get("Items", [])
+        if items:
+            return items[0]
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return None
+        kwargs["ExclusiveStartKey"] = last_key
+
+
+async def set_metronome_ids(
+    owner_id: str,
+    *,
+    metronome_customer_id: str,
+    metronome_contract_id: str,
+) -> None:
+    """Persist the Metronome customer UUID + per-customer contract id on the
+    billing row.
+
+    Written once at provision time; ``ensure_metronome_customer`` keys its
+    short-circuit on these attributes, so the write must land on an EXISTING
+    row — an unconditional update would upsert a phantom
+    ``{owner_id, metronome_customer_id}`` row with no stripe_customer_id
+    (same trap documented on ``clear_provider_choice``).
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET metronome_customer_id = :m, metronome_contract_id = :c, updated_at = :t",
+        ExpressionAttributeValues={
+            ":m": metronome_customer_id,
+            ":c": metronome_contract_id,
+            ":t": utc_now_iso(),
+        },
+        ConditionExpression="attribute_exists(owner_id)",
+    )
 
 
 async def create_if_not_exists(

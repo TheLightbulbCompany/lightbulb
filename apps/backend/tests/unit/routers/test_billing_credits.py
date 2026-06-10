@@ -58,9 +58,12 @@ async def test_get_balance_returns_microcents(async_client, credit_ledger_tables
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
+    # metronome_balance_microcents is display-only and None here: the moto
+    # environment has no billing row / Metronome customer for this owner.
     assert resp.json() == {
         "balance_microcents": 12_345_678,
         "balance_dollars": "12.35",
+        "metronome_balance_microcents": None,
     }
 
 
@@ -79,7 +82,11 @@ async def test_get_balance_org_member_reads_owner_id(async_client_org_member, cr
     with patch("routers.billing.credit_ledger.get_balance", new=fake_get_balance):
         resp = await async_client_org_member.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    assert resp.json() == {"balance_microcents": 9_876_543, "balance_dollars": "9.88"}
+    assert resp.json() == {
+        "balance_microcents": 9_876_543,
+        "balance_dollars": "9.88",
+        "metronome_balance_microcents": None,
+    }
     assert captured["key"] == "org_test_456"
 
 
@@ -454,3 +461,97 @@ async def test_webhook_metadata_without_owner_id_no_ops(async_client, monkeypatc
         )
     assert resp.status_code == 200
     mock_top_up.assert_not_called()
+
+
+def _fake_metronome_client(net_balance=12.34):
+    from unittest.mock import MagicMock
+
+    fake = MagicMock()
+    fake.get_net_balance = AsyncMock(return_value={"net_balance": net_balance})
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_get_balance_includes_metronome_balance_when_provisioned(async_client, credit_ledger_tables, monkeypatch):
+    """When the owner has a Metronome customer, the display-only
+    metronome_balance_microcents rides along (Metronome cents -> microcents,
+    see core/billing/metronome_units.py)."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    fake = _fake_metronome_client(net_balance=1234)  # cents == $12.34
+    with (
+        patch("routers.billing.credit_ledger.get_balance", new=AsyncMock(return_value=1_000_000)),
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
+        ),
+        patch("core.billing.metronome_client.for_settings", return_value=fake),
+    ):
+        resp = await async_client.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["metronome_balance_microcents"] == 12_340_000
+    # The DDB-ledger number is untouched by the Metronome read.
+    assert body["balance_microcents"] == 1_000_000
+    fake.get_net_balance.assert_awaited_once_with(customer_id="cust-uuid-1")
+
+
+@pytest.mark.asyncio
+async def test_get_balance_metronome_none_when_lifecycle_disabled(async_client, credit_ledger_tables, monkeypatch):
+    """With the lifecycle switch off, the display degrades to None without
+    constructing a Metronome client (no doomed calls against placeholder
+    secrets)."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
+    with (
+        patch("routers.billing.credit_ledger.get_balance", new=AsyncMock(return_value=1_000_000)),
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
+        ) as row_mock,
+        patch("core.billing.metronome_client.for_settings") as for_settings_mock,
+    ):
+        resp = await async_client.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    assert resp.json()["metronome_balance_microcents"] is None
+    for_settings_mock.assert_not_called()
+    row_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_balance_metronome_error_yields_none(async_client, credit_ledger_tables, monkeypatch):
+    """A Metronome outage must never 500 the balance endpoint — the field
+    degrades to None and the ledger number still serves."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    fake = _fake_metronome_client()
+    fake.get_net_balance = AsyncMock(side_effect=RuntimeError("metronome down"))
+    with (
+        patch("routers.billing.credit_ledger.get_balance", new=AsyncMock(return_value=2_000_000)),
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
+        ),
+        patch("core.billing.metronome_client.for_settings", return_value=fake),
+    ):
+        resp = await async_client.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["metronome_balance_microcents"] is None
+    assert body["balance_microcents"] == 2_000_000
+
+
+@pytest.mark.asyncio
+async def test_get_balance_no_metronome_customer_yields_none(async_client, credit_ledger_tables, monkeypatch):
+    """Owners not yet provisioned in Metronome get None without any HTTP call."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    fake = _fake_metronome_client()
+    with (
+        patch("routers.billing.credit_ledger.get_balance", new=AsyncMock(return_value=3_000_000)),
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "stripe_customer_id": "cus_x"}),
+        ),
+        patch("core.billing.metronome_client.for_settings", return_value=fake),
+    ):
+        resp = await async_client.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    assert resp.json()["metronome_balance_microcents"] is None
+    fake.get_net_balance.assert_not_awaited()

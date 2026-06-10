@@ -550,6 +550,39 @@ class AutoReloadRequest(BaseModel):
     amount_cents: int | None = Field(default=None, ge=500, le=_AUTO_RELOAD_MAX_CENTS)
 
 
+async def _metronome_balance_microcents(owner_id: str) -> int | None:
+    """Display-only Metronome balance for the Credits panel.
+
+    Strictly informational: the gate and the DDB-ledger number are untouched
+    by whatever this returns. None when the Metronome lifecycle switch is
+    off, on ANY failure, or when the owner has no Metronome customer yet —
+    a Metronome outage (or an unprovisioned owner) must never 500 or
+    slow-fail the balance endpoint into an error state.
+    """
+    if not settings.METRONOME_LIFECYCLE_ENABLED:
+        return None
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id)
+        customer_id = (account or {}).get("metronome_customer_id")
+        if not customer_id:
+            return None
+        from core.billing import metronome_client
+        from core.billing.metronome_units import cents_to_microcents
+
+        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
+            data = await metronome_client.for_settings(http).get_net_balance(customer_id=customer_id)
+        net_balance = data.get("net_balance")
+        if net_balance is None:
+            return None
+        # getNetBalance reports Metronome's USD credit type, denominated in
+        # CENTS (see core/billing/metronome_units.py); the API surface
+        # speaks microcents.
+        return cents_to_microcents(float(net_balance))
+    except Exception:
+        logger.warning("Metronome balance read failed for owner %s — omitting from response", owner_id, exc_info=True)
+        return None
+
+
 @router.get(
     "/credits/balance",
     summary="Get the user's prepaid credit balance",
@@ -559,9 +592,14 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
     # Credits pool at the owner level (org_id for org context, user_id for
     # personal). Keying on ctx.user_id meant org members couldn't see the
     # admin-funded balance and got blocked at chat with out_of_credits.
-    balance_uc = await credit_ledger.get_balance(resolve_owner_id(ctx))
+    owner_id = resolve_owner_id(ctx)
+    balance_uc = await credit_ledger.get_balance(owner_id)
     dollars = f"{balance_uc / 1_000_000:.2f}"
-    return {"balance_microcents": balance_uc, "balance_dollars": dollars}
+    return {
+        "balance_microcents": balance_uc,
+        "balance_dollars": dollars,
+        "metronome_balance_microcents": await _metronome_balance_microcents(owner_id),
+    }
 
 
 @router.post(

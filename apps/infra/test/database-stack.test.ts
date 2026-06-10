@@ -246,3 +246,31 @@ describe("DatabaseStack — bedrock-aip-owners reverse table", () => {
     });
   });
 });
+
+describe("DatabaseStack — metronome fast-gate table (Phase 2)", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates the metronome-fast-gate table keyed on owner_id", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-metronome-fast-gate",
+      KeySchema: [{ AttributeName: "owner_id", KeyType: "HASH" }],
+      AttributeDefinitions: Match.arrayWith([
+        { AttributeName: "owner_id", AttributeType: "S" },
+      ]),
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("metronome-fast-gate uses customer-managed KMS encryption (matches stack posture)", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-metronome-fast-gate",
+      SSESpecification: Match.objectLike({
+        SSEEnabled: true,
+        SSEType: "KMS",
+      }),
+    });
+  });
+});

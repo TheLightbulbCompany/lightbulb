@@ -8,6 +8,17 @@ from core.auth import AuthContext
 from core.services.user_provision import ensure_user_ready
 
 
+@pytest.fixture(autouse=True)
+def _mock_ensure_metronome_customer():
+    """ensure_user_ready provisions the Metronome customer inline on the
+    owner path (best-effort); stub it so these tests never touch billing DDB."""
+    with patch(
+        "core.services.user_provision.ensure_metronome_customer",
+        new=AsyncMock(return_value="cust-uuid"),
+    ) as mock:
+        yield mock
+
+
 def _personal_auth(user_id: str = "user_123", email: str = "u@example.com") -> AuthContext:
     """Personal-context AuthContext (no org)."""
     return AuthContext(
@@ -759,3 +770,76 @@ async def test_provision_container_false_skips_container_dispatch_for_admin():
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), provision_container=False)
     fake_provisioning.provision_member.assert_awaited_once()
     assert captured == [], f"provision_container=False must skip container dispatch, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_metronome_failure_does_not_block_provisioning(_mock_ensure_metronome_customer):
+    """A Metronome 5xx (or any error) on the inline customer-provision call is
+    best-effort: paperclip provisioning + container dispatch still run, and
+    nothing raises. The short-circuit keys on the persisted
+    metronome_customer_id, so the next /container/status poll retries."""
+    _mock_ensure_metronome_customer.side_effect = RuntimeError("metronome 503")
+    fake_provisioning = MagicMock()
+    fake_provisioning.provision_org = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+    _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="user_p")
+    fake_provisioning.provision_org.assert_awaited_once()
+    assert captured == ["background_provision"]
+
+
+@pytest.mark.asyncio
+async def test_metronome_customer_not_provisioned_for_org_member(_mock_ensure_metronome_customer):
+    """Org members never provision the org's Metronome customer — that
+    belongs to the org owner_id and an admin poll creates it."""
+    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
+    fake_provisioning.provision_member = AsyncMock()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_member_auth())
+    _mock_ensure_metronome_customer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metronome_customer_provisioned_for_org_admin_with_org_owner_id(_mock_ensure_metronome_customer):
+    """Org admins provision the Metronome customer keyed on the ORG owner_id
+    (the billing row's PK), never their personal user_id."""
+    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.provision_member = AsyncMock()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="org_xyz")

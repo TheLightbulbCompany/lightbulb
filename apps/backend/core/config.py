@@ -104,6 +104,48 @@ class Settings(BaseSettings):
     METER_IS_LIVE: bool = False  # cutover flag OWNED by Plan 4: when True, Plan 3's AWS meter deplete() is the sole biller (and Plan 3 then calls enforce_after_deplete) and the legacy connection_pool deduct is gated off; when False, Plan 3 is shadow-only (logs, no deplete, no enforce) and the legacy deduct is the live biller. Both paths read this ONE flag so the cutover is order-independent.
     OAUTH_TOKENS_TABLE: str = ""
 
+    # --- Metronome lifecycle + gating ---
+    # Metronome is the usage ledger; the backend never ingests usage into it
+    # (the meter Lambda does that directly). These settings serve the
+    # backend's lifecycle/gating modules: customer provisioning, payment-
+    # gated top-up funding, the low-balance webhook, and balance display.
+    # The environment is token-scoped: same base URL, the token decides
+    # sandbox vs prod, so a sandbox API key only ever touches sandbox data.
+    # Empty defaults keep the backend booting in non-Metronome contexts
+    # (unit tests, local dev). LEDGER_BACKEND stays "ddb" — the DDB ledger
+    # remains the billed truth until it is deleted outright; there is no
+    # config flip that makes the backend read balances from Metronome.
+    METRONOME_BASE_URL: str = os.getenv("METRONOME_BASE_URL", "https://api.metronome.com/v1")
+    """Metronome API base, including the /v1 prefix. Same URL for sandbox + prod."""
+    METRONOME_API_KEY: str = os.getenv("METRONOME_API_KEY", "")
+    """Bearer token. Sandbox token in dev, prod token in prod. From Secrets Manager."""
+    METRONOME_WEBHOOK_SECRET: str = os.getenv("METRONOME_WEBHOOK_SECRET", "")
+    """HMAC-SHA256 key for verifying Metronome-Webhook-Signature on inbound webhooks."""
+    METRONOME_FAST_GATE_TABLE: str = os.getenv("METRONOME_FAST_GATE_TABLE", "")
+    """DDB table backing the local fast-gate flag the synchronous chat gate reads."""
+    METRONOME_LIFECYCLE_ENABLED: bool = os.getenv("METRONOME_LIFECYCLE_ENABLED", "false").lower() == "true"
+    """Master switch for the Metronome customer lifecycle (provisioning,
+    top-up funding, balance display). When False the ~3s /container/status
+    poll never spams doomed calls while the API-key secrets are still
+    placeholders. Flipped per env once the runbook (tokens + rate card +
+    webhook secret) is done. Webhook HMAC verification is independent of
+    this flag (fail-closed on an empty secret)."""
+    METRONOME_RATE_CARD_ID: str = os.getenv("METRONOME_RATE_CARD_ID", "")
+    """Rate card the per-customer contract references at provision time.
+    Created once per env in the Metronome console (runbook step)."""
+    METRONOME_CREDITS_PRODUCT_ID: str = os.getenv("METRONOME_CREDITS_PRODUCT_ID", "")
+    """Metronome product id the prepaid credit commit draws against. Per-env."""
+    METRONOME_LOW_BALANCE_THRESHOLD_CENTS: int = int(os.getenv("METRONOME_LOW_BALANCE_THRESHOLD_CENTS", "500"))
+    """Threshold for the per-customer low_remaining_credit_balance_reached alert
+    created at provision time. When an owner's prepaid balance crosses below
+    this, Metronome fires the webhook that sets the fast-gate flag."""
+
+    BEDROCK_ENFORCEMENT_LIVE: bool = os.getenv("BEDROCK_ENFORCEMENT_LIVE", "false").lower() == "true"
+    """Arms gate + kill-switch enforcement off the Metronome low-balance
+    webhook. When False (default) the webhook still sets the fast-gate flag —
+    ingest is always-on shadow — but never fires the kill-switch, so the
+    Metronome pipeline can be validated end-to-end with zero blast radius."""
+
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
     # keep the backend booting in non-AWS unit-test contexts.
     BEDROCK_AIP_OWNERS_TABLE: str = os.getenv("BEDROCK_AIP_OWNERS_TABLE", "")

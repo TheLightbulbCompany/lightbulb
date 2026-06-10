@@ -26,10 +26,12 @@ from __future__ import annotations
 import calendar
 import os
 import time
+from typing import Any
 
 import boto3
 
 from core.config import settings
+from core.dynamodb import run_in_thread
 
 
 def _table_name() -> str:
@@ -43,8 +45,22 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# This module sits on the synchronous chat hot path, so the boto3 Table
+# resource is built once and cached (per resolved name — tests monkeypatch
+# the env var) instead of reconstructed per call. The repo-wide
+# core.dynamodb.get_table helper isn't usable here because it derives names
+# from DYNAMODB_TABLE_PREFIX, while this table's full name comes from its
+# own env var (wired by service-stack.ts).
+_table_cache: dict[str, Any] = {}
+
+
 def _table():
-    return boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(_table_name())
+    name = _table_name()
+    table = _table_cache.get(name)
+    if table is None:
+        table = boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(name)
+        _table_cache[name] = table
+    return table
 
 
 def is_stale(row: dict | None, max_age_s: int) -> bool:
@@ -79,7 +95,7 @@ class MetronomeFastGate:
         row is NOT blocked (a brand-new owner shouldn't be gated by a missing
         projection).
         """
-        resp = _table().get_item(Key={"owner_id": owner_id}, ConsistentRead=True)
+        resp = await run_in_thread(_table().get_item, Key={"owner_id": owner_id}, ConsistentRead=True)
         item = resp.get("Item")
         if not item:
             return False
@@ -98,7 +114,7 @@ class MetronomeFastGate:
         ``is_blocked`` (which treats a missing row as not-blocked), so this 0
         is only an informational balance for an as-yet-unmetered owner.
         """
-        resp = _table().get_item(Key={"owner_id": owner_id}, ConsistentRead=True)
+        resp = await run_in_thread(_table().get_item, Key={"owner_id": owner_id}, ConsistentRead=True)
         item = resp.get("Item")
         if not item:
             return 0
@@ -109,7 +125,7 @@ class MetronomeFastGate:
         """The raw projection row (or None), for callers that need more than
         the derived blocked-ness — e.g. the lazy-refresh consumer feeding
         ``is_stale`` with the row's ``updated_at``."""
-        resp = _table().get_item(Key={"owner_id": owner_id}, ConsistentRead=True)
+        resp = await run_in_thread(_table().get_item, Key={"owner_id": owner_id}, ConsistentRead=True)
         return resp.get("Item")
 
     async def set_balance(self, owner_id: str, *, remaining_microcents: int) -> None:
@@ -120,11 +136,12 @@ class MetronomeFastGate:
         credit bump — the gate's lazy balance refresh observes the released
         credits and re-arms via this same authoritative set.
         """
-        _table().put_item(
+        await run_in_thread(
+            _table().put_item,
             Item={
                 "owner_id": owner_id,
                 "remaining_microcents": int(remaining_microcents),
                 "blocked": remaining_microcents <= 0,
                 "updated_at": _now_iso(),
-            }
+            },
         )

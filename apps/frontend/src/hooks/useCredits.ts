@@ -8,6 +8,11 @@ export type CreditsBalance = {
    *  (Metronome outage, or the owner has no Metronome customer yet). */
   balance_microcents: number | null;
   balance_dollars: string | null;
+  /** Whether the Metronome credits lifecycle is wired for this environment.
+   *  When false, top-ups are guaranteed to 400 — surfaces must offer a
+   *  different provider path instead of the top-up form. Optional so a
+   *  not-yet-redeployed backend (no field) is treated as enabled. */
+  lifecycle_enabled?: boolean;
 };
 
 export type TopUpResult = {
@@ -40,6 +45,10 @@ export function useCredits() {
 
   return {
     balance: data,
+    // false ONLY when the backend explicitly says so — undefined (still
+    // loading, or an older backend without the field) must not flash the
+    // credits-unavailable state at users in lifecycle-enabled envs.
+    lifecycleEnabled: data ? data.lifecycle_enabled !== false : undefined,
     // SWR v2 exposes a native `isLoading` flag that correctly reports
     // "no data yet, currently fetching" without the stale-while-revalidate
     // false-negative the legacy `!data && !error` idiom produces.

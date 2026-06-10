@@ -7,11 +7,16 @@ const mockBalance = vi.fn();
 const mockStartTopUp = vi.fn();
 const mockRefresh = vi.fn();
 vi.mock("@/hooks/useCredits", () => ({
-  useCredits: () => ({
-    balance: mockBalance(),
-    startTopUp: mockStartTopUp,
-    refresh: mockRefresh,
-  }),
+  useCredits: () => {
+    const balance = mockBalance();
+    return {
+      balance,
+      // Mirrors the real hook: false only when the backend explicitly says so.
+      lifecycleEnabled: balance ? balance.lifecycle_enabled !== false : undefined,
+      startTopUp: mockStartTopUp,
+      refresh: mockRefresh,
+    };
+  },
 }));
 
 // Top-ups are Metronome payment-gated commits charged to the saved card —
@@ -71,6 +76,33 @@ describe("CreditsPanel", () => {
       expect(screen.getByText(/top-up of \$20 requested/i)).toBeInTheDocument(),
     );
     expect(mockRefresh).toHaveBeenCalled();
+  });
+
+  it("latches the submit button after a successful request", async () => {
+    // The payment collects asynchronously — re-enabling after success would
+    // invite a second identical submit (= a second card charge).
+    mockBalance.mockReturnValue({ balance_dollars: "0.00", balance_microcents: 0 });
+    mockStartTopUp.mockResolvedValueOnce({ status: "requested", amount_cents: 2000 });
+    render(<CreditsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i }));
+    const latched = await screen.findByRole("button", { name: /top-up requested/i });
+    expect(latched).toBeDisabled();
+    expect(mockStartTopUp).toHaveBeenCalledTimes(1);
+    fireEvent.click(latched);
+    expect(mockStartTopUp).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables top-up with explanatory copy when the credits lifecycle is off", () => {
+    mockBalance.mockReturnValue({
+      balance_dollars: null,
+      balance_microcents: null,
+      lifecycle_enabled: false,
+    });
+    render(<CreditsPanel />);
+    expect(
+      screen.getByText(/not yet available in this environment/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^add \$20$/i })).toBeDisabled();
   });
 
   it("calls refresh when the refresh icon is clicked", () => {

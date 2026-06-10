@@ -17,7 +17,7 @@ const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
  * updates asynchronously (the hook polls).
  */
 export function CreditsPanel() {
-  const { balance, refresh, startTopUp } = useCredits();
+  const { balance, lifecycleEnabled, refresh, startTopUp } = useCredits();
   const [topUpAmount, setTopUpAmount] = useState(2000);
   const [topUpSubmitting, setTopUpSubmitting] = useState(false);
   const [topUpError, setTopUpError] = useState<string | null>(null);
@@ -30,6 +30,11 @@ export function CreditsPanel() {
     try {
       const r = await startTopUp(topUpAmount);
       if (r?.status !== "requested") throw new Error("Top-up was not accepted");
+      // Latch `topUpRequested` and leave the button disabled: the payment
+      // collects asynchronously, so re-enabling would invite a second
+      // identical submit (= a second card charge) while the first is still
+      // landing. The error path clears it so a failed attempt stays
+      // retryable.
       setTopUpRequested(r.amount_cents);
       void refresh();
     } catch (err) {
@@ -94,18 +99,29 @@ export function CreditsPanel() {
         {topUpRequested !== null && (
           <p className="text-sm text-[#2d8a4e]">
             Top-up of ${topUpRequested / 100} requested — your card on file will be
-            charged and the balance updates shortly.
+            charged and credits can take a few minutes to land.
           </p>
         )}
         <button
           onClick={handleTopUp}
-          disabled={topUpSubmitting || topUpAmount < 500}
+          disabled={
+            topUpSubmitting ||
+            topUpRequested !== null ||
+            lifecycleEnabled === false ||
+            topUpAmount < 500
+          }
           className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
         >
-          {topUpSubmitting ? "Loading…" : `Add $${topUpAmount / 100}`}
+          {topUpSubmitting
+            ? "Loading…"
+            : topUpRequested !== null
+              ? "Top-up requested"
+              : `Add $${topUpAmount / 100}`}
         </button>
         <p className="text-xs text-[#8a8578]">
-          Charged automatically to your card on file — no checkout page.
+          {lifecycleEnabled === false
+            ? "Claude credits are not yet available in this environment — choose a different provider for now."
+            : "Charged automatically to your card on file — no checkout page."}
         </p>
       </div>
     </div>

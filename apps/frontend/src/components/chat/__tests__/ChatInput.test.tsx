@@ -6,6 +6,23 @@ import React from "react";
 import { ChatInput } from "../ChatInput";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+import { capture } from "@/lib/analytics";
+
+describe("ChatInput — analytics ownership", () => {
+  it("does NOT capture chat_message_sent on submit — dispatchNow is the single capture point", () => {
+    // A click is not a send: parked/queued messages must only count when
+    // they actually dispatch, and a second capture here would double-count
+    // every direct send.
+    render(<ChatInput onSend={vi.fn()} />);
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /send message/i }));
+    expect(vi.mocked(capture)).not.toHaveBeenCalledWith(
+      "chat_message_sent",
+      expect.anything(),
+    );
+  });
+});
 
 describe("ChatInput — Queue affordance", () => {
   it("labels the send button 'Send' when idle and 'Queue' while streaming", () => {

@@ -27,21 +27,9 @@ describe("BotSetupWizard", () => {
     postMock.mockResolvedValue({ status: "linked", peer_id: "12345" });
   });
 
-  it("shows the token paste step in create mode", () => {
-    render(
-      <BotSetupWizard
-        mode="create"
-        provider="telegram"
-        agentId="main"
-        onComplete={vi.fn()}
-        onCancel={vi.fn()}
-      />,
-    );
-    expect(screen.getByLabelText(/bot token/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
-  });
-
-  it("enables the next button once a token is typed", async () => {
+  it("reaches the token paste step from the create-mode intro", async () => {
+    // Create mode opens on an intro step (create-your-bot instructions);
+    // the token field lives one Next-click in, behind a Connect CTA.
     const user = userEvent.setup();
     render(
       <BotSetupWizard
@@ -52,8 +40,26 @@ describe("BotSetupWizard", () => {
         onCancel={vi.fn()}
       />,
     );
+    expect(screen.queryByLabelText(/bot token/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /next/i }));
+    expect(screen.getByLabelText(/bot token/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /connect/i })).toBeDisabled();
+  });
+
+  it("enables the Connect button once a token is typed", async () => {
+    const user = userEvent.setup();
+    render(
+      <BotSetupWizard
+        mode="create"
+        provider="telegram"
+        agentId="main"
+        onComplete={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /next/i }));
     await user.type(screen.getByLabelText(/bot token/i), "123:abcABC");
-    expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /connect/i })).toBeEnabled();
   });
 
   it("skips the token step in link-only mode", () => {
@@ -88,7 +94,7 @@ describe("BotSetupWizard", () => {
     await user.type(screen.getByLabelText(/pairing code/i), "BADCODE");
     await user.click(screen.getByRole("button", { name: /link/i }));
     await waitFor(() => {
-      expect(screen.getByText(/code expired or not found/i)).toBeInTheDocument();
+      expect(screen.getByText(/code expired or already used/i)).toBeInTheDocument();
     });
   });
 
@@ -114,7 +120,10 @@ describe("BotSetupWizard", () => {
     });
   });
 
-  it("shows TWO token fields plus a manifest block when provider is slack", () => {
+  it("walks slack through manifest step then TWO token fields", async () => {
+    // Slack opens on the manifest step, then Next reveals the two-token
+    // paste step (App-Level Token + Bot User OAuth Token).
+    const user = userEvent.setup();
     render(
       <BotSetupWizard
         mode="create"
@@ -124,9 +133,9 @@ describe("BotSetupWizard", () => {
         onCancel={vi.fn()}
       />,
     );
+    expect(screen.getAllByText(/manifest/i).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: /next/i }));
     expect(screen.getByLabelText(/app.level token/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/bot token/i)).toBeInTheDocument();
-    // Manifest instructions visible
-    expect(screen.getByText(/paste.*manifest/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/bot user oauth token/i)).toBeInTheDocument();
   });
 });

@@ -13,6 +13,12 @@ vi.mock("@/hooks/useProvisioningState", () => ({
 
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
+  // Components in the stepper tree (useApi consumers) read useAuth/useUser.
+  useAuth: () => ({
+    getToken: vi.fn().mockResolvedValue("test-token"),
+    isSignedIn: true,
+  }),
+  useUser: () => ({ user: null, isLoaded: true }),
 }));
 
 // ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module

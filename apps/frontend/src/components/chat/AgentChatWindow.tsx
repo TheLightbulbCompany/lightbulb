@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import useSWR from "swr";
 
 import { capture } from "@/lib/analytics";
 import { ChatInput } from "./ChatInput";
@@ -42,40 +43,53 @@ function UpdateBanner() {
   const { organization, membership } = useOrganization();
   const { onChatMessage } = useGateway();
 
-  const [updates, setUpdates] = useState<PendingUpdate[]>([]);
   const [applying, setApplying] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  // Updates the user acted on locally (applied / scheduled / snoozed) —
+  // hidden immediately without waiting for a refetch.
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
 
   const isOrg = !!organization;
   const isOrgAdmin = membership?.role === "org:admin";
 
-  const fetchUpdates = useCallback(async () => {
-    try {
-      const data = (await api.get("/container/updates")) as { updates: PendingUpdate[] };
-      const pending = (data.updates || []).filter(
-        (u) => u.status === "pending" && !isSnoozed(updateSnoozeKey(u.update_id)),
-      );
-      setUpdates(pending);
-      setDismissed(false);
-    } catch {
-      // Endpoint may not exist yet -- silently ignore
-    }
-  }, [api]);
+  // SWR (vs. a per-instance fetch effect) so the banner's render branches
+  // and AgentChatWindow's key-driven remounts dedupe onto one request per
+  // window instead of refetching on every mount.
+  const { data, mutate: refetchUpdates } = useSWR<{ updates: PendingUpdate[] }>(
+    "/container/updates",
+    async (url: string) => (await api.get(url)) as { updates: PendingUpdate[] },
+    // Errors are left to throw (endpoint may not exist yet) so SWR keeps
+    // the PREVIOUS data — swallowing them into {updates: []} would make a
+    // transient network error hide an already-visible banner. No retry:
+    // update_available events drive refetches.
+    { revalidateOnFocus: false, dedupingInterval: 15_000, shouldRetryOnError: false },
+  );
 
-  // Fetch on mount
-  useEffect(() => {
-    fetchUpdates();
-  }, [fetchUpdates]);
+  const updates = useMemo(
+    () =>
+      (data?.updates || []).filter(
+        (u) =>
+          u.status === "pending" &&
+          !isSnoozed(updateSnoozeKey(u.update_id)) &&
+          !removedIds.has(u.update_id),
+      ),
+    [data, removedIds],
+  );
+
+  const hideUpdate = useCallback((updateId: string) => {
+    setRemovedIds((prev) => new Set(prev).add(updateId));
+  }, []);
 
   // Listen for update_available WS events to trigger refetch
   useEffect(() => {
     const unsub = onChatMessage((msg: ChatIncomingMessage) => {
       if (msg.type === "update_available") {
-        fetchUpdates();
+        setDismissed(false);
+        refetchUpdates();
       }
     });
     return unsub;
-  }, [onChatMessage, fetchUpdates]);
+  }, [onChatMessage, refetchUpdates]);
 
   const handleApplyNow = useCallback(
     async (updateId: string) => {
@@ -83,14 +97,14 @@ function UpdateBanner() {
       try {
         await api.post(`/container/updates/${updateId}/apply`, { schedule: "now" });
         capture("update_applied");
-        setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
+        hideUpdate(updateId);
       } catch (err) {
         console.error("Failed to apply update:", err);
       } finally {
         setApplying(false);
       }
     },
-    [api],
+    [api, hideUpdate],
   );
 
   const handleScheduleTonight = useCallback(
@@ -98,12 +112,12 @@ function UpdateBanner() {
       try {
         await api.post(`/container/updates/${updateId}/apply`, { schedule: "tonight" });
         capture("update_scheduled");
-        setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
+        hideUpdate(updateId);
       } catch (err) {
         console.error("Failed to schedule update:", err);
       }
     },
-    [api],
+    [api, hideUpdate],
   );
 
   const handleRemindLater = useCallback(
@@ -115,9 +129,9 @@ function UpdateBanner() {
       }
       // Snooze for 4 hours
       setSnoozed(updateSnoozeKey(updateId), 4 * 60 * 60 * 1000);
-      setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
+      hideUpdate(updateId);
     },
-    [api],
+    [api, hideUpdate],
   );
 
   if (dismissed || updates.length === 0) return null;
@@ -226,6 +240,7 @@ export function AgentChatWindow({
     sendMessage,
     cancelMessage,
     clearMessages,
+    isConnected,
     isLoadingHistory,
     needsBootstrap,
     queuedMessages,
@@ -316,6 +331,7 @@ export function AgentChatWindow({
           <ChatInput
             onSend={handleSend}
             onStop={cancelMessage}
+            isConnected={isConnected}
             disabled={!agentId}
             isStreaming={isStreaming}
             isUploading={isUploading}
@@ -362,6 +378,7 @@ export function AgentChatWindow({
             <ChatInput
               onSend={handleSend}
               onStop={cancelMessage}
+              isConnected={isConnected}
               disabled={!agentId}
               isStreaming={isStreaming}
               centered
@@ -395,6 +412,7 @@ export function AgentChatWindow({
       <ChatInput
         onSend={handleSend}
         onStop={cancelMessage}
+        isConnected={isConnected}
         disabled={!agentId}
         isStreaming={isStreaming}
         isUploading={isUploading}

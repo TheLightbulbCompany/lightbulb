@@ -20,6 +20,12 @@ interface ChatInputProps {
   centered?: boolean;
   isUploading?: boolean;
   isStreaming?: boolean;
+  /**
+   * Gateway socket state. Sends while disconnected still queue (by
+   * design, mirroring upstream) — this only drives the "Reconnecting…"
+   * hint so the user knows WHY a send is parked.
+   */
+  isConnected?: boolean;
   suggestedMessage?: string;
   queuedMessages?: {
     id: string;
@@ -46,6 +52,7 @@ export function ChatInput({
   centered,
   isUploading,
   isStreaming,
+  isConnected = true,
   suggestedMessage,
   queuedMessages = [],
   onRemoveQueued,
@@ -111,7 +118,10 @@ export function ChatInput({
   const handleSend = () => {
     if (input.trim() || pendingFiles.length > 0) {
       const files = pendingFiles.map((pf) => pf.file);
-      capture("chat_message_sent", { has_files: files.length > 0 });
+      // No chat_message_sent capture here: useAgentChat.dispatchNow is the
+      // SINGLE capture point, firing only when a message actually goes on
+      // the wire (direct and queue-drained sends alike). A click is not a
+      // send — parked/queued messages must not count until they dispatch.
       onSend(input, files.length > 0 ? files : undefined);
       setInput("");
       setPendingFiles([]);
@@ -210,6 +220,13 @@ export function ChatInput({
             >
               <X className="h-3 w-3" />
             </button>
+          </div>
+        )}
+
+        {!isConnected && (
+          <div className="flex items-center gap-2 mb-2 px-2 py-1 rounded-md bg-[#fdf6e3] border border-[#ede3c4] text-xs text-[#8a7340]">
+            <span className="h-1.5 w-1.5 rounded-full bg-[#c9a227] animate-pulse" />
+            <span>Reconnecting to your agent — messages you send will be delivered once back online.</span>
           </div>
         )}
 

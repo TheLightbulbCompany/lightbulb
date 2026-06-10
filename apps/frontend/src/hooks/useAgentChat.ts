@@ -1202,9 +1202,26 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       opts?: { queueItem?: QueuedMessage },
     ): Promise<boolean> => {
       const agentId = agentIdRef.current;
-      if (!agentId) return false;
-      if (!isConnected) {
-        setError("Not connected. Please wait and try again.");
+      if (!agentId || !isConnected) {
+        console.warn(
+          `[chat] dispatch refused pre-wire: hasAgent=${!!agentId} connected=${isConnected} fromQueue=${!!opts?.queueItem}`,
+        );
+        if (!agentId && !opts?.queueItem) return false;
+        if (!isConnected) {
+          setError("Not connected. Please wait and try again.");
+        }
+        if (opts?.queueItem) {
+          // The drain already removed this item — dropping it here would
+          // lose the user's message with no trace. Park it back instead:
+          // disconnected → waiting-reconnect (replayed on the rising edge),
+          // no agent → failed (user can retry once an agent is selected).
+          const reparked: QueuedMessage = {
+            ...opts.queueItem,
+            sendState: !isConnected ? "waiting-reconnect" : "failed",
+            sendError: !agentId ? "No agent selected" : undefined,
+          };
+          setQueuedMessages((prev) => [reparked, ...prev]);
+        }
         return false;
       }
 
@@ -1227,9 +1244,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       });
 
       try {
+        console.info(`[chat] dispatch runId=${newClientRunId} fromQueue=${!!opts?.queueItem}`);
         sendChat(agentId, message, newClientRunId);
         return true;
       } catch (err) {
+        console.warn(
+          `[chat] dispatch failed runId=${newClientRunId}: ${err instanceof Error ? err.message : err}`,
+        );
         const errorMessage = friendlyError(
           err instanceof Error ? err.message : "Failed to send message",
         );
@@ -1460,6 +1481,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // resumes the normal drain) once the socket is back. Mirrors upstream
       // markQueuedChatSendsWaitingForReconnect (chat-queue.ts:848).
       if (!isConnected) {
+        console.info("[chat] send parked: gateway disconnected, queued as waiting-reconnect");
         const id = `queued-${crypto.randomUUID()}`;
         setQueuedMessages((prev) => [
           ...prev,
@@ -1477,6 +1499,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // set), enqueue instead of firing chat.send. The queue drains off the
       // server's run-ended signal for the active run (see drainQueue).
       if (clientRunIdRef.current !== null) {
+        console.info(`[chat] send queued: run ${clientRunIdRef.current} still in flight`);
         const id = `queued-${crypto.randomUUID()}`;
         setQueuedMessages((prev) => [
           ...prev,

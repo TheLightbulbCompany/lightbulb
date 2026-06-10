@@ -692,7 +692,15 @@ class EcsManager:
         logger.info("Stopped ECS service %s for user %s", service_name, user_id)
 
     async def kill_owner_bedrock(self, owner_id: str) -> None:
-        """Two-pronged Bedrock kill-switch for an owner who ran out of credits.
+        """ADMIN BREAK-GLASS — NOT balance enforcement.
+
+        Balance enforcement is revoke-only (the $50 subscription pays for the
+        container; only Bedrock inference draws credits) — see
+        `core/services/bedrock_enforcement.py`. This combined kill exists for
+        genuine runaways (a container looping Bedrock calls hard enough that
+        even the ~5-15s IAM-propagation window matters, or an incident where
+        an operator wants the box DOWN), invoked by an operator, never by the
+        low-balance webhook.
 
         Fires BOTH:
           1. IAM revoke (`revoke_owner_bedrock` from
@@ -703,18 +711,7 @@ class EcsManager:
              instant stop; the running container is the only live spend source.
 
         The IAM revoke is best-effort: if it raises, the ECS stop MUST still
-        run (the container keeps invoking Bedrock until desired=0 lands). The
-        stop's DDB status flip to "stopped" is durable only because the now-<=0
-        balance keeps `evaluate_provision_gate` returning `credits_required`,
-        so the next `/container/status` poll cannot re-launch the service.
-
-        The ECS stop is the durable half, but it is NOT individually guarded:
-        if `stop_user_service` raises (e.g. `update_service` flakes before the
-        status flip), that exception propagates to bedrock_enforcement's
-        catch-all, which logs and swallows it. The container then keeps
-        spending until the NEXT low-balance trigger re-fires this kill —
-        because the status never became "stopped", `is_owner_service_stopped`
-        does not short-circuit, so the retry path self-heals.
+        run (the container keeps invoking Bedrock until desired=0 lands).
         """
         from core.billing.bedrock_aip import revoke_owner_bedrock
         from core.observability.metrics import put_metric
@@ -730,19 +727,6 @@ class EcsManager:
             )
         await self.stop_user_service(owner_id)
         logger.warning("Bedrock kill-switch completed for owner %s", owner_id)
-
-    async def is_owner_service_stopped(self, owner_id: str) -> bool:
-        """True when the owner's container is already stopped (or has no row).
-
-        Read by bedrock_enforcement's fire path to skip a redundant kill during
-        the ~5-15s IAM-propagation window. Mirrors the status `stop_user_service`
-        writes (`container_repo.update_status(owner_id, "stopped")`); a missing
-        row means there is nothing to kill, so it is treated as stopped.
-        """
-        container = await container_repo.get_by_owner_id(owner_id)
-        if container is None:
-            return True
-        return container.get("status") == "stopped"
 
     async def start_user_service(self, user_id: str) -> None:
         """Scale a user's ECS service to 1 (running).

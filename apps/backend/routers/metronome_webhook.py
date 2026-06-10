@@ -149,7 +149,21 @@ async def _process_event(event: dict, event_id: str) -> Response:
         logger.warning("Metronome low-balance webhook with no remaining_balance: %s", event_id)
         return Response(status_code=200)
 
-    remaining_microcents = cents_to_microcents(remaining_cents)
+    try:
+        remaining_microcents = cents_to_microcents(remaining_cents)
+    except (TypeError, ValueError):
+        # A non-numeric remaining_balance is permanently garbled — letting it
+        # raise into the catch-all would roll the dedup row back and put the
+        # same unprocessable event on infinite redelivery. Keep the dedup row
+        # and ack: redelivery cannot fix the payload.
+        put_metric("metronome.webhook.malformed")
+        logger.warning(
+            "Metronome low-balance webhook %s has non-numeric remaining_balance %r — acking without processing",
+            event_id,
+            remaining_cents,
+        )
+        return Response(status_code=200)
+
     gate = MetronomeFastGate()
 
     # Staleness guard: a low-balance webhook delivered LATE (Metronome

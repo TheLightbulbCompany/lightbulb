@@ -304,6 +304,35 @@ def test_event_without_timestamp_is_processed_without_row_read(client, known_cus
     gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=1_230_000)
 
 
+def test_non_numeric_remaining_balance_acks_200_and_keeps_dedup_row(client, known_customer):
+    """A permanently-garbled remaining_balance must NOT raise into the
+    catch-all (which rolls the dedup row back) — that would put the same
+    unfixable event on infinite redelivery. Ack 200, keep the dedup row,
+    emit the malformed metric."""
+    body = _low_balance_body(remaining_balance="not-a-number")
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch(
+            "routers.metronome_webhook.webhook_dedup.delete_event",
+            new=AsyncMock(),
+        ) as delete_mock,
+        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
+        patch("routers.metronome_webhook.put_metric") as metric_mock,
+        _revoker() as revoke,
+    ):
+        gate = gate_cls.return_value
+        gate.set_balance = AsyncMock()
+        resp = _post(client, body)
+    assert resp.status_code == 200
+    gate.set_balance.assert_not_awaited()
+    revoke.assert_not_called()
+    delete_mock.assert_not_awaited()
+    assert any(call.args[0] == "metronome.webhook.malformed" for call in metric_mock.call_args_list)
+
+
 def test_ignores_unrelated_event_type(client, known_customer):
     body = json.dumps(
         {

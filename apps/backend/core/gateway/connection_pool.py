@@ -1898,7 +1898,9 @@ class GatewayConnectionPool:
            landed could keep talking through the gateway indefinitely on
            cards 1 + 2.
         2. **Card-3 balance.** When ``provider_choice`` is
-           ``bedrock_claude``, the credit balance must be > 0. Cards 1
+           ``bedrock_claude``, the owner must not be blocked by the
+           Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
+           refresh — see ``core/services/metronome_gate.py``). Cards 1
            + 2 don't draw from prepaid credits, so they're not gated
            on balance.
 
@@ -1910,12 +1912,9 @@ class GatewayConnectionPool:
             ``{"blocked": False}`` when chat may proceed.
             ``{"blocked": True, "code": <code>, "message": ...}``
             when the chat must NOT be forwarded to OpenClaw.
-
-        Reads use ``ConsistentRead=True`` so a top-up that just landed
-        via Stripe webhook unblocks the next message immediately.
         """
-        from core.billing.ledger_interface import get_ledger
         from core.repositories import billing_repo
+        from core.services.metronome_gate import is_owner_blocked
         from core.services.provision_gate import is_subscription_active
 
         # --- Layer 1: subscription status ----------------------------
@@ -1940,8 +1939,7 @@ class GatewayConnectionPool:
         if account is None or account.get("provider_choice") != "bedrock_claude":
             return {"blocked": False}
 
-        balance = await get_ledger().get_balance(owner_id, consistent=True)
-        if balance <= 0:
+        if await is_owner_blocked(owner_id):
             return {
                 "blocked": True,
                 "code": "out_of_credits",

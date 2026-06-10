@@ -256,16 +256,12 @@ async def evaluate_provision_gate(
     if provider_choice == "bedrock_claude":
         # Credits pool at the owner level — org members all draw from one
         # balance funded by the admin. clerk_user_id stays per-user for
-        # the OAuth-tokens probe below.
-        from core.billing.ledger_interface import get_ledger
+        # the OAuth-tokens probe below. Blocked-ness comes from the shared
+        # Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
+        # refresh) so this gate and the pre-chat gate can never disagree.
+        from core.services.metronome_gate import is_owner_blocked
 
-        # Strongly-consistent read: this gate authorizes real spend (it lets the
-        # container start) and the credit kill-switch's durability depends on it
-        # reflecting the latest depletion immediately — an eventually-consistent
-        # read could re-open a just-drained balance. Matches the chat gate
-        # (connection_pool.py uses consistent=True for the same reason).
-        balance = await get_ledger().get_balance(owner_id, consistent=True)
-        if balance <= 0:
+        if await is_owner_blocked(owner_id):
             return Gate(
                 code="credits_required",
                 title="Top up Claude credits to start your container",

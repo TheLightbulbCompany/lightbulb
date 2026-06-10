@@ -16,7 +16,7 @@ owner_id), NOT from the ``users`` row. Credit balance reads stay keyed on
 the container owner.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -27,10 +27,8 @@ from core.gateway.connection_pool import GatewayConnection, GatewayConnectionPoo
 
 
 @pytest.mark.asyncio
-async def test_card3_with_zero_balance_blocked():
+async def test_card3_blocked_by_metronome_gate():
     pool = GatewayConnectionPool(management_api=None)
-    ledger = MagicMock()
-    ledger.get_balance = AsyncMock(return_value=0)
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -41,7 +39,7 @@ async def test_card3_with_zero_balance_blocked():
                 }
             ),
         ),
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
+        patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=True)),
     ):
         result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
     assert result["blocked"] is True
@@ -50,10 +48,8 @@ async def test_card3_with_zero_balance_blocked():
 
 
 @pytest.mark.asyncio
-async def test_card3_with_positive_balance_allowed():
+async def test_card3_not_blocked_when_gate_clear():
     pool = GatewayConnectionPool(management_api=None)
-    ledger = MagicMock()
-    ledger.get_balance = AsyncMock(return_value=5_000_000)
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -64,42 +60,17 @@ async def test_card3_with_positive_balance_allowed():
                 }
             ),
         ),
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
+        patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=False)),
     ):
         result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
     assert result == {"blocked": False}
 
 
 @pytest.mark.asyncio
-async def test_card3_uses_consistent_read():
-    """Top-ups landed via webhook must unblock the next chat without
-    eventual-consistency lag — gate_chat reads with consistent=True."""
-    pool = GatewayConnectionPool(management_api=None)
-    ledger = MagicMock()
-    ledger.get_balance = AsyncMock(return_value=10_000_000)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(
-                return_value={
-                    "subscription_status": "active",
-                    "provider_choice": "bedrock_claude",
-                }
-            ),
-        ),
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
-    ):
-        await pool.gate_chat(user_id="u_1", owner_id="o_1")
-    _, kwargs = ledger.get_balance.call_args
-    assert kwargs.get("consistent") is True
-
-
-@pytest.mark.asyncio
 async def test_card3_gate_keyed_on_owner_for_org_credits_pool():
-    """After the org-pooled-credits fix, both provider_choice (from
-    billing_repo) AND credit balance (from the ledger) are keyed on
-    owner_id. Org members all draw from one pool funded by the admin —
-    without this, members see balance=0 and get out_of_credits.
+    """Both provider_choice (from billing_repo) AND the credits gate are
+    keyed on owner_id. Org members all draw from one pool funded by the
+    admin — without this, members get blocked with out_of_credits.
     """
     pool = GatewayConnectionPool(management_api=None)
     billing_mock = AsyncMock(
@@ -108,25 +79,22 @@ async def test_card3_gate_keyed_on_owner_for_org_credits_pool():
             "provider_choice": "bedrock_claude",
         }
     )
-    ledger = MagicMock()
-    ledger.get_balance = AsyncMock(return_value=1_000_000)
+    blocked = AsyncMock(return_value=False)
     with (
         patch("core.repositories.billing_repo.get_by_owner_id", new=billing_mock),
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
+        patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
         result = await pool.gate_chat(user_id="member_X", owner_id="org_Y")
 
     assert result == {"blocked": False}
     billing_mock.assert_awaited_once_with("org_Y")
-    balance_args, _ = ledger.get_balance.call_args
-    assert balance_args[0] == "org_Y"
+    blocked.assert_awaited_once_with("org_Y")
 
 
 @pytest.mark.asyncio
 async def test_card1_oauth_user_never_gated_by_credits():
     pool = GatewayConnectionPool(management_api=None)
-    ledger = MagicMock()
-    ledger.get_balance = AsyncMock()
+    blocked = AsyncMock()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -137,18 +105,17 @@ async def test_card1_oauth_user_never_gated_by_credits():
                 }
             ),
         ),
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
+        patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
         result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
     assert result == {"blocked": False}
-    ledger.get_balance.assert_not_called()
+    blocked.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_card2_byo_user_never_gated_by_credits():
     pool = GatewayConnectionPool(management_api=None)
-    ledger = MagicMock()
-    ledger.get_balance = AsyncMock()
+    blocked = AsyncMock()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -159,11 +126,11 @@ async def test_card2_byo_user_never_gated_by_credits():
                 }
             ),
         ),
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
+        patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
         result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
     assert result == {"blocked": False}
-    ledger.get_balance.assert_not_called()
+    blocked.assert_not_called()
 
 
 @pytest.mark.asyncio

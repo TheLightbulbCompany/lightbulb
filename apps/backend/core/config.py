@@ -145,6 +145,12 @@ class Settings(BaseSettings):
     """Threshold for the per-customer low-remaining-commit-balance alert
     created at provision time. When an owner's prepaid balance crosses below
     this, Metronome fires the webhook that sets the fast-gate flag."""
+    METRONOME_GATE_STALENESS_S: int = int(os.getenv("METRONOME_GATE_STALENESS_S", "900"))
+    """Max age of the fast-gate row before a gate read lazily refreshes it
+    from getNetBalance. The refresh is also the pull-based re-arm path: a
+    Metronome payment-gated top-up releases credits with NO webhook to us,
+    so the first gate read after this window sees the new balance and
+    un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
     BEDROCK_ENFORCEMENT_LIVE: bool = os.getenv("BEDROCK_ENFORCEMENT_LIVE", "false").lower() == "true"
     """Arms gate + kill-switch enforcement off the Metronome low-balance

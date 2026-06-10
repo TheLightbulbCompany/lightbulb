@@ -4,38 +4,22 @@ This module owns the WHEN of the kill-switch; the IAM kill-switch PRIMITIVES
 it relies on (`revoke_owner_bedrock` / `restore_owner_bedrock`) plus the AIP
 resolvers (`resolve_owner_from_aip_arn` / `resolve_tier_from_aip_arn`) live in
 `core/billing/bedrock_aip.py` and are imported lazily on the kill path —
-never redefined here. Two entry points share one fire implementation:
-
-  * `enforce_after_deplete` — the interim-DDB-ledger trigger (still wired
-    while the ledger exists).
-  * `enforce_on_low_balance` — the Metronome low-balance-webhook trigger,
-    additionally gated on settings.BEDROCK_ENFORCEMENT_LIVE so the Metronome
-    pipeline can run in shadow (flag set, no kill) until armed.
+never redefined here. The single trigger is `enforce_on_low_balance` — the
+Metronome low-balance-webhook entry point, gated on
+settings.BEDROCK_ENFORCEMENT_LIVE so the Metronome pipeline can run in shadow
+(flag set, no kill) until armed. Usage ingestion never touches the backend
+(the meter Lambda sends straight to Metronome), so there is no per-deplete
+trigger anymore.
 """
 
 from __future__ import annotations
 
 import logging
 
-from core.billing.ledger_interface import DepleteResult
 from core.config import settings
 from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
-
-
-async def enforce_after_deplete(owner_id: str, result: DepleteResult) -> None:
-    """React to one ledger deplete: fire the kill-switch when this event was
-    newly applied AND the resulting balance is non-positive.
-
-    Called by `POST /internal/usage/from-bedrock-log` right after
-    `get_ledger().deplete(event)`. A deduplicated replay
-    (``applied is False``) is a no-op — it must not thrash ECS on every DLQ
-    re-delivery — and a still-positive balance is a no-op too.
-    """
-    if not result.applied or result.balance_microcents > 0:
-        return
-    await _fire_kill_switch(owner_id, balance_microcents=result.balance_microcents)
 
 
 async def enforce_on_low_balance(owner_id: str, remaining_microcents: int) -> None:

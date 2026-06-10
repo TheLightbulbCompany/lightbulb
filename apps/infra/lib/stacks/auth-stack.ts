@@ -29,7 +29,6 @@ export class AuthStack extends cdk.Stack {
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
-  public readonly bedrockMeterToken: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
 
@@ -104,27 +103,14 @@ export class AuthStack extends cdk.Stack {
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
     );
 
-    // Bedrock meter service token (Plan 3 — the invocation-log meter). The
-    // VALUE is minted out-of-band (a one-time `service_token.mint_meter()` run,
-    // stored via `aws secretsmanager put-secret-value`) — the random value
-    // CDK generates is overwritten before the meter Lambda is wired. createSecret
-    // prepends `isol8/${env}/`, so pass the BARE name; the resulting secret name
-    // `isol8/${env}/bedrock_meter_token` matches BedrockMeterStack's
-    // meterTokenSecretName exactly.
-    this.bedrockMeterToken = createSecret(
-      "BedrockMeterToken",
-      "bedrock_meter_token",
-      { passwordLength: 64, excludePunctuation: true },
-      "Pre-minted bedrock_meter service-token JWT injected into the meter Lambda; overwritten out-of-band after mint_meter().",
-    );
-
-    // Metronome API key for the backend's lifecycle + gating modules:
-    // customer/contract provisioning, top-up funding, the low-balance
-    // webhook's owner resolution, and balance display. The backend never
-    // ingests usage — the meter Lambda does, and gets its own per-env twin
-    // of this secret when it is wired. The api key is a SANDBOX token in
-    // dev (Metronome is token-scoped: same base URL, the token decides
-    // sandbox vs prod); prod gets a prod token after the sales engagement.
+    // Metronome API key, shared by the backend's lifecycle + gating modules
+    // (customer/contract provisioning, top-up funding, the low-balance
+    // webhook's owner resolution, balance display) AND the meter Lambda's
+    // direct usage ingest (BedrockMeterStack imports it by name —
+    // fromSecretNameV2 — so renaming it breaks the meter). The api key is a
+    // SANDBOX token in dev (Metronome is token-scoped: same base URL, the
+    // token decides sandbox vs prod); prod gets a prod token after the sales
+    // engagement.
     // CDK generates a random placeholder on first create; the operator
     // overwrites it out-of-band via `aws secretsmanager put-secret-value`
     // with the real Metronome token. Same CMK as the other auth secrets, so

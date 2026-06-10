@@ -262,18 +262,17 @@ async def test_legacy_billing_row_without_status_does_not_block():
     assert result == {"blocked": False}
 
 
-# --------- Task 6: METER_IS_LIVE gates the legacy deduct (cutover seam) ---------
+# ------ BEDROCK_ENFORCEMENT_LIVE gates the legacy deduct (cutover seam) ------
 #
-# Deferred-merge (flag-gated) variant: the legacy _maybe_deduct_credits call
-# is gated on `not settings.METER_IS_LIVE` so EXACTLY ONE biller is live at
-# every point in time. With the flag False (the default at merge), the legacy
-# path is the sole live biller (Plan 3's meter is shadow-only); flipping the
-# flag True hands billing to the AWS invocation-log meter and skips this call.
-# The two billers write different tx_id namespaces and do NOT dedup against
-# each other, so running both would double-charge — the flag precludes that.
-# The method is kept (not deleted) so the flip stays reversible during meter
-# validation; its deletion is the FINAL post-flip cleanup. The analytics
-# record_usage write is unconditional (independent of the flag).
+# The legacy _maybe_deduct_credits call is gated on
+# `not settings.BEDROCK_ENFORCEMENT_LIVE` so the DDB ledger stays the sole
+# BILLED truth while the flag is False (the default): the meter Lambda's
+# direct-to-Metronome ingest runs in parallel as always-on shadow, but only
+# the DDB number gates/bills pre-cutover, so there is no double-charge.
+# Flipping the flag True hands gating + enforcement to the Metronome pipeline
+# and silences this deduct; the method (and the whole DDB ledger) is deleted
+# in the ledger-deletion PR once Metronome is validated end-to-end. The
+# analytics record_usage write is unconditional (independent of the flag).
 
 
 def _make_connection_with_rpc(session: dict, user_id: str = "u_1") -> GatewayConnection:
@@ -298,11 +297,11 @@ def _bedrock_session() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_meter_live_skips_legacy_deduct_keeps_analytics():
-    """METER_IS_LIVE=True: the AWS meter is the sole biller, so the legacy
-    _maybe_deduct_credits is NOT invoked — but the analytics record_usage
-    write still fires (it is independent of the billing path). This is the
-    'no double-charge' half of the exactly-once seam."""
+async def test_enforcement_live_skips_legacy_deduct_keeps_analytics():
+    """BEDROCK_ENFORCEMENT_LIVE=True: Metronome is the billed truth, so the
+    legacy _maybe_deduct_credits is NOT invoked — but the analytics
+    record_usage write still fires (it is independent of the billing path).
+    This is the 'no double-charge' half of the exactly-once seam."""
     session = _bedrock_session()
     conn = _make_connection_with_rpc(session)
     conn._maybe_deduct_credits = AsyncMock()
@@ -310,7 +309,7 @@ async def test_meter_live_skips_legacy_deduct_keeps_analytics():
 
     with (
         patch("core.services.usage_service.record_usage", new=record_mock),
-        patch("core.gateway.connection_pool.settings.METER_IS_LIVE", new=True),
+        patch("core.gateway.connection_pool.settings.BEDROCK_ENFORCEMENT_LIVE", new=True),
     ):
         await conn._fetch_and_record_usage(session["key"], member_user_id="member_1")
 
@@ -319,11 +318,12 @@ async def test_meter_live_skips_legacy_deduct_keeps_analytics():
 
 
 @pytest.mark.asyncio
-async def test_meter_off_runs_legacy_deduct_keeps_analytics():
-    """METER_IS_LIVE=False (the default): the legacy path is the sole live
-    biller, so _maybe_deduct_credits IS invoked, AND analytics record_usage
-    fires. This is the 'no zero-charge' half of the exactly-once seam — there
-    is never a window where NEITHER biller runs."""
+async def test_enforcement_off_runs_legacy_deduct_keeps_analytics():
+    """BEDROCK_ENFORCEMENT_LIVE=False (the default): the legacy path is the
+    sole BILLED biller (Metronome ingest is shadow), so _maybe_deduct_credits
+    IS invoked, AND analytics record_usage fires. This is the 'no zero-charge'
+    half of the exactly-once seam — there is never a window where NEITHER
+    biller runs."""
     session = _bedrock_session()
     conn = _make_connection_with_rpc(session)
     conn._maybe_deduct_credits = AsyncMock()
@@ -331,7 +331,7 @@ async def test_meter_off_runs_legacy_deduct_keeps_analytics():
 
     with (
         patch("core.services.usage_service.record_usage", new=record_mock),
-        patch("core.gateway.connection_pool.settings.METER_IS_LIVE", new=False),
+        patch("core.gateway.connection_pool.settings.BEDROCK_ENFORCEMENT_LIVE", new=False),
     ):
         await conn._fetch_and_record_usage(session["key"], member_user_id="member_1")
 
@@ -341,7 +341,7 @@ async def test_meter_off_runs_legacy_deduct_keeps_analytics():
 
 def test_maybe_deduct_credits_method_retained_as_flag_gated_safety_net():
     """The legacy biller method is RETAINED (not yet deleted) — it is the
-    reversible safety net gated behind METER_IS_LIVE during meter validation.
-    Its deletion is the final post-flip cleanup, so this test inverts to
-    `not hasattr` only once the meter is confirmed live."""
+    reversible safety net gated behind BEDROCK_ENFORCEMENT_LIVE during
+    Metronome validation. It is deleted with the whole DDB ledger in the
+    ledger-deletion PR, so this test inverts to `not hasattr` then."""
     assert hasattr(GatewayConnection, "_maybe_deduct_credits")

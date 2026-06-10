@@ -710,11 +710,11 @@ class EcsManager:
 
         The ECS stop is the durable half, but it is NOT individually guarded:
         if `stop_user_service` raises (e.g. `update_service` flakes before the
-        status flip), that exception propagates to `enforce_after_deplete`'s
+        status flip), that exception propagates to bedrock_enforcement's
         catch-all, which logs and swallows it. The container then keeps
-        spending until the NEXT applied deplete re-fires this kill — because
-        the status never became "stopped", `is_owner_service_stopped` does not
-        short-circuit, so the retry path self-heals.
+        spending until the NEXT low-balance trigger re-fires this kill —
+        because the status never became "stopped", `is_owner_service_stopped`
+        does not short-circuit, so the retry path self-heals.
         """
         from core.billing.bedrock_aip import revoke_owner_bedrock
         from core.observability.metrics import put_metric
@@ -734,8 +734,8 @@ class EcsManager:
     async def is_owner_service_stopped(self, owner_id: str) -> bool:
         """True when the owner's container is already stopped (or has no row).
 
-        Read by `enforce_after_deplete` to skip a redundant kill during the
-        ~5-15s IAM-propagation window. Mirrors the status `stop_user_service`
+        Read by bedrock_enforcement's fire path to skip a redundant kill during
+        the ~5-15s IAM-propagation window. Mirrors the status `stop_user_service`
         writes (`container_repo.update_status(owner_id, "stopped")`); a missing
         row means there is nothing to kill, so it is treated as stopped.
         """

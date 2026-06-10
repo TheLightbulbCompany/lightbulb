@@ -48,14 +48,16 @@ async def fund_top_up(
     client: MetronomeClient | None = None,
     metronome_customer_id: str | None = None,
     metronome_contract_id: str | None = None,
+    provider_choice: str | None = None,
 ) -> None:
     """Add an ungated prepaid commit for amount_microcents.
 
-    The Metronome customer UUID + contract id live on the billing row (where
-    ensure_metronome_customer persists them at provision time). Callers that
-    already hold the row (e.g. the Stripe webhook, which reads it to decide
-    whether the owner is Metronome-provisioned at all) pass both ids through
-    to skip the duplicate billing-row read.
+    The Metronome customer UUID + contract id + provider_choice live on the
+    billing row (where ensure_metronome_customer persists the ids at
+    provision time). Callers that already hold the row (e.g. the Stripe
+    webhook, which reads it to decide whether the owner is Metronome-
+    provisioned at all) pass all three through to skip the duplicate
+    billing-row read.
     """
     if not settings.METRONOME_LIFECYCLE_ENABLED:
         logger.info("Metronome lifecycle disabled — skipping funding for owner %s", owner_id)
@@ -67,6 +69,7 @@ async def fund_top_up(
         account = await billing_repo.get_by_owner_id(owner_id) or {}
         metronome_customer_id = metronome_customer_id or account.get("metronome_customer_id")
         metronome_contract_id = metronome_contract_id or account.get("metronome_contract_id")
+        provider_choice = provider_choice or account.get("provider_choice")
     if not metronome_customer_id:
         raise FundingError(f"Metronome customer not provisioned for owner_id={owner_id}")
     if not metronome_contract_id:
@@ -110,23 +113,36 @@ async def fund_top_up(
     # Un-kill: re-attach the per-owner scoped Bedrock policy now that the
     # owner is funded again — the kill-switch may have revoked it when the
     # balance crossed zero, and Metronome fires no recovery webhook to undo
-    # it. Idempotent when the kill never fired. Best-effort for the same
-    # reason as the re-arm below: the commit already landed against a
-    # confirmed payment, so a restore failure must not 500 the webhook back
-    # to Stripe (redelivery storm / double commit). It also raises for
-    # owners with no persisted AIP map (non-Bedrock providers) — equally a
-    # log-and-continue, not a funding failure. Imported lazily to keep the
-    # IAM/container layer out of this module's import tree.
-    try:
-        from core.billing.bedrock_aip import restore_owner_bedrock
+    # it. Only Bedrock-managed owners have a policy to restore: BYO/OAuth
+    # owners carry no AIP map, so calling restore for them would just log
+    # noise on every top-up. Idempotent when the kill never fired.
+    # Best-effort for the same reason as the re-arm below: the commit
+    # already landed against a confirmed payment, so a restore failure must
+    # not 500 the webhook back to Stripe (redelivery storm / double commit).
+    # Imported lazily to keep the IAM/container layer out of this module's
+    # import tree.
+    if provider_choice == "bedrock_claude":
+        try:
+            from core.billing.bedrock_aip import restore_owner_bedrock
 
-        await restore_owner_bedrock(owner_id)
-    except Exception:
-        logger.exception(
-            "Bedrock restore failed after funding owner %s session %s (commit landed; gate re-arm still proceeds)",
-            owner_id,
-            stripe_session_id,
-        )
+            await restore_owner_bedrock(owner_id)
+        except Exception as exc:
+            if "no persisted AIP map" in str(exc):
+                # Expected state (container never provisioned / wiped), not
+                # an IAM failure worth an error-level stack trace.
+                logger.info(
+                    "Bedrock restore skipped after funding owner %s session %s: %s",
+                    owner_id,
+                    stripe_session_id,
+                    exc,
+                )
+            else:
+                logger.exception(
+                    "Bedrock restore failed after funding owner %s session %s "
+                    "(commit landed; gate re-arm still proceeds)",
+                    owner_id,
+                    stripe_session_id,
+                )
 
     # Optimistically re-arm the local fast-gate cache so the owner's NEXT chat
     # message unblocks immediately. get_balance reads the cache (not Metronome's

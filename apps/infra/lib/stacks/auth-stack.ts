@@ -118,7 +118,11 @@ export class AuthStack extends cdk.Stack {
       "Pre-minted bedrock_meter service-token JWT injected into the meter Lambda; overwritten out-of-band after mint_meter().",
     );
 
-    // Metronome ledger adapter (Phase 2). The api key is a SANDBOX token in
+    // Metronome API key for the backend's lifecycle + gating modules:
+    // customer/contract provisioning, top-up funding, the low-balance
+    // webhook's owner resolution, and balance display. The backend never
+    // ingests usage — the meter Lambda does, and gets its own per-env twin
+    // of this secret when it is wired. The api key is a SANDBOX token in
     // dev (Metronome is token-scoped: same base URL, the token decides
     // sandbox vs prod); prod gets a prod token after the sales engagement.
     // CDK generates a random placeholder on first create; the operator

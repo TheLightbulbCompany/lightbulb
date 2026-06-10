@@ -34,6 +34,7 @@ def _billing_row_mock(metronome_customer_id):
     if metronome_customer_id:
         row["metronome_customer_id"] = metronome_customer_id
         row["metronome_contract_id"] = "contract-1"
+        row["provider_choice"] = "bedrock_claude"
     return patch(
         "core.services.stripe_webhook_handlers.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value=row),
@@ -64,6 +65,9 @@ async def test_funds_metronome_when_billing_row_has_customer_id(monkeypatch):
     # both ids are passed through so fund_top_up skips a second read.
     assert kwargs["metronome_customer_id"] == "cust-uuid-1"
     assert kwargs["metronome_contract_id"] == "contract-1"
+    # provider_choice rides along so fund_top_up can gate the Bedrock
+    # un-kill without a second billing-row read.
+    assert kwargs["provider_choice"] == "bedrock_claude"
 
 
 @pytest.mark.asyncio

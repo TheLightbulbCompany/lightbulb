@@ -233,6 +233,33 @@ async def test_fund_restores_bedrock_and_rearms_flag(fast_gate_table, provisione
 
 
 @pytest.mark.asyncio
+async def test_fund_skips_restore_for_non_bedrock_provider(fast_gate_table, restore_bedrock_mock):
+    """BYO/OAuth owners have no per-owner AIP map — restoring would only log
+    noise on every top-up, so the un-kill is gated on provider_choice."""
+    fake = _fake_client()
+    with patch(
+        "core.billing.metronome_funding.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value=_billing_row(provider_choice="byo_key")),
+    ):
+        await fund_top_up(
+            owner_id="org_abc",
+            amount_microcents=25_000_000,
+            product_id="prod-credits",
+            stripe_session_id="cs_test_123",
+            client=fake,
+        )
+    fake.edit_contract_add_commits.assert_awaited_once()
+    restore_bedrock_mock.assert_not_awaited()
+    # The fast-gate re-arm is provider-independent (the gate blocks chat for
+    # every provider path) and must still land.
+    item = fast_gate_table.get_item(
+        TableName="test-metronome-fast-gate",
+        Key={"owner_id": {"S": "org_abc"}},
+    )["Item"]
+    assert item["remaining_microcents"]["N"] == "25000000"
+
+
+@pytest.mark.asyncio
 async def test_fund_restore_failure_does_not_raise_and_still_rearms(
     fast_gate_table, provisioned_billing_row, restore_bedrock_mock
 ):

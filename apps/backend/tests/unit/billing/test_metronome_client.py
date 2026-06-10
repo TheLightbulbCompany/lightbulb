@@ -56,7 +56,8 @@ async def test_create_customer_sends_name_and_ingest_aliases():
 
     assert cust_id == "cust-uuid-1"
     args, kwargs = fake.post.call_args
-    assert args[0] == "/customers/create"
+    # Plain REST collection path (sandbox-verified; "/customers/create" 404s).
+    assert args[0] == "/customers"
     assert kwargs["json"] == {"name": "org_abc", "ingest_aliases": ["org_abc"]}
 
 
@@ -104,6 +105,19 @@ async def test_create_contract_sends_rate_card_and_returns_id():
 
 
 @pytest.mark.asyncio
+async def test_create_contract_omits_rate_card_when_unset():
+    # Sandbox-verified: the minimal body {customer_id, starting_at} is
+    # accepted; an empty/absent rate card must not appear in the body.
+    client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
+    contract_id = await client.create_contract(customer_id="cust-uuid-1")
+
+    assert contract_id == "contract-uuid-1"
+    _, kwargs = fake.post.call_args
+    assert "rate_card_id" not in kwargs["json"]
+    assert kwargs["json"]["customer_id"] == "cust-uuid-1"
+
+
+@pytest.mark.asyncio
 async def test_create_contract_raises_on_missing_id():
     client, _ = _client_with(_resp(200, {"data": {}}))
     with pytest.raises(MetronomeError, match="no data.id"):
@@ -133,17 +147,21 @@ async def test_create_alert_shape():
     await client.create_alert(
         customer_id="cust-uuid-1",
         name="isol8-low-balance-org_abc",
-        alert_type="low_remaining_credit_balance_reached",
+        alert_type="low_remaining_commit_balance_reached",
         threshold_cents=500,
+        credit_type_id="ct-usd-cents",
     )
 
     args, kwargs = fake.post.call_args
     assert args[0] == "/alerts/create"
+    # Sandbox-verified create body: credit_type_id is REQUIRED for the
+    # commit-balance alert type (the validator rejects it otherwise).
     assert kwargs["json"] == {
         "customer_id": "cust-uuid-1",
         "name": "isol8-low-balance-org_abc",
-        "alert_type": "low_remaining_credit_balance_reached",
+        "alert_type": "low_remaining_commit_balance_reached",
         "threshold": 500,
+        "credit_type_id": "ct-usd-cents",
     }
 
 
@@ -168,22 +186,38 @@ async def test_set_stripe_billing_config_shape():
 
 
 @pytest.mark.asyncio
-async def test_edit_contract_add_commit_shape():
+async def test_create_prepaid_commit_flat_body_shape():
     client, fake = _client_with(_resp(200, {}))
-    commit = {"product_id": "prod-credits", "amount": 25.0}
-    await client.edit_contract_add_commits(
-        metronome_customer_id="cust-uuid-1",
+    await client.create_prepaid_commit(
+        customer_id="cust-uuid-1",
         contract_id="contract-1",
-        add_commits=[commit],
+        product_id="prod-credits",
+        credit_type_id="ct-usd-cents",
+        amount_cents=2573,
+        description="isol8 top-up stripe_session=cs_test_123 owner=org_abc",
     )
 
     args, kwargs = fake.post.call_args
-    assert args[0] == "/contracts/edit"
-    assert kwargs["json"] == {
-        "customer_id": "cust-uuid-1",
-        "contract_id": "contract-1",
-        "add_commits": [commit],
-    }
+    # Sandbox-verified: "/contracts/edit" does not exist (404); commits land
+    # via customerCommits/create with a FLAT body.
+    assert args[0] == "/contracts/customerCommits/create"
+    body = kwargs["json"]
+    assert body["customer_id"] == "cust-uuid-1"
+    assert body["type"] == "PREPAID"
+    assert body["product_id"] == "prod-credits"
+    # Sandbox-verified required field; fixed ranking — we issue one commit class.
+    assert body["priority"] == 100
+    assert body["applicable_contract_ids"] == ["contract-1"]
+    assert body["invoice_contract_id"] == "contract-1"
+    assert body["description"] == "isol8 top-up stripe_session=cs_test_123 owner=org_abc"
+    # UNGATED: our Stripe Checkout already collected the money.
+    assert "payment_gate_config" not in body
+    schedule = body["access_schedule"]
+    assert schedule["credit_type_id"] == "ct-usd-cents"
+    [item] = schedule["schedule_items"]
+    assert item["amount"] == 2573  # CENTS (Metronome's USD credit type)
+    assert item["starting_at"].endswith("Z")
+    assert item["ending_before"] == "9999-12-31T00:00:00.000Z"
 
 
 @pytest.mark.asyncio

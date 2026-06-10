@@ -2,7 +2,7 @@
 
 Metronome's balance is async (no low-latency SLA), so the synchronous chat
 gate reads the local fast-gate flag instead. This webhook sets that flag on
-alerts.low_remaining_credit_balance_reached and — when enforcement is armed
+the low-balance alert event types and — when enforcement is armed
 (settings.BEDROCK_ENFORCEMENT_LIVE) — fires the Bedrock kill-switch via
 enforce_on_low_balance. There is no backend deplete; between webhook fires
 the flag simply holds its last value, with the kill-switch as the backstop.
@@ -40,7 +40,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_LOW_BALANCE_EVENT = "alerts.low_remaining_credit_balance_reached"
+# The alerts we create are commit-balance alerts (sandbox-verified type:
+# low_remaining_commit_balance_reached — our balance is prepaid commits on a
+# contract). The webhook EVENT-type string is unverifiable until a delivery
+# actually fires, and Metronome's alert-create enum vs webhook event-type
+# naming is not documented as 1:1 — so match a set of the plausible spellings.
+# Set membership is cheap, and dropping a delivery on a wrong single-string
+# match would permanently lose the one low-balance signal (alerts fire once
+# per threshold crossing).
+_LOW_BALANCE_EVENT_TYPES = frozenset(
+    {
+        "alerts.low_remaining_commit_balance_reached",
+        "alerts.low_remaining_credit_balance_reached",
+        "alerts.low_remaining_contract_credit_and_commit_balance_reached",
+    }
+)
 
 
 def _verify_signature(*, secret: str, date_header: str, body: bytes, signature: str) -> bool:
@@ -104,7 +118,7 @@ async def handle_metronome_webhook(
 
 
 async def _process_event(event: dict, event_id: str) -> Response:
-    if event.get("type") != _LOW_BALANCE_EVENT:
+    if event.get("type") not in _LOW_BALANCE_EVENT_TYPES:
         return Response(status_code=200)
 
     props = event.get("properties") or {}

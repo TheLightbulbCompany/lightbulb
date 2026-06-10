@@ -18,6 +18,17 @@ import httpx
 
 from core.config import settings
 
+# Prepaid credits never expire on our side; commit schedule items still need
+# an end, so they get one far past any plausible product lifetime.
+_NO_EXPIRY = "9999-12-31T00:00:00.000Z"
+
+# Relative ranking among commits when several could burn down at once. We
+# issue exactly one commit class (Stripe-confirmed top-ups), so any fixed
+# value works; Metronome's create validator requires the field regardless
+# (sandbox-verified required fields: access_schedule, priority, product_id,
+# type).
+_COMMIT_PRIORITY = 100
+
 
 class MetronomeError(Exception):
     """A Metronome response was well-formed HTTP but semantically unusable
@@ -55,10 +66,12 @@ class MetronomeClient:
         await self._post("/ingest", events)
 
     async def create_customer(self, *, name: str, ingest_aliases: list[str]) -> str:
-        """POST /v1/customers/create — returns the Metronome customer UUID.
+        """POST /v1/customers — returns the Metronome customer UUID.
+        Sandbox-verified: customer create is a plain REST POST on the
+        collection path (a "/customers/create" RPC-style path 404s).
         ingest_aliases lets us send our owner_id directly as customer_id on
         every event (no translation table)."""
-        body = await self._post("/customers/create", {"name": name, "ingest_aliases": ingest_aliases})
+        body = await self._post("/customers", {"name": name, "ingest_aliases": ingest_aliases})
         customer_id = body.get("data", {}).get("id")
         if not customer_id:
             raise MetronomeError(f"create_customer: no data.id in Metronome response (got keys {sorted(body)})")
@@ -75,22 +88,21 @@ class MetronomeClient:
             return None
         return matches[0].get("id")
 
-    async def create_contract(self, *, customer_id: str, rate_card_id: str) -> str:
-        """POST /v1/contracts/create — per-customer contract referencing the
-        env's rate card. Returns the contract id; prepaid commits and
-        balances hang off it. ``starting_at`` must be a UTC-midnight date
-        (Metronome rejects mid-day contract starts); today's midnight makes
-        the contract live immediately. Exact schema is sandbox-validated
-        before cutover."""
+    async def create_contract(self, *, customer_id: str, rate_card_id: str | None = None) -> str:
+        """POST /v1/contracts/create — per-customer contract. Returns the
+        contract id; prepaid commits and balances hang off it. Sandbox-
+        verified: this path is correct as-is, the minimal body
+        {customer_id, starting_at} is accepted, and rate_card_id is
+        OPTIONAL — so it is sent only when the env actually has one
+        configured (an empty-string rate card must not reach the API).
+        ``starting_at`` must be a UTC-midnight date (Metronome rejects
+        mid-day contract starts); today's midnight makes the contract live
+        immediately."""
         starting_at = time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime())
-        body = await self._post(
-            "/contracts/create",
-            {
-                "customer_id": customer_id,
-                "rate_card_id": rate_card_id,
-                "starting_at": starting_at,
-            },
-        )
+        payload: dict[str, Any] = {"customer_id": customer_id, "starting_at": starting_at}
+        if rate_card_id:
+            payload["rate_card_id"] = rate_card_id
+        body = await self._post("/contracts/create", payload)
         contract_id = body.get("data", {}).get("id")
         if not contract_id:
             raise MetronomeError(f"create_contract: no data.id in Metronome response (got keys {sorted(body)})")
@@ -103,11 +115,17 @@ class MetronomeClient:
         body = await self._post("/contracts/list", {"customer_id": customer_id})
         return body.get("data") or []
 
-    async def create_alert(self, *, customer_id: str, name: str, alert_type: str, threshold_cents: int) -> None:
+    async def create_alert(
+        self, *, customer_id: str, name: str, alert_type: str, threshold_cents: int, credit_type_id: str
+    ) -> None:
         """POST /v1/alerts/create — per-customer threshold alert. The threshold
         passes through in cents: Metronome's USD credit type is
         cents-denominated (see core/billing/metronome_units.py), so no
-        conversion belongs here."""
+        conversion belongs here. credit_type_id is REQUIRED for the
+        balance-style alert types we use (sandbox-verified: the create
+        validator rejects the body without it); the exact body below —
+        {alert_type, name, threshold, customer_id, credit_type_id} —
+        returned 200 in the sandbox."""
         await self._post(
             "/alerts/create",
             {
@@ -115,6 +133,7 @@ class MetronomeClient:
                 "name": name,
                 "alert_type": alert_type,
                 "threshold": threshold_cents,
+                "credit_type_id": credit_type_id,
             },
         )
 
@@ -134,19 +153,46 @@ class MetronomeClient:
             },
         )
 
-    async def edit_contract_add_commits(
-        self, *, metronome_customer_id: str, contract_id: str, add_commits: list[dict]
+    async def create_prepaid_commit(
+        self,
+        *,
+        customer_id: str,
+        contract_id: str,
+        product_id: str,
+        credit_type_id: str,
+        amount_cents: int,
+        description: str,
     ) -> None:
-        """POST /v1/contracts/edit — add prepaid commits (credits). Commits
-        are UNGATED: our own Stripe Checkout already collected the money, so
-        a Metronome payment gate would invoice the customer a second time
-        (or never release the credits)."""
+        """POST /v1/contracts/customerCommits/create — add a prepaid commit
+        (credits). Sandbox-verified: a "/contracts/edit" endpoint does not
+        exist (404), and this endpoint takes a FLAT body (commit fields at
+        the top level, contract linkage via applicable_contract_ids +
+        invoice_contract_id) — this exact shape returned 200. The amount is
+        in CENTS: Metronome's USD credit type is cents-denominated (see
+        core/billing/metronome_units.py). The commit is UNGATED (no
+        payment_gate_config): our own Stripe Checkout already collected the
+        money, so a Metronome payment gate would invoice the customer a
+        second time (or never release the credits)."""
         await self._post(
-            "/contracts/edit",
+            "/contracts/customerCommits/create",
             {
-                "customer_id": metronome_customer_id,
-                "contract_id": contract_id,
-                "add_commits": add_commits,
+                "customer_id": customer_id,
+                "type": "PREPAID",
+                "product_id": product_id,
+                "priority": _COMMIT_PRIORITY,
+                "applicable_contract_ids": [contract_id],
+                "invoice_contract_id": contract_id,
+                "description": description,
+                "access_schedule": {
+                    "credit_type_id": credit_type_id,
+                    "schedule_items": [
+                        {
+                            "amount": amount_cents,
+                            "starting_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                            "ending_before": _NO_EXPIRY,
+                        }
+                    ],
+                },
             },
         )
 

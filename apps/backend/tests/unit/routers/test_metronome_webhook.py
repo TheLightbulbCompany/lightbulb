@@ -54,12 +54,27 @@ def _killer(*, already_stopped: bool = False) -> MagicMock:
     return killer
 
 
-def _low_balance_body(customer_id=METRONOME_CUSTOMER_ID, remaining_balance=123, **extra_props):
+# Every event-type spelling the handler must accept: the alerts we create
+# are commit-balance alerts, but the webhook event-type naming is not
+# documented as 1:1 with the alert-create enum, so the handler set-matches.
+ACCEPTED_EVENT_TYPES = (
+    "alerts.low_remaining_commit_balance_reached",
+    "alerts.low_remaining_credit_balance_reached",
+    "alerts.low_remaining_contract_credit_and_commit_balance_reached",
+)
+
+
+def _low_balance_body(
+    customer_id=METRONOME_CUSTOMER_ID,
+    remaining_balance=123,
+    event_type="alerts.low_remaining_commit_balance_reached",
+    **extra_props,
+):
     # remaining_balance / threshold are Metronome's USD credit type: CENTS.
     return json.dumps(
         {
             "id": "evt-1",
-            "type": "alerts.low_remaining_credit_balance_reached",
+            "type": event_type,
             "properties": {
                 "customer_id": customer_id,
                 "remaining_balance": remaining_balance,
@@ -88,8 +103,10 @@ def test_rejects_bad_signature(client):
     assert resp.status_code == 401
 
 
-def test_sets_fast_gate_flag_resolving_owner_from_billing_row(client, known_customer):
-    body = _low_balance_body(remaining_balance=123)  # 123 cents -> 1_230_000 microcents (a 100x slip would show)
+@pytest.mark.parametrize("event_type", ACCEPTED_EVENT_TYPES)
+def test_sets_fast_gate_flag_resolving_owner_from_billing_row(client, known_customer, event_type):
+    # 123 cents -> 1_230_000 microcents (a 100x slip would show)
+    body = _low_balance_body(remaining_balance=123, event_type=event_type)
     killer = _killer()
     with (
         patch(

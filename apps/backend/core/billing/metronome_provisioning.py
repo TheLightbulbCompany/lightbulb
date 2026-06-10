@@ -34,7 +34,11 @@ from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
-_LOW_BALANCE_ALERT_TYPE = "low_remaining_credit_balance_reached"
+# Our balance is PREPAID COMMITS hanging off the per-customer contract, so
+# the commit-balance alert type is the one that tracks it. Sandbox-verified:
+# "low_remaining_credit_balance_reached" is NOT in the alert-create enum
+# (the validator rejects it); "low_remaining_commit_balance_reached" is.
+_LOW_BALANCE_ALERT_TYPE = "low_remaining_commit_balance_reached"
 
 
 class ProvisioningError(Exception):
@@ -117,9 +121,11 @@ async def _create_or_adopt_customer(owner_id: str, client: MetronomeClient) -> s
 
 async def _create_or_adopt_contract(customer_id: str, client: MetronomeClient) -> str:
     try:
+        # rate_card_id is optional on contract create (sandbox-verified) and
+        # is forwarded only when the env actually has one configured.
         return await client.create_contract(
             customer_id=customer_id,
-            rate_card_id=settings.METRONOME_RATE_CARD_ID,
+            rate_card_id=settings.METRONOME_RATE_CARD_ID or None,
         )
     except httpx.HTTPStatusError as exc:
         # Conflict: a prior attempt created the contract but crashed before
@@ -158,6 +164,9 @@ async def _ensure_low_balance_alerts(owner_id: str, customer_id: str, client: Me
                 name=f"isol8-low-balance-{owner_id}-{suffix}",
                 alert_type=_LOW_BALANCE_ALERT_TYPE,
                 threshold_cents=threshold_cents,
+                # Required for commit-balance alert types (sandbox-verified:
+                # the create validator rejects the body without it).
+                credit_type_id=settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID,
             )
         except httpx.HTTPStatusError as exc:
             # A duplicate alert (re-entry after a crash between alert-create

@@ -1,7 +1,8 @@
 "use client";
 
 import "./ChatLayout.css";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import useSWR from "swr";
 import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
@@ -97,7 +98,6 @@ export function ChatLayout({
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
-  const [publishedAgentIds, setPublishedAgentIds] = useState<Set<string>>(new Set());
 
   // TODO: wire to real approvals count when /teams/approvals BFF lands
   const approvalsCount = 0;
@@ -122,7 +122,25 @@ export function ChatLayout({
   useEffect(() => {
     if (!isSignedIn) return;
     if (onboardingPhase !== "ready") return;
-    api.syncUser().catch((err: unknown) => console.error("User sync failed:", err));
+    // Once per browser session: sync is an idempotent Clerk→DDB upsert and
+    // ChatLayout remounts on every view switch / page load — re-firing it
+    // each time is pure backend load.
+    const syncedKey = "isol8:user-synced";
+    try {
+      if (sessionStorage.getItem(syncedKey)) return;
+    } catch {
+      // sessionStorage unavailable (privacy mode) — fall through and sync.
+    }
+    api
+      .syncUser()
+      .then(() => {
+        try {
+          sessionStorage.setItem(syncedKey, "1");
+        } catch {
+          // best effort
+        }
+      })
+      .catch((err: unknown) => console.error("User sync failed:", err));
   }, [isSignedIn, api, onboardingPhase]);
 
   // Dispatch DOM event so page.tsx picks up the current agent (external system sync)
@@ -206,30 +224,28 @@ export function ChatLayout({
   // listing.manifest_json.agent_id (source agent at publish time) with the
   // current installed agent set. Best-effort — failure drops the badge
   // silently rather than breaking the chat shell.
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      if (!user?.id) return;
+  // SWR (vs. a mount effect) so the call dedupes across ChatLayout
+  // remounts and never re-fires on Clerk's getToken identity churn — the
+  // effect form refetched on every auth-state render. Best-effort: errors
+  // drop the badge silently (no retry; the badge isn't load-bearing).
+  const { data: sellerListings } = useSWR(
+    user?.id ? ["seller-listings", user.id] : null,
+    async ([, sellerId]: [string, string]) => {
       const jwt = await getToken();
-      if (!jwt) return;
-      try {
-        const r = await myListings({ sellerId: user.id, jwt });
-        if (!alive) return;
-        const ids = new Set<string>();
-        for (const listing of r.items) {
-          const sourceAgentId = (listing as unknown as { manifest_json?: { agent_id?: string } })
-            .manifest_json?.agent_id;
-          if (sourceAgentId) ids.add(sourceAgentId);
-        }
-        setPublishedAgentIds(ids);
-      } catch {
-        // best effort — drop silently (no badge)
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [user?.id, getToken]);
+      if (!jwt) return { items: [] };
+      return myListings({ sellerId, jwt });
+    },
+    { revalidateOnFocus: false, dedupingInterval: 300_000, shouldRetryOnError: false },
+  );
+  const publishedAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const listing of sellerListings?.items ?? []) {
+      const sourceAgentId = (listing as unknown as { manifest_json?: { agent_id?: string } })
+        .manifest_json?.agent_id;
+      if (sourceAgentId) ids.add(sourceAgentId);
+    }
+    return ids;
+  }, [sellerListings]);
 
   function handleSelectAgent(agentId: string): void {
     capture("agent_selected", { agent_id: agentId });

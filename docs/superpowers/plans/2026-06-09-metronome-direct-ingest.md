@@ -197,12 +197,30 @@ keeps running as today's biller until PR-C.
       alert fire-once behavior + whether `-zero` fires after `-warn` for the
       same burn-down; balance/alert webhook latency (sizes kill-switch lag).
 
-## PR-C — delete the DDB ledger (branch `metronome-cutover`, off main after PR-B; ⛔ gated)
+## PR-C — Metronome becomes the only billing integration (branch `metronome-cutover`)
 
-**Gate (both required):** sandbox e2e validated (ingest→rated→balance→alert
-webhook→gate flip observed in dev); prod rate card configured. **NO backfill**
-(decision 2026-06-09: balances abandoned — dev is test money, the only prod
-org's container is dead at desired=0; owners start fresh via the top-up flow).
+**Decisions 2026-06-10 (user):** build PR-C NOW, rigorous testing happens
+AFTER the codebase collapses to one integration. NO backfill. Plus two design
+corrections:
+- **Enforcement is revoke-only.** The $50 subscription pays for the container;
+  credits pay for inference. Balance <= 0 → `revoke_owner_bedrock` + gate flag
+  ONLY (IAM revoke alone stops all Bedrock spend — AccessDenied before any
+  token). The container stays up serving the other providers/channels.
+  `kill_owner_bedrock` (revoke + desired=0) is demoted to an admin break-glass
+  for genuine runaways, never balance enforcement.
+- **Funding goes Metronome-native Stripe** (docs: integrations/invoice-
+  integrations/stripe). Our Checkout top-up flow + the commit mirror are
+  DELETED. Top-up = backend creates a PAYMENT-GATED commit
+  (`payment_gate_config: {payment_gate_type: "STRIPE"}`); Metronome invoices
+  the customer's Stripe card (`stripe_collection_method:
+  charge_automatically`) and releases credits on payment. Customer link =
+  billing-provider config (stripe_customer_id from the billing row) at
+  provision. **Restore is pull-based**: payment success has no dedicated
+  webhook, so the gate's lazy balance refresh un-revokes
+  (`restore_owner_bedrock`) when it sees balance > 0 on a revoked owner.
+  Setup prerequisites (console, per env): Stripe wizard in Metronome
+  (sandbox pairs with Stripe TEST mode); credits product needs a
+  `stripe_product_id` custom field mapped to a Stripe Product.
 
 ### Task C2: flip + delete
 - [ ] `BEDROCK_ENFORCEMENT_LIVE` default True. Swap `provision_gate` + pre-chat

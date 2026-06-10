@@ -347,11 +347,32 @@ export function AgentChatWindow({
   }
 
   if (isLoadingHistory) {
+    // Render the chat SHELL while chat.history is in flight so the chat
+    // box appears the moment the container is ready, instead of a bare
+    // full-pane spinner. The input is disabled for this brief window
+    // only: a send dispatched before the history projection lands would
+    // be clobbered when setChatMessages replaces the message list.
     return (
-      <div className="flex flex-col h-full bg-[#faf7f2]">
-        <div className="flex-1 flex items-center justify-center">
-          <Loader2 className="h-6 w-6 animate-spin text-[#8a8578]" />
+      <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+        <div className="flex-1 min-h-0 p-6 space-y-4" aria-busy="true">
+          <div className="h-4 w-2/5 rounded bg-[#eee9df] animate-pulse" />
+          <div className="h-4 w-3/5 rounded bg-[#eee9df] animate-pulse" />
+          <div className="h-4 w-1/2 rounded bg-[#eee9df] animate-pulse ml-auto" />
+          <div className="h-4 w-2/4 rounded bg-[#eee9df] animate-pulse" />
         </div>
+        <ChatInput
+          onSend={handleSend}
+          onStop={cancelMessage}
+          disabled
+          isStreaming={isStreaming}
+          isConnected={isConnected}
+          isUploading={isUploading}
+          queuedMessages={queuedMessages}
+          onRemoveQueued={removeQueuedMessage}
+          onClearQueue={clearQueue}
+          onSteerQueued={steerMessage}
+          onRetryQueued={retryQueuedMessage}
+        />
       </div>
     );
   }

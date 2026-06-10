@@ -3,6 +3,7 @@ import * as fs from "fs";
 import { execSync } from "child_process";
 import * as cdk from "aws-cdk-lib";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketApi, WebSocketStage } from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
@@ -505,6 +506,32 @@ export class ApiStack extends cdk.Stack {
 
     this.wsApiId = wsApi.apiId;
     this.wsStage = env;
+
+    // =========================================================================
+    // API Gateway account-level CloudWatch role (ACCOUNT singleton)
+    // =========================================================================
+    // Access/execution log delivery for every API Gateway in the account —
+    // including the WS stage's accessLogSettings above — silently delivers
+    // NOTHING when the account-level CloudWatch role is missing or points
+    // at a deleted IAM role (the account setting referenced a dangling
+    // role and both envs' access-log groups stayed empty despite traffic).
+    // Owned by the PROD stack only: this is an account-wide setting, and
+    // letting a non-prod stack own it would mean a dev teardown deletes
+    // the role out from under every API in the account.
+    if (env === "prod") {
+      const apigwAccountRole = new iam.Role(this, "ApiGatewayAccountCloudWatchRole", {
+        assumedBy: new iam.ServicePrincipal("apigateway.amazonaws.com"),
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName(
+            "service-role/AmazonAPIGatewayPushToCloudWatchLogs",
+          ),
+        ],
+      });
+      const apigwAccount = new apigateway.CfnAccount(this, "ApiGatewayAccount", {
+        cloudWatchRoleArn: apigwAccountRole.roleArn,
+      });
+      apigwAccount.node.addDependency(apigwAccountRole);
+    }
 
     // =========================================================================
     // WebSocket Custom Domain

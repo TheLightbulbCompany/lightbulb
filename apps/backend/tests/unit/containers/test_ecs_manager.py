@@ -2454,3 +2454,44 @@ async def test_provision_mcp_servers_failsafe_returns_connected_on_error(monkeyp
     monkeypatch.setattr(em, "read_openclaw_config_from_efs", _boom)
     connected = {"stripe": {"command": "npx"}}
     assert await em._provision_mcp_servers("org_1", connected) == connected
+
+
+# ---------------------------------------------------------------------------
+# _await_running_transition substatus progression
+# ---------------------------------------------------------------------------
+
+
+class TestAwaitRunningTransitionSubstatus:
+    """The cold-start poller must surface the task-running-but-gateway-
+    booting window as substatus="task_running" so the frontend stepper can
+    show a real phase instead of a time-based guess. The window between
+    "service_created" and "gateway_healthy" is minutes long (image pull +
+    OpenClaw boot) and previously wrote nothing."""
+
+    @pytest.mark.asyncio
+    async def test_writes_task_running_once_while_gateway_port_closed(self, manager):
+        rows = [
+            _make_container_dict(status="provisioning", substatus="service_created"),
+            _make_container_dict(status="provisioning", substatus="task_running"),
+            _make_container_dict(status="provisioning", substatus="task_running"),
+        ]
+        update_calls = []
+
+        async def track_update(user_id, fields):
+            update_calls.append(fields)
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
+            mock_repo.update_fields = AsyncMock(side_effect=track_update)
+            manager._get_primary_deployment = AsyncMock(return_value={"id": "dep-1", "rolloutState": "COMPLETED"})
+            manager._poll_running_task = AsyncMock(return_value=("arn:aws:ecs:task/abc", "10.0.0.1"))
+            manager.is_healthy = MagicMock(side_effect=[False, False, True])
+
+            await manager._await_running_transition("user_test_123", interval_s=0)
+
+        # Exactly ONE task_running write (not one per poll iteration), then
+        # the terminal running/gateway_healthy write.
+        task_running_writes = [f for f in update_calls if f.get("substatus") == "task_running"]
+        assert len(task_running_writes) == 1
+        assert update_calls[-1]["status"] == "running"
+        assert update_calls[-1]["substatus"] == "gateway_healthy"

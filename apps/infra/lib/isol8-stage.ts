@@ -182,28 +182,20 @@ export class Isol8Stage extends cdk.Stage {
       authorizerFunctionName: `isol8-${env}-ws-authorizer`,
     });
 
-    // BedrockMeterStack — account-scoped, SINGLE-OWNER usage meter. Bedrock
-    // model-invocation logging is account+region-global (one config per
-    // region, one invocation-log group per region per account), so this stack
-    // is instantiated ONCE — prod only — to avoid the dev/prod collision that
-    // retired Cost Anomaly Detection (observability-stack.ts:1609-1616). Dev
-    // validation uses the temporary manual capture path, not a second stack.
+    // BedrockMeterStack — account-scoped usage meter, direct Metronome
+    // ingest. Bedrock model-invocation logging is account+region-global (one
+    // config per region, one invocation-log group per region per account), so
+    // this stack is instantiated ONCE — prod stage only — and contains BOTH
+    // env Lambda instances; the dev/prod split happens at the subscription
+    // filters inside the stack. No stack dependencies: the per-env Metronome
+    // secrets are referenced by NAME (fromSecretNameV2), which creates no
+    // CFN-level coupling to either env's auth stack, and the Lambdas have no
+    // VPC, so the network stack is not involved at all.
     if (env === "prod") {
-      const bedrockMeter = new BedrockMeterStack(
-        this,
-        `isol8-${env}-bedrock-meter`,
-        {
-          stackName: `isol8-${env}-bedrock-meter`,
-          envName: env,
-          vpc: network.vpc,
-          alb: network.alb,
-          albSecurityGroup: network.albSecurityGroup,
-          meterTokenSecretName: `isol8/${env}/bedrock_meter_token`,
-          meterKmsKeyArn: auth.kmsKey.keyArn,
-        },
-      );
-      bedrockMeter.addDependency(network);
-      bedrockMeter.addDependency(auth);
+      new BedrockMeterStack(this, `isol8-${env}-bedrock-meter`, {
+        stackName: `isol8-${env}-bedrock-meter`,
+        envName: env,
+      });
     }
 
     // --- Tags ---

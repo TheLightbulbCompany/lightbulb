@@ -15,9 +15,11 @@ interim DDB ledger.
   `routers/metronome_webhook.py`, auth-stack secrets (`metronomeApiKey`,
   `metronomeWebhookSecret`), database-stack fast-gate table, service-stack env
   wiring, all matching tests.
-- `origin/phase-3-metronome-cutover` (#834): `scripts/backfill_balances_to_metronome.py`
-  + test, the deletion lists (`credit_ledger.py`, `ddb_ledger_backend.py`,
-  connection_pool deduct, credits tables), CreditsPanel balance-source change.
+- `origin/phase-3-metronome-cutover` (#834): the deletion lists
+  (`credit_ledger.py`, `ddb_ledger_backend.py`, connection_pool deduct, credits
+  tables), CreditsPanel balance-source change. (Its backfill script is NOT
+  salvaged — decision 2026-06-09: no balance migration; DDB balances abandoned,
+  dev = test money, prod org dead at desired=0.)
 - Worktree (uncommitted): `apps/infra/lambda/bedrock-usage-meter/index.py`
   top-level cache-path fix (KEEP — goes into PR-B with its test rewrite).
 
@@ -78,16 +80,14 @@ keeps running as today's biller until PR-C.
       enforcement-flag off ⇒ flag set but NO kill.
 - [ ] Commit: `feat(billing): low-balance webhook drives gate flag + kill-switch`
 
-### Task A5: gate reads + balance display
-- [ ] `provision_gate` bedrock branch + pre-chat check: read fast-gate flag;
-      if row stale (> `METRONOME_GATE_STALENESS_S`, default 900) lazy-refresh via
-      `getNetBalance` (non-blocking failure ⇒ use stale row). Keep the existing
-      DDB-ledger read UNTIL PR-C (two reads OR'd: blocked if either says blocked —
-      conservative during transition).
+### Task A5: balance display (gate reads UNCHANGED until PR-C)
+- [ ] Do NOT touch `provision_gate`/pre-chat reads in PR-A — they keep reading
+      the DDB ledger exactly as today (simplest transition; PR-C swaps them to
+      the fast-gate flag in the same PR that deletes the ledger).
 - [ ] `routers/billing.py` credits endpoint: include `metronome_balance` field
-      (display-only) alongside the DDB number.
-- [ ] Tests: stale-row refresh, Metronome-down ⇒ stale row used, OR-gating.
-- [ ] Commit: `feat(billing): gate on fast-gate flag (OR'd with DDB ledger until cutover)`
+      (display-only, via `getNetBalance`, None-on-error) alongside the DDB number.
+- [ ] Tests: display field present, Metronome-down ⇒ None not 500.
+- [ ] Commit: `feat(billing): surface Metronome balance read (display-only)`
 
 ### Task A6: verify + PR
 - [ ] `uv run pytest -q` (full backend), `npx jest`, `cdk synth`, ruff.
@@ -150,6 +150,11 @@ keeps running as today's biller until PR-C.
       `Secret.fromSecretNameV2` — cross-stage by-name per codebase posture),
       `AIP_OWNERS_TABLE` (`isol8-{env}-bedrock-aip-owners`), per-fn DLQ + grants
       (DDB GetItem by table ARN, secret read + KMS decrypt).
+- [ ] Rename the log group `/isol8/prod/bedrock-invocation` →
+      **`/isol8/bedrock-invocation`** (env-neutral — it receives BOTH envs'
+      records; the old name was a prod-stage-instantiation artifact). DESTROY
+      policy + the logging-config custom resource make this a clean replace;
+      delete the old group post-deploy if CFN leaves it.
 - [ ] TWO subscription filters on the one log group:
       dev = `'"application-inference-profile" "isol8-dev-owner-bedrock"'`,
       prod = `'"application-inference-profile" "isol8-prod-owner-bedrock"'`.
@@ -184,20 +189,18 @@ keeps running as today's biller until PR-C.
 - [ ] Validate in dev: send chat → sandbox Metronome event visible (correct
       tokens incl. cache) → balance moves once rate card live.
 
-## PR-C — cutover + deletions (branch `metronome-cutover`, off main after PR-B; ⛔ gated)
+## PR-C — delete the DDB ledger (branch `metronome-cutover`, off main after PR-B; ⛔ gated)
 
-**Gate (all required):** sandbox e2e validated (ingest→rated→balance→alert
-webhook→gate flip observed in dev); prod rate card + customer backfill done;
-DDB balances backfilled (C1). Same do-not-merge discipline as #834.
-
-### Task C1: backfill (salvage `scripts/backfill_balances_to_metronome.py` + test from #834)
-- [ ] Adapt: also `ensure_metronome_customer` for any owner missing one; dry-run
-      default; `--apply` writes payment-gate-FREE commits equal to DDB
-      `balance_microcents`.
+**Gate (both required):** sandbox e2e validated (ingest→rated→balance→alert
+webhook→gate flip observed in dev); prod rate card configured. **NO backfill**
+(decision 2026-06-09: balances abandoned — dev is test money, the only prod
+org's container is dead at desired=0; owners start fresh via the top-up flow).
 
 ### Task C2: flip + delete
-- [ ] `BEDROCK_ENFORCEMENT_LIVE` default True. Gate reads fast-gate flag ONLY
-      (drop the OR with DDB ledger).
+- [ ] `BEDROCK_ENFORCEMENT_LIVE` default True. Swap `provision_gate` + pre-chat
+      reads from the DDB ledger to the fast-gate flag, with lazy `getNetBalance`
+      refresh when the row is stale (> `METRONOME_GATE_STALENESS_S`, default
+      900s; Metronome-down ⇒ use stale row, never 500 the gate).
 - [ ] Delete: `credit_ledger.py`, `ddb_ledger_backend.py`, `ledger_interface.py`
       (+ `get_ledger` callers — `provision_gate`, billing router → fast-gate/
       `getNetBalance`), connection_pool deduct block (+ its tests), `credits` +

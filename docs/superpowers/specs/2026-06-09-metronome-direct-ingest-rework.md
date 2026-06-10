@@ -145,18 +145,36 @@ Not code — a runbook step, done once per env before that env's ingest matters:
 ## 6. Sequencing & gates
 
 - **PR-A** backend lifecycle + gating (salvage #833; no LedgerBackend, no
-  behavior change while enforcement flag is off; DDB ledger keeps running in
-  parallel as today's biller).
+  behavior change while enforcement flag is off; gate reads stay on the DDB
+  ledger untouched until PR-C).
 - **PR-B** meter stack rework: two Lambdas + two filters, direct ingest, no
-  VPC; deletes internal_usage + JWT machinery. Folds in the already-written
-  top-level cache-path fix.
-- **PR-C** cutover (rework #834): backfill DDB balances → Metronome commits
-  (salvage script), flip enforcement flag, all remaining deletions.
+  VPC; deletes internal_usage + JWT machinery; renames the log group to the
+  env-neutral `/isol8/bedrock-invocation` (it carries BOTH envs' records).
+  Folds in the already-written top-level cache-path fix.
+- **PR-C** delete the DDB ledger (rework #834): flip enforcement flag, swap
+  gate reads to the fast-gate flag, delete ledger code + tables.
+  **NO BACKFILL — decision 2026-06-09:** existing DDB balances are abandoned
+  (dev = test money; the only prod org's container is dead at desired=0 — the
+  $4k runaway is why this work exists). Owners start fresh on Metronome
+  commits via the normal top-up flow.
   ⛔ **Gated on:** sandbox end-to-end validated in dev (ingest → rated →
-  balance moves → alert webhook → gate flips), prod rate card configured,
-  backfill run. Same do-not-merge discipline as #834.
+  balance moves → alert webhook → gate flips) + prod rate card configured.
 - #833/#834 are **closed** when PR-A/PR-C open (salvage via cherry-pick/copy —
   branches stay on origin until then).
+
+## 6b. Auth model — no self-minted JWTs anywhere in billing
+
+After PR-B the billing pipeline contains **zero JWTs we mint**:
+- Lambda → DDB / SQS / Secrets Manager: **IAM role** (native).
+- Lambda / backend → Metronome: the **vendor API key** (per env; an external
+  SaaS cannot accept AWS IAM — this secret is irreducible, but it is
+  vendor-issued and set once; no minting ceremony to forget).
+- Metronome → backend webhook: Metronome's **HMAC signature**
+  (`Metronome-Webhook-Signature`), verified with the per-env webhook secret.
+- The `bedrock_meter` JWT, `mint_meter()`, and its placeholder-secret footgun
+  (the silent prod 401) are deleted outright.
+- `service_token.py`'s `paperclip_service` kind is unrelated to billing and
+  stays.
 
 ## 7. Open verifications (carry-over + new)
 

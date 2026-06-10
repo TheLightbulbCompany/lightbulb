@@ -228,11 +228,12 @@ describe("BedrockMeterStack", () => {
     }
   });
 
-  test("alarms per instance: DLQ depth + 4 skip metrics, env-scoped dimensions", () => {
-    // (1 DLQ + 4 skip-metric) alarms x 2 instances = 10. Each skip-metric
-    // alarm scopes to its instance via the env dimension so dev noise never
-    // pages prod (both Lambdas share namespace Isol8 + the service name).
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 10);
+  test("alarms per instance: DLQ depth + 4 skip metrics + fn errors, env-scoped dimensions", () => {
+    // (1 DLQ + 4 skip-metric + 1 fn-Errors) alarms x 2 instances = 12. Each
+    // skip-metric alarm scopes to its instance via the env dimension so dev
+    // noise never pages prod (both Lambdas share namespace Isol8 + the
+    // service name).
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 12);
     for (const meterEnv of ["dev", "prod"]) {
       for (const metricName of [
         "meter.unattributed",
@@ -261,6 +262,56 @@ describe("BedrockMeterStack", () => {
     // The truncation path is gone — no truncated-output alarm may survive.
     const alarms = JSON.stringify(template.findResources("AWS::CloudWatch::Alarm"));
     expect(alarms).not.toContain("output_body_truncated");
+  });
+
+  test("per-instance Lambda Errors alarm catches whole-batch failures", () => {
+    // A whole-batch failure (cold-start import error, timeout,
+    // transport-retry exhaustion) raises out of the handler and never reaches
+    // the per-record DLQ path — the function's Errors metric is the only
+    // signal, so each instance must alarm on it and the alarm must page.
+    const alarms = Object.values(
+      template.findResources("AWS::CloudWatch::Alarm"),
+    ) as any[];
+    for (const meterEnv of ["dev", "prod"]) {
+      const errorsAlarm = alarms.find(
+        (a: any) =>
+          a.Properties.AlarmName ===
+          `isol8-${meterEnv}-bedrock-meter-fn-errors`,
+      );
+      expect(errorsAlarm).toBeDefined();
+      expect(errorsAlarm.Properties.MetricName).toBe("Errors");
+      expect(errorsAlarm.Properties.Namespace).toBe("AWS/Lambda");
+      expect(errorsAlarm.Properties.Statistic).toBe("Sum");
+      expect(errorsAlarm.Properties.Threshold).toBe(0);
+      expect(errorsAlarm.Properties.ComparisonOperator).toBe(
+        "GreaterThanThreshold",
+      );
+      expect(errorsAlarm.Properties.TreatMissingData).toBe("notBreaching");
+      expect(errorsAlarm.Properties.AlarmActions?.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("logging-config CR depends on BOTH subscription filters (cutover ordering)", () => {
+    // When the log group is replaced, the CR repoints Bedrock at the new
+    // group. Records delivered before the new group's filters exist are
+    // unrecoverable (filters only forward events ingested after creation), so
+    // the repoint must be ordered AFTER both filters.
+    const json = template.toJSON();
+    const filterIds = Object.entries(json.Resources)
+      .filter(([, r]: [string, any]) => r.Type === "AWS::Logs::SubscriptionFilter")
+      .map(([id]) => id);
+    expect(filterIds.length).toBe(2);
+
+    const crEntry = Object.entries(json.Resources).find(
+      ([, r]: [string, any]) =>
+        r.Type === "Custom::AWS" &&
+        JSON.stringify(r).includes("putModelInvocationLoggingConfiguration"),
+    ) as [string, any];
+    expect(crEntry).toBeDefined();
+    const dependsOn: string[] = crEntry[1].DependsOn ?? [];
+    for (const filterId of filterIds) {
+      expect(dependsOn).toContain(filterId);
+    }
   });
 
   test("alarms page to each env's OWN alerts-warn topic; no topics minted", () => {

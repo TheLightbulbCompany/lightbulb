@@ -9,9 +9,10 @@ ALL billable counts are read from the TOP LEVEL of the record
 nested `output.outputBodyJson.usage` block is a defensive fallback only.
 
 Failure posture under test: every per-record failure (unparseable record,
-unattributed owner, missing tier, Metronome transport error) DLQs the raw log
-event + emits a metric + continues the batch — never a silent drop, and an
-unattributed record is NEVER ingested.
+malformed record shape, unattributed owner, missing tier, Metronome transport
+error) DLQs the raw log event + emits a metric + continues the batch — never
+a silent drop, and an unattributed or transaction-id-less record is NEVER
+ingested.
 """
 
 import base64
@@ -330,6 +331,146 @@ def test_handler_unparseable_record_dlqs_and_emits_metric():
     assert len(dlqd) == 1
     assert dlqd[0][1] == "unparseable_log_event"
     assert "meter.parse_failed" in metrics
+
+
+def test_handler_malformed_non_dict_record_dlqs_and_continues():
+    """Valid JSON that is not a dict (a poison record) must DLQ as
+    malformed_record and never poison the rest of the batch: an unguarded
+    raise would make CW Logs retry the WHOLE batch and then drop it."""
+    import index
+
+    good = _load("inline_record.json")
+    ingested, dlqd, metrics = [], [], []
+
+    payload = {"logEvents": [{"message": json.dumps("just a string")}, {"message": json.dumps(good)}]}
+    event = {"awslogs": {"data": base64.b64encode(gzip.compress(json.dumps(payload).encode())).decode()}}
+
+    with (
+        _stub_resolver(),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(event, None)
+
+    assert result == {"statusCode": 200}
+    assert len(dlqd) == 1
+    assert dlqd[0][1] == "malformed_record: not a dict"
+    assert "meter.malformed_record" in metrics
+    # The batch continued: the good record was still ingested.
+    assert len(ingested) == 1
+    assert ingested[0]["request_id"] == good["requestId"]
+
+
+def test_handler_missing_model_id_dlqs_and_never_ingests():
+    """No modelId means no attribution key — hold on the DLQ, never ingest."""
+    import index
+
+    record = _load("inline_record.json")
+    del record["modelId"]
+    ingested, dlqd, metrics = [], [], []
+
+    with (
+        _stub_resolver(),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(record), None)
+
+    assert result == {"statusCode": 200}
+    assert ingested == []
+    assert len(dlqd) == 1
+    assert dlqd[0][1] == "malformed_record: missing modelId"
+    assert "meter.malformed_record" in metrics
+
+
+def test_handler_missing_request_id_dlqs_and_never_ingests():
+    """requestId becomes the Metronome transaction_id — the ENTIRE replay/dedup
+    safety story. An event without one must never be ingested (a redrive or
+    batch retry would double-bill it)."""
+    import index
+
+    record = _load("inline_record.json")
+    record["requestId"] = ""
+    ingested, dlqd, metrics = [], [], []
+
+    with (
+        _stub_resolver(),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(record), None)
+
+    assert result == {"statusCode": 200}
+    assert ingested == []
+    assert len(dlqd) == 1
+    assert dlqd[0][1] == "malformed_record: missing requestId"
+    assert "meter.malformed_record" in metrics
+
+
+def test_handler_control_message_returns_200_without_dlq_or_metrics():
+    """CloudWatch Logs sends a non-JSON health probe on filter creation; it
+    must short-circuit cleanly instead of DLQing as parse_failed (which would
+    page both envs' warn topics on every deploy)."""
+    import index
+
+    payload = {
+        "messageType": "CONTROL_MESSAGE",
+        "logEvents": [{"message": "CWL CONTROL MESSAGE: Checking health of destination Lambda."}],
+    }
+    event = {"awslogs": {"data": base64.b64encode(gzip.compress(json.dumps(payload).encode())).decode()}}
+    dlqd, metrics, ingested = [], [], []
+
+    with (
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(event, None)
+
+    assert result == {"statusCode": 200}
+    assert dlqd == []
+    assert metrics == []
+    assert ingested == []
+
+
+def test_handler_extract_exception_dlqs_as_parse_failed_and_continues():
+    """Any unexpected exception out of _extract is a deterministic per-record
+    failure: it must DLQ + continue, never raise (a raise would fail the whole
+    batch, and CW Logs retries then silently drops it)."""
+    import index
+
+    first = _load("inline_record.json")
+    second = _load("inline_record.json")
+    second["requestId"] = "second-record-id"
+    ingested, dlqd, metrics = [], [], []
+    calls = {"n": 0}
+    real_extract = index._extract
+
+    def flaky_extract(record):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TypeError("unexpected shape")
+        return real_extract(record)
+
+    with (
+        _stub_resolver(),
+        patch.object(index, "_extract", side_effect=flaky_extract),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(first, second), None)
+
+    assert result == {"statusCode": 200}
+    assert len(dlqd) == 1
+    assert dlqd[0][1].startswith("extract_failed:")
+    assert "meter.parse_failed" in metrics
+    # The batch continued: the second record was still ingested.
+    assert len(ingested) == 1
+    assert ingested[0]["request_id"] == "second-record-id"
 
 
 def test_send_to_dlq_posts_message_to_queue():

@@ -300,11 +300,24 @@ def _ingest_to_metronome(parsed):
 
 def handler(event, context):
     payload = json.loads(gzip.decompress(base64.b64decode(event["awslogs"]["data"])))
+    # CloudWatch Logs delivers a non-JSON health-probe message when a
+    # subscription filter is created. Without this early return that probe
+    # would DLQ as parse_failed and page both envs' warn topics on every
+    # deploy that touches the filters.
+    if payload.get("messageType") == "CONTROL_MESSAGE":
+        return {"statusCode": 200}
     for log_event in payload.get("logEvents", []):
         # Each record is handled independently and fails safe: a parse error,
-        # an unattributable record, or a Metronome ingest failure DLQs that one
-        # record + emits a metric + continues, so one bad record never silently
-        # drops and never poisons the rest of the batch.
+        # a malformed record, an unattributable record, or a Metronome ingest
+        # failure DLQs that one record + emits a metric + continues, so one
+        # bad record never silently drops and never poisons the rest of the
+        # batch. CloudWatch Logs retries the WHOLE batch on a raised error and
+        # then drops it, so an unguarded raise on a deterministic per-record
+        # failure converts one bad record into losing the entire batch
+        # silently. Only TRANSPORT errors may propagate (the retry can
+        # actually fix those): a DDB error in _resolve_owner_and_tier raises
+        # so CW Logs retries the batch — safe because Metronome dedups on
+        # transaction_id.
         try:
             record = json.loads(log_event["message"])
         except (ValueError, KeyError):
@@ -312,7 +325,30 @@ def handler(event, context):
             _emit_metric("meter.parse_failed")
             _send_to_dlq(log_event, "unparseable_log_event")
             continue
-        parsed = _extract(record)
+        # Shape guard BEFORE any use of the record: valid JSON is not
+        # necessarily a usable record. requestId is load-bearing — it becomes
+        # the Metronome transaction_id, which is the ENTIRE replay/dedup
+        # safety story (DLQ redrives, CW Logs batch retries), so an event
+        # without one must never be ingested. modelId is the attribution key.
+        malformed = None
+        if not isinstance(record, dict):
+            malformed = "not a dict"
+        elif not record.get("modelId"):
+            malformed = "missing modelId"
+        elif not record.get("requestId"):
+            malformed = "missing requestId"
+        if malformed:
+            logger.warning("meter: malformed record (%s), DLQ + skip", malformed)
+            _emit_metric("meter.malformed_record")
+            _send_to_dlq(log_event, f"malformed_record: {malformed}")
+            continue
+        try:
+            parsed = _extract(record)
+        except Exception as exc:  # noqa: BLE001 - deterministic per-record failure must never fail the batch
+            logger.warning("meter: extract failed, DLQ + skip: %s", exc)
+            _emit_metric("meter.parse_failed")
+            _send_to_dlq(log_event, f"extract_failed: {exc}")
+            continue
         owner_id, tier = _resolve_owner_and_tier(record)
         if owner_id is None:
             # NEVER ingest unattributed: a customer-less event lands in

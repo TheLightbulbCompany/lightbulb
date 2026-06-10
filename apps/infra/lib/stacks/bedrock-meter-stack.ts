@@ -83,7 +83,7 @@ export class BedrockMeterStack extends cdk.Stack {
       embeddingDataDeliveryEnabled: true,
       imageDataDeliveryEnabled: false,
     };
-    new cr.AwsCustomResource(this, "BedrockLoggingConfig", {
+    const loggingConfigCr = new cr.AwsCustomResource(this, "BedrockLoggingConfig", {
       onCreate: {
         service: "Bedrock",
         action: "putModelInvocationLoggingConfiguration",
@@ -129,6 +129,7 @@ export class BedrockMeterStack extends cdk.Stack {
     );
 
     const fns: Record<string, lambda.Function> = {};
+    const subscriptionFilters: logs.SubscriptionFilter[] = [];
 
     for (const meterEnv of ["dev", "prod"] as const) {
       // The prod instance keeps the construct ids from the original
@@ -241,13 +242,15 @@ export class BedrockMeterStack extends cdk.Stack {
       // subscription-filter slots on the group (hard limit 2/group). Any
       // third consumer must fan out behind one of the Lambdas, not add a
       // filter.
-      new logs.SubscriptionFilter(this, `InvocationSubscription${idSuffix}`, {
-        logGroup: this.invocationLogGroup,
-        destination: new logsDestinations.LambdaDestination(fn),
-        filterPattern: logs.FilterPattern.literal(
-          `"application-inference-profile" "isol8-${meterEnv}-owner-bedrock"`,
-        ),
-      });
+      subscriptionFilters.push(
+        new logs.SubscriptionFilter(this, `InvocationSubscription${idSuffix}`, {
+          logGroup: this.invocationLogGroup,
+          destination: new logsDestinations.LambdaDestination(fn),
+          filterPattern: logs.FilterPattern.literal(
+            `"application-inference-profile" "isol8-${meterEnv}-owner-bedrock"`,
+          ),
+        }),
+      );
 
       // --- Alarms (per instance) --------------------------------------------
       // A silent revenue leak (records DLQ'd on transport/parse failure, or
@@ -284,6 +287,27 @@ export class BedrockMeterStack extends cdk.Stack {
       });
       dlqAlarm.addAlarmAction(alarmAction);
 
+      // Whole-batch failures (a cold-start import error, a timeout, or
+      // transport-retry exhaustion) raise OUT of the handler, so they never
+      // reach the per-record DLQ path — CloudWatch Logs retries the batch a
+      // few times and then drops it silently. The function's own Errors
+      // metric is the only signal for that failure class.
+      const errorsAlarm = new cloudwatch.Alarm(this, `MeterFnErrorsAlarm${idSuffix}`, {
+        alarmName: `isol8-${meterEnv}-bedrock-meter-fn-errors`,
+        alarmDescription:
+          "Bedrock meter Lambda invocation errored - a WHOLE batch failed (cold-start import error, timeout, or transport-retry exhaustion) and never reached the per-record DLQ. CloudWatch Logs retries then drops the batch, so investigate before records age out.",
+        metric: fn.metricErrors({
+          period: cdk.Duration.minutes(5),
+          statistic: "Sum",
+        }),
+        threshold: 0,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+      errorsAlarm.addAlarmAction(alarmAction);
+
       // One alarm per skip/failure metric the Lambda emits. Both instances
       // emit into namespace Isol8 with service=isol8-bedrock-meter, so each
       // alarm scopes to ITS instance via the env dimension — otherwise dev
@@ -317,6 +341,16 @@ export class BedrockMeterStack extends cdk.Stack {
         alarm.addAlarmAction(alarmAction);
       }
     }
+
+    // CUTOVER ORDERING: when the log group is REPLACED, the logging-config
+    // custom resource repoints Bedrock at the new group. If that repoint ran
+    // before the new group's subscription filters existed, records delivered
+    // in the gap would land in the new group with nothing forwarding them —
+    // filters only forward events ingested AFTER filter creation, so those
+    // records would be unrecoverable. Depending on BOTH filters makes CFN
+    // create/repoint the config only after both filters are live, and the
+    // dependency re-arms on every future group replacement.
+    loggingConfigCr.node.addDependency(...subscriptionFilters);
 
     this.meterFnDev = fns["dev"];
     this.meterFnProd = fns["prod"];

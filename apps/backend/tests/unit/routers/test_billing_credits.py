@@ -176,6 +176,31 @@ async def test_top_up_refresh_skipped_when_no_balance(async_client, monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("unreleased_balance", [0, -5_000])
+async def test_top_up_does_not_revoke_on_unreleased_balance(async_client, monkeypatch, unreleased_balance):
+    """A ≤0 read right after the commit is the gated commit not yet released
+    (async Stripe collection), NOT a depleted owner. The top-up path must NOT
+    feed it to apply_fresh_balance, which would RE-REVOKE someone who just
+    paid — restore-only here, the lazy refresh handles the unreleased case."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    apply_fresh = AsyncMock()
+    with (
+        patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
+        patch(
+            "core.services.metronome_gate.read_net_balance_microcents",
+            new=AsyncMock(return_value=unreleased_balance),
+        ),
+        patch("core.services.metronome_gate.apply_fresh_balance", new=apply_fresh),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 200
+    apply_fresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_top_up_refresh_failure_does_not_break_response(async_client, monkeypatch):
     """The post-top-up refresh is best-effort: a getNetBalance blip must not
     turn a SUCCESSFUL purchase into an error response."""

@@ -86,6 +86,15 @@ async def _provision(owner_id: str, account: dict, client: MetronomeClient) -> s
     # config exists (else contract create 404s "Billing provider
     # configuration not found for STRIPE").
     stripe_linked = await _maybe_link_stripe(owner_id, account, customer_id, client)
+    if not stripe_linked and not account.get("metronome_contract_id"):
+        # A contract's billing config is create-time-only and the
+        # short-circuit keys on both persisted ids — creating the contract
+        # now would permanently strand the owner with payment-gated top-ups
+        # that can never collect. Persist just the customer UUID and stop:
+        # the next /container/status poll re-enters and retries the link.
+        if account.get("metronome_customer_id") != customer_id:
+            await billing_repo.set_metronome_customer_id(owner_id, metronome_customer_id=customer_id)
+        return customer_id
     contract_id = account.get("metronome_contract_id") or await _create_or_adopt_contract(
         customer_id, client, with_stripe_billing=stripe_linked
     )
@@ -105,15 +114,16 @@ async def _maybe_link_stripe(owner_id: str, account: dict, customer_id: str, cli
     """Set the customer's root-level billing-provider configuration (Stripe
     customer + charge_automatically) when the billing row carries a
     stripe_customer_id. Returns whether the config now exists — the caller
-    only attaches a contract-level billing config when it does (a contract
-    referencing a non-existent customer config 404s at create).
+    creates the contract only when it does (a contract referencing a
+    non-existent customer config 404s at create, and a contract created
+    WITHOUT a billing config can never collect payment-gated top-ups —
+    billing config is create-time-only).
 
     Payment-gated top-up commits collect through this link, so it matters —
     but it is BEST-EFFORT here: a failure (or a row with no Stripe customer
-    yet) must not block provisioning the Metronome customer/contract/alerts.
-    The contract is then created WITHOUT billing config, so top-ups for that
-    owner fail loudly at the payment gate (never silently) until the owner
-    is re-provisioned; the warnings + metrics below make the gap
+    yet) must not raise and block the customer create from persisting. The
+    caller instead DEFERS contract creation until a later poll re-enters
+    with a working link; the warnings + metrics below make a persistent gap
     operator-visible.
     """
     stripe_customer_id = account.get("stripe_customer_id")
@@ -122,8 +132,8 @@ async def _maybe_link_stripe(owner_id: str, account: dict, customer_id: str, cli
 
         put_metric("metronome.provision.no_stripe_customer")
         logger.warning(
-            "Billing row for owner %s has no stripe_customer_id — Metronome contract will carry no "
-            "billing config; payment-gated top-ups will fail until re-provisioned",
+            "Billing row for owner %s has no stripe_customer_id — deferring Metronome contract "
+            "creation until the Stripe customer exists",
             owner_id,
         )
         return False
@@ -139,7 +149,7 @@ async def _maybe_link_stripe(owner_id: str, account: dict, customer_id: str, cli
         put_metric("metronome.provision.stripe_link_error")
         logger.exception(
             "Failed to set Stripe billing-provider config for owner %s (Metronome customer %s) — "
-            "contract will carry no billing config; payment-gated top-ups will fail until re-provisioned",
+            "deferring contract creation; the next status poll retries the link",
             owner_id,
             customer_id,
         )

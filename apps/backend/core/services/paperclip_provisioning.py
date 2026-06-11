@@ -271,6 +271,33 @@ class PaperclipProvisioning:
                 paperclip_user_id = signup["user"]["id"]
                 new_user_session_cookie = signup["_session_cookie"]
 
+                # Persist the freshly created credential BEFORE the rest of
+                # the chain (mirrors provision_member). If a later step
+                # fails, _mark_failed updates this row in place — preserving
+                # paperclip_user_id + password — so the next attempt ADOPTS
+                # via sign-in instead of re-signing-up, which would 409
+                # against the now-existing Better Auth user and strand it as
+                # an unadoptable orphan (observed live 2026-06-11: a failure
+                # after sign-up left a row with an empty paperclip_user_id,
+                # wedging every retry). company_id isn't known yet at this
+                # point in the org flow; adoption only needs the credential
+                # pair. Net-new only: an adopted row already carries its
+                # credential and must not be overwritten to "provisioning".
+                now = datetime.now(timezone.utc)
+                await self._repo.put(
+                    PaperclipCompany(
+                        user_id=owner_user_id,
+                        org_id=owner_id,
+                        company_id="",
+                        paperclip_user_id=paperclip_user_id,
+                        paperclip_password_encrypted=encrypt(password),
+                        service_token_encrypted="",
+                        status="provisioning",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+
             # 2. ADMIN creates the company. Admin becomes the initial
             #    owner via Paperclip's auto-ensureMembership in
             #    ``routes/companies.ts:273``.
@@ -315,27 +342,16 @@ class PaperclipProvisioning:
             )
             invite_token = invite["token"]
 
-            # 4. New user accepts the invite using their own session.
-            #    Produces a join-request bound to their Better Auth user.
-            accept = await self._admin.accept_invite(
-                session_cookie=new_user_session_cookie,
-                invite_token=invite_token,
-            )
-            try:
-                request_id = accept["id"]
-            except (KeyError, TypeError) as e:
-                raise PaperclipApiError(
-                    "accept_invite response missing 'id' field",
-                    status_code=200,
-                    body=accept,
-                ) from e
-
-            # 5. ADMIN approves the join request → user is now an
+            # 4+5. New user accepts the invite; the join request is
+            #    ensured approved (Paperclip auto-approves human accepts,
+            #    so the standalone approve only fires as a fallback — see
+            #    _accept_invite_and_ensure_approved). User is now an
             #    active owner of the company.
-            await self._admin.approve_join_request(
-                session_cookie=admin_cookie,
+            await self._accept_invite_and_ensure_approved(
+                member_session_cookie=new_user_session_cookie,
+                approver_session_cookie=admin_cookie,
                 company_id=company_id,
-                request_id=request_id,
+                invite_token=invite_token,
             )
 
             # 6. Mint a long-lived OpenClaw service-token JWT. Baked
@@ -606,41 +622,16 @@ class PaperclipProvisioning:
             )
             invite_token = invite["token"]
 
-            # 4. Member accepts the invite, producing a pending join
-            #    request bound to the member's Better Auth user.
-            accept = await self._admin.accept_invite(
-                session_cookie=member_session_cookie,
+            # 4+5. Member accepts the invite; the join request is ensured
+            #    approved (Paperclip auto-approves human accepts, so the
+            #    standalone approve only fires as a fallback — see
+            #    _accept_invite_and_ensure_approved).
+            await self._accept_invite_and_ensure_approved(
+                member_session_cookie=member_session_cookie,
+                approver_session_cookie=owner_session_cookie,
+                company_id=company_id,
                 invite_token=invite_token,
             )
-            # Paperclip's accept_invite response is the join request row
-            # flattened by ``toJoinRequestResponse`` — a top-level ``id`` plus
-            # a ``status`` field. Strict access on ``id`` so a shape change
-            # fails loud instead of silently dropping the approve step.
-            try:
-                request_id = accept["id"]
-            except (KeyError, TypeError) as e:
-                raise PaperclipApiError(
-                    "accept_invite response missing 'id' field",
-                    status_code=200,
-                    body=accept,
-                ) from e
-
-            # 5. Approve the join request — UNLESS accept already approved it.
-            #    Human-invite accept auto-approves on the Paperclip side (the
-            #    accept handler ensures membership + grants and flips the row
-            #    to ``approved`` in the same request), so the response comes
-            #    back ``status="approved"``. Calling the standalone approve
-            #    endpoint on an already-approved request returns 409
-            #    ("Join request is not pending"). We always mint a fresh
-            #    invite, so accept reliably reports status. Only approve a
-            #    still-pending request — this also self-heals if Paperclip
-            #    ever stops auto-approving.
-            if accept.get("status") != "approved":
-                await self._admin.approve_join_request(
-                    session_cookie=owner_session_cookie,
-                    company_id=company_id,
-                    request_id=request_id,
-                )
 
             # 6. Mint the member's OpenClaw service-token JWT.
             #
@@ -994,6 +985,59 @@ class PaperclipProvisioning:
 
         oldest = min(active_items, key=_sort_key)
         return await self._repo.get(oldest["user_id"])
+
+    async def _accept_invite_and_ensure_approved(
+        self,
+        *,
+        member_session_cookie: str,
+        approver_session_cookie: str,
+        company_id: str,
+        invite_token: str,
+    ) -> str:
+        """Accept an invite as the joining user and ensure the resulting
+        join request is approved. Returns the join-request id.
+
+        ONE implementation for both provision_org and provision_member —
+        the accept/approve chain was previously duplicated in each, and
+        the skip-redundant-approve guard landed only in the member copy,
+        so every fresh org/personal signup kept failing on the approve
+        409 (observed live 2026-06-11). A shared helper makes that drift
+        impossible.
+
+        Paperclip's human-invite accept handler auto-approves in the same
+        request (ensures membership + grants, flips the join request to
+        ``approved`` — server/src/routes/access.ts, the
+        ``human_invite_accept`` branch), so the response comes back
+        ``status="approved"`` and calling the standalone approve endpoint
+        again returns 409 ("Join request is not pending"). We always mint
+        a fresh invite, so the accept response reliably reports status:
+        only a still-pending request is approved — which also self-heals
+        if Paperclip ever stops auto-approving.
+        """
+        accept = await self._admin.accept_invite(
+            session_cookie=member_session_cookie,
+            invite_token=invite_token,
+        )
+        # The accept response is the join-request row flattened by
+        # ``toJoinRequestResponse`` — a top-level ``id`` plus ``status``.
+        # Strict access on ``id`` so a shape change fails loud instead of
+        # silently dropping the approve step.
+        try:
+            request_id = accept["id"]
+        except (KeyError, TypeError) as e:
+            raise PaperclipApiError(
+                "accept_invite response missing 'id' field",
+                status_code=200,
+                body=accept,
+            ) from e
+
+        if accept.get("status") != "approved":
+            await self._admin.approve_join_request(
+                session_cookie=approver_session_cookie,
+                company_id=company_id,
+                request_id=request_id,
+            )
+        return request_id
 
     async def _mark_failed(
         self,

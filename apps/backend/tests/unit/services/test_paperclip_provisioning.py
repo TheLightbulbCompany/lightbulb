@@ -172,8 +172,10 @@ async def test_provision_org_atlas_failure_does_not_block_friday_seed(monkeypatc
     # We still attempted both seeds (the Friday try/except didn't
     # short-circuit the Atlas attempt) ...
     assert admin.create_agent.await_count == 2
-    # ... and the row was still persisted (provision_org completed).
-    repo.put.assert_awaited_once()
+    # ... and the row was still persisted (provision_org completed):
+    # early adoptable credential row + final active row.
+    assert repo.put.await_count == 2
+    assert repo.put.await_args.args[0].status == "active"
 
 
 @pytest.mark.asyncio
@@ -307,8 +309,10 @@ async def test_provision_org_persists_seeded_agent_ids(monkeypatch):
         owner_email="owner@example.com",
     )
 
-    repo.put.assert_awaited_once()
+    # Two puts: the early adoptable credential row, then the final active row.
+    assert repo.put.await_count == 2
     persisted = repo.put.await_args.args[0]
+    assert persisted.status == "active"
     assert persisted.seeded_agent_ids == ["friday_id", "atlas_id"]
 
 
@@ -543,6 +547,92 @@ async def test_provision_member_adoption_failure_does_not_mark_existing_row_fail
 
     svc._mark_failed.assert_not_awaited()  # adopted row preserved, not corrupted
     repo.put.assert_not_awaited()  # never re-pointed (join failed)
+
+
+@pytest.mark.asyncio
+async def test_provision_org_skips_approve_when_accept_auto_approved(monkeypatch):
+    """Paperclip auto-approves human invites at accept time, so the org
+    provision must NOT call the standalone approve endpoint (it 409s
+    "Join request is not pending" on an already-approved request). This
+    is the exact failure that broke every fresh signup before the chain
+    was unified into _accept_invite_and_ensure_approved — the guard had
+    landed only in the member copy of the duplicated chain.
+    """
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    admin.accept_invite = AsyncMock(return_value={"id": "req_1", "status": "approved"})
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # The redundant approve call is skipped...
+    admin.approve_join_request.assert_not_awaited()
+    # ...and provisioning completes to an active row (Friday/Atlas seeded).
+    assert isinstance(row, PaperclipCompany)
+    assert row.status == "active"
+    assert admin.create_agent.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_provision_org_approves_when_accept_left_pending(monkeypatch):
+    """Defensive fallback: if Paperclip ever returns the join request still
+    pending from accept, the admin must still approve it."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    admin.accept_invite = AsyncMock(return_value={"id": "req_1", "status": "pending_approval"})
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    admin.approve_join_request.assert_awaited_once()
+    approve_kwargs = admin.approve_join_request.await_args.kwargs
+    assert approve_kwargs["company_id"] == "co_xyz"
+    assert approve_kwargs["request_id"] == "req_1"
+
+
+@pytest.mark.asyncio
+async def test_provision_org_partial_failure_after_signup_leaves_adoptable_row(monkeypatch):
+    """A brand-new owner whose provision fails AFTER sign-up must leave a
+    stored row carrying the freshly created paperclip_user_id + password,
+    so the next attempt ADOPTS via sign-in instead of re-signing-up (which
+    would 409 against the now-existing Better Auth user and wedge every
+    retry — the live 2026-06-11 failure mode: the failed row had an empty
+    paperclip_user_id because provision_org persisted nothing until final
+    success)."""
+    from core.encryption import decrypt
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, _ = _build_provision_org_doubles(monkeypatch)
+    # Fail AFTER sign-up, before completion.
+    admin.create_company = AsyncMock(side_effect=PaperclipApiError("company boom", status_code=500, body="x"))
+
+    repo = _StatefulRepo(company_id="co_xyz")
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError):
+        await svc.provision_org(
+            owner_id="org_xyz",
+            owner_user_id="user_owner",
+            owner_email="owner@example.com",
+        )
+
+    stored = await repo.get("user_owner")
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.paperclip_user_id == "pc_user_1"
+    assert stored.paperclip_password_encrypted, "password must be persisted for adoption"
+    assert decrypt(stored.paperclip_password_encrypted)  # decrypts cleanly
 
 
 @pytest.mark.asyncio

@@ -136,18 +136,32 @@ async def handle_metronome_webhook(
 async def _process_event(event: dict, event_id: str) -> Response:
     event_type = event.get("type")
     if event_type in _PAYMENT_GATE_EVENT_TYPES:
-        # A gated top-up's card charge failed or needs SCA/3DS. Metronome never
-        # auto-retries, so the credits stay unreleased; surface it loudly (a
-        # metric + a warning carrying the customer id when present) instead of
-        # acking it into silence. No field-level action until the real payload
-        # shape is confirmed.
-        put_metric("metronome.webhook.payment_gate", dimensions={"type": event_type})
-        logger.warning(
-            "Metronome payment-gate event %s (id=%s, customer=%s) — gated top-up payment needs attention",
-            event_type,
-            event_id,
-            (event.get("properties") or {}).get("customer_id"),
-        )
+        # payment_gate.payment_status fires after EVERY attempt carrying
+        # payment_status = "paid" | "failed"; pending-action fires for SCA/3DS
+        # (Metronome docs: manual-payment-gated-commits#manage-notifications).
+        # Only the non-paid outcomes need attention — a "paid" event is a
+        # normal successful top-up and must NOT warn/page (it would turn every
+        # purchase into operational noise). Either way it's COUNTED (dimensioned
+        # by status) so a silent 200 never hides a failure. A missing/unknown
+        # status degrades to the attention branch (warn, never silently drop) —
+        # the conservative default for a money-path signal.
+        props = event.get("properties") or {}
+        payment_status = props.get("payment_status")
+        put_metric("metronome.webhook.payment_gate", dimensions={"status": payment_status or "action_required"})
+        if payment_status == "paid":
+            logger.info(
+                "Metronome payment-gate paid (id=%s, customer=%s)",
+                event_id,
+                props.get("customer_id"),
+            )
+        else:
+            logger.warning(
+                "Metronome payment-gate %s (id=%s, customer=%s, status=%s) — gated top-up payment needs attention",
+                event_type,
+                event_id,
+                props.get("customer_id"),
+                payment_status,
+            )
         return Response(status_code=200)
 
     if event_type not in _LOW_BALANCE_EVENT_TYPES:

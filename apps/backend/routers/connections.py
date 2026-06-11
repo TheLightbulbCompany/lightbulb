@@ -71,6 +71,25 @@ def _get_provider_or_404(provider: str) -> registry.Provider:
         raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
 
 
+def _require_grantable_provider(provider: str, owner_id: str) -> registry.Provider:
+    """Resolve a provider for the connect/authorize grant paths, treating an
+    `internal` provider as nonexistent (404) for owners outside the allowlist.
+
+    The catalog filter in list_connections only hides internal providers from
+    the UI; without this an allowlisted-or-not org admin who knows the stable
+    slug could still POST a paste token or hit /authorize and connect one. Gate
+    the grant paths so the allowlist is real access control, not just hiding —
+    matters most for any future internal *paste-token* provider, which has no
+    provider-side gate of its own (Google's own Testing-mode block does not
+    generalize). Disconnect is intentionally NOT gated: a de-allowlisted owner
+    must still be able to remove a previously connected internal provider.
+    """
+    p = _get_provider_or_404(provider)
+    if p.internal and owner_id not in settings.internal_integration_owners:
+        raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
+    return p
+
+
 async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
@@ -145,7 +164,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider)
+    p = _require_grantable_provider(provider, owner_id)
     if p.acquisition != "paste_token":
         raise HTTPException(status_code=400, detail=f"{provider} is not a paste-key integration")
     if not await _validate_token(p, body.token):
@@ -281,7 +300,7 @@ def _redirect_uri(provider: str) -> str:
 async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider)
+    p = _require_grantable_provider(provider, owner_id)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
     url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))

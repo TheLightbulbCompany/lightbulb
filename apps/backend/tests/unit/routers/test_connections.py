@@ -254,6 +254,37 @@ class TestListConnections:
         assert "google" in keys
 
 
+class TestInternalProviderGrantGate:
+    """`internal` providers (e.g. google) are 404 on the connect/authorize
+    grant paths for owners outside INTERNAL_INTEGRATION_OWNERS — the catalog
+    filter is not the only thing keeping the unverified OAuth app away from
+    non-allowlisted owners."""
+
+    @pytest.mark.asyncio
+    async def test_authorize_404_when_not_allowlisted(self, async_client, monkeypatch):
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    async def test_authorize_passes_gate_when_allowlisted(self, mock_dance, async_client, monkeypatch):
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
+        mock_dance.start = AsyncMock(return_value="https://accounts.google.com/o/oauth2/v2/auth?x=1")
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 200
+        assert response.json()["authorize_url"].startswith("https://accounts.google.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_connect_paste_404_when_not_allowlisted(self, mock_repo, async_client, monkeypatch):
+        # The grant gate fires before any acquisition/validation logic, so the
+        # repo is never touched on the rejection path.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        response = await async_client.post("/api/v1/connections/google", json={"token": "x"})
+        assert response.status_code == 404
+
+
 class TestConnectPaste:
     """POST /api/v1/connections/{provider} — paste-key connect."""
 
@@ -345,8 +376,11 @@ class TestConnectPaste:
         mock_removers.get.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_connect_non_paste_provider_returns_400(self, async_client):
-        # google is direct_oauth, not paste_token — must be rejected at this surface.
+    async def test_connect_non_paste_provider_returns_400(self, async_client, monkeypatch):
+        # google is `internal`-gated, so allowlist the owner to reach the
+        # acquisition check — google is direct_oauth, not paste_token, and must
+        # be rejected at this paste surface with a 400 (not the gate's 404).
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
         response = await async_client.post("/api/v1/connections/google", json={"token": "anything"})
         assert response.status_code == 400
 
@@ -732,7 +766,10 @@ class TestAuthorize:
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
-    async def test_authorize_returns_consent_url(self, mock_dance, async_client):
+    async def test_authorize_returns_consent_url(self, mock_dance, async_client, monkeypatch):
+        # google is `internal`-gated; allowlist the owner so authorize reaches
+        # the OAuth dance instead of the gate's 404.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
         consent_url = "https://accounts.google.com/o/oauth2/v2/auth?x=1"
         mock_dance.start = AsyncMock(return_value=consent_url)
 

@@ -139,22 +139,24 @@ class MetronomeClient:
         )
 
     async def set_stripe_billing_config(self, *, metronome_customer_id: str, stripe_customer_id: str) -> None:
-        """POST /v1/customers/{id}/setCustomerBillingProviderConfigurations —
-        link the EXISTING Stripe customer so Metronome pushes usage/credit
-        invoices onto the same Stripe Customer as our $50/mo subscription.
+        """POST /v1/customers/{customer_id}/billing-config/stripe — link the
+        EXISTING Stripe customer so Metronome pushes usage/credit invoices
+        onto the same Stripe Customer as our $50/mo subscription.
         charge_automatically is what lets payment-gated commits collect
-        without a checkout redirect. NB: this exact path/body is per the
-        Metronome docs but NOT yet sandbox-verified — confirm it during the
-        rigorous-test pass before relying on the Stripe link in prod."""
+        without a checkout redirect.
+
+        Live-verified (sandbox, 2026-06-11): this exact path + body returned
+        200, and a GET on the same path reads back
+        {"data": {"billing_provider_customer_id": …,
+        "stripe_collection_method": …}} (404 NotFound while unset). The
+        docs-styled plural path
+        (/customers/{id}/setCustomerBillingProviderConfigurations) does NOT
+        exist in reality — it 404s."""
         await self._post(
-            f"/customers/{metronome_customer_id}/setCustomerBillingProviderConfigurations",
+            f"/customers/{metronome_customer_id}/billing-config/stripe",
             {
-                "billing_provider": "stripe",
-                "delivery_method": "direct_to_billing_provider",
-                "configuration": {
-                    "stripe_customer_id": stripe_customer_id,
-                    "stripe_collection_method": "charge_automatically",
-                },
+                "billing_provider_customer_id": stripe_customer_id,
+                "stripe_collection_method": "charge_automatically",
             },
         )
 

@@ -38,7 +38,7 @@ class UsageEvent:
     """Marked-up amount to deduct from the balance."""
 
     markup_multiplier: float
-    """The markup applied (e.g. 1.4). Audit only."""
+    """The markup applied (e.g. 1.03 — 3% over the AWS rate). Audit only."""
 
     region: str
     """Source region of the invocation (logs are per fan-out region)."""

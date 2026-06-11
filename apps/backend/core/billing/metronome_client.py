@@ -43,6 +43,14 @@ class MetronomeClient:
         self._http = http_client
 
     @property
+    def _v2_base_url(self) -> str:
+        # The configured base is the v1 API root; the v2 surface (gated
+        # commits via contract edit) lives beside it at the same host, so
+        # derive it instead of carrying a second configured URL that could
+        # drift to a different environment.
+        return self._base_url.removesuffix("/v1") + "/v2"
+
+    @property
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._api_key}",
@@ -89,7 +97,9 @@ class MetronomeClient:
             return None
         return matches[0].get("id")
 
-    async def create_contract(self, *, customer_id: str, rate_card_id: str | None = None) -> str:
+    async def create_contract(
+        self, *, customer_id: str, rate_card_id: str | None = None, with_stripe_billing: bool = False
+    ) -> str:
         """POST /v1/contracts/create — per-customer contract. Returns the
         contract id; prepaid commits and balances hang off it. Sandbox-
         verified: this path is correct as-is, the minimal body
@@ -98,11 +108,26 @@ class MetronomeClient:
         configured (an empty-string rate card must not reach the API).
         ``starting_at`` must be a UTC-midnight date (Metronome rejects
         mid-day contract starts); today's midnight makes the contract live
-        immediately."""
+        immediately.
+
+        ``with_stripe_billing`` attaches a contract-level
+        billing_provider_configuration pointing at the customer's Stripe
+        config. Payment-gated commits on the contract collect through this
+        object, so a contract created without it cannot fund gated top-ups.
+        Live-verified (sandbox, 2026-06-11): the object is only valid AFTER
+        the customer's root-level billing-provider configuration exists
+        (set_stripe_billing_config) — sent before that, contract create
+        404s with "Billing provider configuration not found for STRIPE",
+        which is why callers gate this flag on that call having succeeded."""
         starting_at = time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime())
         payload: dict[str, Any] = {"customer_id": customer_id, "starting_at": starting_at}
         if rate_card_id:
             payload["rate_card_id"] = rate_card_id
+        if with_stripe_billing:
+            payload["billing_provider_configuration"] = {
+                "billing_provider": "stripe",
+                "delivery_method": "direct_to_billing_provider",
+            }
         body = await self._post("/contracts/create", payload)
         contract_id = body.get("data", {}).get("id")
         if not contract_id:
@@ -139,24 +164,34 @@ class MetronomeClient:
         )
 
     async def set_stripe_billing_config(self, *, metronome_customer_id: str, stripe_customer_id: str) -> None:
-        """POST /v1/customers/{customer_id}/billing-config/stripe — link the
-        EXISTING Stripe customer so Metronome pushes usage/credit invoices
-        onto the same Stripe Customer as our $50/mo subscription.
+        """POST /v1/setCustomerBillingProviderConfigurations (ROOT level) —
+        write the customer's NEW-STYLE billing-provider configuration linking
+        the EXISTING Stripe customer, so Metronome pushes usage/credit
+        invoices onto the same Stripe Customer as our $50/mo subscription.
         charge_automatically is what lets payment-gated commits collect
         without a checkout redirect.
 
-        Live-verified (sandbox, 2026-06-11): this exact path + body returned
-        200, and a GET on the same path reads back
-        {"data": {"billing_provider_customer_id": …,
-        "stripe_collection_method": …}} (404 NotFound while unset). The
-        docs-styled plural path
-        (/customers/{id}/setCustomerBillingProviderConfigurations) does NOT
-        exist in reality — it 404s."""
+        Live-verified (sandbox, 2026-06-11): the per-customer legacy path
+        (/customers/{id}/billing-config/stripe) also 200s, but it writes a
+        DIFFERENT legacy record that gated commits IGNORE — top-ups through
+        a customer linked only that way fail at the payment gate. This
+        root-level call writes the record that contract-level
+        billing_provider_configuration objects + payment gates actually
+        consult; the exact body below returned 200 with the config record."""
         await self._post(
-            f"/customers/{metronome_customer_id}/billing-config/stripe",
+            "/setCustomerBillingProviderConfigurations",
             {
-                "billing_provider_customer_id": stripe_customer_id,
-                "stripe_collection_method": "charge_automatically",
+                "data": [
+                    {
+                        "customer_id": metronome_customer_id,
+                        "billing_provider": "stripe",
+                        "delivery_method": "direct_to_billing_provider",
+                        "configuration": {
+                            "stripe_customer_id": stripe_customer_id,
+                            "stripe_collection_method": "charge_automatically",
+                        },
+                    }
+                ]
             },
         )
 
@@ -170,15 +205,20 @@ class MetronomeClient:
         amount_cents: int,
         description: str,
         idempotency_key: str,
-        payment_gate_config: dict | None = None,
     ) -> None:
-        """POST /v1/contracts/customerCommits/create — add a prepaid commit
-        (credits). Sandbox-verified: a "/contracts/edit" endpoint does not
-        exist (404), and this endpoint takes a FLAT body (commit fields at
-        the top level, contract linkage via applicable_contract_ids +
-        invoice_contract_id) — this exact shape returned 200. The amount is
-        in CENTS: Metronome's USD credit type is cents-denominated (see
-        core/billing/metronome_units.py).
+        """POST /v1/contracts/customerCommits/create — add an UNGATED prepaid
+        commit (credits grant immediately, nobody is charged). This endpoint
+        takes a FLAT body (commit fields at the top level, contract linkage
+        via applicable_contract_ids + invoice_contract_id) — this exact shape
+        returned 200. The amount is in CENTS: Metronome's USD credit type is
+        cents-denominated (see core/billing/metronome_units.py).
+
+        This API CANNOT payment-gate. Live-verified (sandbox, 2026-06-11):
+        the create validator rejects a payment_gate_config field outright
+        ('Field "payment_gate_config" is not defined by type
+        "CustomerCommitInput"'). Gated commits go through
+        create_gated_prepaid_commit (v2 contract edit) instead; this method
+        stays for ungated grants (e.g. promo/test credits).
 
         ``idempotency_key`` rides as Metronome's native ``Idempotency-Key``
         request header — the exactly-once guarantee at the money source.
@@ -188,13 +228,7 @@ class MetronomeClient:
         been used on a request with different parameters."}. Keys are
         retained ~24h per the Metronome docs. Required (not optional)
         because every commit we create charges or grants money — a caller
-        without a key is a caller with a double-charge bug.
-
-        ``payment_gate_config`` (e.g. {"payment_gate_type": "STRIPE"}) makes
-        Metronome collect the money itself through the customer's linked
-        billing provider before releasing the credits — the funding path for
-        top-ups now that the backend runs no Checkout of its own. Omitted
-        (None) the commit is ungated and grants immediately."""
+        without a key is a caller with a double-charge bug."""
         payload: dict[str, Any] = {
             "customer_id": customer_id,
             "type": "PREPAID",
@@ -220,10 +254,76 @@ class MetronomeClient:
                 ],
             },
         }
-        if payment_gate_config is not None:
-            payload["payment_gate_config"] = payment_gate_config
         await self._post(
             "/contracts/customerCommits/create",
+            payload,
+            extra_headers={"Idempotency-Key": idempotency_key},
+        )
+
+    async def create_gated_prepaid_commit(
+        self,
+        *,
+        customer_id: str,
+        contract_id: str,
+        product_id: str,
+        credit_type_id: str,
+        amount_cents: int,
+        description: str,
+        idempotency_key: str,
+    ) -> None:
+        """POST /v2/contracts/edit — add a STRIPE payment-gated prepaid
+        commit. Metronome invoices the customer's linked Stripe card
+        (charge_automatically) and releases the credits only when Stripe
+        collects; the backend never touches the money.
+
+        The URL is ABSOLUTE on purpose: the client's base is the v1 API
+        root, and payment gating only exists on the v2 contract-edit
+        surface — the v1 customerCommits/create validator rejects
+        payment_gate_config outright (see create_prepaid_commit). httpx
+        passes an absolute URL through untouched even with a base_url set,
+        so no second client is needed. Live-verified (sandbox, 2026-06-11):
+        this exact add_commits shape returned 200, and the Idempotency-Key
+        header IS honored here (same key + body replayed the identical 200).
+
+        A gated commit must carry BOTH schedules: invoice_schedule is WHEN
+        MONEY IS COLLECTED (the Stripe invoice), access_schedule is when the
+        credits unlock. Both use today's UTC midnight — never now() — so a
+        retried request carries a byte-identical body and replays instead of
+        409ing within the idempotency-key retention window; midnight is
+        already in the past, so nothing is delayed. amount_cents feeds both
+        schedules 1:1 (credits unlocked == cents invoiced), in CENTS
+        (Metronome's USD credit type — see core/billing/metronome_units.py).
+        """
+        midnight = time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime())
+        payload = {
+            "customer_id": customer_id,
+            "contract_id": contract_id,
+            "add_commits": [
+                {
+                    "type": "PREPAID",
+                    "product_id": product_id,
+                    "priority": _COMMIT_PRIORITY,
+                    "description": description,
+                    "access_schedule": {
+                        "credit_type_id": credit_type_id,
+                        "schedule_items": [
+                            {
+                                "amount": amount_cents,
+                                "starting_at": midnight,
+                                "ending_before": _NO_EXPIRY,
+                            }
+                        ],
+                    },
+                    "invoice_schedule": {
+                        "credit_type_id": credit_type_id,
+                        "schedule_items": [{"amount": amount_cents, "timestamp": midnight}],
+                    },
+                    "payment_gate_config": {"payment_gate_type": "STRIPE"},
+                }
+            ],
+        }
+        await self._post(
+            f"{self._v2_base_url}/contracts/edit",
             payload,
             extra_headers={"Idempotency-Key": idempotency_key},
         )

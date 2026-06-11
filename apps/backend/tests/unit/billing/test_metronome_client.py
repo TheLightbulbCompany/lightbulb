@@ -102,6 +102,24 @@ async def test_create_contract_sends_rate_card_and_returns_id():
     assert body["rate_card_id"] == "rc-1"
     # Contracts must start at UTC midnight — Metronome rejects mid-day starts.
     assert body["starting_at"].endswith("T00:00:00.000Z")
+    # Not requested ⇒ no contract-level billing config in the body (sending
+    # it without the customer's root-level config existing 404s the create).
+    assert "billing_provider_configuration" not in body
+
+
+@pytest.mark.asyncio
+async def test_create_contract_with_stripe_billing_attaches_billing_provider_configuration():
+    """Live-verified (sandbox, 2026-06-11): payment-gated commits collect
+    through the CONTRACT-level billing_provider_configuration — a contract
+    created without it cannot fund gated top-ups."""
+    client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
+    await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1", with_stripe_billing=True)
+
+    _, kwargs = fake.post.call_args
+    assert kwargs["json"]["billing_provider_configuration"] == {
+        "billing_provider": "stripe",
+        "delivery_method": "direct_to_billing_provider",
+    }
 
 
 @pytest.mark.asyncio
@@ -174,13 +192,23 @@ async def test_set_stripe_billing_config_shape():
     )
 
     args, kwargs = fake.post.call_args
-    # Live-verified (sandbox, 2026-06-11): the singular billing-config/stripe
-    # path with this flat body returns 200; the docs-styled plural
-    # setCustomerBillingProviderConfigurations path 404s.
-    assert args[0] == "/customers/cust-uuid-1/billing-config/stripe"
+    # Live-verified (sandbox, 2026-06-11): the ROOT-level new-style call is
+    # the one whose record contract-level billing configs + payment gates
+    # consult; the legacy per-customer billing-config/stripe path writes a
+    # DIFFERENT record that gated commits ignore.
+    assert args[0] == "/setCustomerBillingProviderConfigurations"
     assert kwargs["json"] == {
-        "billing_provider_customer_id": "cus_123",
-        "stripe_collection_method": "charge_automatically",
+        "data": [
+            {
+                "customer_id": "cust-uuid-1",
+                "billing_provider": "stripe",
+                "delivery_method": "direct_to_billing_provider",
+                "configuration": {
+                    "stripe_customer_id": "cus_123",
+                    "stripe_collection_method": "charge_automatically",
+                },
+            }
+        ]
     }
 
 
@@ -198,8 +226,7 @@ async def test_create_prepaid_commit_flat_body_shape():
     )
 
     args, kwargs = fake.post.call_args
-    # Sandbox-verified: "/contracts/edit" does not exist (404); commits land
-    # via customerCommits/create with a FLAT body.
+    # Ungated commits land via v1 customerCommits/create with a FLAT body.
     assert args[0] == "/contracts/customerCommits/create"
     body = kwargs["json"]
     assert body["customer_id"] == "cust-uuid-1"
@@ -210,7 +237,8 @@ async def test_create_prepaid_commit_flat_body_shape():
     assert body["applicable_contract_ids"] == ["contract-1"]
     assert body["invoice_contract_id"] == "contract-1"
     assert body["description"] == "isol8 top-up owner=org_abc amount_cents=2573"
-    # No gate requested ⇒ none in the body (an ungated commit grants now).
+    # This API has no payment_gate_config field at all (live-verified: the
+    # validator rejects it) — the body must never carry one.
     assert "payment_gate_config" not in body
     schedule = body["access_schedule"]
     assert schedule["credit_type_id"] == "ct-usd-cents"
@@ -245,24 +273,54 @@ async def test_create_prepaid_commit_sends_idempotency_key_header():
 
 
 @pytest.mark.asyncio
-async def test_create_prepaid_commit_forwards_payment_gate_config():
-    """The Metronome-native funding path: a STRIPE payment gate makes
-    Metronome collect through the customer's billing-provider config before
-    releasing the credits."""
+async def test_create_gated_prepaid_commit_v2_body_shape():
+    """The Metronome-native funding path. Live-verified (sandbox,
+    2026-06-11): gating only exists on the v2 contract-edit surface (the v1
+    create validator rejects payment_gate_config), and a gated commit must
+    carry BOTH schedules — invoice_schedule is when money is collected (the
+    Stripe invoice), access_schedule is when the credits unlock."""
     client, fake = _client_with(_resp(200, {}))
-    await client.create_prepaid_commit(
+    await client.create_gated_prepaid_commit(
         customer_id="cust-uuid-1",
         contract_id="contract-1",
         product_id="prod-credits",
         credit_type_id="ct-usd-cents",
-        amount_cents=2500,
-        description="isol8 top-up owner=org_abc",
+        amount_cents=2573,
+        description="isol8 top-up owner=org_abc amount_cents=2573",
         idempotency_key="topup-org_abc-uuid-2",
-        payment_gate_config={"payment_gate_type": "STRIPE"},
     )
 
-    _, kwargs = fake.post.call_args
-    assert kwargs["json"]["payment_gate_config"] == {"payment_gate_type": "STRIPE"}
+    args, kwargs = fake.post.call_args
+    # ABSOLUTE v2 URL: the client's base is the v1 root; httpx passes an
+    # absolute URL through untouched even with a base_url set.
+    assert args[0] == "https://api.metronome.com/v2/contracts/edit"
+    assert kwargs["headers"]["Idempotency-Key"] == "topup-org_abc-uuid-2"
+    assert kwargs["headers"]["Authorization"] == "Bearer tok_sandbox"
+    body = kwargs["json"]
+    assert body["customer_id"] == "cust-uuid-1"
+    assert body["contract_id"] == "contract-1"
+    [commit] = body["add_commits"]
+    assert commit["type"] == "PREPAID"
+    assert commit["product_id"] == "prod-credits"
+    assert commit["priority"] == 100
+    assert commit["description"] == "isol8 top-up owner=org_abc amount_cents=2573"
+    assert commit["payment_gate_config"] == {"payment_gate_type": "STRIPE"}
+    access = commit["access_schedule"]
+    assert access["credit_type_id"] == "ct-usd-cents"
+    [access_item] = access["schedule_items"]
+    assert access_item["amount"] == 2573  # CENTS (Metronome's USD credit type)
+    invoice = commit["invoice_schedule"]
+    assert invoice["credit_type_id"] == "ct-usd-cents"
+    [invoice_item] = invoice["schedule_items"]
+    # Credits unlocked == cents invoiced, 1:1.
+    assert invoice_item["amount"] == 2573
+    # UTC midnight everywhere, never now(): the body must be byte-identical
+    # on a retried request or Metronome 409s instead of replaying.
+    assert access_item["starting_at"].endswith("T00:00:00.000Z")
+    assert access_item["ending_before"] == "9999-12-31T00:00:00.000Z"
+    assert invoice_item["timestamp"].endswith("T00:00:00.000Z")
+    assert set(access_item) == {"amount", "starting_at", "ending_before"}
+    assert set(invoice_item) == {"amount", "timestamp"}
 
 
 @pytest.mark.asyncio

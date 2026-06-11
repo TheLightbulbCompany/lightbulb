@@ -106,6 +106,31 @@ async def set_metronome_ids(
     )
 
 
+async def set_metronome_customer_id(
+    owner_id: str,
+    *,
+    metronome_customer_id: str,
+) -> None:
+    """Persist ONLY the Metronome customer UUID — the partial-provision
+    state where the Stripe billing-provider link failed and contract
+    creation was deferred. Leaving metronome_contract_id absent keeps
+    ``ensure_metronome_customer`` re-entering on every status poll until
+    the link lands and the contract (with billing config) can be created.
+    Same existing-row condition as ``set_metronome_ids``.
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET metronome_customer_id = :m, updated_at = :t",
+        ExpressionAttributeValues={
+            ":m": metronome_customer_id,
+            ":t": utc_now_iso(),
+        },
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
 async def create_if_not_exists(
     owner_id: str,
     stripe_customer_id: str,

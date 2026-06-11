@@ -49,24 +49,36 @@ def billing_repo_mock():
             "core.billing.metronome_provisioning.billing_repo.set_metronome_ids",
             new=AsyncMock(),
         ) as set_mock,
+        patch(
+            "core.billing.metronome_provisioning.billing_repo.set_metronome_customer_id",
+            new=AsyncMock(),
+        ) as set_customer_mock,
     ):
-        yield get_mock, set_mock
+        yield get_mock, set_mock, set_customer_mock
 
 
 @pytest.mark.asyncio
 async def test_creates_customer_contract_links_stripe_arms_alert_and_persists(billing_repo_mock, monkeypatch):
     monkeypatch.setattr("core.config.settings.METRONOME_LOW_BALANCE_THRESHOLD_CENTS", 500)
-    _, set_mock = billing_repo_mock
+    _, set_mock, _ = billing_repo_mock
     fake = _fake_client()
     cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
 
     assert cust_id == "cust-uuid-1"
     fake.create_customer.assert_awaited_once_with(name="org_abc", ingest_aliases=["org_abc"])
-    fake.create_contract.assert_awaited_once_with(customer_id="cust-uuid-1", rate_card_id="rc-1")
+    fake.create_contract.assert_awaited_once_with(
+        customer_id="cust-uuid-1", rate_card_id="rc-1", with_stripe_billing=True
+    )
     fake.set_stripe_billing_config.assert_awaited_once_with(
         metronome_customer_id="cust-uuid-1",
         stripe_customer_id="cus_123",
     )
+    # The billing-provider config must exist BEFORE the contract references
+    # it: contract create with a billing config 404s ("Billing provider
+    # configuration not found for STRIPE") when the customer-level config
+    # isn't set yet.
+    call_names = [name for name, _, _ in fake.mock_calls]
+    assert call_names.index("set_stripe_billing_config") < call_names.index("create_contract")
     # Two alerts: the warn alert fires with a POSITIVE remaining (Metronome
     # reports remaining ≈ threshold on crossing), so only the zero-crossing
     # alert can ever deliver the remaining ≤ 0 that fires the kill-switch.
@@ -105,12 +117,14 @@ async def test_unset_rate_card_is_passed_as_none(billing_repo_mock, monkeypatch)
     monkeypatch.setattr("core.config.settings.METRONOME_RATE_CARD_ID", "")
     fake = _fake_client()
     await ensure_metronome_customer(owner_id="org_abc", client=fake)
-    fake.create_contract.assert_awaited_once_with(customer_id="cust-uuid-1", rate_card_id=None)
+    fake.create_contract.assert_awaited_once_with(
+        customer_id="cust-uuid-1", rate_card_id=None, with_stripe_billing=True
+    )
 
 
 @pytest.mark.asyncio
 async def test_idempotent_skips_http_when_already_provisioned(billing_repo_mock):
-    get_mock, set_mock = billing_repo_mock
+    get_mock, set_mock, _ = billing_repo_mock
     get_mock.return_value = _billing_row(
         metronome_customer_id="existing-uuid",
         metronome_contract_id="existing-contract",
@@ -131,14 +145,16 @@ async def test_persisted_customer_without_contract_creates_only_the_contract(bil
     """A row provisioned before per-customer contracts existed has a customer
     UUID but no contract — re-entry must converge without re-creating the
     customer."""
-    get_mock, set_mock = billing_repo_mock
+    get_mock, set_mock, _ = billing_repo_mock
     get_mock.return_value = _billing_row(metronome_customer_id="existing-uuid")
     fake = _fake_client(contract_id="contract-new")
     cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
 
     assert cust_id == "existing-uuid"
     fake.create_customer.assert_not_awaited()
-    fake.create_contract.assert_awaited_once_with(customer_id="existing-uuid", rate_card_id="rc-1")
+    fake.create_contract.assert_awaited_once_with(
+        customer_id="existing-uuid", rate_card_id="rc-1", with_stripe_billing=True
+    )
     set_mock.assert_awaited_once_with(
         "org_abc",
         metronome_customer_id="existing-uuid",
@@ -152,7 +168,7 @@ async def test_lifecycle_disabled_is_a_pure_noop(billing_repo_mock, monkeypatch)
     spam doomed calls against placeholder secrets — no billing-row read, no
     HTTP client construction."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
-    get_mock, set_mock = billing_repo_mock
+    get_mock, set_mock, _ = billing_repo_mock
     with patch("core.billing.metronome_provisioning.httpx.AsyncClient") as client_cls:
         result = await ensure_metronome_customer(owner_id="org_abc")
 
@@ -167,7 +183,7 @@ async def test_alias_conflict_adopts_existing_customer(billing_repo_mock):
     """A 409 on create means a prior attempt already claimed the alias
     (crashed before persisting the UUID) — adopt that customer instead of
     failing the retry forever."""
-    _, set_mock = billing_repo_mock
+    _, set_mock, _ = billing_repo_mock
     fake = _fake_client()
     fake.create_customer = AsyncMock(side_effect=_http_error(409))
     fake.get_customer_id_by_ingest_alias = AsyncMock(return_value="adopted-uuid")
@@ -178,7 +194,9 @@ async def test_alias_conflict_adopts_existing_customer(billing_repo_mock):
     fake.get_customer_id_by_ingest_alias.assert_awaited_once_with("org_abc")
     # The adopted customer still gets the contract + Stripe link + alert +
     # persist — the prior attempt may have crashed before any of them.
-    fake.create_contract.assert_awaited_once_with(customer_id="adopted-uuid", rate_card_id="rc-1")
+    fake.create_contract.assert_awaited_once_with(
+        customer_id="adopted-uuid", rate_card_id="rc-1", with_stripe_billing=True
+    )
     fake.set_stripe_billing_config.assert_awaited_once()
     fake.create_alert.assert_awaited()
     set_mock.assert_awaited_once_with(
@@ -202,7 +220,7 @@ async def test_contract_conflict_adopts_first_listed_contract(billing_repo_mock)
     """A 409 on contract-create means a prior attempt created the contract
     but crashed before persisting its id — adopt the customer's existing
     contract instead of failing the retry forever."""
-    _, set_mock = billing_repo_mock
+    _, set_mock, _ = billing_repo_mock
     fake = _fake_client()
     fake.create_contract = AsyncMock(side_effect=_http_error(409))
     fake.list_contracts = AsyncMock(return_value=[{"id": "adopted-contract"}, {"id": "later-contract"}])
@@ -220,7 +238,7 @@ async def test_contract_conflict_adopts_first_listed_contract(billing_repo_mock)
 
 @pytest.mark.asyncio
 async def test_contract_conflict_with_no_listed_contract_raises(billing_repo_mock):
-    _, set_mock = billing_repo_mock
+    _, set_mock, _ = billing_repo_mock
     fake = _fake_client()
     fake.create_contract = AsyncMock(side_effect=_http_error(409))
     fake.list_contracts = AsyncMock(return_value=[])
@@ -231,7 +249,7 @@ async def test_contract_conflict_with_no_listed_contract_raises(billing_repo_moc
 
 @pytest.mark.asyncio
 async def test_duplicate_alert_is_success(billing_repo_mock):
-    _, set_mock = billing_repo_mock
+    _, set_mock, _ = billing_repo_mock
     fake = _fake_client()
     fake.create_alert = AsyncMock(side_effect=_http_error(409))
     cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
@@ -248,7 +266,7 @@ async def test_alert_5xx_raises_and_does_not_persist(billing_repo_mock):
     """The short-circuit keys on the persisted ids, so persisting before the
     alert exists would leave the owner alert-less forever. A failed alert
     must abort the persist so the next poll retries the whole sequence."""
-    _, set_mock = billing_repo_mock
+    _, set_mock, _ = billing_repo_mock
     fake = _fake_client()
     fake.create_alert = AsyncMock(side_effect=_http_error(503))
     with pytest.raises(httpx.HTTPStatusError):
@@ -258,39 +276,89 @@ async def test_alert_5xx_raises_and_does_not_persist(billing_repo_mock):
 
 @pytest.mark.asyncio
 async def test_missing_billing_row_raises(billing_repo_mock):
-    get_mock, _ = billing_repo_mock
+    get_mock, _, _ = billing_repo_mock
     get_mock.return_value = None
     with pytest.raises(ProvisioningError, match="No billing row"):
         await ensure_metronome_customer(owner_id="org_missing", client=_fake_client())
 
 
 @pytest.mark.asyncio
-async def test_missing_stripe_customer_skips_billing_provider_link(billing_repo_mock):
-    """No stripe_customer_id ⇒ the billing-provider link is skipped, but the
-    Metronome customer/contract/alerts still provision — a payment-gated
-    top-up later fails loudly at the gate, never silently."""
-    get_mock, set_mock = billing_repo_mock
+async def test_missing_stripe_customer_defers_contract_creation(billing_repo_mock):
+    """No stripe_customer_id ⇒ NO contract: a contract's billing config is
+    create-time-only, so creating one now would permanently strand the owner
+    with payment-gated top-ups that can never collect. Only the customer
+    UUID persists; the missing contract id keeps every later status poll
+    re-entering until the link lands."""
+    get_mock, set_mock, set_customer_mock = billing_repo_mock
     get_mock.return_value = {"owner_id": "org_abc"}
     fake = _fake_client()
-    cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
+    with patch("core.observability.metrics.put_metric") as metric_mock:
+        cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
 
     assert cust_id == "cust-uuid-1"
     fake.set_stripe_billing_config.assert_not_awaited()
-    fake.create_alert.assert_awaited()
-    set_mock.assert_awaited_once()
+    fake.create_contract.assert_not_awaited()
+    set_mock.assert_not_awaited()
+    set_customer_mock.assert_awaited_once_with("org_abc", metronome_customer_id="cust-uuid-1")
+    assert any(call.args[0] == "metronome.provision.no_stripe_customer" for call in metric_mock.call_args_list)
 
 
 @pytest.mark.asyncio
-async def test_stripe_link_failure_is_best_effort(billing_repo_mock):
-    """A billing-provider-config failure logs + metrics but must not block
-    provisioning — the customer/contract/alerts/persist all still land."""
-    _, set_mock = billing_repo_mock
+async def test_stripe_link_failure_defers_contract_and_does_not_raise(billing_repo_mock):
+    """A billing-provider-config failure logs + metrics but must not raise
+    (the caller treats provisioning as best-effort and retries on the next
+    poll) — and must NOT create a contract, which would bake in the missing
+    billing config forever. Only the customer UUID persists."""
+    _, set_mock, set_customer_mock = billing_repo_mock
     fake = _fake_client()
     fake.set_stripe_billing_config = AsyncMock(side_effect=_http_error(500))
     with patch("core.observability.metrics.put_metric") as metric_mock:
         cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
 
     assert cust_id == "cust-uuid-1"
-    fake.create_alert.assert_awaited()
-    set_mock.assert_awaited_once()
+    fake.create_contract.assert_not_awaited()
+    set_mock.assert_not_awaited()
+    set_customer_mock.assert_awaited_once_with("org_abc", metronome_customer_id="cust-uuid-1")
     assert any(call.args[0] == "metronome.provision.stripe_link_error" for call in metric_mock.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_link_retry_after_deferred_contract_converges(billing_repo_mock):
+    """Re-entry after a deferred contract (customer UUID persisted, no
+    contract id): the link is retried and, once it succeeds, the contract is
+    created WITH billing config and both ids persist — without re-creating
+    or re-persisting the customer."""
+    get_mock, set_mock, set_customer_mock = billing_repo_mock
+    get_mock.return_value = _billing_row(metronome_customer_id="existing-uuid")
+    fake = _fake_client(contract_id="contract-new")
+    cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
+
+    assert cust_id == "existing-uuid"
+    fake.create_customer.assert_not_awaited()
+    fake.set_stripe_billing_config.assert_awaited_once()
+    fake.create_contract.assert_awaited_once_with(
+        customer_id="existing-uuid", rate_card_id="rc-1", with_stripe_billing=True
+    )
+    set_customer_mock.assert_not_awaited()
+    set_mock.assert_awaited_once_with(
+        "org_abc",
+        metronome_customer_id="existing-uuid",
+        metronome_contract_id="contract-new",
+    )
+
+
+@pytest.mark.asyncio
+async def test_deferred_persist_skipped_when_customer_id_already_stored(billing_repo_mock):
+    """While the link keeps failing, the ~3s poll re-enters repeatedly — the
+    customer-id-only persist must not rewrite the row on every poll once the
+    UUID is already stored."""
+    get_mock, set_mock, set_customer_mock = billing_repo_mock
+    get_mock.return_value = _billing_row(metronome_customer_id="existing-uuid")
+    fake = _fake_client()
+    fake.set_stripe_billing_config = AsyncMock(side_effect=_http_error(500))
+    cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
+
+    assert cust_id == "existing-uuid"
+    fake.create_contract.assert_not_awaited()
+    set_mock.assert_not_awaited()
+    set_customer_mock.assert_not_awaited()

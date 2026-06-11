@@ -2,11 +2,15 @@
 
 Creates a Metronome customer whose ingest_aliases include our owner_id (so
 the meter Lambda's usage events carry customer_id = owner_id, no translation
-table), creates the per-customer contract referencing the env's rate card
-(contracts are per-customer objects in Metronome — commits and balances hang
-off them), links the EXISTING Stripe customer so Metronome pushes
-usage/credit invoices onto the same Stripe Customer as the $50/mo
-subscription, and creates the per-customer low-balance alerts
+table), links the EXISTING Stripe customer (root-level billing-provider
+configuration) so Metronome pushes usage/credit invoices onto the same
+Stripe Customer as the $50/mo subscription, creates the per-customer
+contract referencing the env's rate card WITH a contract-level billing
+config when that link exists (contracts are per-customer objects in
+Metronome — commits and balances hang off them, and payment-gated top-up
+commits collect through the contract's billing config, which is only valid
+once the customer's root-level config exists — hence the link-then-contract
+order), and creates the per-customer low-balance alerts
 (warn + zero-crossing) that feed the fast-gate webhook. The Metronome customer UUID + contract id are persisted
 on the billing row so a re-call short-circuits all the HTTP calls.
 
@@ -76,8 +80,24 @@ async def _provision(owner_id: str, account: dict, client: MetronomeClient) -> s
     # provisioned before contracts existed): only the missing pieces are
     # created, and the conflict-adopt paths converge the rest.
     customer_id = account.get("metronome_customer_id") or await _create_or_adopt_customer(owner_id, client)
-    contract_id = account.get("metronome_contract_id") or await _create_or_adopt_contract(customer_id, client)
-    await _maybe_link_stripe(owner_id, account, customer_id, client)
+    # Billing-provider config BEFORE the contract: the contract is created
+    # WITH a billing_provider_configuration so payment-gated top-ups can
+    # collect, and that object is only valid once the customer's root-level
+    # config exists (else contract create 404s "Billing provider
+    # configuration not found for STRIPE").
+    stripe_linked = await _maybe_link_stripe(owner_id, account, customer_id, client)
+    if not stripe_linked and not account.get("metronome_contract_id"):
+        # A contract's billing config is create-time-only and the
+        # short-circuit keys on both persisted ids — creating the contract
+        # now would permanently strand the owner with payment-gated top-ups
+        # that can never collect. Persist just the customer UUID and stop:
+        # the next /container/status poll re-enters and retries the link.
+        if account.get("metronome_customer_id") != customer_id:
+            await billing_repo.set_metronome_customer_id(owner_id, metronome_customer_id=customer_id)
+        return customer_id
+    contract_id = account.get("metronome_contract_id") or await _create_or_adopt_contract(
+        customer_id, client, with_stripe_billing=stripe_linked
+    )
     await _ensure_low_balance_alerts(owner_id, customer_id, client)
     # Persist LAST: the short-circuit keys on these attributes, so persisting
     # before the alerts exist would silently leave the owner alert-less
@@ -90,38 +110,50 @@ async def _provision(owner_id: str, account: dict, client: MetronomeClient) -> s
     return customer_id
 
 
-async def _maybe_link_stripe(owner_id: str, account: dict, customer_id: str, client: MetronomeClient) -> None:
-    """Set the customer's billing-provider configuration (Stripe customer +
-    charge_automatically) when the billing row carries a stripe_customer_id.
+async def _maybe_link_stripe(owner_id: str, account: dict, customer_id: str, client: MetronomeClient) -> bool:
+    """Set the customer's root-level billing-provider configuration (Stripe
+    customer + charge_automatically) when the billing row carries a
+    stripe_customer_id. Returns whether the config now exists — the caller
+    creates the contract only when it does (a contract referencing a
+    non-existent customer config 404s at create, and a contract created
+    WITHOUT a billing config can never collect payment-gated top-ups —
+    billing config is create-time-only).
 
     Payment-gated top-up commits collect through this link, so it matters —
     but it is BEST-EFFORT here: a failure (or a row with no Stripe customer
-    yet) must not block provisioning the Metronome customer/contract/alerts.
-    A missed link fails loudly at the first top-up's payment gate (never
-    silently), and the metric below makes the gap operator-visible; the fix
-    is a console/manual re-link, not a blocked owner.
+    yet) must not raise and block the customer create from persisting. The
+    caller instead DEFERS contract creation until a later poll re-enters
+    with a working link; the warnings + metrics below make a persistent gap
+    operator-visible.
     """
     stripe_customer_id = account.get("stripe_customer_id")
     if not stripe_customer_id:
-        logger.info(
-            "Billing row for owner %s has no stripe_customer_id — skipping Metronome billing-provider link",
+        from core.observability.metrics import put_metric
+
+        put_metric("metronome.provision.no_stripe_customer")
+        logger.warning(
+            "Billing row for owner %s has no stripe_customer_id — deferring Metronome contract "
+            "creation until the Stripe customer exists",
             owner_id,
         )
-        return
+        return False
     try:
         await client.set_stripe_billing_config(
             metronome_customer_id=customer_id,
             stripe_customer_id=stripe_customer_id,
         )
+        return True
     except Exception:
         from core.observability.metrics import put_metric
 
         put_metric("metronome.provision.stripe_link_error")
         logger.exception(
-            "Failed to set Stripe billing-provider config for owner %s (Metronome customer %s)",
+            "Failed to set Stripe billing-provider config for owner %s (Metronome customer %s) — "
+            "deferring contract creation; the next status poll retries the link",
             owner_id,
             customer_id,
         )
+        return False
 
 
 async def _create_or_adopt_customer(owner_id: str, client: MetronomeClient) -> str:
@@ -143,13 +175,14 @@ async def _create_or_adopt_customer(owner_id: str, client: MetronomeClient) -> s
         return adopted
 
 
-async def _create_or_adopt_contract(customer_id: str, client: MetronomeClient) -> str:
+async def _create_or_adopt_contract(customer_id: str, client: MetronomeClient, *, with_stripe_billing: bool) -> str:
     try:
         # rate_card_id is optional on contract create (sandbox-verified) and
         # is forwarded only when the env actually has one configured.
         return await client.create_contract(
             customer_id=customer_id,
             rate_card_id=settings.METRONOME_RATE_CARD_ID or None,
+            with_stripe_billing=with_stripe_billing,
         )
     except httpx.HTTPStatusError as exc:
         # Conflict: a prior attempt created the contract but crashed before

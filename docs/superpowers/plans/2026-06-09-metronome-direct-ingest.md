@@ -185,7 +185,7 @@ keeps running as today's biller until PR-C.
       + the webhook signing secrets (user runs via `!` — tokens never in chat).
 - [ ] Metronome console per env: 4 SUM billable metrics (grouped by `tier`,
       filtered `event_type=bedrock_invocation`) + rate card (AWS `us.` CRIS ×
-      1.4) + webhook endpoint (spec §4).
+      1.03 — 3% margin, decision 2026-06-11) + webhook endpoint (spec §4).
 - [ ] Wire `METRONOME_RATE_CARD_ID` env (from the console rate card) and flip
       `METRONOME_LIFECYCLE_ENABLED=true` for that env (service-stack env vars —
       via CDK, never console edits).

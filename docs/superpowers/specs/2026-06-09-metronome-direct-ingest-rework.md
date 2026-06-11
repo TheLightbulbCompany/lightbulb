@@ -144,7 +144,7 @@ Not code — a runbook step, done once per env before that env's ingest matters:
   `cache_read_tokens` / `cache_write_tokens`), filtered
   `event_type = bedrock_invocation`, grouped by `tier`.
 - **Rate card**: per (metric, tier) price = AWS Bedrock `us.` CRIS rate ×
-  `BILLING_MARKUP` (1.4). Rates live HERE — `bedrock_pricing._RATES` stops
+  a 3% margin (x1.03 — decision 2026-06-11, was 1.4). Rates live HERE — `bedrock_pricing._RATES` stops
   being the money path (kept only for display estimates + the daily
   CE-vs-Metronome reconciliation).
 - **Webhook endpoint** (backend `/webhooks/metronome`) + signing secret →

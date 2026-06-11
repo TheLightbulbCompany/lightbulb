@@ -49,8 +49,9 @@ class MetronomeClient:
             "Content-Type": "application/json",
         }
 
-    async def _post(self, path: str, payload: Any) -> dict:
-        resp = await self._http.post(path, json=payload, headers=self._headers)
+    async def _post(self, path: str, payload: Any, *, extra_headers: dict[str, str] | None = None) -> dict:
+        headers = {**self._headers, **extra_headers} if extra_headers else self._headers
+        resp = await self._http.post(path, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json() or {}
 
@@ -140,7 +141,11 @@ class MetronomeClient:
     async def set_stripe_billing_config(self, *, metronome_customer_id: str, stripe_customer_id: str) -> None:
         """POST /v1/customers/{id}/setCustomerBillingProviderConfigurations —
         link the EXISTING Stripe customer so Metronome pushes usage/credit
-        invoices onto the same Stripe Customer as our $50/mo subscription."""
+        invoices onto the same Stripe Customer as our $50/mo subscription.
+        charge_automatically is what lets payment-gated commits collect
+        without a checkout redirect. NB: this exact path/body is per the
+        Metronome docs but NOT yet sandbox-verified — confirm it during the
+        rigorous-test pass before relying on the Stripe link in prod."""
         await self._post(
             f"/customers/{metronome_customer_id}/setCustomerBillingProviderConfigurations",
             {
@@ -162,6 +167,8 @@ class MetronomeClient:
         credit_type_id: str,
         amount_cents: int,
         description: str,
+        idempotency_key: str,
+        payment_gate_config: dict | None = None,
     ) -> None:
         """POST /v1/contracts/customerCommits/create — add a prepaid commit
         (credits). Sandbox-verified: a "/contracts/edit" endpoint does not
@@ -169,37 +176,63 @@ class MetronomeClient:
         the top level, contract linkage via applicable_contract_ids +
         invoice_contract_id) — this exact shape returned 200. The amount is
         in CENTS: Metronome's USD credit type is cents-denominated (see
-        core/billing/metronome_units.py). The commit is UNGATED (no
-        payment_gate_config): our own Stripe Checkout already collected the
-        money, so a Metronome payment gate would invoice the customer a
-        second time (or never release the credits)."""
+        core/billing/metronome_units.py).
+
+        ``idempotency_key`` rides as Metronome's native ``Idempotency-Key``
+        request header — the exactly-once guarantee at the money source.
+        Live-verified (sandbox, 2026-06-10): same key + same body → 200
+        replaying the SAME commit id (one commit, one charge); same key +
+        different body → 409 {"message": "The provided idempotency key has
+        been used on a request with different parameters."}. Keys are
+        retained ~24h per the Metronome docs. Required (not optional)
+        because every commit we create charges or grants money — a caller
+        without a key is a caller with a double-charge bug.
+
+        ``payment_gate_config`` (e.g. {"payment_gate_type": "STRIPE"}) makes
+        Metronome collect the money itself through the customer's linked
+        billing provider before releasing the credits — the funding path for
+        top-ups now that the backend runs no Checkout of its own. Omitted
+        (None) the commit is ungated and grants immediately."""
+        payload: dict[str, Any] = {
+            "customer_id": customer_id,
+            "type": "PREPAID",
+            "product_id": product_id,
+            "priority": _COMMIT_PRIORITY,
+            "applicable_contract_ids": [contract_id],
+            "invoice_contract_id": contract_id,
+            "description": description,
+            "access_schedule": {
+                "credit_type_id": credit_type_id,
+                "schedule_items": [
+                    {
+                        # Today's UTC midnight, not now(): the schedule start
+                        # must be deterministic within the idempotency-key
+                        # retention window, or a retried request carries a
+                        # different body and 409s instead of replaying.
+                        # Midnight is already in the past, so the credits are
+                        # live immediately either way.
+                        "amount": amount_cents,
+                        "starting_at": time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime()),
+                        "ending_before": _NO_EXPIRY,
+                    }
+                ],
+            },
+        }
+        if payment_gate_config is not None:
+            payload["payment_gate_config"] = payment_gate_config
         await self._post(
             "/contracts/customerCommits/create",
-            {
-                "customer_id": customer_id,
-                "type": "PREPAID",
-                "product_id": product_id,
-                "priority": _COMMIT_PRIORITY,
-                "applicable_contract_ids": [contract_id],
-                "invoice_contract_id": contract_id,
-                "description": description,
-                "access_schedule": {
-                    "credit_type_id": credit_type_id,
-                    "schedule_items": [
-                        {
-                            "amount": amount_cents,
-                            "starting_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
-                            "ending_before": _NO_EXPIRY,
-                        }
-                    ],
-                },
-            },
+            payload,
+            extra_headers={"Idempotency-Key": idempotency_key},
         )
 
     async def get_net_balance(self, *, customer_id: str) -> dict:
         """POST /v1/contracts/customerBalances/getNetBalance — aggregated
-        remaining balance. Returns the `data` sub-object. NOT for the
-        synchronous chat hot path (no low-latency SLA)."""
+        remaining balance. Returns the `data` sub-object, whose live-verified
+        shape (sandbox, 2026-06-10) is {"balance": <number-in-CENTS>,
+        "credit_type_id": …} — the number is under "balance", NOT
+        "net_balance". NOT for the synchronous chat hot path (no low-latency
+        SLA)."""
         body = await self._post("/contracts/customerBalances/getNetBalance", {"customer_id": customer_id})
         return body.get("data", {})
 

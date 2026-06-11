@@ -25,26 +25,9 @@ def test_top_up_request_accepts_min_amount():
     assert req.amount_cents == 500
 
 
-@pytest.mark.parametrize("field", ["threshold_cents", "amount_cents"])
-def test_auto_reload_rejects_amount_above_two_hundred_dollars(field):
-    from routers.billing import AutoReloadRequest
+def test_auto_reload_request_is_gone():
+    """Auto-reload died with the DDB ledger — its request schema must not
+    creep back in."""
+    import routers.billing as billing
 
-    payload: dict = {"enabled": True, "threshold_cents": 1000, "amount_cents": 1000}
-    payload[field] = 20_001
-    with pytest.raises(ValidationError):
-        AutoReloadRequest(**payload)
-
-
-def test_auto_reload_accepts_max_amount():
-    from routers.billing import AutoReloadRequest
-
-    req = AutoReloadRequest(enabled=True, threshold_cents=20_000, amount_cents=20_000)
-    assert req.amount_cents == 20_000
-
-
-def test_auto_reload_disabled_skips_amount_validation_when_none():
-    """When disabled, threshold/amount can be omitted entirely."""
-    from routers.billing import AutoReloadRequest
-
-    req = AutoReloadRequest(enabled=False)
-    assert req.enabled is False
+    assert not hasattr(billing, "AutoReloadRequest")

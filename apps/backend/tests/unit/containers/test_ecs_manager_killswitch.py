@@ -1,5 +1,6 @@
-"""EcsManager.kill_owner_bedrock fires BOTH halves of the kill-switch:
-IAM revoke (Plan 2) + ECS desired=0 (reusing stop_user_service)."""
+"""EcsManager.kill_owner_bedrock (the admin break-glass — balance
+enforcement is revoke-only) fires BOTH halves: IAM revoke (Plan 2) + ECS
+desired=0 (reusing stop_user_service)."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -61,31 +62,3 @@ async def test_ecs_stop_runs_even_if_iam_revoke_raises(manager):
         await manager.kill_owner_bedrock("org_Y")
     revoke_mock.assert_awaited_once_with("org_Y")
     stop_mock.assert_awaited_once_with("org_Y")
-
-
-@pytest.mark.asyncio
-async def test_is_owner_service_stopped_true_when_status_stopped(manager):
-    with patch(
-        "core.containers.ecs_manager.container_repo.get_by_owner_id",
-        new=AsyncMock(return_value={"status": "stopped"}),
-    ):
-        assert await manager.is_owner_service_stopped("org_Y") is True
-
-
-@pytest.mark.asyncio
-async def test_is_owner_service_stopped_false_when_running(manager):
-    with patch(
-        "core.containers.ecs_manager.container_repo.get_by_owner_id",
-        new=AsyncMock(return_value={"status": "running"}),
-    ):
-        assert await manager.is_owner_service_stopped("org_Y") is False
-
-
-@pytest.mark.asyncio
-async def test_is_owner_service_stopped_true_when_no_row(manager):
-    """No container row → nothing to kill → treat as already stopped."""
-    with patch(
-        "core.containers.ecs_manager.container_repo.get_by_owner_id",
-        new=AsyncMock(return_value=None),
-    ):
-        assert await manager.is_owner_service_stopped("org_Y") is True

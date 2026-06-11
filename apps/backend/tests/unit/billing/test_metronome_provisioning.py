@@ -265,8 +265,32 @@ async def test_missing_billing_row_raises(billing_repo_mock):
 
 
 @pytest.mark.asyncio
-async def test_missing_stripe_customer_raises(billing_repo_mock):
-    get_mock, _ = billing_repo_mock
+async def test_missing_stripe_customer_skips_billing_provider_link(billing_repo_mock):
+    """No stripe_customer_id ⇒ the billing-provider link is skipped, but the
+    Metronome customer/contract/alerts still provision — a payment-gated
+    top-up later fails loudly at the gate, never silently."""
+    get_mock, set_mock = billing_repo_mock
     get_mock.return_value = {"owner_id": "org_abc"}
-    with pytest.raises(ProvisioningError, match="no stripe_customer_id"):
-        await ensure_metronome_customer(owner_id="org_abc", client=_fake_client())
+    fake = _fake_client()
+    cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
+
+    assert cust_id == "cust-uuid-1"
+    fake.set_stripe_billing_config.assert_not_awaited()
+    fake.create_alert.assert_awaited()
+    set_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_stripe_link_failure_is_best_effort(billing_repo_mock):
+    """A billing-provider-config failure logs + metrics but must not block
+    provisioning — the customer/contract/alerts/persist all still land."""
+    _, set_mock = billing_repo_mock
+    fake = _fake_client()
+    fake.set_stripe_billing_config = AsyncMock(side_effect=_http_error(500))
+    with patch("core.observability.metrics.put_metric") as metric_mock:
+        cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
+
+    assert cust_id == "cust-uuid-1"
+    fake.create_alert.assert_awaited()
+    set_mock.assert_awaited_once()
+    assert any(call.args[0] == "metronome.provision.stripe_link_error" for call in metric_mock.call_args_list)

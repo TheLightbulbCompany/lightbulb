@@ -20,10 +20,11 @@ export function OutOfCreditsBanner() {
   );
 
   // Only the bedrock_claude path uses prepaid credits. Without the gate,
-  // chatgpt_oauth / byo_key users see a false "out of credits" banner
-  // because /billing/credits/balance returns 0 when no credits row exists.
+  // chatgpt_oauth / byo_key users see a false "out of credits" banner.
+  // A null balance (Metronome unavailable / owner not provisioned there
+  // yet) is indeterminate — never scare the user with a false banner.
   if (me?.provider_choice !== "bedrock_claude") return null;
-  if (!balance || balance.balance_microcents > 0) return null;
+  if (!balance || balance.balance_microcents === null || balance.balance_microcents > 0) return null;
 
   return (
     <div className="bg-destructive/10 border-b border-destructive/20 px-4 py-2 text-sm flex items-center justify-between">

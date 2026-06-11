@@ -97,23 +97,18 @@ class Settings(BaseSettings):
     # api-stack's WebSocket stage URL.
     WS_GATEWAY_URL: str = os.getenv("WS_GATEWAY_URL", "wss://ws-dev.isol8.co")
 
-    # Credit ledger + OAuth tables (set by CDK)
-    CREDITS_TABLE: str = ""
-    CREDIT_TRANSACTIONS_TABLE: str = ""
-    LEDGER_BACKEND: str = "ddb"  # ledger system-of-record: "ddb" (interim) | "metronome" (Phase 3)
+    # OAuth tables (set by CDK)
     OAUTH_TOKENS_TABLE: str = ""
 
     # --- Metronome lifecycle + gating ---
-    # Metronome is the usage ledger; the backend never ingests usage into it
-    # (the meter Lambda does that directly). These settings serve the
-    # backend's lifecycle/gating modules: customer provisioning, payment-
-    # gated top-up funding, the low-balance webhook, and balance display.
-    # The environment is token-scoped: same base URL, the token decides
-    # sandbox vs prod, so a sandbox API key only ever touches sandbox data.
-    # Empty defaults keep the backend booting in non-Metronome contexts
-    # (unit tests, local dev). LEDGER_BACKEND stays "ddb" — the DDB ledger
-    # remains the billed truth until it is deleted outright; there is no
-    # config flip that makes the backend read balances from Metronome.
+    # Metronome is the ONLY billing ledger; the backend never ingests usage
+    # into it (the meter Lambda does that directly). These settings serve
+    # the backend's lifecycle/gating modules: customer provisioning,
+    # payment-gated top-up funding, the low-balance webhook, the gate's
+    # lazy balance refresh, and balance display. The environment is
+    # token-scoped: same base URL, the token decides sandbox vs prod, so a
+    # sandbox API key only ever touches sandbox data. Empty defaults keep
+    # the backend booting in non-Metronome contexts (unit tests, local dev).
     METRONOME_BASE_URL: str = os.getenv("METRONOME_BASE_URL", "https://api.metronome.com/v1")
     """Metronome API base, including the /v1 prefix. Same URL for sandbox + prod."""
     METRONOME_API_KEY: str = os.getenv("METRONOME_API_KEY", "")
@@ -145,12 +140,19 @@ class Settings(BaseSettings):
     """Threshold for the per-customer low-remaining-commit-balance alert
     created at provision time. When an owner's prepaid balance crosses below
     this, Metronome fires the webhook that sets the fast-gate flag."""
+    METRONOME_GATE_STALENESS_S: int = int(os.getenv("METRONOME_GATE_STALENESS_S", "900"))
+    """Max age of the fast-gate row before a gate read lazily refreshes it
+    from getNetBalance. The refresh is also the pull-based re-arm path: a
+    Metronome payment-gated top-up releases credits with NO webhook to us,
+    so the first gate read after this window sees the new balance and
+    un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
-    BEDROCK_ENFORCEMENT_LIVE: bool = os.getenv("BEDROCK_ENFORCEMENT_LIVE", "false").lower() == "true"
-    """Arms gate + kill-switch enforcement off the Metronome low-balance
-    webhook. When False (default) the webhook still sets the fast-gate flag —
-    ingest is always-on shadow — but never fires the kill-switch, so the
-    Metronome pipeline can be validated end-to-end with zero blast radius."""
+    BEDROCK_ENFORCEMENT_LIVE: bool = os.getenv("BEDROCK_ENFORCEMENT_LIVE", "true").lower() == "true"
+    """Arms the revoke-only enforcement off the Metronome low-balance
+    webhook. Defaults True now that Metronome is the only ledger — there is
+    no other biller to fall back to, so a depleted balance must revoke the
+    owner's Bedrock IAM grant. Set "false" per env only to run the pipeline
+    in shadow (flag set, no revoke) during validation."""
 
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
     # keep the backend booting in non-AWS unit-test contexts.

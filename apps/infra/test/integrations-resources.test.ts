@@ -74,8 +74,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       pendingUpdatesTable: database.pendingUpdatesTable,
       channelLinksTable: database.channelLinksTable,
       adminActionsTable: database.adminActionsTable,
-      creditsTable: database.creditsTable,
-      creditTransactionsTable: database.creditTransactionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,
       paperclipCompaniesTable: database.paperclipCompaniesTable,

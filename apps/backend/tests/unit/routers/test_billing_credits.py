@@ -1,7 +1,7 @@
-"""Tests for the credit-management endpoints."""
+"""Tests for the credit endpoints — Metronome is the only balance source."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -9,142 +9,176 @@ from moto import mock_aws
 
 
 @pytest.fixture
-def credit_ledger_tables(monkeypatch):
-    """Provision moto-mocked credits + credit-transactions + webhook-dedup tables.
+def webhook_dedup_table(monkeypatch):
+    """Provision the moto-mocked webhook-dedup table.
 
-    Plan 1 (Stripe webhook event dedup, merged in main as `c9113ca`) makes
-    the Stripe webhook handler call record_event_or_skip first; that helper
-    fails fast if WEBHOOK_DEDUP_TABLE is empty. The credit-top-up webhook
-    test routes through that path, so the fixture also provisions the
-    dedup table.
+    The Stripe webhook handler calls record_event_or_skip first; that helper
+    fails fast if WEBHOOK_DEDUP_TABLE is empty, and the webhook tests below
+    route through it. (The credits/credit-transactions tables died with the
+    DDB ledger — Metronome holds the balance now.)
     """
     with mock_aws():
         client = boto3.client("dynamodb", region_name="us-east-1")
-        client.create_table(
-            TableName="test-credits",
-            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        client.create_table(
-            TableName="test-credit-txns",
-            KeySchema=[
-                {"AttributeName": "user_id", "KeyType": "HASH"},
-                {"AttributeName": "tx_id", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "user_id", "AttributeType": "S"},
-                {"AttributeName": "tx_id", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
         client.create_table(
             TableName="test-webhook-event-dedup",
             KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        monkeypatch.setenv("CREDITS_TABLE", "test-credits")
-        monkeypatch.setenv("CREDIT_TRANSACTIONS_TABLE", "test-credit-txns")
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
         yield
 
 
-@pytest.mark.asyncio
-async def test_get_balance_returns_microcents(async_client, credit_ledger_tables):
-    with patch(
-        "routers.billing.credit_ledger.get_balance",
-        new=AsyncMock(return_value=12_345_678),
-    ):
-        resp = await async_client.get("/api/v1/billing/credits/balance")
-    assert resp.status_code == 200
-    # metronome_balance_microcents is display-only and None here: the moto
-    # environment has no billing row / Metronome customer for this owner.
-    assert resp.json() == {
-        "balance_microcents": 12_345_678,
-        "balance_dollars": "12.35",
-        "metronome_balance_microcents": None,
-    }
+def _fake_metronome_client(balance=12.34):
+    # Live-verified getNetBalance shape (sandbox, 2026-06-10): the cents
+    # number rides under "balance" in the data sub-object the client returns.
+    fake = MagicMock()
+    fake.get_net_balance = AsyncMock(return_value={"balance": balance, "credit_type_id": "ct-usd-cents"})
+    return fake
 
 
 @pytest.mark.asyncio
-async def test_get_balance_org_member_reads_owner_id(async_client_org_member, credit_ledger_tables):
-    """Org members and admin share one credit balance, keyed on owner_id (org_id).
-    Without this, every org member sees balance=0 because their personal user_id
-    has no credit row — the bug that blocked org members at chat with
-    code=out_of_credits in prod."""
-    captured: dict = {}
-
-    async def fake_get_balance(key, *, consistent: bool = False):
-        captured["key"] = key
-        return 9_876_543
-
-    with patch("routers.billing.credit_ledger.get_balance", new=fake_get_balance):
-        resp = await async_client_org_member.get("/api/v1/billing/credits/balance")
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "balance_microcents": 9_876_543,
-        "balance_dollars": "9.88",
-        "metronome_balance_microcents": None,
-    }
-    assert captured["key"] == "org_test_456"
-
-
-@pytest.mark.asyncio
-async def test_get_balance_personal_uses_user_id(async_client, credit_ledger_tables):
-    """Personal users have owner_id == user_id, so the read is unchanged."""
-    captured: dict = {}
-
-    async def fake_get_balance(key, *, consistent: bool = False):
-        captured["key"] = key
-        return 1_000_000
-
-    with patch("routers.billing.credit_ledger.get_balance", new=fake_get_balance):
-        resp = await async_client.get("/api/v1/billing/credits/balance")
-    assert resp.status_code == 200
-    assert captured["key"] == "user_test_123"
-
-
-@pytest.mark.asyncio
-async def test_top_up_creates_checkout_session(async_client, credit_ledger_tables):
-    """Top-up endpoint returns a Stripe Checkout URL (Elements-flow
-    replacement). The session has allow_promotion_codes=True so an
-    internal 100%-off coupon can be redeemed; metadata carries the
-    credit-grant amount so the webhook handler knows what to write to
-    the ledger regardless of what was charged."""
-    fake_session = type("S", (), {"id": "cs_test", "url": "https://checkout.stripe.com/c/pay/cs_test"})()
+async def test_get_balance_returns_metronome_balance(async_client, monkeypatch):
+    """1234 cents (Metronome's USD credit type) -> 12_340_000 microcents."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    fake = _fake_metronome_client(balance=1234)
     with (
         patch(
-            "core.services.billing_service.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
         ),
-        patch("stripe.checkout.Session.create", return_value=fake_session) as mock_session,
+        patch("core.billing.metronome_client.for_settings", return_value=fake),
+        patch("core.services.metronome_gate.apply_fresh_balance", new=AsyncMock()) as write_through,
     ):
+        resp = await async_client.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "balance_microcents": 12_340_000,
+        "balance_dollars": "12.34",
+        "lifecycle_enabled": True,
+    }
+    fake.get_net_balance.assert_awaited_once_with(customer_id="cust-uuid-1")
+    # The successful live read is written through the fast-gate projection so
+    # the provision gate un-blocks immediately instead of after the staleness
+    # window.
+    write_through.assert_awaited_once_with("user_test_123", 12_340_000)
+
+
+@pytest.mark.asyncio
+async def test_get_balance_write_through_restores_revoked_owner(async_client, monkeypatch):
+    """End-to-end through the real apply_fresh_balance: a revoked owner whose
+    live read (and confirming re-read) comes back positive gets the fast-gate
+    row rewritten AND the Bedrock IAM grant restored from the balance poll."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    fake = _fake_metronome_client(balance=1234)
+    restore = AsyncMock()
+    with (
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
+        ),
+        patch("core.billing.metronome_client.for_settings", return_value=fake),
+        patch("core.services.metronome_gate.MetronomeFastGate") as gate_cls,
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "bedrock_revoked": True}),
+        ),
+        patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
+    ):
+        gate_cls.return_value.set_balance = AsyncMock()
+        resp = await async_client.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    gate_cls.return_value.set_balance.assert_awaited_once_with("user_test_123", remaining_microcents=12_340_000)
+    restore.assert_awaited_once_with("user_test_123")
+
+
+@pytest.mark.asyncio
+async def test_get_balance_org_member_reads_owner_id(async_client_org_member, monkeypatch):
+    """Org members and admin share one balance, keyed on owner_id (org_id).
+    Without this, every org member sees no balance because their personal
+    user_id has no Metronome customer — the bug that blocked org members at
+    chat with code=out_of_credits in prod."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    fake = _fake_metronome_client(balance=988)
+    row_mock = AsyncMock(return_value={"owner_id": "org_test_456", "metronome_customer_id": "cust-org-1"})
+    with (
+        patch("routers.billing.billing_repo.get_by_owner_id", new=row_mock),
+        patch("core.billing.metronome_client.for_settings", return_value=fake),
+        patch("core.services.metronome_gate.apply_fresh_balance", new=AsyncMock()),
+    ):
+        resp = await async_client_org_member.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    assert resp.json()["balance_microcents"] == 9_880_000
+    row_mock.assert_awaited_once_with("org_test_456")
+
+
+@pytest.mark.asyncio
+async def test_top_up_requests_metronome_payment_gated_commit(async_client):
+    """The top-up endpoint hands the request straight to
+    metronome_funding.request_top_up — no Stripe Checkout session, no
+    redirect URL. Metronome collects via the customer's saved card."""
+    with patch(
+        "core.billing.metronome_funding.request_top_up",
+        new=AsyncMock(),
+    ) as mock_request:
         resp = await async_client.post(
             "/api/v1/billing/credits/top_up",
             json={"amount_cents": 2000},
         )
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["checkout_url"] == "https://checkout.stripe.com/c/pay/cs_test"
-    _, kwargs = mock_session.call_args
-    assert kwargs["mode"] == "payment"
-    assert kwargs["customer"] == "cus_test"
-    assert kwargs["allow_promotion_codes"] is True
-    line_item = kwargs["line_items"][0]
-    assert line_item["price_data"]["unit_amount"] == 2000
-    assert line_item["price_data"]["currency"] == "usd"
-    assert kwargs["metadata"]["purpose"] == "credit_top_up"
-    # Personal users have owner_id == user_id, so the value is unchanged.
-    # Key was renamed user_id -> owner_id when credits became org-pooled.
-    assert kwargs["metadata"]["owner_id"] == "user_test_123"
-    assert "user_id" not in kwargs["metadata"]
-    assert kwargs["metadata"]["amount_cents"] == "2000"
-    assert "idempotency_key" in kwargs
+    assert resp.json() == {"status": "requested", "amount_cents": 2000}
+    # Personal users have owner_id == user_id. No request_id in the body ⇒
+    # no key from the endpoint (the funding layer falls back).
+    mock_request.assert_awaited_once_with("user_test_123", 2000, idempotency_key=None)
 
 
 @pytest.mark.asyncio
-async def test_top_up_below_minimum_rejected(async_client, credit_ledger_tables):
+async def test_top_up_namespaces_client_request_id_with_owner(async_client):
+    """The client's request_id is attacker-chosen, so the endpoint prefixes
+    it with the authenticated owner id before it becomes a Metronome
+    Idempotency-Key — one user must never be able to replay or collide
+    another user's in-flight commit."""
+    with patch(
+        "core.billing.metronome_funding.request_top_up",
+        new=AsyncMock(),
+    ) as mock_request:
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000, "request_id": "9d1f4c2e-uuid"},
+        )
+    assert resp.status_code == 200
+    mock_request.assert_awaited_once_with("user_test_123", 2000, idempotency_key="topup-user_test_123-9d1f4c2e-uuid")
+
+
+@pytest.mark.asyncio
+async def test_top_up_overlong_request_id_rejected(async_client):
+    """max_length=64 on the schema — an unbounded client token would flow
+    into Metronome headers verbatim."""
+    resp = await async_client.post(
+        "/api/v1/billing/credits/top_up",
+        json={"amount_cents": 2000, "request_id": "x" * 65},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_top_up_funding_error_maps_to_400(async_client):
+    from core.billing.metronome_funding import FundingError
+
+    with patch(
+        "core.billing.metronome_funding.request_top_up",
+        new=AsyncMock(side_effect=FundingError("Metronome customer not provisioned for owner_id=user_test_123")),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 400
+    assert "not provisioned" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_top_up_below_minimum_rejected(async_client):
     resp = await async_client.post(
         "/api/v1/billing/credits/top_up",
         json={"amount_cents": 100},
@@ -154,47 +188,40 @@ async def test_top_up_below_minimum_rejected(async_client, credit_ledger_tables)
 
 
 @pytest.mark.asyncio
-async def test_set_auto_reload_persists(async_client, credit_ledger_tables):
-    with patch("routers.billing.credit_ledger.set_auto_reload", new=AsyncMock()) as mock_set:
-        resp = await async_client.put(
-            "/api/v1/billing/credits/auto_reload",
-            json={"enabled": True, "threshold_cents": 500, "amount_cents": 5000},
-        )
-    assert resp.status_code == 200
-    _, kwargs = mock_set.call_args
-    assert kwargs["enabled"] is True
-    assert kwargs["threshold_cents"] == 500
-    assert kwargs["amount_cents"] == 5000
+async def test_auto_reload_endpoint_is_gone(async_client):
+    """Auto-reload died with the DDB ledger — there is no off-session
+    reload machinery against Metronome's payment-gated commits."""
+    resp = await async_client.put(
+        "/api/v1/billing/credits/auto_reload",
+        json={"enabled": True, "threshold_cents": 500, "amount_cents": 5000},
+    )
+    assert resp.status_code == 404
+
+
+def test_stripe_webhook_dispatch_has_no_checkout_session_handlers():
+    """The Stripe-Checkout top-up flow is deleted: checkout.session.* events
+    are no longer handled (the router acks unknown types with 200). Only the
+    subscription lifecycle remains on the Stripe webhook."""
+    from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
+
+    assert not any(t.startswith("checkout.session.") for t in STRIPE_WEBHOOK_HANDLERS)
+    # Subscription lifecycle is untouched.
+    assert "customer.subscription.created" in STRIPE_WEBHOOK_HANDLERS
+    assert "customer.subscription.updated" in STRIPE_WEBHOOK_HANDLERS
+    assert "customer.subscription.deleted" in STRIPE_WEBHOOK_HANDLERS
 
 
 @pytest.mark.asyncio
-async def test_set_auto_reload_org_uses_owner_id(async_client_org_admin, credit_ledger_tables):
-    """Auto-reload settings live on the same row as the balance — must be
-    owner-keyed so they survive across org members."""
-    captured: dict = {}
-
-    async def fake_set(key, *, enabled, threshold_cents, amount_cents):
-        captured["key"] = key
-
-    with patch("routers.billing.credit_ledger.set_auto_reload", new=fake_set):
-        resp = await async_client_org_admin.put(
-            "/api/v1/billing/credits/auto_reload",
-            json={"enabled": True, "threshold_cents": 500, "amount_cents": 5000},
-        )
-    assert resp.status_code == 200
-    assert captured["key"] == "org_test_456"
-
-
-@pytest.mark.asyncio
-async def test_checkout_session_completed_credits_ledger(async_client, monkeypatch, credit_ledger_tables):
-    """Charged top-up: amount_total matches metadata.amount_cents — full
-    Stripe transaction, no discount applied."""
+async def test_checkout_session_completed_is_acked_without_processing(async_client, monkeypatch, webhook_dedup_table):
+    """A stray checkout.session.completed (e.g. the trial-checkout flow's
+    session) is acked 200 via the unknown-type default — no credit grant
+    machinery exists anymore."""
     fake_event = {
-        "id": "evt_cs_credit_1",
+        "id": "evt_cs_legacy_1",
         "type": "checkout.session.completed",
         "data": {
             "object": {
-                "id": "cs_test",
+                "id": "cs_anything",
                 "payment_status": "paid",
                 "amount_total": 2000,
                 "metadata": {
@@ -209,300 +236,38 @@ async def test_checkout_session_completed_credits_ledger(async_client, monkeypat
         "stripe.Webhook.construct_event",
         lambda body, sig, secret: fake_event,
     )
-
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=20_000_000)) as mock_top_up:
-        resp = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=json.dumps(fake_event),
-            headers={"stripe-signature": "ignored"},
-        )
-
-    assert resp.status_code == 200
-    _, kwargs = mock_top_up.call_args
-    assert kwargs["amount_microcents"] == 20_000_000
-    assert kwargs["stripe_payment_intent_id"] == "cs_test"
-
-
-@pytest.mark.asyncio
-async def test_checkout_session_completed_with_full_discount_still_credits(
-    async_client, monkeypatch, credit_ledger_tables
-):
-    """100%-off coupon: amount_total=0 (Stripe didn't charge) but the
-    user still gets the requested credit balance. This is the internal-
-    use case — the company absorbs the cost via the coupon, no Stripe
-    fee, and the ledger reflects the credit grant."""
-    fake_event = {
-        "id": "evt_cs_credit_discount_1",
-        "type": "checkout.session.completed",
-        "data": {
-            "object": {
-                "id": "cs_internal",
-                "payment_status": "no_payment_required",
-                "amount_total": 0,
-                "metadata": {
-                    "purpose": "credit_top_up",
-                    "owner_id": "u_internal",
-                    "amount_cents": "5000",
-                },
-            }
-        },
-    }
-    monkeypatch.setattr(
-        "stripe.Webhook.construct_event",
-        lambda body, sig, secret: fake_event,
+    resp = await async_client.post(
+        "/api/v1/billing/webhooks/stripe",
+        content=json.dumps(fake_event),
+        headers={"stripe-signature": "ignored"},
     )
-
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)) as mock_top_up:
-        resp = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=json.dumps(fake_event),
-            headers={"stripe-signature": "ignored"},
-        )
-
     assert resp.status_code == 200
-    _, kwargs = mock_top_up.call_args
-    # Credit reflects the *requested* amount, not the (zero) Stripe charge.
-    assert kwargs["amount_microcents"] == 50_000_000
-    assert kwargs["stripe_payment_intent_id"] == "cs_internal"
 
 
 @pytest.mark.asyncio
-async def test_checkout_session_completed_ignores_non_credit_purposes(async_client, monkeypatch, credit_ledger_tables):
-    """Trial-checkout sessions ALSO fire checkout.session.completed but
-    they aren't credit grants — they're handled via subscription.created
-    higher up. The handler must ignore non-credit_top_up sessions to
-    avoid accidentally crediting trial signups."""
-    fake_event = {
-        "id": "evt_cs_subscription_1",
-        "type": "checkout.session.completed",
-        "data": {
-            "object": {
-                "id": "cs_subscription",
-                "amount_total": 0,
-                "metadata": {},  # trial-checkout sessions don't set purpose
-            }
-        },
-    }
-    monkeypatch.setattr(
-        "stripe.Webhook.construct_event",
-        lambda body, sig, secret: fake_event,
-    )
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
-        resp = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=json.dumps(fake_event),
-            headers={"stripe-signature": "ignored"},
-        )
-    assert resp.status_code == 200
-    mock_top_up.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_checkout_session_completed_with_unpaid_status_defers_credit(
-    async_client, monkeypatch, credit_ledger_tables
-):
-    """ACH / bank-transfer / Klarna sessions land in
-    checkout.session.completed with payment_status=unpaid. We must NOT
-    credit at this point — wait for async_payment_succeeded."""
-    fake_event = {
-        "id": "evt_cs_unpaid_1",
-        "type": "checkout.session.completed",
-        "data": {
-            "object": {
-                "id": "cs_ach_pending",
-                "payment_status": "unpaid",
-                "amount_total": 5000,
-                "metadata": {
-                    "purpose": "credit_top_up",
-                    "owner_id": "u_ach",
-                    "amount_cents": "5000",
-                },
-            }
-        },
-    }
-    monkeypatch.setattr(
-        "stripe.Webhook.construct_event",
-        lambda body, sig, secret: fake_event,
-    )
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
-        resp = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=json.dumps(fake_event),
-            headers={"stripe-signature": "ignored"},
-        )
-    assert resp.status_code == 200
-    mock_top_up.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_async_payment_succeeded_credits_after_ach_settles(async_client, monkeypatch, credit_ledger_tables):
-    """When ACH/bank-transfer settles, Stripe fires
-    checkout.session.async_payment_succeeded with payment_status=paid.
-    THIS is the event that credits the ledger for delayed payments."""
-    fake_event = {
-        "id": "evt_cs_async_paid_1",
-        "type": "checkout.session.async_payment_succeeded",
-        "data": {
-            "object": {
-                "id": "cs_ach_settled",
-                "payment_status": "paid",
-                "amount_total": 5000,
-                "metadata": {
-                    "purpose": "credit_top_up",
-                    "owner_id": "u_ach",
-                    "amount_cents": "5000",
-                },
-            }
-        },
-    }
-    monkeypatch.setattr(
-        "stripe.Webhook.construct_event",
-        lambda body, sig, secret: fake_event,
-    )
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)) as mock_top_up:
-        resp = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=json.dumps(fake_event),
-            headers={"stripe-signature": "ignored"},
-        )
-    assert resp.status_code == 200
-    _, kwargs = mock_top_up.call_args
-    assert kwargs["amount_microcents"] == 50_000_000
-    assert kwargs["stripe_payment_intent_id"] == "cs_ach_settled"
-
-
-@pytest.mark.asyncio
-async def test_async_payment_failed_does_not_credit(async_client, monkeypatch, credit_ledger_tables):
-    """ACH bounce / bank-transfer reject. Because we never credited on
-    the original completed-but-unpaid event, there's nothing to roll
-    back — just emit a metric."""
-    fake_event = {
-        "id": "evt_cs_async_failed_1",
-        "type": "checkout.session.async_payment_failed",
-        "data": {
-            "object": {
-                "id": "cs_ach_failed",
-                "payment_status": "unpaid",
-                "metadata": {
-                    "purpose": "credit_top_up",
-                    "owner_id": "u_ach",
-                    "amount_cents": "5000",
-                },
-            }
-        },
-    }
-    monkeypatch.setattr(
-        "stripe.Webhook.construct_event",
-        lambda body, sig, secret: fake_event,
-    )
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
-        resp = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=json.dumps(fake_event),
-            headers={"stripe-signature": "ignored"},
-        )
-    assert resp.status_code == 200
-    mock_top_up.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_top_up_org_admin_writes_org_id_to_metadata(async_client_org_admin, credit_ledger_tables):
-    """Org admin top-up: charges the org's Stripe customer, but the credit
-    grant is written to the org_id row so every member of the org sees the
-    balance. Without this, the admin pays but only the admin sees credits."""
-    fake_session = type("S", (), {"id": "cs_test_org", "url": "https://checkout.stripe.com/c/pay/cs_test_org"})()
-    with (
-        patch(
-            "core.services.billing_service.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"stripe_customer_id": "cus_test_org"}),
-        ),
-        patch("stripe.checkout.Session.create", return_value=fake_session) as mock_session,
-    ):
+async def test_top_up_org_admin_uses_org_owner_id(async_client_org_admin):
+    """Org admin top-up funds the org's Metronome customer (owner_id =
+    org_id) so every member draws from the shared balance — and the
+    idempotency namespace is the org, not the admin's personal user_id."""
+    with patch(
+        "core.billing.metronome_funding.request_top_up",
+        new=AsyncMock(),
+    ) as mock_request:
         resp = await async_client_org_admin.post(
             "/api/v1/billing/credits/top_up",
-            json={"amount_cents": 5000},
+            json={"amount_cents": 5000, "request_id": "intent-1"},
         )
     assert resp.status_code == 200
-    _, kwargs = mock_session.call_args
-    assert kwargs["customer"] == "cus_test_org"
-    assert kwargs["metadata"]["owner_id"] == "org_test_456"
-    assert kwargs["payment_intent_data"]["metadata"]["owner_id"] == "org_test_456"
-    assert "user_id" not in kwargs["metadata"]
+    mock_request.assert_awaited_once_with("org_test_456", 5000, idempotency_key="topup-org_test_456-intent-1")
 
 
 @pytest.mark.asyncio
-async def test_webhook_metadata_without_owner_id_no_ops(async_client, monkeypatch, credit_ledger_tables):
-    """No legacy fallback. A Checkout session whose metadata is missing
-    owner_id is an error — log + no-op. We only accept the strict
-    post-cutover shape since there are no in-flight legacy sessions."""
-    fake_event = {
-        "id": "evt_no_owner_id",
-        "type": "checkout.session.completed",
-        "data": {
-            "object": {
-                "id": "cs_missing_owner",
-                "customer": "cus_test",
-                "payment_status": "paid",
-                "amount_total": 2000,
-                "metadata": {
-                    "purpose": "credit_top_up",
-                    "user_id": "u_legacy",
-                    "amount_cents": "2000",
-                },
-            }
-        },
-    }
-    monkeypatch.setattr("stripe.Webhook.construct_event", lambda body, sig, secret: fake_event)
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
-        resp = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=json.dumps(fake_event),
-            headers={"stripe-signature": "ignored"},
-        )
-    assert resp.status_code == 200
-    mock_top_up.assert_not_called()
-
-
-def _fake_metronome_client(net_balance=12.34):
-    from unittest.mock import MagicMock
-
-    fake = MagicMock()
-    fake.get_net_balance = AsyncMock(return_value={"net_balance": net_balance})
-    return fake
-
-
-@pytest.mark.asyncio
-async def test_get_balance_includes_metronome_balance_when_provisioned(async_client, credit_ledger_tables, monkeypatch):
-    """When the owner has a Metronome customer, the display-only
-    metronome_balance_microcents rides along (Metronome cents -> microcents,
-    see core/billing/metronome_units.py)."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
-    fake = _fake_metronome_client(net_balance=1234)  # cents == $12.34
-    with (
-        patch("routers.billing.credit_ledger.get_balance", new=AsyncMock(return_value=1_000_000)),
-        patch(
-            "routers.billing.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
-        ),
-        patch("core.billing.metronome_client.for_settings", return_value=fake),
-    ):
-        resp = await async_client.get("/api/v1/billing/credits/balance")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["metronome_balance_microcents"] == 12_340_000
-    # The DDB-ledger number is untouched by the Metronome read.
-    assert body["balance_microcents"] == 1_000_000
-    fake.get_net_balance.assert_awaited_once_with(customer_id="cust-uuid-1")
-
-
-@pytest.mark.asyncio
-async def test_get_balance_metronome_none_when_lifecycle_disabled(async_client, credit_ledger_tables, monkeypatch):
-    """With the lifecycle switch off, the display degrades to None without
+async def test_get_balance_null_when_lifecycle_disabled(async_client, monkeypatch):
+    """With the lifecycle switch off, the balance degrades to null without
     constructing a Metronome client (no doomed calls against placeholder
-    secrets)."""
+    secrets) and without a billing-row read."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
     with (
-        patch("routers.billing.credit_ledger.get_balance", new=AsyncMock(return_value=1_000_000)),
         patch(
             "routers.billing.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
@@ -511,20 +276,21 @@ async def test_get_balance_metronome_none_when_lifecycle_disabled(async_client, 
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    assert resp.json()["metronome_balance_microcents"] is None
+    # lifecycle_enabled lets the frontend distinguish "credits product not
+    # wired in this environment" from a transient balance outage.
+    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": False}
     for_settings_mock.assert_not_called()
     row_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_get_balance_metronome_error_yields_none(async_client, credit_ledger_tables, monkeypatch):
-    """A Metronome outage must never 500 the balance endpoint — the field
-    degrades to None and the ledger number still serves."""
+async def test_get_balance_metronome_error_yields_null(async_client, monkeypatch):
+    """A Metronome outage must never 500 the balance endpoint — both fields
+    degrade to null and the panel shows the unavailable state."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     fake = _fake_metronome_client()
     fake.get_net_balance = AsyncMock(side_effect=RuntimeError("metronome down"))
     with (
-        patch("routers.billing.credit_ledger.get_balance", new=AsyncMock(return_value=2_000_000)),
         patch(
             "routers.billing.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
@@ -533,18 +299,15 @@ async def test_get_balance_metronome_error_yields_none(async_client, credit_ledg
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["metronome_balance_microcents"] is None
-    assert body["balance_microcents"] == 2_000_000
+    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": True}
 
 
 @pytest.mark.asyncio
-async def test_get_balance_no_metronome_customer_yields_none(async_client, credit_ledger_tables, monkeypatch):
-    """Owners not yet provisioned in Metronome get None without any HTTP call."""
+async def test_get_balance_no_metronome_customer_yields_null(async_client, monkeypatch):
+    """Owners not yet provisioned in Metronome get null without any HTTP call."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     fake = _fake_metronome_client()
     with (
-        patch("routers.billing.credit_ledger.get_balance", new=AsyncMock(return_value=3_000_000)),
         patch(
             "routers.billing.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "user_test_123", "stripe_customer_id": "cus_x"}),
@@ -553,5 +316,5 @@ async def test_get_balance_no_metronome_customer_yields_none(async_client, credi
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    assert resp.json()["metronome_balance_microcents"] is None
+    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": True}
     fake.get_net_balance.assert_not_awaited()

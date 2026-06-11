@@ -1,6 +1,6 @@
 """Tests for the provision-gate helper."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -115,12 +115,10 @@ async def test_canceled_subscription_with_cleared_subscription_id_routes_to_bill
 
 
 @pytest.mark.asyncio
-async def test_active_subscription_bedrock_zero_balance_returns_credits_required():
-    ledger = MagicMock()
-    ledger.get_balance = AsyncMock(return_value=0)
+async def test_active_subscription_bedrock_blocked_returns_credits_required():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
+        patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=True)),
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -139,11 +137,9 @@ async def test_active_subscription_bedrock_zero_balance_returns_credits_required
 
 @pytest.mark.asyncio
 async def test_trialing_with_credits_returns_none():
-    ledger = MagicMock()
-    ledger.get_balance = AsyncMock(return_value=500_000)  # 50 cents in microcents
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
+        patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=False)),
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -207,12 +203,10 @@ async def test_bedrock_balance_keyed_on_owner_id():
     """Org members hitting /onboarding's pre-provision check must read the
     pooled org balance, not their personal user_id row (which is empty
     after the org-pooled-credits cutover)."""
-    balance_mock = AsyncMock(return_value=5_000_000)
-    ledger = MagicMock()
-    ledger.get_balance = balance_mock
+    blocked_mock = AsyncMock(return_value=False)
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.billing.ledger_interface.get_ledger", return_value=ledger),
+        patch("core.services.metronome_gate.is_owner_blocked", new=blocked_mock),
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -226,8 +220,7 @@ async def test_bedrock_balance_keyed_on_owner_id():
             clerk_user_id="user_member_X",
         )
     assert gate is None  # gate passes
-    args, _ = balance_mock.call_args
-    assert args[0] == "org_Y"
+    blocked_mock.assert_awaited_once_with("org_Y")
 
 
 @pytest.mark.asyncio

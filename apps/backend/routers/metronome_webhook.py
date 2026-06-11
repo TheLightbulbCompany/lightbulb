@@ -149,15 +149,30 @@ async def _process_event(event: dict, event_id: str) -> Response:
         logger.warning("Metronome low-balance webhook with no remaining_balance: %s", event_id)
         return Response(status_code=200)
 
-    remaining_microcents = cents_to_microcents(remaining_cents)
+    try:
+        remaining_microcents = cents_to_microcents(remaining_cents)
+    except (TypeError, ValueError):
+        # A non-numeric remaining_balance is permanently garbled — letting it
+        # raise into the catch-all would roll the dedup row back and put the
+        # same unprocessable event on infinite redelivery. Keep the dedup row
+        # and ack: redelivery cannot fix the payload.
+        put_metric("metronome.webhook.malformed")
+        logger.warning(
+            "Metronome low-balance webhook %s has non-numeric remaining_balance %r — acking without processing",
+            event_id,
+            remaining_cents,
+        )
+        return Response(status_code=200)
+
     gate = MetronomeFastGate()
 
     # Staleness guard: a low-balance webhook delivered LATE (Metronome
     # redelivery after our earlier non-2xx, or plain network delay) can
-    # arrive after a confirmed top-up already re-armed the flag. Applying it
+    # arrive after a gate-refresh already re-armed the flag. Applying it
     # would stomp the re-arm and re-kill a paid-up owner — and a blocked
     # owner emits no usage, so no corrective webhook would ever come. The
-    # fast-gate row's updated_at moves on every set_balance/add_credit, so a
+    # fast-gate row's updated_at moves on every set_balance (webhook or lazy
+    # gate refresh), so a
     # row newer than the event's own timestamp means the event is old news.
     event_ts = _parse_timestamp(props.get("timestamp"))
     if event_ts is not None:

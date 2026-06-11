@@ -25,9 +25,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
+import stripe
 from fastapi import Response
 
-from core.observability.metrics import put_metric
+from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo
 from core.services.billing_service import BillingService
 
@@ -99,6 +100,51 @@ async def resolve_owner_account(subscription_event_data: dict) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
+async def _maybe_set_customer_default_payment_method(event_data: dict[str, Any]) -> None:
+    """Promote the subscription's payment method to the CUSTOMER's invoice
+    default when the customer has none.
+
+    Stripe Checkout attaches the collected payment method to the
+    SUBSCRIPTION only — the Customer's invoice_settings.default_payment_method
+    stays empty. Metronome's charge_automatically collection charges the
+    CUSTOMER default, so without this promotion every Metronome invoice
+    (payment-gated credit top-ups, usage) fails for every
+    checkout-onboarded customer.
+
+    Idempotent (an existing customer default is never clobbered) and
+    best-effort: a Stripe failure here must not fail the webhook — Stripe
+    would retry the whole event, and the subscription-state sync is the
+    part that matters. The metrics keep gaps operator-visible.
+    """
+    payment_method = event_data.get("default_payment_method")
+    customer_id = event_data.get("customer")
+    if not payment_method or not customer_id:
+        return
+    # Webhook payloads carry the payment method as an id string unless the
+    # event was built with expansions; accept both shapes.
+    if isinstance(payment_method, dict):
+        payment_method = payment_method.get("id")
+        if not payment_method:
+            return
+    try:
+        with timing("stripe.api.latency", {"op": "customers.retrieve"}):
+            customer = stripe.Customer.retrieve(customer_id)
+        if (customer.get("invoice_settings") or {}).get("default_payment_method"):
+            return
+        with timing("stripe.api.latency", {"op": "customers.modify"}):
+            stripe.Customer.modify(customer_id, invoice_settings={"default_payment_method": payment_method})
+        put_metric("billing.default_pm.set")
+        logger.info(
+            "Set Stripe customer %s default payment method %s (from subscription %s)",
+            customer_id,
+            payment_method,
+            event_data.get("id"),
+        )
+    except Exception:
+        put_metric("billing.default_pm.error")
+        logger.exception("Failed to set default payment method for Stripe customer %s", customer_id)
+
+
 async def handle_subscription_state(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`customer.subscription.created` + `customer.subscription.updated`.
 
@@ -124,6 +170,10 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             "status": event_data.get("status", "unknown"),
         },
     )
+    # Customer-side fix, deliberately BEFORE owner resolution: the default
+    # payment method matters to Metronome regardless of whether we can map
+    # the subscription to a billing row.
+    await _maybe_set_customer_default_payment_method(event_data)
     account = await resolve_owner_account(event_data)
     if not account:
         return None

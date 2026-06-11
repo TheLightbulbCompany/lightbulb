@@ -133,6 +133,87 @@ async def test_top_up_requests_metronome_payment_gated_commit(async_client):
 
 
 @pytest.mark.asyncio
+async def test_top_up_refreshes_gate_after_success(async_client, monkeypatch):
+    """After a successful top-up the endpoint pulls the fresh balance through
+    the gate (read + apply_fresh_balance) so a depleted+revoked owner's
+    just-bought credits restore Bedrock immediately instead of racing the
+    first post-top-up send (which otherwise fails AccessDenied)."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    read_balance = AsyncMock(return_value=20_000_000)
+    apply_fresh = AsyncMock()
+    with (
+        patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
+        patch("core.services.metronome_gate.read_net_balance_microcents", new=read_balance),
+        patch("core.services.metronome_gate.apply_fresh_balance", new=apply_fresh),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 200
+    read_balance.assert_awaited_once_with("user_test_123")
+    apply_fresh.assert_awaited_once_with("user_test_123", 20_000_000)
+
+
+@pytest.mark.asyncio
+async def test_top_up_refresh_skipped_when_no_balance(async_client, monkeypatch):
+    """A None balance read (owner has no Metronome customer / outage) means
+    nothing to apply — the endpoint must not call apply_fresh_balance with
+    None."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    apply_fresh = AsyncMock()
+    with (
+        patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
+        patch("core.services.metronome_gate.read_net_balance_microcents", new=AsyncMock(return_value=None)),
+        patch("core.services.metronome_gate.apply_fresh_balance", new=apply_fresh),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 200
+    apply_fresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_top_up_refresh_failure_does_not_break_response(async_client, monkeypatch):
+    """The post-top-up refresh is best-effort: a getNetBalance blip must not
+    turn a SUCCESSFUL purchase into an error response."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    with (
+        patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
+        patch(
+            "core.services.metronome_gate.read_net_balance_microcents",
+            new=AsyncMock(side_effect=RuntimeError("getNetBalance blip")),
+        ),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "requested"
+
+
+@pytest.mark.asyncio
+async def test_top_up_skips_refresh_when_lifecycle_disabled(async_client, monkeypatch):
+    """Lifecycle off ⇒ the endpoint must not attempt a Metronome balance read
+    (mirrors the same guard the balance endpoint uses)."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
+    read_balance = AsyncMock(return_value=0)
+    with (
+        patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
+        patch("core.services.metronome_gate.read_net_balance_microcents", new=read_balance),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 200
+    read_balance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_top_up_namespaces_client_request_id_with_owner(async_client):
     """The client's request_id is attacker-chosen, so the endpoint prefixes
     it with the authenticated owner id before it becomes a Metronome

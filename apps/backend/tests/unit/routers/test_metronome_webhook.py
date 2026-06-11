@@ -353,3 +353,51 @@ def test_ignores_unrelated_event_type(client, known_customer):
         resp = _post(client, body)
     assert resp.status_code == 200
     gate.set_balance.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "payment_gate.payment_status",
+        "payment_gate.payment_pending_action_required",
+        "alerts.payment_gate.payment_status",
+    ],
+)
+def test_payment_gate_event_is_observable_not_silent(client, event_type):
+    """A gated top-up's card failure / SCA-pending event must NOT vanish into
+    a silent 200 — it emits a payment_gate metric and never touches the fast
+    gate (these carry no balance)."""
+    body = json.dumps(
+        {"id": "evt-pg-1", "type": event_type, "properties": {"customer_id": METRONOME_CUSTOMER_ID}}
+    ).encode("utf-8")
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch("routers.metronome_webhook.put_metric") as put_metric,
+        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
+    ):
+        gate = gate_cls.return_value
+        gate.set_balance = AsyncMock()
+        resp = _post(client, body)
+    assert resp.status_code == 200
+    assert any(call.args and call.args[0] == "metronome.webhook.payment_gate" for call in put_metric.call_args_list)
+    gate.set_balance.assert_not_awaited()
+
+
+def test_unhandled_event_type_is_counted_not_silent(client):
+    """Every other delivery is acked but COUNTED, so an unmodeled type that
+    starts arriving (a payment-gate spelling we didn't anticipate, config
+    drift, etc.) is visible in metrics instead of silently dropped."""
+    body = json.dumps({"id": "evt-inv-1", "type": "invoice.finalized", "properties": {}}).encode("utf-8")
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch("routers.metronome_webhook.put_metric") as put_metric,
+    ):
+        resp = _post(client, body)
+    assert resp.status_code == 200
+    assert any(call.args and call.args[0] == "metronome.webhook.unhandled" for call in put_metric.call_args_list)

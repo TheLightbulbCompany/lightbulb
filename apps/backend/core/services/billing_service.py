@@ -281,6 +281,18 @@ async def create_credit_top_up_checkout(
     if not account or not account.get("stripe_customer_id"):
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
 
+    # Take money ONLY when the completion webhook can actually grant: mirror
+    # grant_prepaid_credits' prerequisites (Metronome customer + contract on
+    # the billing row, credits product configured) BEFORE creating a payable
+    # session. Without this, a not-yet-provisioned owner pays on Stripe and
+    # the grant then 500s/retries until provisioning lands — collected money
+    # in limbo. Provisioning re-runs on every status poll, so the right
+    # answer here is "not ready yet, retry shortly", not a paid checkout.
+    if not settings.METRONOME_CREDITS_PRODUCT_ID:
+        raise BillingServiceError("Credits are not configured for this environment")
+    if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
+        raise BillingServiceError("Credits aren't ready for this account yet — try again in a moment")
+
     # Per-request nonce — see docstring. Hashed to keep the key short.
     nonce = hashlib.sha1(os.urandom(16)).hexdigest()[:12]
 

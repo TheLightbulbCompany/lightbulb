@@ -43,6 +43,10 @@ def one_click_consent():
                 "owner_id": "user_test_123",
                 "credits_auto_charge": True,
                 "stripe_customer_id": "cus_test_1",
+                # Checkout sessions are refused unless the completion webhook
+                # could actually grant — the row must look Metronome-ready.
+                "metronome_customer_id": "mc_test_1",
+                "metronome_contract_id": "mctr_test_1",
             }
         ),
     ):
@@ -564,6 +568,7 @@ async def test_top_up_checkout_creates_session(async_client, monkeypatch):
     metadata carrying the grant inputs the webhook needs, and NO off-session
     card consent unless the customer opted in."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-test-1")
     create = MagicMock(return_value=_fake_checkout_session())
     with patch("core.services.billing_service.stripe.checkout.Session.create", new=create):
         resp = await async_client.post(
@@ -592,6 +597,7 @@ async def test_top_up_checkout_opt_in_captures_off_session_consent(async_client,
     session metadata so the webhook only flips the flag after THIS payment
     succeeds."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-test-1")
     create = MagicMock(return_value=_fake_checkout_session())
     with patch("core.services.billing_service.stripe.checkout.Session.create", new=create):
         resp = await async_client.post(
@@ -646,3 +652,28 @@ async def test_handler_failure_rolls_back_dedup_for_redelivery(async_client, mon
     assert resp.status_code == 200
     assert grant.await_count == 2
     grant.assert_awaited_with("u_buyer", 2000, idempotency_key="checkout-cs_test_abc")
+
+
+@pytest.mark.asyncio
+async def test_top_up_checkout_refuses_unprovisioned_owner(async_client, monkeypatch):
+    """Take money ONLY when the webhook can grant: an owner whose Metronome
+    customer/contract hasn't been provisioned yet must get a 400 BEFORE a
+    payable session exists — otherwise Stripe collects and the grant
+    500s/retries until provisioning lands (collected money in limbo)."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-test-1")
+    create = MagicMock()
+    with (
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123", "stripe_customer_id": "cus_test_1"}),
+        ),
+        patch("core.services.billing_service.stripe.checkout.Session.create", new=create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up_checkout",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 400
+    assert "ready" in resp.json()["detail"].lower()
+    create.assert_not_called()

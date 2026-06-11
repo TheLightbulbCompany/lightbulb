@@ -208,6 +208,48 @@ export class DatabaseStack extends cdk.Stack {
       exportName: `${this.stackName}-admin-actions-table`,
     });
 
+    // Pass-1 of the credits-ledger export retirement. The backend no longer
+    // uses these tables (Metronome is the only biller), but their
+    // auto-generated Arn + Ref exports are imported by the LIVE service
+    // stack, and CloudFormation refuses to delete an in-use export — the
+    // database stack deploys BEFORE the service stack drops the imports, so
+    // deleting table + import in one deploy rolls the database stack back.
+    // Keep the tables and pin all four exports under their existing names
+    // until the import-free service stack is deployed; the deferred Pass-2
+    // deploy removes the tables and these retentions together (prod tables
+    // are RETAIN and become manually-deleted orphans at that point).
+    const creditsTable = new dynamodb.Table(this, "CreditsTable", {
+      tableName: `isol8-${env}-credits`,
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+    const creditTransactionsTable = new dynamodb.Table(this, "CreditTransactionsTable", {
+      tableName: `isol8-${env}-credit-transactions`,
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "tx_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+    this.exportValue(creditsTable.tableArn, {
+      name: `${this.stackName}:ExportsOutputFnGetAttCreditsTable13AC5EA8ArnB299C72C`,
+    });
+    this.exportValue(creditsTable.tableName, {
+      name: `${this.stackName}:ExportsOutputRefCreditsTable13AC5EA80B87C786`,
+    });
+    this.exportValue(creditTransactionsTable.tableArn, {
+      name: `${this.stackName}:ExportsOutputFnGetAttCreditTransactionsTable72EF769AArn60F8FDA5`,
+    });
+    this.exportValue(creditTransactionsTable.tableName, {
+      name: `${this.stackName}:ExportsOutputRefCreditTransactionsTable72EF769A0289C51E`,
+    });
+
     // Metronome local fast-gate flag. A disposable per-owner projection of
     // Metronome balance that the SYNCHRONOUS chat gate reads, since
     // Metronome's balance read is async with no low-latency SLA. Fed by the

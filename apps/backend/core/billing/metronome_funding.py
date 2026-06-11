@@ -1,8 +1,9 @@
 """Metronome-native top-up funding: PAYMENT-GATED prepaid commits.
 
-A top-up request creates a Metronome PREPAID commit with
-``payment_gate_config: {"payment_gate_type": "STRIPE"}``. Metronome invoices
-the customer's linked Stripe card (``stripe_collection_method:
+A top-up request adds a STRIPE-gated PREPAID commit via the v2 contract
+edit (the only API surface where payment gating exists — see
+MetronomeClient.create_gated_prepaid_commit). Metronome invoices the
+customer's linked Stripe card (``stripe_collection_method:
 "charge_automatically"``, set at provision via the billing-provider
 configuration) and releases the credits only when Stripe collects — the
 backend never touches the money and writes NO local balance. There is no
@@ -24,11 +25,6 @@ from core.config import settings
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
-
-# The body Metronome's payment gate expects on the commit. STRIPE means
-# Metronome itself runs the Stripe payment attempt against the customer's
-# billing-provider configuration and releases the commit on success.
-_STRIPE_PAYMENT_GATE = {"payment_gate_type": "STRIPE"}
 
 
 class FundingError(Exception):
@@ -87,13 +83,15 @@ async def request_top_up(
     # ``idempotency_key`` and only get here when one is genuinely absent.
     key = idempotency_key or f"topup-{owner_id}-{amount_cents}-{int(time.time() // 60)}"
 
-    # The commit body itself (flat customerCommits/create shape) is owned by
-    # the client layer; this module supplies the money in CENTS (Metronome's
-    # USD credit type — see core/billing/metronome_units.py), the payment
-    # gate, and an audit description. The description carries NO timestamp:
-    # Metronome's idempotent replay requires the retried body to be identical
-    # (same key + different body → 409), and Metronome stamps the commit's
-    # creation time itself.
+    # The commit body itself (v2 contract-edit add_commits shape, gate
+    # included) is owned by the client layer; this module supplies the money
+    # in CENTS (Metronome's USD credit type — see
+    # core/billing/metronome_units.py) — which feeds BOTH the access and
+    # invoice schedules 1:1 (credits unlocked == cents invoiced) — and an
+    # audit description. The description carries NO timestamp: Metronome's
+    # idempotent replay requires the retried body to be identical (same key
+    # + different body → 409), and Metronome stamps the commit's creation
+    # time itself.
     description = f"isol8 top-up owner={owner_id} amount_cents={amount_cents}"
 
     if client is None:
@@ -132,7 +130,7 @@ async def _create_gated_commit(
     description: str,
     idempotency_key: str,
 ) -> None:
-    await client.create_prepaid_commit(
+    await client.create_gated_prepaid_commit(
         customer_id=customer_id,
         contract_id=contract_id,
         product_id=settings.METRONOME_CREDITS_PRODUCT_ID,
@@ -140,5 +138,4 @@ async def _create_gated_commit(
         amount_cents=amount_cents,
         description=description,
         idempotency_key=idempotency_key,
-        payment_gate_config=_STRIPE_PAYMENT_GATE,
     )

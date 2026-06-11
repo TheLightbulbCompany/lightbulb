@@ -1,4 +1,5 @@
-"""request_top_up creates a PAYMENT-GATED Metronome prepaid commit — no
+"""request_top_up creates a PAYMENT-GATED Metronome prepaid commit via the
+v2 contract edit (the only API surface where payment gating exists) — no
 local balance write, no restore call (the gate's lazy refresh re-arms), no
 Stripe Checkout. Metronome + Stripe collect the money and release credits.
 Double-submit safety is vendor-side: every commit carries an Idempotency-Key,
@@ -62,7 +63,7 @@ def provisioned_billing_row():
 
 def _fake_client():
     fake = MagicMock()
-    fake.create_prepaid_commit = AsyncMock()
+    fake.create_gated_prepaid_commit = AsyncMock()
     return fake
 
 
@@ -71,17 +72,18 @@ async def test_request_creates_payment_gated_commit_in_cents(provisioned_billing
     fake = _fake_client()
     await request_top_up("org_abc", 2573, client=fake)
 
-    fake.create_prepaid_commit.assert_awaited_once()
-    _, kwargs = fake.create_prepaid_commit.call_args
+    # The whole point: the GATED v2 method — Metronome collects via Stripe
+    # before releasing the credits, the backend never touches the money. The
+    # single amount feeds both the access and invoice schedules 1:1 inside
+    # the client (credits unlocked == cents invoiced).
+    fake.create_gated_prepaid_commit.assert_awaited_once()
+    _, kwargs = fake.create_gated_prepaid_commit.call_args
     assert kwargs["customer_id"] == "cust-uuid-1"
     assert kwargs["contract_id"] == "contract-1"
     assert kwargs["product_id"] == "prod-credits"
     assert kwargs["credit_type_id"] == "ct-usd-cents"
     assert kwargs["amount_cents"] == 2573
     assert "org_abc" in kwargs["description"]
-    # The whole point: Metronome collects via Stripe before releasing the
-    # credits — the backend never touches the money.
-    assert kwargs["payment_gate_config"] == {"payment_gate_type": "STRIPE"}
 
 
 @pytest.mark.asyncio
@@ -92,7 +94,7 @@ async def test_request_passes_caller_idempotency_key_through(provisioned_billing
     fake = _fake_client()
     await request_top_up("org_abc", 2500, idempotency_key="topup-org_abc-uuid-1", client=fake)
 
-    _, kwargs = fake.create_prepaid_commit.call_args
+    _, kwargs = fake.create_gated_prepaid_commit.call_args
     assert kwargs["idempotency_key"] == "topup-org_abc-uuid-1"
 
 
@@ -104,7 +106,7 @@ async def test_request_without_key_falls_back_to_minute_bucket(provisioned_billi
     fake = _fake_client()
     await request_top_up("org_abc", 2500, client=fake)
 
-    _, kwargs = fake.create_prepaid_commit.call_args
+    _, kwargs = fake.create_gated_prepaid_commit.call_args
     assert kwargs["idempotency_key"] == f"topup-org_abc-2500-{int(1_780_000_000.0 // 60)}"
 
 
@@ -115,9 +117,9 @@ async def test_request_description_is_deterministic(provisioned_billing_row):
     body → 409)."""
     fake = _fake_client()
     await request_top_up("org_abc", 2573, client=fake)
-    first = fake.create_prepaid_commit.call_args.kwargs["description"]
+    first = fake.create_gated_prepaid_commit.call_args.kwargs["description"]
     await request_top_up("org_abc", 2573, client=fake)
-    second = fake.create_prepaid_commit.call_args.kwargs["description"]
+    second = fake.create_gated_prepaid_commit.call_args.kwargs["description"]
     assert first == second == "isol8 top-up owner=org_abc amount_cents=2573"
 
 
@@ -139,7 +141,7 @@ async def test_request_raises_when_lifecycle_disabled(provisioned_billing_row, m
     fake = _fake_client()
     with pytest.raises(FundingError, match="lifecycle is disabled"):
         await request_top_up("org_abc", 2500, client=fake)
-    fake.create_prepaid_commit.assert_not_awaited()
+    fake.create_gated_prepaid_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -147,7 +149,7 @@ async def test_request_raises_when_customer_not_provisioned(provisioned_billing_
     fake = _fake_client()
     with pytest.raises(FundingError, match="customer not provisioned"):
         await request_top_up("org_unprovisioned", 2500, client=fake)
-    fake.create_prepaid_commit.assert_not_awaited()
+    fake.create_gated_prepaid_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -159,7 +161,7 @@ async def test_request_raises_when_contract_not_provisioned():
     ):
         with pytest.raises(FundingError, match="contract not provisioned"):
             await request_top_up("org_abc", 2500, client=fake)
-    fake.create_prepaid_commit.assert_not_awaited()
+    fake.create_gated_prepaid_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -167,4 +169,4 @@ async def test_request_rejects_non_positive_amount(provisioned_billing_row):
     fake = _fake_client()
     with pytest.raises(FundingError, match="positive"):
         await request_top_up("org_abc", 0, client=fake)
-    fake.create_prepaid_commit.assert_not_awaited()
+    fake.create_gated_prepaid_commit.assert_not_awaited()

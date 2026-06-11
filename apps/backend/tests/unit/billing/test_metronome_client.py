@@ -174,14 +174,13 @@ async def test_set_stripe_billing_config_shape():
     )
 
     args, kwargs = fake.post.call_args
-    assert args[0] == "/customers/cust-uuid-1/setCustomerBillingProviderConfigurations"
+    # Live-verified (sandbox, 2026-06-11): the singular billing-config/stripe
+    # path with this flat body returns 200; the docs-styled plural
+    # setCustomerBillingProviderConfigurations path 404s.
+    assert args[0] == "/customers/cust-uuid-1/billing-config/stripe"
     assert kwargs["json"] == {
-        "billing_provider": "stripe",
-        "delivery_method": "direct_to_billing_provider",
-        "configuration": {
-            "stripe_customer_id": "cus_123",
-            "stripe_collection_method": "charge_automatically",
-        },
+        "billing_provider_customer_id": "cus_123",
+        "stripe_collection_method": "charge_automatically",
     }
 
 

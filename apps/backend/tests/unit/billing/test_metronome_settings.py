@@ -33,4 +33,4 @@ def test_metronome_settings_present_with_defaults():
     # depleted balance revokes the owner's Bedrock IAM grant.
     assert settings.BEDROCK_ENFORCEMENT_LIVE is True
     # The gate's lazy-refresh window (see core/services/metronome_gate.py).
-    assert settings.METRONOME_GATE_STALENESS_S == 900
+    assert settings.METRONOME_GATE_STALENESS_S == 60

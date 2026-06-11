@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from core.config import settings
+
 
 class TestValidateToken:
     """``_validate_token`` builds the Authorization header from the per-provider
@@ -200,7 +202,10 @@ class TestListConnections:
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
-    async def test_list_returns_catalog_with_status(self, mock_repo, async_client):
+    async def test_list_returns_catalog_with_status(self, mock_repo, async_client, monkeypatch):
+        # google is `internal`-flagged, so it only appears for allowlisted
+        # owners — allowlist the test owner here to assert the full catalog.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
         # stripe is connected; google has no row -> disconnected.
         mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}])
 
@@ -219,6 +224,34 @@ class TestListConnections:
 
         # Status now comes from the secret-free integrations index.
         mock_repo.list_for_owner.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_internal_provider_hidden_when_not_allowlisted(self, mock_repo, async_client, monkeypatch):
+        # A non-allowlisted owner must not see `internal` providers (google),
+        # while public paste-key providers (stripe) stay visible.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+
+        keys = {c["provider"] for c in response.json()["connections"]}
+        assert "google" not in keys
+        assert "stripe" in keys
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_internal_provider_shown_when_allowlisted(self, mock_repo, async_client, monkeypatch):
+        # Allowlist is comma-separated and membership is exact-match on owner_id.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "org_other, user_test_123")
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+
+        keys = {c["provider"] for c in response.json()["connections"]}
+        assert "google" in keys
 
 
 class TestConnectPaste:

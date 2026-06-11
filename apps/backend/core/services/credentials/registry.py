@@ -95,6 +95,11 @@ class Provider(BaseModel):
     wiring: Wiring
     requires: Requires = Requires()
     oauth: OAuthSpec | None = None
+    # Hidden from the public /connections catalog unless the owner is on the
+    # internal allowlist (config.INTERNAL_INTEGRATION_OWNERS). For providers that
+    # are built but not yet reliably shippable to every user — e.g. Google while
+    # its OAuth app is still pending Google verification.
+    internal: bool = False
     validation: ValidateSpec | None = Field(default=None, alias="validate")
 
     # populate_by_name lets us pass either the `validate` alias (YAML) or the

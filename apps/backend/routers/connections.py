@@ -121,6 +121,12 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
+    # `internal` providers stay out of the catalog for everyone except
+    # allowlisted owners. The UI is server-driven, so filtering here also hides
+    # any dependent surface — e.g. the Google per-agent assignment panel only
+    # renders when google reads back as connected, which it can't if google
+    # isn't in the list at all.
+    allowlisted = owner_id in settings.internal_integration_owners
     return {
         "connections": [
             {
@@ -130,6 +136,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
                 "status": connected.get(k, "disconnected"),
             }
             for k, v in registry.all_providers().items()
+            if allowlisted or not v.internal
         ]
     }
 

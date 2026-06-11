@@ -808,7 +808,22 @@ async def handle_stripe_webhook(
     if handler is None:
         return {"status": "ok"}
 
-    early_response = await handler(event, billing_service)
+    try:
+        early_response = await handler(event, billing_service)
+    except Exception:
+        # The dedup row was recorded BEFORE dispatch, so a handler failure
+        # would otherwise eat the event permanently: the 500 makes Stripe
+        # redeliver, but the retry hits ALREADY_SEEN and is acked without
+        # processing. For a credit-top-up grant that means money collected
+        # and credits never granted. Roll the dedup row back so the
+        # redelivery gets to re-attempt — handlers with side effects are
+        # idempotent (the Metronome grant keys on the Checkout session id),
+        # so a partial first attempt replays safely. Same pattern as the
+        # Metronome webhook's dedup rollback.
+        from core.services.webhook_dedup import delete_event
+
+        await delete_event(event["id"])
+        raise
     if early_response is not None:
         return early_response
     return {"status": "ok"}

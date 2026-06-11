@@ -626,3 +626,23 @@ async def test_auto_charge_disable(async_client):
     assert resp.status_code == 200
     assert resp.json() == {"auto_charge_enabled": False}
     set_flag.assert_awaited_once_with("user_test_123", enabled=False)
+
+
+@pytest.mark.asyncio
+async def test_handler_failure_rolls_back_dedup_for_redelivery(async_client, monkeypatch, webhook_dedup_table):
+    """If the grant raises AFTER the dedup row was recorded (Metronome outage
+    right after Stripe collected), the row must be rolled back: otherwise
+    Stripe's redelivery hits ALREADY_SEEN and is acked without processing —
+    money collected, credits never granted, permanently. With the rollback,
+    the redelivery re-attempts and the (session-id-keyed, idempotent) grant
+    lands."""
+    grant = AsyncMock(side_effect=[RuntimeError("metronome outage"), None])
+    with patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant):
+        # First delivery: grant blows up -> 500 back to Stripe.
+        with pytest.raises(RuntimeError):
+            await _post_checkout_event(async_client, monkeypatch, _checkout_event())
+        # Stripe redelivers the SAME event id: must NOT be dedup-skipped.
+        resp = await _post_checkout_event(async_client, monkeypatch, _checkout_event())
+    assert resp.status_code == 200
+    assert grant.await_count == 2
+    grant.assert_awaited_with("u_buyer", 2000, idempotency_key="checkout-cs_test_abc")

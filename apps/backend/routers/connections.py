@@ -140,11 +140,14 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
-    # `internal` providers stay out of the catalog for everyone except
-    # allowlisted owners. The UI is server-driven, so filtering here also hides
-    # any dependent surface — e.g. the Google per-agent assignment panel only
-    # renders when google reads back as connected, which it can't if google
-    # isn't in the list at all.
+    # `internal` providers stay out of the catalog for non-allowlisted owners —
+    # but one that's already CONNECTED stays visible so the owner can still see
+    # and remove it (disconnect is ungated). Otherwise an owner who connected
+    # during the pre-gate window, or was later removed from the allowlist, would
+    # be left with a live connection and no UI path to manage it. They still
+    # can't (re)connect: the grant gate on authorize/connect_paste 404s. The UI
+    # is server-driven, so this also governs dependent surfaces — e.g. the Google
+    # per-agent assignment panel only renders when google reads back connected.
     allowlisted = owner_id in settings.internal_integration_owners
     return {
         "connections": [
@@ -155,7 +158,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
                 "status": connected.get(k, "disconnected"),
             }
             for k, v in registry.all_providers().items()
-            if allowlisted or not v.internal
+            if allowlisted or not v.internal or connected.get(k) == "connected"
         ]
     }
 

@@ -253,6 +253,35 @@ class TestListConnections:
         keys = {c["provider"] for c in response.json()["connections"]}
         assert "google" in keys
 
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_connected_internal_provider_stays_visible_for_removal(self, mock_repo, async_client, monkeypatch):
+        # A non-allowlisted owner who already has google CONNECTED must still see
+        # it so the disconnect / account-management UI stays reachable, even
+        # though new connects are gated.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "google", "status": "connected"}])
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["google"]["status"] == "connected"
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnected_internal_provider_stays_hidden(self, mock_repo, async_client, monkeypatch):
+        # A stale, non-connected internal row must NOT resurface the provider for
+        # a non-allowlisted owner — only an active connection keeps it visible.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "google", "status": "disconnected"}])
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+
+        keys = {c["provider"] for c in response.json()["connections"]}
+        assert "google" not in keys
+
 
 class TestInternalProviderGrantGate:
     """`internal` providers (e.g. google) are 404 on the connect/authorize

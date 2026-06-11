@@ -29,6 +29,26 @@ def webhook_dedup_table(monkeypatch):
         yield
 
 
+@pytest.fixture(autouse=True)
+def one_click_consent():
+    """POST /credits/top_up requires the billing row's credits_auto_charge
+    consent (granted only via a prior opt-in Checkout). Most tests here
+    exercise the paths BEHIND that gate, so consent defaults to granted;
+    gate-specific and balance tests patch the row themselves — an inner
+    ``with patch`` wins over this fixture for the duration of the test."""
+    with patch(
+        "routers.billing.billing_repo.get_by_owner_id",
+        new=AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "credits_auto_charge": True,
+                "stripe_customer_id": "cus_test_1",
+            }
+        ),
+    ):
+        yield
+
+
 def _fake_metronome_client(balance=12.34):
     # Live-verified getNetBalance shape (sandbox, 2026-06-10): the cents
     # number rides under "balance" in the data sub-object the client returns.
@@ -56,6 +76,7 @@ async def test_get_balance_returns_metronome_balance(async_client, monkeypatch):
         "balance_microcents": 12_340_000,
         "balance_dollars": "12.34",
         "lifecycle_enabled": True,
+        "auto_charge_enabled": False,
     }
     fake.get_net_balance.assert_awaited_once_with(customer_id="cust-uuid-1")
     # The successful live read is written through the fast-gate projection so
@@ -109,7 +130,9 @@ async def test_get_balance_org_member_reads_owner_id(async_client_org_member, mo
         resp = await async_client_org_member.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
     assert resp.json()["balance_microcents"] == 9_880_000
-    row_mock.assert_awaited_once_with("org_test_456")
+    # Read for the balance path AND for the consent flag — both keyed on the
+    # ORG owner_id, never the member's personal user_id.
+    assert all(call.args == ("org_test_456",) for call in row_mock.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -304,50 +327,115 @@ async def test_auto_reload_endpoint_is_gone(async_client):
     assert resp.status_code == 404
 
 
-def test_stripe_webhook_dispatch_has_no_checkout_session_handlers():
-    """The Stripe-Checkout top-up flow is deleted: checkout.session.* events
-    are no longer handled (the router acks unknown types with 200). Only the
-    subscription lifecycle remains on the Stripe webhook."""
-    from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
+def test_stripe_webhook_dispatch_handles_checkout_sessions():
+    """The explicit-Checkout top-up flow is back as the DEFAULT purchase
+    path: checkout.session.completed + async_payment_succeeded (delayed
+    methods like ACH) both dispatch to the credit-grant handler, alongside
+    the untouched subscription lifecycle."""
+    from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS, handle_checkout_session
 
-    assert not any(t.startswith("checkout.session.") for t in STRIPE_WEBHOOK_HANDLERS)
-    # Subscription lifecycle is untouched.
+    assert STRIPE_WEBHOOK_HANDLERS["checkout.session.completed"] is handle_checkout_session
+    assert STRIPE_WEBHOOK_HANDLERS["checkout.session.async_payment_succeeded"] is handle_checkout_session
     assert "customer.subscription.created" in STRIPE_WEBHOOK_HANDLERS
     assert "customer.subscription.updated" in STRIPE_WEBHOOK_HANDLERS
     assert "customer.subscription.deleted" in STRIPE_WEBHOOK_HANDLERS
 
 
-@pytest.mark.asyncio
-async def test_checkout_session_completed_is_acked_without_processing(async_client, monkeypatch, webhook_dedup_table):
-    """A stray checkout.session.completed (e.g. the trial-checkout flow's
-    session) is acked 200 via the unknown-type default — no credit grant
-    machinery exists anymore."""
-    fake_event = {
-        "id": "evt_cs_legacy_1",
-        "type": "checkout.session.completed",
+def _checkout_event(payment_status="paid", metadata=None, event_type="checkout.session.completed"):
+    return {
+        "id": "evt_cs_1",
+        "type": event_type,
         "data": {
             "object": {
-                "id": "cs_anything",
-                "payment_status": "paid",
+                "id": "cs_test_abc",
+                "payment_status": payment_status,
                 "amount_total": 2000,
-                "metadata": {
-                    "purpose": "credit_top_up",
-                    "owner_id": "u_buyer",
-                    "amount_cents": "2000",
-                },
+                "metadata": (
+                    metadata
+                    if metadata is not None
+                    else {
+                        "purpose": "credit_top_up",
+                        "owner_id": "u_buyer",
+                        "amount_cents": "2000",
+                        "auto_charge_opt_in": "false",
+                    }
+                ),
             }
         },
     }
-    monkeypatch.setattr(
-        "stripe.Webhook.construct_event",
-        lambda body, sig, secret: fake_event,
-    )
-    resp = await async_client.post(
+
+
+async def _post_checkout_event(async_client, monkeypatch, event):
+    monkeypatch.setattr("stripe.Webhook.construct_event", lambda body, sig, secret: event)
+    return await async_client.post(
         "/api/v1/billing/webhooks/stripe",
-        content=json.dumps(fake_event),
+        content=json.dumps(event),
         headers={"stripe-signature": "ignored"},
     )
+
+
+@pytest.mark.asyncio
+async def test_checkout_session_paid_grants_ungated_credits(async_client, monkeypatch, webhook_dedup_table):
+    """A paid credit-top-up session grants the credits as an UNGATED
+    Metronome commit, keyed on the session id so Stripe redelivery can
+    never double-grant."""
+    grant = AsyncMock()
+    with (
+        patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("routers.billing.billing_repo.set_credits_auto_charge", new=AsyncMock()) as set_flag,
+    ):
+        resp = await _post_checkout_event(async_client, monkeypatch, _checkout_event())
     assert resp.status_code == 200
+    grant.assert_awaited_once_with("u_buyer", 2000, idempotency_key="checkout-cs_test_abc")
+    # No opt-in in the metadata ⇒ the consent flag is untouched.
+    set_flag.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_checkout_session_opt_in_enables_auto_charge(async_client, monkeypatch, webhook_dedup_table):
+    """auto_charge_opt_in=true on a PAID session flips the billing row's
+    consent flag — the session that just succeeded carried the
+    setup_future_usage consent, so this is the only legitimate enable path."""
+    meta = {
+        "purpose": "credit_top_up",
+        "owner_id": "u_buyer",
+        "amount_cents": "2000",
+        "auto_charge_opt_in": "true",
+    }
+    set_flag = AsyncMock()
+    with (
+        patch("core.billing.metronome_funding.grant_prepaid_credits", new=AsyncMock()),
+        patch(
+            "core.services.stripe_webhook_handlers.billing_repo.set_credits_auto_charge",
+            new=set_flag,
+        ),
+    ):
+        resp = await _post_checkout_event(async_client, monkeypatch, _checkout_event(metadata=meta))
+    assert resp.status_code == 200
+    set_flag.assert_awaited_once_with("u_buyer", enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_checkout_session_unpaid_defers_grant(async_client, monkeypatch, webhook_dedup_table):
+    """A delayed-payment session (ACH etc.) fires completed with
+    payment_status=unpaid — NO grant until async_payment_succeeded, so a
+    failed ACH never leaves free credits."""
+    grant = AsyncMock()
+    with patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant):
+        resp = await _post_checkout_event(async_client, monkeypatch, _checkout_event(payment_status="unpaid"))
+    assert resp.status_code == 200
+    grant.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_checkout_session_non_topup_purpose_is_acked(async_client, monkeypatch, webhook_dedup_table):
+    """Trial-checkout sessions (no credit_top_up purpose) pass through
+    untouched — their state comes from the subscription handlers."""
+    grant = AsyncMock()
+    with patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant):
+        resp = await _post_checkout_event(async_client, monkeypatch, _checkout_event(metadata={}))
+    assert resp.status_code == 200
+    grant.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -371,22 +459,27 @@ async def test_top_up_org_admin_uses_org_owner_id(async_client_org_admin):
 async def test_get_balance_null_when_lifecycle_disabled(async_client, monkeypatch):
     """With the lifecycle switch off, the balance degrades to null without
     constructing a Metronome client (no doomed calls against placeholder
-    secrets) and without a billing-row read."""
+    secrets). The billing row is still read — it carries the auto-charge
+    consent flag the response exposes."""
     monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
     with (
         patch(
             "routers.billing.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
-        ) as row_mock,
+        ),
         patch("core.billing.metronome_client.for_settings") as for_settings_mock,
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
     # lifecycle_enabled lets the frontend distinguish "credits product not
     # wired in this environment" from a transient balance outage.
-    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": False}
+    assert resp.json() == {
+        "balance_microcents": None,
+        "balance_dollars": None,
+        "lifecycle_enabled": False,
+        "auto_charge_enabled": False,
+    }
     for_settings_mock.assert_not_called()
-    row_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -405,7 +498,12 @@ async def test_get_balance_metronome_error_yields_null(async_client, monkeypatch
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": True}
+    assert resp.json() == {
+        "balance_microcents": None,
+        "balance_dollars": None,
+        "lifecycle_enabled": True,
+        "auto_charge_enabled": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -422,5 +520,129 @@ async def test_get_balance_no_metronome_customer_yields_null(async_client, monke
     ):
         resp = await async_client.get("/api/v1/billing/credits/balance")
     assert resp.status_code == 200
-    assert resp.json() == {"balance_microcents": None, "balance_dollars": None, "lifecycle_enabled": True}
+    assert resp.json() == {
+        "balance_microcents": None,
+        "balance_dollars": None,
+        "lifecycle_enabled": True,
+        "auto_charge_enabled": False,
+    }
     fake.get_net_balance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_top_up_without_auto_charge_consent_is_409(async_client):
+    """One-click top-ups charge the saved card with no confirmation step, so
+    they require standing consent (credits_auto_charge on the billing row,
+    granted only via an opt-in Checkout). Without it the endpoint answers
+    409 auto_charge_not_enabled and never reaches the funding layer."""
+    request = AsyncMock()
+    with (
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_test_123"}),
+        ),
+        patch("core.billing.metronome_funding.request_top_up", new=request),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "auto_charge_not_enabled"
+    request.assert_not_awaited()
+
+
+def _fake_checkout_session(url="https://checkout.stripe.com/c/pay/cs_test_xyz"):
+    session = MagicMock()
+    session.url = url
+    return session
+
+
+@pytest.mark.asyncio
+async def test_top_up_checkout_creates_session(async_client, monkeypatch):
+    """The default purchase path: a Stripe Checkout session for the amount,
+    metadata carrying the grant inputs the webhook needs, and NO off-session
+    card consent unless the customer opted in."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    create = MagicMock(return_value=_fake_checkout_session())
+    with patch("core.services.billing_service.stripe.checkout.Session.create", new=create):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up_checkout",
+            json={"amount_cents": 2000},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"checkout_url": "https://checkout.stripe.com/c/pay/cs_test_xyz"}
+    kwargs = create.call_args.kwargs
+    assert kwargs["mode"] == "payment"
+    assert kwargs["line_items"][0]["price_data"]["unit_amount"] == 2000
+    assert kwargs["metadata"] == {
+        "purpose": "credit_top_up",
+        "owner_id": "user_test_123",
+        "amount_cents": "2000",
+        "auto_charge_opt_in": "false",
+    }
+    # No opt-in ⇒ no off-session consent is captured.
+    assert "setup_future_usage" not in kwargs["payment_intent_data"]
+
+
+@pytest.mark.asyncio
+async def test_top_up_checkout_opt_in_captures_off_session_consent(async_client, monkeypatch):
+    """enable_auto_charge rides as setup_future_usage=off_session — Stripe's
+    documented consent artifact for charging the saved card later — and as
+    session metadata so the webhook only flips the flag after THIS payment
+    succeeds."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+    create = MagicMock(return_value=_fake_checkout_session())
+    with patch("core.services.billing_service.stripe.checkout.Session.create", new=create):
+        resp = await async_client.post(
+            "/api/v1/billing/credits/top_up_checkout",
+            json={"amount_cents": 5000, "enable_auto_charge": True},
+        )
+    assert resp.status_code == 200
+    kwargs = create.call_args.kwargs
+    assert kwargs["payment_intent_data"]["setup_future_usage"] == "off_session"
+    assert kwargs["metadata"]["auto_charge_opt_in"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_top_up_checkout_requires_lifecycle(async_client, monkeypatch):
+    """Without the Metronome lifecycle the completion webhook has nowhere to
+    grant the credits — refuse before taking money that would strand."""
+    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
+    resp = await async_client.post(
+        "/api/v1/billing/credits/top_up_checkout",
+        json={"amount_cents": 2000},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_auto_charge_disable(async_client):
+    """The settings surface may only turn one-click OFF — re-enabling
+    requires a fresh consenting Checkout, so there is no enable endpoint."""
+    set_flag = AsyncMock()
+    with patch("routers.billing.billing_repo.set_credits_auto_charge", new=set_flag):
+        resp = await async_client.post("/api/v1/billing/credits/auto_charge/disable")
+    assert resp.status_code == 200
+    assert resp.json() == {"auto_charge_enabled": False}
+    set_flag.assert_awaited_once_with("user_test_123", enabled=False)
+
+
+@pytest.mark.asyncio
+async def test_handler_failure_rolls_back_dedup_for_redelivery(async_client, monkeypatch, webhook_dedup_table):
+    """If the grant raises AFTER the dedup row was recorded (Metronome outage
+    right after Stripe collected), the row must be rolled back: otherwise
+    Stripe's redelivery hits ALREADY_SEEN and is acked without processing —
+    money collected, credits never granted, permanently. With the rollback,
+    the redelivery re-attempts and the (session-id-keyed, idempotent) grant
+    lands."""
+    grant = AsyncMock(side_effect=[RuntimeError("metronome outage"), None])
+    with patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant):
+        # First delivery: grant blows up -> 500 back to Stripe.
+        with pytest.raises(RuntimeError):
+            await _post_checkout_event(async_client, monkeypatch, _checkout_event())
+        # Stripe redelivers the SAME event id: must NOT be dedup-skipped.
+        resp = await _post_checkout_event(async_client, monkeypatch, _checkout_event())
+    assert resp.status_code == 200
+    assert grant.await_count == 2
+    grant.assert_awaited_with("u_buyer", 2000, idempotency_key="checkout-cs_test_abc")

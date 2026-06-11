@@ -238,6 +238,95 @@ async def create_flat_fee_checkout(
     return session
 
 
+async def create_credit_top_up_checkout(
+    *,
+    owner_id: str,
+    amount_cents: int,
+    enable_auto_charge: bool = False,
+) -> stripe.checkout.Session:
+    """Create a Stripe Checkout session for a one-shot Claude-credit top-up.
+
+    EXPLICIT payment is the default credits-purchase path: the customer
+    sees the amount and their card on a Stripe-hosted page and actively
+    confirms — no implicit card-on-file charge. The credits grant happens
+    asynchronously when Stripe fires ``checkout.session.completed`` with
+    metadata ``{"purpose": "credit_top_up", ...}``: the webhook creates an
+    UNGATED Metronome commit (the money is already collected here, so
+    Metronome must never invoice it a second time — see
+    metronome_funding.grant_prepaid_credits).
+
+    ``enable_auto_charge`` is the customer's opt-in to one-click top-ups:
+    it sets ``payment_intent_data.setup_future_usage="off_session"`` —
+    Stripe's documented consent artifact for charging the saved card
+    off-session later — and rides the session metadata so the webhook
+    flips the billing row's ``credits_auto_charge`` flag only after this
+    consenting payment actually succeeds. Without it the session saves
+    nothing and later top-ups keep routing through Checkout.
+
+    Conventions match :func:`create_flat_fee_checkout`:
+      - ``allow_promotion_codes`` (internal 100%-off coupons),
+        ``automatic_tax``, ``customer_update.address=auto``.
+      - ``idempotency_key`` includes a per-request nonce: legitimate repeat
+        top-ups for the same amount must produce distinct sessions, so
+        bucketing on owner_id+amount would silently collapse a second
+        purchase onto the first.
+
+    ``owner_id`` is the org_id in org context, the user_id in personal
+    context — the credits pool at the owner level.
+    """
+    if amount_cents < 500:
+        raise BillingServiceError("Minimum top-up is $5 (500 cents)")
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or not account.get("stripe_customer_id"):
+        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
+
+    # Per-request nonce — see docstring. Hashed to keep the key short.
+    nonce = hashlib.sha1(os.urandom(16)).hexdigest()[:12]
+
+    payment_intent_data: dict = {
+        "metadata": {
+            "purpose": "credit_top_up",
+            "owner_id": owner_id,
+        },
+    }
+    if enable_auto_charge:
+        payment_intent_data["setup_future_usage"] = "off_session"
+
+    with timing("stripe.api.latency", {"op": "checkout.session.create"}):
+        session = stripe.checkout.Session.create(
+            customer=account["stripe_customer_id"],
+            mode="payment",
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "unit_amount": amount_cents,
+                        "product_data": {
+                            "name": "Claude credits",
+                            "description": "Prepaid Claude inference balance.",
+                        },
+                    },
+                    "quantity": 1,
+                }
+            ],
+            success_url=f"{FRONTEND_URL}/chat?credits=success",
+            cancel_url=f"{FRONTEND_URL}/chat?credits=cancel",
+            allow_promotion_codes=True,
+            automatic_tax={"enabled": True},
+            customer_update={"address": "auto"},
+            payment_intent_data=payment_intent_data,
+            metadata={
+                "purpose": "credit_top_up",
+                "owner_id": owner_id,
+                "amount_cents": str(amount_cents),
+                "auto_charge_opt_in": "true" if enable_auto_charge else "false",
+            },
+            idempotency_key=f"credit_checkout:{owner_id}:{nonce}",
+        )
+    return session
+
+
 async def create_trial_subscription(*, owner_id: str, payment_method_id: str) -> stripe.Subscription:
     """Create a Stripe Subscription with a 14-day trial.
 

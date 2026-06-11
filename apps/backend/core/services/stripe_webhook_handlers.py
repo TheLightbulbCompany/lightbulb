@@ -303,6 +303,97 @@ async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingSer
     return None
 
 
+async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    """`checkout.session.completed` + `checkout.session.async_payment_succeeded`.
+
+    Trial-checkout sessions get their state from the subscription
+    handlers above; only credit-top-up sessions (metadata
+    ``purpose=credit_top_up``) do work here:
+
+      1. Grant the paid-for credits as an UNGATED Metronome commit —
+         the money is already collected by THIS checkout, so the grant
+         must never generate a second Metronome→Stripe invoice
+         (grant_prepaid_credits is access-schedule-only, live-verified
+         to release instantly with zero invoices).
+      2. Flip the billing row's ``credits_auto_charge`` flag when the
+         customer opted in — the session that just succeeded carries the
+         ``setup_future_usage=off_session`` consent, so success here is
+         the only legitimate place the flag turns on.
+      3. Run the restore-only gate refresh so a revoked owner is re-armed
+         the moment the credits land (same hook as the one-click path).
+    """
+    session = event["data"]["object"]
+    if (session.get("metadata") or {}).get("purpose") != "credit_top_up":
+        return Response(status_code=200)
+
+    # Only grant when Stripe has actually collected payment.
+    #   - "paid"               : card cleared synchronously.
+    #   - "no_payment_required": 100%-off coupon → $0 charge → still a
+    #                            valid grant (we absorb it).
+    #   - "unpaid"             : delayed method (ACH etc.) — Stripe fires
+    #                            checkout.session.completed immediately,
+    #                            then async_payment_succeeded (or _failed)
+    #                            later. Wait for the async event so a
+    #                            failed ACH never leaves free credits.
+    payment_status = session.get("payment_status")
+    if payment_status not in ("paid", "no_payment_required"):
+        put_metric("credit.top_up.deferred", dimensions={"payment_status": payment_status or "unknown"})
+        logger.info(
+            "Credit top-up deferred for session %s — payment_status=%s",
+            session.get("id"),
+            payment_status,
+        )
+        return Response(status_code=200)
+
+    metadata = session["metadata"]
+    owner_id = metadata.get("owner_id")
+    amount_cents_str = metadata.get("amount_cents")
+    if not owner_id or not amount_cents_str:
+        logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
+        return Response(status_code=200)
+
+    # Grant the REQUESTED amount, not what Stripe charged — a 100%-off
+    # internal coupon charges nothing but still funds the full balance
+    # (the coupon is us absorbing the cost).
+    from core.billing.metronome_funding import grant_prepaid_credits
+
+    # Session id as the Metronome Idempotency-Key: one completed Checkout
+    # grants exactly once, however many times Stripe redelivers (or fires
+    # completed + async_payment_succeeded back-to-back). A failure here
+    # re-raises so the webhook 500s and Stripe redelivers — paid-for
+    # credits must never be silently dropped.
+    await grant_prepaid_credits(
+        owner_id,
+        int(amount_cents_str),
+        idempotency_key=f"checkout-{session['id']}",
+    )
+
+    if metadata.get("auto_charge_opt_in") == "true":
+        try:
+            await billing_repo.set_credits_auto_charge(owner_id, enabled=True)
+            put_metric("billing.auto_charge.enabled")
+        except Exception:
+            # The credits themselves landed; consent can be re-granted on a
+            # later checkout. Don't fail the webhook into redelivery (the
+            # grant above would replay harmlessly, but the noise is real).
+            logger.exception("Failed to persist auto-charge opt-in for owner %s", owner_id)
+
+    # Restore-only refresh (same contract as the one-click top-up path):
+    # act only on a confirmed-positive balance so a Metronome read lag can
+    # never re-revoke the owner who just paid.
+    try:
+        from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
+
+        balance_uc = await read_net_balance_microcents(owner_id)
+        if balance_uc is not None and balance_uc > 0:
+            await apply_fresh_balance(owner_id, balance_uc)
+    except Exception:
+        logger.warning("Post-checkout balance refresh failed for owner %s", owner_id, exc_info=True)
+
+    put_metric("credit.top_up.granted", dimensions={"source": "checkout"})
+    return Response(status_code=200)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -316,4 +407,6 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "customer.subscription.deleted": handle_subscription_deleted,
     "invoice.payment_failed": handle_invoice_payment_failed,
     "invoice.paid": handle_invoice_paid,
+    "checkout.session.completed": handle_checkout_session,
+    "checkout.session.async_payment_succeeded": handle_checkout_session,
 }

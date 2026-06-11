@@ -8,22 +8,31 @@ type Props = { onComplete: () => void };
 const PRESET_AMOUNTS_CENTS = [1000, 2000, 5000, 10000]; // $10, $20, $50, $100
 
 /**
- * Bedrock onboarding step: collect an initial Claude credit top-up. The
- * request creates a payment-gated Metronome commit charged automatically to
- * the card saved during the subscription checkout — no redirect. Credits
- * release when the payment collects, so after requesting we keep polling
- * the balance (via useCredits) and auto-advance the wizard once it flips
- * positive.
+ * Bedrock onboarding step: collect an initial Claude credit top-up.
+ *
+ * Default path — explicit Stripe Checkout: the customer confirms the
+ * payment on a Stripe-hosted page (never an implicit card-on-file charge),
+ * optionally ticking the one-click opt-in for future top-ups. The webhook
+ * grants the credits the moment payment confirms, so on return the balance
+ * poll advances the wizard within seconds.
+ *
+ * One-click path — only for owners who previously opted in: a payment-gated
+ * Metronome commit charges the saved card with no redirect; credits release
+ * when the payment collects and the same balance poll advances the wizard.
  */
 export function CreditsStep({ onComplete }: Props) {
-  const { balance, lifecycleEnabled, refresh, startTopUp } = useCredits();
+  const { balance, lifecycleEnabled, autoChargeEnabled, refresh, startTopUp, startTopUpCheckout } =
+    useCredits();
   const [amount, setAmount] = useState<number>(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState(false);
+  const [optIn, setOptIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const advancedRef = useRef(false);
   const router = useRouter();
   const searchParams = useSearchParams();
+  // Returning from a cancelled Checkout: surface it instead of a blank form.
+  const checkoutCancelled = searchParams.get("credits") === "cancel";
 
   // On mount and on every balance bump, check whether we already have
   // credits — if so, a previous top-up has landed (or the owner arrived
@@ -76,6 +85,8 @@ export function CreditsStep({ onComplete }: Props) {
     );
   }
 
+  // One-click path (opted-in owners only): payment-gated commit against the
+  // saved card, no redirect.
   const requestTopUp = async () => {
     setSubmitting(true);
     setError(null);
@@ -95,12 +106,28 @@ export function CreditsStep({ onComplete }: Props) {
     }
   };
 
+  // Default path: hand off to the Stripe-hosted Checkout. No latch needed —
+  // the browser leaves this page; on return the balance poll advances.
+  const goToCheckout = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const r = await startTopUpCheckout(amount, optIn);
+      if (!r?.checkout_url) throw new Error("Checkout could not be started");
+      window.location.assign(r.checkout_url);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to start checkout");
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4 py-8 max-w-md mx-auto">
       <h3 className="text-xl font-semibold">Add Claude credits</h3>
       <p className="text-sm text-muted-foreground">
-        Prepay for Claude inference — charged automatically to your card on
-        file. Add any amount, top up later anytime.
+        {autoChargeEnabled
+          ? "Prepay for Claude inference — charged automatically to your card on file. Add any amount, top up later anytime."
+          : "Prepay for Claude inference. You'll confirm the payment on a secure Stripe page — nothing is charged until you do."}
       </p>
 
       <div className="grid grid-cols-4 gap-2">
@@ -130,22 +157,54 @@ export function CreditsStep({ onComplete }: Props) {
         className="rounded-md border border-input bg-background px-3 py-2"
       />
 
+      {!autoChargeEnabled && (
+        <label className="flex items-start gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={optIn}
+            onChange={(e) => setOptIn(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            Enable one-click top-ups — save this card so future credit
+            purchases charge it automatically, no checkout page. You can turn
+            this off anytime.
+          </span>
+        </label>
+      )}
+
+      {checkoutCancelled && !requested && !error && (
+        <p className="text-sm text-muted-foreground">
+          Checkout was cancelled — nothing was charged. Pick an amount to try
+          again.
+        </p>
+      )}
       {error && <p className="text-sm text-destructive">{error}</p>}
       {requested && (
         <p className="text-sm text-muted-foreground">
-          Top-up requested — the payment collects in the background, so
-          credits can take a few minutes to land. This step advances
-          automatically once they do.
+          Payment requested — your card on file is being charged in the
+          background. This step advances automatically once the credits land
+          (usually under a minute).
         </p>
       )}
 
-      <button
-        onClick={requestTopUp}
-        disabled={submitting || requested || amount < 500}
-        className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
-      >
-        {submitting ? "Loading…" : requested ? "Top-up requested" : `Add $${amount / 100}`}
-      </button>
+      {autoChargeEnabled ? (
+        <button
+          onClick={requestTopUp}
+          disabled={submitting || requested || amount < 500}
+          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+        >
+          {submitting ? "Loading…" : requested ? "Payment requested" : `Add $${amount / 100}`}
+        </button>
+      ) : (
+        <button
+          onClick={goToCheckout}
+          disabled={submitting || amount < 500}
+          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+        >
+          {submitting ? "Redirecting…" : `Continue to payment — $${amount / 100}`}
+        </button>
+      )}
     </div>
   );
 }

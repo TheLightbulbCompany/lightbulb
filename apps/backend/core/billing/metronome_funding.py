@@ -139,3 +139,97 @@ async def _create_gated_commit(
         description=description,
         idempotency_key=idempotency_key,
     )
+
+
+async def grant_prepaid_credits(
+    owner_id: str,
+    amount_cents: int,
+    *,
+    idempotency_key: str,
+    client: MetronomeClient | None = None,
+) -> None:
+    """Grant ``amount_cents`` of prepaid credits for a payment collected
+    OUTSIDE Metronome (our own Stripe Checkout).
+
+    Creates an UNGATED prepaid commit — access schedule only, no
+    invoice_schedule and no payment gate — which is the API form of
+    Metronome's documented "Do not invoice" option for externally-collected
+    payments. Live-verified (sandbox, 2026-06-12): the commit releases the
+    credits IMMEDIATELY (balance reflects in the same read) and generates
+    ZERO Metronome invoices, so the customer is never double-billed for
+    money our Checkout already took.
+
+    ``idempotency_key`` is REQUIRED (no fallback): the only caller is the
+    checkout webhook, which keys on the Stripe Checkout session id — one
+    completed session grants exactly once, however many times Stripe
+    redelivers the event.
+
+    Same provisioning guards as :func:`request_top_up` — a FundingError
+    here means the owner's Metronome lifecycle isn't set up, which the
+    webhook surfaces as a metric + retryable failure rather than silently
+    swallowing paid-for credits.
+    """
+    if not settings.METRONOME_LIFECYCLE_ENABLED:
+        raise FundingError("Metronome lifecycle is disabled — credit grants are unavailable")
+    if not settings.METRONOME_CREDITS_PRODUCT_ID:
+        raise FundingError("Metronome credits product is not configured for this environment")
+    if amount_cents <= 0:
+        raise FundingError(f"amount_cents must be positive, got {amount_cents}")
+
+    account = await billing_repo.get_by_owner_id(owner_id) or {}
+    metronome_customer_id = account.get("metronome_customer_id")
+    metronome_contract_id = account.get("metronome_contract_id")
+    if not metronome_customer_id:
+        raise FundingError(f"Metronome customer not provisioned for owner_id={owner_id}")
+    if not metronome_contract_id:
+        raise FundingError(f"Metronome contract not provisioned for owner_id={owner_id}")
+
+    # No timestamp in the description — idempotent replay requires a
+    # byte-identical body (same key + different body → 409).
+    description = f"isol8 checkout top-up owner={owner_id} amount_cents={amount_cents}"
+
+    if client is None:
+        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
+            await _grant_ungated_commit(
+                metronome_client.for_settings(http),
+                customer_id=metronome_customer_id,
+                contract_id=metronome_contract_id,
+                amount_cents=amount_cents,
+                description=description,
+                idempotency_key=idempotency_key,
+            )
+    else:
+        await _grant_ungated_commit(
+            client,
+            customer_id=metronome_customer_id,
+            contract_id=metronome_contract_id,
+            amount_cents=amount_cents,
+            description=description,
+            idempotency_key=idempotency_key,
+        )
+
+    logger.info(
+        "Granted checkout-paid Metronome credits for owner %s: %d cents",
+        owner_id,
+        amount_cents,
+    )
+
+
+async def _grant_ungated_commit(
+    client: MetronomeClient,
+    *,
+    customer_id: str,
+    contract_id: str,
+    amount_cents: int,
+    description: str,
+    idempotency_key: str,
+) -> None:
+    await client.create_prepaid_commit(
+        customer_id=customer_id,
+        contract_id=contract_id,
+        product_id=settings.METRONOME_CREDITS_PRODUCT_ID,
+        credit_type_id=settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID,
+        amount_cents=amount_cents,
+        description=description,
+        idempotency_key=idempotency_key,
+    )

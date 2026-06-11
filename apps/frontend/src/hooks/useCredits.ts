@@ -14,6 +14,10 @@ export type CreditsBalance = {
    *  different provider path instead of the top-up form. Optional so a
    *  not-yet-redeployed backend (no field) is treated as enabled. */
   lifecycle_enabled?: boolean;
+  /** Whether the owner has consented to one-click top-ups (card on file,
+   *  no checkout redirect). Granted only via a prior Checkout with the
+   *  opt-in box ticked; false/absent routes purchases through Checkout. */
+  auto_charge_enabled?: boolean;
 };
 
 export type TopUpResult = {
@@ -21,6 +25,12 @@ export type TopUpResult = {
    *  credits asynchronously; there is no checkout redirect. */
   status: string;
   amount_cents: number;
+};
+
+export type TopUpCheckoutResult = {
+  /** Stripe-hosted payment page — navigate the browser here. The credits
+   *  grant lands via webhook after the customer confirms payment. */
+  checkout_url: string;
 };
 
 export function useCredits() {
@@ -56,12 +66,36 @@ export function useCredits() {
     })) as TopUpResult;
   };
 
+  // The default purchase path: a Stripe-hosted Checkout where the customer
+  // explicitly confirms the payment. enableAutoCharge opts in to one-click
+  // top-ups for NEXT time (the checkout captures the off-session card
+  // consent; the backend flips the flag only after the payment succeeds).
+  const startTopUpCheckout = async (
+    amountCents: number,
+    enableAutoCharge: boolean,
+  ): Promise<TopUpCheckoutResult> => {
+    return (await api.post("/billing/credits/top_up_checkout", {
+      amount_cents: amountCents,
+      enable_auto_charge: enableAutoCharge,
+    })) as TopUpCheckoutResult;
+  };
+
+  // One-way: re-enabling requires a fresh consenting Checkout, so there is
+  // deliberately no enable counterpart.
+  const disableAutoCharge = async (): Promise<void> => {
+    await api.post("/billing/credits/auto_charge/disable", {});
+    void mutate();
+  };
+
   return {
     balance: data,
     // false ONLY when the backend explicitly says so — undefined (still
     // loading, or an older backend without the field) must not flash the
     // credits-unavailable state at users in lifecycle-enabled envs.
     lifecycleEnabled: data ? data.lifecycle_enabled !== false : undefined,
+    // Strict true: undefined/absent (loading, older backend) must route to
+    // the safe default — explicit Checkout — never to an implicit charge.
+    autoChargeEnabled: data?.auto_charge_enabled === true,
     // SWR v2 exposes a native `isLoading` flag that correctly reports
     // "no data yet, currently fetching" without the stale-while-revalidate
     // false-negative the legacy `!data && !error` idiom produces.
@@ -69,5 +103,7 @@ export function useCredits() {
     error,
     refresh: mutate,
     startTopUp,
+    startTopUpCheckout,
+    disableAutoCharge,
   };
 }

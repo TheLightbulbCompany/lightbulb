@@ -107,4 +107,55 @@ describe("useCredits", () => {
     expect(bodies).toHaveLength(2);
     expect(bodies[1].request_id).not.toBe(bodies[0].request_id);
   });
+
+  it("routes checkout top-ups with the opt-in flag and returns the URL", async () => {
+    // The default purchase path: explicit Stripe Checkout. The opt-in flag
+    // rides the request so the backend captures off-session card consent
+    // ONLY when the customer ticked the box.
+    const fetchMock = vi.fn().mockImplementation((url: RequestInfo | URL) => {
+      if (String(url).includes("/billing/credits/top_up_checkout")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ checkout_url: "https://checkout.stripe.com/c/cs_1" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00", lifecycle_enabled: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    global.fetch = fetchMock;
+
+    const { result } = renderHook(() => useCredits(), { wrapper });
+    await expect(result.current.startTopUpCheckout(2000, true)).resolves.toEqual({
+      checkout_url: "https://checkout.stripe.com/c/cs_1",
+    });
+
+    const checkoutBodies = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/billing/credits/top_up_checkout"))
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(checkoutBodies).toHaveLength(1);
+    expect(checkoutBodies[0]).toEqual({ amount_cents: 2000, enable_auto_charge: true });
+  });
+
+  it("exposes autoChargeEnabled strictly (absent/undefined -> false)", async () => {
+    // Absent flag (older backend, still loading) must route to the SAFE
+    // default -- explicit Checkout -- never an implicit card charge.
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00", lifecycle_enabled: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    global.fetch = fetchMock;
+
+    const { result } = renderHook(() => useCredits(), { wrapper });
+    expect(result.current.autoChargeEnabled).toBe(false);
+  });
 });

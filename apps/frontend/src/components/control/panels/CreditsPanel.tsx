@@ -11,17 +11,30 @@ const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
 /**
  * Control-panel surface for managing Claude credits. The balance comes from
- * Metronome (the billing ledger); a top-up creates a payment-gated Metronome
- * commit that charges the saved Stripe card automatically — no checkout
- * redirect. Credits release when the payment collects, so the balance
- * updates asynchronously (the hook polls).
+ * Metronome (the billing ledger).
+ *
+ * Default purchase path — explicit Stripe Checkout (the customer confirms
+ * on a Stripe-hosted page; the webhook grants credits on payment). Owners
+ * who opted in to one-click top-ups instead get a payment-gated Metronome
+ * commit charged automatically to the saved card — no redirect — and can
+ * revoke that consent here (re-enabling requires a fresh opt-in Checkout).
  */
 export function CreditsPanel() {
-  const { balance, lifecycleEnabled, refresh, startTopUp } = useCredits();
+  const {
+    balance,
+    lifecycleEnabled,
+    autoChargeEnabled,
+    refresh,
+    startTopUp,
+    startTopUpCheckout,
+    disableAutoCharge,
+  } = useCredits();
   const [topUpAmount, setTopUpAmount] = useState(2000);
   const [topUpSubmitting, setTopUpSubmitting] = useState(false);
   const [topUpError, setTopUpError] = useState<string | null>(null);
   const [topUpRequested, setTopUpRequested] = useState<number | null>(null);
+  const [optIn, setOptIn] = useState(false);
+  const [disabling, setDisabling] = useState(false);
 
   const handleTopUp = async () => {
     setTopUpSubmitting(true);
@@ -41,6 +54,28 @@ export function CreditsPanel() {
       setTopUpError(err instanceof Error ? err.message : "Couldn't start top-up");
     } finally {
       setTopUpSubmitting(false);
+    }
+  };
+
+  const handleCheckout = async () => {
+    setTopUpSubmitting(true);
+    setTopUpError(null);
+    try {
+      const r = await startTopUpCheckout(topUpAmount, optIn);
+      if (!r?.checkout_url) throw new Error("Checkout could not be started");
+      window.location.assign(r.checkout_url);
+    } catch (err) {
+      setTopUpError(err instanceof Error ? err.message : "Couldn't start checkout");
+      setTopUpSubmitting(false);
+    }
+  };
+
+  const handleDisableAutoCharge = async () => {
+    setDisabling(true);
+    try {
+      await disableAutoCharge();
+    } finally {
+      setDisabling(false);
     }
   };
 
@@ -95,6 +130,20 @@ export function CreditsPanel() {
             );
           })}
         </div>
+        {!autoChargeEnabled && (
+          <label className="flex items-start gap-2 text-xs text-[#8a8578]">
+            <input
+              type="checkbox"
+              checked={optIn}
+              onChange={(e) => setOptIn(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              Enable one-click top-ups — save this card so future purchases
+              charge it automatically. You can turn this off anytime.
+            </span>
+          </label>
+        )}
         {topUpError && <p className="text-sm text-red-600">{topUpError}</p>}
         {topUpRequested !== null && (
           <p className="text-sm text-[#2d8a4e]">
@@ -102,27 +151,49 @@ export function CreditsPanel() {
             charged and credits can take a few minutes to land.
           </p>
         )}
-        <button
-          onClick={handleTopUp}
-          disabled={
-            topUpSubmitting ||
-            topUpRequested !== null ||
-            lifecycleEnabled === false ||
-            topUpAmount < 500
-          }
-          className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
-        >
-          {topUpSubmitting
-            ? "Loading…"
-            : topUpRequested !== null
-              ? "Top-up requested"
-              : `Add $${topUpAmount / 100}`}
-        </button>
+        {autoChargeEnabled ? (
+          <button
+            onClick={handleTopUp}
+            disabled={
+              topUpSubmitting ||
+              topUpRequested !== null ||
+              lifecycleEnabled === false ||
+              topUpAmount < 500
+            }
+            className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+          >
+            {topUpSubmitting
+              ? "Loading…"
+              : topUpRequested !== null
+                ? "Top-up requested"
+                : `Add $${topUpAmount / 100}`}
+          </button>
+        ) : (
+          <button
+            onClick={handleCheckout}
+            disabled={topUpSubmitting || lifecycleEnabled === false || topUpAmount < 500}
+            className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+          >
+            {topUpSubmitting ? "Redirecting…" : `Continue to payment — $${topUpAmount / 100}`}
+          </button>
+        )}
         <p className="text-xs text-[#8a8578]">
           {lifecycleEnabled === false
             ? "Claude credits are not yet available in this environment — choose a different provider for now."
-            : "Charged automatically to your card on file — no checkout page."}
+            : autoChargeEnabled
+              ? "Charged automatically to your card on file — no checkout page."
+              : "You'll confirm the payment on a secure Stripe page — nothing is charged until you do."}
         </p>
+        {autoChargeEnabled && (
+          <button
+            type="button"
+            onClick={handleDisableAutoCharge}
+            disabled={disabling}
+            className="text-xs text-[#8a8578] underline hover:text-[#1a1a1a] disabled:opacity-50 text-left"
+          >
+            {disabling ? "Disabling…" : "Disable one-click top-ups"}
+          </button>
+        )}
       </div>
     </div>
   );

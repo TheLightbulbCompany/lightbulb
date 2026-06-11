@@ -353,3 +353,81 @@ def test_ignores_unrelated_event_type(client, known_customer):
         resp = _post(client, body)
     assert resp.status_code == 200
     gate.set_balance.assert_not_awaited()
+
+
+def _payment_gate_body(event_type="payment_gate.payment_status", **props):
+    return json.dumps(
+        {
+            "id": "evt-pg-1",
+            "type": event_type,
+            "properties": {"customer_id": METRONOME_CUSTOMER_ID, **props},
+        }
+    ).encode("utf-8")
+
+
+def _post_payment_gate(client, body):
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch("routers.metronome_webhook.put_metric") as put_metric,
+        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
+    ):
+        gate = gate_cls.return_value
+        gate.set_balance = AsyncMock()
+        resp = _post(client, body)
+    return resp, put_metric, gate
+
+
+def _payment_gate_metric_dims(put_metric):
+    for call in put_metric.call_args_list:
+        if call.args and call.args[0] == "metronome.webhook.payment_gate":
+            return call.kwargs.get("dimensions")
+    return None
+
+
+def test_payment_gate_failed_is_observable_not_silent(client):
+    """A FAILED gated top-up charge must NOT vanish into a silent 200 — it
+    emits a payment_gate metric dimensioned by status and never touches the
+    fast gate (these carry no balance)."""
+    resp, put_metric, gate = _post_payment_gate(client, _payment_gate_body(payment_status="failed"))
+    assert resp.status_code == 200
+    assert _payment_gate_metric_dims(put_metric) == {"status": "failed"}
+    gate.set_balance.assert_not_awaited()
+
+
+def test_payment_gate_paid_does_not_alert(client):
+    """payment_gate.payment_status fires on EVERY attempt, including paid — a
+    successful top-up must be counted (status=paid) but must NOT take the
+    needs-attention path, or every normal purchase becomes alert noise."""
+    resp, put_metric, _ = _post_payment_gate(client, _payment_gate_body(payment_status="paid"))
+    assert resp.status_code == 200
+    assert _payment_gate_metric_dims(put_metric) == {"status": "paid"}
+
+
+def test_payment_gate_pending_action_alerts(client):
+    """SCA/3DS pending: no payment_status field ⇒ degrade to the attention
+    branch (action_required), never a silent drop."""
+    resp, put_metric, _ = _post_payment_gate(
+        client, _payment_gate_body(event_type="payment_gate.payment_pending_action_required")
+    )
+    assert resp.status_code == 200
+    assert _payment_gate_metric_dims(put_metric) == {"status": "action_required"}
+
+
+def test_unhandled_event_type_is_counted_not_silent(client):
+    """Every other delivery is acked but COUNTED, so an unmodeled type that
+    starts arriving (a payment-gate spelling we didn't anticipate, config
+    drift, etc.) is visible in metrics instead of silently dropped."""
+    body = json.dumps({"id": "evt-inv-1", "type": "invoice.finalized", "properties": {}}).encode("utf-8")
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch("routers.metronome_webhook.put_metric") as put_metric,
+    ):
+        resp = _post(client, body)
+    assert resp.status_code == 200
+    assert any(call.args and call.args[0] == "metronome.webhook.unhandled" for call in put_metric.call_args_list)

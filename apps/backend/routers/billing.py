@@ -641,6 +641,31 @@ async def top_up_credits(
         # not surface as an unhandled 500 — money endpoints answer precisely.
         logger.exception("Metronome top-up failed for owner %s", owner_id)
         raise HTTPException(status_code=502, detail="billing provider error") from e
+
+    # Pull the fresh balance through the gate right after the commit so a
+    # depleted owner who buys credits is re-armed immediately. Restore is
+    # pull-based (no payment-success webhook reaches us), so it otherwise waits
+    # for the next balance poll or chat-gate refresh — both race the owner's
+    # FIRST send after buying credits, which then fails AccessDenied (observed
+    # live 2026-06-11).
+    #
+    # RESTORE-ONLY here: act ONLY on a confirmed-POSITIVE balance. A ≤0 read in
+    # this path is the gated commit not yet released (Stripe collection is
+    # async) — NOT a depleted owner — so handing it to apply_fresh_balance
+    # (which re-asserts the revoke on ≤0) would wrongly REVOKE someone who just
+    # paid. A top-up never depletes, so there is nothing to enforce here; the
+    # normal lazy refresh (chat / balance poll) re-arms once the credits land.
+    # Best-effort: apply_fresh_balance never raises.
+    if settings.METRONOME_LIFECYCLE_ENABLED:
+        try:
+            from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
+
+            balance_uc = await read_net_balance_microcents(owner_id)
+            if balance_uc is not None and balance_uc > 0:
+                await apply_fresh_balance(owner_id, balance_uc)
+        except Exception:
+            logger.warning("Post-top-up balance refresh failed for owner %s", owner_id, exc_info=True)
+
     return {"status": "requested", "amount_cents": body.amount_cents}
 
 

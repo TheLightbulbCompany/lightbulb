@@ -56,6 +56,22 @@ _LOW_BALANCE_EVENT_TYPES = frozenset(
     }
 )
 
+# Payment-gated top-up commits charge the saved card; when the charge fails or
+# needs SCA/3DS, Metronome emits a payment-gate event and does NOT auto-retry,
+# so the credits never release. We can't complete card auth server-side, so the
+# minimum bar is OBSERVABILITY — these must not vanish into a silent 200 like
+# every other unmodeled type. The exact spelling is unverifiable until a real
+# delivery fires (same caveat as the low-balance set), so match plausible
+# spellings; we deliberately do not act on the payload fields yet.
+_PAYMENT_GATE_EVENT_TYPES = frozenset(
+    {
+        "payment_gate.payment_status",
+        "payment_gate.payment_pending_action_required",
+        "alerts.payment_gate.payment_status",
+        "alerts.payment_gate.payment_pending_action_required",
+    }
+)
+
 
 def _verify_signature(*, secret: str, date_header: str, body: bytes, signature: str) -> bool:
     if not secret or not signature:
@@ -118,7 +134,42 @@ async def handle_metronome_webhook(
 
 
 async def _process_event(event: dict, event_id: str) -> Response:
-    if event.get("type") not in _LOW_BALANCE_EVENT_TYPES:
+    event_type = event.get("type")
+    if event_type in _PAYMENT_GATE_EVENT_TYPES:
+        # payment_gate.payment_status fires after EVERY attempt carrying
+        # payment_status = "paid" | "failed"; pending-action fires for SCA/3DS
+        # (Metronome docs: manual-payment-gated-commits#manage-notifications).
+        # Only the non-paid outcomes need attention — a "paid" event is a
+        # normal successful top-up and must NOT warn/page (it would turn every
+        # purchase into operational noise). Either way it's COUNTED (dimensioned
+        # by status) so a silent 200 never hides a failure. A missing/unknown
+        # status degrades to the attention branch (warn, never silently drop) —
+        # the conservative default for a money-path signal.
+        props = event.get("properties") or {}
+        payment_status = props.get("payment_status")
+        put_metric("metronome.webhook.payment_gate", dimensions={"status": payment_status or "action_required"})
+        if payment_status == "paid":
+            logger.info(
+                "Metronome payment-gate paid (id=%s, customer=%s)",
+                event_id,
+                props.get("customer_id"),
+            )
+        else:
+            logger.warning(
+                "Metronome payment-gate %s (id=%s, customer=%s, status=%s) — gated top-up payment needs attention",
+                event_type,
+                event_id,
+                props.get("customer_id"),
+                payment_status,
+            )
+        return Response(status_code=200)
+
+    if event_type not in _LOW_BALANCE_EVENT_TYPES:
+        # Every other delivery (invoice.*, and any future type) is acked, but
+        # COUNTED — a silent 200 made payment-gate failures and config drift
+        # invisible. The metric is the breadcrumb that tells us a type we don't
+        # model yet is actually arriving.
+        put_metric("metronome.webhook.unhandled", dimensions={"type": event_type or "none"})
         return Response(status_code=200)
 
     props = event.get("properties") or {}

@@ -7,6 +7,7 @@ import { ChevronDown } from "lucide-react";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
 import { McpServersTab } from "@/components/control/panels/McpServersTab";
+import { PluginsTab } from "@/components/control/panels/PluginsTab";
 import { useConnections } from "@/hooks/useConnections";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +32,7 @@ export function IntegrationsPanel() {
   // same rule server-side (403), which ConnectButton surfaces inline.
   const canManage = !membership || membership.role === "org:admin";
 
-  const [mcpOpen, setMcpOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // The Google multi-account surface only makes sense once Google is
   // connected. We read the same shared /connections cache ConnectionsList
@@ -69,25 +70,37 @@ export function IntegrationsPanel() {
 
         {googleConnected && <GoogleAccountsSection canManage={canManage} />}
 
-        {/* Advanced: the raw mcp.servers escape hatch. Curated integrations
-            above write the same mcp.servers config; this is the manual rail
-            for MCP servers that don't have a curated card. McpServersTab
-            self-gates non-admins (403 -> "org admins only"). */}
+        {/* Bring-your-own MCP servers. A mainstream act now (vendors hand out
+            remote MCP URLs), so it sits in the open — not behind Advanced.
+            Curated integrations above write the same mcp.servers config; this is
+            the manual rail. McpServersTab self-gates non-admins (403). */}
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            Add your own MCP servers
+          </h3>
+          <div className="rounded-md border border-[#e0dbd0] bg-white">
+            <McpServersTab />
+          </div>
+        </div>
+
+        {/* Advanced: plugin enable/disable switches. Plugins run in-process with
+            the agent, which is why this — unlike MCP — keeps a wall. Channel and
+            provider plugins get real homes elsewhere (Channels / Model & Credits). */}
         <div className="rounded-md border border-[#e0dbd0] bg-white">
           <button
             type="button"
-            aria-expanded={mcpOpen}
-            onClick={() => setMcpOpen((v) => !v)}
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((v) => !v)}
             className="flex w-full items-center justify-between p-4 text-left"
           >
             <span className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-              Advanced — raw MCP servers
+              Advanced — plugins
             </span>
-            <ChevronDown className={cn("h-4 w-4 text-[#8a8578] transition-transform", !mcpOpen && "-rotate-90")} />
+            <ChevronDown className={cn("h-4 w-4 text-[#8a8578] transition-transform", !advancedOpen && "-rotate-90")} />
           </button>
-          {mcpOpen && (
+          {advancedOpen && (
             <div className="border-t border-[#e0dbd0]">
-              <McpServersTab />
+              <PluginsTab />
             </div>
           )}
         </div>

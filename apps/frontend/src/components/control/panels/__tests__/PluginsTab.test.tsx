@@ -135,4 +135,20 @@ describe("PluginsTab", () => {
     // Discovered-but-unconfigured plugins default to enabled.
     expect(screen.getByText("Enabled")).toBeInTheDocument();
   });
+
+  it("hides channel plugins — the Channels panel owns their lifecycle", () => {
+    mockConfig.mockReturnValue({
+      config: {
+        plugins: { entries: { slack: { enabled: true }, discord: {}, telegram: {}, googlechat: {}, "custom-x": {} } },
+        agents: { list: [] },
+      },
+    });
+    render(<PluginsTab />);
+    expect(screen.queryByText("slack")).toBeNull();
+    expect(screen.queryByText("discord")).toBeNull();
+    expect(screen.queryByText("telegram")).toBeNull();
+    expect(screen.queryByText("googlechat")).toBeNull();
+    expect(screen.getByText("custom-x")).toBeInTheDocument();
+    expect(screen.getByText(/managed in the channels panel/i)).toBeInTheDocument();
+  });
 });

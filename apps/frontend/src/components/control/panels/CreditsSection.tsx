@@ -10,16 +10,13 @@ const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
 const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
 /**
- * Control-panel surface for managing Claude credits. The balance comes from
- * Metronome (the billing ledger).
- *
- * Default purchase path — explicit Stripe Checkout (the customer confirms
- * on a Stripe-hosted page; the webhook grants credits on payment). Owners
- * who opted in to one-click top-ups instead get a payment-gated Metronome
- * commit charged automatically to the saved card — no redirect — and can
- * revoke that consent here (re-enabling requires a fresh opt-in Checkout).
+ * Embeddable Claude-credits manager (balance + top-up + auto-reload).
+ * Mounted inside the Model & Credits panel for bedrock_claude owners —
+ * this is the only credits surface; there is no standalone Credits panel.
+ * Purchase-path semantics are unchanged: explicit Stripe Checkout by
+ * default, one-click Metronome commit for owners who opted in.
  */
-export function CreditsPanel() {
+export function CreditsSection() {
   const {
     balance,
     lifecycleEnabled,
@@ -83,9 +80,7 @@ export function CreditsPanel() {
     balance && balance.balance_dollars !== null ? `$${balance.balance_dollars}` : "—";
 
   return (
-    <div className="p-6 space-y-6">
-      <h2 className="text-lg font-semibold">Claude credits</h2>
-
+    <div className="space-y-6">
       <div className={CARD}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">

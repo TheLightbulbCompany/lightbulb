@@ -100,3 +100,43 @@ describe("ConnectionsList — Bedrock lock", () => {
     expect(screen.queryByText("Requires Bedrock credits")).toBeNull();
   });
 });
+
+describe("ConnectionsList — delivery receipts", () => {
+  beforeEach(() => {
+    // Bedrock owner so no row ever locks — these tests are about the
+    // receipt line, not the upsell.
+    h.account = { provider_choice: "bedrock_claude" };
+    h.billingLoading = false;
+    h.billingError = undefined;
+    h.connections = [];
+  });
+
+  it("shows what a connected provider delivered", () => {
+    h.connections = [
+      { provider: "stripe", display_name: "Stripe", acquisition: "paste_token", status: "connected" },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText(/delivered/i)).toBeInTheDocument();
+    expect(screen.getByText(/payment tools/i)).toBeInTheDocument();
+  });
+
+  it("shows what a disconnected provider will deliver", () => {
+    h.connections = [
+      { provider: "github", display_name: "GitHub", acquisition: "paste_token", status: "disconnected" },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText(/will deliver/i)).toBeInTheDocument();
+  });
+
+  it("renders unknown providers without a receipt line", () => {
+    h.connections = [
+      { provider: "acme", display_name: "Acme", acquisition: "paste_token", status: "connected" },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText("Acme")).toBeInTheDocument();
+    expect(screen.queryByText(/will deliver|delivered/i)).toBeNull();
+  });
+});

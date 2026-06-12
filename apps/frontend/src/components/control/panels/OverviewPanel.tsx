@@ -359,7 +359,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
       </div>
 
       {/* Summary Row \u2014 clickable cards deep-link to the relevant panel.
-          Cron -> CronPanel; Skills -> CapabilitiesPanel; MCP -> IntegrationsPanel
+          Cron -> CronPanel; Skills -> SkillsTab; MCP -> IntegrationsPanel
           (the raw MCP-servers escape hatch now lives under Integrations > Advanced). */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <SummaryCard

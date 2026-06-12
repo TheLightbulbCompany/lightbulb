@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { SkillsTab } from "../SkillsTab";
 
@@ -82,5 +82,13 @@ describe("SkillsTab", () => {
     });
     render(<SkillsTab />);
     expect(screen.queryByText(/works with/i)).toBeNull();
+  });
+
+  it("reveals the create-custom-skill helper with a copyable prompt", () => {
+    mockData.mockReturnValue({ skills: [] });
+    render(<SkillsTab />);
+    fireEvent.click(screen.getByRole("button", { name: /create custom skill/i }));
+    expect(screen.getByText(/Use your skill-creator skill/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy prompt/i })).toBeInTheDocument();
   });
 });

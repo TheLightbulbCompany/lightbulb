@@ -124,6 +124,13 @@ function getFriendlyDescription(skill: SkillStatusEntry): string {
   return FRIENDLY_DESCRIPTIONS[key] || skill.description || "Extend your agent's capabilities";
 }
 
+// --- Create-custom-skill helper ---
+
+const CREATE_SKILL_PROMPT =
+  "Use your skill-creator skill to create a new custom skill for me. " +
+  "It should: <describe what the skill does and when it should trigger>. " +
+  "Put it in my workspace skills folder so it loads automatically.";
+
 // --- Dependency viability check ---
 
 type SkillState = "installed" | "available" | "unsupported";
@@ -164,6 +171,8 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   const [filter, setFilter] = useState("");
   const [activeCategory, setActiveCategory] = useState<Category>("All");
   const [unsupportedCollapsed, setUnsupportedCollapsed] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Normalize response: could be SkillStatusReport or raw array
   const skills: SkillStatusEntry[] = Array.isArray(raw) ? raw : raw?.skills ?? [];
@@ -220,10 +229,45 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               Discover and install skills for your agent
             </p>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[#8a8578] hover:text-[#1a1a1a]">
-            <RefreshCw className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowCreate((v) => !v)}
+              className="text-xs border-[#e0dbd0]"
+              style={{ fontFamily: "'DM Sans', sans-serif" }}
+            >
+              + Create custom skill
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[#8a8578] hover:text-[#1a1a1a]">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
+
+        {/* Create-custom-skill helper */}
+        {showCreate && (
+          <div className="rounded-xl border border-[#e0dbd0] bg-white p-4 space-y-3">
+            <p className="text-sm text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+              Your agent writes custom skills itself — it has a built-in <strong>skill-creator</strong> skill.
+              Describe what you want in chat; the new skill appears here once it&apos;s written.
+            </p>
+            <pre className="text-xs text-[#5a5549] bg-[#faf7f2] border border-[#e0dbd0] rounded-md p-3 whitespace-pre-wrap">
+              {CREATE_SKILL_PROMPT}
+            </pre>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs border-[#e0dbd0]"
+              onClick={() => {
+                void navigator.clipboard?.writeText(CREATE_SKILL_PROMPT);
+                setCopied(true);
+              }}
+            >
+              {copied ? "Copied — paste it in chat" : "Copy prompt"}
+            </Button>
+          </div>
+        )}
 
         {/* Search bar */}
         <div className="relative">
@@ -418,7 +462,7 @@ function IntegrationChip({ skillName }: { skillName: string }) {
   if (!integration) return null;
   return (
     <a
-      href={`/chat?panel=integrations`}
+      href="/chat?panel=integrations"
       className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#5a5549] hover:text-[#1a1a1a] flex-shrink-0"
       style={{ fontFamily: "'DM Sans', sans-serif" }}
       title="Connect this account under Integrations"

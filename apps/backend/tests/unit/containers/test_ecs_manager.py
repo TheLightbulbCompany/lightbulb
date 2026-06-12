@@ -2155,6 +2155,10 @@ class TestProvisionUserContainerProviderChoice:
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch(
+                "core.services.oauth_service.resolve_token_owner",
+                AsyncMock(return_value="user_test_123"),
+            ),
             patch("core.services.oauth_service.get_decrypted_tokens", AsyncMock(return_value=tokens)),
             patch("core.containers.workspace.pre_stage_auth_profile_store", side_effect=_record_pre_stage),
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
@@ -2197,6 +2201,10 @@ class TestProvisionUserContainerProviderChoice:
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch(
+                "core.services.oauth_service.resolve_token_owner",
+                AsyncMock(return_value="user_test_123"),
+            ),
             patch("core.services.oauth_service.get_decrypted_tokens", AsyncMock(return_value=None)),
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),

@@ -3,13 +3,13 @@
 import {
   LayoutDashboard,
   Bot,
-  Boxes,
   MessageSquare,
   Radio,
   Clock,
   BarChart3,
   Plug,
   Blocks,
+  Wrench,
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,7 @@ interface ControlSidebarProps {
 const NAV_ITEMS = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "agents", label: "Agents", icon: Bot },
-  { key: "skills", label: "Capabilities", icon: Boxes },
+  { key: "skills", label: "Skills", icon: Wrench },
   { key: "sessions", label: "Sessions", icon: MessageSquare },
   { key: "channels", label: "Channels", icon: Radio },
   { key: "cron", label: "Cron Jobs", icon: Clock },

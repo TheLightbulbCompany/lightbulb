@@ -13,7 +13,7 @@ vi.mock("../panels/SessionsPanel", () => ({ SessionsPanel: () => <div /> }));
 vi.mock("../panels/UsagePanel", () => ({ UsagePanel: () => <div /> }));
 vi.mock("../panels/CronPanel", () => ({ CronPanel: () => <div /> }));
 vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => <div /> }));
-vi.mock("../panels/CapabilitiesPanel", () => ({ CapabilitiesPanel: () => <div /> }));
+vi.mock("../panels/SkillsTab", () => ({ SkillsTab: () => <div data-testid="skills-store" /> }));
 vi.mock("../panels/IntegrationsPanel", () => ({ IntegrationsPanel: () => <div /> }));
 vi.mock("../panels/ChannelsStatusPanel", () => ({ ChannelsStatusPanel: () => <div /> }));
 
@@ -39,5 +39,15 @@ describe("ControlPanelRouter credits redirect", () => {
     const onPanelChange = vi.fn();
     render(<ControlPanelRouter panel="overview" onPanelChange={onPanelChange} />);
     expect(onPanelChange).not.toHaveBeenCalled();
+  });
+
+  it("mounts the skills store directly (no Capabilities tab wrapper)", () => {
+    render(<ControlPanelRouter panel="skills" onPanelChange={vi.fn()} />);
+    expect(screen.getByTestId("skills-store")).toBeInTheDocument();
+  });
+
+  it("redirect path tolerates a missing onPanelChange callback", () => {
+    render(<ControlPanelRouter panel="credits" />);
+    expect(screen.getByTestId("llm-panel")).toBeInTheDocument();
   });
 });

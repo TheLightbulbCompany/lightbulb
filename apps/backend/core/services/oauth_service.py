@@ -37,6 +37,7 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.encryption import get_fernet
+from core.repositories import billing_repo
 
 
 logger = logging.getLogger(__name__)
@@ -324,20 +325,24 @@ async def get_decrypted_tokens_consistent(*, user_id: str) -> dict | None:
     return json.loads(plain.decode())
 
 
-async def resolve_token_owner(owner_id: str) -> str:
+def connector_from_account(account: dict | None, owner_id: str) -> str:
     """The Clerk user whose ChatGPT OAuth tokens back this owner's container.
 
     Personal owners ARE their own connector (owner_id == Clerk user_id), so
     the fallback is correct for them and for legacy rows that predate
     ``oauth_connector_user_id``. For orgs, the billing row records the
-    workspace owner who completed the device-code flow. Lazy import —
-    billing_repo must not become a module-level dependency of the OAuth
-    subsystem.
+    workspace owner who completed the device-code flow. Callers that already
+    hold the billing row use this directly — the provision gate runs on
+    every ~3s status poll and must not burn a second read of a row it has
+    in scope; callers without the row use ``resolve_token_owner``.
     """
-    from core.repositories import billing_repo
+    return (account or {}).get("oauth_connector_user_id") or owner_id
 
+
+async def resolve_token_owner(*, owner_id: str) -> str:
+    """``connector_from_account`` for callers that don't hold the billing row."""
     row = await billing_repo.get_by_owner_id(owner_id)
-    return (row or {}).get("oauth_connector_user_id") or owner_id
+    return connector_from_account(row, owner_id)
 
 
 async def revoke_user_oauth(*, user_id: str) -> None:

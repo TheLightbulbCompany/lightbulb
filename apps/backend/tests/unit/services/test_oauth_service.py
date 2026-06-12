@@ -304,10 +304,10 @@ async def test_revoke_deletes_oauth_row(oauth_table):
 @pytest.mark.asyncio
 async def test_resolve_token_owner_returns_connector_for_org():
     with patch(
-        "core.repositories.billing_repo.get_by_owner_id",
+        "core.services.oauth_service.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value={"owner_id": "org_1", "oauth_connector_user_id": "user_a"}),
     ):
-        assert await oauth_service.resolve_token_owner("org_1") == "user_a"
+        assert await oauth_service.resolve_token_owner(owner_id="org_1") == "user_a"
 
 
 @pytest.mark.asyncio
@@ -315,7 +315,21 @@ async def test_resolve_token_owner_falls_back_to_owner_id():
     # Personal owners: owner_id IS the Clerk user id. Legacy rows and
     # missing rows both fall back.
     with patch(
-        "core.repositories.billing_repo.get_by_owner_id",
+        "core.services.oauth_service.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value=None),
     ):
-        assert await oauth_service.resolve_token_owner("user_b") == "user_b"
+        assert await oauth_service.resolve_token_owner(owner_id="user_b") == "user_b"
+
+
+@pytest.mark.asyncio
+async def test_resolve_token_owner_legacy_row_without_field_falls_back():
+    with patch(
+        "core.services.oauth_service.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value={"owner_id": "user_b"}),
+    ):
+        assert await oauth_service.resolve_token_owner(owner_id="user_b") == "user_b"
+
+
+def test_connector_from_account_returns_connector_when_present():
+    account = {"owner_id": "org_1", "oauth_connector_user_id": "user_a"}
+    assert oauth_service.connector_from_account(account, "org_1") == "user_a"

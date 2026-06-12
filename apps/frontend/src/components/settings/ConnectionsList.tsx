@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
 import { useConnections } from "@/hooks/useConnections";
 import { ConnectButton } from "@/components/settings/ConnectButton";
+import { INTEGRATION_RECEIPTS } from "@/components/settings/integration-receipts";
 
 interface ConnectionsListProps {
   /** Org admins may connect/disconnect; non-admins see disabled actions. */
@@ -72,6 +73,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
         // Lock only the connect path: a row already connected before a
         // provider switch keeps Disconnect (so `locked` excludes connected).
         const locked = !!connection.requires_bedrock && !connected && offBedrock;
+        const receipt = INTEGRATION_RECEIPTS[connection.provider];
         return (
           <div
             key={connection.provider}
@@ -95,6 +97,14 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                   </>
                 )}
               </p>
+              {receipt && (
+                <p className="text-xs text-[#8a8578] mt-0.5">
+                  {connected ? "Delivered: " : "Will deliver: "}
+                  <span className={connected ? "text-[#2d8a4e]" : undefined}>
+                    {receipt.delivers}
+                  </span>
+                </p>
+              )}
             </div>
             <ConnectButton
               connection={connection}

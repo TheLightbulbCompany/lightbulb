@@ -23,33 +23,44 @@ describe("ProviderPicker", () => {
     expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
   });
 
-  it("hides the ChatGPT OAuth card for org users", () => {
+  it("shows the ChatGPT OAuth card to org users too, with the connector hint", () => {
+    // New contract: the org owner's ChatGPT account backs the org container
+    // (one account ↔ one container), so org users see all three cards. The
+    // org-only hint under the ChatGPT card spells out the connector model.
     render(<ProviderPicker isOrg={true} orgName="Acme" />);
-    expect(screen.queryByText("Sign in with ChatGPT")).not.toBeInTheDocument();
+    expect(screen.getByText("Sign in with ChatGPT")).toBeInTheDocument();
     expect(screen.getByText("Bring your own API key")).toBeInTheDocument();
     expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
+    expect(
+      screen.getByText(/You connect your ChatGPT account/i),
+    ).toBeInTheDocument();
   });
 
-  it('uses "Three ways" headline for personal users', () => {
+  it("omits the org-only ChatGPT connector hint for personal users", () => {
+    render(<ProviderPicker isOrg={false} />);
+    expect(
+      screen.queryByText(/You connect your ChatGPT account/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('uses the "Three ways" headline for both personal and org users', () => {
     render(<ProviderPicker isOrg={false} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(
       "One price. Three ways to power it.",
     );
-  });
 
-  it('uses "Two ways" headline for org users', () => {
     render(<ProviderPicker isOrg={true} orgName="Acme" />);
-    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(
-      "One price. Two ways to power it.",
+    const headings = screen.getAllByRole("heading", { level: 2 });
+    expect(headings[headings.length - 1]).toHaveTextContent(
+      "One price. Three ways to power it.",
     );
   });
 
-  it("uses 2-col centered grid for org users and 3-col grid otherwise", () => {
+  it("uses the 3-col grid for both org and personal users", () => {
     const { container: orgContainer } = render(
       <ProviderPicker isOrg={true} orgName="Acme" />,
     );
-    expect(orgContainer.querySelector(".md\\:grid-cols-2")).toBeInTheDocument();
-    expect(orgContainer.querySelector(".max-w-3xl")).toBeInTheDocument();
+    expect(orgContainer.querySelector(".md\\:grid-cols-3")).toBeInTheDocument();
 
     const { container: personalContainer } = render(<ProviderPicker isOrg={false} />);
     expect(personalContainer.querySelector(".md\\:grid-cols-3")).toBeInTheDocument();

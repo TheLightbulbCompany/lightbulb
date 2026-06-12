@@ -126,6 +126,10 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
     ),
 )
 async def poll(ctx: AuthContext = Depends(get_current_user)):
+    # No owner gate here (unlike /start and /disconnect): poll_device_code 502s
+    # unless a pending device-code row exists for ctx.user_id, and only /start —
+    # which IS owner-gated — can create one. A non-owner member therefore has no
+    # pending row to poll, so they can never reach the connector-claim below.
     try:
         result = await poll_device_code(user_id=ctx.user_id)
     except OAuthExchangeFailedError as e:

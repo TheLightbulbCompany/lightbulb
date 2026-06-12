@@ -6,6 +6,7 @@ Covers OpenAI's actual Codex CLI device-code flow:
   POST /oauth/token                       →  access_token + refresh_token
 """
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import boto3
@@ -18,6 +19,7 @@ from core.services import oauth_service
 from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
+    get_decrypted_tokens,
     OAuthAlreadyActiveError,
     OAuthExchangeFailedError,
     poll_device_code,
@@ -97,7 +99,7 @@ async def test_poll_pending_returns_pending(oauth_table):
         return httpx.Response(403, request=httpx.Request("POST", str(url)))
 
     with patch.object(httpx.AsyncClient, "post", new=fake_poll):
-        result = await poll_device_code(user_id="u_1")
+        result = await poll_device_code(user_id="u_1", bound_owner_id="u_1")
     assert result is DevicePollPending
 
 
@@ -150,7 +152,7 @@ async def test_poll_success_persists_encrypted_tokens(oauth_table):
         raise AssertionError(f"unexpected URL: {url_str}")
 
     with patch.object(httpx.AsyncClient, "post", new=fake_poll_then_exchange):
-        result = await poll_device_code(user_id="u_1")
+        result = await poll_device_code(user_id="u_1", bound_owner_id="u_1")
 
     assert isinstance(result, DevicePollResult)
     assert result.account_id == "chatgpt-account-1"
@@ -196,7 +198,7 @@ async def test_poll_propagates_exchange_failure(oauth_table):
 
     with patch.object(httpx.AsyncClient, "post", new=fake_poll_exchange_400):
         with pytest.raises(OAuthExchangeFailedError):
-            await poll_device_code(user_id="u_1")
+            await poll_device_code(user_id="u_1", bound_owner_id="u_1")
 
 
 @pytest.mark.asyncio
@@ -218,7 +220,7 @@ async def test_poll_legacy_row_raises_clean_error(oauth_table):
         },
     )
     with pytest.raises(OAuthExchangeFailedError, match="Stale OAuth session"):
-        await poll_device_code(user_id="u_legacy")
+        await poll_device_code(user_id="u_legacy", bound_owner_id="u_legacy")
 
 
 @pytest.mark.asyncio
@@ -253,7 +255,7 @@ async def test_request_device_code_refuses_to_clobber_active_session(oauth_table
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
         await request_device_code(user_id="u_1")
     with patch.object(httpx.AsyncClient, "post", new=fake_complete):
-        await poll_device_code(user_id="u_1")
+        await poll_device_code(user_id="u_1", bound_owner_id="u_1")
 
     # User now has state=active. A second request_device_code must refuse.
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
@@ -292,7 +294,7 @@ async def test_revoke_deletes_oauth_row(oauth_table):
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
         await request_device_code(user_id="u_1")
     with patch.object(httpx.AsyncClient, "post", new=fake_complete):
-        await poll_device_code(user_id="u_1")
+        await poll_device_code(user_id="u_1", bound_owner_id="u_1")
 
     await revoke_user_oauth(user_id="u_1")
 
@@ -333,3 +335,104 @@ async def test_resolve_token_owner_legacy_row_without_field_falls_back():
 def test_connector_from_account_returns_connector_when_present():
     account = {"owner_id": "org_1", "oauth_connector_user_id": "user_a"}
     assert oauth_service.connector_from_account(account, "org_1") == "user_a"
+
+
+# ---------------------------------------------------------------------------
+# Token-row binding: one ChatGPT sign-in ↔ one workspace.
+#
+# The oauth-tokens table keys one row per Clerk user. A human who connects
+# ChatGPT for an ORG (their row backs the org container) can also open a
+# PERSONAL workspace under the same Clerk user_id. The completed row records
+# the workspace owner it was created for (``bound_owner_id``); consumption
+# reads pass the owner whose container will use the tokens and get None when
+# the row was claimed by a different workspace.
+# ---------------------------------------------------------------------------
+
+
+async def _complete_flow(user_id: str, bound_owner_id: str) -> None:
+    """Drive a full device-code completion for ``user_id`` so the row lands
+    active with the binding ``bound_owner_id`` stamped on it."""
+
+    async def fake_seed(self, url, **kwargs):
+        return _ok({"device_auth_id": "dev", "user_code": "CODE-1", "interval": 5}, url=str(url))
+
+    async def fake_complete(self, url, **kwargs):
+        url_str = str(url)
+        if "deviceauth/token" in url_str:
+            return _ok({"authorization_code": "ac", "code_verifier": "v"}, url=url_str)
+        return _ok(
+            {
+                "access_token": "eyJ.x.y",
+                "refresh_token": "rt",
+                "id_token": "eyJ.z",
+                "account_id": "acc",
+            },
+            url=url_str,
+        )
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        await request_device_code(user_id=user_id)
+    with patch.object(httpx.AsyncClient, "post", new=fake_complete):
+        await poll_device_code(user_id=user_id, bound_owner_id=bound_owner_id)
+
+
+@pytest.mark.asyncio
+async def test_completed_poll_writes_bound_owner_id(oauth_table):
+    """A completed device-code flow stamps the workspace owner it was created
+    for onto the token row."""
+    await _complete_flow(user_id="user_a", bound_owner_id="org_1")
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    row = client.get_item(TableName="test-oauth-tokens", Key={"user_id": {"S": "user_a"}})["Item"]
+    assert row["bound_owner_id"]["S"] == "org_1"
+
+
+@pytest.mark.asyncio
+async def test_get_decrypted_tokens_returns_row_when_bound_to_matches(oauth_table):
+    """The connector's row is bound to the org; reading with bound_to=<org>
+    (the container owner) returns the tokens."""
+    await _complete_flow(user_id="user_a", bound_owner_id="org_1")
+
+    tokens = await get_decrypted_tokens(user_id="user_a", bound_to="org_1")
+    assert tokens is not None
+    assert tokens["refresh_token"] == "rt"
+
+
+@pytest.mark.asyncio
+async def test_get_decrypted_tokens_returns_none_when_bound_to_differs(oauth_table):
+    """THE P1 GUARD: the same connector's row is bound to an org; reading it
+    for a DIFFERENT owner (the connector's personal workspace) must return
+    None so personal provisioning never reuses the org-claimed tokens."""
+    await _complete_flow(user_id="user_a", bound_owner_id="org_1")
+
+    tokens = await get_decrypted_tokens(user_id="user_a", bound_to="user_a")
+    assert tokens is None
+
+
+@pytest.mark.asyncio
+async def test_get_decrypted_tokens_allows_legacy_unbound_row_for_any_reader(oauth_table):
+    """A row WITHOUT bound_owner_id (pre-binding legacy) is admissible for any
+    bound_to — existing personal users must keep working through the cutover."""
+    # Seed an active row directly without the binding field (legacy shape).
+    from core.encryption import get_fernet
+
+    plain = json.dumps({"access_token": "a", "refresh_token": "r", "account_id": "acc"}).encode()
+    boto3.resource("dynamodb", region_name="us-east-1").Table("test-oauth-tokens").put_item(
+        Item={
+            "user_id": "user_legacy",
+            "state": "active",
+            "encrypted_tokens": get_fernet().encrypt(plain),
+            "account_id": "acc",
+        }
+    )
+
+    assert await get_decrypted_tokens(user_id="user_legacy", bound_to="anyone") is not None
+
+
+@pytest.mark.asyncio
+async def test_get_decrypted_tokens_no_bound_to_skips_check(oauth_table):
+    """bound_to=None (caller didn't specify) keeps the pre-binding behavior —
+    the row is returned regardless of its bound_owner_id."""
+    await _complete_flow(user_id="user_a", bound_owner_id="org_1")
+
+    assert await get_decrypted_tokens(user_id="user_a") is not None

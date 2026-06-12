@@ -598,7 +598,11 @@ async def change_provider(
     if provider_choice == "chatgpt_oauth":
         from core.services import oauth_service
 
-        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id)
+        # The connector's row must be bound to THIS workspace (owner_id). A row
+        # the same human claimed for a different workspace reads as missing —
+        # one ChatGPT account ↔ one container, so we don't let a switch borrow
+        # tokens that back another container.
+        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id, bound_to=owner_id)
         if not tokens:
             raise ChangeProviderError(
                 "oauth_required",
@@ -805,8 +809,10 @@ async def _hot_swap_provider(
 
         # READ the tokens under the switcher (the new connector): tokens live
         # keyed on the human who completed the device-code flow, which IS the
-        # clerk_user_id we just recorded as oauth_connector_user_id.
-        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id)
+        # clerk_user_id we just recorded as oauth_connector_user_id. Pass
+        # ``bound_to=owner_id`` so we only read a row this connector claimed for
+        # THIS workspace — one ChatGPT account ↔ one container.
+        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id, bound_to=owner_id)
         if not tokens:
             # Lost the tokens between the prerequisite check and now (very
             # rare — concurrent disconnect). Bail out to the cold path so

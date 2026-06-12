@@ -1,8 +1,12 @@
 """Integration tests for /api/v1/oauth/chatgpt/* endpoints."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
+import boto3
 import pytest
+from cryptography.fernet import Fernet
+from moto import mock_aws
 
 from core.auth import AuthContext, get_current_user
 from core.services.oauth_service import (
@@ -11,6 +15,41 @@ from core.services.oauth_service import (
     DevicePollResult,
     OAuthAlreadyActiveError,
 )
+
+
+@pytest.fixture
+def oauth_table(monkeypatch):
+    """A real (moto) oauth-tokens table so the binding logic runs end-to-end
+    through the router for the P1 cross-owner-reuse scenario, instead of
+    mocking the service helper and losing the actual rejection."""
+    from core.config import settings as _settings
+
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="test-oauth-tokens",
+            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setenv("OAUTH_TOKENS_TABLE", "test-oauth-tokens")
+        monkeypatch.setattr(_settings, "ENCRYPTION_KEY", Fernet.generate_key().decode())
+        yield
+
+
+def _seed_active_row(*, user_id: str, bound_owner_id: str | None, account_id: str = "acc_x") -> None:
+    from core.encryption import get_fernet
+
+    plain = json.dumps({"access_token": "a", "refresh_token": "r", "account_id": account_id}).encode()
+    item = {
+        "user_id": user_id,
+        "state": "active",
+        "encrypted_tokens": get_fernet().encrypt(plain),
+        "account_id": account_id,
+    }
+    if bound_owner_id is not None:
+        item["bound_owner_id"] = bound_owner_id
+    boto3.resource("dynamodb", region_name="us-east-1").Table("test-oauth-tokens").put_item(Item=item)
 
 
 @pytest.mark.asyncio
@@ -216,7 +255,48 @@ class TestStatus:
         assert resp.status_code == 200
         assert resp.json() == {"connected": True, "account_id": "acc_owner"}
         mock_resolve.assert_awaited_once_with(owner_id="org_test_456")
-        mock_tokens.assert_awaited_once_with(user_id="user_a")
+        mock_tokens.assert_awaited_once_with(user_id="user_a", bound_to="org_test_456")
+
+    @pytest.mark.asyncio
+    async def test_status_personal_with_row_bound_to_org_reports_disconnected(self, async_client, oauth_table):
+        """THE P1 SCENARIO. user_test_123 connected ChatGPT for an org; the row
+        keyed on their Clerk user_id is bound to that org. When the SAME human
+        opens a PERSONAL workspace and hits /status, the personal owner is
+        user_test_123 — but the row belongs to the org, so the probe must
+        report disconnected. Otherwise the personal gate passes and the same
+        ChatGPT account gets staged into a second container.
+
+        Runs the real binding logic through the router (no service mock)."""
+        _seed_active_row(user_id="user_test_123", bound_owner_id="org_other_999")
+
+        resp = await async_client.get("/api/v1/oauth/chatgpt/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"connected": False, "account_id": None}
+
+    @pytest.mark.asyncio
+    async def test_status_personal_with_own_bound_row_reports_connected(self, async_client, oauth_table):
+        """Control for the P1 test: the row bound to the personal owner's own
+        id reads as connected — the binding only rejects OTHER workspaces."""
+        _seed_active_row(user_id="user_test_123", bound_owner_id="user_test_123")
+
+        resp = await async_client.get("/api/v1/oauth/chatgpt/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"connected": True, "account_id": "acc_x"}
+
+    @pytest.mark.asyncio
+    async def test_status_org_with_connector_row_bound_to_org_reports_connected(
+        self, async_client, override_auth, oauth_table
+    ):
+        """Org member hits /status; the connector (user_a) has a row bound to
+        the org. The probe resolves the connector, then reads with bound_to=org
+        and finds the org-bound row → connected. Runs the real binding logic."""
+        override_auth(ORG_MEMBER)
+        _seed_active_row(user_id="user_a", bound_owner_id="org_test_456", account_id="acc_owner")
+
+        with patch("routers.oauth.resolve_token_owner", new=AsyncMock(return_value="user_a")):
+            resp = await async_client.get("/api/v1/oauth/chatgpt/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"connected": True, "account_id": "acc_owner"}
 
 
 class TestStartOrgRules:
@@ -369,6 +449,39 @@ class TestPollOrgClaim:
         assert resp.status_code == 200
         assert resp.json() == {"status": "pending"}
         mock_claim.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_poll_org_binds_completed_row_to_org(self, async_client, override_auth):
+        """Org admin /poll must stamp the completed token row with the ORG id
+        (resolve_owner_id), not the admin's user_id. The binding is what lets a
+        later consumption read reject reuse of this row by a different
+        workspace (one ChatGPT account ↔ one container)."""
+        override_auth(ORG_OWNER_ADMIN)
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
+            ) as mock_poll,
+            patch(
+                "core.repositories.billing_repo.claim_oauth_connector",
+                new=AsyncMock(),
+            ),
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        mock_poll.assert_awaited_once_with(user_id="user_test_123", bound_owner_id="org_test_456")
+
+    @pytest.mark.asyncio
+    async def test_poll_personal_binds_completed_row_to_user(self, async_client):
+        """Personal /poll binds the row to the user's own id (resolve_owner_id
+        == user_id for personal context)."""
+        with patch(
+            "routers.oauth.poll_device_code",
+            new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
+        ) as mock_poll:
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        mock_poll.assert_awaited_once_with(user_id="user_test_123", bound_owner_id="user_test_123")
 
 
 class TestDisconnectOrgRules:

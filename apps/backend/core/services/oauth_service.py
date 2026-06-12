@@ -28,8 +28,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 import boto3
 import httpx
@@ -154,13 +155,22 @@ async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
     )
 
 
-async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
+async def poll_device_code(*, user_id: str, bound_owner_id: str) -> DevicePollResult | object:
     """Poll OpenAI's deviceauth/token endpoint for this user's session.
 
     Returns DevicePollPending while the user hasn't completed sign-in
     (OpenAI returns 403/404 in that case). Returns DevicePollResult on
     success after Fernet-encrypting access+refresh tokens into DDB.
     Raises OAuthExchangeFailedError on terminal errors.
+
+    ``bound_owner_id`` is the workspace owner this sign-in is being
+    completed for (org_id in org context, the user's own id personally).
+    It is stamped onto the completed row as ``bound_owner_id`` so a
+    consumption read can reject reuse by a *different* workspace. The
+    oauth-tokens table keys one row per Clerk user, so without this a human
+    who connected ChatGPT for an org could have the same row silently
+    staged into a second, personal container — two containers sharing one
+    ChatGPT account, and a disconnect in either revoking the other.
     """
     row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "pending":
@@ -264,13 +274,18 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     _table().update_item(
         Key={"user_id": user_id},
         UpdateExpression=(
-            "SET #s = :ok, encrypted_tokens = :tok, account_id = :acc REMOVE device_auth_id, user_code, #i"
+            "SET #s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
+            "REMOVE device_auth_id, user_code, #i"
         ),
         ExpressionAttributeNames={"#s": "state", "#i": "interval"},
         ExpressionAttributeValues={
             ":ok": "active",
             ":tok": encrypted,
             ":acc": account_id or "",
+            # The workspace this sign-in was completed for. A consumption read
+            # that passes a different ``bound_to`` is rejected (see
+            # get_decrypted_tokens) — one ChatGPT account ↔ one container.
+            ":bound": bound_owner_id,
         },
     )
     return DevicePollResult(account_id=account_id)
@@ -301,25 +316,60 @@ def _extract_account_id(access_token: str) -> str | None:
         return None
 
 
-async def get_decrypted_tokens(*, user_id: str) -> dict | None:
-    """Decrypt and return the user's stored OAuth tokens. None if no row."""
+def _row_belongs_to(row: Mapping[str, Any], bound_to: str | None) -> bool:
+    """Whether ``bound_to`` is allowed to consume this token row.
+
+    The oauth-tokens table keys one row per Clerk user, but a single human
+    can own a personal workspace AND be the connector for an org workspace.
+    ``bound_owner_id`` records which workspace claimed the row at sign-in.
+
+    - ``bound_to is None`` — caller didn't specify a workspace; keep the
+      pre-binding behavior (no check). Production consumption reads always
+      pass ``bound_to``; this branch is for incidental/admin callers.
+    - row has NO ``bound_owner_id`` (legacy, pre-binding) — admissible for
+      any reader so existing personal users keep working through the cutover.
+    - row's ``bound_owner_id`` matches ``bound_to`` — the row was created
+      for this workspace; admit it.
+    - row's ``bound_owner_id`` differs — a DIFFERENT workspace claimed the
+      sign-in; reject (treat as no tokens).
+    """
+    if bound_to is None:
+        return True
+    recorded = row.get("bound_owner_id")
+    return not recorded or recorded == bound_to
+
+
+async def get_decrypted_tokens(*, user_id: str, bound_to: str | None = None) -> dict | None:
+    """Decrypt and return the user's stored OAuth tokens. None if no row.
+
+    When ``bound_to`` is given, the row is returned only if it belongs to
+    that workspace (see ``_row_belongs_to``) — a row bound to a different
+    owner reads as None so its tokens can't be reused by another container.
+    """
     row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "active":
+        return None
+    if not _row_belongs_to(row, bound_to):
         return None
     plain = get_fernet().decrypt(bytes(row["encrypted_tokens"]))
     return json.loads(plain.decode())
 
 
-async def get_decrypted_tokens_consistent(*, user_id: str) -> dict | None:
+async def get_decrypted_tokens_consistent(*, user_id: str, bound_to: str | None = None) -> dict | None:
     """Strongly-consistent variant of ``get_decrypted_tokens``.
 
     Used by ``GET /oauth/chatgpt/status`` so the wizard reads its own
     write from ``/poll`` without an eventual-consistency stutter. Other
     callers (gate evaluator, provisioning) keep using the eventually-
     consistent helper to avoid taxing every read path with strong reads.
+
+    ``bound_to`` has the same cross-owner-rejection semantics as
+    ``get_decrypted_tokens``.
     """
     row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=True).get("Item")
     if not row or row.get("state") != "active":
+        return None
+    if not _row_belongs_to(row, bound_to):
         return None
     plain = get_fernet().decrypt(bytes(row["encrypted_tokens"]))
     return json.loads(plain.decode())

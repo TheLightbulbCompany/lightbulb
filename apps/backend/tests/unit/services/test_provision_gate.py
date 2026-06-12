@@ -240,6 +240,79 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
 
 
 @pytest.mark.asyncio
+async def test_personal_gate_rejects_row_bound_to_other_workspace():
+    """THE P1 GATE GUARD. A personal owner (user_x) has a token row, but it is
+    bound to an ORG (they connected ChatGPT for an org under the same Clerk
+    user). The personal gate must pass owner_id (user_x) as bound_to so the
+    org-bound row reads as no-tokens and oauth_required fires — otherwise the
+    personal container provisions on tokens that back the org container.
+    """
+
+    async def tokens_for(*, user_id: str, bound_to: str | None = None):
+        # Row exists for user_x but bound to org_other; only a bound_to that
+        # matches (or None) returns it. The gate passes bound_to=owner_id.
+        if user_id != "user_x":
+            return None
+        bound_owner = "org_other"
+        if bound_to is not None and bound_to != bound_owner:
+            return None
+        return {"access_token": "x"}
+
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(side_effect=tokens_for),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_x",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "chatgpt_oauth",
+            },
+        )
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "oauth_required"
+
+
+@pytest.mark.asyncio
+async def test_org_gate_passes_when_connector_row_bound_to_org():
+    """An org's connector (user_a) has a row bound to the org; the gate reads
+    with bound_to=org_1 and finds it → passes. Pins that the org branch passes
+    owner_id as bound_to and a correctly-bound row still satisfies the gate."""
+
+    async def tokens_for(*, user_id: str, bound_to: str | None = None):
+        if user_id != "user_a":
+            return None
+        bound_owner = "org_1"
+        if bound_to is not None and bound_to != bound_owner:
+            return None
+        return {"access_token": "x"}
+
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(side_effect=tokens_for),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "chatgpt_oauth",
+                "oauth_connector_user_id": "user_a",
+            },
+        )
+        gate = await evaluate_provision_gate(owner_id="org_1", is_admin=True)
+    assert gate is None  # connector row bound to the org → gate passes
+
+
+@pytest.mark.asyncio
 async def test_org_gate_checks_connector_tokens_not_poller():
     """In an org, the gate must read the CONNECTOR's tokens (the owner who
     completed the device-code flow, recorded as oauth_connector_user_id),
@@ -254,7 +327,7 @@ async def test_org_gate_checks_connector_tokens_not_poller():
     # Tokens exist only for the connector (user_a); anyone else (the poller)
     # has none. Keying the mock on user_id pins that the gate reads the
     # connector, not the clerk_user_id passed in.
-    async def tokens_for(*, user_id: str):
+    async def tokens_for(*, user_id: str, bound_to: str | None = None):
         return {"access_token": "x"} if user_id == "user_a" else None
 
     with (
@@ -288,7 +361,7 @@ async def test_org_gate_oauth_required_is_admin_only():
     the gate but not an actionable button.
     """
 
-    async def tokens_for(*, user_id: str):
+    async def tokens_for(*, user_id: str, bound_to: str | None = None):
         return None  # nobody has tokens
 
     with (
@@ -325,7 +398,7 @@ async def test_personal_gate_oauth_required_is_not_admin_only():
     so the sign-in button must render for them.
     """
 
-    async def tokens_for(*, user_id: str):
+    async def tokens_for(*, user_id: str, bound_to: str | None = None):
         return None
 
     with (

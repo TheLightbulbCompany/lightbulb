@@ -2182,7 +2182,7 @@ class TestProvisionUserContainerProviderChoice:
 
             # Tokens were read from the resolved CONNECTOR's row, not the
             # container owner's — guards the token_owner_id= plumbing.
-            mock_get_tokens.assert_awaited_once_with(user_id=connector_id)
+            mock_get_tokens.assert_awaited_once_with(user_id=connector_id, bound_to="user_test_123")
 
             assert call_order, "pre_stage_auth_profile_store and create_service must both be called"
             # pre_stage_auth_profile_store runs before create_service.

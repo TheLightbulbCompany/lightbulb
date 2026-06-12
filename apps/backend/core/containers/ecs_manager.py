@@ -1305,7 +1305,11 @@ class EcsManager:
         from core.services.oauth_service import get_decrypted_tokens
 
         token_owner = token_owner_id or user_id
-        tokens = await get_decrypted_tokens(user_id=token_owner)
+        # ``user_id`` is the CONTAINER OWNER — pass it as ``bound_to`` so we only
+        # stage a row the connector claimed for THIS workspace. A row bound to a
+        # different owner reads as missing and raises below, rather than staging
+        # one ChatGPT account into a second container.
+        tokens = await get_decrypted_tokens(user_id=token_owner, bound_to=user_id)
         if not tokens:
             raise EcsManagerError(
                 f"No ChatGPT OAuth tokens for connector {token_owner} (owner {user_id}) - "

@@ -78,10 +78,15 @@ async def status(ctx: AuthContext = Depends(get_current_user)):
     # member reading /status sees the shared container's connection, not their
     # own (a member never completes the device-code flow). Personal owners ARE
     # their own connector, so the resolution is a no-op for them.
-    token_owner = await resolve_token_owner(owner_id=resolve_owner_id(ctx)) if ctx.is_org_context else ctx.user_id
+    owner_id = resolve_owner_id(ctx)
+    token_owner = await resolve_token_owner(owner_id=owner_id) if ctx.is_org_context else ctx.user_id
     # Strongly-consistent read so the wizard sees its own write from /poll
-    # without an eventual-consistency stutter.
-    tokens = await get_decrypted_tokens_consistent(user_id=token_owner)
+    # without an eventual-consistency stutter. ``bound_to`` is the workspace
+    # owner whose container consumes these tokens: a row the connector
+    # claimed for a DIFFERENT workspace (e.g. they connected for an org, then
+    # opened a personal workspace under the same Clerk user) reads as
+    # disconnected here, so the personal gate can never silently reuse it.
+    tokens = await get_decrypted_tokens_consistent(user_id=token_owner, bound_to=owner_id)
     return {
         "connected": tokens is not None,
         "account_id": (tokens or {}).get("account_id"),
@@ -131,7 +136,12 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     # which IS owner-gated — can create one. A non-owner member therefore has no
     # pending row to poll, so they can never reach the connector-claim below.
     try:
-        result = await poll_device_code(user_id=ctx.user_id)
+        # Bind the completed row to the workspace this sign-in is for (org_id
+        # in org context, the user's own id personally). One ChatGPT account ↔
+        # one container — a later consumption read for a different workspace is
+        # rejected, so the connector can't have the same row staged into a
+        # second container.
+        result = await poll_device_code(user_id=ctx.user_id, bound_owner_id=resolve_owner_id(ctx))
     except OAuthExchangeFailedError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     if result is DevicePollPending:

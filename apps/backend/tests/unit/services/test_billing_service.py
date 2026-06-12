@@ -328,6 +328,6 @@ async def test_hot_swap_pre_stages_under_owner_id(monkeypatch):
     )
 
     # Token read keyed on the human connector (the switcher).
-    get_tokens.assert_awaited_once_with(user_id="user_a")
+    get_tokens.assert_awaited_once_with(user_id="user_a", bound_to="org_1")
     # Auth file written under the container owner (org_1), not the connector.
     pre_stage.assert_awaited_once_with(user_id="org_1", oauth_tokens={"access_token": "tok", "account_id": "acc"})

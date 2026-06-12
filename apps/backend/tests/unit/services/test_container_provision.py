@@ -71,6 +71,6 @@ async def test_pre_stage_oauth_reads_connector_writes_owner():
         ) as write,
     ):
         await EcsManager._pre_stage_oauth_for_user(mgr, "org_1", token_owner_id="user_a")
-    read.assert_awaited_once_with(user_id="user_a")
+    read.assert_awaited_once_with(user_id="user_a", bound_to="org_1")
     write.assert_awaited_once()
     assert write.call_args.kwargs["user_id"] == "org_1"

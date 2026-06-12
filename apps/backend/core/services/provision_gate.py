@@ -131,8 +131,8 @@ class Gate:
         }
 
 
-async def _has_oauth_tokens(token_owner: str) -> bool:
-    """Whether ``token_owner`` has ChatGPT OAuth tokens on file.
+async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
+    """Whether ``token_owner`` has ChatGPT OAuth tokens bound to ``owner_id``.
 
     OAuth tokens live in the ``oauth-tokens`` DynamoDB table keyed by Clerk
     user_id (see ``core.services.oauth_service``). Callers pass the resolved
@@ -140,11 +140,16 @@ async def _has_oauth_tokens(token_owner: str) -> bool:
     completed the device-code flow, ``connector_from_account``), not the
     polling user; for personal owners the connector is the user themselves.
 
+    ``owner_id`` is the workspace whose container consumes the tokens; we pass
+    it as ``bound_to`` so a row the connector claimed for a *different*
+    workspace reads as no-tokens — the gate then fires ``oauth_required``
+    instead of silently passing on a row that belongs to another container.
+
     Lazy import to avoid pulling the OAuth subsystem at module import time.
     """
     from core.services import oauth_service
 
-    tokens = await oauth_service.get_decrypted_tokens(user_id=token_owner)
+    tokens = await oauth_service.get_decrypted_tokens(user_id=token_owner, bound_to=owner_id)
     return tokens is not None
 
 
@@ -282,7 +287,7 @@ async def evaluate_provision_gate(
         from core.services.oauth_service import connector_from_account
 
         token_owner = connector_from_account(account, owner_id)
-        if not await _has_oauth_tokens(token_owner):
+        if not await _has_oauth_tokens(token_owner, owner_id):
             return Gate(
                 code="oauth_required",
                 title="Sign in with ChatGPT",

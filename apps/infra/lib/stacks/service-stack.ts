@@ -1024,24 +1024,36 @@ export class ServiceStack extends cdk.Stack {
         // DynamoDbIntegrations statement, so no cross-stack export is created.
         METRONOME_FAST_GATE_TABLE: `isol8-${env}-metronome-fast-gate`,
         // Master switch for the Metronome customer lifecycle (provisioning,
-        // funding, balance display). Dev is LIVE: the sandbox runbook is done
-        // (sandbox token in Secrets Manager, sandbox rate card created
-        // 2026-06-10, webhook secret set). Prod stays "false" until the prod
-        // console runbook completes — flipping it earlier would spam doomed
-        // calls against the placeholder prod secrets on every status poll.
-        METRONOME_LIFECYCLE_ENABLED: env === "dev" ? "true" : "false",
+        // funding, balance display). Dev went live 2026-06-10 (sandbox
+        // runbook); prod went live 2026-06-12 (prod token in Secrets
+        // Manager, prod rate card + credits product created via API,
+        // Stripe live product wired into the stripe_product_id custom
+        // field, webhook secret set). Any future env starts "false" until
+        // its console runbook completes — flipping earlier would spam
+        // doomed calls against placeholder secrets on every status poll.
+        METRONOME_LIFECYCLE_ENABLED:
+          env === "dev" || env === "prod" ? "true" : "false",
         // Per-env rate card the per-customer contract references at
-        // provision. Dev = the sandbox rate card (created 2026-06-10); prod
-        // is set after the prod Metronome console setup.
+        // provision. Dev = sandbox rate card (2026-06-10); prod =
+        // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03
+        // in cents per token (margin decision 2026-06-11).
         METRONOME_RATE_CARD_ID:
-          env === "dev" ? "99576f5a-37d2-4983-ba64-fea9bad96e08" : "",
-        // The FIXED-type product top-up commits land on. Dev = the sandbox
-        // credits product (created 2026-06-10). Payment-gated invoicing
-        // additionally requires a stripe_product_id custom field on it
-        // (console runbook); until that lands, top-ups 400 loudly rather
-        // than silently no-op. Prod is set with the prod console runbook.
+          env === "dev"
+            ? "99576f5a-37d2-4983-ba64-fea9bad96e08"
+            : env === "prod"
+              ? "fdac2edd-f207-4f11-b65b-01fad6fbbdbc"
+              : "",
+        // The FIXED-type product top-up commits land on. Payment-gated
+        // invoicing additionally requires a stripe_product_id custom field
+        // on it (set: dev -> test-mode product, prod -> live-mode
+        // prod_UgkNkatoEaWFnb); without it, top-ups 400 loudly rather
+        // than silently no-op.
         METRONOME_CREDITS_PRODUCT_ID:
-          env === "dev" ? "6dab1634-020d-4288-b5e6-99568a30404c" : "",
+          env === "dev"
+            ? "6dab1634-020d-4288-b5e6-99568a30404c"
+            : env === "prod"
+              ? "876e1694-9d76-4c37-9814-c957dbd9370f"
+              : "",
         // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
         // table is granted BY NAME above, so the env var is the literal name
         // (not a cross-stack tableName ref). The boundary + base-policy ARNs

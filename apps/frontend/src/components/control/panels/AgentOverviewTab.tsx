@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { ModelSelector } from "@/components/chat/ModelSelector";
+import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
 import { Button } from "@/components/ui/button";
 import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
 import {
@@ -182,15 +183,25 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
     }
   }, [callRpc, agentId, onAgentUpdated, mutateConfig]);
 
+  // Display names from the providers catalog (models.providers[*].models[]
+  // carries {id, name}) — Bedrock ids are application-inference-profile
+  // ARNs whose last segment is an opaque random suffix, so the old
+  // split("/").pop() fallback rendered garbage like "ykpc0bdu467l".
+  const modelNames = useMemo(() => buildModelNameMap(configInner), [configInner]);
+
   const selectorModels = useMemo(() => {
-    const models: { id: string; name: string }[] = Object.entries(modelsCatalog).map(
-      ([id, entry]) => ({ id, name: entry.alias || id.split("/").pop() || id })
-    );
+    const models: { id: string; name: string }[] = Object.entries(modelsCatalog).map(([id, entry]) => ({
+      id,
+      name: entry.alias || displayModelName(id, modelNames) || id,
+    }));
     if (currentModel && !modelsCatalog[currentModel]) {
-      models.unshift({ id: currentModel, name: currentModel.split("/").pop() || currentModel });
+      models.unshift({
+        id: currentModel,
+        name: displayModelName(currentModel, modelNames) || currentModel,
+      });
     }
     return models;
-  }, [modelsCatalog, currentModel]);
+  }, [modelsCatalog, currentModel, modelNames]);
 
   return (
     <div className="space-y-4 mt-2">
@@ -215,7 +226,9 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
           />
         ) : (
           <p className="text-xs text-[#8a8578]">
-            {currentModel ? currentModel.split("/").pop() : "No models configured in gateway"}
+            {currentModel
+              ? displayModelName(currentModel, modelNames) || "Custom model"
+              : "No models configured in gateway"}
           </p>
         )}
         {updatingModel && <Loader2 className="h-3.5 w-3.5 animate-spin text-[#8a8578]" />}

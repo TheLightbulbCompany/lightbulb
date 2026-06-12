@@ -16,6 +16,8 @@ import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { useGateway } from "@/hooks/useGateway";
+import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
 import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
 import { useApi } from "@/lib/api";
 import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
@@ -77,6 +79,11 @@ export function ChatLayout({
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { refresh: refreshBilling, account, isSubscribed } = useBilling();
   const { nodeConnected } = useGateway();
+  // Models catalog for the sidebar agent rows: resolves Bedrock
+  // application-inference-profile ARNs to display names ("Claude Opus 4.6")
+  // — the raw ARN's last segment is an opaque random suffix.
+  const { data: configSnapshot } = useGatewayRpc<{ config?: unknown }>("config.get");
+  const modelNames = useMemo(() => buildModelNameMap(configSnapshot?.config), [configSnapshot?.config]);
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
@@ -390,8 +397,8 @@ export function ChatLayout({
                           // chat UI with `TypeError: e.model.split is not a
                           // function` after sign-in.
                           const modelStr = getAgentModelString(agent);
-                          if (!modelStr) return null;
-                          const display = modelStr.split("/").pop()?.replace(/-v\d+:\d+$/, "") || modelStr;
+                          const display = displayModelName(modelStr, modelNames);
+                          if (!display) return null;
                           return <div className="agent-model">{display}</div>;
                         })()}
                       </div>

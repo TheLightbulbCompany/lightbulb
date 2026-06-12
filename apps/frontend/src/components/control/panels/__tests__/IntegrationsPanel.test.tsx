@@ -8,21 +8,28 @@ vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections:
 vi.mock("@/components/settings/ConnectionsList", () => ({ ConnectionsList: () => <div data-testid="connections-list" /> }));
 vi.mock("@/components/control/panels/GoogleAccountsSection", () => ({ GoogleAccountsSection: () => null }));
 vi.mock("@/components/control/panels/McpServersTab", () => ({ McpServersTab: () => <div data-testid="mcp-servers-tab" /> }));
+vi.mock("@/components/control/panels/PluginsTab", () => ({
+  PluginsTab: () => <div data-testid="plugins-tab" />,
+}));
 
 describe("IntegrationsPanel", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("renders the connections list and a collapsed raw-MCP advanced section", () => {
+  it("renders the connections list", () => {
     render(<IntegrationsPanel />);
     expect(screen.getByTestId("connections-list")).toBeInTheDocument();
-    expect(screen.getByText("Advanced — raw MCP servers")).toBeInTheDocument();
-    // Collapsed by default — McpServersTab not mounted.
-    expect(screen.queryByTestId("mcp-servers-tab")).toBeNull();
   });
 
-  it("expands the raw-MCP section on click", () => {
+  it("shows raw MCP servers as a visible section, not behind Advanced", () => {
     render(<IntegrationsPanel />);
-    fireEvent.click(screen.getByText("Advanced — raw MCP servers"));
+    expect(screen.getByText(/add your own mcp servers/i)).toBeInTheDocument();
     expect(screen.getByTestId("mcp-servers-tab")).toBeInTheDocument();
+  });
+
+  it("tucks plugin switches behind the Advanced disclosure", () => {
+    render(<IntegrationsPanel />);
+    expect(screen.queryByTestId("plugins-tab")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /advanced — plugins/i }));
+    expect(screen.getByTestId("plugins-tab")).toBeInTheDocument();
   });
 });

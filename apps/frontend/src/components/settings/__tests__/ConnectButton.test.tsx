@@ -55,6 +55,16 @@ describe("ConnectButton", () => {
     expect(screen.queryByRole("button", { name: /connect/i })).toBeNull();
   });
 
+  it("disables the upsell CTA for non-admins (no actionable link into an admin-gated flow)", () => {
+    renderButton({ lockedForBedrock: true, canManage: false });
+
+    const btn = screen.getByRole("button", {
+      name: /switch to bedrock to unlock google workspace/i,
+    });
+    expect(btn).toBeDisabled();
+    expect(screen.queryByRole("link", { name: /switch to bedrock/i })).toBeNull();
+  });
+
   it("renders Connect (not the upsell) when not locked", () => {
     renderButton({ lockedForBedrock: false });
 

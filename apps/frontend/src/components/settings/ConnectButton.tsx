@@ -114,6 +114,17 @@ export function ConnectButton({
   // not-yet-connected rows (the connected branch above wins first), so a
   // provider already linked before a provider switch keeps its Disconnect.
   if (lockedForBedrock) {
+    // Switching providers (POST /billing/provider) is org-admin gated, so a
+    // non-admin member can't complete it. Show the reason but a disabled
+    // control — consistent with how Connect/Disconnect disable here — rather
+    // than a live link into a flow they'd be blocked from.
+    if (!canManage) {
+      return (
+        <Button size="sm" variant="outline" disabled aria-label={`Switch to Bedrock to unlock ${display_name}`}>
+          Switch to Bedrock
+        </Button>
+      );
+    }
     return (
       <Button asChild size="sm" variant="outline">
         <Link href={SWITCH_PROVIDER_HREF} aria-label={`Switch to Bedrock to unlock ${display_name}`}>

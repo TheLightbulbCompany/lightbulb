@@ -6,8 +6,9 @@
  *     anchor links to /sign-up?provider=…
  *   - `components/chat/ProvisioningStepper.tsx#ProviderPicker` — renders
  *     cards with click handlers that POST /billing/trial-checkout and
- *     redirect to Stripe Checkout. Filters out `chatgpt_oauth` for orgs
- *     (see `feedback_chatgpt_oauth_personal_only`).
+ *     redirect to Stripe Checkout. All three cards show for personal and
+ *     org owners alike; for orgs the subscribing admin's ChatGPT account
+ *     backs the whole workspace.
  *
  * Previously: three near-identical card arrays lived inline across these
  * two surfaces. The landing copy is the canonical version; the

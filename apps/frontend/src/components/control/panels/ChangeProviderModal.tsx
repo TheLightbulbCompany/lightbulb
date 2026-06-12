@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useOrganization } from "@clerk/nextjs";
 import { Loader2 } from "lucide-react";
 import { ApiError, useApi } from "@/lib/api";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
@@ -22,8 +21,10 @@ import { Button } from "@/components/ui/button";
  * assumes an already-active subscription.
  *
  * UX flow:
- *   1. Pick a provider card (3 for personal, 2 for org). Cutover warning
- *      is rendered at the top so it's visible BEFORE the user commits.
+ *   1. Pick a provider card (all three for personal and org owners alike;
+ *      for orgs the subscribing admin's ChatGPT account backs the
+ *      workspace). Cutover warning is rendered at the top so it's visible
+ *      BEFORE the user commits.
  *   2. If ChatGPT OAuth → render the device-code flow inline (reuses
  *      useChatGPTOAuth, which auto-fires /status + /start on mount).
  *      On completion we POST /billing/provider.
@@ -105,8 +106,6 @@ function ChangeProviderBody({
   onCommitted,
 }: BodyProps) {
   const api = useApi();
-  const { organization } = useOrganization();
-  const isOrg = Boolean(organization?.id);
   const [stage, setStage] = useState<Stage>({ kind: "picker" });
 
   const commit = useCallback(
@@ -174,7 +173,6 @@ function ChangeProviderBody({
 
       {stage.kind === "picker" && (
         <PickerStage
-          isOrg={isOrg}
           currentProvider={currentProvider}
           currentByoProvider={currentByoProvider}
           onPick={handlePick}
@@ -229,13 +227,12 @@ function readableProvider(choice: ProviderChoice, byo?: ByoProvider): string {
 // ---------------------------------------------------------------------------
 
 interface PickerStageProps {
-  isOrg: boolean;
   currentProvider?: ProviderChoice | null;
   currentByoProvider?: ByoProvider | null;
   onPick: (choice: ProviderChoice) => void;
 }
 
-function PickerStage({ isOrg, currentProvider, currentByoProvider, onPick }: PickerStageProps) {
+function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStageProps) {
   type Card = {
     id: ProviderChoice;
     title: string;
@@ -258,7 +255,7 @@ function PickerStage({ isOrg, currentProvider, currentByoProvider, onPick }: Pic
       subtitle: "OpenAI or Anthropic — your key, your billing",
     },
   ];
-  const visibleCards = isOrg ? cards.filter((c) => c.id !== "chatgpt_oauth") : cards;
+  const visibleCards = cards;
 
   const isCurrent = (id: ProviderChoice) => {
     if (id !== currentProvider) return false;

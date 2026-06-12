@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from core.auth import AuthContext, get_current_user
 from core.services.oauth_service import (
     DeviceCodeResponse,
     DevicePollPending,
@@ -75,20 +76,20 @@ async def test_disconnect_revokes(async_client):
 
 
 @pytest.mark.asyncio
-async def test_disconnect_clears_provider_choice(async_client):
-    """Router-level pin: disconnect MUST clear provider_choice on the
-    billing row so the next /chat visit routes the user to the provider
-    picker (via the provider_required gate) instead of looping on a
-    chatgpt_oauth billing row with no auth.json.
+async def test_disconnect_personal_unchanged(async_client):
+    """Personal /disconnect revokes the user's OAuth row, deletes the EFS
+    auth-profiles store keyed on the personal owner (== the Clerk user), and
+    clears provider_choice on the personal billing row.
 
     The repo-level guarantee (billing_repo.clear_provider_choice no-op on
     missing row) is covered separately. This test pins the integration —
     swapping in a disconnect implementation that forgets the
-    clear_provider_choice call would silently regress the dead-end fix.
+    clear_provider_choice call (or mis-keys the EFS delete) would silently
+    regress the dead-end fix.
     """
     with (
-        patch("routers.oauth.revoke_user_oauth", new=AsyncMock()),
-        patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()),
+        patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+        patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
         patch(
             "core.repositories.billing_repo.clear_provider_choice",
             new=AsyncMock(),
@@ -97,82 +98,61 @@ async def test_disconnect_clears_provider_choice(async_client):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
 
     assert resp.status_code == 200
+    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+    mock_delete.assert_awaited_once_with(user_id="user_test_123")
     mock_clear.assert_awaited_once_with("user_test_123")
 
 
-class TestStartProviderRules:
-    """POST /api/v1/oauth/chatgpt/start — org/personal context rules.
+def _override(app, ctx: AuthContext):
+    """Override get_current_user to return ``ctx`` for the duration of a test."""
 
-    Per memory/project_chatgpt_oauth_personal_only.md (decision 2026-04-30),
-    ChatGPT OAuth is allowed only for personal/single-user workspaces. This
-    endpoint must reject org-context callers with 403 before any device-code
-    request, as belt-and-suspenders to the trial-checkout block: a future
-    "reconnect" flow that calls /start outside trial-checkout still won't
-    bypass the rule.
-    """
+    async def _mock():
+        return ctx
 
-    @pytest.fixture
-    def override_org_admin_auth(self, app, mock_org_admin_user):
-        """Swap get_current_user with an org-admin AuthContext for one test."""
-        from core.auth import get_current_user
+    app.dependency_overrides[get_current_user] = _mock
 
-        app.dependency_overrides[get_current_user] = mock_org_admin_user
-        yield
-        app.dependency_overrides.clear()
 
-    @pytest.mark.asyncio
-    async def test_start_rejects_org_context(self, async_client, override_org_admin_auth):
-        """Org-context user calling /oauth/chatgpt/start gets 403 before any device-code request."""
-        fake_resp = DeviceCodeResponse(
-            user_code="TEST-1234",
-            verification_uri="https://chatgpt.com/codex",
-            expires_in=900,
-            interval=5,
-        )
-        with patch(
-            "routers.oauth.request_device_code",
-            new=AsyncMock(return_value=fake_resp),
-        ) as mock_request:
-            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
-        assert resp.status_code == 403
-        assert "organization" in resp.json()["detail"].lower()
-        mock_request.assert_not_awaited()
+@pytest.fixture
+def override_auth(app):
+    """Install an arbitrary AuthContext on get_current_user; clears on teardown."""
 
-    @pytest.mark.asyncio
-    async def test_start_allows_personal_context(self, async_client):
-        """Personal user (no org_id) still reaches the device-code request."""
-        # Default async_client uses mock_current_user — personal mode (no org_id).
-        fake_resp = DeviceCodeResponse(
-            user_code="TEST-1234",
-            verification_uri="https://chatgpt.com/codex",
-            expires_in=900,
-            interval=5,
-        )
-        with patch(
-            "routers.oauth.request_device_code",
-            new=AsyncMock(return_value=fake_resp),
-        ):
-            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
-        assert resp.status_code == 200
+    def _install(ctx: AuthContext):
+        _override(app, ctx)
+
+    yield _install
+    app.dependency_overrides.clear()
+
+
+# Org admin who IS the recorded workspace owner (user_test_123 in org_test_456).
+ORG_OWNER_ADMIN = AuthContext(
+    user_id="user_test_123",
+    org_id="org_test_456",
+    org_role="org:admin",
+    org_slug="test-org",
+)
+# A second org admin who is NOT the recorded owner.
+ORG_OTHER_ADMIN = AuthContext(
+    user_id="user_test_999",
+    org_id="org_test_456",
+    org_role="org:admin",
+    org_slug="test-org",
+)
+# Plain org member (non-admin).
+ORG_MEMBER = AuthContext(
+    user_id="user_test_789",
+    org_id="org_test_456",
+    org_role="org:member",
+    org_slug="test-org",
+)
 
 
 class TestStatus:
     """GET /api/v1/oauth/chatgpt/status — wizard idempotency probe.
 
-    Used by useChatGPTOAuth on mount so the wizard can recover from a
-    remount mid-flow (e.g. tab close + revisit, or in-tab parent re-render
-    that unmounts + remounts the OAuth step). Strongly-consistent DDB read
-    so the wizard reads its own write from /poll without an
-    eventual-consistency stutter.
+    Org context resolves the WORKSPACE's connection (bound to the recorded
+    owner), not the caller's: any org member reading /status sees the same
+    connected/disconnected answer for the shared container.
     """
-
-    @pytest.fixture
-    def override_org_admin_auth(self, app, mock_org_admin_user):
-        from core.auth import get_current_user
-
-        app.dependency_overrides[get_current_user] = mock_org_admin_user
-        yield
-        app.dependency_overrides.clear()
 
     @pytest.mark.asyncio
     async def test_status_returns_connected_true_when_active_row_exists(self, async_client):
@@ -212,18 +192,250 @@ class TestStatus:
         assert resp.json() == {"connected": True, "account_id": None}
 
     @pytest.mark.asyncio
-    async def test_status_rejects_org_context(self, async_client, override_org_admin_auth):
-        """Org-context user calling /status gets 403 before any DDB read.
+    async def test_status_org_reports_owner_connection(self, async_client, override_auth):
+        """Org member calls /status; the billing row records user_a as the
+        ChatGPT connector and user_a has tokens on file. The probe must report
+        the WORKSPACE's connection — connected=True — even though the caller
+        (user_test_789) is a different person who never signed in.
 
-        Mirrors /start's org guard. Even though /status is read-only,
-        ChatGPT OAuth is personal-only per
-        memory/project_chatgpt_oauth_personal_only.md.
+        The token lookup must key on the resolved owner (user_a), not the
+        caller; otherwise a member would always see disconnected.
         """
-        with patch(
-            "routers.oauth.get_decrypted_tokens_consistent",
-            new=AsyncMock(return_value=None),
-        ) as mock_lookup:
+        override_auth(ORG_MEMBER)
+        with (
+            patch(
+                "routers.oauth.resolve_token_owner",
+                new=AsyncMock(return_value="user_a"),
+            ) as mock_resolve,
+            patch(
+                "routers.oauth.get_decrypted_tokens_consistent",
+                new=AsyncMock(return_value={"account_id": "acc_owner"}),
+            ) as mock_tokens,
+        ):
             resp = await async_client.get("/api/v1/oauth/chatgpt/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"connected": True, "account_id": "acc_owner"}
+        mock_resolve.assert_awaited_once_with(owner_id="org_test_456")
+        mock_tokens.assert_awaited_once_with(user_id="user_a")
+
+
+class TestStartOrgRules:
+    """POST /api/v1/oauth/chatgpt/start — org owner-gating.
+
+    Org owners may connect ChatGPT; the connection binds to the workspace
+    owner (set-once). Only an org admin may /start, and once an owner is
+    recorded only that owner may re-connect (e.g. after token expiry).
+    """
+
+    @pytest.mark.asyncio
+    async def test_start_org_requires_admin(self, async_client, override_auth):
+        """Org MEMBER -> 403; org ADMIN with no recorded owner yet -> 200."""
+        fake_resp = DeviceCodeResponse(
+            user_code="TEST-1234",
+            verification_uri="https://chatgpt.com/codex",
+            expires_in=900,
+            interval=5,
+        )
+
+        # Member is rejected before any device-code request.
+        override_auth(ORG_MEMBER)
+        with patch(
+            "routers.oauth.request_device_code",
+            new=AsyncMock(return_value=fake_resp),
+        ) as mock_request:
+            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
         assert resp.status_code == 403
-        assert "organization" in resp.json()["detail"].lower()
-        mock_lookup.assert_not_awaited()
+        mock_request.assert_not_awaited()
+
+        # Admin with no recorded owner yet reaches the device-code request.
+        override_auth(ORG_OWNER_ADMIN)
+        with (
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "routers.oauth.request_device_code",
+                new=AsyncMock(return_value=fake_resp),
+            ) as mock_request,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+        assert resp.status_code == 200
+        mock_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_start_org_rejects_non_owner_admin(self, async_client, override_auth):
+        """billing row owner=user_test_123; admin user_test_999 /start -> 403
+        with a workspace-owner message. The recorded owner (user_test_123)
+        re-connecting -> 200 (re-connect after token expiry is the owner's
+        right)."""
+        fake_resp = DeviceCodeResponse(
+            user_code="TEST-1234",
+            verification_uri="https://chatgpt.com/codex",
+            expires_in=900,
+            interval=5,
+        )
+        row = {"owner_id": "org_test_456", "oauth_connector_user_id": "user_test_123"}
+
+        # A different admin cannot hijack an already-claimed connection.
+        override_auth(ORG_OTHER_ADMIN)
+        with (
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value=row),
+            ),
+            patch(
+                "routers.oauth.request_device_code",
+                new=AsyncMock(return_value=fake_resp),
+            ) as mock_request,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+        assert resp.status_code == 403
+        assert "workspace owner" in resp.json()["detail"].lower()
+        mock_request.assert_not_awaited()
+
+        # The recorded owner may re-connect.
+        override_auth(ORG_OWNER_ADMIN)
+        with (
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value=row),
+            ),
+            patch(
+                "routers.oauth.request_device_code",
+                new=AsyncMock(return_value=fake_resp),
+            ) as mock_request,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+        assert resp.status_code == 200
+        mock_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_start_allows_personal_context(self, async_client):
+        """Personal user (no org_id) still reaches the device-code request."""
+        fake_resp = DeviceCodeResponse(
+            user_code="TEST-1234",
+            verification_uri="https://chatgpt.com/codex",
+            expires_in=900,
+            interval=5,
+        )
+        with patch(
+            "routers.oauth.request_device_code",
+            new=AsyncMock(return_value=fake_resp),
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+        assert resp.status_code == 200
+
+
+class TestPollOrgClaim:
+    """POST /api/v1/oauth/chatgpt/poll — org ownership claim on completion."""
+
+    @pytest.mark.asyncio
+    async def test_poll_completion_claims_owner_once_for_org(self, async_client, override_auth):
+        """Org admin /poll returns completed -> claim_oauth_connector awaited
+        with (org_id, connector_user_id=<admin>). The repo layer makes this
+        set-once; the router just fires the claim on the completing sign-in."""
+        override_auth(ORG_OWNER_ADMIN)
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
+            ),
+            patch(
+                "core.repositories.billing_repo.claim_oauth_connector",
+                new=AsyncMock(),
+            ) as mock_claim,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "completed", "account_id": "acc_1"}
+        mock_claim.assert_awaited_once_with("org_test_456", connector_user_id="user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_poll_pending_does_not_claim_for_org(self, async_client, override_auth):
+        """A still-pending poll must NOT claim ownership."""
+        override_auth(ORG_OWNER_ADMIN)
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                new=AsyncMock(return_value=DevicePollPending),
+            ),
+            patch(
+                "core.repositories.billing_repo.claim_oauth_connector",
+                new=AsyncMock(),
+            ) as mock_claim,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "pending"}
+        mock_claim.assert_not_awaited()
+
+
+class TestDisconnectOrgRules:
+    """POST /api/v1/oauth/chatgpt/disconnect — org owner-gating + revocation."""
+
+    @pytest.mark.asyncio
+    async def test_disconnect_org_owner_revokes_and_clears(self, async_client, override_auth):
+        """Owner user_test_123 /disconnect revokes their own OAuth tokens,
+        deletes the EFS auth store keyed on the CONTAINER owner (org_id), and
+        clears provider_choice on the org billing row."""
+        override_auth(ORG_OWNER_ADMIN)
+        row = {"owner_id": "org_test_456", "oauth_connector_user_id": "user_test_123"}
+        with (
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value=row),
+            ),
+            patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+            patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
+            patch(
+                "core.repositories.billing_repo.clear_provider_choice",
+                new=AsyncMock(),
+            ) as mock_clear,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
+        assert resp.status_code == 200
+        mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+        mock_delete.assert_awaited_once_with(user_id="org_test_456")
+        mock_clear.assert_awaited_once_with("org_test_456")
+
+    @pytest.mark.asyncio
+    async def test_disconnect_org_rejects_non_owner_admin(self, async_client, override_auth):
+        """billing row owner=user_test_123; admin user_test_999 /disconnect ->
+        403, and nothing is revoked or deleted."""
+        override_auth(ORG_OTHER_ADMIN)
+        row = {"owner_id": "org_test_456", "oauth_connector_user_id": "user_test_123"}
+        with (
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value=row),
+            ),
+            patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+            patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
+            patch(
+                "core.repositories.billing_repo.clear_provider_choice",
+                new=AsyncMock(),
+            ) as mock_clear,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
+        assert resp.status_code == 403
+        assert "workspace owner" in resp.json()["detail"].lower()
+        mock_revoke.assert_not_awaited()
+        mock_delete.assert_not_awaited()
+        mock_clear.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_org_member_rejected(self, async_client, override_auth):
+        """A non-admin org member cannot disconnect the workspace connection."""
+        override_auth(ORG_MEMBER)
+        with (
+            patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+            patch(
+                "core.repositories.billing_repo.clear_provider_choice",
+                new=AsyncMock(),
+            ) as mock_clear,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
+        assert resp.status_code == 403
+        mock_revoke.assert_not_awaited()
+        mock_clear.assert_not_awaited()

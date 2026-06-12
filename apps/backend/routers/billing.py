@@ -306,22 +306,6 @@ async def create_trial_checkout(
     # "byo_key + populated byo_provider + populated key" as a separate
     # downstream gate before any agent run.
 
-    # Org-context users cannot pick ChatGPT OAuth:
-    # OpenAI Plus terms forbid reselling, so org admins can't route their
-    # teammates' prompts through their personal ChatGPT subscription; orgs
-    # must use Bedrock or BYOK. Frontend ProviderPicker hides the card too,
-    # but a savvy user could call this endpoint directly without server-side
-    # enforcement. Reject before any Stripe Checkout creation so a denied
-    # caller never gets a session URL.
-    if body.provider_choice == "chatgpt_oauth" and auth.is_org_context:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "ChatGPT OAuth is not available for organization workspaces. "
-                "Use Bring-Your-Own-Key or Powered by Claude instead."
-            ),
-        )
-
     # Tenancy invariant (Gate B): refuse a PERSONAL trial-checkout when
     # the caller has any pending org invitations. We only check the
     # personal path — an org-context call to /trial-checkout is the
@@ -427,6 +411,10 @@ async def create_trial_checkout(
         account["owner_id"],
         provider_choice=body.provider_choice,
         byo_provider=body.byo_provider if body.provider_choice == "byo_key" else None,
+        # For chatgpt_oauth the subscribing admin is the workspace owner and
+        # initial connector; /oauth/chatgpt/poll's set-once claim cannot
+        # repoint it later.
+        connector_user_id=auth.user_id if body.provider_choice == "chatgpt_oauth" else None,
     )
 
     try:

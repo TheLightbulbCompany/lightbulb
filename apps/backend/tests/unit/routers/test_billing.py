@@ -470,12 +470,11 @@ class TestStripeWebhook:
 class TestTrialCheckoutProviderRules:
     """POST /api/v1/billing/trial-checkout — org/personal provider_choice rules.
 
-    Per memory/project_chatgpt_oauth_personal_only.md (decision 2026-04-30),
-    ChatGPT OAuth is allowed only for personal/single-user workspaces. OpenAI
-    Plus terms forbid reselling Plus access, so org admins cannot route their
-    teammates' prompts through their personal ChatGPT subscription. Org-context
-    callers picking provider_choice=chatgpt_oauth get 403; byo_key and
-    bedrock_claude continue to work for orgs.
+    ChatGPT OAuth is available to org workspaces as well as personal ones: the
+    subscribing org admin is the workspace owner and the single connector whose
+    OpenAI account backs every teammate's inference, so there is no reselling
+    across separate humans. Org-context callers may pick chatgpt_oauth, byo_key,
+    or bedrock_claude.
     """
 
     @pytest.fixture
@@ -490,14 +489,15 @@ class TestTrialCheckoutProviderRules:
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
     @patch("core.services.billing_service.create_flat_fee_checkout")
-    async def test_trial_checkout_rejects_chatgpt_oauth_for_org(
+    async def test_trial_checkout_allows_chatgpt_oauth_for_org(
         self, mock_create_checkout, mock_repo, async_client, override_org_admin_auth
     ):
-        """Org-context user calling trial-checkout with provider_choice=chatgpt_oauth gets 403.
+        """Org-context admin calling trial-checkout with provider_choice=chatgpt_oauth
+        is allowed through to Stripe Checkout — no 403.
 
-        Mocks billing_repo + create_flat_fee_checkout so that *without* the
-        org-block the request would otherwise succeed with a 200 — that way
-        a green test pre-implementation is impossible (failing assert 403).
+        Mocks billing_repo + create_flat_fee_checkout so the request reaches the
+        happy path; the assertion is that the org-block is GONE (200, Checkout
+        session minted) rather than the old personal-only 403.
         """
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -506,9 +506,11 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
+        # Sync-persist of provider_choice runs before Stripe Checkout.
+        mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:
-            url = "https://checkout.stripe.test/sess_should_not_reach"
+            url = "https://checkout.stripe.test/sess_org_chatgpt"
 
         mock_create_checkout.return_value = _Session()
 
@@ -516,11 +518,9 @@ class TestTrialCheckoutProviderRules:
             "/api/v1/billing/trial-checkout",
             json={"provider_choice": "chatgpt_oauth"},
         )
-        assert resp.status_code == 403
-        assert "organization" in resp.json()["detail"].lower()
-        # Reject must happen BEFORE Stripe Checkout is touched — otherwise we'd
-        # leak a Checkout session to a denied caller.
-        mock_create_checkout.assert_not_called()
+        assert resp.status_code == 200
+        assert resp.json()["checkout_url"] == "https://checkout.stripe.test/sess_org_chatgpt"
+        mock_create_checkout.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")

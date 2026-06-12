@@ -39,12 +39,10 @@ logger = logging.getLogger(__name__)
 
 
 def _is_org_owner_id(owner_id: str) -> bool:
-    """Clerk org IDs are prefixed 'org_'; user IDs are prefixed 'user_'.
+    """Delegates to core.auth.is_org_owner_id — single edit point for the prefix convention."""
+    from core.auth import is_org_owner_id
 
-    Stable convention from Clerk; if either prefix changes upstream,
-    update this and the tests together.
-    """
-    return owner_id.startswith("org_")
+    return is_org_owner_id(owner_id)
 
 
 async def resolve_company_id_for_owner(*, owner_id: str, repo: PaperclipRepo) -> str | None:

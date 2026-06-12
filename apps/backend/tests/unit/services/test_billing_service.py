@@ -289,7 +289,6 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
         owner_id="user_x",
         clerk_user_id="user_x",
         owner_type="personal",
-        is_org_context=False,
         provider_choice="bedrock_claude",
     )
 

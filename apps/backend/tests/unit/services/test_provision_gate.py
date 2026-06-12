@@ -22,7 +22,6 @@ async def test_no_billing_account_returns_signup_required():
         repo.get_by_owner_id = AsyncMock(return_value=None)
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "signup_required"
@@ -48,7 +47,6 @@ async def test_inactive_billing_account_with_subscription_id_returns_subscriptio
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "subscription_required"
@@ -80,7 +78,6 @@ async def test_billing_account_without_subscription_id_returns_signup_required()
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "signup_required"
@@ -107,7 +104,6 @@ async def test_canceled_subscription_with_cleared_subscription_id_routes_to_bill
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "subscription_required"
@@ -129,7 +125,6 @@ async def test_active_subscription_bedrock_blocked_returns_credits_required():
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "credits_required"
@@ -150,7 +145,6 @@ async def test_trialing_with_credits_returns_none():
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is None  # all gates pass
 
@@ -172,7 +166,6 @@ async def test_active_subscription_no_provider_choice_returns_provider_required(
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "provider_required"
@@ -192,7 +185,6 @@ async def test_past_due_returns_payment_past_due():
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "payment_past_due"
@@ -217,7 +209,6 @@ async def test_bedrock_balance_keyed_on_owner_id():
         )
         gate = await evaluate_provision_gate(
             owner_id="org_Y",
-            clerk_user_id="user_member_X",
         )
     assert gate is None  # gate passes
     blocked_mock.assert_awaited_once_with("org_Y")
@@ -239,7 +230,6 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
         ht.return_value = False
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "oauth_required"
@@ -285,7 +275,6 @@ async def test_org_gate_checks_connector_tokens_not_poller():
         )
         gate = await evaluate_provision_gate(
             owner_id="org_1",
-            clerk_user_id="user_b",
             is_admin=True,
         )
     assert gate is None  # connector connected → gate passes for the poller
@@ -321,7 +310,6 @@ async def test_org_gate_oauth_required_is_admin_only():
         )
         gate = await evaluate_provision_gate(
             owner_id="org_1",
-            clerk_user_id="user_b",
             is_admin=False,
         )
     assert gate is not None
@@ -357,7 +345,6 @@ async def test_personal_gate_oauth_required_is_not_admin_only():
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
         )
     assert gate is not None
     assert gate.code == "oauth_required"
@@ -390,7 +377,6 @@ async def test_byo_key_without_byo_provider_returns_byo_provider_required():
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
             is_admin=True,
         )
     assert gate is not None
@@ -422,7 +408,6 @@ async def test_byo_key_with_byo_provider_set_passes():
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            clerk_user_id="user_x",
             is_admin=True,
         )
     assert gate is None  # all gates pass

@@ -1403,7 +1403,6 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
       setError(err instanceof Error ? err.message : "Couldn't start checkout. Please try again.");
     }
   }, [api]);
-  const visibleCards = PROVIDER_CARDS;
 
   return (
     <div className="flex-1 flex items-center justify-center p-8 bg-[#faf7f2]">
@@ -1428,7 +1427,7 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
         )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          {visibleCards.map((card) => (
+          {PROVIDER_CARDS.map((card) => (
             <div
               key={card.id}
               className={

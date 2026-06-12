@@ -71,7 +71,6 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
     # the helper and the endpoint can never disagree.
     gate = await evaluate_provision_gate(
         owner_id=owner_id,
-        clerk_user_id=auth.user_id,
         is_admin=auth.is_org_admin if auth.is_org_context else True,
     )
     if gate is not None:

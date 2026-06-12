@@ -345,6 +345,23 @@ async def resolve_token_owner(*, owner_id: str) -> str:
     return connector_from_account(row, owner_id)
 
 
+def caller_may_manage_connector(account: dict | None, caller_user_id: str) -> bool:
+    """Whether this caller may bind/rebind the owner's ChatGPT connection.
+
+    The connection belongs to the workspace owner who connected it
+    (``oauth_connector_user_id``): once recorded, only that human may
+    manage or re-select it. An unclaimed row (no recorded connector —
+    first connect, or a legacy row predating the field) admits any
+    caller; the surrounding endpoint/service decides who reaches this
+    check (org-admin gates etc.). Deliberately NOT built on
+    ``connector_from_account``: its owner_id fallback would make an
+    unclaimed org row look owned by the org id and wrongly reject the
+    first claimer.
+    """
+    recorded = (account or {}).get("oauth_connector_user_id")
+    return not recorded or recorded == caller_user_id
+
+
 async def revoke_user_oauth(*, user_id: str) -> None:
     """Delete the user's OAuth row. Caller is responsible for also
     deleting any pre-staged auth file on EFS (see workspace.py)."""

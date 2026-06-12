@@ -503,7 +503,6 @@ async def change_provider(
     owner_id: str,
     clerk_user_id: str,
     owner_type: str,
-    is_org_context: bool,
     provider_choice: ProviderChoice,
     byo_provider: ByoProvider | None = None,
 ) -> dict:
@@ -520,10 +519,6 @@ async def change_provider(
         owner_type: ``"personal"`` or ``"org"``. Drives the org workspace-owner
             check on a switch into chatgpt_oauth, and the leaving-chatgpt
             cleanup (which key to revoke vs. which EFS file to delete).
-        is_org_context: Whether the caller is in org mode. Retained for the
-            router's call shape; no longer gates chatgpt_oauth (org owners are
-            now allowed — the owner check uses owner_type + the recorded
-            connector instead).
         provider_choice: Target provider.
         byo_provider: Required when ``provider_choice == "byo_key"``; one of
             "openai" or "anthropic".
@@ -570,11 +565,12 @@ async def change_provider(
     # only the recorded owner may (re)select chatgpt_oauth for an org. A
     # legacy org row with no recorded owner is claimed by the first admin
     # to switch (the only sane backfill for rows that predate the field).
+    from core.services.oauth_service import caller_may_manage_connector
+
     if (
         provider_choice == "chatgpt_oauth"
         and owner_type == "org"
-        and recorded_connector
-        and recorded_connector != clerk_user_id
+        and not caller_may_manage_connector(account, clerk_user_id)
     ):
         raise ChangeProviderError(
             "not_workspace_owner",

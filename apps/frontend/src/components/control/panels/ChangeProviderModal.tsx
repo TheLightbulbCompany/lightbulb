@@ -255,7 +255,6 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
       subtitle: "OpenAI or Anthropic — your key, your billing",
     },
   ];
-  const visibleCards = cards;
 
   const isCurrent = (id: ProviderChoice) => {
     if (id !== currentProvider) return false;
@@ -267,7 +266,7 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
 
   return (
     <div className="grid grid-cols-1 gap-3 py-2 md:grid-cols-3">
-      {visibleCards.map((card) => {
+      {cards.map((card) => {
         const current = isCurrent(card.id);
         return (
           <button

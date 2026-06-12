@@ -54,7 +54,6 @@ def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> s
 
 async def _assert_provision_allowed(
     owner_id: str,
-    clerk_user_id: str,
     *,
     is_admin: bool = True,
 ) -> None:
@@ -66,7 +65,6 @@ async def _assert_provision_allowed(
     """
     gate = await evaluate_provision_gate(
         owner_id=owner_id,
-        clerk_user_id=clerk_user_id,
         is_admin=is_admin,
     )
     if gate is not None:
@@ -111,7 +109,6 @@ async def container_status(
         is_admin = auth.is_org_admin if auth.is_org_context else True
         gate = await evaluate_provision_gate(
             owner_id=owner_id,
-            clerk_user_id=auth.user_id,
             is_admin=is_admin,
         )
         if gate is not None:
@@ -180,7 +177,6 @@ async def container_status(
         try:
             await _assert_provision_allowed(
                 owner_id,
-                auth.user_id,
                 is_admin=auth.is_org_admin if auth.is_org_context else True,
             )
         except HTTPException:
@@ -312,7 +308,6 @@ async def container_provision(
     # callers asking about a container they already have.
     await _assert_provision_allowed(
         owner_id,
-        auth.user_id,
         is_admin=auth.is_org_admin if auth.is_org_context else True,
     )
 
@@ -360,7 +355,6 @@ async def container_retry(
     # a positive credit balance.
     await _assert_provision_allowed(
         owner_id,
-        auth.user_id,
         is_admin=auth.is_org_admin if auth.is_org_context else True,
     )
 

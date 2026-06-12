@@ -151,7 +151,6 @@ async def _has_oauth_tokens(token_owner: str) -> bool:
 async def evaluate_provision_gate(
     *,
     owner_id: str,
-    clerk_user_id: str,
     is_admin: bool = True,  # personal owners are always admin of themselves
 ) -> Gate | None:
     """Return a Gate if provisioning should be blocked, else None.

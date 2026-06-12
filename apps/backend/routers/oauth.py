@@ -29,6 +29,7 @@ from core.services.oauth_service import (
     DevicePollResult,
     OAuthAlreadyActiveError,
     OAuthExchangeFailedError,
+    caller_may_manage_connector,
     get_decrypted_tokens_consistent,
     poll_device_code,
     request_device_code,
@@ -52,8 +53,7 @@ async def _require_org_oauth_owner(ctx: AuthContext) -> None:
     """
     require_org_admin(ctx)
     row = await billing_repo.get_by_owner_id(resolve_owner_id(ctx))
-    recorded = (row or {}).get("oauth_connector_user_id")
-    if recorded and recorded != ctx.user_id:
+    if not caller_may_manage_connector(row, ctx.user_id):
         raise HTTPException(
             status_code=403,
             detail="Only the workspace owner who connected ChatGPT can manage this connection.",

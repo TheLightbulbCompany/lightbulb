@@ -293,7 +293,6 @@ async def test_provision_402_returns_structured_blocked_payload():
         with pytest.raises(HTTPException) as exc:
             await _assert_provision_allowed(
                 owner_id="user_x",
-                clerk_user_id="user_x",
                 is_admin=True,
             )
 
@@ -335,7 +334,6 @@ async def test_provision_402_subscription_required_payload():
         with pytest.raises(HTTPException) as exc:
             await _assert_provision_allowed(
                 owner_id="user_x",
-                clerk_user_id="user_x",
                 is_admin=True,
             )
 

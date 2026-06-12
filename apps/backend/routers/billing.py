@@ -412,8 +412,9 @@ async def create_trial_checkout(
         provider_choice=body.provider_choice,
         byo_provider=body.byo_provider if body.provider_choice == "byo_key" else None,
         # For chatgpt_oauth the subscribing admin is the workspace owner and
-        # initial connector; /oauth/chatgpt/poll's set-once claim cannot
-        # repoint it later.
+        # initial connector. Later writes can't repoint it to another human:
+        # /oauth/chatgpt/poll claims via a set-once conditional write, and
+        # the owner check in change_provider gates re-selection.
         connector_user_id=auth.user_id if body.provider_choice == "chatgpt_oauth" else None,
     )
 
@@ -492,7 +493,6 @@ async def change_provider(
             owner_id=owner_id,
             clerk_user_id=auth.user_id,
             owner_type=owner_type,
-            is_org_context=auth.is_org_context,
             provider_choice=body.provider_choice,
             byo_provider=body.byo_provider,
         )

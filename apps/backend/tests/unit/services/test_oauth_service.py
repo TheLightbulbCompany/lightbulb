@@ -6,7 +6,7 @@ Covers OpenAI's actual Codex CLI device-code flow:
   POST /oauth/token                       →  access_token + refresh_token
 """
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import httpx
@@ -14,6 +14,7 @@ import pytest
 from cryptography.fernet import Fernet
 from moto import mock_aws
 
+from core.services import oauth_service
 from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
@@ -298,3 +299,23 @@ async def test_revoke_deletes_oauth_row(oauth_table):
     client = boto3.client("dynamodb", region_name="us-east-1")
     resp = client.get_item(TableName="test-oauth-tokens", Key={"user_id": {"S": "u_1"}})
     assert "Item" not in resp
+
+
+@pytest.mark.asyncio
+async def test_resolve_token_owner_returns_connector_for_org():
+    with patch(
+        "core.repositories.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value={"owner_id": "org_1", "oauth_connector_user_id": "user_a"}),
+    ):
+        assert await oauth_service.resolve_token_owner("org_1") == "user_a"
+
+
+@pytest.mark.asyncio
+async def test_resolve_token_owner_falls_back_to_owner_id():
+    # Personal owners: owner_id IS the Clerk user id. Legacy rows and
+    # missing rows both fall back.
+    with patch(
+        "core.repositories.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value=None),
+    ):
+        assert await oauth_service.resolve_token_owner("user_b") == "user_b"

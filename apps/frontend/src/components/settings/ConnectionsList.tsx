@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { useBilling } from "@/hooks/useBilling";
 import { useConnections } from "@/hooks/useConnections";
 import { ConnectButton } from "@/components/settings/ConnectButton";
 
@@ -8,6 +9,10 @@ interface ConnectionsListProps {
   /** Org admins may connect/disconnect; non-admins see disabled actions. */
   canManage: boolean;
 }
+
+// The owner's inference path that unlocks `requires_bedrock` providers —
+// matches billing_accounts.provider_choice (see backend connections.py).
+const BEDROCK_PROVIDER_CHOICE = "bedrock_claude";
 
 /**
  * Renders one row per provider returned by GET /connections: a status dot
@@ -23,6 +28,19 @@ interface ConnectionsListProps {
 export function ConnectionsList({ canManage }: ConnectionsListProps) {
   const { connections, isLoading, error, mutate, connectPaste, startOAuth, disconnect } =
     useConnections();
+  // `requires_bedrock` providers are connectable only on Bedrock-managed
+  // inference. One cached read (SWR-deduped) tells us the owner's path so we
+  // can render those rows as locked-with-upsell instead of a dead Connect.
+  //
+  // Lock ONLY once billing has resolved. While it's still loading or errored,
+  // `account` is undefined — locking then would briefly show the upsell to an
+  // owner who is in fact on Bedrock. A resolved 404 (account === null, no
+  // billing row) is a genuine "not on Bedrock" and does lock.
+  const { account, isLoading: billingLoading, error: billingError } = useBilling();
+  const offBedrock =
+    !billingLoading &&
+    !billingError &&
+    account?.provider_choice !== BEDROCK_PROVIDER_CHOICE;
 
   if (error) {
     return (
@@ -51,6 +69,9 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
     <div className="space-y-2">
       {connections.map((connection) => {
         const connected = connection.status === "connected";
+        // Lock only the connect path: a row already connected before a
+        // provider switch keeps Disconnect (so `locked` excludes connected).
+        const locked = !!connection.requires_bedrock && !connected && offBedrock;
         return (
           <div
             key={connection.provider}
@@ -65,13 +86,20 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-[#1c1917]">{connection.display_name}</p>
               <p className="text-xs text-[#8a8578]">
-                {connected ? "Connected" : "Not connected"}
-                {connection.acquisition === "direct_oauth" ? " · OAuth" : " · API key"}
+                {locked ? (
+                  "Requires Bedrock credits"
+                ) : (
+                  <>
+                    {connected ? "Connected" : "Not connected"}
+                    {connection.acquisition === "direct_oauth" ? " · OAuth" : " · API key"}
+                  </>
+                )}
               </p>
             </div>
             <ConnectButton
               connection={connection}
               canManage={canManage}
+              lockedForBedrock={locked}
               connectPaste={connectPaste}
               startOAuth={startOAuth}
               disconnect={disconnect}

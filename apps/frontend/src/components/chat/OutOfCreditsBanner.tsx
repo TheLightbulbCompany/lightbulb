@@ -35,9 +35,10 @@ export function OutOfCreditsBanner() {
         Route into the CreditsStep flow inside the ProvisioningStepper. A
         link to /chat?panel=credits would strip the ?provider= URL param
         the stepper uses to gate the provider step, causing the wizard to
-        proceed into container provisioning without any payment — and the
-        destination panel (CreditsPanel) is a placeholder that can't take
-        a payment. URL stays inside /chat so we don't lose ChatLayout
+        proceed into container provisioning without any payment — and
+        credits now live inside the Model & Credits panel, which isn't
+        the stepper flow this banner must route into. URL stays inside
+        /chat so we don't lose ChatLayout
         chrome / the in-flight gateway socket.
       */}
       <Link

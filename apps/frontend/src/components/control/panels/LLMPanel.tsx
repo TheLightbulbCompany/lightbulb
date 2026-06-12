@@ -305,7 +305,7 @@ export function LLMPanel() {
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Model &amp; Credits</h2>
+        <h2 className="text-lg font-semibold">Model & Credits</h2>
         <button
           type="button"
           // The read hook only auto-revalidates on a matching gateway *event*,

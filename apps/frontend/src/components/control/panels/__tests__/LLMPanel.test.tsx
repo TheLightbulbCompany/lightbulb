@@ -159,8 +159,8 @@ describe("LLMPanel", () => {
     expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
     expect(screen.getByTestId("credits-section")).toBeInTheDocument();
     // The credits surface now lives inline — the old jump-to-panel button
-    // must be gone so there's no dead affordance pointing at a panel that
-    // a later task removes.
+    // must be gone so there's no dead affordance pointing at the retired
+    // standalone Credits panel.
     expect(screen.queryByRole("button", { name: /manage credits/i })).toBeNull();
   });
 

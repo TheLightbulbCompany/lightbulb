@@ -256,7 +256,10 @@ describe("ServiceStack — Metronome lifecycle env split", () => {
     });
   });
 
-  test("prod lifecycle stays off until the prod console runbook", () => {
+  test("prod runs the lifecycle live against the prod rate card", () => {
+    // Prod's runbook completed 2026-06-12: prod token in Secrets Manager,
+    // rate card + credits product created via API (rates verified 12/12
+    // against sandbox), Stripe live product wired, webhook secret set.
     const prodTemplate = buildServiceStack("prod");
     prodTemplate.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
@@ -264,11 +267,15 @@ describe("ServiceStack — Metronome lifecycle env split", () => {
           Environment: Match.arrayWith([
             Match.objectLike({
               Name: "METRONOME_LIFECYCLE_ENABLED",
-              Value: "false",
+              Value: "true",
             }),
             Match.objectLike({
               Name: "METRONOME_RATE_CARD_ID",
-              Value: "",
+              Value: "fdac2edd-f207-4f11-b65b-01fad6fbbdbc",
+            }),
+            Match.objectLike({
+              Name: "METRONOME_CREDITS_PRODUCT_ID",
+              Value: "876e1694-9d76-4c37-9814-c957dbd9370f",
             }),
           ]),
         }),

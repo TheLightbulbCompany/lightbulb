@@ -22,6 +22,17 @@ import pytest
 from core.config import settings
 
 
+@pytest.fixture(autouse=True)
+def _default_owner_on_bedrock(monkeypatch):
+    """Default every test's owner to the Bedrock provider so the Google
+    Bedrock-gate is open unless a test opts out. Tests that exercise the
+    locked/upsell path override billing_repo.get_by_owner_id themselves."""
+    monkeypatch.setattr(
+        "routers.connections.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+    )
+
+
 class TestValidateToken:
     """``_validate_token`` builds the Authorization header from the per-provider
     validate ``auth_scheme`` (Stripe = ``Bearer <key>``) and sends the optional
@@ -312,6 +323,81 @@ class TestInternalProviderGrantGate:
         monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
         response = await async_client.post("/api/v1/connections/google", json={"token": "x"})
         assert response.status_code == 404
+
+
+class TestBedrockGate:
+    """`requires_bedrock` providers (google) are usable only by owners on the
+    Bedrock-managed path. The catalog exposes the static flag; the grant paths
+    enforce it with a structured 403 the UI renders as the upsell."""
+
+    def _set_provider(self, monkeypatch, choice: str | None):
+        monkeypatch.setattr(
+            "routers.connections.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"provider_choice": choice} if choice else None),
+        )
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_catalog_exposes_requires_bedrock_flag(self, mock_repo, async_client, monkeypatch):
+        # The flag is static (not per-owner) — the UI pairs it with the owner's
+        # provider_choice to decide the lock. No billing read happens here.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["google"]["requires_bedrock"] is True
+        assert by_key["stripe"]["requires_bedrock"] is False
+
+    @pytest.mark.asyncio
+    async def test_authorize_403_for_non_bedrock_owner(self, async_client, monkeypatch):
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
+        self._set_provider(monkeypatch, "chatgpt_oauth")
+
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 403
+        assert response.json()["detail"]["reason"] == "requires_bedrock"
+
+    @pytest.mark.asyncio
+    async def test_connect_paste_403_for_non_bedrock_owner(self, async_client, monkeypatch):
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
+        self._set_provider(monkeypatch, "byo_key")
+
+        response = await async_client.post("/api/v1/connections/google", json={"token": "x"})
+        assert response.status_code == 403
+        assert response.json()["detail"]["reason"] == "requires_bedrock"
+
+    @pytest.mark.asyncio
+    async def test_no_billing_row_treated_as_non_bedrock(self, async_client, monkeypatch):
+        # An owner who never picked a provider (no billing row) is not on Bedrock.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
+        self._set_provider(monkeypatch, None)
+
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integrations_repo")
+    async def test_non_bedrock_provider_is_not_gated(
+        self, mock_repo, mock_apply, mock_store, async_client, monkeypatch
+    ):
+        # A provider without requires_bedrock (stripe) connects fine for a
+        # non-Bedrock owner — the gate early-returns for it.
+        self._set_provider(monkeypatch, "chatgpt_oauth")
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value=None)
+
+        async def ok(self, *a, **k):
+            return httpx.Response(200)
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", ok)
+        response = await async_client.post("/api/v1/connections/stripe", json={"token": "sk_test_x"})
+        assert response.status_code == 200
 
 
 class TestConnectPaste:

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.repositories import google_accounts_repo, integrations_repo
+from core.repositories import billing_repo, google_accounts_repo, integrations_repo
 from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
@@ -90,6 +90,48 @@ def _require_grantable_provider(provider: str, owner_id: str) -> registry.Provid
     return p
 
 
+# provider_choice value (on the billing row) for the Isol8-managed Bedrock path.
+_BEDROCK_PROVIDER_CHOICE = "bedrock_claude"
+# Deep-link the upsell CTA points at — opens the LLM panel's change-provider flow.
+_SWITCH_PROVIDER_HREF = "/chat?panel=llm&action=change-provider"
+
+
+def _bedrock_lock() -> dict:
+    """The structured payload that tells the UI to render a provider as
+    locked-with-upsell (catalog `lock` object + grant-path 403 detail share it)."""
+    return {
+        "reason": "requires_bedrock",
+        "message": (
+            "Google integrations require Bedrock-managed inference so your Google "
+            "data is never used to train AI models. Switch to Bedrock credits to "
+            "unlock it."
+        ),
+        "action_label": "Switch to Bedrock",
+        "action_href": _SWITCH_PROVIDER_HREF,
+    }
+
+
+async def _owner_on_bedrock(owner_id: str) -> bool:
+    row = await billing_repo.get_by_owner_id(owner_id)
+    return bool(row) and row.get("provider_choice") == _BEDROCK_PROVIDER_CHOICE
+
+
+async def _require_bedrock_for(p: registry.Provider, owner_id: str) -> None:
+    """Block a `requires_bedrock` provider's grant paths unless the owner is on
+    Bedrock-managed inference. 403 (not 404) with a structured `requires_bedrock`
+    detail so the UI can render the "switch to Bedrock to unlock" upsell rather
+    than a dead end.
+
+    Always called AFTER `_require_grantable_provider` so a non-allowlisted owner
+    gets the internal 404 first — this 403 must not leak that a still-internal
+    provider exists to owners who shouldn't see it at all.
+    """
+    if not p.requires_bedrock:
+        return
+    if not await _owner_on_bedrock(owner_id):
+        raise HTTPException(status_code=403, detail=_bedrock_lock())
+
+
 async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
@@ -149,6 +191,11 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     # is server-driven, so this also governs dependent surfaces — e.g. the Google
     # per-agent assignment panel only renders when google reads back connected.
     allowlisted = owner_id in settings.internal_integration_owners
+    # `requires_bedrock` is a static product flag. The UI pairs it with the
+    # owner's provider_choice (which it already has) to render the "switch to
+    # Bedrock to unlock" upsell — so the catalog needs no per-owner billing read
+    # on this polled path. The connect/authorize grant paths do the real
+    # server-side enforcement.
     return {
         "connections": [
             {
@@ -156,6 +203,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
                 "display_name": v.display_name,
                 "acquisition": v.acquisition,
                 "status": connected.get(k, "disconnected"),
+                "requires_bedrock": v.requires_bedrock,
             }
             for k, v in registry.all_providers().items()
             if allowlisted or not v.internal or connected.get(k) == "connected"
@@ -168,6 +216,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _require_grantable_provider(provider, owner_id)
+    await _require_bedrock_for(p, owner_id)
     if p.acquisition != "paste_token":
         raise HTTPException(status_code=400, detail=f"{provider} is not a paste-key integration")
     if not await _validate_token(p, body.token):
@@ -304,6 +353,7 @@ async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _require_grantable_provider(provider, owner_id)
+    await _require_bedrock_for(p, owner_id)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
     url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))

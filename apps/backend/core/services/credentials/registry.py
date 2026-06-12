@@ -100,6 +100,12 @@ class Provider(BaseModel):
     # are built but not yet reliably shippable to every user — e.g. Google while
     # its OAuth app is still pending Google verification.
     internal: bool = False
+    # Available only to owners on Bedrock-managed inference (provider_choice ==
+    # bedrock_claude). For providers whose third-party data is sent to the
+    # agent's LLM and must never be used for model training — Bedrock is the only
+    # path Isol8 controls a no-training contract for. Doubles as a Bedrock-credits
+    # funnel: non-Bedrock owners get a "switch to unlock" upsell.
+    requires_bedrock: bool = False
     validation: ValidateSpec | None = Field(default=None, alias="validate")
 
     # populate_by_name lets us pass either the `validate` alias (YAML) or the

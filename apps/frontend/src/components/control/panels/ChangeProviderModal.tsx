@@ -195,7 +195,7 @@ function ChangeProviderBody({
       )}
 
       {stage.kind === "submitting" && (
-        <div className="flex items-center justify-center gap-3 py-12 text-sm text-[#5a5549]">
+        <div className="flex items-center justify-center gap-3 py-12 text-sm text-white/60">
           <Loader2 className="h-4 w-4 animate-spin" />
           Switching to {readableProvider(stage.choice, stage.byo)}…
         </div>
@@ -203,9 +203,13 @@ function ChangeProviderBody({
 
       {stage.kind === "error" && (
         <div className="space-y-4 py-6">
-          <p className="text-sm text-red-600">{stage.message}</p>
+          <p className="text-sm text-red-400">{stage.message}</p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setStage({ kind: "picker" })}>
+            <Button
+              variant="outline"
+              className="border-white/15 bg-transparent text-white/80 hover:bg-white/10 hover:text-white"
+              onClick={() => setStage({ kind: "picker" })}
+            >
               Back
             </Button>
           </DialogFooter>
@@ -276,23 +280,23 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
             className={
               "rounded-xl border p-4 text-left transition-colors " +
               (current
-                ? "border-[#06402B] bg-[#f3efe6]"
-                : "border-[#e0dbd0] bg-white hover:bg-[#faf7f2]")
+                ? "border-[#7cc6a3]/60 bg-[#7cc6a3]/10"
+                : "border-white/10 bg-white/[0.04] hover:bg-white/[0.08]")
             }
           >
             <div className="flex items-start justify-between gap-2">
               <div>
-                <h3 className="font-medium text-[#1a1a1a]">{card.title}</h3>
-                <p className="mt-1 text-xs text-[#8a8578]">{card.subtitle}</p>
+                <h3 className="font-medium text-white/90">{card.title}</h3>
+                <p className="mt-1 text-xs text-white/50">{card.subtitle}</p>
               </div>
               {current && (
-                <span className="rounded-full bg-[#06402B] px-2 py-0.5 text-[10px] font-medium text-white">
+                <span className="rounded-full bg-[#7cc6a3] px-2 py-0.5 text-[10px] font-medium text-[#06402B]">
                   Current
                 </span>
               )}
             </div>
             {card.id === "byo_key" && current && currentByoProvider && (
-              <p className="mt-2 text-[11px] text-[#8a8578]">
+              <p className="mt-2 text-[11px] text-white/50">
                 Active sub-provider: {currentByoProvider === "openai" ? "OpenAI" : "Anthropic"}
               </p>
             )}
@@ -322,21 +326,21 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
   return (
     <div className="space-y-4 py-4">
       {state.status === "idle" && (
-        <div className="flex flex-col items-center gap-3 py-6 text-sm text-[#5a5549]">
+        <div className="flex flex-col items-center gap-3 py-6 text-sm text-white/60">
           <Loader2 className="h-5 w-5 animate-spin" />
           Starting ChatGPT sign-in…
         </div>
       )}
 
       {state.status === "pending" && (
-        <ol className="list-decimal space-y-3 pl-5 text-sm text-[#1a1a1a]">
+        <ol className="list-decimal space-y-3 pl-5 text-sm text-white/85 marker:text-white/40">
           <li>
             Open{" "}
             <a
               href={state.verificationUri}
               target="_blank"
               rel="noreferrer"
-              className="text-[#06402B] underline"
+              className="text-[#7cc6a3] underline underline-offset-2 hover:text-[#9fd9bd]"
             >
               {state.verificationUri}
             </a>{" "}
@@ -345,12 +349,12 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
           <li>
             Enter this code:
             <div className="mt-2">
-              <code className="rounded bg-[#f3efe6] px-3 py-2 font-mono text-lg tracking-widest">
+              <code className="rounded bg-[#f3efe6] px-3 py-2 font-mono text-lg tracking-widest text-[#1a1a1a]">
                 {state.userCode}
               </code>
             </div>
           </li>
-          <li className="text-xs text-[#8a8578]">
+          <li className="text-xs text-white/50">
             We&apos;ll switch you over automatically once you finish sign-in.
           </li>
         </ol>
@@ -358,21 +362,29 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
 
       {state.status === "error" && (
         <div className="space-y-3 py-4">
-          <p className="text-sm text-red-600">Connection failed: {state.message}</p>
-          <Button variant="outline" onClick={start}>
+          <p className="text-sm text-red-400">Connection failed: {state.message}</p>
+          <Button
+            variant="outline"
+            className="border-white/15 bg-transparent text-white/80 hover:bg-white/10 hover:text-white"
+            onClick={start}
+          >
             Try again
           </Button>
         </div>
       )}
 
       {state.status === "completed" && (
-        <div className="flex items-center justify-center py-6 text-sm text-[#06402B]">
+        <div className="flex items-center justify-center py-6 text-sm text-[#7cc6a3]">
           ✓ Connected — committing switch…
         </div>
       )}
 
       <DialogFooter>
-        <Button variant="ghost" onClick={onCancel}>
+        <Button
+          variant="ghost"
+          className="text-white/70 hover:bg-white/10 hover:text-white"
+          onClick={onCancel}
+        >
           Back
         </Button>
       </DialogFooter>
@@ -418,21 +430,23 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
   return (
     <form onSubmit={submit} className="space-y-4 py-4">
       <fieldset className="flex gap-4">
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2 text-sm text-white/80">
           <input
             type="radio"
             value="openai"
             checked={provider === "openai"}
             onChange={() => setProvider("openai")}
+            className="accent-[#7cc6a3]"
           />
           OpenAI
         </label>
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2 text-sm text-white/80">
           <input
             type="radio"
             value="anthropic"
             checked={provider === "anthropic"}
             onChange={() => setProvider("anthropic")}
+            className="accent-[#7cc6a3]"
           />
           Anthropic
         </label>
@@ -446,18 +460,24 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
         required
         autoComplete="off"
         spellCheck={false}
-        className="w-full rounded-md border border-[#e0dbd0] bg-white px-3 py-2 font-mono text-sm"
+        className="w-full rounded-md border border-white/15 bg-white/5 px-3 py-2 font-mono text-sm text-white placeholder:text-white/30 focus:border-[#7cc6a3]/60 focus:outline-none"
       />
 
-      <p className="text-xs text-[#8a8578]">
+      <p className="text-xs text-white/50">
         Stored encrypted in AWS Secrets Manager. We validate the key against the
         provider before saving — invalid keys are rejected here, not at chat time.
       </p>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-red-400">{error}</p>}
 
       <DialogFooter>
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={submitting}>
+        <Button
+          type="button"
+          variant="ghost"
+          className="text-white/70 hover:bg-white/10 hover:text-white"
+          onClick={onCancel}
+          disabled={submitting}
+        >
           Back
         </Button>
         <Button type="submit" disabled={submitting || !apiKey}>

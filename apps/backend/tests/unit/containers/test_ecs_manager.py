@@ -2153,9 +2153,22 @@ class TestProvisionUserContainerProviderChoice:
 
         tokens = {"access_token": "tok-a", "refresh_token": "tok-r"}
 
+        # The connector (token owner) is a DIFFERENT id than the container owner
+        # so a regression that drops ``token_owner_id=`` at the call site —
+        # reading the owner's row instead of the org connector's — would surface
+        # as get_decrypted_tokens being awaited with the owner id, which the
+        # assertion below catches. (For orgs the connector is the workspace
+        # owner's Clerk id, not the org id.)
+        connector_id = "user_connector_abc"
+        mock_get_tokens = AsyncMock(return_value=tokens)
+
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.services.oauth_service.get_decrypted_tokens", AsyncMock(return_value=tokens)),
+            patch(
+                "core.services.oauth_service.resolve_token_owner",
+                AsyncMock(return_value=connector_id),
+            ),
+            patch("core.services.oauth_service.get_decrypted_tokens", mock_get_tokens),
             patch("core.containers.workspace.pre_stage_auth_profile_store", side_effect=_record_pre_stage),
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),
@@ -2166,6 +2179,10 @@ class TestProvisionUserContainerProviderChoice:
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
 
             await manager.provision_user_container("user_test_123", provider_choice="chatgpt_oauth")
+
+            # Tokens were read from the resolved CONNECTOR's row, not the
+            # container owner's — guards the token_owner_id= plumbing.
+            mock_get_tokens.assert_awaited_once_with(user_id=connector_id, bound_to="user_test_123")
 
             assert call_order, "pre_stage_auth_profile_store and create_service must both be called"
             # pre_stage_auth_profile_store runs before create_service.
@@ -2197,6 +2214,10 @@ class TestProvisionUserContainerProviderChoice:
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch(
+                "core.services.oauth_service.resolve_token_owner",
+                AsyncMock(return_value="user_test_123"),
+            ),
             patch("core.services.oauth_service.get_decrypted_tokens", AsyncMock(return_value=None)),
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),

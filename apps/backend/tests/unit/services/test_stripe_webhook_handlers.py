@@ -112,3 +112,55 @@ async def test_stripe_error_does_not_fail_handler(mock_repo):
     assert result is None
     assert "billing.default_pm.error" in [c.args[0] for c in mock_metric.call_args_list]
     mock_repo.set_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_webhook_backup_write_threads_connector(mock_repo):
+    """The provider_choice backup write threads the subscribing human's Clerk
+    id (from subscription metadata) as connector_user_id for chatgpt_oauth.
+
+    create_flat_fee_checkout stamps clerk_user_id into subscription metadata;
+    for chatgpt_oauth that human is the workspace owner / initial connector.
+    Non-oauth providers pass None so the backup never strips a synchronously
+    written connector.
+    """
+    # default_payment_method=None keeps the PM-promotion path inert so this
+    # test isolates the provider_choice backup write.
+    event = _subscription_event(
+        default_payment_method=None,
+        metadata={
+            "owner_id": "org_x",
+            "provider_choice": "chatgpt_oauth",
+            "clerk_user_id": "user_a",
+        },
+    )
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_awaited_once_with(
+        "org_x",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_a",
+    )
+
+
+@pytest.mark.asyncio
+async def test_webhook_backup_write_bedrock_passes_no_connector(mock_repo):
+    """A bedrock subscription event passes connector_user_id=None — bedrock is
+    not connector-backed, and None leaves any existing connector untouched."""
+    event = _subscription_event(
+        default_payment_method=None,
+        metadata={
+            "owner_id": "org_x",
+            "provider_choice": "bedrock_claude",
+            "clerk_user_id": "user_a",
+        },
+    )
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_awaited_once_with(
+        "org_x",
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        connector_user_id=None,
+    )

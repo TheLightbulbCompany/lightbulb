@@ -48,11 +48,13 @@ async def test_trial_checkout_persists_provider_choice_synchronously(async_clien
         )
 
     assert resp.status_code == 200
+    # bedrock_claude is not connector-backed, so connector_user_id is None
+    # (REMOVEs any stale connector on the row).
     mock_set_pc.assert_awaited_once_with(
         "user_x",
         provider_choice="bedrock_claude",
         byo_provider=None,
-        owner_type="personal",
+        connector_user_id=None,
     )
 
 
@@ -84,7 +86,7 @@ async def test_trial_checkout_persists_byo_provider_when_byo_key(async_client):
         "user_y",
         provider_choice="byo_key",
         byo_provider="openai",
-        owner_type="personal",
+        connector_user_id=None,
     )
 
 
@@ -119,7 +121,88 @@ async def test_trial_checkout_byo_key_without_provider_now_allowed(async_client)
         "user_v",
         provider_choice="byo_key",
         byo_provider=None,
-        owner_type="personal",
+        connector_user_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_checkout_persists_connector_for_org_admin(app, mock_org_admin_user):
+    """An ORG admin picking chatgpt_oauth threads THEIR Clerk user id (NOT the
+    org id) as the initial connector on the billing row.
+
+    The admin is the workspace owner whose OpenAI account backs every
+    teammate's inference, so they are the single connector. owner_id stays the
+    org id; connector_user_id is the admin's user id.
+    """
+    from core.auth import get_current_user
+    from httpx import ASGITransport, AsyncClient
+
+    fake_org_account = {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_org_chatgpt",
+    }
+
+    app.dependency_overrides[get_current_user] = mock_org_admin_user
+    try:
+        with (
+            patch("routers.billing._get_billing_account", new_callable=AsyncMock, return_value=fake_org_account),
+            patch("routers.billing.billing_repo.set_provider_choice", new_callable=AsyncMock) as mock_set_pc,
+            patch(
+                "core.services.billing_service.create_flat_fee_checkout",
+                new_callable=AsyncMock,
+            ) as mock_checkout,
+        ):
+            mock_checkout.return_value = type("S", (), {"url": "https://checkout.stripe.com/org"})()
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/v1/billing/trial-checkout",
+                    json={"provider_choice": "chatgpt_oauth"},
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    # mock_org_admin_context.user_id == "user_test_123".
+    mock_set_pc.assert_awaited_once_with(
+        "org_test_456",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_test_123",
+    )
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_checkout_persists_connector_for_personal(async_client):
+    """A personal user picking chatgpt_oauth threads their own Clerk id as the
+    connector — same human owns the workspace and the OpenAI account."""
+    fake_account = {
+        "owner_id": "user_x",
+        "owner_type": "personal",
+        "stripe_customer_id": "cus_personal_chatgpt",
+    }
+
+    with (
+        patch("routers.billing._get_billing_account", new_callable=AsyncMock, return_value=fake_account),
+        patch("routers.billing.billing_repo.set_provider_choice", new_callable=AsyncMock) as mock_set_pc,
+        patch(
+            "core.services.billing_service.create_flat_fee_checkout",
+            new_callable=AsyncMock,
+        ) as mock_checkout,
+    ):
+        mock_checkout.return_value = type("S", (), {"url": "https://checkout.stripe.com/personal"})()
+        resp = await async_client.post(
+            "/api/v1/billing/trial-checkout",
+            json={"provider_choice": "chatgpt_oauth"},
+        )
+
+    assert resp.status_code == 200
+    # mock_current_user is user_test_123.
+    mock_set_pc.assert_awaited_once_with(
+        "user_x",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_test_123",
     )
 
 

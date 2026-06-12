@@ -28,8 +28,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 import boto3
 import httpx
@@ -37,6 +38,7 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.encryption import get_fernet
+from core.repositories import billing_repo
 
 
 logger = logging.getLogger(__name__)
@@ -53,8 +55,16 @@ EXCHANGE_REDIRECT_URI: Final = f"{AUTH_BASE_URL}/deviceauth/callback"
 
 
 class OAuthAlreadyActiveError(Exception):
-    """Raised when start is called for a user who already has active
-    tokens. Callers should reuse or revoke before starting a new flow."""
+    """Raised when start is called for a user who already has active tokens
+    bound to THIS workspace. The workspace is genuinely already connected;
+    callers should reuse or revoke before starting a new flow."""
+
+
+class OAuthBoundElsewhereError(Exception):
+    """Raised when start is called for a workspace while the user's active
+    tokens are bound to a DIFFERENT workspace. This workspace is NOT connected,
+    so it must not be reported as already-active — the caller surfaces a real
+    error telling the user to disconnect at the other workspace first."""
 
 
 class OAuthExchangeFailedError(Exception):
@@ -76,9 +86,14 @@ class DeviceCodeResponse:
 
 @dataclass(frozen=True)
 class DevicePollResult:
-    """Returned on successful poll. Tokens persisted internally."""
+    """Returned on successful poll. Tokens persisted internally.
+
+    ``bound_owner_id`` is the workspace the session was authorized for at
+    /start (read off the pending row), so the router learns what the session
+    was actually for — not what the polling caller's current context is."""
 
     account_id: str | None
+    bound_owner_id: str
 
 
 # Sentinel returned while OpenAI says "still pending".
@@ -92,11 +107,23 @@ def _table():
     return boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(table_name)
 
 
-async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
+async def request_device_code(*, user_id: str, bound_owner_id: str) -> DeviceCodeResponse:
     """Start a device-code session. Persists `device_auth_id` + `user_code`
     in DDB so the subsequent poll knows what to ask OpenAI about.
 
-    Raises OAuthAlreadyActiveError if the user already has active tokens.
+    ``bound_owner_id`` is the workspace this sign-in will be bound to. It is
+    fixed HERE, at session start, where the owner gate runs — and stamped onto
+    the PENDING row. Completion (poll_device_code) reads it back off that row
+    rather than re-deriving it from the polling caller's context, so switching
+    Clerk contexts between start and poll cannot re-target the binding (e.g. a
+    member starting a personal, ungated session and then polling in org context
+    to hijack the org's connector).
+
+    Raises OAuthAlreadyActiveError if the user already has active tokens bound
+    to THIS workspace (genuinely already-connected). Raises
+    OAuthBoundElsewhereError if the active tokens are bound to a DIFFERENT
+    workspace — this workspace is not connected, so the caller must surface a
+    real error rather than treating it as completion.
     """
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         resp = await client.post(
@@ -130,6 +157,10 @@ async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
                 "device_auth_id": device_auth_id,
                 "user_code": user_code,
                 "interval": interval,
+                # The workspace this session is authorized for, fixed at start
+                # (where the owner gate runs). poll_device_code reads it back
+                # off this row so completion cannot re-target the binding.
+                "bound_owner_id": bound_owner_id,
             },
             ConditionExpression="attribute_not_exists(user_id) OR #s <> :active",
             ExpressionAttributeNames={"#s": "state"},
@@ -137,6 +168,19 @@ async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # The put failed because an active row exists. Whether that means
+            # "already connected here" or "connected for a different workspace"
+            # depends on the row's binding: an active row bound to THIS
+            # workspace is genuinely already-connected (the wizard may treat
+            # this as completion), but one bound elsewhere leaves the current
+            # workspace unconnected and must surface a distinct error so the
+            # wizard doesn't advance with no usable tokens.
+            existing = _table().get_item(Key={"user_id": user_id}).get("Item")
+            if existing and existing.get("state") == "active" and not _row_belongs_to(existing, bound_owner_id):
+                raise OAuthBoundElsewhereError(
+                    "This ChatGPT account is connected to a different workspace. "
+                    "Disconnect it there before connecting here."
+                ) from None
             raise OAuthAlreadyActiveError(
                 f"User {user_id} already has active OAuth tokens — revoke before starting again"
             ) from None
@@ -160,10 +204,28 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     (OpenAI returns 403/404 in that case). Returns DevicePollResult on
     success after Fernet-encrypting access+refresh tokens into DDB.
     Raises OAuthExchangeFailedError on terminal errors.
+
+    The workspace this sign-in is bound to is NOT taken from the polling
+    caller's context — it is read off the pending row's ``bound_owner_id``,
+    which /start fixed (under the owner gate). Completion therefore cannot
+    re-target a session: a member who started a personal, ungated session
+    cannot poll in org context to bind the org's connector to themselves.
+
+    The binding is stamped onto the completed row (and surfaced on
+    DevicePollResult) so a consumption read can reject reuse by a *different*
+    workspace. The oauth-tokens table keys one row per Clerk user, so without
+    this a human who connected ChatGPT for an org could have the same row
+    silently staged into a second, personal container — two containers sharing
+    one ChatGPT account, and a disconnect in either revoking the other.
     """
     row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "pending":
         raise OAuthExchangeFailedError(f"No pending device-code session for user {user_id}")
+    # The binding was fixed at /start. Fall back to user_id (personal
+    # semantics) for any legacy pending row written before this field existed
+    # — an in-flight session at deploy time completes cleanly instead of
+    # erroring or binding to an empty owner.
+    bound_owner_id = row.get("bound_owner_id") or user_id
     # Legacy pending rows (from the pre-Codex-CLI flow) store `device_code`
     # instead of `device_auth_id`. Same for any partially-written row that
     # doesn't have user_code. Treat both as stale — the new flow can't
@@ -263,16 +325,21 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     _table().update_item(
         Key={"user_id": user_id},
         UpdateExpression=(
-            "SET #s = :ok, encrypted_tokens = :tok, account_id = :acc REMOVE device_auth_id, user_code, #i"
+            "SET #s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
+            "REMOVE device_auth_id, user_code, #i"
         ),
         ExpressionAttributeNames={"#s": "state", "#i": "interval"},
         ExpressionAttributeValues={
             ":ok": "active",
             ":tok": encrypted,
             ":acc": account_id or "",
+            # The workspace this sign-in was completed for. A consumption read
+            # that passes a different ``bound_to`` is rejected (see
+            # get_decrypted_tokens) — one ChatGPT account ↔ one container.
+            ":bound": bound_owner_id,
         },
     )
-    return DevicePollResult(account_id=account_id)
+    return DevicePollResult(account_id=account_id, bound_owner_id=bound_owner_id)
 
 
 def _extract_account_id(access_token: str) -> str | None:
@@ -300,28 +367,106 @@ def _extract_account_id(access_token: str) -> str | None:
         return None
 
 
-async def get_decrypted_tokens(*, user_id: str) -> dict | None:
-    """Decrypt and return the user's stored OAuth tokens. None if no row."""
+def _row_belongs_to(row: Mapping[str, Any], bound_to: str | None) -> bool:
+    """Whether ``bound_to`` is allowed to consume this token row.
+
+    The oauth-tokens table keys one row per Clerk user, but a single human
+    can own a personal workspace AND be the connector for an org workspace.
+    ``bound_owner_id`` records which workspace claimed the row at sign-in.
+
+    - ``bound_to is None`` — caller didn't specify a workspace; keep the
+      pre-binding behavior (no check). Production consumption reads always
+      pass ``bound_to``; this branch is for incidental/admin callers.
+    - row has NO ``bound_owner_id`` (legacy, pre-binding) — treated as
+      implicitly bound to its own ``user_id``. Legacy rows predate
+      orgs-on-chatgpt entirely, so they can only legitimately back the
+      personal workspace of the human who created them. A personal owner's
+      ``bound_to`` equals the row's ``user_id``, so no existing personal user
+      is affected; but an org consuming an unbound row (``bound_to=org_…``)
+      now requires a fresh, org-bound sign-in instead of silently sharing the
+      human's personal ChatGPT account.
+    - row's ``bound_owner_id`` matches ``bound_to`` — the row was created
+      for this workspace; admit it.
+    - row's ``bound_owner_id`` differs — a DIFFERENT workspace claimed the
+      sign-in; reject (treat as no tokens).
+    """
+    if bound_to is None:
+        return True
+    recorded = row.get("bound_owner_id") or row.get("user_id")
+    return recorded == bound_to
+
+
+async def get_decrypted_tokens(*, user_id: str, bound_to: str | None = None) -> dict | None:
+    """Decrypt and return the user's stored OAuth tokens. None if no row.
+
+    When ``bound_to`` is given, the row is returned only if it belongs to
+    that workspace (see ``_row_belongs_to``) — a row bound to a different
+    owner reads as None so its tokens can't be reused by another container.
+    """
     row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "active":
+        return None
+    if not _row_belongs_to(row, bound_to):
         return None
     plain = get_fernet().decrypt(bytes(row["encrypted_tokens"]))
     return json.loads(plain.decode())
 
 
-async def get_decrypted_tokens_consistent(*, user_id: str) -> dict | None:
+async def get_decrypted_tokens_consistent(*, user_id: str, bound_to: str | None = None) -> dict | None:
     """Strongly-consistent variant of ``get_decrypted_tokens``.
 
     Used by ``GET /oauth/chatgpt/status`` so the wizard reads its own
     write from ``/poll`` without an eventual-consistency stutter. Other
     callers (gate evaluator, provisioning) keep using the eventually-
     consistent helper to avoid taxing every read path with strong reads.
+
+    ``bound_to`` has the same cross-owner-rejection semantics as
+    ``get_decrypted_tokens``.
     """
     row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=True).get("Item")
     if not row or row.get("state") != "active":
         return None
+    if not _row_belongs_to(row, bound_to):
+        return None
     plain = get_fernet().decrypt(bytes(row["encrypted_tokens"]))
     return json.loads(plain.decode())
+
+
+def connector_from_account(account: dict | None, owner_id: str) -> str:
+    """The Clerk user whose ChatGPT OAuth tokens back this owner's container.
+
+    Personal owners ARE their own connector (owner_id == Clerk user_id), so
+    the fallback is correct for them and for legacy rows that predate
+    ``oauth_connector_user_id``. For orgs, the billing row records the
+    workspace owner who completed the device-code flow. Callers that already
+    hold the billing row use this directly — the provision gate runs on
+    every ~3s status poll and must not burn a second read of a row it has
+    in scope; callers without the row use ``resolve_token_owner``.
+    """
+    return (account or {}).get("oauth_connector_user_id") or owner_id
+
+
+async def resolve_token_owner(*, owner_id: str) -> str:
+    """``connector_from_account`` for callers that don't hold the billing row."""
+    row = await billing_repo.get_by_owner_id(owner_id)
+    return connector_from_account(row, owner_id)
+
+
+def caller_may_manage_connector(account: dict | None, caller_user_id: str) -> bool:
+    """Whether this caller may bind/rebind the owner's ChatGPT connection.
+
+    The connection belongs to the workspace owner who connected it
+    (``oauth_connector_user_id``): once recorded, only that human may
+    manage or re-select it. An unclaimed row (no recorded connector —
+    first connect, or a legacy row predating the field) admits any
+    caller; the surrounding endpoint/service decides who reaches this
+    check (org-admin gates etc.). Deliberately NOT built on
+    ``connector_from_account``: its owner_id fallback would make an
+    unclaimed org row look owned by the org id and wrongly reject the
+    first claimer.
+    """
+    recorded = (account or {}).get("oauth_connector_user_id")
+    return not recorded or recorded == caller_user_id
 
 
 async def revoke_user_oauth(*, user_id: str) -> None:

@@ -372,7 +372,6 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
 
     gate = await evaluate_provision_gate(
         owner_id=owner_id,
-        clerk_user_id=auth.user_id,
         is_admin=is_admin,
     )
     if gate is not None:

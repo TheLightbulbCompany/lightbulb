@@ -306,22 +306,6 @@ async def create_trial_checkout(
     # "byo_key + populated byo_provider + populated key" as a separate
     # downstream gate before any agent run.
 
-    # Org-context users cannot pick ChatGPT OAuth:
-    # OpenAI Plus terms forbid reselling, so org admins can't route their
-    # teammates' prompts through their personal ChatGPT subscription; orgs
-    # must use Bedrock or BYOK. Frontend ProviderPicker hides the card too,
-    # but a savvy user could call this endpoint directly without server-side
-    # enforcement. Reject before any Stripe Checkout creation so a denied
-    # caller never gets a session URL.
-    if body.provider_choice == "chatgpt_oauth" and auth.is_org_context:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "ChatGPT OAuth is not available for organization workspaces. "
-                "Use Bring-Your-Own-Key or Powered by Claude instead."
-            ),
-        )
-
     # Tenancy invariant (Gate B): refuse a PERSONAL trial-checkout when
     # the caller has any pending org invitations. We only check the
     # personal path — an org-context call to /trial-checkout is the
@@ -423,12 +407,15 @@ async def create_trial_checkout(
     # customer.subscription.created webhook lands (the webhook can be
     # delayed by seconds-to-minutes). The webhook handler still writes to
     # billing_repo as an idempotent backup.
-    owner_type_val = account.get("owner_type", get_owner_type(auth))
     await billing_repo.set_provider_choice(
         account["owner_id"],
         provider_choice=body.provider_choice,
         byo_provider=body.byo_provider if body.provider_choice == "byo_key" else None,
-        owner_type=owner_type_val,
+        # For chatgpt_oauth the subscribing admin is the workspace owner and
+        # initial connector. Later writes can't repoint it to another human:
+        # /oauth/chatgpt/poll claims via a set-once conditional write, and
+        # the owner check in change_provider gates re-selection.
+        connector_user_id=auth.user_id if body.provider_choice == "chatgpt_oauth" else None,
     )
 
     try:
@@ -506,7 +493,6 @@ async def change_provider(
             owner_id=owner_id,
             clerk_user_id=auth.user_id,
             owner_type=owner_type,
-            is_org_context=auth.is_org_context,
             provider_choice=body.provider_choice,
             byo_provider=body.byo_provider,
         )

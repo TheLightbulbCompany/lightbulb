@@ -104,6 +104,17 @@ def get_owner_type(auth: AuthContext) -> str:
     return "org" if auth.is_org_context else "personal"
 
 
+def is_org_owner_id(owner_id: str) -> bool:
+    """Whether an owner_id names a Clerk organization.
+
+    Clerk org IDs are prefixed 'org_'; user IDs are 'user_'. Stable
+    convention from Clerk; if either prefix changes upstream, update
+    this and the tests together. Use this instead of inlining the
+    prefix check so a convention change has one edit point.
+    """
+    return owner_id.startswith("org_")
+
+
 def require_org_admin(auth: AuthContext) -> AuthContext:
     """Raise 403 if user is in an org but not an admin. Personal context passes through."""
     if auth.is_org_context and not auth.is_org_admin:

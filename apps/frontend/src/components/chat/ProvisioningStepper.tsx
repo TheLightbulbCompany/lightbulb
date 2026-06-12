@@ -1403,9 +1403,6 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
       setError(err instanceof Error ? err.message : "Couldn't start checkout. Please try again.");
     }
   }, [api]);
-  const visibleCards = isOrg
-    ? PROVIDER_CARDS.filter((c) => c.id !== "chatgpt_oauth")
-    : PROVIDER_CARDS;
 
   return (
     <div className="flex-1 flex items-center justify-center p-8 bg-[#faf7f2]">
@@ -1416,7 +1413,7 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
             <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
           </svg>
           <h2 className="text-2xl font-semibold tracking-tight text-[#1a1a1a] font-lora">
-            One price. {isOrg ? "Two" : "Three"} ways to power it.
+            One price. Three ways to power it.
           </h2>
           <p className="text-[#8a8578] text-sm max-w-md mx-auto">
             {isOrg
@@ -1429,13 +1426,8 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
           <div className="text-sm text-red-600 -mt-4">{error}</div>
         )}
 
-        <div
-          className={
-            "grid grid-cols-1 gap-4 " +
-            (isOrg ? "md:grid-cols-2 max-w-3xl mx-auto" : "md:grid-cols-3")
-          }
-        >
-          {visibleCards.map((card) => (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {PROVIDER_CARDS.map((card) => (
             <div
               key={card.id}
               className={
@@ -1447,6 +1439,12 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
                 <h3 className="font-medium text-[#1a1a1a]">{card.title}</h3>
                 <p className="text-sm text-[#8a8578]">{card.subtitle}</p>
                 <p className="text-xs text-[#06402B] font-medium">{card.trialNote}</p>
+                {isOrg && card.id === "chatgpt_oauth" && (
+                  <p className="text-xs text-[#8a8578]">
+                    You connect your ChatGPT account (Pro recommended) — one
+                    account powers the whole workspace.
+                  </p>
+                )}
               </div>
               <ul className="text-sm text-[#5a5549] space-y-2 flex-1">
                 {card.bullets.map((b) => (

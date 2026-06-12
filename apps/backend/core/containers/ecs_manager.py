@@ -1286,23 +1286,34 @@ class EcsManager:
         env_var_name = "OPENAI_API_KEY" if byo_provider == "openai" else "ANTHROPIC_API_KEY"
         return [{"name": env_var_name, "valueFrom": secret_arn}]
 
-    async def _pre_stage_oauth_for_user(self, user_id: str) -> None:
-        """Pre-stage the auth-profiles.json for a chatgpt_oauth user.
+    async def _pre_stage_oauth_for_user(self, user_id: str, *, token_owner_id: str | None = None) -> None:
+        """Pre-stage the auth-profiles.json for a chatgpt_oauth owner.
 
         Fetches the decrypted ChatGPT tokens persisted by ``oauth_service``
         and writes OpenClaw's AuthProfileStore JSON to
         ``<EFS>/users/{user_id}/agents/main/agent/auth-profiles.json``
         BEFORE the ECS service is created so the openai-codex provider
-        finds the credentials cold on first boot. Raises if no active
-        OAuth row exists — caller should gate provisioning on a completed
-        device-code flow.
+        finds the credentials cold on first boot.
+
+        ``user_id`` is the CONTAINER OWNER (org_id for orgs) — it keys the
+        EFS path the container mounts. ``token_owner_id`` is the Clerk user
+        whose OAuth row holds the tokens (the org's workspace owner);
+        defaults to ``user_id``, which is correct for personal owners.
+        Raises if no active OAuth row exists — caller should gate
+        provisioning on a completed device-code flow.
         """
         from core.services.oauth_service import get_decrypted_tokens
 
-        tokens = await get_decrypted_tokens(user_id=user_id)
+        token_owner = token_owner_id or user_id
+        # ``user_id`` is the CONTAINER OWNER — pass it as ``bound_to`` so we only
+        # stage a row the connector claimed for THIS workspace. A row bound to a
+        # different owner reads as missing and raises below, rather than staging
+        # one ChatGPT account into a second container.
+        tokens = await get_decrypted_tokens(user_id=token_owner, bound_to=user_id)
         if not tokens:
             raise EcsManagerError(
-                f"No ChatGPT OAuth tokens for user {user_id} - caller should complete OAuth before provisioning",
+                f"No ChatGPT OAuth tokens for connector {token_owner} (owner {user_id}) - "
+                "caller should complete OAuth before provisioning",
                 user_id,
             )
         from core.containers.workspace import pre_stage_auth_profile_store
@@ -1349,7 +1360,9 @@ class EcsManager:
         secrets_for_task: list[dict] = []
         environment_for_task: list[dict] = []
         if provider_choice == "chatgpt_oauth":
-            await self._pre_stage_oauth_for_user(user_id)
+            from core.services.oauth_service import resolve_token_owner
+
+            await self._pre_stage_oauth_for_user(user_id, token_owner_id=await resolve_token_owner(owner_id=user_id))
             # OpenClaw reads OAuth credentials from
             # <agentDir>/auth-profiles.json. _pre_stage_oauth_for_user above
             # writes that file to EFS. No env var override needed — the

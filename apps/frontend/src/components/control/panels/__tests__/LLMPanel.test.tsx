@@ -63,16 +63,6 @@ vi.mock("../ChangeProviderModal", () => ({
     open ? <div data-testid="change-provider-modal-open" /> : null,
 }));
 
-// Clerk's useOrganization is pulled in transitively by ChangeProviderModal
-// (used to filter the chatgpt_oauth card on org context). The mock above
-// makes that path inert for these tests, but the import-time path still
-// resolves through ChangeProviderModal.tsx → @clerk/nextjs. The shared
-// LLMPanel render doesn't otherwise touch Clerk; stub it to a no-op org
-// so any code that reads it from LLMPanel directly stays happy.
-vi.mock("@clerk/nextjs", () => ({
-  useOrganization: () => ({ organization: null, membership: null }),
-}));
-
 describe("LLMPanel", () => {
   beforeEach(() => {
     mockSWRData.mockReset();

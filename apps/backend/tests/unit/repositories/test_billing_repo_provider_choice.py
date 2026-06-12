@@ -1,4 +1,4 @@
-"""Tests for billing_repo.set_provider_choice with org invariant."""
+"""Tests for billing_repo.set_provider_choice + oauth-connector handling."""
 
 import os
 from unittest.mock import patch
@@ -49,7 +49,6 @@ async def test_set_provider_choice_personal_bedrock(dynamodb_table):
         "user_x",
         provider_choice="bedrock_claude",
         byo_provider=None,
-        owner_type="personal",
     )
     row = await billing_repo.get_by_owner_id("user_x")
     assert row["provider_choice"] == "bedrock_claude"
@@ -63,7 +62,6 @@ async def test_set_provider_choice_personal_byo_key(dynamodb_table):
         "user_y",
         provider_choice="byo_key",
         byo_provider="openai",
-        owner_type="personal",
     )
     row = await billing_repo.get_by_owner_id("user_y")
     assert row["provider_choice"] == "byo_key"
@@ -77,23 +75,69 @@ async def test_set_provider_choice_personal_chatgpt_oauth(dynamodb_table):
         "user_z",
         provider_choice="chatgpt_oauth",
         byo_provider=None,
-        owner_type="personal",
     )
     row = await billing_repo.get_by_owner_id("user_z")
     assert row["provider_choice"] == "chatgpt_oauth"
 
 
 @pytest.mark.asyncio
-async def test_set_provider_choice_org_chatgpt_oauth_rejected(dynamodb_table):
-    """ChatGPT OAuth cannot be set on org owners (decision 2026-04-30)."""
-    await billing_repo.create_if_not_exists("org_x", "cus_jkl", owner_type="org")
-    with pytest.raises(ValueError, match="chatgpt_oauth"):
-        await billing_repo.set_provider_choice(
-            "org_x",
-            provider_choice="chatgpt_oauth",
-            byo_provider=None,
-            owner_type="org",
-        )
+async def test_set_provider_choice_allows_chatgpt_oauth_for_org(dynamodb_table):
+    """Orgs may now pick chatgpt_oauth — the old org invariant is gone.
+
+    The owner's connector user id is persisted alongside the choice so the
+    container knows whose ChatGPT tokens back it.
+    """
+    await billing_repo.create_if_not_exists("org_123", "cus_org1", owner_type="org")
+    await billing_repo.set_provider_choice(
+        "org_123",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_abc",
+    )
+    row = await billing_repo.get_by_owner_id("org_123")
+    assert row["provider_choice"] == "chatgpt_oauth"
+    assert row["oauth_connector_user_id"] == "user_abc"
+
+
+@pytest.mark.asyncio
+async def test_set_provider_choice_chatgpt_without_connector_keeps_existing(dynamodb_table):
+    """A chatgpt_oauth write that carries no connector (e.g. the webhook
+    backup) must NOT strip the connector that the synchronous
+    trial-checkout/change-provider write already persisted."""
+    await billing_repo.create_if_not_exists("org_123", "cus_org2", owner_type="org")
+    await billing_repo.set_provider_choice(
+        "org_123",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_abc",
+    )
+    # Webhook backup arrives without a connector.
+    await billing_repo.set_provider_choice(
+        "org_123",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+    )
+    row = await billing_repo.get_by_owner_id("org_123")
+    assert row["oauth_connector_user_id"] == "user_abc"
+
+
+@pytest.mark.asyncio
+async def test_set_provider_choice_non_chatgpt_removes_connector(dynamodb_table):
+    """Switching away from chatgpt_oauth drops any persisted connector."""
+    await billing_repo.create_if_not_exists("org_123", "cus_org3", owner_type="org")
+    await billing_repo.set_provider_choice(
+        "org_123",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_abc",
+    )
+    await billing_repo.set_provider_choice(
+        "org_123",
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+    )
+    row = await billing_repo.get_by_owner_id("org_123")
+    assert "oauth_connector_user_id" not in row
 
 
 @pytest.mark.asyncio
@@ -103,7 +147,6 @@ async def test_set_provider_choice_org_bedrock(dynamodb_table):
         "org_y",
         provider_choice="bedrock_claude",
         byo_provider=None,
-        owner_type="org",
     )
     row = await billing_repo.get_by_owner_id("org_y")
     assert row["provider_choice"] == "bedrock_claude"
@@ -116,7 +159,6 @@ async def test_set_provider_choice_org_byo_key(dynamodb_table):
         "org_z",
         provider_choice="byo_key",
         byo_provider="anthropic",
-        owner_type="org",
     )
     row = await billing_repo.get_by_owner_id("org_z")
     assert row["provider_choice"] == "byo_key"
@@ -131,7 +173,6 @@ async def test_set_provider_choice_unknown_provider_rejected(dynamodb_table):
             "user_w",
             provider_choice="invalid_choice",
             byo_provider=None,
-            owner_type="personal",
         )
 
 
@@ -146,7 +187,6 @@ async def test_set_provider_choice_byo_key_without_provider_now_allowed(dynamodb
         "user_v",
         provider_choice="byo_key",
         byo_provider=None,
-        owner_type="personal",
     )
     row = await billing_repo.get_by_owner_id("user_v")
     assert row["provider_choice"] == "byo_key"
@@ -161,17 +201,43 @@ async def test_set_provider_choice_overwrites_byo_provider_when_switching_away(d
         "user_t",
         provider_choice="byo_key",
         byo_provider="openai",
-        owner_type="personal",
     )
     await billing_repo.set_provider_choice(
         "user_t",
         provider_choice="bedrock_claude",
         byo_provider=None,
-        owner_type="personal",
     )
     row = await billing_repo.get_by_owner_id("user_t")
     assert row["provider_choice"] == "bedrock_claude"
     assert "byo_provider" not in row or row["byo_provider"] is None
+
+
+@pytest.mark.asyncio
+async def test_claim_oauth_connector_is_set_once(dynamodb_table):
+    """The first claim records the owner as the connector."""
+    await billing_repo.create_if_not_exists("org_123", "cus_claim1", owner_type="org")
+    await billing_repo.claim_oauth_connector("org_123", connector_user_id="user_abc")
+    row = await billing_repo.get_by_owner_id("org_123")
+    assert row["oauth_connector_user_id"] == "user_abc"
+
+
+@pytest.mark.asyncio
+async def test_claim_oauth_connector_noops_when_already_claimed(dynamodb_table):
+    """A second admin signing in must NOT repoint the org — set-once."""
+    await billing_repo.create_if_not_exists("org_123", "cus_claim2", owner_type="org")
+    await billing_repo.claim_oauth_connector("org_123", connector_user_id="user_abc")
+    # A different admin tries to claim — must not raise, must not overwrite.
+    await billing_repo.claim_oauth_connector("org_123", connector_user_id="user_other")
+    row = await billing_repo.get_by_owner_id("org_123")
+    assert row["oauth_connector_user_id"] == "user_abc"
+
+
+@pytest.mark.asyncio
+async def test_claim_oauth_connector_missing_row_is_noop(dynamodb_table):
+    """No billing row → silent no-op (same phantom-row hazard guard as
+    clear_provider_choice); must not upsert a phantom row."""
+    await billing_repo.claim_oauth_connector("org_ghost", connector_user_id="user_abc")
+    assert await billing_repo.get_by_owner_id("org_ghost") is None
 
 
 @pytest.mark.asyncio
@@ -181,12 +247,28 @@ async def test_clear_provider_choice(dynamodb_table):
         "user_s",
         provider_choice="byo_key",
         byo_provider="openai",
-        owner_type="personal",
     )
     await billing_repo.clear_provider_choice("user_s")
     row = await billing_repo.get_by_owner_id("user_s")
     assert row.get("provider_choice") is None
     assert row.get("byo_provider") is None
+
+
+@pytest.mark.asyncio
+async def test_clear_provider_choice_also_removes_connector(dynamodb_table):
+    """Clearing the provider choice must also drop a persisted connector so a
+    disconnect fully unbinds the ChatGPT account from the row."""
+    await billing_repo.create_if_not_exists("org_123", "cus_clear1", owner_type="org")
+    await billing_repo.set_provider_choice(
+        "org_123",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_abc",
+    )
+    await billing_repo.clear_provider_choice("org_123")
+    row = await billing_repo.get_by_owner_id("org_123")
+    assert row.get("provider_choice") is None
+    assert "oauth_connector_user_id" not in row
 
 
 @pytest.mark.asyncio
@@ -208,7 +290,6 @@ async def test_clear_provider_choice_existing_row_clears_fields(dynamodb_table):
         "user_y2",
         provider_choice="byo_key",
         byo_provider="openai",
-        owner_type="personal",
     )
     await billing_repo.clear_provider_choice("user_y2")
     row = await billing_repo.get_by_owner_id("user_y2")

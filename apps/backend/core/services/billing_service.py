@@ -503,7 +503,6 @@ async def change_provider(
     owner_id: str,
     clerk_user_id: str,
     owner_type: str,
-    is_org_context: bool,
     provider_choice: ProviderChoice,
     byo_provider: ByoProvider | None = None,
 ) -> dict:
@@ -512,14 +511,14 @@ async def change_provider(
     Args:
         owner_id: org_id for org context, user_id for personal. Pins the
             billing row + the container scope (re-provision target).
-        clerk_user_id: The signed-in human's Clerk user_id. Used for
-            personal-only side-effect reads (OAuth tokens, BYOK keys live
-            keyed on the calling user, not the org).
-        owner_type: ``"personal"`` or ``"org"``. Forwarded to set_provider_choice
-            so the org-invariant check (chatgpt_oauth banned on org rows)
-            fires at the repo layer too.
-        is_org_context: Whether the caller is in org mode. Used to enforce
-            the chatgpt_oauth=personal-only guard before any state changes.
+        clerk_user_id: The signed-in human's Clerk user_id. OAuth tokens and
+            BYOK keys live keyed on this calling user. For an org switching
+            INTO chatgpt_oauth the caller must BE the workspace owner (the
+            recorded ``oauth_connector_user_id``, or claim it if unset) — one
+            ChatGPT account ↔ one container.
+        owner_type: ``"personal"`` or ``"org"``. Drives the org workspace-owner
+            check on a switch into chatgpt_oauth, and the leaving-chatgpt
+            cleanup (which key to revoke vs. which EFS file to delete).
         provider_choice: Target provider.
         byo_provider: Required when ``provider_choice == "byo_key"``; one of
             "openai" or "anthropic".
@@ -532,17 +531,6 @@ async def change_provider(
     Raises:
         ChangeProviderError: with a code + status_code the router maps to HTTP.
     """
-    # Org guard — chatgpt_oauth is personal-only
-    # (memory/project_chatgpt_oauth_personal_only.md). Mirror the same guard
-    # /billing/trial-checkout uses so a savvy caller can't bypass it by
-    # going through the post-onboarding switch endpoint.
-    if provider_choice == "chatgpt_oauth" and is_org_context:
-        raise ChangeProviderError(
-            "org_chatgpt_oauth_forbidden",
-            "ChatGPT OAuth is not available for organization workspaces.",
-            status_code=403,
-        )
-
     # Subscription must exist and be currently usable. The post-onboarding
     # switch endpoint is NOT a substitute for /billing/trial-checkout —
     # if there's no subscription we route the caller back through the
@@ -567,6 +555,29 @@ async def change_provider(
     current_byo = account.get("byo_provider")
     next_byo = byo_provider if provider_choice == "byo_key" else None
 
+    # The org owner whose tokens back this workspace (None for rows that
+    # were never on chatgpt_oauth and for pre-connector legacy rows).
+    # Captured BEFORE the provider write below REMOVEs/overwrites it —
+    # cleanup and the owner check both need the recorded identity.
+    recorded_connector = account.get("oauth_connector_user_id")
+
+    # One ChatGPT account ↔ one container, bound to the workspace OWNER:
+    # only the recorded owner may (re)select chatgpt_oauth for an org. A
+    # legacy org row with no recorded owner is claimed by the first admin
+    # to switch (the only sane backfill for rows that predate the field).
+    from core.services.oauth_service import caller_may_manage_connector
+
+    if (
+        provider_choice == "chatgpt_oauth"
+        and owner_type == "org"
+        and not caller_may_manage_connector(account, clerk_user_id)
+    ):
+        raise ChangeProviderError(
+            "not_workspace_owner",
+            "Only the workspace owner who connected ChatGPT can select this provider.",
+            status_code=403,
+        )
+
     # Fast-path no-op. Returning early instead of re-provisioning prevents
     # an idle "change provider" click from blowing away the user's chat
     # session for no functional change. byo_key with the same byo_provider
@@ -587,7 +598,11 @@ async def change_provider(
     if provider_choice == "chatgpt_oauth":
         from core.services import oauth_service
 
-        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id)
+        # The connector's row must be bound to THIS workspace (owner_id). A row
+        # the same human claimed for a different workspace reads as missing —
+        # one ChatGPT account ↔ one container, so we don't let a switch borrow
+        # tokens that back another container.
+        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id, bound_to=owner_id)
         if not tokens:
             raise ChangeProviderError(
                 "oauth_required",
@@ -621,7 +636,7 @@ async def change_provider(
         owner_id,
         provider_choice=provider_choice,
         byo_provider=next_byo,
-        owner_type=owner_type,
+        connector_user_id=clerk_user_id if provider_choice == "chatgpt_oauth" else None,
     )
 
     # Side-effect cleanup: drop the OLD provider's credentials so a future
@@ -633,19 +648,28 @@ async def change_provider(
         from core.containers.workspace import delete_auth_profile_store
         from core.services.oauth_service import revoke_user_oauth
 
+        # One ChatGPT account ↔ one container: the owner's token row serves
+        # nothing but this workspace, so leaving chatgpt_oauth fully revokes
+        # it — identical for personal and org. Switching back later requires
+        # a fresh sign-in by design (never reuse stale credentials).
         try:
-            await revoke_user_oauth(user_id=clerk_user_id)
+            # Tokens are keyed on the human who connected (recorded_connector);
+            # for legacy/personal rows with no recorded owner, clerk_user_id IS
+            # that human (personal owner_id == user_id).
+            await revoke_user_oauth(user_id=recorded_connector or clerk_user_id)
         except Exception:
             logger.exception(
-                "change_provider: revoke_user_oauth failed for clerk_user_id=%s",
-                clerk_user_id,
+                "change_provider: revoke_user_oauth failed for connector=%s",
+                recorded_connector or clerk_user_id,
             )
         try:
-            await delete_auth_profile_store(user_id=clerk_user_id)
+            # EFS auth file is keyed on the CONTAINER OWNER (org_id for
+            # orgs), not the human who connected.
+            await delete_auth_profile_store(user_id=owner_id)
         except Exception:
             logger.exception(
-                "change_provider: delete_auth_profile_store failed for clerk_user_id=%s",
-                clerk_user_id,
+                "change_provider: delete_auth_profile_store failed for owner=%s",
+                owner_id,
             )
 
     if current_choice == "byo_key" and provider_choice != "byo_key" and current_byo in ("openai", "anthropic"):
@@ -783,7 +807,12 @@ async def _hot_swap_provider(
         from core.containers.workspace import pre_stage_auth_profile_store
         from core.services import oauth_service
 
-        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id)
+        # READ the tokens under the switcher (the new connector): tokens live
+        # keyed on the human who completed the device-code flow, which IS the
+        # clerk_user_id we just recorded as oauth_connector_user_id. Pass
+        # ``bound_to=owner_id`` so we only read a row this connector claimed for
+        # THIS workspace — one ChatGPT account ↔ one container.
+        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id, bound_to=owner_id)
         if not tokens:
             # Lost the tokens between the prerequisite check and now (very
             # rare — concurrent disconnect). Bail out to the cold path so
@@ -794,7 +823,10 @@ async def _hot_swap_provider(
                 clerk_user_id,
             )
             raise _HotSwapUnavailableError("oauth_tokens_missing")
-        await pre_stage_auth_profile_store(user_id=clerk_user_id, oauth_tokens=tokens)
+        # WRITE the auth file under the CONTAINER OWNER (org_id for orgs): the
+        # EFS workspace + auth-profiles.json are owner-scoped, not keyed on the
+        # human connector. For personal owners owner_id == clerk_user_id.
+        await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=tokens)
 
     providers, default_model, plugin_entries = build_provider_block(
         provider_choice=new_provider,

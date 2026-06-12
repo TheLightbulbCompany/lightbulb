@@ -488,13 +488,10 @@ something durable mid-conversation, append it here.
 
 
 def _is_org_owner_id(owner_id: str) -> bool:
-    """Mirrors paperclip_openclaw_pairing._is_org_owner_id.
+    """Delegates to core.auth.is_org_owner_id — single edit point for the prefix convention."""
+    from core.auth import is_org_owner_id
 
-    Clerk org IDs are prefixed 'org_'; user IDs are 'user_'. Stable
-    convention from Clerk; if either prefix changes upstream, update
-    this and the tests together.
-    """
-    return owner_id.startswith("org_")
+    return is_org_owner_id(owner_id)
 
 
 def _format_provider_label(provider_choice: str, byo_provider: str | None) -> str:

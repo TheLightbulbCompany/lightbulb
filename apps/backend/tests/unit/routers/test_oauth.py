@@ -99,7 +99,7 @@ async def test_poll_returns_pending_status(async_client):
 async def test_poll_returns_completed_status(async_client):
     with patch(
         "routers.oauth.poll_device_code",
-        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
+        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
     assert resp.status_code == 200
@@ -327,7 +327,8 @@ class TestStartOrgRules:
         assert resp.status_code == 403
         mock_request.assert_not_awaited()
 
-        # Admin with no recorded owner yet reaches the device-code request.
+        # Admin with no recorded owner yet reaches the device-code request, and
+        # the session is bound to the ORG at /start — where the owner gate runs.
         override_auth(ORG_OWNER_ADMIN)
         with (
             patch(
@@ -341,7 +342,7 @@ class TestStartOrgRules:
         ):
             resp = await async_client.post("/api/v1/oauth/chatgpt/start")
         assert resp.status_code == 200
-        mock_request.assert_awaited_once()
+        mock_request.assert_awaited_once_with(user_id="user_test_123", bound_owner_id="org_test_456")
 
     @pytest.mark.asyncio
     async def test_start_org_rejects_non_owner_admin(self, async_client, override_auth):
@@ -392,7 +393,8 @@ class TestStartOrgRules:
 
     @pytest.mark.asyncio
     async def test_start_allows_personal_context(self, async_client):
-        """Personal user (no org_id) still reaches the device-code request."""
+        """Personal user (no org_id) still reaches the device-code request, and
+        the session binds to the user themselves (resolve_owner_id == user_id)."""
         fake_resp = DeviceCodeResponse(
             user_code="TEST-1234",
             verification_uri="https://chatgpt.com/codex",
@@ -402,24 +404,91 @@ class TestStartOrgRules:
         with patch(
             "routers.oauth.request_device_code",
             new=AsyncMock(return_value=fake_resp),
-        ):
+        ) as mock_request:
             resp = await async_client.post("/api/v1/oauth/chatgpt/start")
         assert resp.status_code == 200
+        mock_request.assert_awaited_once_with(user_id="user_test_123", bound_owner_id="user_test_123")
 
 
 class TestPollOrgClaim:
-    """POST /api/v1/oauth/chatgpt/poll — org ownership claim on completion."""
+    """POST /api/v1/oauth/chatgpt/poll — org ownership claim on completion.
+
+    Binding + authorization are decided at /start (owner-gated) and carried on
+    the pending row; /poll surfaces that decision as DevicePollResult.bound_owner_id
+    and can only complete what /start authorized. The caller's Clerk context at
+    poll time NEVER drives the claim or the binding — switching contexts between
+    start and poll cannot re-target either.
+    """
+
+    @pytest.mark.asyncio
+    async def test_poll_member_personal_start_then_org_poll_does_not_claim(self, async_client, override_auth):
+        """THE ATTACK. A non-admin member calls /start in PERSONAL context
+        (ungated — they bind the session to themselves) and completes the user
+        code. They then switch their Clerk context to the org and call /poll.
+
+        The session was authorized FOR the member personally at /start, so the
+        completed row is bound to the member's user_id (carried on
+        DevicePollResult.bound_owner_id). The claim is driven by THAT binding,
+        not the caller's current org context: claim_oauth_connector must NOT
+        fire, so the member can never become the org's set-once connector and
+        lock out a legitimate admin."""
+        override_auth(ORG_MEMBER)
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                # The session bound itself to the member at /start (personal).
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_789")),
+            ) as mock_poll,
+            patch(
+                "core.repositories.billing_repo.claim_oauth_connector",
+                new=AsyncMock(),
+            ) as mock_claim,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "completed", "account_id": "acc_1"}
+        # /poll must not pass a binding arg — it reads the binding off the row.
+        mock_poll.assert_awaited_once_with(user_id="user_test_789")
+        # Personal-bound session → no org claim, even though the caller is now
+        # in org context.
+        mock_claim.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_poll_completion_claims_owner_once_for_org(self, async_client, override_auth):
-        """Org admin /poll returns completed -> claim_oauth_connector awaited
+        """Org admin happy path: started + owner-gated in ORG context at /start,
+        so the session is bound to the org. /poll surfaces bound_owner_id=org and
+        claims the admin as the org's connector. claim_oauth_connector awaited
         with (org_id, connector_user_id=<admin>). The repo layer makes this
         set-once; the router just fires the claim on the completing sign-in."""
         override_auth(ORG_OWNER_ADMIN)
         with (
             patch(
                 "routers.oauth.poll_device_code",
-                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="org_test_456")),
+            ) as mock_poll,
+            patch(
+                "core.repositories.billing_repo.claim_oauth_connector",
+                new=AsyncMock(),
+            ) as mock_claim,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "completed", "account_id": "acc_1"}
+        mock_poll.assert_awaited_once_with(user_id="user_test_123")
+        mock_claim.assert_awaited_once_with("org_test_456", connector_user_id="user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_poll_org_start_then_personal_poll_still_claims_org(self, async_client, override_auth):
+        """Context switch the OTHER way: the session was started + owner-gated in
+        ORG context (bound to the org), but the caller polls in PERSONAL context.
+        The claim STILL happens for the org — the session's binding wins over the
+        caller's current context. connector_user_id is the polling caller's
+        user_id (the human who held the session)."""
+        # Personal context: no org_id. The session, however, was bound to the org.
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="org_test_456")),
             ),
             patch(
                 "core.repositories.billing_repo.claim_oauth_connector",
@@ -432,7 +501,7 @@ class TestPollOrgClaim:
         mock_claim.assert_awaited_once_with("org_test_456", connector_user_id="user_test_123")
 
     @pytest.mark.asyncio
-    async def test_poll_pending_does_not_claim_for_org(self, async_client, override_auth):
+    async def test_poll_pending_does_not_claim(self, async_client, override_auth):
         """A still-pending poll must NOT claim ownership."""
         override_auth(ORG_OWNER_ADMIN)
         with (
@@ -451,37 +520,23 @@ class TestPollOrgClaim:
         mock_claim.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_poll_org_binds_completed_row_to_org(self, async_client, override_auth):
-        """Org admin /poll must stamp the completed token row with the ORG id
-        (resolve_owner_id), not the admin's user_id. The binding is what lets a
-        later consumption read reject reuse of this row by a different
-        workspace (one ChatGPT account ↔ one container)."""
-        override_auth(ORG_OWNER_ADMIN)
+    async def test_poll_personal_bound_session_does_not_claim(self, async_client):
+        """Personal /poll of a personally-bound session: no org claim (a personal
+        binding never names an org). /poll passes no binding arg."""
         with (
             patch(
                 "routers.oauth.poll_device_code",
-                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
             ) as mock_poll,
             patch(
                 "core.repositories.billing_repo.claim_oauth_connector",
                 new=AsyncMock(),
-            ),
+            ) as mock_claim,
         ):
             resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
         assert resp.status_code == 200
-        mock_poll.assert_awaited_once_with(user_id="user_test_123", bound_owner_id="org_test_456")
-
-    @pytest.mark.asyncio
-    async def test_poll_personal_binds_completed_row_to_user(self, async_client):
-        """Personal /poll binds the row to the user's own id (resolve_owner_id
-        == user_id for personal context)."""
-        with patch(
-            "routers.oauth.poll_device_code",
-            new=AsyncMock(return_value=DevicePollResult(account_id="acc_1")),
-        ) as mock_poll:
-            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
-        assert resp.status_code == 200
-        mock_poll.assert_awaited_once_with(user_id="user_test_123", bound_owner_id="user_test_123")
+        mock_poll.assert_awaited_once_with(user_id="user_test_123")
+        mock_claim.assert_not_awaited()
 
 
 class TestDisconnectOrgRules:

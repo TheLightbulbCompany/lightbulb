@@ -68,7 +68,7 @@ async def test_request_device_code_returns_user_facing_fields(oauth_table):
         )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_post):
-        result = await request_device_code(user_id="u_1")
+        result = await request_device_code(user_id="u_1", bound_owner_id="u_1")
 
     assert result.user_code == "ABCD-1234"
     assert result.verification_uri == VERIFICATION_URL
@@ -93,13 +93,13 @@ async def test_poll_pending_returns_pending(oauth_table):
         )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
-        await request_device_code(user_id="u_1")
+        await request_device_code(user_id="u_1", bound_owner_id="u_1")
 
     async def fake_poll(self, url, **kwargs):
         return httpx.Response(403, request=httpx.Request("POST", str(url)))
 
     with patch.object(httpx.AsyncClient, "post", new=fake_poll):
-        result = await poll_device_code(user_id="u_1", bound_owner_id="u_1")
+        result = await poll_device_code(user_id="u_1")
     assert result is DevicePollPending
 
 
@@ -120,7 +120,7 @@ async def test_poll_success_persists_encrypted_tokens(oauth_table):
         )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
-        await request_device_code(user_id="u_1")
+        await request_device_code(user_id="u_1", bound_owner_id="u_1")
 
     # Two-stage success:
     #   1st call: deviceauth/token → returns authorization_code + verifier
@@ -152,7 +152,7 @@ async def test_poll_success_persists_encrypted_tokens(oauth_table):
         raise AssertionError(f"unexpected URL: {url_str}")
 
     with patch.object(httpx.AsyncClient, "post", new=fake_poll_then_exchange):
-        result = await poll_device_code(user_id="u_1", bound_owner_id="u_1")
+        result = await poll_device_code(user_id="u_1")
 
     assert isinstance(result, DevicePollResult)
     assert result.account_id == "chatgpt-account-1"
@@ -182,7 +182,7 @@ async def test_poll_propagates_exchange_failure(oauth_table):
         )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
-        await request_device_code(user_id="u_1")
+        await request_device_code(user_id="u_1", bound_owner_id="u_1")
 
     async def fake_poll_exchange_400(self, url, **kwargs):
         url_str = str(url)
@@ -198,7 +198,7 @@ async def test_poll_propagates_exchange_failure(oauth_table):
 
     with patch.object(httpx.AsyncClient, "post", new=fake_poll_exchange_400):
         with pytest.raises(OAuthExchangeFailedError):
-            await poll_device_code(user_id="u_1", bound_owner_id="u_1")
+            await poll_device_code(user_id="u_1")
 
 
 @pytest.mark.asyncio
@@ -220,7 +220,7 @@ async def test_poll_legacy_row_raises_clean_error(oauth_table):
         },
     )
     with pytest.raises(OAuthExchangeFailedError, match="Stale OAuth session"):
-        await poll_device_code(user_id="u_legacy", bound_owner_id="u_legacy")
+        await poll_device_code(user_id="u_legacy")
 
 
 @pytest.mark.asyncio
@@ -253,14 +253,14 @@ async def test_request_device_code_refuses_to_clobber_active_session(oauth_table
         )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
-        await request_device_code(user_id="u_1")
+        await request_device_code(user_id="u_1", bound_owner_id="u_1")
     with patch.object(httpx.AsyncClient, "post", new=fake_complete):
-        await poll_device_code(user_id="u_1", bound_owner_id="u_1")
+        await poll_device_code(user_id="u_1")
 
     # User now has state=active. A second request_device_code must refuse.
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
         with pytest.raises(OAuthAlreadyActiveError):
-            await request_device_code(user_id="u_1")
+            await request_device_code(user_id="u_1", bound_owner_id="u_1")
 
 
 @pytest.mark.asyncio
@@ -292,9 +292,9 @@ async def test_revoke_deletes_oauth_row(oauth_table):
         )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
-        await request_device_code(user_id="u_1")
+        await request_device_code(user_id="u_1", bound_owner_id="u_1")
     with patch.object(httpx.AsyncClient, "post", new=fake_complete):
-        await poll_device_code(user_id="u_1", bound_owner_id="u_1")
+        await poll_device_code(user_id="u_1")
 
     await revoke_user_oauth(user_id="u_1")
 
@@ -371,15 +371,105 @@ async def _complete_flow(user_id: str, bound_owner_id: str) -> None:
         )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
-        await request_device_code(user_id=user_id)
+        await request_device_code(user_id=user_id, bound_owner_id=bound_owner_id)
     with patch.object(httpx.AsyncClient, "post", new=fake_complete):
-        await poll_device_code(user_id=user_id, bound_owner_id=bound_owner_id)
+        await poll_device_code(user_id=user_id)
+
+
+@pytest.mark.asyncio
+async def test_request_device_code_stamps_binding_on_pending_row(oauth_table):
+    """The binding is fixed at session start, where the owner gate runs. /start
+    stamps bound_owner_id onto the PENDING row so completion can't re-target it."""
+
+    async def fake_seed(self, url, **kwargs):
+        return _ok({"device_auth_id": "dev_p", "user_code": "PEND-1", "interval": 5}, url=str(url))
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        await request_device_code(user_id="user_a", bound_owner_id="org_1")
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    row = client.get_item(TableName="test-oauth-tokens", Key={"user_id": {"S": "user_a"}})["Item"]
+    assert row["state"]["S"] == "pending"
+    assert row["bound_owner_id"]["S"] == "org_1"
+
+
+@pytest.mark.asyncio
+async def test_poll_reads_binding_from_pending_row_and_returns_it(oauth_table):
+    """poll_device_code reads the binding off the pending row (stamped at /start)
+    and (a) stamps it on the active row, (b) surfaces it on DevicePollResult so
+    the router learns what the session was actually authorized for — independent
+    of who is polling."""
+    await _complete_flow(user_id="user_a", bound_owner_id="org_1")
+
+    # Re-run a completion to capture the return value directly.
+    await revoke_user_oauth(user_id="user_a")
+
+    async def fake_seed(self, url, **kwargs):
+        return _ok({"device_auth_id": "dev_b", "user_code": "BND-1", "interval": 5}, url=str(url))
+
+    async def fake_complete(self, url, **kwargs):
+        url_str = str(url)
+        if "deviceauth/token" in url_str:
+            return _ok({"authorization_code": "ac", "code_verifier": "v"}, url=url_str)
+        return _ok(
+            {"access_token": "eyJ.x.y", "refresh_token": "rt", "id_token": "eyJ.z", "account_id": "acc"},
+            url=url_str,
+        )
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        await request_device_code(user_id="user_a", bound_owner_id="org_1")
+    with patch.object(httpx.AsyncClient, "post", new=fake_complete):
+        result = await poll_device_code(user_id="user_a")
+
+    assert isinstance(result, DevicePollResult)
+    assert result.bound_owner_id == "org_1"
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    row = client.get_item(TableName="test-oauth-tokens", Key={"user_id": {"S": "user_a"}})["Item"]
+    assert row["bound_owner_id"]["S"] == "org_1"
+
+
+@pytest.mark.asyncio
+async def test_poll_legacy_pending_row_without_binding_falls_back_to_user_id(oauth_table):
+    """A pending row written before this change has no bound_owner_id. poll falls
+    back to user_id (personal semantics) so an in-flight session at deploy time
+    completes cleanly instead of erroring or binding to an empty owner."""
+    # Hand-write a pending row in the new device_auth_id shape but WITHOUT the
+    # binding field (mid-deploy: started on old code, polled on new code).
+    boto3.resource("dynamodb", region_name="us-east-1").Table("test-oauth-tokens").put_item(
+        Item={
+            "user_id": "user_mid",
+            "state": "pending",
+            "device_auth_id": "dev_mid",
+            "user_code": "MID-1",
+            "interval": 5,
+        }
+    )
+
+    async def fake_complete(self, url, **kwargs):
+        url_str = str(url)
+        if "deviceauth/token" in url_str:
+            return _ok({"authorization_code": "ac", "code_verifier": "v"}, url=url_str)
+        return _ok(
+            {"access_token": "eyJ.x.y", "refresh_token": "rt", "id_token": "eyJ.z", "account_id": "acc"},
+            url=url_str,
+        )
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_complete):
+        result = await poll_device_code(user_id="user_mid")
+
+    assert isinstance(result, DevicePollResult)
+    assert result.bound_owner_id == "user_mid"
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    row = client.get_item(TableName="test-oauth-tokens", Key={"user_id": {"S": "user_mid"}})["Item"]
+    assert row["bound_owner_id"]["S"] == "user_mid"
 
 
 @pytest.mark.asyncio
 async def test_completed_poll_writes_bound_owner_id(oauth_table):
-    """A completed device-code flow stamps the workspace owner it was created
-    for onto the token row."""
+    """A completed device-code flow stamps the workspace owner the session was
+    started for (fixed at /start) onto the token row."""
     await _complete_flow(user_id="user_a", bound_owner_id="org_1")
 
     client = boto3.client("dynamodb", region_name="us-east-1")

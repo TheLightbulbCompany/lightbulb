@@ -21,7 +21,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
 from core.containers.workspace import delete_auth_profile_store
 from core.repositories import billing_repo
 from core.services.oauth_service import (
@@ -108,7 +108,11 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
     if ctx.is_org_context:
         await _require_org_oauth_owner(ctx)
     try:
-        result = await request_device_code(user_id=ctx.user_id)
+        # Bind the session to the workspace it is being started for, decided
+        # HERE under the owner gate (org_id in org context, the user's own id
+        # personally). The binding rides the pending row through to completion;
+        # /poll cannot re-derive it from the polling caller's context.
+        result = await request_device_code(user_id=ctx.user_id, bound_owner_id=resolve_owner_id(ctx))
     except OAuthAlreadyActiveError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except OAuthExchangeFailedError as e:
@@ -131,32 +135,33 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
     ),
 )
 async def poll(ctx: AuthContext = Depends(get_current_user)):
-    # No owner gate here (unlike /start and /disconnect): poll_device_code 502s
-    # unless a pending device-code row exists for ctx.user_id, and only /start —
-    # which IS owner-gated — can create one. A non-owner member therefore has no
-    # pending row to poll, so they can never reach the connector-claim below.
+    # No owner gate here (unlike /start and /disconnect), and none is needed:
+    # the binding AND the authorization are both fixed at /start (which IS
+    # owner-gated) and ride the pending row through to completion. /poll can
+    # only complete what /start authorized — it never re-derives the workspace
+    # from the polling caller's current Clerk context. poll_device_code also
+    # 502s unless a pending row exists for ctx.user_id, which only /start can
+    # create.
     try:
-        # Bind the completed row to the workspace this sign-in is for (org_id
-        # in org context, the user's own id personally). One ChatGPT account ↔
-        # one container — a later consumption read for a different workspace is
-        # rejected, so the connector can't have the same row staged into a
-        # second container.
-        result = await poll_device_code(user_id=ctx.user_id, bound_owner_id=resolve_owner_id(ctx))
+        result = await poll_device_code(user_id=ctx.user_id)
     except OAuthExchangeFailedError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     if result is DevicePollPending:
         return {"status": "pending"}
     assert isinstance(result, DevicePollResult)
-    if ctx.is_org_context:
-        # Completing the first sign-in claims workspace ownership of the
-        # ChatGPT connection. claim_oauth_connector is set-once at the repo
-        # layer (conditional write), so this can never repoint an org whose
-        # owner is already recorded. Best-effort: a DDB blip must not fail
-        # an otherwise-completed OAuth.
+    if is_org_owner_id(result.bound_owner_id):
+        # The session was started (and owner-gated) FOR this org at /start; the
+        # caller's Clerk context at poll time is irrelevant — switching contexts
+        # between start and poll cannot re-target the binding or let an ungated
+        # personal session claim an org. Completing the first sign-in claims
+        # workspace ownership of the ChatGPT connection. claim_oauth_connector
+        # is set-once at the repo layer (conditional write), so this can never
+        # repoint an org whose owner is already recorded. Best-effort: a DDB
+        # blip must not fail an otherwise-completed OAuth.
         try:
-            await billing_repo.claim_oauth_connector(resolve_owner_id(ctx), connector_user_id=ctx.user_id)
+            await billing_repo.claim_oauth_connector(result.bound_owner_id, connector_user_id=ctx.user_id)
         except Exception:
-            logger.exception("Failed to claim oauth connector for org %s", ctx.org_id)
+            logger.exception("Failed to claim oauth connector for owner %s", result.bound_owner_id)
     return {"status": "completed", "account_id": result.account_id}
 
 

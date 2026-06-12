@@ -198,15 +198,12 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 account["owner_id"],
                 provider_choice=metadata_provider,
                 byo_provider=metadata_byo if metadata_provider == "byo_key" else None,
-            )
-        except ValueError:
-            # Org invariant violation (chatgpt_oauth on org). Should
-            # not happen post-Workstream-B because /trial-checkout's
-            # router-level guard rejects the same combo, but
-            # defense-in-depth.
-            logger.exception(
-                "Webhook tried to set invalid provider_choice for owner %s",
-                account["owner_id"],
+                # create_flat_fee_checkout threads the subscribing human's
+                # Clerk id through subscription metadata; for chatgpt_oauth
+                # that human is the workspace owner / initial connector.
+                # None just leaves any synchronously-written connector
+                # untouched.
+                connector_user_id=(metadata.get("clerk_user_id") if metadata_provider == "chatgpt_oauth" else None),
             )
         except Exception:
             logger.exception(

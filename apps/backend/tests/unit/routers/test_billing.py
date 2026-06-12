@@ -357,11 +357,14 @@ class TestStripeWebhook:
         assert kwargs["status"] == "trialing"
         assert kwargs["trial_end"] == 1700000000
         # Webhook backup writes provider_choice to billing_repo, keyed on
-        # account["owner_id"] (NOT clerk_user_id, NOT user_repo).
+        # account["owner_id"] (NOT clerk_user_id, NOT user_repo). bedrock is
+        # not connector-backed, so connector_user_id is None despite the
+        # clerk_user_id present in metadata.
         mock_repo.set_provider_choice.assert_awaited_once_with(
             "org_x",
             provider_choice="bedrock_claude",
             byo_provider=None,
+            connector_user_id=None,
         )
 
     @pytest.mark.asyncio

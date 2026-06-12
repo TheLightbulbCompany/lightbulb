@@ -71,7 +71,6 @@ async def test_change_provider_bedrock_to_byo_key_happy_path(
         "user_test_123",
         provider_choice="byo_key",
         byo_provider="anthropic",
-        owner_type="personal",
     )
 
 

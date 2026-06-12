@@ -362,7 +362,6 @@ class TestStripeWebhook:
             "org_x",
             provider_choice="bedrock_claude",
             byo_provider=None,
-            owner_type="org",
         )
 
     @pytest.mark.asyncio

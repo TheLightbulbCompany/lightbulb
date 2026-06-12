@@ -52,7 +52,6 @@ async def test_trial_checkout_persists_provider_choice_synchronously(async_clien
         "user_x",
         provider_choice="bedrock_claude",
         byo_provider=None,
-        owner_type="personal",
     )
 
 
@@ -84,7 +83,6 @@ async def test_trial_checkout_persists_byo_provider_when_byo_key(async_client):
         "user_y",
         provider_choice="byo_key",
         byo_provider="openai",
-        owner_type="personal",
     )
 
 
@@ -119,7 +117,6 @@ async def test_trial_checkout_byo_key_without_provider_now_allowed(async_client)
         "user_v",
         provider_choice="byo_key",
         byo_provider=None,
-        owner_type="personal",
     )
 
 

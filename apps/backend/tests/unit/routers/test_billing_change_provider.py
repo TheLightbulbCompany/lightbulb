@@ -71,6 +71,9 @@ async def test_change_provider_bedrock_to_byo_key_happy_path(
         "user_test_123",
         provider_choice="byo_key",
         byo_provider="anthropic",
+        # Non-chatgpt switch always passes connector_user_id=None so the repo
+        # REMOVEs any stale connector from the row.
+        connector_user_id=None,
     )
 
 
@@ -140,23 +143,95 @@ async def test_change_provider_chatgpt_without_oauth_tokens_returns_409(
 
 
 @pytest.mark.asyncio
-async def test_change_provider_chatgpt_blocked_for_org_context(
+async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
     async_client_org_admin,
-    patch_background_provision,
 ):
-    """Mirrors /trial-checkout's org guard — ChatGPT OAuth is personal-only
-    (memory/project_chatgpt_oauth_personal_only.md). A switched-into-org
-    admin can't pick OAuth from the change-provider modal either."""
-    with patch(
-        "core.repositories.billing_repo.get_by_owner_id",
-        new=AsyncMock(
-            return_value={
-                "owner_id": "org_test_456",
-                "owner_type": "org",
-                "stripe_subscription_id": "sub_x",
-                "subscription_status": "active",
-                "provider_choice": "bedrock_claude",
-            },
+    """Org owners may now run on chatgpt_oauth: the org admin's own ChatGPT
+    account backs the org container. A legacy org row with no recorded
+    connector is claimed by the first admin to switch, and that identity is
+    persisted via set_provider_choice(connector_user_id=<caller>)."""
+    org_account = {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "bedrock_claude",
+        # No oauth_connector_user_id — never been on chatgpt_oauth.
+    }
+
+    async def _replace(owner_id, *, providers, default_model, plugin_entries, ceo_model, cheap_model):
+        # Hot swap into chatgpt_oauth — shape pinned by the personal hot-path
+        # test; here we only care that the org claim + connector write happen.
+        pass
+
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=org_account),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ) as mock_set_pc,
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(return_value={"access_token": "tok", "account_id": "acc"}),
+        ),
+        patch(
+            "core.containers.workspace.pre_stage_auth_profile_store",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.config_patcher.replace_provider_block",
+            new=AsyncMock(side_effect=_replace),
+        ),
+    ):
+        resp = await async_client_org_admin.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "chatgpt_oauth"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["provider_choice"] == "chatgpt_oauth"
+    # The owner identity (the switching admin, user_test_123) is recorded on
+    # the org row so a non-owner admin can't later hijack the provider.
+    mock_set_pc.assert_awaited_once_with(
+        "org_test_456",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_test_123",
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_owner_admin_cannot_switch_org_to_chatgpt(
+    async_client_org_admin,
+):
+    """One ChatGPT account ↔ one container, bound to the recorded owner. A
+    different org admin (user_b) cannot re-select chatgpt_oauth once user_a
+    has claimed it — 403 not_workspace_owner, no provider write."""
+    org_account = {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "bedrock_claude",
+        # user_a is the recorded owner; the caller (admin fixture) is
+        # user_test_123 — a different human.
+        "oauth_connector_user_id": "user_a",
+    }
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=org_account),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ) as mock_set_pc,
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(return_value={"access_token": "tok"}),
         ),
     ):
         resp = await async_client_org_admin.post(
@@ -165,7 +240,105 @@ async def test_change_provider_chatgpt_blocked_for_org_context(
         )
 
     assert resp.status_code == 403
-    assert resp.json()["detail"]["code"] == "org_chatgpt_oauth_forbidden"
+    assert resp.json()["detail"]["code"] == "not_workspace_owner"
+    mock_set_pc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
+    async_client_org_admin,
+    patch_background_provision,
+):
+    """Leaving chatgpt_oauth on an org revokes the RECORDED OWNER's token row
+    (user_a — the human who connected, not necessarily the switcher) and
+    deletes the owner-keyed EFS auth file (keyed on org_id, the container
+    owner)."""
+    org_account = {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "chatgpt_oauth",
+        "oauth_connector_user_id": "user_a",
+    }
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=org_account),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.key_service.get_secret_arn",
+            new=AsyncMock(return_value="arn:aws:secretsmanager:...:key"),
+        ),
+        patch(
+            "core.services.oauth_service.revoke_user_oauth",
+            new=AsyncMock(return_value=None),
+        ) as mock_revoke,
+        patch(
+            "core.containers.workspace.delete_auth_profile_store",
+            new=AsyncMock(return_value=None),
+        ) as mock_delete_auth,
+    ):
+        resp = await async_client_org_admin.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "byo_key", "byo_provider": "anthropic"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    # Tokens are keyed on the recorded human owner, not the org_id and not the
+    # (possibly different) switching admin.
+    mock_revoke.assert_awaited_once_with(user_id="user_a")
+    # The EFS auth-profiles.json lives under the CONTAINER OWNER (org_id).
+    mock_delete_auth.assert_awaited_once_with(user_id="org_test_456")
+
+
+@pytest.mark.asyncio
+async def test_personal_switch_away_still_revokes(
+    async_client,
+    patch_background_provision,
+):
+    """Personal owners are unchanged: owner_id == user, so revoke + delete
+    both key on the same id. With no recorded connector, the cleanup falls
+    back to the calling user."""
+    chatgpt_account = {
+        "owner_id": "user_test_123",
+        "owner_type": "personal",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "chatgpt_oauth",
+        # No oauth_connector_user_id — personal rows predate the field; the
+        # cleanup falls back to the calling user (which IS the owner).
+    }
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=chatgpt_account),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.oauth_service.revoke_user_oauth",
+            new=AsyncMock(return_value=None),
+        ) as mock_revoke,
+        patch(
+            "core.containers.workspace.delete_auth_profile_store",
+            new=AsyncMock(return_value=None),
+        ) as mock_delete_auth,
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "bedrock_claude"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+    mock_delete_auth.assert_awaited_once_with(user_id="user_test_123")
 
 
 @pytest.mark.asyncio

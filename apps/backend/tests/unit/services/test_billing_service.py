@@ -299,3 +299,36 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     assert created, "expected background_provision to be dispatched"
     for coro in created:
         coro.close()
+
+
+@pytest.mark.asyncio
+async def test_hot_swap_pre_stages_under_owner_id(monkeypatch):
+    """One ChatGPT account ↔ one container: the token READ is keyed on the
+    switcher (the connector), but the EFS auth file is WRITTEN under the
+    container OWNER (org_id for orgs). For an org the two ids differ — pin
+    that the read uses clerk_user_id and the write uses owner_id."""
+    get_tokens = AsyncMock(return_value={"access_token": "tok", "account_id": "acc"})
+    monkeypatch.setattr("core.services.oauth_service.get_decrypted_tokens", get_tokens)
+    pre_stage = AsyncMock()
+    monkeypatch.setattr("core.containers.workspace.pre_stage_auth_profile_store", pre_stage)
+    # Stub the config side so the helper reaches the patch step without real
+    # config I/O. build_provider_block returns the (providers, default, plugins)
+    # triple; replace_provider_block is the EFS write we don't care about here.
+    monkeypatch.setattr(
+        "core.containers.config.build_provider_block",
+        lambda **kwargs: ({}, {"primary": "p", "fallbacks": ["p"]}, {}),
+    )
+    monkeypatch.setattr("core.containers.config.premium_model_ref", lambda *a, **k: None)
+    monkeypatch.setattr("core.containers.config.cheap_model_ref", lambda *a, **k: "cheap")
+    monkeypatch.setattr("core.services.config_patcher.replace_provider_block", AsyncMock())
+
+    await billing_service._hot_swap_provider(
+        owner_id="org_1",
+        clerk_user_id="user_a",
+        new_provider="chatgpt_oauth",
+    )
+
+    # Token read keyed on the human connector (the switcher).
+    get_tokens.assert_awaited_once_with(user_id="user_a")
+    # Auth file written under the container owner (org_1), not the connector.
+    pre_stage.assert_awaited_once_with(user_id="org_1", oauth_tokens={"access_token": "tok", "account_id": "acc"})

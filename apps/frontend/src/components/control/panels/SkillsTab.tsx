@@ -233,7 +233,11 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setShowCreate((v) => !v)}
+              onClick={() => {
+                setShowCreate((v) => !v);
+                setCopied(false);
+              }}
+              aria-expanded={showCreate}
               className="text-xs border-[#e0dbd0]"
               style={{ fontFamily: "'DM Sans', sans-serif" }}
             >
@@ -260,8 +264,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               size="sm"
               className="text-xs border-[#e0dbd0]"
               onClick={() => {
-                void navigator.clipboard?.writeText(CREATE_SKILL_PROMPT);
-                setCopied(true);
+                void navigator.clipboard?.writeText(CREATE_SKILL_PROMPT).then(() => setCopied(true));
               }}
             >
               {copied ? "Copied — paste it in chat" : "Copy prompt"}

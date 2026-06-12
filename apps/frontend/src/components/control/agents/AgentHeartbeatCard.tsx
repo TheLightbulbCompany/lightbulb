@@ -63,6 +63,12 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
     if (stored.activeHours) {
       setHoursStart(stored.activeHours.start);
       setHoursEnd(stored.activeHours.end);
+    } else {
+      // Reset to the placeholder window — without this, switching from an
+      // agent WITH active hours to one without leaks the previous agent's
+      // times into this form, and enabling the checkbox would save them.
+      setHoursStart("09:00");
+      setHoursEnd("18:00");
     }
   }, [stored, dirty]);
 

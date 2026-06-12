@@ -21,6 +21,14 @@ export interface Connection {
   display_name: string;
   acquisition: "paste_token" | "direct_oauth";
   status: "connected" | "disconnected";
+  /**
+   * Static product flag from the catalog: this provider may only be granted
+   * by owners on Bedrock-managed inference. The UI pairs it with the owner's
+   * `provider_choice` to render a "switch to Bedrock to unlock" upsell in
+   * place of the connect action. The grant endpoints enforce the same rule
+   * server-side (a structured `requires_bedrock` 403).
+   */
+  requires_bedrock?: boolean;
 }
 
 interface ConnectionsResponse {

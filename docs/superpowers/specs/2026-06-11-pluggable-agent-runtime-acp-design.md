@@ -168,7 +168,7 @@ on the host for that harness."* The spawned adapter inherits gateway env
 | Isol8 provider path (`billing_accounts.provider_choice`) | Unlocks harness | Credential delivery |
 |---|---|---|
 | Bedrock managed | `claude` | `CLAUDE_CODE_USE_BEDROCK=1` + task-role IAM (no secret) |
-| ChatGPT OAuth (personal only) | `codex` | existing OAuth via codex-auth-bridge host config |
+| ChatGPT OAuth (personal + org via connector) | `codex` | existing OAuth pre-staged to EFS; codex-auth-bridge reads host config |
 | BYO Anthropic key | `claude` | `ANTHROPIC_API_KEY` (Fernet-decrypted → per-user task env) |
 | BYO OpenAI key | `codex` | `OPENAI_API_KEY` |
 | (new, fast-follow) Sign in with Claude | `claude` | Pro/Max OAuth in `~/.claude` — headless feasibility unverified |
@@ -196,15 +196,21 @@ harness availability maps 1:1 onto `provider_choice`:
 
 | Owner's `provider_choice` | Harness it can enable | Default | Why |
 |---|---|---|---|
-| **ChatGPT OAuth** ("signed in", personal only) | **Codex** | on | Codex auths via the OAuth we already provision (codex-auth-bridge); no Anthropic/Google creds present |
+| **ChatGPT OAuth** ("signed in", personal **and** org) | **Codex** | on | Codex auths via the OAuth tokens we already pre-stage onto EFS (codex-auth-bridge reads host auth); no Anthropic/Google creds present |
 | **Bedrock managed** | **Claude Code** | on | `CLAUDE_CODE_USE_BEDROCK=1` + task-role IAM; no OpenAI/Google creds present |
 | **BYO key** | **whichever keys exist** → Codex (OpenAI key), Claude Code (Anthropic key), Gemini (Google key); **both/all if multiple keys** | the auth-available set | Harness auth = the BYO key for that provider |
 
 So: signed-in → Codex, Bedrock → Claude, BYOK → choice/both. The UI offers **only** the
 harnesses the owner can authenticate; `provision_gate.py` enforces the same server-side so a
-listing/agent can't request an unauthable harness. Org owners can't pick ChatGPT OAuth
-(existing personal-only guard), so Codex-via-OAuth is personal-only; orgs reach Codex only
-via a BYO OpenAI key.
+listing/agent can't request an unauthable harness.
+
+**ChatGPT OAuth is available to orgs as well as personal owners** (PR #864, merged
+2026-06-12 — the prior personal-only guard is gone). Orgs use an **org connector**: an org
+admin completes the device-code flow once, the tokens are bound to the org workspace and
+pre-staged onto the owner's EFS. That EFS auth is exactly what the Codex ACP adapter's
+`codex-auth-bridge` reads, so **Codex works for an org identically to a personal owner** —
+no BYO OpenAI key required. (Binding a ChatGPT account to a shared org container stays an
+admin-only action, per the gate's `action_admin_only=owner_id.startswith("org_")`.)
 
 **Shape of the setting.** A small allowlist on the owner record, e.g.
 `enabled_harnesses: ["claude"]`, **defaulted** from `provider_choice` (zero-config: you get

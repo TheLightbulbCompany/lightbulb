@@ -1,60 +1,42 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import React from "react";
 import { ControlSidebar } from "../ControlSidebar";
 
-// SWR mock: each test seeds a different /users/me response.
-const mockSWRData = vi.fn();
-vi.mock("swr", () => ({
-  default: () => ({ data: mockSWRData(), error: null, isLoading: false, mutate: vi.fn() }),
-}));
-
-vi.mock("@/lib/api", () => ({
-  useApi: () => ({
-    get: vi.fn(),
-    post: vi.fn(),
-  }),
-}));
-
+// The sidebar's only data dependency is the Clerk org membership (admin
+// gating for the Usage item). Each test seeds it via this holder.
+const mockMembership = vi.fn();
 vi.mock("@clerk/nextjs", () => ({
-  useOrganization: () => ({ membership: null }),
+  useOrganization: () => ({ membership: mockMembership() }),
 }));
 
 describe("ControlSidebar", () => {
-  beforeEach(() => {
-    mockSWRData.mockReset();
-  });
-
-  it("shows the Credits item for bedrock_claude users", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+  it("renders the consolidated nav: Skills and Model & Credits, no Credits or Capabilities items", () => {
+    mockMembership.mockReturnValue(null); // personal owner
     render(<ControlSidebar activePanel="overview" />);
-    expect(screen.getByText("Credits")).toBeInTheDocument();
-  });
-
-  it("hides the Credits item for byo_key users", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "byo_key" });
-    render(<ControlSidebar activePanel="overview" />);
+    expect(screen.getByText("Skills")).toBeInTheDocument();
+    expect(screen.getByText("Model & Credits")).toBeInTheDocument();
+    // Credits merged into Model & Credits; Capabilities flattened into Skills.
     expect(screen.queryByText("Credits")).not.toBeInTheDocument();
+    expect(screen.queryByText("Capabilities")).not.toBeInTheDocument();
+    expect(screen.queryByText("LLM Provider")).not.toBeInTheDocument();
   });
 
-  it("hides the Credits item for chatgpt_oauth users", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "chatgpt_oauth" });
-    render(<ControlSidebar activePanel="overview" />);
-    expect(screen.queryByText("Credits")).not.toBeInTheDocument();
-  });
-
-  it("shows the Credits item while /users/me is still loading (undefined)", () => {
-    mockSWRData.mockReturnValue(undefined);
-    render(<ControlSidebar activePanel="overview" />);
-    // Loading state: render the item rather than flash it on resolve.
-    expect(screen.getByText("Credits")).toBeInTheDocument();
-  });
-
-  it("shows the Channels nav item for every provider", () => {
-    // Channels is provider-agnostic — unlike Credits, it isn't gated on
-    // provider_choice, so any seeded value (here byo_key) must still show it.
-    mockSWRData.mockReturnValue({ provider_choice: "byo_key" });
+  it("shows the Channels nav item", () => {
+    mockMembership.mockReturnValue(null);
     render(<ControlSidebar activePanel="overview" />);
     expect(screen.getByText("Channels")).toBeInTheDocument();
+  });
+
+  it("hides Usage from non-admin org members", () => {
+    mockMembership.mockReturnValue({ role: "org:member" });
+    render(<ControlSidebar activePanel="overview" />);
+    expect(screen.queryByText("Usage")).not.toBeInTheDocument();
+  });
+
+  it("shows Usage to org admins", () => {
+    mockMembership.mockReturnValue({ role: "org:admin" });
+    render(<ControlSidebar activePanel="overview" />);
+    expect(screen.getByText("Usage")).toBeInTheDocument();
   });
 });

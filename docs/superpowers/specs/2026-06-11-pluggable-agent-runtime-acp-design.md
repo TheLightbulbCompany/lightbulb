@@ -180,6 +180,39 @@ surfaces the structured blocked state instead of a runtime spawn error.
 
 ## 3. Isol8-side work (all of it)
 
+### 3.0 Enablement model — setting-driven, credential-gated
+
+**Setting-based, not config-based.** The source of truth for "which harnesses are enabled"
+is a **per-owner setting** stored alongside `provider_choice` (the `billing_accounts` /
+owner record), and `config.py` *projects* it into `openclaw.json` (`acp.allowedAgents` +
+`plugins.entries.acpx`). It must not live only in the container config, for the same reason
+nothing else does: `config_reconciler` / `config_patcher` can rewrite `openclaw.json`, and a
+reprovision regenerates it from scratch — a config-only flag would silently drop on the next
+Track-1 patch or reprovision. Settings survive; config is derived.
+
+**Availability is gated by credentials, and that gate IS the matrix you described.** A
+harness can only authenticate if the owner has that harness's model-provider credentials, so
+harness availability maps 1:1 onto `provider_choice`:
+
+| Owner's `provider_choice` | Harness it can enable | Default | Why |
+|---|---|---|---|
+| **ChatGPT OAuth** ("signed in", personal only) | **Codex** | on | Codex auths via the OAuth we already provision (codex-auth-bridge); no Anthropic/Google creds present |
+| **Bedrock managed** | **Claude Code** | on | `CLAUDE_CODE_USE_BEDROCK=1` + task-role IAM; no OpenAI/Google creds present |
+| **BYO key** | **whichever keys exist** → Codex (OpenAI key), Claude Code (Anthropic key), Gemini (Google key); **both/all if multiple keys** | the auth-available set | Harness auth = the BYO key for that provider |
+
+So: signed-in → Codex, Bedrock → Claude, BYOK → choice/both. The UI offers **only** the
+harnesses the owner can authenticate; `provision_gate.py` enforces the same server-side so a
+listing/agent can't request an unauthable harness. Org owners can't pick ChatGPT OAuth
+(existing personal-only guard), so Codex-via-OAuth is personal-only; orgs reach Codex only
+via a BYO OpenAI key.
+
+**Shape of the setting.** A small allowlist on the owner record, e.g.
+`enabled_harnesses: ["claude"]`, **defaulted** from `provider_choice` (zero-config: you get
+the harness you can auth) and optionally **narrowable** by the user (e.g. a BYOK owner with
+both keys who wants Jarvis to use only Codex). `config.py` renders `allowedAgents` =
+`enabled_harnesses ∩ credential-available`. This is the only new stored state; everything
+else is projection.
+
 ### 3.1 Image (`apps/infra/openclaw/Dockerfile`)
 
 - `@anthropic-ai/claude-code` and `@google/gemini-cli` are **already baked** as global

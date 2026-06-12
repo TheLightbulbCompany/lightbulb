@@ -14,6 +14,7 @@ from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
     OAuthAlreadyActiveError,
+    OAuthBoundElsewhereError,
 )
 
 
@@ -82,6 +83,23 @@ async def test_start_returns_409_when_already_active(async_client):
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/start")
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_start_returns_403_when_bound_elsewhere(async_client):
+    """When the active row is bound to a DIFFERENT workspace, /start must NOT
+    return 409 — the wizard treats a /start 409 as completion and would advance
+    with no usable tokens for THIS workspace. Map to 403 with the human-readable
+    detail so the wizard surfaces it as an error (its error branch shows
+    e.message, which carries body.detail)."""
+    msg = "This ChatGPT account is connected to a different workspace. Disconnect it there before connecting here."
+    with patch(
+        "routers.oauth.request_device_code",
+        new=AsyncMock(side_effect=OAuthBoundElsewhereError(msg)),
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == msg
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,7 @@ from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
     OAuthAlreadyActiveError,
+    OAuthBoundElsewhereError,
     OAuthExchangeFailedError,
     caller_may_manage_connector,
     get_decrypted_tokens_consistent,
@@ -115,6 +116,13 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
         result = await request_device_code(user_id=ctx.user_id, bound_owner_id=resolve_owner_id(ctx))
     except OAuthAlreadyActiveError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except OAuthBoundElsewhereError as e:
+        # NOT 409: the wizard hook treats a /start 409 as "already connected"
+        # and advances, but a row bound to a different workspace means THIS
+        # workspace has no usable tokens — advancing would loop the user back
+        # through the provision gate. 403 with the human-readable detail routes
+        # the wizard into its error branch, which renders e.message (the detail).
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except OAuthExchangeFailedError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     return {

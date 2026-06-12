@@ -55,8 +55,16 @@ EXCHANGE_REDIRECT_URI: Final = f"{AUTH_BASE_URL}/deviceauth/callback"
 
 
 class OAuthAlreadyActiveError(Exception):
-    """Raised when start is called for a user who already has active
-    tokens. Callers should reuse or revoke before starting a new flow."""
+    """Raised when start is called for a user who already has active tokens
+    bound to THIS workspace. The workspace is genuinely already connected;
+    callers should reuse or revoke before starting a new flow."""
+
+
+class OAuthBoundElsewhereError(Exception):
+    """Raised when start is called for a workspace while the user's active
+    tokens are bound to a DIFFERENT workspace. This workspace is NOT connected,
+    so it must not be reported as already-active — the caller surfaces a real
+    error telling the user to disconnect at the other workspace first."""
 
 
 class OAuthExchangeFailedError(Exception):
@@ -111,7 +119,11 @@ async def request_device_code(*, user_id: str, bound_owner_id: str) -> DeviceCod
     member starting a personal, ungated session and then polling in org context
     to hijack the org's connector).
 
-    Raises OAuthAlreadyActiveError if the user already has active tokens.
+    Raises OAuthAlreadyActiveError if the user already has active tokens bound
+    to THIS workspace (genuinely already-connected). Raises
+    OAuthBoundElsewhereError if the active tokens are bound to a DIFFERENT
+    workspace — this workspace is not connected, so the caller must surface a
+    real error rather than treating it as completion.
     """
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         resp = await client.post(
@@ -156,6 +168,19 @@ async def request_device_code(*, user_id: str, bound_owner_id: str) -> DeviceCod
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # The put failed because an active row exists. Whether that means
+            # "already connected here" or "connected for a different workspace"
+            # depends on the row's binding: an active row bound to THIS
+            # workspace is genuinely already-connected (the wizard may treat
+            # this as completion), but one bound elsewhere leaves the current
+            # workspace unconnected and must surface a distinct error so the
+            # wizard doesn't advance with no usable tokens.
+            existing = _table().get_item(Key={"user_id": user_id}).get("Item")
+            if existing and existing.get("state") == "active" and not _row_belongs_to(existing, bound_owner_id):
+                raise OAuthBoundElsewhereError(
+                    "This ChatGPT account is connected to a different workspace. "
+                    "Disconnect it there before connecting here."
+                ) from None
             raise OAuthAlreadyActiveError(
                 f"User {user_id} already has active OAuth tokens — revoke before starting again"
             ) from None
@@ -352,8 +377,14 @@ def _row_belongs_to(row: Mapping[str, Any], bound_to: str | None) -> bool:
     - ``bound_to is None`` — caller didn't specify a workspace; keep the
       pre-binding behavior (no check). Production consumption reads always
       pass ``bound_to``; this branch is for incidental/admin callers.
-    - row has NO ``bound_owner_id`` (legacy, pre-binding) — admissible for
-      any reader so existing personal users keep working through the cutover.
+    - row has NO ``bound_owner_id`` (legacy, pre-binding) — treated as
+      implicitly bound to its own ``user_id``. Legacy rows predate
+      orgs-on-chatgpt entirely, so they can only legitimately back the
+      personal workspace of the human who created them. A personal owner's
+      ``bound_to`` equals the row's ``user_id``, so no existing personal user
+      is affected; but an org consuming an unbound row (``bound_to=org_…``)
+      now requires a fresh, org-bound sign-in instead of silently sharing the
+      human's personal ChatGPT account.
     - row's ``bound_owner_id`` matches ``bound_to`` — the row was created
       for this workspace; admit it.
     - row's ``bound_owner_id`` differs — a DIFFERENT workspace claimed the
@@ -361,8 +392,8 @@ def _row_belongs_to(row: Mapping[str, Any], bound_to: str | None) -> bool:
     """
     if bound_to is None:
         return True
-    recorded = row.get("bound_owner_id")
-    return not recorded or recorded == bound_to
+    recorded = row.get("bound_owner_id") or row.get("user_id")
+    return recorded == bound_to
 
 
 async def get_decrypted_tokens(*, user_id: str, bound_to: str | None = None) -> dict | None:

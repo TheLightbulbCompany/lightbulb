@@ -21,6 +21,7 @@ from core.services.oauth_service import (
     DevicePollResult,
     get_decrypted_tokens,
     OAuthAlreadyActiveError,
+    OAuthBoundElsewhereError,
     OAuthExchangeFailedError,
     poll_device_code,
     request_device_code,
@@ -499,24 +500,41 @@ async def test_get_decrypted_tokens_returns_none_when_bound_to_differs(oauth_tab
     assert tokens is None
 
 
-@pytest.mark.asyncio
-async def test_get_decrypted_tokens_allows_legacy_unbound_row_for_any_reader(oauth_table):
-    """A row WITHOUT bound_owner_id (pre-binding legacy) is admissible for any
-    bound_to — existing personal users must keep working through the cutover."""
-    # Seed an active row directly without the binding field (legacy shape).
+def _seed_legacy_unbound_active_row(user_id: str) -> None:
+    """Seed an active row WITHOUT bound_owner_id (pre-binding legacy shape)."""
     from core.encryption import get_fernet
 
     plain = json.dumps({"access_token": "a", "refresh_token": "r", "account_id": "acc"}).encode()
     boto3.resource("dynamodb", region_name="us-east-1").Table("test-oauth-tokens").put_item(
         Item={
-            "user_id": "user_legacy",
+            "user_id": user_id,
             "state": "active",
             "encrypted_tokens": get_fernet().encrypt(plain),
             "account_id": "acc",
         }
     )
 
-    assert await get_decrypted_tokens(user_id="user_legacy", bound_to="anyone") is not None
+
+@pytest.mark.asyncio
+async def test_get_decrypted_tokens_legacy_unbound_row_admits_own_personal_owner(oauth_table):
+    """A row WITHOUT bound_owner_id (pre-binding legacy) is treated as implicitly
+    bound to its own user_id. A personal owner's bound_to EQUALS the row's
+    user_id, so existing personal users keep working through the cutover."""
+    _seed_legacy_unbound_active_row("user_legacy")
+
+    assert await get_decrypted_tokens(user_id="user_legacy", bound_to="user_legacy") is not None
+
+
+@pytest.mark.asyncio
+async def test_get_decrypted_tokens_legacy_unbound_row_rejected_for_org(oauth_table):
+    """THE FINDING-1 GUARD: a legacy unbound row predates orgs-on-chatgpt; it can
+    only legitimately back the personal workspace of the human who created it.
+    An ORG consuming it (bound_to=org_…) must be REJECTED — otherwise the org
+    silently shares that human's personal ChatGPT account, the exact hole the
+    binding exists to prevent. The org must complete a fresh, org-bound sign-in."""
+    _seed_legacy_unbound_active_row("user_legacy")
+
+    assert await get_decrypted_tokens(user_id="user_legacy", bound_to="org_legacy") is None
 
 
 @pytest.mark.asyncio
@@ -526,3 +544,71 @@ async def test_get_decrypted_tokens_no_bound_to_skips_check(oauth_table):
     await _complete_flow(user_id="user_a", bound_owner_id="org_1")
 
     assert await get_decrypted_tokens(user_id="user_a") is not None
+
+
+# ---------------------------------------------------------------------------
+# /start conflict resolution: an active row blocks a new device-code session,
+# but "active here" and "active for a DIFFERENT workspace" are distinct. The
+# former is genuinely already-connected (OAuthAlreadyActiveError → 409, which
+# the wizard treats as completion); the latter means THIS workspace is NOT
+# connected and the wizard must surface a real error (OAuthBoundElsewhereError).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_request_device_code_active_row_same_workspace_raises_already_active(oauth_table):
+    """An active row bound to the SAME workspace the start is for → genuine
+    already-connected → OAuthAlreadyActiveError (the 409 the wizard expects)."""
+    await _complete_flow(user_id="user_a", bound_owner_id="org_1")
+
+    async def fake_seed(self, url, **kwargs):
+        return _ok({"device_auth_id": "dev_x", "user_code": "OK-9", "interval": 5}, url=str(url))
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        with pytest.raises(OAuthAlreadyActiveError):
+            await request_device_code(user_id="user_a", bound_owner_id="org_1")
+
+
+@pytest.mark.asyncio
+async def test_request_device_code_active_row_other_workspace_raises_bound_elsewhere(oauth_table):
+    """An active row bound to a DIFFERENT workspace → the current workspace is
+    NOT connected; raise OAuthBoundElsewhereError so the wizard shows a real
+    error instead of (via a 409) advancing with no usable tokens."""
+    await _complete_flow(user_id="user_a", bound_owner_id="org_1")
+
+    async def fake_seed(self, url, **kwargs):
+        return _ok({"device_auth_id": "dev_x", "user_code": "OK-9", "interval": 5}, url=str(url))
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        with pytest.raises(OAuthBoundElsewhereError):
+            await request_device_code(user_id="user_a", bound_owner_id="org_2")
+
+
+@pytest.mark.asyncio
+async def test_request_device_code_legacy_unbound_active_personal_start_raises_already_active(oauth_table):
+    """A legacy unbound active row is implicitly bound to its own user_id. A
+    PERSONAL start for that same user (bound_owner_id == user_id) is therefore
+    already-connected → OAuthAlreadyActiveError."""
+    _seed_legacy_unbound_active_row("user_legacy")
+
+    async def fake_seed(self, url, **kwargs):
+        return _ok({"device_auth_id": "dev_x", "user_code": "OK-9", "interval": 5}, url=str(url))
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        with pytest.raises(OAuthAlreadyActiveError):
+            await request_device_code(user_id="user_legacy", bound_owner_id="user_legacy")
+
+
+@pytest.mark.asyncio
+async def test_request_device_code_legacy_unbound_active_org_start_raises_bound_elsewhere(oauth_table):
+    """The same legacy unbound active row, but the SAME human now starts in ORG
+    context (bound_owner_id=org_…). The implicit personal binding ≠ the org, so
+    this is bound-elsewhere — the org must complete a fresh, org-bound sign-in."""
+    _seed_legacy_unbound_active_row("user_legacy")
+
+    async def fake_seed(self, url, **kwargs):
+        return _ok({"device_auth_id": "dev_x", "user_code": "OK-9", "interval": 5}, url=str(url))
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        with pytest.raises(OAuthBoundElsewhereError):
+            await request_device_code(user_id="user_legacy", bound_owner_id="org_legacy")

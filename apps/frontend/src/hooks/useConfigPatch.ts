@@ -44,7 +44,16 @@ export function useConfigPatch() {
       })) as ConfigPatchResult;
       // Re-read so every consumer of config.get (model selectors, routing
       // cards) sees the new state and the next patch carries the new hash.
-      await mutate();
+      // BEST-EFFORT: a restart-triggering patch can close the WebSocket
+      // right after the write lands, so this follow-up read may reject
+      // ("WebSocket closed") even though the patch SUCCEEDED — that must
+      // not surface as a failure to the caller. SWR revalidates config.get
+      // after the gateway reconnects anyway.
+      try {
+        await mutate();
+      } catch {
+        // Patch already applied; the refresh retries on reconnect.
+      }
       return res;
     },
     [baseHash, callRpc, mutate],

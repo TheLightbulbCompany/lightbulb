@@ -14,6 +14,11 @@ import type { ConfigSnapshot, ToolsCatalogResponse } from "./agents-types";
 // they're shown read-only (mirrors how the Skills tab locks `always` skills).
 const LOCKED_PLUGIN_IDS = new Set(["amazon-bedrock", "lobster", "llm-task"]);
 
+// Channel plugins are enabled/disabled through the Channels panel (channel
+// enable = hot per-channel restart). Listing them here as generic switches
+// invites breaking a live channel from the wrong surface.
+const CHANNEL_PLUGIN_IDS = new Set(["slack", "discord", "telegram", "whatsapp", "googlechat", "feishu", "signal"]);
+
 interface PluginEntryConfig {
   enabled?: boolean;
   [key: string]: unknown;
@@ -67,7 +72,9 @@ export function PluginsTab() {
     }
   }
 
-  const ids = Array.from(new Set([...Object.keys(entries), ...Object.keys(toolCounts)])).sort();
+  const ids = Array.from(new Set([...Object.keys(entries), ...Object.keys(toolCounts)]))
+    .filter((id) => !CHANNEL_PLUGIN_IDS.has(id))
+    .sort();
   const rows: PluginRow[] = ids.map((id) => ({
     id,
     // Enabled unless the entry explicitly sets enabled:false.
@@ -206,6 +213,10 @@ export function PluginsTab() {
             </div>
           ))}
         </div>
+
+        <p className="text-xs text-[#8a8578]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          Channel plugins (Slack, Discord, Telegram…) are managed in the Channels panel.
+        </p>
       </div>
     </div>
   );

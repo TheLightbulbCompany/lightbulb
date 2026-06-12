@@ -131,19 +131,20 @@ class Gate:
         }
 
 
-async def _has_oauth_tokens(clerk_user_id: str) -> bool:
-    """Whether the calling Clerk user has ChatGPT OAuth tokens on file.
+async def _has_oauth_tokens(token_owner: str) -> bool:
+    """Whether ``token_owner`` has ChatGPT OAuth tokens on file.
 
     OAuth tokens live in the ``oauth-tokens`` DynamoDB table keyed by Clerk
-    user_id (see ``core.services.oauth_service``). ChatGPT OAuth is a
-    personal-only path (org owners use Bedrock), so the lookup is always
-    by the calling user, not the owner_id.
+    user_id (see ``core.services.oauth_service``). Callers pass the resolved
+    token owner — for orgs that is the *connector* (the workspace owner who
+    completed the device-code flow, ``connector_from_account``), not the
+    polling user; for personal owners the connector is the user themselves.
 
     Lazy import to avoid pulling the OAuth subsystem at module import time.
     """
     from core.services import oauth_service
 
-    tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id)
+    tokens = await oauth_service.get_decrypted_tokens(user_id=token_owner)
     return tokens is not None
 
 
@@ -158,7 +159,9 @@ async def evaluate_provision_gate(
     Layers (matches existing _assert_provision_allowed logic):
     1. Subscription must be active or trialing (or legacy stripe_subscription_id present).
     2. For bedrock_claude: credit balance must be > 0.
-    3. For chatgpt_oauth: OAuth tokens must exist for the calling user.
+    3. For chatgpt_oauth: OAuth tokens must exist for the connector — the
+       owner who completed the device-code flow (the polling user in orgs is
+       irrelevant). Personal owners are their own connector.
     """
     owner_role = "admin" if is_admin else "member"
 
@@ -255,8 +258,7 @@ async def evaluate_provision_gate(
     # Layer 3 — provider-specific prerequisites.
     if provider_choice == "bedrock_claude":
         # Credits pool at the owner level — org members all draw from one
-        # balance funded by the admin. clerk_user_id stays per-user for
-        # the OAuth-tokens probe below. Blocked-ness comes from the shared
+        # balance funded by the admin. Blocked-ness comes from the shared
         # Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
         # refresh) so this gate and the pre-chat gate can never disagree.
         from core.services.metronome_gate import is_owner_blocked
@@ -273,14 +275,24 @@ async def evaluate_provision_gate(
             )
 
     if provider_choice == "chatgpt_oauth":
-        if not await _has_oauth_tokens(clerk_user_id):
+        # Gate on the CONNECTOR's tokens (the workspace owner who completed
+        # the device-code flow), never the polling user — otherwise the gate
+        # flaps per-poller in orgs: admin B would be told to "sign in" even
+        # though owner A already connected. The billing row is already in
+        # scope; connector_from_account costs no extra read on this poll path.
+        from core.services.oauth_service import connector_from_account
+
+        token_owner = connector_from_account(account, owner_id)
+        if not await _has_oauth_tokens(token_owner):
             return Gate(
                 code="oauth_required",
                 title="Sign in with ChatGPT",
                 message="Complete the ChatGPT sign-in to start your container.",
                 action_label="Sign in with ChatGPT",
                 action_href="/chat?provider=chatgpt_oauth",
-                action_admin_only=False,
+                # Org workspaces: only an admin (the owner) may bind a
+                # ChatGPT account to the shared container.
+                action_admin_only=owner_id.startswith("org_"),
                 owner_role=owner_role,
             )
 

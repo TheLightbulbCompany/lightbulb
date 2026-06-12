@@ -250,6 +250,121 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
 
 
 @pytest.mark.asyncio
+async def test_org_gate_checks_connector_tokens_not_poller():
+    """In an org, the gate must read the CONNECTOR's tokens (the owner who
+    completed the device-code flow, recorded as oauth_connector_user_id),
+    not the polling user's. Owner user_a connected; admin user_b polls —
+    the gate must pass for user_b even though user_b has no OAuth row.
+
+    Without this, the gate flaps per-poller: every org member that hasn't
+    personally signed in to ChatGPT gets told to "sign in" on the shared
+    container that user_a already powers.
+    """
+
+    # Tokens exist only for the connector (user_a); anyone else (the poller)
+    # has none. Keying the mock on user_id pins that the gate reads the
+    # connector, not the clerk_user_id passed in.
+    async def tokens_for(*, user_id: str):
+        return {"access_token": "x"} if user_id == "user_a" else None
+
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(side_effect=tokens_for),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "chatgpt_oauth",
+                "oauth_connector_user_id": "user_a",
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="org_1",
+            clerk_user_id="user_b",
+            is_admin=True,
+        )
+    assert gate is None  # connector connected → gate passes for the poller
+
+
+@pytest.mark.asyncio
+async def test_org_gate_oauth_required_is_admin_only():
+    """No connector recorded and nobody connected → oauth_required. For an
+    org the bind-a-ChatGPT-account action is admin-only (only the owner may
+    attach an account to the shared container), so a non-admin member sees
+    the gate but not an actionable button.
+    """
+
+    async def tokens_for(*, user_id: str):
+        return None  # nobody has tokens
+
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(side_effect=tokens_for),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "chatgpt_oauth",
+                # No oauth_connector_user_id — falls back to owner_id (org_1),
+                # which has no tokens.
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="org_1",
+            clerk_user_id="user_b",
+            is_admin=False,
+        )
+    assert gate is not None
+    assert gate.code == "oauth_required"
+    assert gate.action_admin_only is True
+
+
+@pytest.mark.asyncio
+async def test_personal_gate_oauth_required_is_not_admin_only():
+    """Personal owner with no tokens still gets oauth_required, but the
+    action stays member-actionable (action_admin_only False) — owner_id
+    doesn't start with 'org_', and a personal user is admin of themselves
+    so the sign-in button must render for them.
+    """
+
+    async def tokens_for(*, user_id: str):
+        return None
+
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(side_effect=tokens_for),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_x",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "chatgpt_oauth",
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+            clerk_user_id="user_x",
+        )
+    assert gate is not None
+    assert gate.code == "oauth_required"
+    assert gate.action_admin_only is False
+
+
+@pytest.mark.asyncio
 async def test_byo_key_without_byo_provider_returns_byo_provider_required():
     """provider_choice='byo_key' + byo_provider=None must block ECS
     dispatch with code='byo_provider_required'.

@@ -64,7 +64,7 @@ export function ControlPanelRouter({ panel, onPanelChange }: ControlPanelRouterP
   // their deep-link affordances (LLM → Credits; Overview → Cron/Skills/etc).
   // Every other panel takes no props.
   if (resolvedPanel === "llm") {
-    return <LLMPanel onPanelChange={onPanelChange} />;
+    return <LLMPanel />;
   }
   if (resolvedPanel === "overview") {
     return <OverviewPanel onPanelChange={onPanelChange} />;

@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { CreditsSection } from "./CreditsSection";
 import { ModelRoutingCard } from "./ModelRoutingCard";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
 import { Input } from "@/components/ui/input";
@@ -174,11 +175,9 @@ function ByoKeyBlock({
 }
 
 function BedrockBlock({
-  onManageCredits,
   onChangeProvider,
   dotColor,
 }: {
-  onManageCredits: () => void;
   onChangeProvider: () => void;
   dotColor: DotColor;
 }) {
@@ -192,24 +191,16 @@ function BedrockBlock({
         dotColor={dotColor}
       />
       <div className={ACTION_CARD}>
-        <span className={EYEBROW}>Billing</span>
+        <span className={EYEBROW}>Provider</span>
         <p className="text-sm text-[#1a1a1a]">
-          Manage your Claude credits and auto-reload settings.
+          Credits and auto-reload are managed below.
         </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={onManageCredits}
-            className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
-          >
-            Manage credits →
-          </button>
-          <button
-            onClick={onChangeProvider}
-            className="rounded-md border border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] px-3 py-1.5 text-sm"
-          >
-            Change provider
-          </button>
-        </div>
+        <button
+          onClick={onChangeProvider}
+          className="rounded-md border border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] px-3 py-1.5 text-sm"
+        >
+          Change provider
+        </button>
       </div>
     </>
   );
@@ -250,11 +241,7 @@ function EmptyStateCard({
   );
 }
 
-interface LLMPanelProps {
-  onPanelChange?: (panel: string) => void;
-}
-
-export function LLMPanel({ onPanelChange }: LLMPanelProps) {
+export function LLMPanel() {
   const api = useApi();
   const searchParams = useSearchParams();
   const { data: user, mutate } = useSWR<UserData | null>(
@@ -313,17 +300,12 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
 
   if (!user) return <div className="p-6 text-sm">Loading…</div>;
 
-  const handleManageCredits = () => {
-    if (onPanelChange) onPanelChange("credits");
-    else if (typeof window !== "undefined") window.location.href = "/chat?panel=credits";
-  };
-
   const openModal = () => setModalOpen(true);
 
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">LLM Provider</h2>
+        <h2 className="text-lg font-semibold">Model &amp; Credits</h2>
         <button
           type="button"
           // The read hook only auto-revalidates on a matching gateway *event*,
@@ -371,14 +353,15 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
       )}
 
       {user.provider_choice === "bedrock_claude" && (
-        <BedrockBlock
-          onManageCredits={handleManageCredits}
-          onChangeProvider={openModal}
-          dotColor={dotColor}
-        />
+        <BedrockBlock onChangeProvider={openModal} dotColor={dotColor} />
       )}
 
       {!user.provider_choice && <EmptyStateCard onChangeProvider={openModal} />}
+
+      {/* Credits live inline for Bedrock owners — the former Credits panel.
+          Non-Bedrock providers bill through their own account, so nothing
+          renders for them. */}
+      {user.provider_choice === "bedrock_claude" && <CreditsSection />}
 
       {/* Owner-level model routing (default + overhead model). Renders only
           when the container's models catalog is non-empty — the card hides

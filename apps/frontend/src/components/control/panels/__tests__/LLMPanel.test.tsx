@@ -63,6 +63,14 @@ vi.mock("../ChangeProviderModal", () => ({
     open ? <div data-testid="change-provider-modal-open" /> : null,
 }));
 
+// CreditsSection owns its own data fetching (billing/credits SWR) and is
+// covered by its own test file — stub it so LLMPanel tests only assert
+// when the panel chooses to mount it (Bedrock owners only).
+vi.mock("../CreditsSection", () => ({
+  CreditsSection: () => <div data-testid="credits-section" />,
+}));
+
+
 describe("LLMPanel", () => {
   beforeEach(() => {
     mockSWRData.mockReset();
@@ -138,30 +146,28 @@ describe("LLMPanel", () => {
     expect(screen.getByPlaceholderText(/sk-ant-/)).toBeInTheDocument();
   });
 
-  it("calls onPanelChange('credits') from the Bedrock Manage-credits button when prop provided", () => {
+  it("renders the Model & Credits heading", () => {
     mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
-    const onPanelChange = vi.fn();
-    render(<LLMPanel onPanelChange={onPanelChange} />);
-    expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /manage credits/i }));
-    expect(onPanelChange).toHaveBeenCalledWith("credits");
+    render(<LLMPanel />);
+    expect(screen.getByText("Model & Credits")).toBeInTheDocument();
+    expect(screen.queryByText("LLM Provider")).toBeNull();
   });
 
-  it("falls back to window.location when onPanelChange is omitted on Bedrock", () => {
+  it("embeds CreditsSection for bedrock users and drops the Manage credits button", () => {
     mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
-    const originalLocation = window.location;
-    // jsdom: replace window.location with a writable stub
-    Object.defineProperty(window, "location", {
-      configurable: true,
-      value: { ...originalLocation, href: "" },
-    });
     render(<LLMPanel />);
-    fireEvent.click(screen.getByRole("button", { name: /manage credits/i }));
-    expect(window.location.href).toBe("/chat?panel=credits");
-    Object.defineProperty(window, "location", {
-      configurable: true,
-      value: originalLocation,
-    });
+    expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
+    expect(screen.getByTestId("credits-section")).toBeInTheDocument();
+    // The credits surface now lives inline — the old jump-to-panel button
+    // must be gone so there's no dead affordance pointing at a panel that
+    // a later task removes.
+    expect(screen.queryByRole("button", { name: /manage credits/i })).toBeNull();
+  });
+
+  it("hides CreditsSection for non-bedrock users", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: "anthropic" });
+    render(<LLMPanel />);
+    expect(screen.queryByTestId("credits-section")).toBeNull();
   });
 
   it("renders the empty-state with an in-place Pick-a-provider button when provider_choice is null", () => {

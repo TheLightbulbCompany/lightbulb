@@ -33,6 +33,42 @@ export function buildModelNameMap(config: unknown): Record<string, string> {
   return names;
 }
 
+export type CatalogModel = {
+  /** Provider-prefixed ref ("amazon-bedrock/arn:…") — the form model fields
+   *  (agents.defaults.model, heartbeat.model, agents.list[*].model) expect. */
+  ref: string;
+  /** Bare catalog id as listed under the provider. */
+  bareId: string;
+  /** Display name ("Claude Opus 4.6"). */
+  name: string;
+};
+
+/** Flatten `config.models.providers` into selectable models. The catalog is
+ *  the ONLY legitimate option source for routing dropdowns: per-owner IAM
+ *  scopes Bedrock invokes to exactly these AIPs, so anything outside the
+ *  catalog would fail closed at AccessDenied anyway. */
+export function listCatalogModels(config: unknown): CatalogModel[] {
+  const out: CatalogModel[] = [];
+  const models = (config as { models?: unknown } | null | undefined)?.models;
+  const providers = (models as { providers?: unknown } | null | undefined)?.providers;
+  if (!providers || typeof providers !== "object") return out;
+  for (const [providerKey, provider] of Object.entries(providers as Record<string, unknown>)) {
+    const list = (provider as { models?: unknown } | null | undefined)?.models;
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      const id = (entry as { id?: unknown } | null | undefined)?.id;
+      const name = (entry as { name?: unknown } | null | undefined)?.name;
+      if (typeof id !== "string" || !id) continue;
+      out.push({
+        ref: `${providerKey}/${id}`,
+        bareId: id,
+        name: typeof name === "string" && name ? name : id,
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Resolve a model id to a display name, or null when nothing presentable
  * exists (callers should render nothing rather than an opaque ARN tail).

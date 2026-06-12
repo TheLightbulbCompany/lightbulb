@@ -4,7 +4,8 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { ModelSelector } from "@/components/chat/ModelSelector";
-import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
+import { buildModelNameMap, displayModelName, listCatalogModels } from "@/lib/modelDisplay";
+import { AgentHeartbeatCard } from "@/components/control/agents/AgentHeartbeatCard";
 import { Button } from "@/components/ui/button";
 import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
 import {
@@ -190,18 +191,27 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
   const modelNames = useMemo(() => buildModelNameMap(configInner), [configInner]);
 
   const selectorModels = useMemo(() => {
-    const models: { id: string; name: string }[] = Object.entries(modelsCatalog).map(([id, entry]) => ({
-      id,
-      name: entry.alias || displayModelName(id, modelNames) || id,
+    // Primary source: the providers catalog (provision always writes it).
+    // agents.defaults.models is a per-deployment alias map that provision
+    // does NOT write — kept as a secondary source for hand-edited configs.
+    const models: { id: string; name: string }[] = listCatalogModels(configInner).map((m) => ({
+      id: m.ref,
+      name: m.name,
     }));
-    if (currentModel && !modelsCatalog[currentModel]) {
+    const seen = new Set(models.map((m) => m.id));
+    for (const [id, entry] of Object.entries(modelsCatalog)) {
+      if (seen.has(id)) continue;
+      models.push({ id, name: entry.alias || displayModelName(id, modelNames) || id });
+      seen.add(id);
+    }
+    if (currentModel && !seen.has(currentModel)) {
       models.unshift({
         id: currentModel,
         name: displayModelName(currentModel, modelNames) || currentModel,
       });
     }
     return models;
-  }, [modelsCatalog, currentModel, modelNames]);
+  }, [configInner, modelsCatalog, currentModel, modelNames]);
 
   return (
     <div className="space-y-4 mt-2">
@@ -238,6 +248,8 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
           </p>
         )}
       </div>
+
+      <AgentHeartbeatCard agentId={agentId} />
 
       <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3 bg-white">
         <h3 className="text-sm font-medium text-[#1a1a1a]">Role &amp; description</h3>

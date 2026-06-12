@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { ModelRoutingCard } from "./ModelRoutingCard";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
 import { Input } from "@/components/ui/input";
 import { ChangeProviderModal } from "./ChangeProviderModal";
@@ -378,6 +379,11 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
       )}
 
       {!user.provider_choice && <EmptyStateCard onChangeProvider={openModal} />}
+
+      {/* Owner-level model routing (default + overhead model). Renders only
+          when the container's models catalog is non-empty — the card hides
+          itself otherwise. */}
+      <ModelRoutingCard />
 
       <ChangeProviderModal
         open={modalOpen}

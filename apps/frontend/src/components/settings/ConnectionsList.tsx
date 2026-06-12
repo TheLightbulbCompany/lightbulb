@@ -31,8 +31,16 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
   // `requires_bedrock` providers are connectable only on Bedrock-managed
   // inference. One cached read (SWR-deduped) tells us the owner's path so we
   // can render those rows as locked-with-upsell instead of a dead Connect.
-  const { account } = useBilling();
-  const onBedrock = account?.provider_choice === BEDROCK_PROVIDER_CHOICE;
+  //
+  // Lock ONLY once billing has resolved. While it's still loading or errored,
+  // `account` is undefined — locking then would briefly show the upsell to an
+  // owner who is in fact on Bedrock. A resolved 404 (account === null, no
+  // billing row) is a genuine "not on Bedrock" and does lock.
+  const { account, isLoading: billingLoading, error: billingError } = useBilling();
+  const offBedrock =
+    !billingLoading &&
+    !billingError &&
+    account?.provider_choice !== BEDROCK_PROVIDER_CHOICE;
 
   if (error) {
     return (
@@ -63,7 +71,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
         const connected = connection.status === "connected";
         // Lock only the connect path: a row already connected before a
         // provider switch keeps Disconnect (so `locked` excludes connected).
-        const locked = !!connection.requires_bedrock && !onBedrock && !connected;
+        const locked = !!connection.requires_bedrock && !connected && offBedrock;
         return (
           <div
             key={connection.provider}

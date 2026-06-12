@@ -15,14 +15,20 @@ vi.mock("next/link", () => ({
 }));
 
 // Mutable holders the hook mocks read from, so each test can vary the owner's
-// provider_choice and the catalog rows without re-hoisting the mock.
+// provider_choice, billing-load state, and the catalog rows without re-hoisting.
 const h = vi.hoisted(() => ({
   account: null as { provider_choice: string | null } | null,
+  billingLoading: false,
+  billingError: undefined as unknown,
   connections: [] as Connection[],
 }));
 
 vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({ account: h.account }),
+  useBilling: () => ({
+    account: h.account,
+    isLoading: h.billingLoading,
+    error: h.billingError,
+  }),
 }));
 
 vi.mock("@/hooks/useConnections", () => ({
@@ -48,6 +54,8 @@ const googleRow: Connection = {
 describe("ConnectionsList — Bedrock lock", () => {
   beforeEach(() => {
     h.account = null;
+    h.billingLoading = false;
+    h.billingError = undefined;
     h.connections = [googleRow];
   });
 
@@ -64,6 +72,18 @@ describe("ConnectionsList — Bedrock lock", () => {
 
   it("shows Connect (no lock) when the owner IS on Bedrock", () => {
     h.account = { provider_choice: "bedrock_claude" };
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByRole("button", { name: /connect google workspace/i })).toBeInTheDocument();
+    expect(screen.queryByText("Requires Bedrock credits")).toBeNull();
+    expect(screen.queryByRole("link", { name: /switch to bedrock/i })).toBeNull();
+  });
+
+  it("does NOT lock while billing is still loading (no false upsell flash)", () => {
+    // Codex #861: account is undefined until /billing/account resolves; locking
+    // then would briefly show the upsell to an owner who is in fact on Bedrock.
+    h.account = null;
+    h.billingLoading = true;
     render(<ConnectionsList canManage />);
 
     expect(screen.getByRole("button", { name: /connect google workspace/i })).toBeInTheDocument();

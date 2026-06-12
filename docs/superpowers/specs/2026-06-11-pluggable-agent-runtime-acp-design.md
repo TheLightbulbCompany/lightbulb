@@ -23,6 +23,35 @@ This is "Path B" from the harness-pluggability discussion. Path A (swap the cont
 per harness) is explicitly **not** pursued — it forks the marketplace and re-implements the
 wire protocol per harness.
 
+### 1.1 Driving use case — Jarvis, the marketplace SWE agent
+
+The concrete reason we're building this: **Jarvis is a software-engineering agent on the
+prod container, to be published on the marketplace. Jarvis should be able to spawn Claude
+Code / Codex / Gemini to do coding tasks.** Everything below is shaped by that.
+
+**Critical distinction — Jarvis uses delegation, NOT runtime-replacement.** There are two
+different ACP mechanisms and Jarvis wants the first:
+
+| Mechanism | What it does | Who it's for |
+|---|---|---|
+| **Delegation** — `sessions_spawn({runtime:"acp", agentId:"claude"})` | A **native** agent spawns a coding harness as a tracked sub-session for a task, results delivered back. The agent stays itself. | **Jarvis.** He keeps his native OpenClaw identity, memory, channels, and orchestration, and *rents* Claude Code/Codex/Gemini per coding task. |
+| **Runtime-replacement** — `agents.list[].runtime.type="acp"` | The agent **is** the harness — every one of its turns runs inside Claude Code instead of the native loop. | An agent that should *be* Claude Code end-to-end. NOT Jarvis — this would erase his orchestrator identity. |
+
+Jarvis is a **native** agent (`runtime` absent/embedded). He gains the spawn-a-harness
+capability automatically: `isAcpRuntimeSpawnAvailable({config})`
+(`src/acp/runtime/availability.ts`) is true when `acp.enabled` and the acpx backend is
+healthy, and when true the subagent system-prompt builder sets `acpEnabled: true`
+(`src/agents/subagent-spawn.ts:1406`), which teaches Jarvis he can dispatch
+`sessions_spawn({runtime:"acp", …})`. **So enabling ACP in Jarvis's container is the entire
+backend ask** — no per-agent runtime field is needed for the primary use case. (The
+runtime-replacement field from §2.1 remains available for a future "be Claude Code" agent,
+but it is secondary.)
+
+This matches OpenClaw's canonical pattern exactly: the platform agent orchestrates
+(identity, channels, memory, approvals, delivery) and delegates the actual coding to a
+best-in-class coding harness. The fork docs' own example trigger is literally *"Run this as
+a one-shot Claude Code ACP session and summarize the result."*
+
 ## 2. Verified: how the fork already does all of this
 
 All claims below were verified by reading the fork source at the **pinned shipped tag**
@@ -199,13 +228,31 @@ plus the per-agent `runtime` object (§2.1) stamped onto `agents.list[]` entries
   `ModelSelector`, options gated by provider), display on `AgentDetailPanel`,
   `ProviderIcons` marks.
 
-### 3.4 Marketplace — unchanged by construction
+### 3.4 Marketplace — publishing Jarvis (the real test)
 
-`runtime` is a plain field inside the agent entry that `agent_export.py` already snapshots
-into `openclaw-slice.json` and `catalog_service.deploy_from_artifact` already deep-merges.
-Every container's image carries every adapter (§3.1), so no compatibility gating. The only
-runtime gate is credential availability, which the provision gate models. Listings can
-display their runtime (phase 3 UI). Friday remains unpublishable regardless.
+Jarvis is the first listing whose *capability* depends on container-level config, not just
+his agent slice. Two things the deploy path must get right:
+
+1. **The delegation capability is container-level, not agent-level.** Jarvis's ability to
+   spawn coding harnesses comes from `acp.enabled` + `plugins.entries.acpx.enabled` in the
+   buyer's `openclaw.json`, not from a field on his agent entry. So
+   `catalog_service.deploy_from_artifact`'s slice deep-merge **must turn ACP on in the
+   buyer's container** when deploying a listing that needs it. Add an `acp`/`acpx` block to
+   Jarvis's `openclaw-slice.json` (already a deep-merged surface) and flag the listing as
+   requiring ACP so deploy enables it. Every container's image already carries the adapters
+   (§3.1), so there is no per-buyer image work — only this config merge.
+
+2. **Which harnesses Jarvis can actually spawn depends on the buyer's provider.** A
+   Bedrock-managed buyer → Claude Code works out of the box (`CLAUDE_CODE_USE_BEDROCK=1` +
+   their task-role IAM). A ChatGPT-OAuth buyer → Codex works, Claude Code needs a key. So
+   `allowedAgents` for a deployed Jarvis should be **computed from the buyer's
+   `provider_choice`**, and Jarvis's prompt/tooling should degrade gracefully when a
+   harness isn't auth-available (provision-gate matrix, §2.6). The listing page can state
+   "best with Bedrock or a BYO Anthropic key."
+
+Otherwise the marketplace plumbing is unchanged: `runtime` (for any future
+runtime-replacement agent) rides in the slice as a plain field; export/deploy already
+handle it. Friday remains unpublishable; Jarvis is a separate, publishable agent.
 
 ### 3.5 Paperclip seed agents
 

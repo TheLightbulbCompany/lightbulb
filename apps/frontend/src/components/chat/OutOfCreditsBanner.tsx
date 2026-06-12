@@ -32,14 +32,13 @@ export function OutOfCreditsBanner() {
         You&apos;re out of Claude credits. Top up to keep chatting.
       </span>
       {/*
-        Route into the CreditsStep flow inside the ProvisioningStepper. A
-        link to /chat?panel=credits would strip the ?provider= URL param
+        Route into the CreditsStep flow inside the ProvisioningStepper.
+        A link to /chat?panel=credits would strip the ?provider= URL param
         the stepper uses to gate the provider step, causing the wizard to
         proceed into container provisioning without any payment — and
-        credits now live inside the Model & Credits panel, which isn't
-        the stepper flow this banner must route into. URL stays inside
-        /chat so we don't lose ChatLayout
-        chrome / the in-flight gateway socket.
+        credits now live inside the Model & Credits panel, which isn't the
+        stepper flow this banner must route into. URL stays inside /chat
+        so we don't lose ChatLayout chrome / the in-flight gateway socket.
       */}
       <Link
         href="/chat?provider=bedrock_claude"

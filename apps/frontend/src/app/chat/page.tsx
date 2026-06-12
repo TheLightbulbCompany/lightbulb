@@ -23,9 +23,9 @@ export default function ChatPage() {
 function ChatPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  // Single source of truth for view + panel is the URL. ?panel=credits
-  // opens the credits control panel directly (used by OutOfCreditsBanner's
-  // CTA). The sidebar updates the URL via router.replace so in-app deep
+  // Single source of truth for view + panel is the URL. ?panel=credits is a
+  // legacy deep link — the panel router remaps it to the Model & Credits
+  // panel. The sidebar updates the URL via router.replace so in-app deep
   // links and clicks share the same code path.
   const panelParam = searchParams.get("panel");
   const viewParam = searchParams.get("view");

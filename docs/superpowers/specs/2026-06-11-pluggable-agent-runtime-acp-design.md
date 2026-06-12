@@ -1,9 +1,8 @@
 # Pluggable Agent Runtime via ACP — Design
 
-**Status:** Draft / spec-first (no code yet)
-**Date:** 2026-06-11
-**Author:** harness-model-selection working branch
-**Decision recap:** Per-agent runtime · generalize to *any* ACP agent · Bedrock/BYO/OAuth credentials resolved per provider · ship spec before code.
+**Status:** Verified design (fork source audited at tag `v2026.6.1-isol8.1`); ready for implementation planning
+**Date:** 2026-06-11 (rev 2, 2026-06-12 — verified against `Isol8AI/agent` source)
+**Decision recap:** Per-agent runtime · generalize to *any* ACP agent · credentials resolved per provider · spec before code.
 
 ---
 
@@ -12,261 +11,240 @@
 Let an Isol8 user choose, **per agent**, which agent runtime ("harness") executes that
 agent's turns:
 
-- `openclaw` — the native OpenClaw loop we run today (default; unchanged).
-- `acp:claude-code` — Anthropic's Claude Code, driven over ACP.
-- `acp:codex` — OpenAI's Codex, driven over ACP.
-- `acp:gemini` — Google's Gemini CLI, driven over ACP.
-- `acp:<id>` — any future ACP agent ("Hermes" etc.) with **zero new platform plumbing**.
+- `openclaw` — the native embedded loop we run today (default; unchanged).
+- **ACP harnesses** via the bundled `acpx` backend: `claude` (Claude Code), `codex`,
+  `gemini`, `copilot`, `cursor`, `droid`, `opencode`, `qwen`, … and any custom adapter
+  ("Hermes" etc.) added by **config alone**.
 
-The whole point of going the ACP route (rather than swapping the container image) is that
-**nothing above the container changes**: the gateway protocol, Paperclip seed-agent wiring,
-the marketplace artifact format, billing, and the frontend all keep seeing an ordinary
-OpenClaw agent. "Which harness" collapses to a single config field on the agent.
+Nothing above the container changes: gateway protocol, Paperclip seed agents, marketplace
+artifact format, billing, and the frontend all keep seeing an ordinary OpenClaw agent.
 
-This is "Path B" from the harness-pluggability discussion. Path A (swap the whole image per
-harness) is explicitly **not** pursued — it forks the marketplace and re-implements the wire
-protocol per harness.
+This is "Path B" from the harness-pluggability discussion. Path A (swap the container image
+per harness) is explicitly **not** pursued — it forks the marketplace and re-implements the
+wire protocol per harness.
 
----
+## 2. Verified: how the fork already does all of this
 
-## 2. Key finding — OpenClaw is already an ACP host
+All claims below were verified by reading the fork source at the **pinned shipped tag**
+`v2026.6.1-isol8.1` (the same code our extended image is built FROM). This entire design is
+**zero fork patches** — Isol8-side config + image baking only.
 
-This design is cheap because the OpenClaw fork (`Isol8AI/agent`) already ships a mature ACP
-host. Verified in the fork source (`src/acp/**`, `src/agents/acp-spawn.ts`,
-`src/auto-reply/reply/commands-acp/**`):
+### 2.1 The per-agent runtime field exists upstream
 
-| Capability | Evidence in fork |
-|---|---|
-| ACP control plane that spawns + drives a sub-agent | `src/acp/control-plane/manager.js` (`getAcpSessionManager`), `src/agents/acp-spawn.ts` (`spawnAcpDirect`) |
-| Pluggable backend registry, selected by id | `src/acp/runtime/registry.ts` — `registerAcpRuntimeBackend({id, runtime, healthy})`; default backend `acpx` |
-| Per-session runtime options (model / mode / cwd / permission profile / timeout) | `src/acp/control-plane/runtime-options.js`, surfaced via `/acp` commands |
-| Spawns a real Zed ACP adapter today | `src/gateway/gateway-acp-spawn-defaults.live.test.ts` launches `@zed-industries/codex-acp/bin/codex-acp.js` with `agent: "codex"` |
-| Injects provider credentials into the spawned agent via env | `src/acp/client.ts` → `resolveAcpClientSpawnEnv` passes `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / … (with strip rules) |
-| Config schema for ACP | `src/config/types.acp.ts` — `AcpConfig { enabled, backend, fallbacks, defaultAgent, allowedAgents, maxConcurrentSessions, stream, runtime }` |
-
-And the **Isol8 backend already consumes ACP output**: `connection_pool.py:758` folds
-`stream: "acp"` agent events into the `agent_activity` envelope, tested at
-`tests/unit/core/test_chat_event_transform.py:199`. So the inbound rendering path is done.
-
-**Net:** Claude Code's adapter (`@zed-industries/claude-code-acp`) is the sibling of the
-`codex-acp` package the fork already spawns. Adding it is the same mechanism, a different
-command + credential source.
-
-### Unknowns to confirm before/early in implementation
-
-1. **`acpx` agent→command map.** The `acpx` backend is a bundled plugin (not in the core
-   sparse checkout). We must confirm where it maps an agent id (`claude-code`, `codex`,
-   `gemini`) to a spawn command/args, and whether new agents are added via config or require
-   a plugin change. *This is the single load-bearing implementation unknown.*
-2. **`claude-code-acp` headless auth.** Confirm the adapter package name/version and that it
-   runs non-interactively in our Debian container with each of: `ANTHROPIC_API_KEY`,
-   `CLAUDE_CODE_USE_BEDROCK=1` + IAM, and "Sign in with Claude" OAuth.
-3. **Per-agent model selection** semantics inside each adapter (Claude Code model flag vs our
-   `ModelSelector`).
-
----
-
-## 3. The `runtime` field (per-agent)
-
-A new optional field on the **agent entry** (the unit the marketplace already snapshots),
-not on the owner/container row — so it is marketplace-portable and lets one container mix a
-native Friday with an `acp:claude-code` worker.
+`src/config/types.agents.ts:16-34` — each `agents.list[]` entry takes:
 
 ```jsonc
-// agents.list[] entry in openclaw.json (and in the marketplace openclaw-slice)
 {
   "id": "agent_…",
-  "workspace": ".openclaw/workspaces/agent_…",
-  "runtime": "openclaw",          // NEW. default. omitted == "openclaw"
-  // or "acp:claude-code" | "acp:codex" | "acp:gemini" | "acp:<id>"
+  "runtime": {                 // optional; absent == native embedded loop
+    "type": "acp",
+    "acp": {
+      "agent": "claude",       // harness id (acpx alias)
+      "backend": "acpx",
+      "mode": "persistent",    // or "oneshot"
+      "cwd": "/path"           // optional; defaults to the agent's workspace
+    }
+  }
 }
 ```
 
-- **Default / back-compat:** absent ⇒ `openclaw`. Every existing agent keeps working with no
-  migration.
-- **Storage:** lives in the agent entry on EFS `openclaw.json`, written by `config.py`. The
-  per-agent choice is set through the existing agents RPC (`agents.create` / `agents.update`)
-  and rendered into config. No new DDB table.
-- **Validation:** `runtime` must be `openclaw` or `acp:<id>` where `<id> ∈ allowedAgents`
-  (see §5). Unknown ⇒ reject at the RPC boundary, fall back to `openclaw`.
+Override precedence for bound ACP sessions (per `docs/tools/acp-agents.md`):
+`bindings[].acp.*` → `agents.list[].runtime.acp.*` → global `acp.*` defaults.
+Dispatch is policy-checked against `acp.allowedAgents` and this mapping.
 
-### Where it routes
+**Spec rev note:** rev 1 proposed inventing a `runtime: "acp:claude-code"` string field.
+Dropped — we adopt the upstream object shape verbatim.
 
-When `runtime == "acp:<id>"`, the agent entry must mark the agent so OpenClaw dispatches its
-turns through the ACP control plane instead of the native loop, and `config.acp.defaultAgent`
-(or a per-agent ACP binding) resolves to `<id>`. Exact mechanism depends on Unknown #1 — the
-spec assumes one of: (a) a per-agent ACP binding the fork already supports
-(`src/acp/persistent-bindings.*`), or (b) a small fork patch to read `runtime` off the agent
-entry and route accordingly. Confirm before coding §4.
+### 2.2 The acpx backend is bundled, with Claude Code built in
 
----
+`extensions/acpx/` in the fork (`@openclaw/acpx 2026.6.1`) is the official ACP runtime
+plugin. Its `package.json` **vendors the adapters as dependencies**:
 
-## 4. Config generation (`apps/backend/core/containers/config.py`)
+- `@agentclientprotocol/claude-agent-acp@0.39.0` — **Claude Code ACP adapter** (with usage
+  accounting: input/output/cache tokens accumulated per session — see
+  `claude-agent-acp-completion.test.ts`)
+- `@zed-industries/codex-acp@0.15.0` — Codex adapter
+- `acpx@0.10.0` — the process manager (spawn, leases, reaping)
 
-Today `build_openclaw_config_dict()` emits **no** `acp` block. Changes:
+Built-in harness aliases (per `docs/tools/acp-agents-setup.md`): `claude`, `codex`,
+`copilot`, `cursor`, `droid`, `gemini`, `iflow`, `kilocode`, `kimi`, `kiro`, `openclaw`,
+`opencode`, `qwen`.
 
-1. **Emit a top-level `acp` block** when any agent in the container uses an `acp:*` runtime:
-   ```python
-   "acp": {
-       "enabled": True,
-       "backend": "acpx",
-       "defaultAgent": <derived>,            # if exactly one acp agent
-       "allowedAgents": ["claude-code", "codex", "gemini"],  # gated by entitlement
-       "runtime": {"ttlMinutes": <idle ttl>},
-       "stream": {"deliveryMode": "live"},
-   }
-   ```
-   When no agent uses ACP, omit the block entirely (no behavior change for existing users).
+**Custom harnesses ("Hermes") are config-only** — `plugins.entries.acpx.config.agents`
+(`src/config-schema.ts`): `agents: { "<id>": { command, args? } }`, merged as overrides
+into the built-in registry (`service.ts:88`). *Rev-1 Unknown #1 is resolved: config-only,
+no fork patch.*
 
-2. **Stamp `runtime` onto each agent entry** in `agents.list[]` from the per-agent choice.
+### 2.3 How a turn enters ACP (three paths)
 
-3. **Provider/credential env** — `build_provider_block()` already wires the native provider;
-   for ACP agents the credentials are injected as **env vars on the container task**
-   (see §6), which `src/acp/client.ts` forwards into the spawned adapter. `config.py` records
-   *which* provider each ACP agent uses so the task-def env can be assembled.
+The reply pipeline hands every turn to the acpx plugin's `reply-dispatch` hook
+(`tryDispatchAcpReplyHook` → `tryDispatchAcpReply` → `AcpSessionManager.resolveSession`).
+A session dispatches to ACP when it has ACP session meta, created by:
 
-No change to the gateway/`amazon-bedrock`/`openai-codex` native provider blocks — native
-agents are untouched.
+1. **Conversation binding** — `/acp spawn claude --bind here` (or config
+   `bindings: [{type:"acp", agentId, match:{channel,…}}]`). All subsequent messages in the
+   bound conversation route to the ACP session; OpenClaw auto-ensures the session exists.
+   **Verified for our exact entry point**: the fork's live test
+   `gateway-acp-bind.live.test.ts` drives gateway `chat.send` (same RPC our
+   `connection_pool.py` proxies) → bind → follow-up turns run in the harness → replies
+   stream back as normal gateway events. Spawned key shape: `agent:<id>:acp:<uuid>`.
+2. **`sessions_spawn({runtime:"acp", agentId:"claude", task})`** — a tool call available
+   to native agents. **This is the "Friday delegates to Claude Code" path** — a native
+   orchestrator spawns a Claude Code session as a tracked background task with delivery
+   back to the requesting conversation. First-class, no platform work needed beyond
+   enabling ACP.
+3. **Per-agent runtime defaults** (§2.1) — `agents.list[].runtime.type="acp"` makes
+   OpenClaw resolve that config agent to its harness for spawn/bound flows
+   (`src/agents/acp-spawn.ts:460`).
 
----
+The Isol8 backend already consumes the output: `stream:"acp"` events →
+`agent_activity` (`connection_pool.py:758`, tested at `test_chat_event_transform.py:199`).
 
-## 5. Credentials & providers — answering "does it work with Sign in with ChatGPT?"
+### 2.4 Permissions (containers are non-interactive)
 
-**Short answer:** "Sign in with ChatGPT" is **OpenAI-only**. It authenticates the **Codex**
-ACP agent, *not* Claude Code. Claude Code uses Anthropic auth — API key, Bedrock, or its own
-"Sign in with Claude" (Pro/Max) OAuth. Because we generalized to any ACP agent, credentials
-are resolved **per agent → per provider**, and they map almost 1:1 onto Isol8's three
-existing provider paths (`billing_accounts.provider_choice`, enforced by
-`core/services/provision_gate.py`).
+acpx plugin config (`src/config-schema.ts`):
 
-| Isol8 provider path (today) | Native OpenClaw uses | Unlocks ACP agent | Credential delivered to adapter |
-|---|---|---|---|
-| **Bedrock managed** | `amazon-bedrock/claude-*` | `acp:claude-code` | `CLAUDE_CODE_USE_BEDROCK=1` + container IAM role (no secret) |
-| **ChatGPT OAuth** (`oauth_service.py`, personal owners only) | `openai-codex/gpt-5.5` | `acp:codex` | Existing ChatGPT OAuth tokens → Codex `auth.json` / `OPENAI_API_KEY`-equiv |
-| **BYO key — Anthropic** (`key_service.py`, Fernet) | `anthropic/claude-*` | `acp:claude-code` | `ANTHROPIC_API_KEY` env |
-| **BYO key — OpenAI** | `openai/gpt-*` | `acp:codex` | `OPENAI_API_KEY` env |
-| **(new) Sign in with Claude** | — | `acp:claude-code` | Claude Pro/Max OAuth creds in `~/.claude` (headless — Unknown #2) |
-| **(new) Gemini** | — | `acp:gemini` | Google OAuth or `GEMINI_API_KEY` |
+- `permissionMode`: `approve-all` | `approve-reads` (default) | `deny-all`
+- `nonInteractivePermissions`: `fail` (default) | `deny`
 
-Implications:
-- **Bedrock-managed owners get Claude Code "for free"** — `CLAUDE_CODE_USE_BEDROCK=1` reuses
-  the IAM path and flows through existing Bedrock-credit metering. This is the lowest-friction
-  default and the recommended first credential path to wire.
-- **ChatGPT-OAuth owners get Codex**, reusing the OAuth we already store. They **cannot** run
-  Claude Code on that credential.
-- **"Sign in with Claude"** (subscription OAuth) is a *new* provider path; it's attractive but
-  headless-in-container feasibility is unverified (Unknown #2) — treat as a fast-follow, not
-  the first cut.
-- **Provision gate** (`provision_gate.py`) already blocks chat on missing OAuth / exhausted
-  credits; extend it so "agent X needs provider Y, owner has Z" surfaces the same structured
-  blocked state rather than a runtime spawn failure.
+ACP sessions have no TTY. **With the defaults, any write/exec prompt aborts the session.**
+For Isol8 v1: `permissionMode: "approve-all"` + `nonInteractivePermissions: "deny"` —
+the container is the user's own isolated sandbox, equivalent trust to the native loop's
+`allowCommands`. A later phase can wire `src/acp/permission-relay.ts` into Isol8's existing
+`ApprovalCard` flow for interactive approval parity.
 
----
+### 2.5 Tool bridges (off by default — keep them off in v1)
 
-## 6. Image (`apps/infra/openclaw/Dockerfile`)
+`pluginToolsMcpBridge` / `openClawToolsMcpBridge` expose OpenClaw plugin tools and core
+tools to the harness via injected MCP servers. Default off; leave off for v1 (smaller
+blast radius), revisit when an ACP agent needs memory/cron.
 
-Bake the ACP adapters into the extended image (same place Slack/Discord/Bedrock plugins live),
-so **every** container can run any runtime and the marketplace stays single-pool:
+### 2.6 Credentials — "does it work with Sign in with ChatGPT?"
 
-- `@zed-industries/claude-code-acp` (+ the Claude Code CLI it wraps)
-- `@zed-industries/codex-acp` (+ Codex CLI) — already exercised by the fork's live test
-- Gemini CLI ACP adapter (phase 2)
-- Confirm the `acpx` backend plugin is present/enabled (it's the spawner).
+Per the fork docs: *"the harness owns its provider login… Vendor auth still has to exist
+on the host for that harness."* The spawned adapter inherits gateway env
+(`src/acp/client.ts` → `resolveAcpClientSpawnEnv`, with provider-key strip rules).
 
-Pin versions in the image; bump via the normal `build-openclaw-image.yml` → ECR
-`isol8/openclaw-extended` flow and the per-env tags in `openclaw-version.json`. No per-user
-image variance.
+- **"Sign in with ChatGPT" is OpenAI-only → it drives `codex`, not `claude`.** The fork
+  even ships a dedicated `codex-auth-bridge.ts` (759 lines): Codex ACP runs with an
+  isolated `CODEX_HOME`; trusted-project + model-routing config are copied from the host
+  while **auth stays on host config** — i.e. the ChatGPT-OAuth credentials Isol8 already
+  provisions for the native `openai-codex` provider serve the Codex ACP harness too.
+- **Claude Code** (`@agentclientprotocol/claude-agent-acp`) authenticates via Anthropic:
+  `ANTHROPIC_API_KEY` env (BYO-key path) or `CLAUDE_CODE_USE_BEDROCK=1` + AWS creds
+  (Bedrock-managed path — the ECS task role supplies creds via the container metadata
+  endpoint automatically; zero new secrets).
+- **Gemini CLI**: `GEMINI_API_KEY` or Google OAuth.
 
----
+| Isol8 provider path (`billing_accounts.provider_choice`) | Unlocks harness | Credential delivery |
+|---|---|---|
+| Bedrock managed | `claude` | `CLAUDE_CODE_USE_BEDROCK=1` + task-role IAM (no secret) |
+| ChatGPT OAuth (personal only) | `codex` | existing OAuth via codex-auth-bridge host config |
+| BYO Anthropic key | `claude` | `ANTHROPIC_API_KEY` (Fernet-decrypted → per-user task env) |
+| BYO OpenAI key | `codex` | `OPENAI_API_KEY` |
+| (new, fast-follow) Sign in with Claude | `claude` | Pro/Max OAuth in `~/.claude` — headless feasibility unverified |
 
-## 7. Gateway / backend impact — minimal
-
-- **Inbound events:** already handled — `stream:"acp"` → `agent_activity`
-  (`connection_pool.py:758`). May want to enrich the pill (currently one generic "ACP step"
-  envelope) once we see real Claude Code session updates, but nothing is *required*.
-- **RPC surface:** unchanged. `chat.send`, `sessions.list`, `agents.create/update/list` work
-  identically — the ACP agent is invisible above the container.
-- **Usage/metering:** token accounting via `sessions.list` should still report for ACP runs;
-  **verify** the ACP path populates session token counts (Bedrock metering especially — see
-  `2026-06-07-bedrock-metering-enforcement-metronome-design.md`). If ACP turns don't surface
-  tokens the same way, that's a metering gap to close before GA.
+Extend `provision_gate.py` so "agent wants harness X, owner's provider can't auth it"
+surfaces the structured blocked state instead of a runtime spawn error.
 
 ---
 
-## 8. Marketplace impact — stays one marketplace
+## 3. Isol8-side work (all of it)
 
-- **Export** (`agent_export.py`) keeps `format="openclaw"`; `runtime` rides along as a plain
-  field inside `openclaw-slice.json`'s agent entry. No new format, no exporter fork.
-- **Deploy** (`catalog_service.deploy_from_artifact`) is unchanged: it deep-merges the slice
-  (carrying `runtime`) and the buyer's image already has every adapter baked in (§6), so any
-  buyer can run any listing's runtime.
-- **Entitlement/compat:** because all adapters are in the shared image, there is **no**
-  buyer/seller compatibility gating to build. The only gate is credential availability at run
-  time (§5), which the provision gate already models.
-- **Safety:** `marketplace_safety.scan_tarball` is unaffected (still scans the workspace).
-  Note for review: an `acp:*` agent's behavior is defined by the adapter, not by workspace
-  files — the safety story is the same as native (we trust the baked adapters; we scan the
-  seller's workspace/skills/MCPs as today).
-- **Friday remains unpublishable** (`FRIDAY_PUBLISH_ERROR_MSG`) regardless of runtime.
+### 3.1 Image (`apps/infra/openclaw/Dockerfile`)
+
+- `@anthropic-ai/claude-code` and `@google/gemini-cli` are **already baked** as global
+  bins (Layer 8). 
+- Bake the `acpx` plugin into the stock plugin root following the existing Layer-10/11
+  pattern (slack/discord/bedrock): copy `@openclaw/acpx` + co-located `node_modules`
+  (incl. `claude-agent-acp`, `codex-acp`, `acpx`) into `/app/dist/extensions/acpx`,
+  root-owned. (`openclaw plugins install` is unusable on per-user EFS — uid 1000 is
+  rejected by the loader; and first-use `npx` fetches must not happen at runtime.)
+- **Phase-0 check:** whether the base image already ships `/app/dist/extensions/acpx`
+  (`docker run --rm ghcr.io/isol8ai/agent:2026.6.1-isol8.1 ls /app/dist/extensions`).
+  The fork's `docker-release.yml` passes no `OPENCLAW_EXTENSIONS` build-arg, so assume
+  the bake is needed.
+
+### 3.2 Config generation (`apps/backend/core/containers/config.py`)
+
+Emit, when any agent (or the owner's entitlement) enables ACP:
+
+```python
+"acp": {
+    "enabled": True,
+    "backend": "acpx",
+    "allowedAgents": [...],          # gated by owner's provider/entitlement
+    "runtime": {"ttlMinutes": ...},
+},
+"plugins": {"entries": {
+    "acpx": {"enabled": True, "config": {
+        "permissionMode": "approve-all",
+        "nonInteractivePermissions": "deny",
+        # "agents": {...}  # custom harness overrides (Hermes etc.)
+    }},
+    ...existing entries...
+}},
+```
+
+plus the per-agent `runtime` object (§2.1) stamped onto `agents.list[]` entries, and
+`CLAUDE_CODE_USE_BEDROCK` / `ANTHROPIC_API_KEY` on the per-user task definition
+(`ecs_manager._build_register_kwargs_from_base`) according to provider choice.
+
+### 3.3 Backend API + frontend
+
+- Agents RPC/router: accept + validate `runtime` (must be absent or
+  `{type:"acp", acp:{agent ∈ allowedAgents}}`).
+- `provision_gate.py`: provider↔harness compatibility check (§2.6).
+- Frontend: runtime selector in `AgentCreateForm`/`AgentDialogs` (sibling of
+  `ModelSelector`, options gated by provider), display on `AgentDetailPanel`,
+  `ProviderIcons` marks.
+
+### 3.4 Marketplace — unchanged by construction
+
+`runtime` is a plain field inside the agent entry that `agent_export.py` already snapshots
+into `openclaw-slice.json` and `catalog_service.deploy_from_artifact` already deep-merges.
+Every container's image carries every adapter (§3.1), so no compatibility gating. The only
+runtime gate is credential availability, which the provision gate models. Listings can
+display their runtime (phase 3 UI). Friday remains unpublishable regardless.
+
+### 3.5 Paperclip seed agents
+
+Friday/Atlas stay native. Friday additionally gains delegation for free: `sessions_spawn`
+with `runtime:"acp"` is available to native agents once ACP is enabled (§2.3 path 2).
+No change to `paperclip_provisioning.provision_org`.
 
 ---
 
-## 9. Paperclip seed agents
+## 4. Rollout phases
 
-Friday/Atlas stay `runtime: openclaw` (native) by default — they are the orchestrator/recruiter
-and rely on OpenClaw-native behavior. The per-agent field means a user can *add* an
-`acp:claude-code` worker agent alongside them without touching Friday. No change to
-`paperclip_provisioning.provision_org` or the `openclaw_gateway` adapter wiring.
+1. **Phase 0 — container spike (no user-facing change).** On a dev container with acpx
+   baked + `acp.enabled` + `permissionMode=approve-all` + `CLAUDE_CODE_USE_BEDROCK=1`:
+   drive `chat.send` → `/acp spawn claude --bind here` → follow-up turn, mirroring
+   `gateway-acp-bind.live.test.ts`. Confirms: image bake, Bedrock auth headless, event
+   rendering in our UI, and token/metering visibility.
+2. **Phase 1 — Claude Code via Bedrock, per-agent.** §3.1–3.3 wired; Bedrock-managed
+   owners only.
+3. **Phase 2 — BYO Anthropic key + Codex via existing ChatGPT OAuth** (codex-auth-bridge).
+4. **Phase 3 — Gemini, custom harness config surface ("Hermes"), marketplace runtime UI,
+   optional permission-relay → ApprovalCard.**
 
----
+Each phase independently shippable and reversible (absent `runtime` ⇒ native).
 
-## 10. Frontend
+## 5. Testing
 
-- Add a **runtime selector** to agent create/edit (`AgentCreateForm.tsx` /
-  `AgentDialogs.tsx`), sibling to the existing `ModelSelector`. Options gated by the owner's
-  provider/entitlement (don't offer `acp:claude-code` to a ChatGPT-OAuth-only owner, etc.).
-- Surface the chosen runtime on `AgentDetailPanel` / `AgentOverviewTab`.
-- Reuse `ProviderIcons` for brand marks (Claude / OpenAI / Gemini).
+- Backend unit: `config.py` emits `acp` + `plugins.entries.acpx` iff enabled; agent entry
+  `runtime` validation; provision-gate provider↔harness matrix.
+- Container integration (gated live): the Phase-0 flow as a repeatable check.
+- Marketplace: export→deploy round-trip preserves `runtime`.
+- Metering: ACP turns report token usage (`claude-agent-acp` accumulates usage per
+  session; verify it surfaces through `sessions.list` for `record_usage`).
 
----
+## 6. Remaining open questions
 
-## 11. Rollout phases
-
-1. **Phase 0 — verify (no user-facing change).** Resolve Unknowns #1–#3 against the fork +
-   a scratch container: bake `claude-code-acp`, hand-write an `acp` config + one agent with
-   `runtime: acp:claude-code`, drive a turn end-to-end with `CLAUDE_CODE_USE_BEDROCK=1`.
-2. **Phase 1 — Claude Code via Bedrock.** Per-agent `runtime` field, `config.py` `acp` block,
-   Dockerfile bake, provision-gate extension, frontend selector. Bedrock-managed owners only.
-3. **Phase 2 — BYO Anthropic key + Codex via ChatGPT OAuth.** Wire the per-provider credential
-   env map; Codex reuses existing OAuth.
-4. **Phase 3 — Gemini + "Sign in with Claude" OAuth + marketplace runtime UI** (listings
-   display/advertise their runtime).
-
-Each phase is independently shippable and reversible (absent `runtime` ⇒ native).
-
----
-
-## 12. Testing
-
-- **Backend unit:** `config.py` emits the `acp` block iff an agent uses `acp:*`; agent entry
-  carries `runtime`; provision-gate rejects unsupported provider/runtime combos.
-- **Backend unit:** extend `test_chat_event_transform.py` if we enrich the `acp` pill.
-- **Container integration (live, gated):** mirror the fork's
-  `gateway-acp-spawn-defaults.live.test.ts` pattern — spawn `claude-code-acp`, assert a turn
-  streams back through the gateway as chunks + `agent_activity`.
-- **Marketplace:** export→deploy round-trip preserves `runtime` in the slice; deployed agent
-  runs on a fresh container.
-- **Metering:** assert ACP runs report token usage (§7).
-
----
-
-## 13. Open questions for review
-
-1. **Unknown #1** (acpx agent→command map) — config-only or fork patch? Gates §3/§4.
-2. Should `runtime` be settable on an existing agent (hot switch) or only at create time?
-   Hot-switch means tearing down a live ACP session on change.
-3. Per-agent **model** within a runtime — do we expose Claude Code's model picker, or pin to
-   the owner's Bedrock model set?
-4. **Metering parity** for ACP turns (Bedrock especially) — blocker for GA or fast-follow?
-5. "Sign in with Claude" subscription OAuth in a headless container — worth the spike, or skip
-   in favor of Bedrock/BYO?
+1. **Metering parity** — does ACP session usage surface through `sessions.list` the same
+   way native runs do? (Phase-0 item; potential GA blocker for Bedrock metering.)
+2. Main-session UX: do we bind each ACP agent's default conversation at provision time
+   (config `bindings[]`) or lazily on first message? (Phase-1 design detail.)
+3. Hot-switching `runtime` on an existing agent — allowed (tears down live ACP session)
+   or create-time only?
+4. "Sign in with Claude" subscription OAuth headless in a container — spike or skip.

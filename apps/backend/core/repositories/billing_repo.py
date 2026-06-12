@@ -233,7 +233,7 @@ async def set_provider_choice(
     *,
     provider_choice: str,
     byo_provider: str | None,
-    owner_type: str,
+    connector_user_id: str | None = None,
 ) -> dict:
     """Persist the provider choice on a billing row.
 
@@ -243,37 +243,47 @@ async def set_provider_choice(
         byo_provider: optional even when ``provider_choice == "byo_key"`` —
             the picker submits ``byo_key`` alone at /trial-checkout time, and
             the BYO wizard fills in ``byo_provider`` (openai vs anthropic) +
-            the actual API key in a later step. The
-            row's ``byo_provider`` attribute is REMOVE'd whenever it's
-            ``None`` so a switch away from byo_key, or a re-pick of byo_key
-            without a chosen provider yet, doesn't leave stale data.
-        owner_type: ``"personal"`` or ``"org"``. Used for the org invariant.
+            the actual API key in a later step. REMOVE'd whenever ``None``.
+        connector_user_id: the Clerk user whose ChatGPT OAuth tokens back this
+            owner's container (the workspace owner). Persisted only for
+            ``chatgpt_oauth``; for other providers any prior value is
+            REMOVE'd. ``None`` on a chatgpt_oauth write (e.g. the webhook
+            backup, which may not carry it) leaves an existing connector
+            untouched so the backup can never strip the value the synchronous
+            trial-checkout/change-provider write set.
 
     Raises:
-        ValueError: unknown provider_choice, or chatgpt_oauth on an org row.
+        ValueError: unknown provider_choice.
     """
     if provider_choice not in _VALID_PROVIDER_CHOICES:
         raise ValueError(f"unknown provider_choice: {provider_choice!r}")
-    if owner_type == "org" and provider_choice == "chatgpt_oauth":
-        # ChatGPT OAuth is personal-only — orgs use Bedrock or BYO API key
-        # (OpenAI Plus terms forbid reselling).
-        raise ValueError(
-            "chatgpt_oauth is not allowed for org owners; orgs must use bedrock_claude or byo_key",
-        )
 
     now = utc_now_iso()
     table = _get_table()
+    sets = ["provider_choice = :pc", "updated_at = :t"]
+    removes: list[str] = []
+    values: dict = {":pc": provider_choice, ":t": now}
+
     if provider_choice == "byo_key" and byo_provider is not None:
-        update_expr = "SET provider_choice = :pc, byo_provider = :bp, updated_at = :t"
-        values: dict = {":pc": provider_choice, ":bp": byo_provider, ":t": now}
+        sets.append("byo_provider = :bp")
+        values[":bp"] = byo_provider
     else:
-        # provider_choice != byo_key, OR byo_key without a chosen byo_provider
-        # yet. Drop any prior byo_provider so a switch away from byo_key, or a
-        # re-pick of byo_key before the BYO wizard fills in the provider,
-        # doesn't leak a stale value onto the row. DDB also rejects SETting
-        # an attribute to None — REMOVE is the correct verb here.
-        update_expr = "SET provider_choice = :pc, updated_at = :t REMOVE byo_provider"
-        values = {":pc": provider_choice, ":t": now}
+        # DDB rejects SETting None — REMOVE is the correct verb. Dropping the
+        # stale value covers both "switched away from byo_key" and "re-picked
+        # byo_key before the wizard chose a provider".
+        removes.append("byo_provider")
+
+    if provider_choice == "chatgpt_oauth":
+        if connector_user_id is not None:
+            sets.append("oauth_connector_user_id = :cu")
+            values[":cu"] = connector_user_id
+        # connector_user_id None: leave any existing connector in place.
+    else:
+        removes.append("oauth_connector_user_id")
+
+    update_expr = "SET " + ", ".join(sets)
+    if removes:
+        update_expr += " REMOVE " + ", ".join(removes)
 
     response = await run_in_thread(
         table.update_item,
@@ -285,8 +295,33 @@ async def set_provider_choice(
     return response["Attributes"]
 
 
+async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> None:
+    """Record the org OWNER as the ChatGPT connector — set-once.
+
+    The connector is the workspace owner (one ChatGPT account ↔ one
+    container) and is immutable once recorded: the condition refuses to
+    overwrite an existing value, so a later sign-in by a different admin
+    can never repoint the org. The no-overwrite failure and the
+    missing-row failure (same phantom-row hazard as clear_provider_choice)
+    are both silent no-ops."""
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET oauth_connector_user_id = :cu, updated_at = :t",
+            ExpressionAttributeValues={":cu": connector_user_id, ":t": utc_now_iso()},
+            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(oauth_connector_user_id)"),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
+
+
 async def clear_provider_choice(owner_id: str) -> None:
-    """Remove provider_choice and byo_provider from a billing row.
+    """Remove provider_choice, byo_provider, and oauth_connector_user_id from
+    a billing row.
 
     No-op when no billing row exists — DynamoDB ``update_item`` would
     otherwise upsert and create a phantom ``{owner_id, updated_at}`` row
@@ -301,7 +336,7 @@ async def clear_provider_choice(owner_id: str) -> None:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="REMOVE provider_choice, byo_provider SET updated_at = :t",
+            UpdateExpression="REMOVE provider_choice, byo_provider, oauth_connector_user_id SET updated_at = :t",
             ExpressionAttributeValues={":t": now},
             ConditionExpression="attribute_exists(owner_id)",
         )

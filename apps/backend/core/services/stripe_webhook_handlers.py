@@ -198,7 +198,6 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 account["owner_id"],
                 provider_choice=metadata_provider,
                 byo_provider=metadata_byo if metadata_provider == "byo_key" else None,
-                owner_type=account.get("owner_type", "personal"),
             )
         except ValueError:
             # Org invariant violation (chatgpt_oauth on org). Should

@@ -621,7 +621,6 @@ async def change_provider(
         owner_id,
         provider_choice=provider_choice,
         byo_provider=next_byo,
-        owner_type=owner_type,
     )
 
     # Side-effect cleanup: drop the OLD provider's credentials so a future

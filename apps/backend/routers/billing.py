@@ -423,12 +423,10 @@ async def create_trial_checkout(
     # customer.subscription.created webhook lands (the webhook can be
     # delayed by seconds-to-minutes). The webhook handler still writes to
     # billing_repo as an idempotent backup.
-    owner_type_val = account.get("owner_type", get_owner_type(auth))
     await billing_repo.set_provider_choice(
         account["owner_id"],
         provider_choice=body.provider_choice,
         byo_provider=body.byo_provider if body.provider_choice == "byo_key" else None,
-        owner_type=owner_type_val,
     )
 
     try:

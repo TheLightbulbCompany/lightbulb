@@ -374,6 +374,13 @@ async def oauth_callback(provider: str, code: str, state: str):
     except ValueError:
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_state")
     p = registry.get_provider(prov)
+    # Re-verify the Bedrock requirement at the actual point of use: the owner
+    # could have switched providers during the OAuth round-trip, leaving
+    # authorize's check stale. Bounce to the upsell rather than wire Google data
+    # into a training-capable path. Done before any secret/keyring write below,
+    # so there is nothing to roll back — the just-exchanged token is discarded.
+    if p.requires_bedrock and not await _owner_on_bedrock(owner_id):
+        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=requires_bedrock")
     # Retain the credential in Secrets Manager only when the backend is the
     # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
     # container, so the backend stores nothing and the EFS keyring written by

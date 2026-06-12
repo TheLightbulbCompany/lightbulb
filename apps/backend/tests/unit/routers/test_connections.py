@@ -953,6 +953,37 @@ class TestOAuthCallback:
         mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected")
 
     @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_rechecks_bedrock_and_bounces_non_bedrock_owner(
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client, monkeypatch
+    ):
+        # Owner passed authorize on Bedrock but switched off during the OAuth
+        # round-trip: the callback re-checks at the point of use and must NOT
+        # complete the Google connection (the just-exchanged token is discarded).
+        monkeypatch.setattr(
+            "routers.connections.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
+        )
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "error=requires_bedrock" in response.headers["location"]
+        mock_apply.apply_connection.assert_not_called()
+        mock_store.put.assert_not_called()
+        mock_repo.put_status.assert_not_called()
+
+    @pytest.mark.asyncio
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")

@@ -313,7 +313,7 @@ def build_provider_block(
         # `models.providers.openai` block: an explicit override (baseUrl +
         # legacy responses/completions api) would SHADOW the built-in OAuth
         # provider path. The OAuth credentials are read from the EFS-staged
-        # auth-profiles.json (see workspace.pre_stage_auth_profile_store).
+        # credentials/oauth.json (see workspace.pre_stage_auth_profile_store).
         #
         # NB: `openai-codex/*` is a RETIRED ref at the deployed image — the
         # `openai` plugin subsumes it. Emitting it produces "Unknown model:

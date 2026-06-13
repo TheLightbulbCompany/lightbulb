@@ -671,6 +671,13 @@ async def change_provider(
                 "change_provider: delete_auth_profile_store failed for owner=%s",
                 owner_id,
             )
+        # On 6.6 the deleted EFS seed isn't what the running container reads —
+        # the credential it imported lives in its SQLite store. Tell the live
+        # gateway to drop it via models.authLogout so switch-away revokes the
+        # token now (best-effort; no-op when the container is cold).
+        from core.services.container_auth import revoke_provider_auth_in_container
+
+        await revoke_provider_auth_in_container(owner_id)
 
     if current_choice == "byo_key" and provider_choice != "byo_key" and current_byo in ("openai", "anthropic"):
         from core.services.key_service import KeyService

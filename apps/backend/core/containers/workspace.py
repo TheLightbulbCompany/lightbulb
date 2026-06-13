@@ -17,7 +17,6 @@ import logging
 import mimetypes
 import os
 import re
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
 
@@ -695,19 +694,15 @@ class Workspace:
         return self.user_path(user_id) / "workspaces" / agent_id
 
 
-# OpenClaw's auth-profile store schema. Mirrors the upstream
-# AuthProfileStore type defined in src/agents/auth-profiles/types.ts; the
-# version constant is `AUTH_STORE_VERSION = 1` from
-# src/agents/auth-profiles/constants.ts, last verified at openclaw
-# v2026.5.7. Bump _AUTH_STORE_VERSION here when bumping
-# openclaw-version.json#upstream past a release that changes the schema.
-_AUTH_STORE_VERSION = 1
-
-# Profile-id key under AuthProfileStore.profiles. The id itself is not used
-# for provider matching (the resolver filters on the credential's `provider`
-# field, below) — but we align it to the fork's canonical OAuth profile id
-# (`openai:default`) rather than the retired `openai-codex:` prefix.
-_OPENAI_OAUTH_PROFILE_ID = "openai:default"
+# Top-level key in OpenClaw's container-global ``credentials/oauth.json`` is
+# the PROVIDER name; the in-container import (mergeOAuthFileIntoStore) builds
+# profile ``<provider>:default`` from it. Provider MUST be "openai": the auth
+# resolver filters profiles by the credential's provider field and there is NO
+# runtime alias from the retired "openai-codex" to "openai" (only
+# ``openclaw doctor`` migrates it), so a key of "openai-codex" is silently
+# dropped. The deployed chatgpt model ref is ``openai/gpt-5.5`` (config.py),
+# which resolves ``openai:default``.
+_OAUTH_PROVIDER_KEY = "openai"
 
 
 def _list_agent_dir_names(efs_root: str, user_id: str) -> list[str]:
@@ -727,41 +722,46 @@ def _list_agent_dir_names(efs_root: str, user_id: str) -> list[str]:
         return []
 
 
-async def pre_stage_auth_profile_store(
-    *, user_id: str, oauth_tokens: dict, agent_ids: Iterable[str] = ("main",)
-) -> None:
-    """Write the user's ChatGPT OAuth profile to EFS before container start.
+async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> None:
+    """Write the owner's ChatGPT OAuth credential to EFS before container start.
 
-    Writes ``<EFS>/users/{user_id}/agents/{agent_id}/agent/auth-profiles.json``
-    in OpenClaw's AuthProfileStore JSON shape — once per agent in
-    ``agent_ids`` (``"main"`` is always included) — so the bundled ``openai``
-    provider finds credentials at boot for EVERY agent that runs, not only
-    the default ``main`` agent. OpenClaw resolves auth strictly per agent
-    dir (``resolveAgentDir`` -> ``agents/<id>/agent``) with NO shared/default
-    fallback, so an org whose agents are Friday/Atlas/custom (UUID dirs) gets
-    no credential unless each one is staged. The EFS access-point chroots
-    ``/users/{user_id}`` to ``/home/node/.openclaw``, so each file is read at
-    ``/home/node/.openclaw/agents/<id>/agent/auth-profiles.json``.
+    Writes ONE container-global file
+    ``<EFS>/users/{user_id}/credentials/oauth.json`` in OpenClaw's flat
+    ``Record<provider, OAuthCredentials>`` shape, e.g.::
 
-    Re-OAuth callers can re-invoke this helper; files are overwritten, not
-    merged. After provision, OpenClaw owns each file's lifecycle and
-    refreshes the access token in-place using the long-lived refresh token
-    (each agent holds its own copy and refreshes independently — the same
-    per-agent model upstream uses, so no cross-agent refresh conflict).
+        {"openai": {"access": "...", "refresh": "...", "expires": 1730000000000}}
+
+    OpenClaw 6.6 reads per-agent auth from a WAL SQLite store and IGNORES the
+    legacy per-agent ``auth-profiles.json``. The in-container process imports
+    this file into each agent's SQLite store on first load (building profile
+    ``openai:default``), and a cross-agent ``(provider, profileId)`` refresh
+    lock serializes token rotation across agents -- so a SINGLE shared file
+    authenticates every agent. This replaces the per-agent fan-out, which
+    broke under OpenAI's refresh-token rotation (``refresh_token_reused``): N
+    independent copies each spent the same one-time refresh token. See
+    project_openclaw_oauth_auth_model.
+
+    The EFS access point chroots ``/users/{user_id}`` to
+    ``/home/node/.openclaw``, so the file is read at
+    ``/home/node/.openclaw/credentials/oauth.json`` =
+    ``$STATE_DIR/credentials/oauth.json`` (``resolveOAuthPath`` upstream).
+
+    Re-OAuth overwrites the file. NOTE: 6.6 imports it only into an EMPTY
+    SQLite slot, so rewriting it updates only a fresh store -- a fresh provision
+    (or a switch into chatgpt_oauth, which hot-patches the config and triggers a
+    reload of an as-yet-empty Bedrock store) picks it up live; reconnecting on
+    an already-authed container needs a reprovision. After first import the
+    in-container OAuth manager refreshes the token in place.
 
     Args:
         user_id: the container owner id (org_id for orgs, user_id personal).
         oauth_tokens: dict with required keys ``access_token`` and
-            ``refresh_token``, optional keys ``expires_at`` (ms epoch) and
-            ``email``. Sourced from oauth_service.get_decrypted_tokens.
-        agent_ids: agent ids to stage the profile for. ``"main"`` is always
-            included; callers pass the owner's full agent population
-            (Friday/Atlas/custom) so every agent that can run is authed.
+            ``refresh_token``, optional ``expires_at`` (ms epoch), ``email``,
+            ``account_id``. Sourced from oauth_service.get_decrypted_tokens.
 
-    Note: tokens are written in plaintext to EFS. Security boundary is
-    EFS encryption-at-rest (KMS) + per-user EFS access point UID/GID
-    isolation, NOT in-file encryption — the container can't decrypt at
-    boot, so encrypting here would just break OpenClaw.
+    Note: tokens are plaintext on EFS. Security boundary is EFS KMS
+    encryption-at-rest + per-user access-point UID/GID isolation, NOT in-file
+    encryption -- the container can't decrypt at boot.
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")
@@ -775,108 +775,94 @@ async def pre_stage_auth_profile_store(
     if not efs_root:
         raise RuntimeError("EFS_MOUNT_PATH is empty - backend is misconfigured.")
 
-    profile: dict = {
-        # Provider MUST be "openai": the auth resolver filters profiles by the
-        # credential's provider field, and there is NO runtime alias from the
-        # retired "openai-codex" to "openai" (only `openclaw doctor` migrates
-        # it). A row keyed "openai-codex" is silently dropped as a
-        # provider mismatch, so the model run finds no credentials.
-        "type": "oauth",
-        "provider": "openai",
+    # Flat OAuthCredentials: keys are ``access``/``refresh``/``expires``, NOT
+    # the DDB ``access_token``/``refresh_token``/``expires_at``. Extra keys
+    # (``accountId``) are carried verbatim into the profile by the import.
+    creds: dict = {
         "access": oauth_tokens["access_token"],
         "refresh": oauth_tokens["refresh_token"],
     }
-    # `expires` is a ms-epoch number per upstream OAuthCredentials type.
-    # When absent, OpenClaw treats the access token as already-expired and
-    # refreshes on first use; that's correct behavior for cold provision
-    # since our DDB tokens may have aged.
+    # ``expires`` is a ms-epoch number per upstream OAuthCredentials. When
+    # absent, OpenClaw treats the access token as already-expired and refreshes
+    # on first use -- fine for cold provision since DDB tokens may have aged.
     if oauth_tokens.get("expires_at") is not None:
-        profile["expires"] = int(oauth_tokens["expires_at"])
+        creds["expires"] = int(oauth_tokens["expires_at"])
     if oauth_tokens.get("email"):
-        profile["email"] = oauth_tokens["email"]
+        creds["email"] = oauth_tokens["email"]
+    if oauth_tokens.get("account_id"):
+        creds["accountId"] = oauth_tokens["account_id"]
 
-    payload = json.dumps(
-        {"version": _AUTH_STORE_VERSION, "profiles": {_OPENAI_OAUTH_PROFILE_ID: profile}},
-        indent=2,
-    )
+    payload = json.dumps({_OAUTH_PROVIDER_KEY: creds}, indent=2)
 
-    # Stage the profile into EVERY agent's dir, not just "main". OpenClaw
-    # resolves auth strictly per agentDir (agents/<id>/agent) with no shared
-    # fallback, so agents that actually run (Friday/Atlas/custom UUID dirs)
-    # boot unauthenticated unless each gets its own copy. Targets =
-    # "main" (implicit default) + agent dirs already on disk (covers running
-    # containers — provider hot-swap, running redeploy — where the explicit
-    # list isn't threaded in) + any explicit ``agent_ids`` (covers first
-    # provision, before the container has booted to create those dirs).
-    # dict.fromkeys de-dupes and preserves order.
-    targets = list(
-        dict.fromkeys(["main", *_list_agent_dir_names(efs_root, user_id), *(aid for aid in agent_ids if aid)])
-    )
-
-    def _stage_one(agent_id: str) -> None:
-        # agent_ids come from our own Paperclip/config population, not user
-        # input — guard against path traversal defensively.
-        if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
-            raise ValueError(f"unsafe agent_id for auth-profile staging: {agent_id!r}")
-        base = Path(efs_root) / user_id / "agents" / agent_id / "agent"
-        base.mkdir(parents=True, exist_ok=True)
-        # Atomic write: .tmp + os.replace. Truncate-then-write isn't
-        # crash-atomic — a re-OAuth that crashes mid-write would leave OpenClaw
-        # with corrupt JSON. os.replace is atomic on POSIX (same filesystem).
-        auth_path = base / "auth-profiles.json"
-        tmp_path = base / "auth-profiles.json.tmp"
-        tmp_path.write_text(payload)
-        # File holds long-lived OAuth tokens — owner-only.
+    base = Path(efs_root) / user_id / "credentials"
+    base.mkdir(parents=True, exist_ok=True)
+    # Atomic write: .tmp + os.replace (crash-safe on POSIX, same filesystem) --
+    # a re-OAuth that crashes mid-write must not leave OpenClaw corrupt JSON.
+    oauth_path = base / "oauth.json"
+    tmp_path = base / "oauth.json.tmp"
+    tmp_path.write_text(payload)
+    # File holds long-lived OAuth tokens -- owner-only.
+    try:
+        os.chmod(str(tmp_path), 0o600)
+    except OSError:
+        pass
+    # OpenClaw runs as UID 1000 -- match ownership so its in-container import +
+    # token refresh can read/write. Best-effort.
+    try:
+        os.chown(str(tmp_path), 1000, 1000)
+    except (PermissionError, OSError):
+        pass
+    os.replace(str(tmp_path), str(oauth_path))
+    for dir_path in (base, base.parent):
         try:
-            os.chmod(str(tmp_path), 0o600)
-        except OSError:
-            pass
-        # OpenClaw runs as UID 1000 — match ownership so its in-container
-        # token-refresh can rotate the file. Best-effort.
-        try:
-            os.chown(str(tmp_path), 1000, 1000)
+            os.chown(str(dir_path), 1000, 1000)
         except (PermissionError, OSError):
             pass
-        os.replace(str(tmp_path), str(auth_path))
-        for dir_path in (base, base.parent, base.parent.parent):
-            try:
-                os.chown(str(dir_path), 1000, 1000)
-            except (PermissionError, OSError):
-                pass
-
-    for agent_id in targets:
-        _stage_one(agent_id)
 
     logger.info(
-        "pre_staged_auth_profile_store",
-        extra={"user_id": user_id, "agents": targets, "has_email": "email" in profile},
+        "pre_staged_oauth_json",
+        extra={
+            "user_id": user_id,
+            "has_email": "email" in creds,
+            "has_expires": "expires" in creds,
+        },
     )
 
 
 async def delete_auth_profile_store(*, user_id: str) -> None:
-    """Remove the staged auth-profiles.json from EVERY agent dir on EFS.
+    """Remove the staged ChatGPT credential from EFS on OAuth disconnect/switch.
 
-    Paired with pre_stage_auth_profile_store, which fans the credential into
-    every agent dir. Called on OAuth disconnect / switch-away so the container
-    can no longer read tokens cold even if it doesn't restart — so it MUST
-    enumerate the same per-agent files ("main" + every agent dir on disk),
-    not only "main", or a revoked agent keeps a usable refresh token on EFS.
+    Deletes the container-global ``credentials/oauth.json`` AND sweeps any
+    legacy per-agent ``agents/*/agent/auth-profiles.json`` left by the pre-6.6
+    fan-out, so a revoked owner can't re-import a stale token on the next boot
+    and no agent keeps a usable refresh token on EFS. (The in-container SQLite
+    store is the container's own state and is not touched here; a reprovision
+    starts it fresh.)
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")
 
     efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
     if not efs_root:
-        return  # No EFS configured (e.g. tests) — nothing to delete.
+        return  # No EFS configured (e.g. tests) -- nothing to delete.
 
-    targets = list(dict.fromkeys(["main", *_list_agent_dir_names(efs_root, user_id)]))
     removed: list[str] = []
-    for agent_id in targets:
-        auth_path = Path(efs_root) / user_id / "agents" / agent_id / "agent" / "auth-profiles.json"
+    oauth_path = Path(efs_root) / user_id / "credentials" / "oauth.json"
+    try:
+        if oauth_path.exists():
+            oauth_path.unlink()
+            removed.append("credentials/oauth.json")
+    except OSError as e:
+        logger.warning("delete_auth_profile_store: %s -- %s", oauth_path, e)
+
+    # Sweep legacy per-agent files left by the pre-6.6 fan-out.
+    for agent_id in dict.fromkeys(["main", *_list_agent_dir_names(efs_root, user_id)]):
+        legacy = Path(efs_root) / user_id / "agents" / agent_id / "agent" / "auth-profiles.json"
         try:
-            if auth_path.exists():
-                auth_path.unlink()
-                removed.append(agent_id)
+            if legacy.exists():
+                legacy.unlink()
+                removed.append(f"agents/{agent_id}/agent/auth-profiles.json")
         except OSError as e:
-            logger.warning("delete_auth_profile_store: %s — %s", auth_path, e)
-    logger.info("deleted_auth_profile_store", extra={"user_id": user_id, "agents": removed})
+            logger.warning("delete_auth_profile_store: %s -- %s", legacy, e)
+
+    logger.info("deleted_oauth_credential", extra={"user_id": user_id, "removed": removed})

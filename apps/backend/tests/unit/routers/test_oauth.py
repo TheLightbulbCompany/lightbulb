@@ -126,10 +126,17 @@ async def test_poll_returns_completed_status(async_client):
 
 @pytest.mark.asyncio
 async def test_disconnect_revokes(async_client):
-    with patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke:
+    with (
+        patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+        patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()) as mock_logout,
+    ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
     assert resp.status_code == 200
     mock_revoke.assert_awaited_once()
+    # 6.6: disconnect must also clear the credential the running container
+    # already imported into its SQLite store (models.authLogout), not just the
+    # EFS seed file.
+    mock_logout.assert_awaited_once()
 
 
 @pytest.mark.asyncio

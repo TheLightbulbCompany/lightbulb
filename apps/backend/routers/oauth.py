@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
 from core.containers.workspace import delete_auth_profile_store
 from core.repositories import billing_repo
+from core.services.container_auth import revoke_provider_auth_in_container
 from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
@@ -202,6 +203,11 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
         # Best-effort: the row deletion above is the authoritative signal.
         # EFS unlink failures shouldn't 5xx the disconnect.
         pass
+    # On 6.6 the credential the container actually uses lives in its per-agent
+    # SQLite store (imported from the now-deleted oauth.json). Tell the running
+    # gateway to drop it via models.authLogout so disconnect revokes the live
+    # token immediately — best-effort, a no-op if the container is cold.
+    await revoke_provider_auth_in_container(owner_id)
     # Clear provider_choice so the next /chat visit routes the owner back to
     # onboarding to pick a provider. Without this, the wizard sees
     # provider_choice=chatgpt_oauth on a billing row with no auth.json and the

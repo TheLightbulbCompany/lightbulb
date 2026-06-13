@@ -258,15 +258,27 @@ Implemented, dark-by-default, derived (no stored per-owner state), unit-tested
   new `settings.ACP_ENABLED` feature flag (default off) — the whole fleet flips with one env
   var, and **only after** the acpx-baked image tag is promoted in `openclaw-version.json`.
 
-**Still TODO in this area (next increment):** per-owner credential env on the task def —
-`CLAUDE_CODE_USE_BEDROCK=1` for `bedrock_claude` owners (and `ANTHROPIC_API_KEY`/
-`OPENAI_API_KEY` for BYO), set in `ecs_manager` gated by `provider_choice`. This must be
-provider-gated, NOT global: a global `CLAUDE_CODE_USE_BEDROCK=1` would make a BYO-Anthropic
-owner's Claude Code bill against Isol8's Bedrock instead of their key. Codex needs no env —
-the OAuth tokens are pre-staged to EFS where codex-auth-bridge reads them. Until this lands,
-a `bedrock_claude` Claude Code spawn degrades to an auth error (safe; nobody's enabled in
-prod), which is fine for the dev spike where the env can be set by hand. The per-agent
-`runtime` object (§2.1, runtime-replacement) is deferred — not needed for Jarvis delegation.
+**Still TODO in this area (next increment):** per-owner credential env on the task def, set
+in `ecs_manager` gated by `provider_choice`:
+
+- **`bedrock_claude`** — `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, **and crucially**
+  `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` set to the owner's **AIP ARNs** (the same
+  `aip_arns` config.py already threads into the native Bedrock provider), NOT base Bedrock
+  model ids. This is both an auth and a **metering-correctness** requirement (see §7):
+  billing is attributed by AIP, and the container IAM only grants
+  `application-inference-profile/*`, so a base-model call is unbilled *and* likely
+  IAM-denied. Pointing Claude Code at the owner's AIP is what makes "uses Bedrock → draws
+  the owner's credits" actually true.
+- **`byo_key`** — `ANTHROPIC_API_KEY` (anthropic) or `OPENAI_API_KEY` (openai). Must be
+  provider-gated, NOT global: a global `CLAUDE_CODE_USE_BEDROCK=1` would make a BYO-Anthropic
+  owner's Claude Code bill against Isol8's Bedrock instead of their key.
+- **`chatgpt_oauth`** — no env; the OAuth tokens are pre-staged to EFS where codex-auth-bridge
+  reads them.
+
+Until this lands, a `bedrock_claude` Claude Code spawn degrades to an auth/IAM error (safe;
+nobody's enabled in prod), which is fine for the dev spike where the env can be set by hand.
+The per-agent `runtime` object (§2.1, runtime-replacement) is deferred — not needed for
+Jarvis delegation.
 
 ### 3.3 Backend API + frontend
 
@@ -332,13 +344,22 @@ Each phase independently shippable and reversible (absent `runtime` ⇒ native).
   `runtime` validation; provision-gate provider↔harness matrix.
 - Container integration (gated live): the Phase-0 flow as a repeatable check.
 - Marketplace: export→deploy round-trip preserves `runtime`.
-- Metering: ACP turns report token usage (`claude-agent-acp` accumulates usage per
-  session; verify it surfaces through `sessions.list` for `record_usage`).
+- Metering (Bedrock): **resolved by architecture, not by the app.** Isol8 bills Bedrock at
+  the AWS invocation level — the `bedrock-usage-meter` Lambda ingests every invocation,
+  filters to `application-inference-profile` traffic, attributes it via the
+  `bedrock-aip-owners` table (`aip_arn → {owner_id, tier}`), and meters to Metronome. The
+  `sessions.list`/`record_usage` token path is analytics-only. So a Claude Code Bedrock
+  invocation is billed to the owner **iff it targets the owner's AIP ARN** (see §3.2 env) —
+  independent of whether it routes through OpenClaw. Phase-0 verifies a spawned-Claude-Code
+  turn shows up under the owner in the meter, with the AIP env set.
+- Metering (BYO / OAuth): out of Isol8's billing scope by design — the owner's own
+  key/subscription is charged by the vendor.
 
 ## 6. Remaining open questions
 
-1. **Metering parity** — does ACP session usage surface through `sessions.list` the same
-   way native runs do? (Phase-0 item; potential GA blocker for Bedrock metering.)
+1. **Metering — Bedrock RESOLVED** (invocation-level, AIP-attributed; §7). Remaining check:
+   confirm Phase-0 that a Claude-Code-via-Bedrock turn lands under the owner in the meter
+   once `ANTHROPIC_MODEL` points at the owner's AIP ARN.
 2. Main-session UX: do we bind each ACP agent's default conversation at provision time
    (config `bindings[]`) or lazily on first message? (Phase-1 design detail.)
 3. Hot-switching `runtime` on an existing agent — allowed (tears down live ACP session)

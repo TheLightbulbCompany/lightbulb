@@ -710,6 +710,23 @@ _AUTH_STORE_VERSION = 1
 _OPENAI_OAUTH_PROFILE_ID = "openai:default"
 
 
+def _list_agent_dir_names(efs_root: str, user_id: str) -> list[str]:
+    """Names of existing per-agent dirs under ``<EFS>/{user_id}/agents/``.
+
+    Empty when the dir doesn't exist yet (e.g. first provision, before the
+    container has booted and created agent dirs). Used to fan auth-profile
+    staging *and* cleanup across the owner's real agents (Friday/Atlas/custom)
+    discovered on disk — not only the implicit ``main`` — so callers that
+    don't thread an explicit agent list (provider hot-swap, running redeploy,
+    disconnect) still cover every agent.
+    """
+    agents_root = Path(efs_root) / user_id / "agents"
+    try:
+        return [d.name for d in agents_root.iterdir() if d.is_dir()]
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
 async def pre_stage_auth_profile_store(
     *, user_id: str, oauth_tokens: dict, agent_ids: Iterable[str] = ("main",)
 ) -> None:
@@ -785,11 +802,16 @@ async def pre_stage_auth_profile_store(
 
     # Stage the profile into EVERY agent's dir, not just "main". OpenClaw
     # resolves auth strictly per agentDir (agents/<id>/agent) with no shared
-    # fallback, so the agents that actually run (Friday/Atlas/custom UUID
-    # dirs) boot unauthenticated unless each gets its own copy. "main" (the
-    # implicit default agent) is always included; dict.fromkeys de-dupes and
-    # preserves order.
-    targets = list(dict.fromkeys(["main", *(aid for aid in agent_ids if aid)]))
+    # fallback, so agents that actually run (Friday/Atlas/custom UUID dirs)
+    # boot unauthenticated unless each gets its own copy. Targets =
+    # "main" (implicit default) + agent dirs already on disk (covers running
+    # containers — provider hot-swap, running redeploy — where the explicit
+    # list isn't threaded in) + any explicit ``agent_ids`` (covers first
+    # provision, before the container has booted to create those dirs).
+    # dict.fromkeys de-dupes and preserves order.
+    targets = list(
+        dict.fromkeys(["main", *_list_agent_dir_names(efs_root, user_id), *(aid for aid in agent_ids if aid)])
+    )
 
     def _stage_one(agent_id: str) -> None:
         # agent_ids come from our own Paperclip/config population, not user
@@ -832,11 +854,13 @@ async def pre_stage_auth_profile_store(
 
 
 async def delete_auth_profile_store(*, user_id: str) -> None:
-    """Remove the staged auth-profiles.json from the user's EFS workspace.
+    """Remove the staged auth-profiles.json from EVERY agent dir on EFS.
 
-    Paired with pre_stage_auth_profile_store. Called on OAuth disconnect
-    so the container can no longer read tokens cold even if it doesn't
-    restart.
+    Paired with pre_stage_auth_profile_store, which fans the credential into
+    every agent dir. Called on OAuth disconnect / switch-away so the container
+    can no longer read tokens cold even if it doesn't restart — so it MUST
+    enumerate the same per-agent files ("main" + every agent dir on disk),
+    not only "main", or a revoked agent keeps a usable refresh token on EFS.
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")
@@ -845,10 +869,14 @@ async def delete_auth_profile_store(*, user_id: str) -> None:
     if not efs_root:
         return  # No EFS configured (e.g. tests) — nothing to delete.
 
-    auth_path = Path(efs_root) / user_id / "agents" / "main" / "agent" / "auth-profiles.json"
-    try:
-        auth_path.unlink(missing_ok=True)
-    except OSError as e:
-        logger.warning("delete_auth_profile_store: %s — %s", auth_path, e)
-    else:
-        logger.info("deleted_auth_profile_store", extra={"user_id": user_id})
+    targets = list(dict.fromkeys(["main", *_list_agent_dir_names(efs_root, user_id)]))
+    removed: list[str] = []
+    for agent_id in targets:
+        auth_path = Path(efs_root) / user_id / "agents" / agent_id / "agent" / "auth-profiles.json"
+        try:
+            if auth_path.exists():
+                auth_path.unlink()
+                removed.append(agent_id)
+        except OSError as e:
+            logger.warning("delete_auth_profile_store: %s — %s", auth_path, e)
+    logger.info("deleted_auth_profile_store", extra={"user_id": user_id, "agents": removed})

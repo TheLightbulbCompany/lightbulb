@@ -210,3 +210,39 @@ async def test_pre_stage_rejects_unsafe_agent_id(fake_efs_root):
             oauth_tokens={"access_token": "a", "refresh_token": "b"},
             agent_ids=["../../etc"],
         )
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_discovers_existing_agent_dirs(fake_efs_root):
+    """Callers that DON'T pass agent_ids (provider hot-swap, running redeploy)
+    must still fan out: pre_stage discovers agent dirs already on disk so a
+    running container's Friday/Atlas/custom agents all get the credential."""
+    user = "org_disc"
+    # Simulate a booted container: agent dirs already exist on EFS.
+    for aid in ("friday-x", "atlas-y"):
+        (fake_efs_root / user / "agents" / aid / "agent").mkdir(parents=True)
+    # No agent_ids passed — must still discover the on-disk agents + main.
+    await pre_stage_auth_profile_store(
+        user_id=user,
+        oauth_tokens={"access_token": "a", "refresh_token": "b"},
+    )
+    for aid in ("main", "friday-x", "atlas-y"):
+        assert _agent_path(fake_efs_root, user, aid).exists(), f"missing {aid}"
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_every_agent_profile(fake_efs_root):
+    """Disconnect must remove the credential from ALL agent dirs, not just
+    main — else a revoked agent keeps a usable refresh token on EFS (P1)."""
+    user = "org_del"
+    await pre_stage_auth_profile_store(
+        user_id=user,
+        oauth_tokens={"access_token": "a", "refresh_token": "b"},
+        agent_ids=["agent-a", "agent-b"],
+    )
+    for aid in ("main", "agent-a", "agent-b"):
+        assert _agent_path(fake_efs_root, user, aid).exists()
+
+    await delete_auth_profile_store(user_id=user)
+    for aid in ("main", "agent-a", "agent-b"):
+        assert not _agent_path(fake_efs_root, user, aid).exists(), f"{aid} still has tokens"

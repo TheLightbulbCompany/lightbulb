@@ -17,6 +17,7 @@ import logging
 import mimetypes
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
 
@@ -709,26 +710,36 @@ _AUTH_STORE_VERSION = 1
 _OPENAI_OAUTH_PROFILE_ID = "openai:default"
 
 
-async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> None:
+async def pre_stage_auth_profile_store(
+    *, user_id: str, oauth_tokens: dict, agent_ids: Iterable[str] = ("main",)
+) -> None:
     """Write the user's ChatGPT OAuth profile to EFS before container start.
 
-    Writes ``<EFS>/users/{user_id}/agents/main/agent/auth-profiles.json``
-    in OpenClaw's AuthProfileStore JSON shape so the bundled ``openai``
-    provider finds the credentials at boot. The EFS access-point chroots
-    ``/users/{user_id}`` to ``/home/node/.openclaw`` inside the container,
-    so the file is read at ``/home/node/.openclaw/agents/main/agent/auth-profiles.json``
-    — the path OpenClaw's runtime probes for `agent="main"` (the implicit
-    default agent declared in our openclaw.json).
+    Writes ``<EFS>/users/{user_id}/agents/{agent_id}/agent/auth-profiles.json``
+    in OpenClaw's AuthProfileStore JSON shape — once per agent in
+    ``agent_ids`` (``"main"`` is always included) — so the bundled ``openai``
+    provider finds credentials at boot for EVERY agent that runs, not only
+    the default ``main`` agent. OpenClaw resolves auth strictly per agent
+    dir (``resolveAgentDir`` -> ``agents/<id>/agent``) with NO shared/default
+    fallback, so an org whose agents are Friday/Atlas/custom (UUID dirs) gets
+    no credential unless each one is staged. The EFS access-point chroots
+    ``/users/{user_id}`` to ``/home/node/.openclaw``, so each file is read at
+    ``/home/node/.openclaw/agents/<id>/agent/auth-profiles.json``.
 
-    Re-OAuth callers can re-invoke this helper; the file is overwritten,
-    not merged. After provision, OpenClaw owns the file's lifecycle and
-    refreshes the access token in-place using the long-lived refresh token.
+    Re-OAuth callers can re-invoke this helper; files are overwritten, not
+    merged. After provision, OpenClaw owns each file's lifecycle and
+    refreshes the access token in-place using the long-lived refresh token
+    (each agent holds its own copy and refreshes independently — the same
+    per-agent model upstream uses, so no cross-agent refresh conflict).
 
     Args:
-        user_id: our internal user_id.
+        user_id: the container owner id (org_id for orgs, user_id personal).
         oauth_tokens: dict with required keys ``access_token`` and
             ``refresh_token``, optional keys ``expires_at`` (ms epoch) and
             ``email``. Sourced from oauth_service.get_decrypted_tokens.
+        agent_ids: agent ids to stage the profile for. ``"main"`` is always
+            included; callers pass the owner's full agent population
+            (Friday/Atlas/custom) so every agent that can run is authed.
 
     Note: tokens are written in plaintext to EFS. Security boundary is
     EFS encryption-at-rest (KMS) + per-user EFS access point UID/GID
@@ -746,13 +757,6 @@ async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> N
     efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
     if not efs_root:
         raise RuntimeError("EFS_MOUNT_PATH is empty - backend is misconfigured.")
-
-    # OpenClaw's auth-profile resolver reads <agentDir>/auth-profiles.json
-    # where agentDir for the implicit "main" agent is
-    # <openclaw_home>/agents/main/agent/. Our openclaw.json declares the
-    # main agent in agents.list (see config.py).
-    base = Path(efs_root) / user_id / "agents" / "main" / "agent"
-    base.mkdir(parents=True, exist_ok=True)
 
     profile: dict = {
         # Provider MUST be "openai": the auth resolver filters profiles by the
@@ -774,44 +778,56 @@ async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> N
     if oauth_tokens.get("email"):
         profile["email"] = oauth_tokens["email"]
 
-    payload = {
-        "version": _AUTH_STORE_VERSION,
-        "profiles": {_OPENAI_OAUTH_PROFILE_ID: profile},
-    }
+    payload = json.dumps(
+        {"version": _AUTH_STORE_VERSION, "profiles": {_OPENAI_OAUTH_PROFILE_ID: profile}},
+        indent=2,
+    )
 
-    # Atomic write: write to .tmp + os.replace. Truncate-then-write isn't
-    # crash-atomic — a re-OAuth that crashes mid-write would leave OpenClaw
-    # with corrupt JSON. os.replace is atomic on POSIX (same filesystem).
-    auth_path = base / "auth-profiles.json"
-    tmp_path = base / "auth-profiles.json.tmp"
-    tmp_path.write_text(json.dumps(payload, indent=2))
+    # Stage the profile into EVERY agent's dir, not just "main". OpenClaw
+    # resolves auth strictly per agentDir (agents/<id>/agent) with no shared
+    # fallback, so the agents that actually run (Friday/Atlas/custom UUID
+    # dirs) boot unauthenticated unless each gets its own copy. "main" (the
+    # implicit default agent) is always included; dict.fromkeys de-dupes and
+    # preserves order.
+    targets = list(dict.fromkeys(["main", *(aid for aid in agent_ids if aid)]))
 
-    # File contains long-lived OAuth tokens — owner-only.
-    try:
-        os.chmod(str(tmp_path), 0o600)
-    except OSError:
-        pass
-
-    # OpenClaw container runs as UID 1000 — match ownership so the
-    # in-container token-refresh logic can rotate the file. Best-effort;
-    # ignore failures (e.g. local dev without root, test tmp_path).
-    try:
-        os.chown(str(tmp_path), 1000, 1000)
-    except (PermissionError, OSError):
-        pass
-
-    os.replace(str(tmp_path), str(auth_path))
-
-    # Chown the parent dirs (best-effort, separate from the file).
-    for dir_path in (base, base.parent, base.parent.parent):
+    def _stage_one(agent_id: str) -> None:
+        # agent_ids come from our own Paperclip/config population, not user
+        # input — guard against path traversal defensively.
+        if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+            raise ValueError(f"unsafe agent_id for auth-profile staging: {agent_id!r}")
+        base = Path(efs_root) / user_id / "agents" / agent_id / "agent"
+        base.mkdir(parents=True, exist_ok=True)
+        # Atomic write: .tmp + os.replace. Truncate-then-write isn't
+        # crash-atomic — a re-OAuth that crashes mid-write would leave OpenClaw
+        # with corrupt JSON. os.replace is atomic on POSIX (same filesystem).
+        auth_path = base / "auth-profiles.json"
+        tmp_path = base / "auth-profiles.json.tmp"
+        tmp_path.write_text(payload)
+        # File holds long-lived OAuth tokens — owner-only.
         try:
-            os.chown(str(dir_path), 1000, 1000)
+            os.chmod(str(tmp_path), 0o600)
+        except OSError:
+            pass
+        # OpenClaw runs as UID 1000 — match ownership so its in-container
+        # token-refresh can rotate the file. Best-effort.
+        try:
+            os.chown(str(tmp_path), 1000, 1000)
         except (PermissionError, OSError):
             pass
+        os.replace(str(tmp_path), str(auth_path))
+        for dir_path in (base, base.parent, base.parent.parent):
+            try:
+                os.chown(str(dir_path), 1000, 1000)
+            except (PermissionError, OSError):
+                pass
+
+    for agent_id in targets:
+        _stage_one(agent_id)
 
     logger.info(
         "pre_staged_auth_profile_store",
-        extra={"user_id": user_id, "has_email": "email" in profile},
+        extra={"user_id": user_id, "agents": targets, "has_email": "email" in profile},
     )
 
 

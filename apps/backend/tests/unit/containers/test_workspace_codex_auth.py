@@ -149,3 +149,64 @@ async def test_delete_auth_profile_store_removes_file(fake_efs_root):
 async def test_delete_auth_profile_store_no_op_when_absent(fake_efs_root):
     """Disconnect on a never-staged user must not raise."""
     await delete_auth_profile_store(user_id="u_never")  # should not raise
+
+
+def _agent_path(efs_root, user_id, agent_id):
+    return efs_root / user_id / "agents" / agent_id / "agent" / "auth-profiles.json"
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_fans_out_to_all_agents(fake_efs_root):
+    """The credential must land in EVERY agent's dir, not just `main` — OpenClaw
+    resolves auth strictly per-agentDir with no shared fallback, so Friday/Atlas/
+    custom agents boot unauthenticated unless each is staged. This is the bug
+    that broke org ChatGPT-OAuth inference (only `main` was staged)."""
+    agents = ["friday-uuid", "atlas-uuid", "custom-uuid"]
+    await pre_stage_auth_profile_store(
+        user_id="org_1",
+        oauth_tokens={"access_token": "a", "refresh_token": "b"},
+        agent_ids=agents,
+    )
+    for agent_id in ["main", *agents]:
+        p = _agent_path(fake_efs_root, "org_1", agent_id)
+        assert p.exists(), f"missing profile for agent {agent_id}"
+        profile = json.loads(p.read_text())["profiles"][_PROFILE_ID]
+        assert profile["provider"] == "openai"
+        assert profile["access"] == "a"
+        assert profile["refresh"] == "b"
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_always_includes_main(fake_efs_root):
+    """`main` is staged even when the caller's agent_ids omit it (default agent)."""
+    await pre_stage_auth_profile_store(
+        user_id="org_2",
+        oauth_tokens={"access_token": "a", "refresh_token": "b"},
+        agent_ids=["only-custom"],
+    )
+    assert _agent_path(fake_efs_root, "org_2", "main").exists()
+    assert _agent_path(fake_efs_root, "org_2", "only-custom").exists()
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_dedupes_agents(fake_efs_root):
+    """Duplicate ids (incl. `main` in the list) don't error or double-write."""
+    await pre_stage_auth_profile_store(
+        user_id="org_3",
+        oauth_tokens={"access_token": "a", "refresh_token": "b"},
+        agent_ids=["main", "x", "x"],
+    )
+    assert _agent_path(fake_efs_root, "org_3", "main").exists()
+    assert _agent_path(fake_efs_root, "org_3", "x").exists()
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_rejects_unsafe_agent_id(fake_efs_root):
+    """Path-traversal agent ids are refused (defense-in-depth; ids come from our
+    own Paperclip population, but guard anyway)."""
+    with pytest.raises(ValueError, match="unsafe agent_id"):
+        await pre_stage_auth_profile_store(
+            user_id="org_4",
+            oauth_tokens={"access_token": "a", "refresh_token": "b"},
+            agent_ids=["../../etc"],
+        )

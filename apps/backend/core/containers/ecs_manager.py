@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import socket
+from collections.abc import Iterable
 from pathlib import Path
 
 import boto3
@@ -1320,7 +1321,13 @@ class EcsManager:
         env_var_name = "OPENAI_API_KEY" if byo_provider == "openai" else "ANTHROPIC_API_KEY"
         return [{"name": env_var_name, "valueFrom": secret_arn}]
 
-    async def _pre_stage_oauth_for_user(self, user_id: str, *, token_owner_id: str | None = None) -> None:
+    async def _pre_stage_oauth_for_user(
+        self,
+        user_id: str,
+        *,
+        token_owner_id: str | None = None,
+        agent_ids: Iterable[str] = ("main",),
+    ) -> None:
         """Pre-stage the auth-profiles.json for a chatgpt_oauth owner.
 
         Fetches the decrypted ChatGPT tokens persisted by ``oauth_service``
@@ -1352,7 +1359,7 @@ class EcsManager:
             )
         from core.containers.workspace import pre_stage_auth_profile_store
 
-        await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens)
+        await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens, agent_ids=agent_ids)
 
     async def provision_user_container(
         self,
@@ -2130,6 +2137,36 @@ class EcsManager:
                 owner_id,
                 exc,
             )
+
+        # Stage the ChatGPT OAuth credential into EVERY agent's
+        # auth-profiles.json (Friday/Atlas/custom), not just "main". OpenClaw
+        # resolves auth strictly per agentDir with no shared fallback, so a
+        # non-"main" agent boots unauthenticated otherwise. Runs after the
+        # config write so ``paperclip_agents`` is the final agent population.
+        # Best-effort + loud: the provision token gate already ran in
+        # _pre_stage_oauth_for_user (which staged "main"), so a transient
+        # failure here leaves "main" authed and self-heals on the next
+        # reprovision rather than blocking provision.
+        if provider_choice == "chatgpt_oauth":
+            from core.services.oauth_service import resolve_token_owner
+
+            try:
+                agent_ids = [
+                    "main",
+                    *(a.get("id") for a in (paperclip_agents or []) if a.get("id")),
+                ]
+                await self._pre_stage_oauth_for_user(
+                    owner_id,
+                    token_owner_id=await resolve_token_owner(owner_id=owner_id),
+                    agent_ids=agent_ids,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort (main already staged).
+                put_metric("chatgpt_oauth.auth_profile_fanout.error")
+                logger.warning(
+                    "write_user_configs: auth-profile fan-out failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
 
         # NOTE: the per-agent Google-account instruction (`gog -a <email>`) is
         # deliberately NOT seeded here. That managed-block edit to IDENTITY.md

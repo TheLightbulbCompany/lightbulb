@@ -942,15 +942,35 @@ class EcsManager:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
     async def reprovision_for_user(self, user_id: str) -> dict:
-        """Force a fresh deploy: stop then start the ECS service so the
-        next task picks up the latest task definition. Less destructive
-        than delete_user_service + create_user_service (which would lose
-        the gateway token + EFS access point binding). Used by the admin
-        dashboard's container-reprovision action.
+        """Full reprovision: re-register the task def from the current CDK
+        base (picks up the latest pinned image) AND rewrite the EFS
+        openclaw.json from the owner's current provider settings, then roll
+        the service onto the new revision. Used by the admin dashboard's
+        container-reprovision action.
+
+        This replaces the old stop+start, which only scaled the existing
+        service — it left the container on its stale task-def AND its stale
+        EFS config, so it could neither pick up a new image nor apply a
+        backend config-builder change. Routing through
+        ``provision_user_container`` (via ``background_provision``) is the
+        only path that re-runs ``write_user_configs`` + the chatgpt OAuth
+        pre-stage, so an admin reprovision now genuinely re-applies config.
+
+        Dispatched as a background task: a full reprovision waits on the
+        image pull + running transition (minutes), which would blow the
+        admin request's HTTP timeout. The container row flips to
+        provisioning -> running on the usual status-poll path; admins watch
+        the Container card. Preserves EFS data, gateway token, and the EFS
+        access point (provision_user_container reuses the existing row).
         """
-        await self.stop_user_service(user_id)
-        await self.start_user_service(user_id)
-        return {"status": "started"}
+        from core.services.container_provision import background_provision
+
+        # clerk_user_id is unused by the reprovision path: provision reads
+        # provider_choice off the billing row by owner_id, and chatgpt OAuth
+        # resolves the connector via resolve_token_owner(owner_id). Pass
+        # user_id for both to satisfy the signature.
+        asyncio.create_task(background_provision(user_id, user_id))
+        return {"status": "reprovisioning"}
 
     async def reapply_standard_sizing(self, user_id: str) -> dict:
         """Roll the user's task definition with the canonical flat-fee

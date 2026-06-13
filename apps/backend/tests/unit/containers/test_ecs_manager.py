@@ -2516,3 +2516,38 @@ class TestAwaitRunningTransitionSubstatus:
         assert len(task_running_writes) == 1
         assert update_calls[-1]["status"] == "running"
         assert update_calls[-1]["substatus"] == "gateway_healthy"
+
+
+# ---------------------------------------------------------------------------
+# reprovision_for_user — full reprovision, not stop+start
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reprovision_for_user_dispatches_full_reprovision(manager):
+    """The admin reprovision must run a FULL reprovision (re-register task def
+    + rewrite EFS config via background_provision), NOT the old stop+start
+    that left the container on its stale task-def + config.
+    """
+    dispatched = []
+
+    async def _fake_bg(owner_id, clerk_user_id):
+        dispatched.append((owner_id, clerk_user_id))
+
+    manager.stop_user_service = AsyncMock()
+    manager.start_user_service = AsyncMock()
+    with patch(
+        "core.services.container_provision.background_provision",
+        side_effect=_fake_bg,
+    ):
+        result = await manager.reprovision_for_user("org_abc")
+        # Let the create_task'd coroutine run.
+        import asyncio
+
+        await asyncio.sleep(0)
+
+    assert result == {"status": "reprovisioning"}
+    assert dispatched == [("org_abc", "org_abc")]
+    # The stale stop+start path must NOT be used.
+    manager.stop_user_service.assert_not_awaited()
+    manager.start_user_service.assert_not_awaited()

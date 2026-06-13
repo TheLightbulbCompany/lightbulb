@@ -179,16 +179,18 @@ export function HeroPod() {
     ro.observe(mount);
 
     // Scroll out of the hero -> the pod loses containment and disperses.
-    const trigger = ScrollTrigger.create({
-      trigger: mount.closest(".ld-hero") ?? mount,
-      start: "top top",
-      end: "bottom 25%",
-      scrub: true,
-      onUpdate: (self) => {
-        state.disperse = self.progress;
-        if (!state.running) renderFrame();
-      },
-    });
+    // Skipped under reduced motion so the static frame stays truly static.
+    const trigger = reduced
+      ? null
+      : ScrollTrigger.create({
+          trigger: mount.closest(".ld-hero") ?? mount,
+          start: "top top",
+          end: "bottom 25%",
+          scrub: true,
+          onUpdate: (self) => {
+            state.disperse = self.progress;
+          },
+        });
 
     if (reduced) {
       renderFrame(); // one static frame
@@ -198,7 +200,7 @@ export function HeroPod() {
 
     return () => {
       if (raf) cancelAnimationFrame(raf);
-      trigger.kill();
+      trigger?.kill();
       io.disconnect();
       ro.disconnect();
       document.removeEventListener("visibilitychange", onVisibility);

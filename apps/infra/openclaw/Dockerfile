@@ -281,6 +281,37 @@ RUN set -eux; \
     rm -rf /opt/stage-lobster; \
     chown -R root:root /app/dist/extensions/lobster
 
+# ---- Layer 13: externalized ACP runtime backend (acpx) ----
+# acpx is the official ACP runtime plugin that lets a native OpenClaw agent
+# (e.g. Jarvis) spawn external coding harnesses — Claude Code, Codex, Gemini —
+# over the Agent Client Protocol via sessions_spawn({runtime:"acp"}). Like the
+# slack/discord/bedrock plugins above, acpx is pruned from the published base
+# image (`!dist/extensions/acpx/**` in the fork's root package.json `files`, so
+# the release build — which passes no OPENCLAW_EXTENSIONS — strips
+# dist/extensions/acpx). Without it on a discovery root the gateway reports
+# "ACP runtime backend is not configured" and every /acp spawn or
+# sessions_spawn({runtime:"acp"}) fails. Bake it root-owned into the stock
+# plugin root so it auto-activates from plugins.entries.acpx.enabled (the
+# runtime `openclaw plugins install` path is blocked — the per-user EFS mount
+# forces uid 1000, which the loader rejects). The npm package `@openclaw/acpx`
+# pulls its adapter deps (@agentclientprotocol/claude-agent-acp,
+# @zed-industries/codex-acp) and the `acpx` process-manager binary transitively;
+# the Claude Code / Gemini CLIs themselves are already global bins (Layer 8).
+# Do NOT pass --ignore-scripts here: the `acpx` dep fetches a platform-specific
+# binary via its postinstall hook, which CI's native per-arch build resolves
+# correctly. Inert until openclaw.json enables acpx + acp. Pin in lockstep with
+# the FROM tag / openclaw-version.json#upstream.
+RUN set -eux; \
+    mkdir -p /opt/stage-acpx; \
+    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.6.1"; \
+    mkdir -p /app/dist/extensions/acpx; \
+    cp -R /opt/stage-acpx/node_modules/@openclaw/acpx/. /app/dist/extensions/acpx/; \
+    mkdir -p /app/dist/extensions/acpx/node_modules; \
+    cp -R /opt/stage-acpx/node_modules/. /app/dist/extensions/acpx/node_modules/; \
+    rm -rf /app/dist/extensions/acpx/node_modules/@openclaw/acpx; \
+    rm -rf /opt/stage-acpx; \
+    chown -R root:root /app/dist/extensions/acpx
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node

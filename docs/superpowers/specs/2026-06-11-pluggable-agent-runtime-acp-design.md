@@ -222,16 +222,19 @@ else is projection.
 ### 3.1 Image (`apps/infra/openclaw/Dockerfile`)
 
 - `@anthropic-ai/claude-code` and `@google/gemini-cli` are **already baked** as global
-  bins (Layer 8). 
-- Bake the `acpx` plugin into the stock plugin root following the existing Layer-10/11
-  pattern (slack/discord/bedrock): copy `@openclaw/acpx` + co-located `node_modules`
-  (incl. `claude-agent-acp`, `codex-acp`, `acpx`) into `/app/dist/extensions/acpx`,
-  root-owned. (`openclaw plugins install` is unusable on per-user EFS — uid 1000 is
-  rejected by the loader; and first-use `npx` fetches must not happen at runtime.)
-- **Phase-0 check:** whether the base image already ships `/app/dist/extensions/acpx`
-  (`docker run --rm ghcr.io/isol8ai/agent:2026.6.1-isol8.1 ls /app/dist/extensions`).
-  The fork's `docker-release.yml` passes no `OPENCLAW_EXTENSIONS` build-arg, so assume
-  the bake is needed.
+  bins (Layer 8).
+- **acpx IS pruned from the base image — confirmed, the bake is required.** Verified against
+  the fork's root `package.json` `files`: `!dist/extensions/acpx/**` lists acpx in the
+  excluded/opt-in set (same bucket as `slack`, `discord`, `amazon-bedrock`, `codex`), and
+  `scripts/prune-docker-plugin-dist.mjs` strips `dist/extensions/<id>` for any excluded
+  plugin not in `OPENCLAW_EXTENSIONS`. The fork's `docker-release.yml` passes no
+  `OPENCLAW_EXTENSIONS`, so `ghcr.io/isol8ai/agent:2026.6.1-isol8.1` ships **without**
+  `dist/extensions/acpx`.
+- **Done (this branch):** added Layer 12 to the extended Dockerfile that bakes
+  `@openclaw/acpx@2026.6.1` root-owned into `/app/dist/extensions/acpx` with co-located
+  runtime deps (`claude-agent-acp`, `codex-acp`, the `acpx` platform binary), mirroring the
+  Layer-10/11 slack/discord/bedrock pattern. No `--ignore-scripts` (acpx's postinstall
+  fetches a platform binary; CI builds per-arch). Inert until `openclaw.json` enables it.
 
 ### 3.2 Config generation (`apps/backend/core/containers/config.py`)
 

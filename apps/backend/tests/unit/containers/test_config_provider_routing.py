@@ -45,13 +45,13 @@ async def test_chatgpt_oauth_branch(tmp_path):
     )
     cfg = json.loads(out.read_text())
     primary = cfg["agents"]["defaults"]["model"]["primary"]
-    assert primary == "openai-codex/gpt-5.5"
-    # OpenClaw's openai-codex provider has no JSON config knob for the
+    assert primary == "openai/gpt-5.5"
+    # OpenClaw's openai provider has no JSON config knob for the
     # auth dir — it reads the CODEX_HOME env var (set on the per-user ECS
     # task in ecs_manager). The provider block is omitted entirely so the
     # base schema validator (which requires baseUrl + models on a populated
     # entry) doesn't reject the empty `{}` we'd otherwise emit.
-    assert "openai-codex" not in cfg["models"].get("providers", {})
+    assert "openai" not in cfg["models"].get("providers", {})
 
 
 @pytest.mark.asyncio
@@ -300,7 +300,7 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
     agent's runs are spaced further apart than that, so cached prefixes
     expire before reuse and get re-written (live metrics showed a
     write-heavy read:write ratio). "long" widens the window so re-reads
-    land within it. The openai/openai-codex providers ignore the param,
+    land within it. The openai/openai providers ignore the param,
     so it's a harmless global no-op there — set unconditionally.
     """
     kwargs = {
@@ -323,9 +323,9 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         # chatgpt_oauth is flat-rate, but the codex provider DOES carry a
-        # mini tier (gpt-5.4-mini, in the openai-codex catalog) — route aux
+        # mini tier (gpt-5.4-mini, in the openai catalog) — route aux
         # work to it for rate-limit headroom on the flat-rate plan.
-        ("chatgpt_oauth", None, "openai-codex/gpt-5.4-mini"),
+        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
     ],
 )
 def test_cheap_model_ref_matrix(provider_choice, byo_provider, expected):
@@ -345,7 +345,7 @@ def test_cheap_model_ref_matrix(provider_choice, byo_provider, expected):
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
-        ("chatgpt_oauth", None, "openai-codex/gpt-5.4-mini"),
+        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
     ],
 )
 async def test_aux_operations_routed_to_cheap_tier(tmp_path, provider_choice, byo_provider, expected_cheap):

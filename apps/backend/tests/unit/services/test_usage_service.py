@@ -94,7 +94,7 @@ async def test_record_usage_unknown_model_records_volume_with_zero_spend(dynamod
     from core.services.usage_service import _current_period, record_usage
 
     # Should not raise
-    await record_usage("org_codex", "user_c", "openai-codex/gpt-5.5", 1000, 500, 200, 100)
+    await record_usage("org_codex", "user_c", "openai/gpt-5.5", 1000, 500, 200, 100)
 
     period = _current_period()
 
@@ -183,7 +183,7 @@ async def test_non_bedrock_model_does_not_page_but_records_volume(dynamodb_table
         await record_usage(
             owner_id="org_codex_gap",
             user_id="user_g",
-            model="openai-codex/gpt-5.5",
+            model="openai/gpt-5.5",
             input_tokens=1000,
             output_tokens=500,
             cache_read=0,
@@ -317,7 +317,7 @@ async def test_record_usage_raw_cost_override_ignored_for_non_bedrock_model(dyna
     await record_usage(
         owner_id="org_codex_override",
         user_id="user_co",
-        model="openai-codex/gpt-5.5",
+        model="openai/gpt-5.5",
         input_tokens=1000,
         output_tokens=500,
         cache_read=200,

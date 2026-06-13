@@ -2192,7 +2192,7 @@ class TestProvisionUserContainerProviderChoice:
 
             # The per-user task def MUST NOT carry CODEX_HOME. We used to
             # inject it pointing at codex/auth.json — that approach was
-            # wrong: OpenClaw's openai-codex provider reads from
+            # wrong: OpenClaw's openai provider reads from
             # <agentDir>/auth-profiles.json, not from $CODEX_HOME/auth.json.
             # The fix in pre_stage_auth_profile_store writes to the right
             # place; CODEX_HOME is now dead weight. Asserting absence to

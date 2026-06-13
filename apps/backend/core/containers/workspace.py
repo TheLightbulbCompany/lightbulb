@@ -702,19 +702,19 @@ class Workspace:
 # openclaw-version.json#upstream past a release that changes the schema.
 _AUTH_STORE_VERSION = 1
 
-# Verbatim copy of upstream's CODEX_CLI_PROFILE_ID constant — same file
-# as above. Used as the key in AuthProfileStore.profiles for ChatGPT OAuth
-# credentials so OpenClaw's auth-profile resolver finds the row by its
-# canonical id.
-_CODEX_CLI_PROFILE_ID = "openai-codex:codex-cli"
+# Profile-id key under AuthProfileStore.profiles. The id itself is not used
+# for provider matching (the resolver filters on the credential's `provider`
+# field, below) — but we align it to the fork's canonical OAuth profile id
+# (`openai:default`) rather than the retired `openai-codex:` prefix.
+_OPENAI_OAUTH_PROFILE_ID = "openai:default"
 
 
 async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> None:
     """Write the user's ChatGPT OAuth profile to EFS before container start.
 
     Writes ``<EFS>/users/{user_id}/agents/main/agent/auth-profiles.json``
-    in OpenClaw's AuthProfileStore JSON shape so the openai-codex provider
-    finds the credentials at boot. The EFS access-point chroots
+    in OpenClaw's AuthProfileStore JSON shape so the bundled ``openai``
+    provider finds the credentials at boot. The EFS access-point chroots
     ``/users/{user_id}`` to ``/home/node/.openclaw`` inside the container,
     so the file is read at ``/home/node/.openclaw/agents/main/agent/auth-profiles.json``
     — the path OpenClaw's runtime probes for `agent="main"` (the implicit
@@ -755,8 +755,13 @@ async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> N
     base.mkdir(parents=True, exist_ok=True)
 
     profile: dict = {
+        # Provider MUST be "openai": the auth resolver filters profiles by the
+        # credential's provider field, and there is NO runtime alias from the
+        # retired "openai-codex" to "openai" (only `openclaw doctor` migrates
+        # it). A row keyed "openai-codex" is silently dropped as a
+        # provider mismatch, so the model run finds no credentials.
         "type": "oauth",
-        "provider": "openai-codex",
+        "provider": "openai",
         "access": oauth_tokens["access_token"],
         "refresh": oauth_tokens["refresh_token"],
     }
@@ -771,7 +776,7 @@ async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> N
 
     payload = {
         "version": _AUTH_STORE_VERSION,
-        "profiles": {_CODEX_CLI_PROFILE_ID: profile},
+        "profiles": {_OPENAI_OAUTH_PROFILE_ID: profile},
     }
 
     # Atomic write: write to .tmp + os.replace. Truncate-then-write isn't

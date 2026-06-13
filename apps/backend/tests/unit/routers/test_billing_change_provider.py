@@ -530,7 +530,7 @@ async def test_change_provider_org_member_blocked(async_client_org_member):
 #   2. background_provision is NOT called (no ECS restart).
 #   3. For a ChatGPT-bound switch, auth-profiles.json is staged BEFORE the
 #      openclaw.json patch (chokidar's reload would otherwise read a stale
-#      or missing auth file and the openai-codex provider would 401 once).
+#      or missing auth file and the openai provider would 401 once).
 #   4. The response carries restart=False so the UI doesn't show the
 #      cutover banner unnecessarily.
 
@@ -555,22 +555,22 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
     async def _replace(owner_id, *, providers, default_model, plugin_entries, ceo_model, cheap_model):
         call_order.append("replace")
         # The chatgpt_oauth branch sets ``models.providers`` to {} and the
-        # default model to the openai-codex pair. Pin the contract so a
+        # default model to the openai pair. Pin the contract so a
         # silent change to build_provider_block fails the gate test rather
         # than landing the wrong block on the running container.
         assert providers == {}
         assert default_model == {
-            "primary": "openai-codex/gpt-5.5",
-            "fallbacks": ["openai-codex/gpt-5.5"],
+            "primary": "openai/gpt-5.5",
+            "fallbacks": ["openai/gpt-5.5"],
         }
         assert plugin_entries == {}
         # chatgpt_oauth is flat-rate — no premium tier, so the CEO's stale
         # amazon-bedrock Opus override MUST be cleared (ceo_model=None).
         assert ceo_model is None
-        # chatgpt_oauth DOES have a cheap tier (openai-codex mini), so the aux
+        # chatgpt_oauth DOES have a cheap tier (openai mini), so the aux
         # slots are re-pinned to it rather than cleared — verify the cheap_model
         # is threaded through from cheap_model_ref(chatgpt_oauth, None).
-        assert cheap_model == "openai-codex/gpt-5.4-mini"
+        assert cheap_model == "openai/gpt-5.4-mini"
 
     with (
         patch(

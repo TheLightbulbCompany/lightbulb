@@ -1292,7 +1292,7 @@ class EcsManager:
         Fetches the decrypted ChatGPT tokens persisted by ``oauth_service``
         and writes OpenClaw's AuthProfileStore JSON to
         ``<EFS>/users/{user_id}/agents/main/agent/auth-profiles.json``
-        BEFORE the ECS service is created so the openai-codex provider
+        BEFORE the ECS service is created so the openai provider
         finds the credentials cold on first boot.
 
         ``user_id`` is the CONTAINER OWNER (org_id for orgs) — it keys the

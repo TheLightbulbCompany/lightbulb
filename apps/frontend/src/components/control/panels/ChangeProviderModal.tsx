@@ -379,15 +379,20 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
         </div>
       )}
 
-      <DialogFooter>
-        <Button
-          variant="ghost"
-          className="text-white/70 hover:bg-white/10 hover:text-white"
-          onClick={onCancel}
-        >
-          Back
-        </Button>
-      </DialogFooter>
+      {/* Once sign-in completes the switch is committing — hide Back so the
+          user can't bail into a half-committed state (the tokens are already
+          stored; cancelling here would only confuse, not undo). */}
+      {state.status !== "completed" && (
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            className="text-white/70 hover:bg-white/10 hover:text-white"
+            onClick={onCancel}
+          >
+            Back
+          </Button>
+        </DialogFooter>
+      )}
     </div>
   );
 }

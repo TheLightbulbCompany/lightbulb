@@ -782,7 +782,7 @@ async def _hot_swap_provider(
     Step order matters:
       1. If switching *to* chatgpt_oauth, write ``auth-profiles.json``
          to EFS FIRST. Once we patch openclaw.json (step 2) chokidar fires
-         a reload and the openai-codex provider initializes — it needs the
+         a reload and the openai provider initializes — it needs the
          auth file already in place.
       2. Atomically swap the three openclaw.json subtrees via
          ``replace_provider_block``. OpenClaw's reload-plan picks up the

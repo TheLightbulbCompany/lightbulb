@@ -306,16 +306,22 @@ def build_provider_block(
         ``(providers_config, default_model, plugin_entries)``.
     """
     if provider_choice == "chatgpt_oauth":
-        # OpenClaw's openai-codex provider has no JSON config knob for the
-        # auth.json directory — it reads the CODEX_HOME env var (default
-        # ${HOME}/.codex). The per-user CODEX_HOME pointing at the EFS-staged
-        # auth.json is set in ecs_manager._provider_environment_for_user().
-        # We deliberately omit any provider entry so the bundled provider
-        # plugin's defaults apply; writing an empty {} would still trip the
-        # base-schema validator that requires `baseUrl` + `models`.
+        # ChatGPT OAuth resolves through OpenClaw's bundled `openai` provider
+        # plugin, whose model catalog (gpt-5.5 / gpt-5.4-mini / …) is baked
+        # into its manifest as a STATIC catalog — so `openai/gpt-5.5` resolves
+        # with no explicit provider entry. We deliberately emit NO
+        # `models.providers.openai` block: an explicit override (baseUrl +
+        # legacy responses/completions api) would SHADOW the built-in OAuth
+        # provider path. The OAuth credentials are read from the EFS-staged
+        # auth-profiles.json (see workspace.pre_stage_auth_profile_store).
+        #
+        # NB: `openai-codex/*` is a RETIRED ref at the deployed image — the
+        # `openai` plugin subsumes it. Emitting it produces "Unknown model:
+        # openai-codex/…" at first chat (nothing migrates it at runtime; only
+        # `openclaw doctor --fix` would). The canonical ref is `openai/*`.
         return (
             {},
-            {"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
+            {"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
             {},
         )
     if provider_choice == "byo_key":
@@ -487,7 +493,7 @@ def cheap_model_ref(
     compaction especially, since it processes the largest contexts.
 
     Unlike ``premium_model_ref``, the flat-rate ``chatgpt_oauth`` path DOES get
-    a value: the openai-codex provider catalog carries a mini tier
+    a value: the bundled ``openai`` provider catalog carries a mini tier
     (``gpt-5.4-mini``), and pushing aux work onto it buys rate-limit headroom on
     the flat-rate plan.
 
@@ -503,7 +509,7 @@ def cheap_model_ref(
         if byo_provider == "openai":
             return "openai/gpt-5.4-mini"
     if provider_choice == "chatgpt_oauth":
-        return "openai-codex/gpt-5.4-mini"
+        return "openai/gpt-5.4-mini"
     return None
 
 
@@ -795,7 +801,7 @@ def build_openclaw_config_dict(
                 # apart than that, so cached prefixes expire before reuse and
                 # get re-written (write-heavy cache). "long" = 1h TTL widens the
                 # window so re-reads land within it, cutting input-token cost.
-                # openai/openai-codex ignore the key, so it's a global no-op
+                # the openai provider ignores the key, so it's a global no-op
                 # there — set unconditionally rather than per-provider.
                 "params": {"cacheRetention": "long"},
                 # contextLimits is a no-op stub (its schema doesn't change

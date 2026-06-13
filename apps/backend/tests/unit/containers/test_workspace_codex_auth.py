@@ -1,6 +1,6 @@
 """Tests for the EFS pre-staging of OpenClaw's auth-profiles.json file.
 
-OpenClaw's openai-codex provider reads OAuth credentials from
+OpenClaw's openai provider reads OAuth credentials from
 ``<agentDir>/auth-profiles.json`` (the new AuthProfileStore format).
 ``codex/auth.json`` (the legacy CLI format) is bridged FROM this file
 automatically by OpenClaw — we never need to write it ourselves.
@@ -18,7 +18,7 @@ from core.containers.workspace import (
 
 # Verbatim from upstream src/agents/auth-profiles/constants.ts at the
 # openclaw version we pin to.
-_PROFILE_ID = "openai-codex:codex-cli"
+_PROFILE_ID = "openai:default"
 _AUTH_STORE_VERSION = 1
 
 
@@ -46,7 +46,7 @@ async def test_pre_stage_writes_auth_profile_store(fake_efs_root):
     assert written["version"] == _AUTH_STORE_VERSION
     profile = written["profiles"][_PROFILE_ID]
     assert profile["type"] == "oauth"
-    assert profile["provider"] == "openai-codex"
+    assert profile["provider"] == "openai"
     assert profile["access"] == "eyJ.access"
     assert profile["refresh"] == "rt_opaque"
     assert profile["expires"] == 1730000000000

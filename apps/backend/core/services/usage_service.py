@@ -34,7 +34,7 @@ def _is_bedrock_model(model: str) -> bool:
 
     Pricing only knows Bedrock models, so a pricing miss is a genuine,
     page-worthy gap only for Bedrock refs. OpenAI (``openai/``), Codex
-    (``openai-codex/``), and BYO-direct Anthropic (``anthropic/``) refs
+    (``openai/``), and BYO-direct Anthropic (``anthropic/``) refs
     are expected to miss and must not page. The check runs on the raw
     model ref (before any prefix stripping) where the provider is still
     visible.

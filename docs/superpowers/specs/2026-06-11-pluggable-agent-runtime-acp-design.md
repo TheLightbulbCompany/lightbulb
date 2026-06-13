@@ -258,27 +258,25 @@ Implemented, dark-by-default, derived (no stored per-owner state), unit-tested
   new `settings.ACP_ENABLED` feature flag (default off) — the whole fleet flips with one env
   var, and **only after** the acpx-baked image tag is promoted in `openclaw-version.json`.
 
-**Still TODO in this area (next increment):** per-owner credential env on the task def, set
-in `ecs_manager` gated by `provider_choice`:
+**Credential env on the task def — DONE (this branch).** `ecs_manager.provision_user_container`
+now wires harness auth, provider-gated and behind `settings.ACP_ENABLED`
+(`_build_bedrock_acp_harness_env`, unit-tested in
+`tests/unit/containers/test_ecs_manager_acp_env.py`):
 
-- **`bedrock_claude`** — `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, **and crucially**
-  `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` set to the owner's **AIP ARNs** (the same
-  `aip_arns` config.py already threads into the native Bedrock provider), NOT base Bedrock
-  model ids. This is both an auth and a **metering-correctness** requirement (see §7):
-  billing is attributed by AIP, and the container IAM only grants
-  `application-inference-profile/*`, so a base-model call is unbilled *and* likely
-  IAM-denied. Pointing Claude Code at the owner's AIP is what makes "uses Bedrock → draws
-  the owner's credits" actually true.
-- **`byo_key`** — `ANTHROPIC_API_KEY` (anthropic) or `OPENAI_API_KEY` (openai). Must be
-  provider-gated, NOT global: a global `CLAUDE_CODE_USE_BEDROCK=1` would make a BYO-Anthropic
-  owner's Claude Code bill against Isol8's Bedrock instead of their key.
-- **`chatgpt_oauth`** — no env; the OAuth tokens are pre-staged to EFS where codex-auth-bridge
-  reads them.
+- **`bedrock_claude`** — appends `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, and
+  `ANTHROPIC_MODEL`/`ANTHROPIC_SMALL_FAST_MODEL` set to the owner's **AIP ARNs**
+  (sonnet=main, haiku=fast) from `ensure_owner_aips`. Skipped for revoked owners (their
+  Bedrock grant is withheld). This is the auth + metering-correctness requirement from §7.
+- **`byo_key`** — **no new code needed**: the existing per-user secret already injects
+  `ANTHROPIC_API_KEY` (anthropic) / `OPENAI_API_KEY` (openai), which Claude Code / Codex read
+  natively. Provider-gated by construction — a Bedrock owner never gets `CLAUDE_CODE_USE_BEDROCK`
+  set against a BYO key.
+- **`chatgpt_oauth`** — **no new code needed**: OAuth tokens are already pre-staged to EFS
+  where codex-auth-bridge reads them.
 
-Until this lands, a `bedrock_claude` Claude Code spawn degrades to an auth/IAM error (safe;
-nobody's enabled in prod), which is fine for the dev spike where the env can be set by hand.
-The per-agent `runtime` object (§2.1, runtime-replacement) is deferred — not needed for
-Jarvis delegation.
+`refresh_task_definition` (hook-token refresh) preserves the existing env, so the harness env
+survives token rotations. The per-agent `runtime` object (§2.1, runtime-replacement) is
+deferred — not needed for Jarvis delegation.
 
 ### 3.3 Backend API + frontend
 

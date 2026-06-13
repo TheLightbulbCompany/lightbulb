@@ -154,6 +154,34 @@ def _build_per_user_environment(
     return out
 
 
+def _build_bedrock_acp_harness_env(aip_arns: dict[str, str]) -> list[dict]:
+    """Env that points the ACP coding harness (Claude Code) at the owner's
+    per-owner Bedrock Application Inference Profiles.
+
+    Claude Code — spawned by acpx for ``sessions_spawn({runtime:"acp"})`` — reads
+    these to route its own Bedrock calls. ``ANTHROPIC_MODEL`` /
+    ``ANTHROPIC_SMALL_FAST_MODEL`` MUST be the owner's AIP ARNs, never base model
+    ids: Isol8 attributes Bedrock billing by AIP (the bedrock-usage-meter Lambda
+    keys on the ``bedrock-aip-owners`` table), and the per-user task role grants
+    Bedrock only on ``application-inference-profile/*`` — so a base-model call is
+    BOTH unbilled (the meter's log filter misses it) AND IAM-denied. Pointing the
+    harness at the owner's AIP is what makes "Claude Code on Bedrock draws the
+    owner's credits" true. ``AWS_REGION`` is set explicitly because, unlike
+    OpenClaw's native provider (which bakes the region into its baseUrl), Claude
+    Code's AWS SDK resolves the region from the environment, and the base task
+    def does not set it.
+
+    Tier mapping mirrors Claude Code's own defaults: ``sonnet`` is the main
+    coding model, ``haiku`` the small/fast background model.
+    """
+    return [
+        {"name": "CLAUDE_CODE_USE_BEDROCK", "value": "1"},
+        {"name": "AWS_REGION", "value": settings.AWS_REGION},
+        {"name": "ANTHROPIC_MODEL", "value": aip_arns["sonnet"]},
+        {"name": "ANTHROPIC_SMALL_FAST_MODEL", "value": aip_arns["haiku"]},
+    ]
+
+
 class EcsManagerError(Exception):
     """Raised when ECS operations fail."""
 
@@ -1530,6 +1558,15 @@ class EcsManager:
             # un-revoking (restore_owner_bedrock), not provision.
             is_revoked = bool(existing and existing.get("bedrock_revoked"))
             bedrock_role_arn = await ensure_owner_bedrock_role(user_id, bedrock_aip_arns, skip_bedrock_grant=is_revoked)
+
+            # ACP coding-harness (Claude Code) Bedrock wiring. Gated by the
+            # ACP_ENABLED feature flag (dark by default, same gate as the
+            # openclaw.json acp block) and skipped for revoked owners — their
+            # Bedrock grant is withheld above, so pointing the harness at it
+            # would only AccessDeny. Points Claude Code at the owner's AIP ARNs
+            # so its inference is billed to the owner (see helper docstring).
+            if settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
+                environment_for_task.extend(_build_bedrock_acp_harness_env(bedrock_aip_arns))
 
         service_name = self._service_name(user_id)
 

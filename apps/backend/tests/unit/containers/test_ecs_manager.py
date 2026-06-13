@@ -2524,10 +2524,11 @@ class TestAwaitRunningTransitionSubstatus:
 
 
 @pytest.mark.asyncio
-async def test_reprovision_for_user_dispatches_full_reprovision(manager):
-    """The admin reprovision must run a FULL reprovision (re-register task def
-    + rewrite EFS config via background_provision), NOT the old stop+start
-    that left the container on its stale task-def + config.
+async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager):
+    """The admin reprovision must run a FULL reprovision: scale to 0 first (so
+    provision takes its scale-from-zero branch that re-registers the task def +
+    rewrites the EFS config), then dispatch background_provision. The old
+    stale-task-def force-redeploy path (start_user_service) must NOT be used.
     """
     dispatched = []
 
@@ -2547,7 +2548,9 @@ async def test_reprovision_for_user_dispatches_full_reprovision(manager):
         await asyncio.sleep(0)
 
     assert result == {"status": "reprovisioning"}
+    # Scale to 0 first so provision hits the re-register + write-config branch.
+    manager.stop_user_service.assert_awaited_once_with("org_abc")
+    # Then the FULL provision is dispatched.
     assert dispatched == [("org_abc", "org_abc")]
-    # The stale stop+start path must NOT be used.
-    manager.stop_user_service.assert_not_awaited()
+    # The old stale-task-def scale-up path must NOT be used.
     manager.start_user_service.assert_not_awaited()

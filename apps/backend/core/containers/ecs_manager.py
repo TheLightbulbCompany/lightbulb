@@ -962,8 +962,22 @@ class EcsManager:
         provisioning -> running on the usual status-poll path; admins watch
         the Container card. Preserves EFS data, gateway token, and the EFS
         access point (provision_user_container reuses the existing row).
+
+        Scale to 0 FIRST: provision_user_container only re-registers the task
+        def + rewrites the EFS config on its scale-FROM-zero branch. Its
+        already-running branch just force-redeploys the SAME (stale)
+        task-def + config — so without dropping to 0 first, an admin
+        reprovision on a live container would apply neither an image bump nor
+        a config-builder change. The brief (~30s) drain while the new task
+        starts is acceptable for an intentional admin action; EFS, gateway
+        token, and access point are all preserved.
         """
         from core.services.container_provision import background_provision
+
+        # Drop to desiredCount=0 so the dispatched provision takes the
+        # scale-from-zero branch (re-register + write_user_configs), not the
+        # running force-redeploy branch.
+        await self.stop_user_service(user_id)
 
         # clerk_user_id is unused by the reprovision path: provision reads
         # provider_choice off the billing row by owner_id, and chatgpt OAuth

@@ -5,53 +5,54 @@ import { PROVIDER_CARDS } from "@/lib/providerCards";
 
 export function PricingThreeCard() {
   return (
-    <section
-      id="pricing"
-      className="container mx-auto px-4 py-16 md:py-24"
-    >
-      <h2 className="text-3xl md:text-4xl font-bold text-center mb-2">
-        One price. Three ways to power it.
-      </h2>
-      <p className="text-center text-muted-foreground mb-12 max-w-2xl mx-auto">
-        Every plan is $50/month for the always-on agent infrastructure.
-        Choose how you want to pay for inference.
-      </p>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl mx-auto">
-        {PROVIDER_CARDS.map((card) => (
-          <div
-            key={card.id}
-            className={
-              "rounded-2xl border bg-card p-8 flex flex-col " +
-              (card.highlighted
-                ? "border-primary shadow-lg shadow-primary/10"
-                : "border-border")
-            }
-          >
-            <h3 className="text-xl font-semibold mb-1">{card.title}</h3>
-            <p className="text-sm text-muted-foreground mb-1">
-              {card.subtitle}
-            </p>
-            <p className="text-sm text-primary font-medium mb-6">
-              {card.trialNote}
-            </p>
-            <ul className="space-y-2 flex-1 mb-8">
-              {card.bullets.map((b) => (
-                <li key={b} className="flex items-start gap-2 text-sm">
-                  <span aria-hidden className="text-primary">
-                    ✓
-                  </span>
-                  <span>{b}</span>
-                </li>
-              ))}
-            </ul>
-            <Link
-              href={card.href}
-              className="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition"
+    <section id="pricing" className="ld-pricing">
+      <div className="ld-section">
+        <div className="ld-kicker" data-ld-reveal>
+          pricing
+          <span className="ld-kicker-index">06 — 08</span>
+        </div>
+        <h2 className="ld-h2" data-ld-reveal>
+          One price. <em>Three ways to power it.</em>
+        </h2>
+        <p className="ld-lede" data-ld-reveal>
+          Every plan is the same always-on agent infrastructure — your pod,
+          your team, every channel. Choose how you want to pay for inference.
+        </p>
+        <div className="ld-price-note" data-ld-reveal>
+          <span className="ld-price-big">
+            <sup>$</sup>50
+          </span>
+          <span className="ld-price-per">/ month · flat</span>
+        </div>
+
+        <div className="ld-price-grid" data-ld-reveal-group>
+          {PROVIDER_CARDS.map((card) => (
+            <div
+              key={card.id}
+              className={
+                "ld-price-card" + (card.highlighted ? " ld-price-card--hi" : "")
+              }
             >
-              {card.cta}
-            </Link>
-          </div>
-        ))}
+              <span className="ld-pc-tag">
+                {card.highlighted ? "recommended" : "option"}
+              </span>
+              <h3>{card.title}</h3>
+              <p className="ld-pc-sub">{card.subtitle}</p>
+              <p className="ld-pc-trial">{card.trialNote}</p>
+              <ul>
+                {card.bullets.map((b) => (
+                  <li key={b}>{b}</li>
+                ))}
+              </ul>
+              <Link href={card.href} className="ld-btn">
+                {card.cta}
+                <span className="ld-btn-arrow" aria-hidden="true">
+                  →
+                </span>
+              </Link>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );

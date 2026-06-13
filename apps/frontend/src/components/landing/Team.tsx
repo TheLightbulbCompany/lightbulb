@@ -43,25 +43,28 @@ export function Team() {
   const active = new Set<number>([tick % EDGES.length, (tick + 3) % EDGES.length]);
 
   return (
-    <section className="landing-orch" id="team">
-      <div className="section-inner">
-        <p className="section-eyebrow reveal">Your Team</p>
-        <h2 className="section-h2 reveal">
+    <section className="ld-team" id="team">
+      <div className="ld-section">
+        <div className="ld-kicker" data-ld-reveal>
+          your team
+          <span className="ld-kicker-index">04 — 08</span>
+        </div>
+        <h2 className="ld-h2" data-ld-reveal>
           One brief. <em>The whole team listens.</em>
         </h2>
-        <p className="agents-lede">
-          Every agent has a desk, a load, and a status.{" "}
-          <strong>Friday</strong>, your orchestrator, sees the room — splits the
-          work, hands off to specialists, and stitches the answer back together.
+        <p className="ld-lede" data-ld-reveal>
+          Every agent has a desk, a load, and a status. <strong>Friday</strong>,
+          your orchestrator, sees the room — splits the work, hands off to
+          specialists, and stitches the answer back together.
         </p>
 
-        <div className="orch-stage">
-          <span className="orch-frame-label">paperclip · team view</span>
-          <span className="orch-frame-meta">
-            <span className="dot live" /> Friday is delegating
+        <div className="ld-team-stage" data-ld-reveal>
+          <span className="ld-frame-label">paperclip · team view</span>
+          <span className="ld-frame-meta">
+            <span className="ld-dot ld-dot--live" /> Friday is delegating
           </span>
 
-          <div className="orch-const">
+          <div className="ld-const">
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
               {EDGES.map(([a, b], i) => {
                 const A = BY_ID[a];
@@ -90,19 +93,15 @@ export function Team() {
             {NODES.map((n) => (
               <div
                 key={n.id}
-                className="orch-const-node"
+                className="ld-const-node"
                 style={{ left: `${n.x}%`, top: `${n.y}%` }}
               >
-                <span className={"puck " + (n.big ? "lg accent" : "")}>
-                  {n.id === "F" ? (
-                    <span style={{ fontStyle: "italic", fontFamily: "var(--font-lora)" }}>F</span>
-                  ) : (
-                    n.id
-                  )}
+                <span className={"ld-puck" + (n.big ? " ld-puck--lead" : "")}>
+                  {n.id === "F" ? <span>F</span> : n.id}
                 </span>
-                <span className="puck-name">{n.name}</span>
-                <span className="puck-status">
-                  <span className={"dot " + (n.status === "idle" ? "idle" : "live")} />
+                <span className="ld-puck-name">{n.name}</span>
+                <span className="ld-puck-status">
+                  <span className={"ld-dot " + (n.status === "idle" ? "ld-dot--idle" : "ld-dot--live")} />
                   <span>{n.load}</span>
                 </span>
               </div>
@@ -137,7 +136,7 @@ function Pulse({ ax, ay, bx, by }: { ax: number; ay: number; bx: number; by: num
 
   return (
     <span
-      className="orch-const-pulse"
+      className="ld-const-pulse"
       style={{
         left: `${x}%`,
         top: `${y}%`,

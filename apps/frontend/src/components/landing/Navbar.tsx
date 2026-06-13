@@ -37,7 +37,7 @@ export function Navbar() {
     });
 
     const sections = [
-      { id: "home", el: document.querySelector(".landing-hero") },
+      { id: "home", el: document.querySelector(".ld-hero") },
       { id: "features", el: document.getElementById("features") },
       { id: "team", el: document.getElementById("team") },
       { id: "marketplace", el: document.getElementById("marketplace") },

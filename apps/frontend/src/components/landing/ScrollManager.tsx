@@ -1,37 +1,99 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useLenis } from "lenis/react";
+import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
 
+gsap.registerPlugin(ScrollTrigger);
+
+declare global {
+  interface Window {
+    __ldGsap?: typeof gsap;
+    __ldST?: typeof ScrollTrigger;
+  }
+}
+
+// Dev-only handle so animation states can be driven deterministically from
+// the console / automated visual tests (rAF is suspended in hidden tabs).
+if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
+  window.__ldGsap = gsap;
+  window.__ldST = ScrollTrigger;
+}
+
+/**
+ * Landing-wide motion conductor.
+ *
+ * Owns the pieces of motion that belong to the page rather than any one
+ * section: Lenis <-> ScrollTrigger sync, the top progress bar, and the
+ * generic [data-ld-reveal] / [data-ld-reveal-group] scroll reveals that
+ * every section opts into via markup. Section-specific timelines (hero
+ * intro, pinned how-it-works) live with their components.
+ *
+ * Hidden states are applied by GSAP at runtime — never in CSS — so the
+ * page renders complete without JavaScript.
+ */
 export function ScrollManager() {
+  const progressRef = useRef<HTMLDivElement>(null);
+  const lenis = useLenis();
+
+  // Keep ScrollTrigger in lockstep with Lenis' smoothed scroll position.
   useEffect(() => {
-    // Scroll progress bar
-    const progressBar = document.getElementById("scrollProgress");
-    const scrollHandler = () => {
-      if (!progressBar) return;
-      const scrollTop = document.documentElement.scrollTop;
-      const scrollHeight =
-        document.documentElement.scrollHeight - window.innerHeight;
-      progressBar.style.width = (scrollTop / scrollHeight) * 100 + "%";
-    };
-    window.addEventListener("scroll", scrollHandler, { passive: true });
+    if (!lenis) return;
+    const update = () => ScrollTrigger.update();
+    lenis.on("scroll", update);
+    return () => lenis.off("scroll", update);
+  }, [lenis]);
 
-    // Scroll reveal
-    const revealObserver = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((e) => {
-          if (e.isIntersecting) {
-            e.target.classList.add("visible");
-            revealObserver.unobserve(e.target);
-          }
+  useEffect(() => {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const ctx = gsap.context(() => {
+      if (progressRef.current) {
+        gsap.to(progressRef.current, {
+          scaleX: 1,
+          ease: "none",
+          scrollTrigger: { start: 0, end: "max", scrub: 0.3 },
         });
-      },
-      { threshold: 0.15, rootMargin: "0px 0px -40px 0px" }
-    );
-    document
-      .querySelectorAll(".reveal")
-      .forEach((el) => revealObserver.observe(el));
+      }
 
-    // Console easter egg
+      if (reduced) return;
+
+      gsap.utils.toArray<HTMLElement>("[data-ld-reveal]").forEach((el) => {
+        gsap.fromTo(
+          el,
+          { autoAlpha: 0, y: 36 },
+          {
+            autoAlpha: 1,
+            y: 0,
+            duration: 1,
+            ease: "power3.out",
+            scrollTrigger: { trigger: el, start: "top 86%", once: true },
+          }
+        );
+      });
+
+      gsap.utils.toArray<HTMLElement>("[data-ld-reveal-group]").forEach((group) => {
+        const children = Array.from(group.children);
+        if (!children.length) return;
+        gsap.fromTo(
+          children,
+          { autoAlpha: 0, y: 30 },
+          {
+            autoAlpha: 1,
+            y: 0,
+            duration: 0.9,
+            ease: "power3.out",
+            stagger: 0.12,
+            scrollTrigger: { trigger: group, start: "top 84%", once: true },
+          }
+        );
+      });
+    });
+
+    // Layout shifts after webfonts land; recompute trigger positions.
+    document.fonts?.ready.then(() => ScrollTrigger.refresh()).catch(() => {});
+
     console.log(
       "%c🏝️ isol8 %c— Your private AI pod",
       "font-size:20px;font-weight:900;color:#06402B;",
@@ -42,11 +104,8 @@ export function ScrollManager() {
       "font-size:11px;color:#4a9e74;"
     );
 
-    return () => {
-      window.removeEventListener("scroll", scrollHandler);
-      revealObserver.disconnect();
-    };
+    return () => ctx.revert();
   }, []);
 
-  return <div className="scroll-progress" id="scrollProgress" />;
+  return <div className="ld-progress" ref={progressRef} />;
 }

@@ -14,65 +14,62 @@ export async function MarketplaceSection() {
   }
 
   return (
-    <section className="landing-marketplace" id="marketplace">
-      <div className="section-inner">
-        <div className="marketplace-intro">
-          <p className="section-eyebrow reveal">The Marketplace</p>
-          <h2 className="section-h2 reveal">
-            Hire an agent.
-          </h2>
-          <p className="marketplace-lede">
-            A growing storefront of production-grade agents you can deploy into
-            your isol8 container in one click. <strong>Curated, vetted, and
-            yours to own.</strong>
-          </p>
-          <Link href="/marketplace" className="marketplace-cta-inline">
-            Browse the marketplace →
+    <section className="ld-mkt" id="marketplace">
+      <div className="ld-section">
+        <div className="ld-mkt-head">
+          <div>
+            <div className="ld-kicker" data-ld-reveal>
+              the marketplace
+              <span className="ld-kicker-index">05 — 08</span>
+            </div>
+            <h2 className="ld-h2" data-ld-reveal>
+              Hire an <em>agent.</em>
+            </h2>
+            <p className="ld-lede" data-ld-reveal>
+              A growing storefront of production-grade agents you can deploy
+              into your isol8 container in one click.{" "}
+              <strong>Curated, vetted, and yours to own.</strong>
+            </p>
+          </div>
+          <Link href="/marketplace" className="ld-mkt-link" data-ld-reveal>
+            Browse all <span aria-hidden="true">→</span>
           </Link>
         </div>
 
         {items.length > 0 && (
-          <div className="shelf">
-            <div className="shelf-frame">
-              <span className="shelf-frame-label">marketplace · featured</span>
-            </div>
-
-            <div className="shelf-grid">
-              {items.map((listing) => (
-                <Link
-                  key={listing.listing_id}
-                  href={`/marketplace/listing/${listing.listing_id}`}
-                  className="listing"
-                >
-                  <div className="listing-head">
-                    <span className="puck">{monogram(listing.name)}</span>
-                    <span className={priceClass(listing.price_cents)}>
-                      {formatPrice(listing.price_cents)}
-                    </span>
+          <div className="ld-shelf" data-ld-reveal-group>
+            {items.map((listing) => (
+              <Link
+                key={listing.listing_id}
+                href={`/marketplace/listing/${listing.listing_id}`}
+                className="ld-listing"
+              >
+                <div className="ld-listing-head">
+                  <span className="ld-puck">{monogram(listing.name)}</span>
+                  <span className="ld-price">
+                    {formatPrice(listing.price_cents)}
+                  </span>
+                </div>
+                <h3>{listing.name}</h3>
+                <p className="ld-listing-desc">{firstLine(listing.description_md)}</p>
+                {listing.tags.length > 0 && (
+                  <div className="ld-listing-tags">
+                    {listing.tags.slice(0, 3).map((t) => (
+                      <span key={t} className="ld-listing-tag">
+                        {t}
+                      </span>
+                    ))}
                   </div>
-                  <h3 className="listing-name">{listing.name}</h3>
-                  <p className="listing-desc">{firstLine(listing.description_md)}</p>
-                  {listing.tags.length > 0 && (
-                    <div className="listing-tags">
-                      {listing.tags.slice(0, 3).map((t) => (
-                        <span key={t} className="listing-tag">
-                          {t}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className="listing-foot">
-                    <span className="listing-cta">Deploy →</span>
-                  </div>
-                </Link>
-              ))}
-
-              <Link href="/marketplace" className="listing more">
-                <span className="more-glyph">∞</span>
-                <span className="more-lbl">The full shelf</span>
-                <span className="more-cta">Browse all →</span>
+                )}
+                <div className="ld-listing-foot">Deploy →</div>
               </Link>
-            </div>
+            ))}
+
+            <Link href="/marketplace" className="ld-listing ld-listing--more">
+              <span className="ld-more-glyph">∞</span>
+              <span className="ld-more-lbl">The full shelf</span>
+              <div className="ld-listing-foot">Browse all →</div>
+            </Link>
           </div>
         )}
       </div>
@@ -94,8 +91,4 @@ function formatPrice(cents: number): string {
   if (cents === 0) return "$0";
   const dollars = cents / 100;
   return dollars % 1 === 0 ? `$${dollars}` : `$${dollars.toFixed(2)}`;
-}
-
-function priceClass(cents: number): string {
-  return cents === 0 ? "price free" : "price";
 }

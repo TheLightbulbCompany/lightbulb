@@ -2142,7 +2142,7 @@ class TestProvisionUserContainerProviderChoice:
         mock_ecs_client.describe_services.return_value = {"services": []}
         call_order: list[str] = []
 
-        async def _record_pre_stage(*, user_id, oauth_tokens):
+        async def _record_pre_stage(*, user_id, oauth_tokens, agent_ids=("main",)):
             call_order.append("pre_stage")
 
         def _record_create_service(**kwargs):

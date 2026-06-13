@@ -78,7 +78,7 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/isol8ai/agent:2026.6.1-isol8.1
+FROM ghcr.io/isol8ai/agent:2026.6.6-isol8.1
 
 USER root
 
@@ -222,7 +222,7 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
 RUN set -eux; \
     for P in slack discord; do \
       mkdir -p "/opt/stage-$P"; \
-      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.6.1"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.6.6"; \
       mkdir -p "/app/dist/extensions/$P"; \
       cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
       mkdir -p "/app/dist/extensions/$P/node_modules"; \
@@ -245,7 +245,7 @@ RUN set -eux; \
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-amazon-bedrock; \
-    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.6.1"; \
+    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.6.6"; \
     mkdir -p /app/dist/extensions/amazon-bedrock; \
     cp -R /opt/stage-amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider/. /app/dist/extensions/amazon-bedrock/; \
     mkdir -p /app/dist/extensions/amazon-bedrock/node_modules; \

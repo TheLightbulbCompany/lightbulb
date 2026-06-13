@@ -11,6 +11,8 @@ import {
   readOverheadModel,
 } from "@/lib/modelRouting";
 
+type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+
 const CARD = "rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3";
 const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
 const SELECT_CLS =
@@ -24,7 +26,7 @@ const SELECT_CLS =
  * overhead = Haiku, with only the CEO agent pinned to Opus per-agent.
  * Writes go through config.patch and may briefly restart the gateway.
  */
-export function ModelRoutingCard() {
+export function ModelRoutingCard({ providerChoice }: { providerChoice?: ProviderChoice | null }) {
   const { config, configReady, patchConfig } = useConfigPatch();
   const catalogModels = useMemo(() => listCatalogModels(config), [config]);
   const currentDefault = readDefaultModelPrimary(config);
@@ -34,8 +36,36 @@ export function ModelRoutingCard() {
   const [error, setError] = useState<string | null>(null);
   const [restartNotice, setRestartNotice] = useState(false);
 
-  // No catalog (BYO/OAuth containers without a providers list) → nothing to
-  // route between; hide rather than show empty dropdowns.
+  // ChatGPT is a flat-rate plan with a fixed model set that isn't part of the
+  // routable catalog (the codex provider uses bundled defaults, so
+  // models.providers is empty). Gate on the provider — which updates the
+  // moment the switch commits — rather than the lagging config catalog, so
+  // we never flash the old Bedrock dropdowns after a switch. Show what it
+  // runs on instead of vanishing silently.
+  if (providerChoice === "chatgpt_oauth") {
+    return (
+      <div className={CARD}>
+        <span className={EYEBROW}>MODEL ROUTING</span>
+        <p className="text-sm text-[#1a1a1a]">Running on your ChatGPT plan.</p>
+        <div className="grid grid-cols-2 gap-4 text-xs text-[#8a8578]">
+          <div className="space-y-0.5">
+            <div className="text-sm text-[#1a1a1a]">Agents — GPT-5.5</div>
+            <span>What agents use by default.</span>
+          </div>
+          <div className="space-y-0.5">
+            <div className="text-sm text-[#1a1a1a]">Maintenance — GPT-5.4 mini</div>
+            <span>Compaction, memory flush, heartbeats.</span>
+          </div>
+        </div>
+        <p className="text-xs text-[#8a8578]">
+          Model routing is managed automatically on the ChatGPT plan.
+        </p>
+      </div>
+    );
+  }
+
+  // No catalog (BYO containers without a providers list) → nothing to route
+  // between; hide rather than show empty dropdowns.
   if (catalogModels.length === 0) return null;
 
   const apply = async (kind: "default" | "overhead", ref: string) => {

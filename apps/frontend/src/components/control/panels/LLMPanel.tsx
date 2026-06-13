@@ -363,10 +363,10 @@ export function LLMPanel() {
           renders for them. */}
       {user.provider_choice === "bedrock_claude" && <CreditsSection />}
 
-      {/* Owner-level model routing (default + overhead model). Renders only
-          when the container's models catalog is non-empty — the card hides
-          itself otherwise. */}
-      <ModelRoutingCard />
+      {/* Owner-level model routing (default + overhead model). Provider-aware:
+          renders dropdowns when there's a routable catalog (Bedrock), a fixed
+          summary on the flat-rate ChatGPT plan, and hides for catalog-less BYO. */}
+      <ModelRoutingCard providerChoice={user.provider_choice ?? null} />
 
       <ChangeProviderModal
         open={modalOpen}

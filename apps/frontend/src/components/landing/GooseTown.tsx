@@ -50,8 +50,8 @@ export function GooseTown() {
       <div className="gt-inner">
         {/* LEFT: Copy + signup */}
         <div>
-          <p className="gt-eyebrow reveal">GOOSETOWN · ALPHA</p>
-          <h2 className="gt-h2 reveal">
+          <p className="gt-eyebrow" data-ld-reveal>GOOSETOWN · ALPHA</p>
+          <h2 className="gt-h2" data-ld-reveal>
             Your agent gets a <em>life of its own.</em>
           </h2>
           <p className="gt-desc">

@@ -43,25 +43,29 @@ export function Team() {
   const active = new Set<number>([tick % EDGES.length, (tick + 3) % EDGES.length]);
 
   return (
-    <section className="landing-orch" id="team">
-      <div className="section-inner">
-        <p className="section-eyebrow reveal">Your Team</p>
-        <h2 className="section-h2 reveal">
+    <section className="ld-team" id="team">
+      <div className="ld-section">
+        <div className="ld-kicker" data-ld-reveal>
+          your team
+          <span className="ld-kicker-index">04 — 08</span>
+        </div>
+        <h2 className="ld-h2" data-ld-reveal>
           One brief. <em>The whole team listens.</em>
         </h2>
-        <p className="agents-lede">
-          Every agent has a desk, a load, and a status.{" "}
-          <strong>Friday</strong>, your orchestrator, sees the room — splits the
-          work, hands off to specialists, and stitches the answer back together.
+        <p className="ld-lede" data-ld-reveal>
+          Every pod is a company, with a real <strong>Teams Inbox</strong>.
+          File an issue and <strong>Friday</strong> staffs it — specialists
+          report back in threads you can read end-to-end, and nothing risky
+          ships without your approval.
         </p>
 
-        <div className="orch-stage">
-          <span className="orch-frame-label">paperclip · team view</span>
-          <span className="orch-frame-meta">
-            <span className="dot live" /> Friday is delegating
+        <div className="ld-team-stage" data-ld-reveal>
+          <span className="ld-frame-label">paperclip · team view</span>
+          <span className="ld-frame-meta">
+            <span className="ld-dot ld-dot--live" /> Friday is delegating
           </span>
 
-          <div className="orch-const">
+          <div className="ld-const">
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
               {EDGES.map(([a, b], i) => {
                 const A = BY_ID[a];
@@ -90,27 +94,155 @@ export function Team() {
             {NODES.map((n) => (
               <div
                 key={n.id}
-                className="orch-const-node"
+                className="ld-const-node"
                 style={{ left: `${n.x}%`, top: `${n.y}%` }}
               >
-                <span className={"puck " + (n.big ? "lg accent" : "")}>
-                  {n.id === "F" ? (
-                    <span style={{ fontStyle: "italic", fontFamily: "var(--font-lora)" }}>F</span>
-                  ) : (
-                    n.id
-                  )}
+                <span className={"ld-puck" + (n.big ? " ld-puck--lead" : "")}>
+                  {n.id === "F" ? <span>F</span> : n.id}
                 </span>
-                <span className="puck-name">{n.name}</span>
-                <span className="puck-status">
-                  <span className={"dot " + (n.status === "idle" ? "idle" : "live")} />
+                <span className="ld-puck-name">{n.name}</span>
+                <span className="ld-puck-status">
+                  <span className={"ld-dot " + (n.status === "idle" ? "ld-dot--idle" : "ld-dot--live")} />
                   <span>{n.load}</span>
                 </span>
               </div>
             ))}
           </div>
         </div>
+
+        <InboxMock />
+
+        <div className="ld-inbox-captions" data-ld-reveal-group>
+          <span>issues &amp; assignment</span>
+          <span>auditable threads</span>
+          <span>you approve the risky steps</span>
+        </div>
       </div>
     </section>
+  );
+}
+
+const ISSUES = [
+  {
+    id: "ISO-214",
+    title: "Source 40 sales leads",
+    who: "St",
+    name: "Stitch",
+    status: "in progress",
+    kind: "live" as const,
+    active: true,
+  },
+  {
+    id: "ISO-213",
+    title: "Weekly status report",
+    who: "F",
+    name: "Friday",
+    status: "done",
+    kind: "done" as const,
+  },
+  {
+    id: "ISO-209",
+    title: "Reconcile Q2 invoices",
+    who: "T",
+    name: "Tally",
+    status: "needs approval",
+    kind: "warn" as const,
+  },
+];
+
+/**
+ * Static mock of the Teams Inbox (the Paperclip-backed /teams surface) —
+ * beat two of the team story: the constellation shows who's in the room,
+ * this shows what running them actually feels like. Decorative; the
+ * captions below carry the message for assistive tech.
+ */
+function InboxMock() {
+  return (
+    <div className="ld-inbox" data-ld-reveal aria-hidden="true">
+      <span className="ld-frame-label">paperclip · inbox</span>
+      <span className="ld-frame-meta">
+        <span className="ld-dot ld-dot--live" /> 3 open issues
+      </span>
+
+      <div className="ld-inbox-body">
+        <div className="ld-ib-list">
+          {ISSUES.map((it) => (
+            <div
+              key={it.id}
+              className={"ld-ib-item" + (it.active ? " is-active" : "")}
+            >
+              <span className="ld-ib-id">{it.id}</span>
+              <span className="ld-ib-title">{it.title}</span>
+              <span className="ld-ib-meta">
+                <span className="ld-ib-avatar">{it.who}</span>
+                <span className={`ld-chip-status ld-chip-status--${it.kind}`}>
+                  {it.status}
+                </span>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="ld-ib-thread">
+          <div className="ld-ib-thread-hd">
+            <span className="ld-ib-id">ISO-214</span>
+            <span className="ld-ib-thread-title">Source 40 sales leads</span>
+            <span className="ld-chip-status ld-chip-status--live">
+              in progress
+            </span>
+          </div>
+
+          <div className="ld-ib-msg">
+            <span className="ld-ib-avatar ld-ib-avatar--you">You</span>
+            <div>
+              <span className="ld-ib-author">You</span>
+              <p>
+                Find 40 leads for the Q3 outreach push — mid-market SaaS,
+                US/EU.
+              </p>
+            </div>
+          </div>
+
+          <div className="ld-ib-msg">
+            <span className="ld-ib-avatar ld-ib-avatar--lead">F</span>
+            <div>
+              <span className="ld-ib-author">
+                Friday <i>· orchestrator</i>
+              </span>
+              <p>
+                On it. Splitting across Stitch (sourcing) and Lens
+                (research). ETA tonight.
+              </p>
+              <span className="ld-ib-tag">assigned → Stitch, Lens</span>
+            </div>
+          </div>
+
+          <div className="ld-ib-msg">
+            <span className="ld-ib-avatar">St</span>
+            <div>
+              <span className="ld-ib-author">
+                Stitch <i>· sourcing</i>
+              </span>
+              <p>38 verified so far — list attached.</p>
+              <span className="ld-ib-attach">⎘ leads-q3.csv</span>
+            </div>
+          </div>
+
+          <div className="ld-approval">
+            <div>
+              <span className="ld-approval-kicker">approval needed</span>
+              <p>Stitch wants to send 42 intro emails via Gmail.</p>
+            </div>
+            <div className="ld-approval-actions">
+              <span className="ld-approve-btn">Approve</span>
+              <span className="ld-approve-btn ld-approve-btn--ghost">
+                Hold
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -137,7 +269,7 @@ function Pulse({ ax, ay, bx, by }: { ax: number; ay: number; bx: number; by: num
 
   return (
     <span
-      className="orch-const-pulse"
+      className="ld-const-pulse"
       style={{
         left: `${x}%`,
         top: `${y}%`,

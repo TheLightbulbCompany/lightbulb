@@ -11,10 +11,16 @@ The gateway exposes a built-in ``models.authLogout`` RPC (scope
 stores, invalidates the provider-auth cache, and aborts in-flight runs using
 that provider (``stopReason: "auth-revoked"``) — a true revoke with no restart.
 
-NOTE: the WS connect+RPC pattern below is also in routers/container_rpc.py and
-routers/container_recover.py. It is duplicated here (rather than imported) to
-avoid a service -> router import cycle; a shared gateway RPC client is a
-reasonable future cleanup.
+``operator.admin`` REQUIRES the signed operator-device handshake (the gateway
+strips self-declared scopes from clients that present only the shared token —
+see core/crypto/operator_device.py). So we load the per-container Ed25519
+device seed (KMS-decrypted from the container row) and sign the connect, the
+same way routers/container_recover.py and core/gateway/connection_pool.py do.
+
+NOTE: the signed WS connect+RPC pattern below is also in container_recover.py /
+connection_pool.py. It is duplicated here (rather than imported) to avoid a
+service -> router import cycle; a shared gateway RPC client is a reasonable
+future cleanup.
 """
 
 import asyncio
@@ -32,16 +38,45 @@ logger = logging.getLogger(__name__)
 _WS_TIMEOUT = 10
 
 
-async def _logout_provider_via_gateway(ip: str, token: str, provider: str) -> None:
-    """Open a short-lived WS to the gateway, complete the operator.admin connect
-    handshake, and call ``models.authLogout`` for ``provider``. Raises on any
-    handshake/RPC failure (caller treats failure as best-effort)."""
+async def _logout_provider_via_gateway(ip: str, owner_id: str, enc_seed: str, token: str, provider: str) -> None:
+    """Open a short-lived WS to the gateway, complete the SIGNED operator-device
+    connect handshake (so the gateway grants ``operator.admin``), and call
+    ``models.authLogout`` for ``provider``. Raises on any failure (the caller
+    treats failure as best-effort)."""
+    from core.crypto import kms_secrets
+    from core.crypto.operator_device import (
+        BACKEND_CLIENT_ID,
+        BACKEND_CLIENT_MODE,
+        BACKEND_OPERATOR_SCOPES,
+        BACKEND_ROLE,
+        load_operator_device_from_seed,
+        sign_connect_request,
+    )
+
+    seed_bytes = kms_secrets.decrypt_bytes(
+        enc_seed,
+        encryption_context={"owner_id": owner_id, "purpose": "operator-device-seed"},
+    )
+    identity = load_operator_device_from_seed(seed_bytes)
+
     uri = f"ws://{ip}:{GATEWAY_PORT}"
     async with websockets.connect(uri, open_timeout=_WS_TIMEOUT, close_timeout=5) as ws:
-        # Handshake: connect.challenge -> connect (operator.admin) -> hello-ok.
-        raw = await asyncio.wait_for(ws.recv(), timeout=_WS_TIMEOUT)
-        if json.loads(raw).get("event") != "connect.challenge":
+        # connect.challenge -> signed connect (operator.admin) -> hello-ok.
+        challenge = json.loads(await asyncio.wait_for(ws.recv(), timeout=_WS_TIMEOUT))
+        if challenge.get("event") != "connect.challenge":
             raise RuntimeError("expected connect.challenge from gateway")
+        nonce = challenge.get("payload", {}).get("nonce") or challenge.get("nonce")
+        if not nonce:
+            raise RuntimeError("connect.challenge missing nonce")
+
+        # Sign the v2 payload with the per-container operator identity — this is
+        # what gets the self-declared operator.admin scope honored.
+        device = sign_connect_request(
+            identity=identity,
+            token=token,
+            nonce=nonce,
+            scopes=BACKEND_OPERATOR_SCOPES,
+        )
         await ws.send(
             json.dumps(
                 {
@@ -52,14 +87,15 @@ async def _logout_provider_via_gateway(ip: str, token: str, provider: str) -> No
                         "minProtocol": 4,
                         "maxProtocol": 4,
                         "client": {
-                            "id": "cli",
+                            "id": BACKEND_CLIENT_ID,
                             "version": "1.0.0",
                             "platform": "linux",
-                            "mode": "cli",
+                            "mode": BACKEND_CLIENT_MODE,
                         },
-                        "role": "operator",
-                        "scopes": ["operator.admin"],
+                        "role": BACKEND_ROLE,
+                        "scopes": list(BACKEND_OPERATOR_SCOPES),
                         "auth": {"token": token},
+                        "device": device,
                     },
                 }
             )
@@ -97,7 +133,8 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
     Returns ``True`` if the RPC succeeded, ``False`` otherwise. NEVER raises —
     when no container is running (cold) there is no live store to clear and the
     EFS seed-file delete is the authoritative cleanup; a transient RPC failure
-    is logged and self-heals on the next reprovision.
+    (or a pre-4.5 row with no paired operator device) is logged and self-heals
+    on the next reprovision.
     """
     try:
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)
@@ -108,11 +145,20 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
     if not container or not ip:
         return False  # cold container — nothing live to clear
     token = container.get("gateway_token")
-    if not token:
+    enc_seed = container.get("operator_priv_key_enc")
+    if not token or not enc_seed:
+        # Pre-4.5 row without a paired operator device — we can't sign the
+        # operator.admin connect, so the live logout isn't possible. The EFS
+        # seed delete + the eventual reprovision are the fallback cleanup.
+        logger.warning(
+            "revoke_provider_auth: missing gateway_token/operator seed for %s — "
+            "skipping live logout (EFS delete + reprovision will clear)",
+            owner_id,
+        )
         return False
 
     try:
-        await _logout_provider_via_gateway(ip, token, provider)
+        await _logout_provider_via_gateway(ip, owner_id, enc_seed, token, provider)
         logger.info(
             "revoked_provider_auth_in_container",
             extra={"owner_id": owner_id, "provider": provider},

@@ -32,7 +32,7 @@ async def test_cold_container_skips_logout():
 
 @pytest.mark.asyncio
 async def test_running_container_calls_logout_for_openai():
-    container = {"gateway_token": "tok"}
+    container = {"gateway_token": "tok", "operator_priv_key_enc": "enc-seed"}
     with (
         patch(
             "core.services.container_auth.get_ecs_manager",
@@ -41,12 +41,13 @@ async def test_running_container_calls_logout_for_openai():
         patch("core.services.container_auth._logout_provider_via_gateway", new=AsyncMock()) as logout,
     ):
         assert await revoke_provider_auth_in_container("org_1") is True
-        logout.assert_awaited_once_with("10.0.0.5", "tok", "openai")
+        # Signed-handshake args: (ip, owner_id, enc_seed, token, provider).
+        logout.assert_awaited_once_with("10.0.0.5", "org_1", "enc-seed", "tok", "openai")
 
 
 @pytest.mark.asyncio
 async def test_logout_rpc_failure_is_best_effort():
-    container = {"gateway_token": "tok"}
+    container = {"gateway_token": "tok", "operator_priv_key_enc": "enc-seed"}
     with (
         patch(
             "core.services.container_auth.get_ecs_manager",
@@ -69,13 +70,17 @@ async def test_resolve_failure_is_best_effort():
 
 
 @pytest.mark.asyncio
-async def test_missing_gateway_token_returns_false():
-    with (
-        patch(
-            "core.services.container_auth.get_ecs_manager",
-            return_value=_ecs_manager({"no_token": True}, "10.0.0.5"),
-        ),
-        patch("core.services.container_auth._logout_provider_via_gateway", new=AsyncMock()) as logout,
-    ):
-        assert await revoke_provider_auth_in_container("org_1") is False
-        logout.assert_not_awaited()
+async def test_missing_token_or_operator_seed_skips_logout():
+    """A pre-4.5 row without a paired operator device (no seed), or one missing
+    the gateway token, can't sign the operator.admin connect — skip the live
+    logout (the EFS delete + reprovision are the fallback)."""
+    for container in ({"operator_priv_key_enc": "enc-seed"}, {"gateway_token": "tok"}):
+        with (
+            patch(
+                "core.services.container_auth.get_ecs_manager",
+                return_value=_ecs_manager(container, "10.0.0.5"),
+            ),
+            patch("core.services.container_auth._logout_provider_via_gateway", new=AsyncMock()) as logout,
+        ):
+            assert await revoke_provider_auth_in_container("org_1") is False
+            logout.assert_not_awaited()

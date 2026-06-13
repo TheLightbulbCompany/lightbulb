@@ -1070,6 +1070,17 @@ export class ServiceStack extends cdk.Stack {
           props.container.ownerBedrockBoundary.managedPolicyArn,
         BEDROCK_OWNER_BASE_POLICY_ARN:
           props.container.ownerBedrockBasePolicy.managedPolicyArn,
+        // ACP coding-harness runtime (acpx). Master switch read by
+        // core.config.settings.ACP_ENABLED — when true, write_openclaw_config
+        // emits the acp block + plugins.entries.acpx and provision wires the
+        // per-owner Bedrock harness env, letting a native agent (Jarvis)
+        // sessions_spawn Claude Code / Codex / Gemini. Kept "false" everywhere
+        // until the acpx-baked extended image is promoted per-env in
+        // openclaw-version.json — enabling it against an image without
+        // dist/extensions/acpx makes every ACP spawn fail "ACP runtime backend
+        // is not configured". Flip the target env's value to "true" (one line)
+        // after promotion + a reprovision.
+        ACP_ENABLED: "false",
         // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
         // env vars via core.config.settings; empty defaults keep the app
         // booting in non-marketplace contexts (unit tests, smoke tests).

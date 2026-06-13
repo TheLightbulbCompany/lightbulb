@@ -323,11 +323,15 @@ No change to `paperclip_provisioning.provision_org`.
 
 ## 4. Rollout phases
 
-1. **Phase 0 — container spike (no user-facing change).** On a dev container with acpx
-   baked + `acp.enabled` + `permissionMode=approve-all` + `CLAUDE_CODE_USE_BEDROCK=1`:
-   drive `chat.send` → `/acp spawn claude --bind here` → follow-up turn, mirroring
-   `gateway-acp-bind.live.test.ts`. Confirms: image bake, Bedrock auth headless, event
-   rendering in our UI, and token/metering visibility.
+1. **Phase 0 — container spike (no user-facing change).** Everything is code/deploy, no
+   console edits: (a) merge the Dockerfile bake to `main` so `build-openclaw-image.yml`
+   publishes a new `isol8/openclaw-extended` tag; (b) point dev at it via
+   `openclaw-version.json` `dev.tag`; (c) flip `ACP_ENABLED` for dev from `"false"` to
+   `"true"` in `service-stack.ts` (one line — the env is already plumbed) and deploy;
+   (d) reprovision a Bedrock dev owner, then have a native agent
+   `sessions_spawn({runtime:"acp", agentId:"claude"})` (or `/acp spawn claude --bind here`),
+   mirroring `gateway-acp-bind.live.test.ts`. Confirms: image bake, Bedrock auth headless,
+   event rendering in our UI, and that the turn meters to the owner via their AIP.
 2. **Phase 1 — Claude Code via Bedrock, per-agent.** §3.1–3.3 wired; Bedrock-managed
    owners only.
 3. **Phase 2 — BYO Anthropic key + Codex via existing ChatGPT OAuth** (codex-auth-bridge).

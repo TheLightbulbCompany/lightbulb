@@ -2142,7 +2142,7 @@ class TestProvisionUserContainerProviderChoice:
         mock_ecs_client.describe_services.return_value = {"services": []}
         call_order: list[str] = []
 
-        async def _record_pre_stage(*, user_id, oauth_tokens, agent_ids=("main",)):
+        async def _record_pre_stage(*, user_id, oauth_tokens):
             call_order.append("pre_stage")
 
         def _record_create_service(**kwargs):
@@ -2192,17 +2192,17 @@ class TestProvisionUserContainerProviderChoice:
 
             # The per-user task def MUST NOT carry CODEX_HOME. We used to
             # inject it pointing at codex/auth.json — that approach was
-            # wrong: OpenClaw's openai provider reads from
-            # <agentDir>/auth-profiles.json, not from $CODEX_HOME/auth.json.
-            # The fix in pre_stage_auth_profile_store writes to the right
-            # place; CODEX_HOME is now dead weight. Asserting absence to
-            # prevent regression to the old approach.
+            # wrong: OpenClaw 6.6 imports the container-global
+            # credentials/oauth.json into each agent's auth store, not
+            # $CODEX_HOME/auth.json. The fix in pre_stage_auth_profile_store
+            # writes to the right place; CODEX_HOME is now dead weight.
+            # Asserting absence to prevent regression to the old approach.
             reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
             envs = reg_kwargs["containerDefinitions"][0].get("environment") or []
             codex_home = next((e for e in envs if e["name"] == "CODEX_HOME"), None)
             assert codex_home is None, (
                 "chatgpt_oauth must NOT inject CODEX_HOME — credentials go in "
-                "<agentDir>/auth-profiles.json, not codex/auth.json"
+                "credentials/oauth.json, not codex/auth.json"
             )
 
     @pytest.mark.asyncio

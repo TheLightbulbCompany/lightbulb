@@ -13,7 +13,6 @@ import logging
 import re
 import secrets
 import socket
-from collections.abc import Iterable
 from pathlib import Path
 
 import boto3
@@ -1326,15 +1325,15 @@ class EcsManager:
         user_id: str,
         *,
         token_owner_id: str | None = None,
-        agent_ids: Iterable[str] = ("main",),
     ) -> None:
-        """Pre-stage the auth-profiles.json for a chatgpt_oauth owner.
+        """Pre-stage the container-global ``credentials/oauth.json`` for a
+        chatgpt_oauth owner.
 
         Fetches the decrypted ChatGPT tokens persisted by ``oauth_service``
-        and writes OpenClaw's AuthProfileStore JSON to
-        ``<EFS>/users/{user_id}/agents/main/agent/auth-profiles.json``
-        BEFORE the ECS service is created so the openai provider
-        finds the credentials cold on first boot.
+        and writes ``<EFS>/users/{user_id}/credentials/oauth.json`` (a single
+        container-global file, NOT a per-agent fan-out) BEFORE the ECS service
+        is created, so OpenClaw imports it into every agent's auth store on
+        first boot. See workspace.pre_stage_auth_profile_store.
 
         ``user_id`` is the CONTAINER OWNER (org_id for orgs) — it keys the
         EFS path the container mounts. ``token_owner_id`` is the Clerk user
@@ -1359,7 +1358,7 @@ class EcsManager:
             )
         from core.containers.workspace import pre_stage_auth_profile_store
 
-        await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens, agent_ids=agent_ids)
+        await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens)
 
     async def provision_user_container(
         self,
@@ -1404,10 +1403,9 @@ class EcsManager:
             from core.services.oauth_service import resolve_token_owner
 
             await self._pre_stage_oauth_for_user(user_id, token_owner_id=await resolve_token_owner(owner_id=user_id))
-            # OpenClaw reads OAuth credentials from
-            # <agentDir>/auth-profiles.json. _pre_stage_oauth_for_user above
-            # writes that file to EFS. No env var override needed — the
-            # path is resolved from agents.list[*].id in openclaw.json.
+            # OpenClaw 6.6 imports the container-global credentials/oauth.json
+            # into each agent's auth store at boot. _pre_stage_oauth_for_user
+            # above writes that single file to EFS. No env var override needed.
         elif provider_choice == "byo_key":
             if byo_provider is None:
                 raise EcsManagerError(
@@ -2138,32 +2136,26 @@ class EcsManager:
                 exc,
             )
 
-        # Stage the ChatGPT OAuth credential into EVERY agent's
-        # auth-profiles.json (Friday/Atlas/custom), not just "main". OpenClaw
-        # resolves auth strictly per agentDir with no shared fallback, so a
-        # non-"main" agent boots unauthenticated otherwise. Runs after the
-        # config write so ``paperclip_agents`` is the final agent population.
-        # Best-effort + loud: the provision token gate already ran in
-        # _pre_stage_oauth_for_user (which staged "main"), so a transient
-        # failure here leaves "main" authed and self-heals on the next
-        # reprovision rather than blocking provision.
+        # Stage the container-global credentials/oauth.json after the config
+        # write, so it's present for any reprovision / config-rewrite path that
+        # reaches write_user_configs WITHOUT the provision pre-task (debug
+        # PATCH, the reapply script). For a fresh provision the pre-task already
+        # wrote it; this overwrite is idempotent. One shared file authenticates
+        # every agent (OpenClaw imports it per-agent on boot), so there is no
+        # per-agent fan-out. Best-effort + loud: a transient failure self-heals
+        # on the next reprovision rather than blocking the config write.
         if provider_choice == "chatgpt_oauth":
             from core.services.oauth_service import resolve_token_owner
 
             try:
-                agent_ids = [
-                    "main",
-                    *(a.get("id") for a in (paperclip_agents or []) if a.get("id")),
-                ]
                 await self._pre_stage_oauth_for_user(
                     owner_id,
                     token_owner_id=await resolve_token_owner(owner_id=owner_id),
-                    agent_ids=agent_ids,
                 )
-            except Exception as exc:  # noqa: BLE001 — best-effort (main already staged).
-                put_metric("chatgpt_oauth.auth_profile_fanout.error")
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                put_metric("chatgpt_oauth.oauth_json_stage.error")
                 logger.warning(
-                    "write_user_configs: auth-profile fan-out failed for owner=%s: %s",
+                    "write_user_configs: oauth.json stage failed for owner=%s: %s",
                     owner_id,
                     exc,
                 )

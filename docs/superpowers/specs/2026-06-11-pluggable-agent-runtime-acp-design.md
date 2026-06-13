@@ -236,30 +236,37 @@ else is projection.
   Layer-10/11 slack/discord/bedrock pattern. No `--ignore-scripts` (acpx's postinstall
   fetches a platform binary; CI builds per-arch). Inert until `openclaw.json` enables it.
 
-### 3.2 Config generation (`apps/backend/core/containers/config.py`)
+### 3.2 Config generation (`apps/backend/core/containers/config.py`) — DONE (this branch)
 
-Emit, when any agent (or the owner's entitlement) enables ACP:
+Implemented, dark-by-default, derived (no stored per-owner state), unit-tested
+(`tests/unit/containers/test_config_acp.py`, 12 cases; full container suite green):
 
-```python
-"acp": {
-    "enabled": True,
-    "backend": "acpx",
-    "allowedAgents": [...],          # gated by owner's provider/entitlement
-    "runtime": {"ttlMinutes": ...},
-},
-"plugins": {"entries": {
-    "acpx": {"enabled": True, "config": {
-        "permissionMode": "approve-all",
-        "nonInteractivePermissions": "deny",
-        # "agents": {...}  # custom harness overrides (Hermes etc.)
-    }},
-    ...existing entries...
-}},
-```
+- `derive_enabled_harnesses(provider_choice, byo_provider)` — pure function:
+  `bedrock_claude→["claude"]`, `chatgpt_oauth→["codex"]`, `byo_key+anthropic→["claude"]`,
+  `byo_key+openai→["codex"]`, else `[]`. Gemini omitted (no Google credential path yet).
+- `build_acp_config(harnesses)` → `(acp_block, acpx_plugin_entry)`:
+  ```python
+  "acp": {"enabled": True, "backend": "acpx", "allowedAgents": harnesses,
+          "defaultAgent": harnesses[0], "runtime": {"ttlMinutes": 120},
+          "stream": {"coalesceIdleMs": 300, "maxChunkChars": 1200}}
+  "plugins": {"entries": {"acpx": {"enabled": True, "config": {
+      "permissionMode": "approve-all", "nonInteractivePermissions": "deny"}}}}
+  ```
+- `build_openclaw_config_dict(..., acp_enabled=False)` emits the block only when
+  `acp_enabled` AND the derived harness set is non-empty (so a native agent is never taught
+  a spawn it can't authenticate). `write_openclaw_config` resolves `acp_enabled` from the
+  new `settings.ACP_ENABLED` feature flag (default off) — the whole fleet flips with one env
+  var, and **only after** the acpx-baked image tag is promoted in `openclaw-version.json`.
 
-plus the per-agent `runtime` object (§2.1) stamped onto `agents.list[]` entries, and
-`CLAUDE_CODE_USE_BEDROCK` / `ANTHROPIC_API_KEY` on the per-user task definition
-(`ecs_manager._build_register_kwargs_from_base`) according to provider choice.
+**Still TODO in this area (next increment):** per-owner credential env on the task def —
+`CLAUDE_CODE_USE_BEDROCK=1` for `bedrock_claude` owners (and `ANTHROPIC_API_KEY`/
+`OPENAI_API_KEY` for BYO), set in `ecs_manager` gated by `provider_choice`. This must be
+provider-gated, NOT global: a global `CLAUDE_CODE_USE_BEDROCK=1` would make a BYO-Anthropic
+owner's Claude Code bill against Isol8's Bedrock instead of their key. Codex needs no env —
+the OAuth tokens are pre-staged to EFS where codex-auth-bridge reads them. Until this lands,
+a `bedrock_claude` Claude Code spawn degrades to an auth error (safe; nobody's enabled in
+prod), which is fine for the dev spike where the env can be set by hand. The per-agent
+`runtime` object (§2.1, runtime-replacement) is deferred — not needed for Jarvis delegation.
 
 ### 3.3 Backend API + frontend
 

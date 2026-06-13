@@ -138,6 +138,15 @@ class Settings(BaseSettings):
     METRONOME_RATE_CARD_ID: str = os.getenv("METRONOME_RATE_CARD_ID", "")
     """Rate card the per-customer contract references at provision time.
     Created once per env in the Metronome console (runbook step)."""
+    ACP_ENABLED: bool = os.getenv("ACP_ENABLED", "false").lower() == "true"
+    """Master switch for the ACP coding-harness runtime (acpx). When True,
+    write_openclaw_config emits the acp block + plugins.entries.acpx so a
+    native agent (e.g. Jarvis) can sessions_spawn Claude Code / Codex / Gemini,
+    with allowedAgents DERIVED from the owner's provider_choice. Dark by
+    default: keep False until the acpx-baked extended image (Dockerfile
+    Layer 12) is promoted in openclaw-version.json for the env — enabling it
+    against an image without /app/dist/extensions/acpx makes every ACP spawn
+    fail with 'ACP runtime backend is not configured'."""
     METRONOME_CREDITS_PRODUCT_ID: str = os.getenv("METRONOME_CREDITS_PRODUCT_ID", "")
     """Metronome product id the prepaid credit commit draws against. Per-env."""
     METRONOME_USD_CENTS_CREDIT_TYPE_ID: str = "2714e483-4ff1-48e4-9e25-ac732e8f24f2"

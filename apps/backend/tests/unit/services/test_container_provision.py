@@ -30,6 +30,33 @@ async def test_background_provision_resolves_provider_and_dispatches():
         "user_123",
         provider_choice="bedrock_claude",
         byo_provider=None,
+        owner_type="personal",
+    )
+
+
+@pytest.mark.asyncio
+async def test_background_provision_passes_org_owner_type():
+    """An org owner_id (org_*) must reprovision with owner_type='org' — config
+    generation keys org-specific behavior (e.g. gateway browser mode) off it,
+    so defaulting to 'personal' would silently rewrite an org's config."""
+    fake_ecs = MagicMock()
+    fake_ecs.provision_user_container = AsyncMock(return_value="svc-name")
+    with (
+        patch(
+            "core.services.container_provision.resolve_provider_choice",
+            new=AsyncMock(return_value=("chatgpt_oauth", None)),
+        ),
+        patch(
+            "core.services.container_provision.get_ecs_manager",
+            return_value=fake_ecs,
+        ),
+    ):
+        await background_provision("org_abc", "user_admin")
+    fake_ecs.provision_user_container.assert_awaited_once_with(
+        "org_abc",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        owner_type="org",
     )
 
 

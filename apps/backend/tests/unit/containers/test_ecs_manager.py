@@ -2516,3 +2516,41 @@ class TestAwaitRunningTransitionSubstatus:
         assert len(task_running_writes) == 1
         assert update_calls[-1]["status"] == "running"
         assert update_calls[-1]["substatus"] == "gateway_healthy"
+
+
+# ---------------------------------------------------------------------------
+# reprovision_for_user — full reprovision, not stop+start
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager):
+    """The admin reprovision must run a FULL reprovision: scale to 0 first (so
+    provision takes its scale-from-zero branch that re-registers the task def +
+    rewrites the EFS config), then dispatch background_provision. The old
+    stale-task-def force-redeploy path (start_user_service) must NOT be used.
+    """
+    dispatched = []
+
+    async def _fake_bg(owner_id, clerk_user_id):
+        dispatched.append((owner_id, clerk_user_id))
+
+    manager.stop_user_service = AsyncMock()
+    manager.start_user_service = AsyncMock()
+    with patch(
+        "core.services.container_provision.background_provision",
+        side_effect=_fake_bg,
+    ):
+        result = await manager.reprovision_for_user("org_abc")
+        # Let the create_task'd coroutine run.
+        import asyncio
+
+        await asyncio.sleep(0)
+
+    assert result == {"status": "reprovisioning"}
+    # Scale to 0 first so provision hits the re-register + write-config branch.
+    manager.stop_user_service.assert_awaited_once_with("org_abc")
+    # Then the FULL provision is dispatched.
+    assert dispatched == [("org_abc", "org_abc")]
+    # The old stale-task-def scale-up path must NOT be used.
+    manager.start_user_service.assert_not_awaited()

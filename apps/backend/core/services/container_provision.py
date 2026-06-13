@@ -40,12 +40,20 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
     Catches and logs all exceptions — never raises. This function is an
     asyncio.create_task target.
     """
+    from core.auth import is_org_owner_id
+
     try:
         provider_choice, byo_provider = await resolve_provider_choice(owner_id)
+        # owner_type drives org-specific config (e.g. gateway.nodes.browser.mode
+        # = "manual" for orgs vs "auto" for personal). It's derivable from the
+        # owner_id prefix, so a re-provision regenerates the SAME org/personal
+        # config rather than silently defaulting to personal.
+        owner_type = "org" if is_org_owner_id(owner_id) else "personal"
         await get_ecs_manager().provision_user_container(
             owner_id,
             provider_choice=provider_choice,
             byo_provider=byo_provider,
+            owner_type=owner_type,
         )
     except Exception:
         logger.exception("Background provisioning failed for owner %s", owner_id)

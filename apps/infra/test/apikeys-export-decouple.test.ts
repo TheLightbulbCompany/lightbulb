@@ -102,6 +102,7 @@ function build(environment: "dev" | "prod"): {
       gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
+      resendApiKey: `isol8/${environment}/resend_api_key`,
     },
     kmsKeyArn: kmsKey.keyArn,
     container: {

@@ -112,6 +112,7 @@ export class Isol8Stage extends cdk.Stage {
         gogKeyringPassword: auth.gogKeyringPassword.secretName,
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,
+        resendApiKey: auth.resendApiKey.secretName,
       },
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {

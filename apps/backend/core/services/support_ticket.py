@@ -33,11 +33,21 @@ def _admin_user_url(user_id: str) -> str:
     return f"https://{host}/admin/users/{user_id}"
 
 
+async def _safe_fetch(repo_get, owner_id: str) -> dict | None:
+    """Enrichment is best-effort: a repo / DynamoDB hiccup must degrade
+    gracefully (omit that metadata), never 500 the ticket submission."""
+    try:
+        return await repo_get(owner_id)
+    except Exception:
+        logger.warning("ticket enrichment fetch failed for %s", owner_id, exc_info=True)
+        return None
+
+
 async def _build_metadata(auth: AuthContext, req: SupportTicketRequest) -> dict:
     owner_id = resolve_owner_id(auth)
     now = datetime.now(timezone.utc)
-    container = await container_repo.get_by_owner_id(owner_id)
-    billing = await billing_repo.get_by_owner_id(owner_id)
+    container = await _safe_fetch(container_repo.get_by_owner_id, owner_id)
+    billing = await _safe_fetch(billing_repo.get_by_owner_id, owner_id)
 
     cloudwatch = cloudwatch_url.build_insights_url(
         user_id=auth.user_id,

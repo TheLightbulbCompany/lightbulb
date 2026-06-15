@@ -66,3 +66,30 @@ async def test_submit_ticket_escapes_user_message(monkeypatch):
     body = mock_send.await_args.kwargs["html"]
     assert "<script>" not in body
     assert html.escape("<script>alert(1)</script>") in body
+
+
+@pytest.mark.asyncio
+async def test_submit_ticket_survives_enrichment_failure():
+    """A repo/DynamoDB failure during enrichment must not break delivery —
+    the ticket still sends, just without that metadata (no 500)."""
+    auth = AuthContext(user_id="user_1", email="x@y.com")
+    req = SupportTicketRequest(message="help")
+
+    with (
+        patch(
+            "core.services.support_ticket.container_repo.get_by_owner_id",
+            new=AsyncMock(side_effect=RuntimeError("ddb down")),
+        ),
+        patch(
+            "core.services.support_ticket.billing_repo.get_by_owner_id",
+            new=AsyncMock(side_effect=RuntimeError("ddb down")),
+        ),
+        patch(
+            "core.services.support_ticket.email_service.send_email",
+            new=AsyncMock(return_value="email_1"),
+        ) as mock_send,
+    ):
+        result = await support_ticket.submit_ticket(auth, req)
+
+    assert result == "email_1"
+    mock_send.assert_awaited_once()

@@ -50,6 +50,7 @@ from routers import (
     orgs,
     paperclip_proxy,
     settings_keys,
+    support_tickets,
     updates,
     users,
     webhooks,
@@ -625,6 +626,9 @@ app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
+
+# Support ticket capture
+app.include_router(support_tickets.router, prefix="/api/v1/support", tags=["support"])
 
 # Metronome ledger webhook (low-balance -> local fast-gate flag, Phase 2).
 # Route is /webhooks/metronome; mounting under API_V1_STR yields

@@ -1,12 +1,17 @@
 "use client";
 
+import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 
 import { Logo } from "@/components/Logo";
+import { SupportTicketDialog } from "@/components/support/SupportTicketDialog";
 
 export default function SupportPage() {
   const router = useRouter();
+  const { isSignedIn, isLoaded } = useUser();
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   return (
     <div className="legal-page">
@@ -28,37 +33,51 @@ export default function SupportPage() {
           <p>We&rsquo;re here to help. Send us a message and we&rsquo;ll get back to you.</p>
         </div>
 
-        <form className="support-form" action="mailto:support@isol8.co" method="POST" encType="text/plain">
-          <div className="support-field">
-            <label htmlFor="name">Name</label>
-            <input type="text" id="name" name="name" required autoComplete="name" placeholder="Your name" />
+        {isLoaded && isSignedIn ? (
+          // Signed-in: real form that POSTs an enriched ticket to the backend.
+          <div className="support-form">
+            <p style={{ marginBottom: "1rem", color: "var(--muted, #666)" }}>
+              Submitting while signed in attaches your account + diagnostics automatically, so we can help faster.
+            </p>
+            <button type="button" className="support-submit" onClick={() => setDialogOpen(true)}>
+              Contact support
+            </button>
+            <SupportTicketDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
           </div>
+        ) : (
+          // Signed-out: simple mailto form (no backend enrichment available).
+          <form className="support-form" action="mailto:support@isol8.co" method="POST" encType="text/plain">
+            <div className="support-field">
+              <label htmlFor="name">Name</label>
+              <input type="text" id="name" name="name" required autoComplete="name" placeholder="Your name" />
+            </div>
 
-          <div className="support-field">
-            <label htmlFor="email">Email</label>
-            <input type="email" id="email" name="email" required autoComplete="email" placeholder="you@example.com" />
-          </div>
+            <div className="support-field">
+              <label htmlFor="email">Email</label>
+              <input type="email" id="email" name="email" required autoComplete="email" placeholder="you@example.com" />
+            </div>
 
-          <div className="support-field">
-            <label htmlFor="subject">Subject</label>
-            <select id="subject" name="subject" required defaultValue="">
-              <option value="" disabled>Select a topic</option>
-              <option value="Bug report">Bug report</option>
-              <option value="Feature request">Feature request</option>
-              <option value="Billing question">Billing question</option>
-              <option value="Account issue">Account issue</option>
-              <option value="GooseTown">GooseTown</option>
-              <option value="Other">Other</option>
-            </select>
-          </div>
+            <div className="support-field">
+              <label htmlFor="subject">Subject</label>
+              <select id="subject" name="subject" required defaultValue="">
+                <option value="" disabled>Select a topic</option>
+                <option value="Bug report">Bug report</option>
+                <option value="Feature request">Feature request</option>
+                <option value="Billing question">Billing question</option>
+                <option value="Account issue">Account issue</option>
+                <option value="GooseTown">GooseTown</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
 
-          <div className="support-field">
-            <label htmlFor="message">Message</label>
-            <textarea id="message" name="message" required placeholder="Describe how we can help..." />
-          </div>
+            <div className="support-field">
+              <label htmlFor="message">Message</label>
+              <textarea id="message" name="message" required placeholder="Describe how we can help..." />
+            </div>
 
-          <button type="submit" className="support-submit">Send message</button>
-        </form>
+            <button type="submit" className="support-submit">Send message</button>
+          </form>
+        )}
 
         <div className="support-direct">
           <p>You can also reach us directly at <a href="mailto:support@isol8.co">support@isol8.co</a></p>

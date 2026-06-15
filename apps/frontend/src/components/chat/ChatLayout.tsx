@@ -7,7 +7,7 @@ import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Grid2X2 } from "lucide-react";
+import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Grid2X2, HelpCircle } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -26,6 +26,7 @@ import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { FileViewer } from "@/components/chat/FileViewer";
 import { Logo } from "@/components/Logo";
+import { SupportTicketDialog } from "@/components/support/SupportTicketDialog";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/components/chat/AgentDialogs";
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
@@ -102,6 +103,7 @@ export function ChatLayout({
   const [pollingForWebhook, setPollingForWebhook] = useState(() => cameFromCheckout);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [supportOpen, setSupportOpen] = useState(false);
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
@@ -465,6 +467,15 @@ export function ChatLayout({
               </button>
             )}
             <div style={{ flex: 1 }} />
+            <button
+              onClick={() => setSupportOpen(true)}
+              className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 mr-1"
+              title="Get help / report a problem"
+              aria-label="Get help"
+            >
+              <HelpCircle size={18} />
+            </button>
+            <SupportTicketDialog open={supportOpen} onClose={() => setSupportOpen(false)} />
             <UserButton
               appearance={{
                 elements: {

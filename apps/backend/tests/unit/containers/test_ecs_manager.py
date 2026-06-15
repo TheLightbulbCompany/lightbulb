@@ -453,6 +453,27 @@ class TestCreateUserService:
             assert cb.get("rollback") is False
 
     @pytest.mark.asyncio
+    async def test_create_service_pins_single_writer_deployment_config(self, manager, mock_ecs_client, mock_efs_client):
+        """Per-user services MUST deploy with maximumPercent=100 +
+        minimumHealthyPercent=0 so ECS stops the old task before starting the
+        new one. The per-owner EFS state is WAL-mode SQLite, which corrupts if
+        two tasks (draining old + new) hold the same DB open over NFS during a
+        rolling deploy — there must only ever be a single writer."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+
+            dc = mock_ecs_client.create_service.call_args.kwargs.get("deploymentConfiguration") or {}
+            assert dc.get("maximumPercent") == 100, (
+                "maximumPercent must be 100 so ECS never runs two tasks at once (single EFS SQLite writer)."
+            )
+            assert dc.get("minimumHealthyPercent") == 0, (
+                "minimumHealthyPercent must be 0 so ECS can drop to zero tasks before starting the replacement."
+            )
+
+    @pytest.mark.asyncio
     async def test_ecs_failure_raises_and_rolls_back(self, manager, mock_ecs_client, mock_efs_client):
         """ECS API failure raises EcsManagerError, sets error status, and rolls back AWS resources."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
@@ -628,7 +649,9 @@ class TestStartUserService:
                     "deploymentCircuitBreaker": {
                         "enable": True,
                         "rollback": False,
-                    }
+                    },
+                    "minimumHealthyPercent": 0,
+                    "maximumPercent": 100,
                 },
             )
             # Belt + suspenders: forceNewDeployment must NOT be in kwargs.
@@ -2527,15 +2550,26 @@ class TestAwaitRunningTransitionSubstatus:
 async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager):
     """The admin reprovision must run a FULL reprovision: scale to 0 first (so
     provision takes its scale-from-zero branch that re-registers the task def +
-    rewrites the EFS config), then dispatch background_provision. The old
-    stale-task-def force-redeploy path (start_user_service) must NOT be used.
+    rewrites the EFS config), wait for the old task to fully drain (single EFS
+    SQLite writer), then dispatch background_provision. The old stale-task-def
+    force-redeploy path (start_user_service) must NOT be used.
     """
+    order = []
     dispatched = []
 
+    async def _fake_stop(uid):
+        order.append("stop")
+
+    async def _fake_drain(uid, timeout_s=90.0):
+        order.append("drain")
+        return True
+
     async def _fake_bg(owner_id, clerk_user_id):
+        order.append("provision")
         dispatched.append((owner_id, clerk_user_id))
 
-    manager.stop_user_service = AsyncMock()
+    manager.stop_user_service = AsyncMock(side_effect=_fake_stop)
+    manager._wait_for_service_drained = AsyncMock(side_effect=_fake_drain)
     manager.start_user_service = AsyncMock()
     with patch(
         "core.services.container_provision.background_provision",
@@ -2550,7 +2584,28 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
     assert result == {"status": "reprovisioning"}
     # Scale to 0 first so provision hits the re-register + write-config branch.
     manager.stop_user_service.assert_awaited_once_with("org_abc")
+    # The old task MUST be fully drained before the new one is provisioned —
+    # otherwise the draining old task and the new task share the EFS WAL DB and
+    # corrupt it. Ordering is load-bearing: stop -> drain -> provision.
+    manager._wait_for_service_drained.assert_awaited_once_with("org_abc")
+    assert order == ["stop", "drain", "provision"], order
     # Then the FULL provision is dispatched.
     assert dispatched == [("org_abc", "org_abc")]
     # The old stale-task-def scale-up path must NOT be used.
     manager.start_user_service.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_drained_returns_true_when_zero(manager, mock_ecs_client):
+    """Returns True as soon as the service reports 0 running + 0 pending."""
+    mock_ecs_client.describe_services.return_value = {"services": [{"runningCount": 0, "pendingCount": 0}]}
+    assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_drained_times_out_returns_false(manager, mock_ecs_client):
+    """If the service never drains, returns False so the caller proceeds rather
+    than wedging an admin reprovision on a task that refuses to stop."""
+    mock_ecs_client.describe_services.return_value = {"services": [{"runningCount": 1, "pendingCount": 0}]}
+    with patch("core.containers.ecs_manager.asyncio.sleep", new=AsyncMock()):
+        assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is False

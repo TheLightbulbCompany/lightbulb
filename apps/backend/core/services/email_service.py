@@ -3,8 +3,9 @@
 Everything that sends app-generated mail (welcome email; Plan 2 support
 ticket delivery) goes through send_email. It is:
 
-- **Gated** — no-ops unless EMAIL_ENABLED and a real RESEND_API_KEY are set,
-  so un-provisioned envs never 403 against the placeholder secret.
+- **Gated** — no-ops unless a real Resend key (re_…) is configured, so an env
+  still holding the CDK-generated placeholder secret never 403s. Presence of a
+  real key is the only switch.
 - **Off the event loop** — the Resend SDK is synchronous; we run it in a
   worker thread with a hard timeout so a slow send can't wedge the caller
   (e.g. the Clerk webhook).
@@ -41,13 +42,16 @@ async def send_email(
     kind: str = "generic",
 ) -> str | None:
     """Send one email via Resend. Returns the Resend email id, or None when
-    disabled / on failure. Never raises.
+    no real Resend key is configured / on failure. Never raises.
 
     kind is a short label ("welcome", "support_ticket") used only for metric
     dimensions and log context.
     """
-    if not (settings.EMAIL_ENABLED and settings.RESEND_API_KEY):
-        logger.debug("email disabled or no key; skipping %s send to %s", kind, to)
+    # Real Resend keys are re_-prefixed; this also skips the random placeholder
+    # the CDK secret holds until an operator sets the real key, so we never 403
+    # against it. Presence of a real key is the only switch — no enable flag.
+    if not settings.RESEND_API_KEY.startswith("re_"):
+        logger.debug("no real Resend key configured; skipping %s send to %s", kind, to)
         return None
 
     resend.api_key = settings.RESEND_API_KEY

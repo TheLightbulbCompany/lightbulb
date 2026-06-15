@@ -260,12 +260,10 @@ class Settings(BaseSettings):
     # inbox. The inbound support mailbox itself is Google Workspace, read by
     # the founder's agent — NOT Resend.
     #
-    # EMAIL_ENABLED is the master switch (mirrors METRONOME_LIFECYCLE_ENABLED):
-    # it stays false until the Resend domain is verified and the real key is
-    # in Secrets Manager, so un-provisioned envs never 403 against the random
-    # placeholder secret on every signup. Flipped per-env via the CDK
-    # service-stack environment block (prod first).
-    EMAIL_ENABLED: bool = os.getenv("EMAIL_ENABLED", "false").lower() == "true"
+    # Sending is gated solely on a real key being present (email_service skips
+    # unless RESEND_API_KEY is re_-prefixed), so the CDK placeholder secret is a
+    # no-op and the feature self-arms the moment a real key is deployed. No
+    # separate enable flag.
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
     # Visible From identities on the verified isol8.co domain. Same across
     # envs, so plain defaults (no CDK wiring) — override via env only if a

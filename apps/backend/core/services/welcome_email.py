@@ -36,9 +36,7 @@ def _render_welcome_html(first_name: str | None, chat_url: str) -> str:
 </div>"""
 
 
-async def send_welcome_email(
-    *, to_email: str, user_id: str, first_name: str | None = None
-) -> str | None:
+async def send_welcome_email(*, to_email: str, user_id: str, first_name: str | None = None) -> str | None:
     """Send the welcome email. Best-effort: returns the Resend id or None.
     Never raises (the seam swallows its own errors)."""
     html = _render_welcome_html(first_name, settings.FRONTEND_URL)

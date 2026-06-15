@@ -15,9 +15,7 @@ async def test_disabled_is_noop(monkeypatch):
     monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
 
     with patch("resend.Emails.send") as mock_send:
-        result = await email_service.send_email(
-            to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com"
-        )
+        result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
 
     assert result is None
     mock_send.assert_not_called()
@@ -30,9 +28,7 @@ async def test_missing_key_is_noop(monkeypatch):
     monkeypatch.setattr(settings, "RESEND_API_KEY", "")
 
     with patch("resend.Emails.send") as mock_send:
-        result = await email_service.send_email(
-            to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com"
-        )
+        result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
 
     assert result is None
     mock_send.assert_not_called()
@@ -72,8 +68,6 @@ async def test_failure_is_swallowed(monkeypatch):
     monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
 
     with patch("resend.Emails.send", side_effect=RuntimeError("boom")):
-        result = await email_service.send_email(
-            to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com"
-        )
+        result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
 
     assert result is None

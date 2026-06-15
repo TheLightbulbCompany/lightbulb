@@ -38,9 +38,7 @@ async def test_send_welcome_without_first_name_uses_fallback(monkeypatch):
         "core.services.welcome_email.email_service.send_email",
         new=AsyncMock(return_value="email_xyz"),
     ) as mock_send:
-        await welcome_email.send_welcome_email(
-            to_email="newuser@example.com", user_id="u_42", first_name=None
-        )
+        await welcome_email.send_welcome_email(to_email="newuser@example.com", user_id="u_42", first_name=None)
 
     html = mock_send.await_args.kwargs["html"]
     assert "there" in html  # "Hi there," fallback greeting

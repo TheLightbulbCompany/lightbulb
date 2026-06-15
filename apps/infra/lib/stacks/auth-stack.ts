@@ -31,6 +31,7 @@ export class AuthStack extends cdk.Stack {
   public readonly gogKeyringPassword: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
+  public readonly resendApiKey: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -127,6 +128,19 @@ export class AuthStack extends cdk.Stack {
       "metronome_webhook_secret",
       { passwordLength: 48, excludePunctuation: true },
       "HMAC key for verifying Metronome-Webhook-Signature. Overwritten out-of-band with the value from the Metronome dashboard webhook config.",
+    );
+
+    // Resend API key for transactional email (welcome email; support ticket
+    // delivery). CDK generates a random placeholder on first create; the
+    // operator overwrites it out-of-band with the real re_… key via
+    // `aws secretsmanager put-secret-value` once the Resend domain is
+    // verified. Same CMK as the other auth secrets, so the backend task
+    // role's KmsDecryptForSecrets + wildcard SecretsAccess already cover read.
+    this.resendApiKey = createSecret(
+      "ResendApiKey",
+      "resend_api_key",
+      { passwordLength: 48, excludePunctuation: true },
+      "Resend API bearer token for transactional email. Overwritten out-of-band with the real re_… key after the Resend domain runbook.",
     );
 
     // Bootstrap admin Better Auth credentials. CDK creates the secret

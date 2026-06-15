@@ -254,6 +254,28 @@ class Settings(BaseSettings):
     # comma-separated list.
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://dev.isol8.co")
 
+    # --- Transactional email (Resend) ---
+    # Resend is used for OUTBOUND app-generated mail only: the welcome email
+    # on signup and (Plan 2) delivery of support tickets into the support@
+    # inbox. The inbound support mailbox itself is Google Workspace, read by
+    # the founder's agent — NOT Resend.
+    #
+    # EMAIL_ENABLED is the master switch (mirrors METRONOME_LIFECYCLE_ENABLED):
+    # it stays false until the Resend domain is verified and the real key is
+    # in Secrets Manager, so un-provisioned envs never 403 against the random
+    # placeholder secret on every signup. Flipped per-env via the CDK
+    # service-stack environment block (prod first).
+    EMAIL_ENABLED: bool = os.getenv("EMAIL_ENABLED", "false").lower() == "true"
+    RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    # Visible From identities on the verified isol8.co domain. Same across
+    # envs, so plain defaults (no CDK wiring) — override via env only if a
+    # future env needs a different sender.
+    EMAIL_FROM_WELCOME: str = os.getenv("EMAIL_FROM_WELCOME", "Isol8 <hello@isol8.co>")
+    # The Google Workspace support mailbox. Used as Reply-To on the welcome
+    # email (a plain reply lands in the inbox the agent watches) and (Plan 2)
+    # as the ticket destination.
+    EMAIL_SUPPORT_ADDRESS: str = os.getenv("EMAIL_SUPPORT_ADDRESS", "support@isol8.co")
+
     @field_validator("CLERK_ISSUER")
     @classmethod
     def validate_clerk_issuer(cls, v: str) -> str:

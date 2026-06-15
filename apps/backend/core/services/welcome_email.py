@@ -5,6 +5,7 @@ the (stable) Clerk user id so a webhook retry / double-process can't send a
 second welcome within Resend's 24h window.
 """
 
+import html
 import logging
 
 from core.config import settings
@@ -16,7 +17,9 @@ _SUBJECT = "Welcome to Isol8 \U0001f44b"
 
 
 def _render_welcome_html(first_name: str | None, chat_url: str) -> str:
-    greeting = f"Hi {first_name}," if first_name else "Hi there,"
+    # first_name is user-controlled (from Clerk); escape it so a name with
+    # markup can't inject HTML into mail sent from the official sender.
+    greeting = f"Hi {html.escape(first_name)}," if first_name else "Hi there,"
     return f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.5;color:#1a1a1a;max-width:520px;margin:0 auto">
   <p>{greeting}</p>

@@ -69,7 +69,12 @@ async def send_email(
 
     try:
         with anyio.fail_after(_SEND_TIMEOUT_S):
-            resp = await anyio.to_thread.run_sync(lambda: resend.Emails.send(params, options))
+            # abandon_on_cancel=True so fail_after can actually return at the
+            # deadline. anyio shields a default run_sync from cancellation and
+            # would otherwise wait for the stalled thread, blocking the caller
+            # (the Clerk webhook) past the timeout. The orphaned thread
+            # finishing late is fine for best-effort mail.
+            resp = await anyio.to_thread.run_sync(lambda: resend.Emails.send(params, options), abandon_on_cancel=True)
         email_id = resp.get("id") if isinstance(resp, dict) else getattr(resp, "id", None)
         put_metric("email.send", dimensions={"result": "ok", "kind": kind})
         logger.info("sent %s email to %s id=%s", kind, to, email_id)

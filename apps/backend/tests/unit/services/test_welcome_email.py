@@ -42,3 +42,19 @@ async def test_send_welcome_without_first_name_uses_fallback(monkeypatch):
 
     html = mock_send.await_args.kwargs["html"]
     assert "there" in html  # "Hi there," fallback greeting
+
+
+@pytest.mark.asyncio
+async def test_send_welcome_escapes_html_in_first_name():
+    """A first_name with markup must be escaped, not injected into the email."""
+    with patch(
+        "core.services.welcome_email.email_service.send_email",
+        new=AsyncMock(return_value="email_xyz"),
+    ) as mock_send:
+        await welcome_email.send_welcome_email(
+            to_email="x@y.com", user_id="u_1", first_name="<script>alert(1)</script>"
+        )
+
+    body = mock_send.await_args.kwargs["html"]
+    assert "<script>" not in body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body

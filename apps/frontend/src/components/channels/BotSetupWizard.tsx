@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { awaitChannelReady } from "@/lib/awaitChannelReady";
+import { SLACK_APP_MANIFEST } from "@/lib/slackManifest";
 
 type Provider = "telegram" | "discord" | "slack";
 type Mode = "create" | "link-only";
@@ -52,28 +53,8 @@ const PROVIDER_CREATE_URL: Record<Provider, string> = {
   slack: "https://api.slack.com/apps?new_app=1",
 };
 
-// Slack manifest — dropped into the "From an app manifest" flow on api.slack.com.
-const SLACK_APP_MANIFEST = `display_information:
-  name: Isol8 Agent
-features:
-  bot_user:
-    display_name: Isol8 Agent
-    always_online: true
-oauth_config:
-  scopes:
-    bot:
-      - app_mentions:read
-      - chat:write
-      - im:history
-      - im:read
-      - im:write
-      - users:read
-settings:
-  event_subscriptions:
-    bot_events:
-      - app_mention
-      - message.im
-  socket_mode_enabled: true`;
+// The Slack app manifest (dropped into Slack's "From an app manifest" flow) lives
+// in src/lib/slackManifest.ts, guarded by slackManifest.test.ts.
 
 // Client-side format validation for the primary bot token. We're not doing
 // cryptographic checks, just shape-matching so the user can't submit a token

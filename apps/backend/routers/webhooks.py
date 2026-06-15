@@ -606,6 +606,21 @@ async def handle_clerk_webhook(request: Request):
                 # back to Clerk admin API. Logging is enough.
                 logger.exception("user_repo.put failed for user.created %s", user_id)
 
+            # Best-effort welcome email. send_welcome_email already swallows
+            # its own errors, but we also guard here so a welcome blowup can
+            # never 500 the webhook (which would trigger a Clerk retry storm).
+            if email:
+                try:
+                    from core.services.welcome_email import send_welcome_email
+
+                    await send_welcome_email(
+                        to_email=email,
+                        user_id=user_id,
+                        first_name=data.get("first_name"),
+                    )
+                except Exception:
+                    logger.exception("welcome email send raised for user.created %s", user_id)
+
     elif event_type == "user.updated":
         user_id = data.get("id", "")
         logger.info("Clerk user.updated webhook received for %s", user_id)

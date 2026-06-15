@@ -100,6 +100,33 @@ describe("awaitChannelReady", () => {
     expect(notes.some((n) => /restart/i.test(n))).toBe(true);
   });
 
+  it("treats the first defined lastStartAt as a restart when initialStartAt is null", async () => {
+    const callRpc = scriptedCallRpc("telegram", "a", [{ running: true, lastStartAt: 50, connected: true }]);
+    const out = await awaitChannelReady({
+      ...BASE,
+      initialStartAt: null,
+      callRpc,
+      now: makeClock(),
+      deadlineMs: 1000,
+    });
+    expect(out).toEqual({ status: "ready" });
+  });
+
+  it("prefers connected over a lastError present in the same snapshot", async () => {
+    const callRpc = scriptedCallRpc("telegram", "a", [
+      { running: true, lastStartAt: 200, connected: true, lastError: "stale prior error" },
+    ]);
+    const out = await awaitChannelReady({ ...BASE, callRpc, now: makeClock(), deadlineMs: 1000 });
+    expect(out).toEqual({ status: "ready" });
+  });
+
+  it("shows the starting note after a restart that has not connected yet", async () => {
+    const callRpc = scriptedCallRpc("telegram", "a", [{ running: true, lastStartAt: 200, lastError: null }]);
+    const notes: string[] = [];
+    await awaitChannelReady({ ...BASE, callRpc, now: makeClock(), deadlineMs: 5, onNote: (n) => notes.push(n) });
+    expect(notes.some((n) => /starting/i.test(n))).toBe(true);
+  });
+
   it("bails as cancelled (non-destructive) when shouldCancel returns true", async () => {
     const callRpc = scriptedCallRpc("telegram", "a", [{ running: true, lastStartAt: 100 }]);
     const out = await awaitChannelReady({

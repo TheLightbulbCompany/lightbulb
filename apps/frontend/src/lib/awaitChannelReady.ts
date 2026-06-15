@@ -43,7 +43,10 @@ export type AwaitChannelReadyOptions = {
   // Injectable for deterministic tests:
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
-  /** Overall ceiling. Default 330s = OpenClaw's 300s deferral ceiling + boot margin. */
+  /** Overall ceiling. Default 390s = OpenClaw's 300s deferral ceiling + ~90s for
+   * chokidar EFS detection, restart, and auth on a busy 0.5-vCPU box. Timeout is
+   * non-destructive (the account is kept), so an over-short ceiling never deletes
+   * a valid bot — but too short would show the "taking longer" message early. */
   deadlineMs?: number;
   pollMs?: number;
 };
@@ -65,7 +68,7 @@ export async function awaitChannelReady(
     shouldCancel,
     now = () => Date.now(),
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
-    deadlineMs = 330_000,
+    deadlineMs = 390_000,
     pollMs = 2_000,
   } = opts;
 

@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 # promotion, and a provision in that window must not stamp a future version.
 DEPLOYED_UPSTREAM_VERSION = openclaw_version.deployed_upstream_version()
 
+# Channel provider ids we provision a config block for, and whose accounts must
+# survive a reprovision (read back by ecs_manager._provision_channel_accounts).
+# Single source of truth — the channels block in build_openclaw_config_dict is
+# built from this, and ecs_manager imports it, so the two can't drift.
+CHANNEL_PROVIDER_IDS = ("telegram", "discord", "slack")
+
 
 # =============================================================================
 # Node device identity helpers
@@ -1003,18 +1009,8 @@ def build_openclaw_config_dict(
             # channels.webchat: unknown channel id: webchat`) and fresh
             # provisions boot-loop. Use an upstream channel id or extend
             # CHANNEL_IDS upstream first.
-            "telegram": {
-                "enabled": True,
-                "dmPolicy": "pairing",
-            },
-            "discord": {
-                "enabled": True,
-                "dmPolicy": "pairing",
-            },
-            "slack": {
-                "enabled": True,
-                "dmPolicy": "pairing",
-            },
+            cid: {"enabled": True, "dmPolicy": "pairing"}
+            for cid in CHANNEL_PROVIDER_IDS
         },
         "session": {
             "dmScope": "per-account-channel-peer",

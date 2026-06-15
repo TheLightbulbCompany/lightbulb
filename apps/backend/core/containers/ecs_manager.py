@@ -22,6 +22,7 @@ from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
 from core.containers.config import (
+    CHANNEL_PROVIDER_IDS,
     build_device_paired_json,
     generate_node_device_identity,
     load_node_device_identity,
@@ -103,11 +104,6 @@ async def _provision_mcp_servers(owner_id: str, connected_servers: dict) -> dict
         return connected_servers
 
 
-# Channel ids whose accounts must survive a reprovision. Must match the
-# providers config.py emits in the channels block (config.py build_openclaw_config_dict).
-_CHANNEL_IDS_TO_PRESERVE = ("telegram", "discord", "slack")
-
-
 async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict]]:
     """Channel bot accounts to re-inject into a regenerated openclaw.json.
 
@@ -126,7 +122,7 @@ async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict
         existing_cfg = await read_openclaw_config_from_efs(owner_id) or {}
         channels = existing_cfg.get("channels") or {}
         out: dict[str, dict[str, dict]] = {}
-        for provider in _CHANNEL_IDS_TO_PRESERVE:
+        for provider in CHANNEL_PROVIDER_IDS:
             entry = channels.get(provider)
             if not isinstance(entry, dict):
                 continue

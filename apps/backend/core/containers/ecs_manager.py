@@ -103,6 +103,42 @@ async def _provision_mcp_servers(owner_id: str, connected_servers: dict) -> dict
         return connected_servers
 
 
+# Channel ids whose accounts must survive a reprovision. Must match the
+# providers config.py emits in the channels block (config.py build_openclaw_config_dict).
+_CHANNEL_IDS_TO_PRESERVE = ("telegram", "discord", "slack")
+
+
+async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict]]:
+    """Channel bot accounts to re-inject into a regenerated openclaw.json.
+
+    The reprovision path fully overwrites openclaw.json, so without this every
+    configured Telegram/Slack/Discord account — bot token, allowFrom pairings
+    and all — is lost, exactly like the MCP-server case that
+    ``_provision_mcp_servers`` handles. Read the live on-disk accounts and
+    return them keyed ``{provider: {accountId: account}}``;
+    ``build_openclaw_config_dict`` merges them back and recreates the sibling
+    route bindings.
+
+    Fail-safe: any read/parse hiccup returns ``{}`` so provisioning never breaks
+    (worst case the user re-runs the channel wizard).
+    """
+    try:
+        existing_cfg = await read_openclaw_config_from_efs(owner_id) or {}
+        channels = existing_cfg.get("channels") or {}
+        out: dict[str, dict[str, dict]] = {}
+        for provider in _CHANNEL_IDS_TO_PRESERVE:
+            entry = channels.get(provider)
+            if not isinstance(entry, dict):
+                continue
+            accounts = entry.get("accounts")
+            if isinstance(accounts, dict) and accounts:
+                out[provider] = accounts
+        return out
+    except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
+        logger.exception("preserving channel accounts failed for %s; continuing", owner_id)
+        return {}
+
+
 def _build_per_user_environment(
     *,
     hook_token: str,
@@ -2110,6 +2146,11 @@ class EcsManager:
         # the connected integration servers.
         integration_mcp_servers = await _provision_mcp_servers(owner_id, integration_mcp_servers)
 
+        # Carry the user's configured channel bot accounts across this full
+        # overwrite. A reprovision rewrites openclaw.json wholesale, so without
+        # this every Telegram/Slack/Discord bot token + pairing is dropped.
+        channel_accounts = await _provision_channel_accounts(owner_id)
+
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
@@ -2125,6 +2166,7 @@ class EcsManager:
             paperclip_api_url=settings.PAPERCLIP_INTERNAL_URL or None,
             integration_mcp_servers=integration_mcp_servers,
             aip_arns=aip_arns,
+            channel_accounts=channel_accounts,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

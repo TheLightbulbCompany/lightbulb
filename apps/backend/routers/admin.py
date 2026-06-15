@@ -214,7 +214,9 @@ async def admin_user_cloudwatch_url(
 
 @router.post(
     "/users/{user_id}/container/reprovision",
-    description="Force a fresh container deploy (stop+start). Idempotency-Key supported.",
+    description="Reprovision the container: rewrites openclaw.json and redeploys. "
+    "Channel accounts and MCP servers are preserved across the rewrite. "
+    "Idempotency-Key supported.",
 )
 @idempotency()
 @audit_admin_action("container.reprovision")

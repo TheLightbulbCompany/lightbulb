@@ -60,6 +60,31 @@ async def test_sends_with_params_and_idempotency(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_non_prod_env_prefixes_subject(monkeypatch):
+    """Dev/staging sends get a [ENV] subject tag so test mail is obvious."""
+    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+    monkeypatch.setattr(settings, "ENVIRONMENT", "dev")
+
+    with patch("resend.Emails.send", return_value={"id": "x"}) as mock_send:
+        await email_service.send_email(to="a@b.com", subject="Welcome", html="<p>hi</p>", from_addr="x@y.com")
+
+    params, _ = mock_send.call_args.args
+    assert params["subject"] == "[DEV] Welcome"
+
+
+@pytest.mark.asyncio
+async def test_prod_env_has_no_prefix(monkeypatch):
+    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+
+    with patch("resend.Emails.send", return_value={"id": "x"}) as mock_send:
+        await email_service.send_email(to="a@b.com", subject="Welcome", html="<p>hi</p>", from_addr="x@y.com")
+
+    params, _ = mock_send.call_args.args
+    assert params["subject"] == "Welcome"
+
+
+@pytest.mark.asyncio
 async def test_failure_is_swallowed(monkeypatch):
     """Resend raising -> returns None, does not raise."""
     monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")

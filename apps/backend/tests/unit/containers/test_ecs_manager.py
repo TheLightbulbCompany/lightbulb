@@ -2500,6 +2500,55 @@ async def test_provision_mcp_servers_failsafe_returns_connected_on_error(monkeyp
     assert await em._provision_mcp_servers("org_1", connected) == connected
 
 
+@pytest.mark.asyncio
+async def test_provision_channel_accounts_extracts_accounts(monkeypatch):
+    """Carry the live on-disk channel accounts across a reprovision overwrite;
+    skip providers with no accounts or an empty accounts map."""
+    from core.containers import ecs_manager as em
+
+    async def _read(owner_id):
+        return {
+            "channels": {
+                "telegram": {
+                    "enabled": True,
+                    "dmPolicy": "pairing",
+                    "accounts": {"a": {"botToken": "123:ABC", "allowFrom": ["u1"]}},
+                },
+                "discord": {"enabled": True, "dmPolicy": "pairing"},  # no accounts
+                "slack": {"enabled": True, "accounts": {}},  # empty accounts
+            }
+        }
+
+    monkeypatch.setattr(em, "read_openclaw_config_from_efs", _read)
+    out = await em._provision_channel_accounts("org_x")
+    assert out == {"telegram": {"a": {"botToken": "123:ABC", "allowFrom": ["u1"]}}}
+
+
+@pytest.mark.asyncio
+async def test_provision_channel_accounts_handles_missing_config(monkeypatch):
+    """No openclaw.json on disk yet → nothing to carry forward."""
+    from core.containers import ecs_manager as em
+
+    async def _none(owner_id):
+        return None
+
+    monkeypatch.setattr(em, "read_openclaw_config_from_efs", _none)
+    assert await em._provision_channel_accounts("org_x") == {}
+
+
+@pytest.mark.asyncio
+async def test_provision_channel_accounts_failsafe_returns_empty_on_error(monkeypatch):
+    """An EFS read hiccup must not fail provisioning — fall back to {} (worst
+    case the user re-runs the channel wizard)."""
+    from core.containers import ecs_manager as em
+
+    async def _boom(owner_id):
+        raise OSError("efs down")
+
+    monkeypatch.setattr(em, "read_openclaw_config_from_efs", _boom)
+    assert await em._provision_channel_accounts("org_x") == {}
+
+
 # ---------------------------------------------------------------------------
 # _await_running_transition substatus progression
 # ---------------------------------------------------------------------------

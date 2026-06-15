@@ -608,3 +608,66 @@ class TestEnsureNodePairedEntry:
         assert "deadbeef" in state
         assert state["deadbeef"]["tokens"]["node"]["token"] == "keep-me"
         assert _FIXTURE_EXPECTED_DEVICE_ID in state
+
+
+class TestChannelAccountsReinjection:
+    """Channel bot accounts + their route bindings must survive a reprovision.
+
+    A reprovision fully overwrites openclaw.json; build_openclaw_config_dict
+    merges carried-forward channel accounts back into the channels block and
+    recreates the sibling top-level route bindings (config_patcher adds those
+    per-PATCH, so they are also lost by the overwrite).
+    """
+
+    def test_channel_accounts_merged_into_channels_block(self):
+        accounts = {"telegram": {"agent_a": {"botToken": "123:ABC", "dmPolicy": "pairing"}}}
+        cfg = _cfg(channel_accounts=accounts)
+        assert cfg["channels"]["telegram"]["accounts"] == {"agent_a": {"botToken": "123:ABC", "dmPolicy": "pairing"}}
+        # Untouched providers keep their account-less scaffold.
+        assert "accounts" not in cfg["channels"]["discord"]
+
+    def test_channel_accounts_recreate_route_bindings(self):
+        accounts = {
+            "telegram": {"agent_a": {"botToken": "123:ABC"}},
+            "slack": {"agent_b": {"mode": "socket", "appToken": "xapp-", "botToken": "xoxb-"}},
+        }
+        cfg = _cfg(channel_accounts=accounts)
+        assert {
+            "type": "route",
+            "agentId": "agent_a",
+            "match": {"channel": "telegram", "accountId": "agent_a"},
+        } in cfg["bindings"]
+        assert {
+            "type": "route",
+            "agentId": "agent_b",
+            "match": {"channel": "slack", "accountId": "agent_b"},
+        } in cfg["bindings"]
+
+    def test_no_channel_accounts_emits_account_less_scaffold(self):
+        cfg = _cfg()
+        assert "accounts" not in cfg["channels"]["telegram"]
+        assert cfg.get("bindings", []) == []
+
+    def test_unknown_provider_in_channel_accounts_is_skipped(self):
+        # A provider not in the static channels block must not crash or inject.
+        cfg = _cfg(channel_accounts={"webchat": {"x": {"botToken": "t"}}})
+        assert "webchat" not in cfg["channels"]
+        assert cfg.get("bindings", []) == []
+
+    async def test_write_openclaw_config_threads_channel_accounts(self, tmp_path):
+        out = tmp_path / "openclaw.json"
+        await write_openclaw_config(
+            config_path=out,
+            gateway_token="t",
+            provider_choice="bedrock_claude",
+            user_id="u_1",
+            aip_arns=_AIPS,
+            channel_accounts={"telegram": {"agent_a": {"botToken": "123:ABC"}}},
+        )
+        cfg = json.loads(out.read_text())
+        assert cfg["channels"]["telegram"]["accounts"]["agent_a"]["botToken"] == "123:ABC"
+        assert {
+            "type": "route",
+            "agentId": "agent_a",
+            "match": {"channel": "telegram", "accountId": "agent_a"},
+        } in cfg["bindings"]

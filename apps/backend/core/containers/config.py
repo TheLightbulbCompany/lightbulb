@@ -656,6 +656,7 @@ def build_openclaw_config_dict(
     paperclip_api_url: str | None = None,
     integration_mcp_servers: dict | None = None,
     aip_arns: dict[str, str] | None = None,
+    channel_accounts: dict[str, dict[str, dict]] | None = None,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -1162,6 +1163,28 @@ def build_openclaw_config_dict(
         if isinstance(mcp_block, dict):
             mcp_block["runtimeScope"] = "shared"
 
+    # Re-inject channel bot accounts carried across a reprovision. A reprovision
+    # does a full overwrite of openclaw.json (like the mcp.servers case above),
+    # so without this every configured Telegram/Slack/Discord account, its token,
+    # and its allowFrom pairings are silently dropped. Recreate the sibling route
+    # bindings too, since config_patcher adds those per-PATCH and the overwrite
+    # would otherwise lose them (without a binding the bot misroutes to main).
+    if channel_accounts:
+        bindings = config.setdefault("bindings", [])
+        for provider, accounts in channel_accounts.items():
+            channel = config.get("channels", {}).get(provider)
+            if not isinstance(channel, dict) or not accounts:
+                continue
+            channel["accounts"] = accounts
+            for account_id in accounts:
+                binding = {
+                    "type": "route",
+                    "agentId": account_id,
+                    "match": {"channel": provider, "accountId": account_id},
+                }
+                if binding not in bindings:
+                    bindings.append(binding)
+
     return config
 
 
@@ -1180,6 +1203,7 @@ async def write_openclaw_config(
     paperclip_api_url: str | None = None,
     integration_mcp_servers: dict | None = None,
     aip_arns: dict[str, str] | None = None,
+    channel_accounts: dict[str, dict[str, dict]] | None = None,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -1229,6 +1253,7 @@ async def write_openclaw_config(
         paperclip_api_url=paperclip_api_url,
         integration_mcp_servers=integration_mcp_servers,
         aip_arns=aip_arns,
+        channel_accounts=channel_accounts,
     )
 
     def _write() -> None:

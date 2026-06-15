@@ -42,6 +42,21 @@ GATEWAY_PORT = 18789
 PER_USER_CPU = "512"
 PER_USER_MEMORY_MIB = "2048"
 
+# Per-user services run exactly one task whose OpenClaw process writes SQLite
+# state (chat history, task runs, memory) into a shared per-owner EFS dir in
+# WAL mode. ECS's default rolling deploy (200% / 100%) briefly runs the old
+# and new task at the same time; two OpenClaw processes on different Fargate
+# hosts opening the same WAL database over NFS corrupts it, because WAL's -shm
+# coordination only works between processes on a single host. Pinning
+# maximumPercent=100 (never two tasks) and minimumHealthyPercent=0 (allowed to
+# drop to zero between them) makes ECS stop the old task before starting the
+# new one, so the EFS state is only ever touched by a single writer.
+SINGLE_WRITER_DEPLOYMENT_CONFIG = {
+    "deploymentCircuitBreaker": {"enable": True, "rollback": False},
+    "minimumHealthyPercent": 0,
+    "maximumPercent": 100,
+}
+
 
 def _user_owned_mcp_servers(existing_servers: dict, integration_provider_keys: set[str]) -> dict:
     """User-added MCP servers to carry across a full openclaw.json regenerate.
@@ -607,12 +622,7 @@ class EcsManager:
                     }
                 },
                 serviceRegistries=[{"registryArn": self._cloud_map_service_arn}],
-                deploymentConfiguration={
-                    "deploymentCircuitBreaker": {
-                        "enable": True,
-                        "rollback": False,
-                    }
-                },
+                deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
             )
             # Enable ECS Exec for all environments so we can debug per-user
             # OpenClaw containers (skill installs, workspace state, gateway
@@ -761,12 +771,7 @@ class EcsManager:
                     cluster=self._cluster,
                     service=service_name,
                     desiredCount=1,
-                    deploymentConfiguration={
-                        "deploymentCircuitBreaker": {
-                            "enable": True,
-                            "rollback": False,
-                        }
-                    },
+                    deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                 )
         except Exception as e:
             logger.error(
@@ -873,12 +878,7 @@ class EcsManager:
                 service=service_name,
                 taskDefinition=new_task_def_arn,
                 forceNewDeployment=True,
-                deploymentConfiguration={
-                    "deploymentCircuitBreaker": {
-                        "enable": True,
-                        "rollback": False,
-                    }
-                },
+                deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
             )
 
             # Decide whether to flip status=provisioning + fire the poller.
@@ -941,6 +941,40 @@ class EcsManager:
         except Exception as e:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
+    async def _wait_for_service_drained(self, user_id: str, timeout_s: float = 90.0) -> bool:
+        """Poll until the user's ECS service has no running or pending tasks.
+
+        Returns True once the service is drained, or False on timeout (the
+        caller proceeds anyway — a stuck describe is not worth wedging an
+        admin reprovision). Enforces the single-writer invariant on the
+        reprovision path, which scales to 0 and then re-creates the task; the
+        new task must not start until the old one is fully stopped, or both
+        would hold the EFS WAL database open at once.
+        """
+        service_name = self._service_name(user_id)
+        interval_s = 3.0
+        attempts = max(1, int(timeout_s / interval_s))
+        for _ in range(attempts):
+            try:
+                resp = await asyncio.to_thread(
+                    self._ecs.describe_services,
+                    cluster=self._cluster,
+                    services=[service_name],
+                )
+                services = resp.get("services", [])
+                svc = services[0] if services else {}
+                if svc.get("runningCount", 0) == 0 and svc.get("pendingCount", 0) == 0:
+                    return True
+            except Exception:
+                logger.warning("describe_services failed while draining %s; will retry", service_name)
+            await asyncio.sleep(interval_s)
+        logger.warning(
+            "Service %s did not drain within %.0fs; proceeding with reprovision",
+            service_name,
+            timeout_s,
+        )
+        return False
+
     async def reprovision_for_user(self, user_id: str) -> dict:
         """Full reprovision: re-register the task def from the current CDK
         base (picks up the latest pinned image) AND rewrite the EFS
@@ -968,9 +1002,9 @@ class EcsManager:
         already-running branch just force-redeploys the SAME (stale)
         task-def + config — so without dropping to 0 first, an admin
         reprovision on a live container would apply neither an image bump nor
-        a config-builder change. The brief (~30s) drain while the new task
-        starts is acceptable for an intentional admin action; EFS, gateway
-        token, and access point are all preserved.
+        a config-builder change. The new task is only started once the old one
+        has fully drained (single EFS SQLite writer — see the drain-wait
+        below); EFS, gateway token, and access point are all preserved.
         """
         from core.services.container_provision import background_provision
 
@@ -978,6 +1012,15 @@ class EcsManager:
         # scale-from-zero branch (re-register + write_user_configs), not the
         # running force-redeploy branch.
         await self.stop_user_service(user_id)
+
+        # Block until the old task is fully stopped before provisioning the new
+        # one. stop_user_service only issues desiredCount=0 and returns at once;
+        # ECS then takes up to the task's stop-timeout to actually kill it. The
+        # per-owner state lives in WAL-mode SQLite on EFS, which corrupts if the
+        # draining old task and the new task hold it open together (the same
+        # reason SINGLE_WRITER_DEPLOYMENT_CONFIG pins max=100). Waiting here
+        # guarantees a single writer across the reprovision.
+        await self._wait_for_service_drained(user_id)
 
         # clerk_user_id is unused by the reprovision path: provision reads
         # provider_choice off the billing row by owner_id, and chatgpt OAuth
@@ -1560,12 +1603,7 @@ class EcsManager:
                             service=service_name,
                             desiredCount=1,
                             taskDefinition=new_task_def_arn,
-                            deploymentConfiguration={
-                                "deploymentCircuitBreaker": {
-                                    "enable": True,
-                                    "rollback": False,
-                                }
-                            },
+                            deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                         )
                         old_task_def_arn = existing.get("task_definition_arn") if existing else None
                         await container_repo.update_fields(
@@ -1635,12 +1673,7 @@ class EcsManager:
                         cluster=self._cluster,
                         service=service_name,
                         forceNewDeployment=True,
-                        deploymentConfiguration={
-                            "deploymentCircuitBreaker": {
-                                "enable": True,
-                                "rollback": False,
-                            }
-                        },
+                        deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                     )
                 except Exception as e:
                     put_metric("container.provision", dimensions={"status": "error"})

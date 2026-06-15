@@ -54,6 +54,12 @@ async def send_email(
         logger.debug("no real Resend key configured; skipping %s send to %s", kind, to)
         return None
 
+    # Tag non-prod mail so dev/staging test sends are obvious in the inbox
+    # (e.g. "[DEV] Welcome to Isol8"). Prod sends are unprefixed.
+    env = settings.ENVIRONMENT.strip()
+    if env and env.lower() not in ("prod", "production"):
+        subject = f"[{env.upper()}] {subject}"
+
     resend.api_key = settings.RESEND_API_KEY
 
     params: resend.Emails.SendParams = {

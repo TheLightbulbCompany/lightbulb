@@ -554,7 +554,7 @@ export function BotSetupWizard({
         </p>
       </div>
       <InfoCallout
-        title="Enable Message Content Intent"
+        title="Enable Message Content Intent (required)"
         body={
           <>
             Open your app in the{" "}
@@ -566,8 +566,9 @@ export function BotSetupWizard({
             <InlineLink href="https://discord.com/developers/docs/topics/gateway#privileged-intents">
               Message Content Intent
             </InlineLink>{" "}
-            on. Without this, Discord will silently drop message content and pairing will never
-            work.
+            on. This is required: without it, Discord refuses the bot&apos;s connection entirely
+            (it fails with error 4014, &ldquo;Disallowed intents&rdquo;) and the bot never comes
+            online.
           </>
         }
       />

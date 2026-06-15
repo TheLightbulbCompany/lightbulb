@@ -78,7 +78,7 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/isol8ai/agent:2026.6.6-isol8.1
+FROM ghcr.io/isol8ai/agent:2026.6.6-isol8.2
 
 USER root
 

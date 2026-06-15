@@ -70,8 +70,8 @@ export interface SecretNames {
   metronomeWebhookSecret: string;
   /**
    * Resend API key secret name. Same isol8/{env}/* CMK + wildcard read as the
-   * other auth secrets, so no extra IAM. Empty/placeholder is fine until the
-   * EMAIL_ENABLED switch is flipped.
+   * other auth secrets, so no extra IAM. The placeholder is a no-op until a
+   * real re_… key is set (email_service gates on the key prefix).
    */
   resendApiKey: string;
 }
@@ -1039,12 +1039,6 @@ export class ServiceStack extends cdk.Stack {
         // doomed calls against placeholder secrets on every status poll.
         METRONOME_LIFECYCLE_ENABLED:
           env === "dev" || env === "prod" ? "true" : "false",
-        // Master switch for transactional email (Resend). Starts "false" in
-        // every env until the Resend domain is verified and the real key is
-        // in Secrets Manager (otherwise every signup 403s against the random
-        // placeholder secret). Flip prod -> "true" first after the runbook,
-        // then dev. See core/services/email_service.py.
-        EMAIL_ENABLED: "false",
         // Per-env rate card the per-customer contract references at
         // provision. Dev = sandbox rate card (2026-06-10); prod =
         // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03

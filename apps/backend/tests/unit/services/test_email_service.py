@@ -10,10 +10,9 @@ from core.services import email_service
 
 
 @pytest.mark.asyncio
-async def test_disabled_is_noop(monkeypatch):
-    """EMAIL_ENABLED False -> returns None and never calls Resend."""
-    monkeypatch.setattr(settings, "EMAIL_ENABLED", False)
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+async def test_placeholder_key_is_noop(monkeypatch):
+    """A non-re_ placeholder key (the CDK default) -> None, never calls Resend."""
+    monkeypatch.setattr(settings, "RESEND_API_KEY", "PLACEHOLDERnotARealKey")
 
     with patch("resend.Emails.send") as mock_send:
         result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
@@ -24,8 +23,7 @@ async def test_disabled_is_noop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_missing_key_is_noop(monkeypatch):
-    """Enabled but no key -> returns None and never calls Resend."""
-    monkeypatch.setattr(settings, "EMAIL_ENABLED", True)
+    """No key -> returns None and never calls Resend."""
     monkeypatch.setattr(settings, "RESEND_API_KEY", "")
 
     with patch("resend.Emails.send") as mock_send:
@@ -37,7 +35,6 @@ async def test_missing_key_is_noop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sends_with_params_and_idempotency(monkeypatch):
-    monkeypatch.setattr(settings, "EMAIL_ENABLED", True)
     monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
 
     with patch("resend.Emails.send", return_value={"id": "email_abc"}) as mock_send:
@@ -65,7 +62,6 @@ async def test_sends_with_params_and_idempotency(monkeypatch):
 @pytest.mark.asyncio
 async def test_failure_is_swallowed(monkeypatch):
     """Resend raising -> returns None, does not raise."""
-    monkeypatch.setattr(settings, "EMAIL_ENABLED", True)
     monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
 
     with patch("resend.Emails.send", side_effect=RuntimeError("boom")):
@@ -79,7 +75,6 @@ async def test_stalled_send_respects_timeout(monkeypatch):
     """A send that blocks past the timeout returns None promptly instead of
     wedging the caller. abandon_on_cancel lets fail_after return at the
     deadline rather than waiting for the stalled worker thread."""
-    monkeypatch.setattr(settings, "EMAIL_ENABLED", True)
     monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
     monkeypatch.setattr(email_service, "_SEND_TIMEOUT_S", 0.1)
 

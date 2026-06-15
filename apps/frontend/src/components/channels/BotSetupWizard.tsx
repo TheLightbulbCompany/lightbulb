@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { awaitChannelReady } from "@/lib/awaitChannelReady";
 
 type Provider = "telegram" | "discord" | "slack";
 type Mode = "create" | "link-only";
@@ -238,6 +239,7 @@ export function BotSetupWizard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manifestCopied, setManifestCopied] = useState(false);
+  const [connectingNote, setConnectingNote] = useState("");
 
   // Whether the wizard has written an account row to openclaw.json that has
   // not yet been confirmed working. If the user cancels, the bot reports
@@ -246,6 +248,8 @@ export function BotSetupWizard({
   // fix from the UI. Cleared once we successfully reach the pair step.
   const dirtyConfig = useRef(false);
   const rollbackInFlight = useRef(false);
+  // Set by the Cancel button on the connecting step; awaitChannelReady polls it.
+  const cancelConnect = useRef(false);
 
   const rollbackAccount = async () => {
     if (!dirtyConfig.current || rollbackInFlight.current) return;
@@ -316,6 +320,8 @@ export function BotSetupWizard({
     // on success) tells us where setup is breaking.
     capture("channel_link_submitted", { channel_type: provider });
     // Move UI to the connecting state immediately so the user sees progress.
+    cancelConnect.current = false;
+    setConnectingNote("");
     setStepIndex(steps.indexOf("connecting"));
 
     // OpenClaw stores per-account runtime state in a Map that PERSISTS
@@ -392,42 +398,46 @@ export function BotSetupWizard({
       // rolls the account row back instead of leaving broken state on EFS.
       dirtyConfig.current = true;
 
-      // Poll until the runtime entry actually reflects the new restart
-      // (lastStartAt > initialStartAt). Only THEN do we trust the
-      // snapshot's running / connected / lastError fields — anything
-      // before that is stale runtime state from a previous attempt.
-      const deadline = Date.now() + 60_000;
-      while (Date.now() < deadline) {
-        try {
-          const status = (await callRpc("channels.status", { probe: false })) as {
-            channelAccounts?: Record<string, AccountSnapshot[]>;
-          };
-          const accounts = status?.channelAccounts?.[provider] ?? [];
-          const ourAccount = accounts.find((a) => a.accountId === agentId);
-          const newStartAt = ourAccount?.lastStartAt ?? null;
-          const restartHappened =
-            newStartAt != null &&
-            (initialStartAt == null || newStartAt > initialStartAt);
-          if (restartHappened) {
-            if (ourAccount?.running || ourAccount?.connected) {
-              dirtyConfig.current = false;
-              setStepIndex(steps.indexOf("pair"));
-              return;
-            }
-            if (ourAccount?.lastError) {
-              setError(`Bot failed to start: ${ourAccount.lastError}`);
-              await rollbackAccount();
-              setStepIndex(steps.indexOf("token"));
-              return;
-            }
-          }
-        } catch {
-          // retry
-        }
-        await new Promise((r) => setTimeout(r, 2000));
+      // Wait for the channel to actually come up. OpenClaw 6.6 defers the
+      // reload until in-flight work drains (up to ~300s on a busy box), so we
+      // wait past that ceiling, surface the wait, and key success on a real
+      // `connected` transition — never the bare `running:true` the gateway sets
+      // before auth runs (so a bad token surfaces as a real error, not a false
+      // success). `initialStartAt` lets the poller ignore stale pre-restart state.
+      const outcome = await awaitChannelReady({
+        callRpc,
+        provider,
+        accountId: agentId,
+        initialStartAt,
+        onNote: setConnectingNote,
+        shouldCancel: () => cancelConnect.current,
+      });
+      if (outcome.status === "ready") {
+        dirtyConfig.current = false;
+        setStepIndex(steps.indexOf("pair"));
+        return;
       }
-      setError("Bot started but never reported ready. Check the token and try again.");
-      await rollbackAccount();
+      if (outcome.status === "error") {
+        setError(`Bot failed to start: ${outcome.lastError}`);
+        await rollbackAccount();
+        setStepIndex(steps.indexOf("token"));
+        return;
+      }
+      if (outcome.status === "cancelled") {
+        // User backed out of the wait. Keep the saved account (it may yet come
+        // up); just return to the token step without an error or rollback.
+        dirtyConfig.current = false;
+        setStepIndex(steps.indexOf("token"));
+        return;
+      }
+      // timeout: the reload is taking longer than our ceiling. Do NOT roll back
+      // — the account is valid and the deferred reload may still land. Keep it
+      // and tell the user it will finish connecting in the background.
+      dirtyConfig.current = false;
+      setError(
+        "Setup is taking longer than expected — your container is busy. Your bot is saved and " +
+          "will finish connecting in the background; check the Channels status in a few minutes.",
+      );
       setStepIndex(steps.indexOf("token"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -725,9 +735,19 @@ export function BotSetupWizard({
       <div>
         <p className="text-sm font-semibold text-[#1a1a1a]">Connecting to {label}…</p>
         <p className="mt-1 text-xs text-[#8a8578]">
-          Your container is starting the bot. This usually takes a few seconds.
+          {connectingNote ||
+            "Your container is starting the bot. This can take a few minutes if your agent is busy."}
         </p>
       </div>
+      <button
+        type="button"
+        onClick={() => {
+          cancelConnect.current = true;
+        }}
+        className="text-xs text-[#8a8578] underline underline-offset-2 hover:text-[#1a1a1a]"
+      >
+        Cancel
+      </button>
     </div>
   );
 

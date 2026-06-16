@@ -99,7 +99,7 @@ describe("ObservabilityStack", () => {
   test("creates at least 65 CloudWatch alarms", () => {
     const alarms = template.findResources("AWS::CloudWatch::Alarm");
     const count = Object.keys(alarms).length;
-    // 81 alarms: 11 page + 27 warn custom + 3 x 7 per-table DDB
+    // 82 alarms: 11 page + 28 warn custom + 3 x 7 per-table DDB
     // + remaining AWS-native + 2 cost
     expect(count).toBeGreaterThanOrEqual(65);
   });

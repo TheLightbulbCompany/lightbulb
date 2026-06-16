@@ -956,6 +956,25 @@ export class ObservabilityStack extends cdk.Stack {
       severity: "warn",
       description: "Update worker loop iteration caught an exception",
     });
+
+    // W28: operator-relay-churn — a per-user container is dropping its Paperclip
+    // relay connection (operator upstream closed) abnormally often. A healthy
+    // relay establishes once and holds; sustained churn means the container is
+    // too unhealthy to keep an agent connected, so heartbeat runs fail at the
+    // connect handshake — a degradation the ECS healthcheck reports as HEALTHY.
+    this.createAlarm({
+      id: "W28",
+      name: "operator-relay-churn",
+      metricName: "operator.upstream.closed",
+      threshold: 10,
+      evaluationPeriods: 1,
+      periodMinutes: 15,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "warn",
+      description:
+        "A per-user container is dropping Paperclip relay connections >10/15min — agent heartbeats can't stay connected; find the owner via the operator_proxy 'Operator upstream closed' logs",
+    });
   }
 
   // =========================================================================

@@ -14,6 +14,7 @@ import {
   Server,
 } from "lucide-react";
 import { useApi } from "@/lib/api";
+import { notifyApiError } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 
 interface McpServer {
@@ -108,8 +109,7 @@ export function McpServersTab(props: { agentId?: string }) {
       setStatus({ type: "success", message: "Server(s) added successfully." });
       setTimeout(() => setStatus(null), 3000);
     } catch (err) {
-      console.error("Failed to save MCP servers:", err);
-      setStatus({ type: "error", message: "Failed to save. Please try again." });
+      notifyApiError(err, "Failed to save MCP server. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -122,7 +122,7 @@ export function McpServersTab(props: { agentId?: string }) {
       setServers(resp.servers ?? {});
       capture("mcp_server_removed", { server_name: name });
     } catch (err) {
-      console.error("Failed to remove MCP server:", err);
+      notifyApiError(err, "Failed to remove MCP server. Please try again.");
     } finally {
       setDeleting(null);
     }

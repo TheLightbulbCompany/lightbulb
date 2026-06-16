@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { EditorialButton } from "@/components/teams/shell";
+import { notifyApiError } from "@/lib/notify";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { ApprovalDetail, CompanyAgent } from "@/components/teams/shared/types";
@@ -21,7 +22,6 @@ export function ApprovalDetailPanel({ approvalId }: { approvalId: string }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [showRaw, setShowRaw] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   if (isLoading) return <div className="p-8">Loading…</div>;
   if (!data) return <div className="p-8 text-[var(--mute)]">Approval not found.</div>;
@@ -34,12 +34,11 @@ export function ApprovalDetailPanel({ approvalId }: { approvalId: string }) {
 
   async function act(fn: () => Promise<void>) {
     setBusy(true);
-    setError(null);
     try {
       await fn();
       await mutate();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Action failed. Try again.");
+      notifyApiError(e, "Action failed. Try again.");
     } finally {
       setBusy(false);
     }
@@ -117,7 +116,6 @@ export function ApprovalDetailPanel({ approvalId }: { approvalId: string }) {
           </EditorialButton>
         </div>
       )}
-      {error && <span className="text-xs text-[var(--danger)]">{error}</span>}
     </div>
   );
 }

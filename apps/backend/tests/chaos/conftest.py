@@ -1,0 +1,151 @@
+"""Chaos suite fixtures: moto-backed DynamoDB + S3 with all isol8 tables, and
+hypothesis profiles.
+
+Table names are derived three different ways in production code, so the
+fixture wires all three:
+  * ``core.dynamodb.get_table`` (prefix convention) — usage-counters,
+    billing-accounts, paperclip-companies. Patched via ``_table_prefix`` +
+    ``_dynamodb_resource``.
+  * ``os.environ["WEBHOOK_DEDUP_TABLE"]`` — webhook_dedup makes its own boto3
+    resource (moto intercepts it inside the ``mock_aws`` context).
+  * ``settings.MARKETPLACE_LISTINGS_TABLE`` / ``MARKETPLACE_ARTIFACTS_BUCKET``
+    — marketplace_service reads settings lazily, so we patch the attributes.
+"""
+
+import os
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+os.environ.setdefault("ENCRYPTION_KEY", "wHc3hAOcLlFzWyu3Ph7xIyClIdVQTrIzFOZDtu_pIEY=")
+os.environ.setdefault("AWS_REGION", "us-east-1")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
+from unittest.mock import patch
+
+import boto3
+import pytest
+from hypothesis import HealthCheck, settings
+
+# --- Hypothesis profiles -----------------------------------------------------
+# `ci`  : bounded, deadline-guarded — runs on every PR.
+# `dev` : deep, no deadline — local "really try to break it" runs.
+_HEALTH = [HealthCheck.too_slow, HealthCheck.function_scoped_fixture]
+settings.register_profile("ci", max_examples=50, deadline=None, suppress_health_check=_HEALTH)
+settings.register_profile("dev", max_examples=500, deadline=None, suppress_health_check=_HEALTH)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
+
+_PREFIX = "test-"
+_MARKETPLACE_TABLE = "test-marketplace-listings"
+_MARKETPLACE_BUCKET = "test-marketplace-artifacts"
+_DEDUP_TABLE = "test-webhook-event-dedup"
+
+
+def _create_tables(resource):
+    """Create every table the chaos machines touch, matching CDK key schemas
+    (apps/infra/lib/stacks/database-stack.ts)."""
+    waiters = []
+
+    def _make(name, key_schema, attr_defs, gsis=None):
+        kwargs = dict(
+            TableName=name,
+            KeySchema=key_schema,
+            AttributeDefinitions=attr_defs,
+            BillingMode="PAY_PER_REQUEST",
+        )
+        if gsis:
+            kwargs["GlobalSecondaryIndexes"] = gsis
+        t = resource.create_table(**kwargs)
+        waiters.append(name)
+        return t
+
+    # billing-accounts: PK owner_id, GSI stripe-customer-index
+    _make(
+        f"{_PREFIX}billing-accounts",
+        [{"AttributeName": "owner_id", "KeyType": "HASH"}],
+        [
+            {"AttributeName": "owner_id", "AttributeType": "S"},
+            {"AttributeName": "stripe_customer_id", "AttributeType": "S"},
+        ],
+        gsis=[
+            {
+                "IndexName": "stripe-customer-index",
+                "KeySchema": [{"AttributeName": "stripe_customer_id", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
+    )
+    # usage-counters: PK owner_id, SK period
+    _make(
+        f"{_PREFIX}usage-counters",
+        [
+            {"AttributeName": "owner_id", "KeyType": "HASH"},
+            {"AttributeName": "period", "KeyType": "RANGE"},
+        ],
+        [
+            {"AttributeName": "owner_id", "AttributeType": "S"},
+            {"AttributeName": "period", "AttributeType": "S"},
+        ],
+    )
+    # paperclip-companies: PK user_id, GSI by-org-id (PK org_id)
+    _make(
+        f"{_PREFIX}paperclip-companies",
+        [{"AttributeName": "user_id", "KeyType": "HASH"}],
+        [
+            {"AttributeName": "user_id", "AttributeType": "S"},
+            {"AttributeName": "org_id", "AttributeType": "S"},
+        ],
+        gsis=[
+            {
+                "IndexName": "by-org-id",
+                "KeySchema": [{"AttributeName": "org_id", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
+    )
+    # marketplace-listings: PK listing_id, SK version (N)
+    _make(
+        _MARKETPLACE_TABLE,
+        [
+            {"AttributeName": "listing_id", "KeyType": "HASH"},
+            {"AttributeName": "version", "KeyType": "RANGE"},
+        ],
+        [
+            {"AttributeName": "listing_id", "AttributeType": "S"},
+            {"AttributeName": "version", "AttributeType": "N"},
+        ],
+    )
+    # webhook-event-dedup: PK event_id
+    _make(
+        _DEDUP_TABLE,
+        [{"AttributeName": "event_id", "KeyType": "HASH"}],
+        [{"AttributeName": "event_id", "AttributeType": "S"}],
+    )
+
+    for name in waiters:
+        resource.meta.client.get_waiter("table_exists").wait(TableName=name)
+
+
+@pytest.fixture
+def chaos_ddb(monkeypatch):
+    """Boot moto (DynamoDB + S3) with every table/bucket the chaos machines
+    touch, wired into all three table-name mechanisms."""
+    from moto import mock_aws
+
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        _create_tables(resource)
+
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=_MARKETPLACE_BUCKET)
+
+        # 1. prefix-convention repos (usage, billing, paperclip)
+        monkeypatch.setattr("core.dynamodb._table_prefix", _PREFIX)
+        monkeypatch.setattr("core.dynamodb._dynamodb_resource", resource)
+        # 2. webhook_dedup reads this env var lazily
+        monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", _DEDUP_TABLE)
+        # 3. marketplace reads settings lazily
+        from core.config import settings as _settings
+
+        monkeypatch.setattr(_settings, "MARKETPLACE_LISTINGS_TABLE", _MARKETPLACE_TABLE, raising=False)
+        monkeypatch.setattr(_settings, "MARKETPLACE_ARTIFACTS_BUCKET", _MARKETPLACE_BUCKET, raising=False)
+
+        yield resource

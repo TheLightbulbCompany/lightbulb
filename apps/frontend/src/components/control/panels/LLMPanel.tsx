@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
+import { notifyApiError } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { CreditsSection } from "./CreditsSection";
@@ -396,18 +397,15 @@ function ReplaceKeyForm({
   const api = useApi();
   const [apiKey, setApiKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    setError(null);
     try {
       await api.put(`/settings/keys/${currentProvider}`, { api_key: apiKey });
       setApiKey("");
       onReplaced();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't save key");
+      notifyApiError(err, "Couldn't save key");
     } finally {
       setSubmitting(false);
     }
@@ -431,7 +429,6 @@ function ReplaceKeyForm({
           Save
         </button>
       </form>
-      {error && <p className="text-sm text-red-600">{error}</p>}
     </div>
   );
 }

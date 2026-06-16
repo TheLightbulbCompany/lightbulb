@@ -957,13 +957,15 @@ export class ObservabilityStack extends cdk.Stack {
       description: "Update worker loop iteration caught an exception",
     });
 
-    // W28: operator-relay-churn — a per-user container is dropping its Paperclip
-    // relay connection (operator upstream closed) abnormally often. A healthy
-    // relay establishes once and holds; sustained churn means the container is
-    // too unhealthy to keep an agent connected, so heartbeat runs fail at the
-    // connect handshake — a degradation the ECS healthcheck reports as HEALTHY.
+    // W53: operator-relay-churn (next free id — W2-W27 are custom-warn,
+    // W28-W48 are the AWS-native block, W49-W52 are taken). A per-user
+    // container is dropping its Paperclip relay connection (operator upstream
+    // closed) abnormally often. A healthy relay establishes once and holds;
+    // sustained churn means the container is too unhealthy to keep an agent
+    // connected, so heartbeat runs fail at the connect handshake — a
+    // degradation the ECS healthcheck reports as HEALTHY.
     this.createAlarm({
-      id: "W28",
+      id: "W53",
       name: "operator-relay-churn",
       metricName: "operator.upstream.closed",
       threshold: 10,

@@ -11,6 +11,7 @@ import {
   Blocks,
   Wrench,
   Moon,
+  FileCheck,
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ const NAV_ITEMS = [
   { key: "llm", label: "Model & Credits", icon: Plug },
   { key: "integrations", label: "Integrations", icon: Blocks },
   { key: "dreams", label: "Dreams", icon: Moon },
+  { key: "skill-proposals", label: "Skill Proposals", icon: FileCheck },
 ];
 
 // Panels hidden from non-admin org members

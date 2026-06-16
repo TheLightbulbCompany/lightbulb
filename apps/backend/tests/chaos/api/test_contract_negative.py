@@ -31,7 +31,9 @@ from tests.chaos.api.conftest import NEGATIVE_PASS_EXCLUSIONS, schema
 )
 @pytest.mark.chaos
 def test_contract_negative(case, chaos_ddb):
-    key = (case.method.upper(), case.path)
-    if key in NEGATIVE_PASS_EXCLUSIONS:
-        pytest.skip(f"excluded: {NEGATIVE_PASS_EXCLUSIONS[key]}")
+    # Key on the stable operation label, not case.method/path — schemathesis
+    # mutates the HTTP method during fuzzing.
+    label = case.operation.label
+    if label in NEGATIVE_PASS_EXCLUSIONS:
+        pytest.skip(f"excluded: {NEGATIVE_PASS_EXCLUSIONS[label]}")
     case.call_and_validate(checks=[not_a_server_error])

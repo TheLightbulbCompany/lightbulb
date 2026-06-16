@@ -24,30 +24,22 @@ schema = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
 
 # Operations that 5xx purely from an unmocked external dependency even when
 # unauthenticated (not a product bug) — excluded with a written reason.
-# Populated empirically during implementation; NO silent skips. Format:
-#   ("METHOD", "/path/template"): "reason"
-NEGATIVE_PASS_EXCLUSIONS: dict[tuple[str, str], str] = {
+# Keyed on the stable operation label ("METHOD /path") because schemathesis
+# mutates case.method during fuzzing, so the generated method is unreliable.
+# Populated empirically during implementation; NO silent skips.
+NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # Proxy to the per-user OpenClaw container after a ws-connections lookup;
     # 500 here is the connections table absent from the hermetic fixture +
     # no live container to proxy to — not a product bug.
-    ("POST", "/api/v1/ws/message"): "proxies to a live container; ws-connections table not provisioned hermetically",
+    "POST /api/v1/ws/message": "proxies to a live container; ws-connections table not provisioned hermetically",
     # Exchanges the OAuth code with the external provider after an oauth-state
     # lookup; both the state table and the provider call are absent hermetically.
-    (
-        "GET",
-        "/api/v1/oauth/{provider}/callback",
-    ): "external OAuth code exchange + oauth-state table not provisioned hermetically",
+    "GET /api/v1/oauth/{provider}/callback": "external OAuth code exchange + oauth-state table not provisioned hermetically",
     # Webhook ingress that looks up a hook token then forwards to the container;
     # the hook-token table + container are absent hermetically.
-    (
-        "POST",
-        "/api/v1/hooks/u/{owner_id}/{hook_path}",
-    ): "forwards to a live container; hook-token table not provisioned hermetically",
+    "POST /api/v1/hooks/u/{owner_id}/{hook_path}": "forwards to a live container; hook-token table not provisioned hermetically",
     # Pure-DDB read, but the seller-profile table-name env is not wired into the
     # chaos fixture → boto ParamValidationError (empty TableName). FOLLOW-UP:
     # wire the seller table into the fixture to fuzz this endpoint for real.
-    (
-        "GET",
-        "/api/v1/marketplace/seller/handle/{handle}",
-    ): "seller-profile table env not wired in fixture (empty TableName); follow-up to provision it",
+    "GET /api/v1/marketplace/seller/handle/{handle}": "seller-profile table env not wired in fixture (empty TableName); follow-up to provision it",
 }

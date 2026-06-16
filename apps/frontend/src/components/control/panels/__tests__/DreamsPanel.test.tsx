@@ -1,8 +1,14 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DreamsPanel } from "../DreamsPanel";
 
 const rpcMock = vi.fn();
+const patchConfigMock = vi.fn().mockResolvedValue({ ok: true });
+vi.mock("@/hooks/useConfigPatch", () => ({
+  useConfigPatch: () => ({
+    config: {}, configReady: true, patchConfig: patchConfigMock, refreshConfig: vi.fn(),
+  }),
+}));
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (method: string | null) => {
     if (method === "agents.list") {
@@ -34,5 +40,19 @@ describe("DreamsPanel", () => {
     await waitFor(() => expect(screen.getByText(/Light/i)).toBeInTheDocument());
     expect(screen.getByText(/REM/i)).toBeInTheDocument();
     expect(screen.getByText(/Deep/i)).toBeInTheDocument();
+  });
+
+  it("toggles a phase via config.patch", async () => {
+    patchConfigMock.mockClear();
+    render(<DreamsPanel />);
+    const btn = await screen.findByLabelText(/Toggle Light phase/i);
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          plugins: { entries: { "memory-core": { config: { dreaming: { phases: { light: { enabled: false } } } } } } },
+        }),
+      ),
+    );
   });
 });

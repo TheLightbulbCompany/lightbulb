@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Loader2, RefreshCw, Moon, Sun, Sparkles } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useConfigPatch } from "@/hooks/useConfigPatch";
 import { Button } from "@/components/ui/button";
 import {
   type MemoryStatusResponse,
@@ -86,7 +87,7 @@ export function DreamsPanel() {
         ))}
       </div>
 
-      {tab === "scene" && <SceneTab status={data} dreaming={dreaming} />}
+      {tab === "scene" && <SceneTab status={data} dreaming={dreaming} onChanged={() => mutate()} />}
       {tab === "diary" && <DiaryTab params={params} />}
       {tab === "advanced" && <AdvancedTab params={params} onAfterAction={() => mutate()} />}
     </div>
@@ -96,9 +97,11 @@ export function DreamsPanel() {
 function SceneTab({
   status,
   dreaming,
+  onChanged,
 }: {
   status?: MemoryStatusResponse;
   dreaming?: MemoryStatusResponse["dreaming"];
+  onChanged: () => void;
 }) {
   if (!dreaming) {
     return (
@@ -125,21 +128,76 @@ function SceneTab({
         <Stat label="Signals" value={dreaming.totalSignalCount ?? 0} />
       </div>
 
-      <div>
-        <p className="text-xs uppercase tracking-wide text-[#8a8578] mb-2">Sleep phases</p>
-        <div className="flex gap-3">
-          {PHASE_ORDER.map((key) => {
-            const on = dreaming.phases?.[key]?.enabled ?? false;
-            return (
-              <div key={key} className="flex items-center gap-1.5 text-sm">
+      <PhaseToggles dreaming={dreaming} onChanged={onChanged} />
+    </div>
+  );
+}
+
+function PhaseToggles({
+  dreaming,
+  onChanged,
+}: {
+  dreaming: MemoryStatusResponse["dreaming"];
+  onChanged: () => void;
+}) {
+  const { configReady, patchConfig } = useConfigPatch();
+  const [busy, setBusy] = useState<DreamPhaseKey | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const toggle = async (phase: DreamPhaseKey, next: boolean) => {
+    if (
+      phase === "deep" &&
+      next &&
+      !window.confirm(
+        "Enable the DEEP phase? It promotes recurring recalls into MEMORY.md and " +
+          "exercises the embeddings store heavily — only safe on the 6.6 sqlite-nfs " +
+          "image. Do not enable on an older container.",
+      )
+    ) {
+      return;
+    }
+    setBusy(phase);
+    setMsg(null);
+    try {
+      await patchConfig({
+        plugins: { entries: { "memory-core": { config: { dreaming: { phases: { [phase]: { enabled: next } } } } } } },
+      });
+      onChanged();
+    } catch (e) {
+      setMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wide text-[#8a8578] mb-2">Sleep phases</p>
+      <div className="space-y-2">
+        {PHASE_ORDER.map((key) => {
+          const on = dreaming?.phases?.[key]?.enabled ?? false;
+          return (
+            <div key={key} className="flex items-center justify-between rounded-lg border bg-white px-3 py-2">
+              <div className="flex items-center gap-2 text-sm">
                 <span className={`h-2 w-2 rounded-full ${on ? "bg-emerald-500" : "bg-[#d4d0c4]"}`} />
                 {key === "light" ? <Sun className="h-3.5 w-3.5 text-[#8a8578]" /> : <Moon className="h-3.5 w-3.5 text-[#8a8578]" />}
                 <span>{PHASE_LABEL[key]}</span>
+                {key === "deep" && <span className="text-xs text-amber-600">requires 6.6 image</span>}
               </div>
-            );
-          })}
-        </div>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label={`Toggle ${PHASE_LABEL[key]} phase`}
+                disabled={!configReady || busy !== null}
+                onClick={() => toggle(key, !on)}
+              >
+                {busy === key ? "…" : on ? "On" : "Off"}
+              </Button>
+            </div>
+          );
+        })}
       </div>
+      {msg && <p className="text-sm text-destructive mt-2">{msg}</p>}
     </div>
   );
 }

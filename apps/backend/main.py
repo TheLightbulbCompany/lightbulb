@@ -574,6 +574,13 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-E2E-Run-Id"],
+    # Expose X-Request-ID (set on every response by RequestContextMiddleware) so
+    # cross-origin browser JS can read it. Without this, response.headers.get(
+    # "X-Request-ID") is null cross-origin (it works same-origin, which masks the
+    # gap in local dev). The frontend attaches recent request IDs to support
+    # tickets for log correlation. Named explicitly rather than "*" as the
+    # mode-agnostic, future-proof choice — unrelated to credentials.
+    expose_headers=["X-Request-ID"],
 )
 
 # E2E correlation middleware — binds X-E2E-Run-Id header to log context so

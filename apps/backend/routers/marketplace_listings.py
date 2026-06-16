@@ -749,6 +749,7 @@ async def my_agent_artifact_preview(
         available_skills=[
             schemas.AvailableSkill(name=s["name"], bucket=s["bucket"]) for s in preview["available_skills"]
         ],
+        auto_ship_skills=preview["auto_ship_skills"],
         persona_files=preview["persona_files"],
         safety_flags=[schemas.SafetyFlag(**f) for f in preview["safety_flags"]],
         needs_config_patch=needs_config_patch,

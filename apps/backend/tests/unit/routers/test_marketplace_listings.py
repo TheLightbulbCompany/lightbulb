@@ -1266,6 +1266,7 @@ def test_artifact_preview_returns_available_mcps_skills_and_flags(
             {"name": "jira", "bucket": "entries"},
             {"name": "my-skill", "bucket": "workspace"},
         ],
+        "auto_ship_skills": ["my-skill"],
         "persona_files": ["IDENTITY.md", "SOUL.md"],
         "safety_flags": [
             {
@@ -1308,6 +1309,7 @@ def test_artifact_preview_needs_config_patch_false_for_pure_workspace_listing(
         "agent_id": "custom-1",
         "available_mcps": [],
         "available_skills": [{"name": "my-skill", "bucket": "workspace"}],
+        "auto_ship_skills": ["my-skill"],
         "persona_files": ["IDENTITY.md"],
         "safety_flags": [],
     }

@@ -1,5 +1,9 @@
 import { useCallback, useMemo } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { recordRequestId } from "./requestIdLog";
+
+/** Backend correlation header, exposed cross-origin via CORS expose_headers. */
+const REQUEST_ID_HEADER = "X-Request-ID";
 
 // Use environment variable for production, fallback to localhost for development
 export const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
@@ -43,12 +47,18 @@ export const WS_URL = deriveWebSocketUrl(BACKEND_URL);
  * `body` is the parsed JSON response body when Content-Type is JSON, else
  * null. Callers can switch on `status` and `body` to handle structured
  * error payloads (e.g. the `blocked` field from /container/* endpoints).
+ *
+ * `requestId` is the backend's `X-Request-ID` for the failing response (null
+ * if the header was absent — e.g. cross-origin before CORS exposed it, or a
+ * network failure with no response). The Report button on an error toast
+ * forwards it so support tickets pin the exact failing request.
  */
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly body: unknown,
     message?: string,
+    public readonly requestId?: string | null,
   ) {
     super(message ?? `API ${status}`);
     this.name = "ApiError";
@@ -83,6 +93,9 @@ export async function fetchJsonWithStatus(
     },
   });
 
+  const requestId = response.headers.get(REQUEST_ID_HEADER);
+  recordRequestId(requestId);
+
   let body: unknown = null;
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
@@ -102,7 +115,7 @@ export async function fetchJsonWithStatus(
         ? (body as { detail: unknown }).detail
         : null;
     const message = typeof detail === "string" ? detail : undefined;
-    throw new ApiError(response.status, body, message);
+    throw new ApiError(response.status, body, message, requestId);
   }
 
   return { status: response.status, body };
@@ -189,6 +202,9 @@ export function useApi(): ApiMethods {
           ...(apiOpts.credentials ? { credentials: apiOpts.credentials } : {}),
         });
 
+        const requestId = response.headers.get(REQUEST_ID_HEADER);
+        recordRequestId(requestId);
+
         if (!response.ok) {
           // Retry-once on 401 for opted-in (Teams) calls. The backend reseeds
           // a fresh session cookie on this 401, so re-issuing the identical
@@ -216,7 +232,7 @@ export function useApi(): ApiMethods {
               ? (body as { detail?: unknown }).detail
               : undefined;
           const message = typeof detail === "string" ? detail : undefined;
-          throw new ApiError(response.status, body, message);
+          throw new ApiError(response.status, body, message, requestId);
         }
 
         return response.json();

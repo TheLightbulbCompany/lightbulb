@@ -4,6 +4,8 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
 import { PostHogProvider } from "@/components/PostHogProvider";
+import { SupportProvider } from "@/components/support/SupportProvider";
+import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -71,7 +73,12 @@ export default function RootLayout({
           <ErrorBoundary>
             <PostHogProvider>
               <DesktopAuthListener />
-              {children}
+              <SupportProvider>
+                {children}
+                {/* Toaster INSIDE SupportProvider so a toast's <ReportButton/>
+                    (a custom-JSX sonner action) can resolve useSupport(). */}
+                <Toaster />
+              </SupportProvider>
             </PostHogProvider>
           </ErrorBoundary>
         </body>

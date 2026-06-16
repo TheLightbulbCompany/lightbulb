@@ -83,6 +83,16 @@ describe('ApiError', () => {
     expect(err.message).toBe('Resource not found');
   });
 
+  it('captures the backend request id when provided', () => {
+    const err = new ApiError(500, null, 'boom', 'req_abc');
+    expect(err.requestId).toBe('req_abc');
+  });
+
+  it('leaves requestId undefined when omitted (back-compat with existing call sites)', () => {
+    const err = new ApiError(500, null, 'boom');
+    expect(err.requestId).toBeUndefined();
+  });
+
   it('is throwable and instanceof Error', () => {
     expect(() => {
       throw new ApiError(400, { error: 'bad' });

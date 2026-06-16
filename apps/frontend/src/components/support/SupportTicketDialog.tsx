@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 
 import { useApi } from "@/lib/api";
+import { getRecentRequestIds } from "@/lib/requestIdLog";
 
 export const SUPPORT_CATEGORIES = [
   "Bug report",
@@ -23,6 +24,8 @@ export interface SupportTicketDialogProps {
   presetCategory?: string;
   /** When opened from an error surface, the captured error to attach. */
   presetError?: { message: string; stack?: string };
+  /** Backend X-Request-ID for the failing request (error surfaces only). */
+  presetRequestId?: string | null;
 }
 
 /**
@@ -31,9 +34,12 @@ export interface SupportTicketDialogProps {
  * it to the support inbox. Used by /support, the ErrorBoundary, the app-shell
  * Help button, and error toasts.
  */
-export function SupportTicketDialog({ open, onClose, presetCategory, presetError }: SupportTicketDialogProps) {
+export function SupportTicketDialog({ open, onClose, presetCategory, presetError, presetRequestId }: SupportTicketDialogProps) {
   const api = useApi();
   const pathname = usePathname();
+  // State initializes once per mount. The provider remounts this dialog (via a
+  // changing `key`) on every open, so each open starts fresh from the current
+  // preset — no reset effect needed, and no stale category/message carried over.
   const [category, setCategory] = useState(presetCategory ?? "Bug report");
   const [message, setMessage] = useState("");
   const [state, setState] = useState<SubmitState>("idle");
@@ -52,6 +58,11 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetError
         app_sha: process.env.NEXT_PUBLIC_APP_SHA ?? null,
         error_message: presetError?.message ?? null,
         error_stack: presetError?.stack ?? null,
+        // The failing request first, then the recent-request ring buffer
+        // (newest-first), de-duped and capped to the backend's max_length=20.
+        recent_request_ids: Array.from(
+          new Set([presetRequestId, ...getRecentRequestIds()].filter(Boolean) as string[]),
+        ).slice(0, 20),
       });
       setState("sent");
     } catch {

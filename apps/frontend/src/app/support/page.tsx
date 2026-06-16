@@ -3,15 +3,14 @@
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
 
 import { Logo } from "@/components/Logo";
-import { SupportTicketDialog } from "@/components/support/SupportTicketDialog";
+import { useSupport } from "@/components/support/SupportProvider";
 
 export default function SupportPage() {
   const router = useRouter();
   const { isSignedIn, isLoaded } = useUser();
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const { openSupport } = useSupport();
 
   return (
     <div className="legal-page">
@@ -39,10 +38,9 @@ export default function SupportPage() {
             <p style={{ marginBottom: "1rem", color: "var(--muted, #666)" }}>
               Submitting while signed in attaches your account + diagnostics automatically, so we can help faster.
             </p>
-            <button type="button" className="support-submit" onClick={() => setDialogOpen(true)}>
+            <button type="button" className="support-submit" onClick={() => openSupport()}>
               Contact support
             </button>
-            <SupportTicketDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
           </div>
         ) : (
           // Signed-out: simple mailto form (no backend enrichment available).

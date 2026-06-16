@@ -33,6 +33,18 @@ def test_scrub_still_blanks_named_fields():
     assert out["apiKey"] == "" and out["env"] == {"X": ""} and out["args"] == ["ok"]
 
 
+def test_scrub_leaves_non_secret_eq_args():
+    # A non-secret `key=value` arg must not be over-scrubbed by the `=` branch.
+    entry = {"args": ["--config=foo.json"]}
+    assert _scrub_secret_fields(entry)["args"] == ["--config=foo.json"]
+
+
+def test_scrub_trailing_secret_flag_no_value():
+    # A secret flag with no following value must not raise or misbehave.
+    entry = {"args": ["--api-key"]}
+    assert _scrub_secret_fields(entry)["args"] == ["--api-key"]
+
+
 def test_extract_agent_slice_strips_provider_plugins():
     """Provider plugins are user-config (the buyer picked a provider at
     signup), not agent-config. Shipping them in the slice would deep-merge

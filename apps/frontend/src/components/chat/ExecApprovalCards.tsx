@@ -121,17 +121,12 @@ function PluginBody({ pending }: { pending: ExecApprovalRequest }) {
 }
 
 export function ExecApprovalCards() {
-  const { queue, resolve, error } = useExecApprovalsContext();
+  const { queue, resolve } = useExecApprovalsContext();
   if (queue.length === 0) return null;
   return (
     <div className="px-4 pt-2 pb-1 flex flex-col gap-2 max-h-[40vh] overflow-y-auto">
       {queue.map((req) => (
-        <ExecApprovalCard
-          key={req.id}
-          pending={req}
-          onDecide={(decision) => resolve(req.id, decision)}
-          globalError={error}
-        />
+        <ExecApprovalCard key={req.id} pending={req} onDecide={(decision) => resolve(req.id, decision)} />
       ))}
     </div>
   );
@@ -140,10 +135,9 @@ export function ExecApprovalCards() {
 interface ExecApprovalCardProps {
   pending: ExecApprovalRequest;
   onDecide: (decision: ExecApprovalDecision) => Promise<void>;
-  globalError: string | null;
 }
 
-function ExecApprovalCard({ pending, onDecide, globalError }: ExecApprovalCardProps) {
+function ExecApprovalCard({ pending, onDecide }: ExecApprovalCardProps) {
   const [pendingDecision, setPendingDecision] = useState<ExecApprovalDecision | null>(null);
   const [lastFailed, setLastFailed] = useState<ExecApprovalDecision | null>(null);
 
@@ -239,9 +233,6 @@ function ExecApprovalCard({ pending, onDecide, globalError }: ExecApprovalCardPr
         </Button>
       </div>
 
-      {globalError && (
-        <div className="mt-2 text-xs text-[#b42318]">{globalError}</div>
-      )}
       {lastFailed && (
         <div className="mt-2 text-xs text-[#b42318] flex items-center gap-2">
           <span>That decision didn&apos;t send.</span>

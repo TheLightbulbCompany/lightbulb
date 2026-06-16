@@ -414,12 +414,7 @@ export class ContainerStack extends cdk.Stack {
     // Single per-user task size for the flat-fee pivot. Per spec §3.2 / §10.
     // Old per-tier sizing deleted; resize add-ons are out of scope (§3.5).
     // Backend-side _TIER_TASK_RESOURCES collapse is in Task 13 of this plan.
-    // TEMPORARY memory-pressure test (revert after): 2048 -> 4096 MiB. Tests
-    // whether RAM is behind the per-user container freeze. Hypothesis: a larger
-    // OS page cache for the EFS-backed SQLite DBs means fewer NFS reads, hence
-    // less of the synchronous-I/O event-loop blocking that drops the relay WS.
-    // 0.5 vCPU supports up to 4 GB on Fargate.
-    const PER_USER_TASK_RESOURCES = { cpu: 512, memoryMiB: 4096 } as const;
+    const PER_USER_TASK_RESOURCES = { cpu: 512, memoryMiB: 2048 } as const;
 
     this.openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
       family: `isol8-${env}-openclaw`,

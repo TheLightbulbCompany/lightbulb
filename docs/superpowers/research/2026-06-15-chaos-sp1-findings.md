@@ -45,9 +45,9 @@ bar; no vacuous assertion or stale xfail was found).
 |---------|-----------|--------|----------------------------------------|
 | `invariants/test_config_schema.py` | `build_openclaw_config_dict` never raises across provider/owner combos | PASS (50 ex.) | `test_config.py` (example-based) |
 | `invariants/test_usage_counters.py` | owner rollup == recorded volume == Σ member rows; `request_count` exact | PASS (50 ex.) | partial (`test_usage*`) |
-| `machines/marketplace_machine.py` | real transitions == reference SM; ≤1 published row; illegal acts raise documented exc | PASS (50 ex.) | `test_marketplace_purchases.py` (happy path) |
-| `machines/provisioning_machine.py` | `provision_org` idempotent short-circuit; N calls→1 row; zero HTTP | PASS (50 ex.) | `test_paperclip_provisioning.py` |
-| `machines/billing_machine.py` | webhook dedup exactly-once, order-independent | PASS (50 ex.) | `test_webhook_dedup.py` (happy path) |
+| `machines/test_marketplace_machine.py` | real transitions == reference SM; ≤1 published row; illegal acts raise documented exc | PASS (50 ex.) | `test_marketplace_purchases.py` (happy path) |
+| `machines/test_provisioning_machine.py` | `provision_org` idempotent short-circuit; N calls→1 row; zero HTTP | PASS (50 ex.) | `test_paperclip_provisioning.py` |
+| `machines/test_billing_machine.py` | webhook dedup exactly-once, order-independent | PASS (50 ex.) | `test_webhook_dedup.py` (happy path) |
 
 No code fixes or regression tests were required, because no invariant broke.
 

@@ -19,8 +19,6 @@ os.environ.setdefault("ENCRYPTION_KEY", "wHc3hAOcLlFzWyu3Ph7xIyClIdVQTrIzFOZDtu_
 os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
-from unittest.mock import patch
-
 import boto3
 import pytest
 from hypothesis import HealthCheck, settings

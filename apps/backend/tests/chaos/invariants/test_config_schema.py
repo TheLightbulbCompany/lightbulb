@@ -71,6 +71,5 @@ def test_emitted_config_passes_upstream_schema(provider_choice, byo_provider, ow
         text=True,
     )
     assert proc.returncode == 0, (
-        f"Emitted openclaw.json failed upstream zod schema:\n{proc.stderr}\n"
-        f"config={json.dumps(config, indent=2)}"
+        f"Emitted openclaw.json failed upstream zod schema:\n{proc.stderr}\nconfig={json.dumps(config, indent=2)}"
     )

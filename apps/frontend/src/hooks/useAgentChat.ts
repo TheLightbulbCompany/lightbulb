@@ -26,6 +26,7 @@ import {
 } from "@/hooks/useGateway";
 import { useExecApprovalsContextOptional } from "@/hooks/useExecApprovals";
 import { capture } from "@/lib/analytics";
+import { notifyApiError } from "@/lib/notify";
 import type {
   HistoryMessage,
   ContentBlock,
@@ -1118,7 +1119,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // OpenClaw keeps working. Surface a notice but do NOT tear down the
         // live turn (the generic no-runId path below would wipe it).
         if (msg.code === "steer_failed") {
-          setError(friendlyError(msg.message));
+          // Non-terminal: the primary run keeps going. Toast the notice instead
+          // of the full-view `error` banner (which would hide the live stream).
+          notifyApiError(new Error(friendlyError(msg.message)), "Failed to steer message", {
+            dedupeKey: "chat-steer",
+          });
           return;
         }
 
@@ -1208,7 +1213,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         );
         if (!agentId && !opts?.queueItem) return false;
         if (!isConnected) {
-          setError("Not connected. Please wait and try again.");
+          notifyApiError(new Error("Not connected. Please wait and try again."), "Not connected", {
+            dedupeKey: "chat-send",
+          });
         }
         if (opts?.queueItem) {
           // The drain already removed this item — dropping it here would
@@ -1270,8 +1277,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           };
           setQueuedMessages((prev) => [failed, ...prev]);
         } else {
-          // Direct typed send: surface the failure as a chat error bubble.
-          setError(errorMessage);
+          // Direct typed send: toast the transient failure (ChatInput is the
+          // retry affordance). The transcript "Error:" bubble below stays as
+          // the in-stream record.
+          notifyApiError(err, errorMessage, { dedupeKey: "chat-send" });
           const errMsg: HistoryMessage = {
             role: "assistant",
             content: [{ type: "text", text: `Error: ${errorMessage}` }],

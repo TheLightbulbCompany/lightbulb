@@ -73,8 +73,3 @@ export interface DreamActionResponse {
   removedShortTermEntries?: number;
   archiveDir?: string;
 }
-
-export interface DreamAgentOption {
-  agent_id: string;
-  name?: string;
-}

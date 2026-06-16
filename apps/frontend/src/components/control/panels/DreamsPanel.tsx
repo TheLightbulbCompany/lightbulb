@@ -4,12 +4,12 @@ import { useState } from "react";
 import { Loader2, RefreshCw, Moon, Sun, Sparkles } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { useConfigPatch } from "@/hooks/useConfigPatch";
+import { type Agent, agentDisplayName } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
 import {
   type MemoryStatusResponse,
   type DreamDiaryResponse,
   type DreamActionResponse,
-  type DreamAgentOption,
   type DreamPhaseKey,
 } from "./dreams-types";
 
@@ -23,8 +23,12 @@ export function DreamsPanel() {
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
 
   // Agent selector. `{}` → default agent server-side; an explicit pick scopes
-  // every doctor.memory.* call to that agent's workspace.
-  const { data: agents } = useGatewayRpc<DreamAgentOption[]>("agents.list");
+  // every doctor.memory.* call to that agent's workspace. `agents.list`
+  // returns `{ defaultId?, agents? }`, not a bare array.
+  const { data: agentsData } = useGatewayRpc<{ defaultId?: string; agents?: Agent[] }>(
+    "agents.list",
+  );
+  const agents = agentsData?.agents ?? [];
   const params = agentId ? { agentId } : {};
 
   const { data, error, isLoading, mutate } = useGatewayRpc<MemoryStatusResponse>(
@@ -59,7 +63,7 @@ export function DreamsPanel() {
           <Moon className="h-5 w-5 text-[#8a8578]" />
           <h2 className="text-lg font-medium text-[#1a1a1a]">Dreams</h2>
         </div>
-        {agents && agents.length > 1 && (
+        {agents.length > 1 && (
           <select
             className="text-sm border rounded-md px-2 py-1 bg-white"
             value={agentId ?? ""}
@@ -67,7 +71,7 @@ export function DreamsPanel() {
           >
             <option value="">Default agent</option>
             {agents.map((a) => (
-              <option key={a.agent_id} value={a.agent_id}>{a.name || a.agent_id}</option>
+              <option key={a.id} value={a.id}>{agentDisplayName(a)}</option>
             ))}
           </select>
         )}

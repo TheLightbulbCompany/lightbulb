@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, AlertCircle } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useConfigPatch } from "@/hooks/useConfigPatch";
+import { notifyApiError } from "@/lib/notify";
 import { listCatalogModels } from "@/lib/modelDisplay";
 import {
   buildDefaultModelPatch,
@@ -33,7 +34,6 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
   const currentOverhead = readOverheadModel(config);
 
   const [saving, setSaving] = useState<"default" | "overhead" | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [restartNotice, setRestartNotice] = useState(false);
 
   // ChatGPT is a flat-rate plan with a fixed model set that isn't part of the
@@ -71,7 +71,6 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
   const apply = async (kind: "default" | "overhead", ref: string) => {
     if (!ref) return;
     setSaving(kind);
-    setError(null);
     setRestartNotice(false);
     try {
       const res = await patchConfig(
@@ -79,7 +78,7 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
       );
       if (res?.restart) setRestartNotice(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      notifyApiError(err, "Couldn't update model routing");
     } finally {
       setSaving(null);
     }
@@ -131,11 +130,6 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
       </div>
 
       {saving && <Loader2 className="h-3.5 w-3.5 animate-spin text-[#8a8578]" />}
-      {error && (
-        <p className="text-xs text-[#dc2626] flex items-center gap-1">
-          <AlertCircle className="h-3 w-3" /> {error}
-        </p>
-      )}
       {restartNotice && (
         <p className="text-xs text-[#8a8578]">
           Applied — the agent gateway is restarting briefly; chat reconnects

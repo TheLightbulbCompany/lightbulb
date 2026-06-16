@@ -614,11 +614,13 @@ def memory_plugin_entries() -> dict:
     agents carry recent work forward without relying on the agent remembering
     to call ``memory_search``.
 
-    REM is OFF: it only writes ``DREAMS.md``, which nothing in Isol8 reads (no
-    Dreaming UI) — pure noise/cost. DEEP is OFF: it auto-promotes recurring
-    recalls into root ``MEMORY.md`` but is gated on sustained ``memory_search``
-    recall traffic, which is ~zero today; enable it once recall is actually
-    exercised. ``memory_search`` itself stays ENABLED in agents.defaults (live
+    REM is ON: it writes ``DREAMS.md`` narratives, now surfaced by the Dreams
+    control panel's Diary tab (``doctor.memory.dreamDiary``). DEEP is OFF by
+    default and is an opt-in per-container toggle (Dreams panel → ``config.patch``,
+    never a builder flip): it auto-promotes recurring recalls into root
+    ``MEMORY.md``. The 6.6 image that makes its embeddings store EFS-safe
+    (DELETE journaling on NFS) is already deployed, so the toggle is usable.
+    ``memory_search`` itself stays ENABLED in agents.defaults (live
     logs show no sqlite contention; recall is what lets agents remember beyond
     the always-loaded ``MEMORY.md``).
 
@@ -640,7 +642,10 @@ def memory_plugin_entries() -> dict:
                     "phases": {
                         "light": {"enabled": True},
                         "deep": {"enabled": False},
-                        "rem": {"enabled": False},
+                        # REM writes daily REM blocks + a DREAMS.md narrative,
+                        # surfaced by the Dreams control panel's Diary tab. Flat
+                        # files (no embeddings), EFS-safe on the deployed image.
+                        "rem": {"enabled": True},
                     },
                 },
             },

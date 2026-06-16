@@ -988,30 +988,24 @@ def build_openclaw_config_dict(
                 **memory_plugin_entries(),
             },
         },
-        # Channels: we ship every supported provider as `enabled: true`
-        # so the plugin is loaded into the gateway at startup.
-        # OpenClaw's reload plan treats `channels.{id}` as a hot-reload
-        # prefix ONLY when the channel plugin is already running — on
-        # the very first enable of a never-before-loaded channel it
-        # escalates to a full gateway restart (~6 min on Fargate).
-        # Shipping the plugins hot at provision time means every
-        # subsequent token/account change is a fast per-channel
-        # restart, not a gateway restart. Plugins with no `accounts`
-        # entries sit idle safely.
-        "channels": {
-            # Do NOT add a `channels.webchat` entry here. Upstream's config
-            # validator (src/config/validation.ts) rejects any
-            # `channels.<id>` whose id is not in `[...CHANNEL_IDS,
-            # ...registry.plugins[].channels]`. "webchat" is neither
-            # bundled (src/channels/ids.ts) nor a plugin-backed channel,
-            # so both startup validation AND chokidar hot-reload reject
-            # the block (`config reload skipped (invalid config):
-            # channels.webchat: unknown channel id: webchat`) and fresh
-            # provisions boot-loop. Use an upstream channel id or extend
-            # CHANNEL_IDS upstream first.
-            cid: {"enabled": True, "dmPolicy": "pairing"}
-            for cid in CHANNEL_PROVIDER_IDS
-        },
+        # Channels: ship EMPTY until the user configures one. A provider block
+        # (channels.<id> = {enabled: true, accounts: {...}}) appears only when the
+        # setup wizard PATCHes the first account. Why not the old enabled-trio:
+        #   - An enabled channel with zero accounts still counts as a "configured
+        #     channel" for OpenClaw's cron announce-delivery guard, so shipping all
+        #     three forced agents to disambiguate delivery.channel on every announce
+        #     cron — which they don't, so agent-authored delivery crons failed.
+        #   - An enabled channel with a stale/orphaned provider-level token auth-
+        #     loops on invalid_auth and burns CPU; empty-until-configured removes
+        #     that substrate entirely.
+        # COST: the first setup of a given channel is now a full gateway restart
+        # (the plugin isn't loaded until the channel is enabled), deferred up to
+        # ~300s — handled gracefully by the deferral-aware setup wizard
+        # (awaitChannelReady). On reprovision, the channel_accounts re-injection
+        # below recreates the enabled block + accounts for any channel the user had
+        # configured. ChannelsSchema accepts an empty object (upstream
+        # zod-schema.channels-config.ts: object().passthrough().optional()).
+        "channels": {},
         "session": {
             "dmScope": "per-account-channel-peer",
         },
@@ -1167,10 +1161,16 @@ def build_openclaw_config_dict(
     # would otherwise lose them (without a binding the bot misroutes to main).
     if channel_accounts:
         bindings = config.setdefault("bindings", [])
+        channels = config.setdefault("channels", {})
         for provider, accounts in channel_accounts.items():
-            channel = config.get("channels", {}).get(provider)
-            if not isinstance(channel, dict) or not accounts:
+            # Channels now ship empty-until-configured, so a carried-forward
+            # account must (re)create its enabled channel block — otherwise the
+            # reprovision would silently drop the user's configured channel.
+            # Gate on the known provider set so a bad id can't brick boot.
+            if provider not in CHANNEL_PROVIDER_IDS or not accounts:
                 continue
+            channel = channels.setdefault(provider, {"enabled": True, "dmPolicy": "pairing"})
+            channel["enabled"] = True
             channel["accounts"] = accounts
             for account_id in accounts:
                 binding = {

@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ApiError, useGoogleAccounts } from "@/hooks/useGoogleAccounts";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
+import { notifyApiError } from "@/lib/notify";
 
 interface GoogleAccountsSectionProps {
   /** Org admins may manage accounts/assignments; non-admins see read-only. */
@@ -60,15 +61,13 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
   // Track which row (keyed by email or agent id) is mid-request, plus the
   // last error for that row, so spinners + messages stay row-local.
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [rowError, setRowError] = useState<{ key: string; msg: string } | null>(null);
 
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusyKey(key);
-    setRowError(null);
     try {
       await fn();
     } catch (e) {
-      setRowError({ key, msg: errorMessage(e) });
+      notifyApiError(e, errorMessage(e));
     } finally {
       setBusyKey(null);
     }
@@ -127,8 +126,6 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
               <ul className="space-y-2">
                 {accounts.map((account) => {
                   const busy = busyKey === account.email;
-                  const showErr =
-                    rowError?.key === account.email ? rowError.msg : null;
                   return (
                     <li
                       key={account.email}
@@ -153,11 +150,6 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                         >
                           {busy ? "Disconnecting…" : "Disconnect"}
                         </Button>
-                        {showErr && (
-                          <p className="text-xs text-[#b63025]" role="alert">
-                            {showErr}
-                          </p>
-                        )}
                       </div>
                     </li>
                   );
@@ -197,8 +189,6 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                 {agents.map((agent) => {
                   const current = assignments[agent.id] ?? DEFAULT_OPTION;
                   const busy = busyKey === agent.id;
-                  const showErr =
-                    rowError?.key === agent.id ? rowError.msg : null;
                   const selectId = `google-assign-${agent.id}`;
                   return (
                     <li
@@ -229,11 +219,6 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                             </option>
                           ))}
                         </select>
-                        {showErr && (
-                          <p className="text-xs text-[#b63025]" role="alert">
-                            {showErr}
-                          </p>
-                        )}
                       </div>
                     </li>
                   );
@@ -255,16 +240,14 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
 function ConnectAnotherButton({ canManage }: { canManage: boolean }) {
   const { connectAnother } = useGoogleAccounts();
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
   const onClick = async () => {
     setBusy(true);
-    setErr(null);
     try {
       await connectAnother();
       // On success the browser navigates away; nothing else runs.
     } catch (e) {
-      setErr(errorMessage(e));
+      notifyApiError(e, errorMessage(e));
       setBusy(false);
     }
   };
@@ -274,11 +257,6 @@ function ConnectAnotherButton({ canManage }: { canManage: boolean }) {
       <Button size="sm" disabled={busy || !canManage} onClick={onClick}>
         {busy ? "Redirecting…" : "Connect another Google account"}
       </Button>
-      {err && (
-        <p className="text-xs text-[#b63025]" role="alert">
-          {err}
-        </p>
-      )}
     </div>
   );
 }

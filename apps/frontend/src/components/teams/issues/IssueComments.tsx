@@ -10,6 +10,7 @@
 
 import { useState } from "react";
 import { EditorialButton } from "@/components/teams/shell";
+import { notifyApiError } from "@/lib/notify";
 import { Textarea } from "@/components/ui/textarea";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -37,18 +38,16 @@ export function IssueComments({
 }: IssueCommentsProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
     const trimmed = body.trim();
     if (!trimmed || submitting) return;
     setSubmitting(true);
-    setError(null);
     try {
       await onSubmit(trimmed);
       setBody("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to post comment");
+      notifyApiError(e, "Failed to post comment");
     } finally {
       setSubmitting(false);
     }
@@ -126,15 +125,6 @@ export function IssueComments({
             color: "var(--ink)",
           }}
         />
-        {error && (
-          <p
-            role="alert"
-            className="text-sm"
-            style={{ color: "var(--danger)" }}
-          >
-            {error}
-          </p>
-        )}
         <div className="flex justify-end gap-2">
           <EditorialButton
             type="button"

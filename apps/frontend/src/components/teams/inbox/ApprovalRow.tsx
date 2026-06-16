@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { ShieldQuestion } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
+import { notifyApiError } from "@/lib/notify";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import type { Approval } from "@/components/teams/shared/types";
@@ -13,18 +14,16 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
-  const [error, setError] = useState<string | null>(null);
 
   const title = approval.title?.trim() ? approval.title : "Approval requested";
   const isPending = approval.status === "pending";
 
   async function run(fn: () => Promise<void>) {
     setBusy(true);
-    setError(null);
     try {
       await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Action failed. Try again.");
+      notifyApiError(e, "Action failed. Try again.");
     } finally {
       setBusy(false);
     }
@@ -98,7 +97,6 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
           </EditorialButton>
         </div>
       )}
-      {error && <span className="text-xs text-[var(--danger)]">{error}</span>}
     </li>
   );
 }

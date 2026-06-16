@@ -6,6 +6,31 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 from core.services import catalog_slice  # noqa: E402
+from core.services.catalog_slice import _scrub_secret_fields  # noqa: E402
+
+
+def test_scrub_blanks_value_after_secret_flag():
+    entry = {"command": "npx", "args": ["-y", "instantly-mcp", "--api-key", "REALSECRETVALUE123"]}
+    out = _scrub_secret_fields(entry)
+    assert out["args"] == ["-y", "instantly-mcp", "--api-key", ""]
+    # original untouched (deep copy)
+    assert entry["args"][-1] == "REALSECRETVALUE123"
+
+
+def test_scrub_blanks_joined_secret_flag():
+    entry = {"command": "x", "args": ["--token=abc123DEF456ghi789"]}
+    assert _scrub_secret_fields(entry)["args"] == ["--token="]
+
+
+def test_scrub_leaves_non_secret_flags_and_packages_untouched():
+    entry = {"command": "npx", "args": ["-y", "@perplexity-ai/mcp-server", "--transport", "stdio"]}
+    assert _scrub_secret_fields(entry)["args"] == ["-y", "@perplexity-ai/mcp-server", "--transport", "stdio"]
+
+
+def test_scrub_still_blanks_named_fields():
+    entry = {"apiKey": "k", "env": {"X": "y"}, "args": ["ok"]}
+    out = _scrub_secret_fields(entry)
+    assert out["apiKey"] == "" and out["env"] == {"X": ""} and out["args"] == ["ok"]
 
 
 def test_extract_agent_slice_strips_provider_plugins():

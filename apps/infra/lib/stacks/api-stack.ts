@@ -111,7 +111,12 @@ export class ApiStack extends cdk.Stack {
           "Authorization",
           "X-Requested-With",
         ],
-        exposeHeaders: ["Content-Type"],
+        // Browser-readable response headers. The gateway's expose-headers is
+        // authoritative — it replaces whatever FastAPI's CORSMiddleware sets, so
+        // X-Request-ID must be listed HERE (not only in the backend) for
+        // cross-origin JS to read it. The frontend attaches recent request IDs
+        // to support tickets for log correlation.
+        exposeHeaders: ["Content-Type", "X-Request-ID"],
         allowCredentials: true,
         maxAge: 86400,
       },

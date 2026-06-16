@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Loader2, Save } from "lucide-react";
 import type { FileInfo } from "@/hooks/useWorkspaceFiles";
+import { notifyApiError } from "@/lib/notify";
 
 interface FileContentViewerProps {
   file: FileInfo | null;
@@ -16,7 +17,6 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
   const [editContent, setEditContent] = React.useState("");
   const [originalContent, setOriginalContent] = React.useState("");
   const [saving, setSaving] = React.useState(false);
-  const [saveError, setSaveError] = React.useState<string | null>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   const dirty = editContent !== originalContent;
@@ -32,19 +32,17 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
     if (file?.content != null && !file.binary) {
       setEditContent(file.content);
       setOriginalContent(file.content);
-      setSaveError(null);
     }
   }, [file?.path, file?.content, file?.binary]);
 
   const handleSave = React.useCallback(async () => {
     if (!onSave || editContent === originalContent) return;
     setSaving(true);
-    setSaveError(null);
     try {
       await onSave(editContent);
       setOriginalContent(editContent);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Save failed");
+      notifyApiError(err, "Couldn't save the file");
     } finally {
       setSaving(false);
     }
@@ -124,7 +122,6 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
         <span className="text-xs text-[#8a8578]">{file.name}</span>
         <div className="flex items-center gap-2">
           {dirty && <span className="text-[10px] text-amber-500 font-medium">unsaved</span>}
-          {saveError && <span className="text-[10px] text-red-500">{saveError}</span>}
           <button
             onClick={handleSave}
             disabled={!dirty || saving || !onSave}

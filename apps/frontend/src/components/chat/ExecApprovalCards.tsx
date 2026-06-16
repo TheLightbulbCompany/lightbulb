@@ -18,6 +18,7 @@ import {
   type ExecApprovalRequest,
 } from "@/hooks/useExecApprovals";
 import { formatApprovalDisplayPath } from "@/lib/approvalDisplayPath";
+import { notifyApiError } from "@/lib/notify";
 
 const HOST_LABEL: Record<ExecApprovalRequest["host"], string> = {
   gateway: "container",
@@ -144,7 +145,6 @@ interface ExecApprovalCardProps {
 
 function ExecApprovalCard({ pending, onDecide, globalError }: ExecApprovalCardProps) {
   const [pendingDecision, setPendingDecision] = useState<ExecApprovalDecision | null>(null);
-  const [localError, setLocalError] = useState<string | null>(null);
   const [lastFailed, setLastFailed] = useState<ExecApprovalDecision | null>(null);
 
   const allowsOnce = pending.allowedDecisions.includes("allow-once");
@@ -157,19 +157,16 @@ function ExecApprovalCard({ pending, onDecide, globalError }: ExecApprovalCardPr
 
   const submit = async (decision: ExecApprovalDecision) => {
     setPendingDecision(decision);
-    setLocalError(null);
     try {
       await onDecide(decision);
       setLastFailed(null);
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : "Couldn't send decision");
+      notifyApiError(e, "Couldn't send decision");
       setLastFailed(decision);
     } finally {
       setPendingDecision(null);
     }
   };
-
-  const errorMsg = localError ?? globalError;
 
   return (
     <div className="rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-3 text-sm">
@@ -242,19 +239,20 @@ function ExecApprovalCard({ pending, onDecide, globalError }: ExecApprovalCardPr
         </Button>
       </div>
 
-      {errorMsg && (
+      {globalError && (
+        <div className="mt-2 text-xs text-[#b42318]">{globalError}</div>
+      )}
+      {lastFailed && (
         <div className="mt-2 text-xs text-[#b42318] flex items-center gap-2">
-          <span>Couldn&apos;t send decision: {errorMsg}.</span>
-          {lastFailed && (
-            <button
-              type="button"
-              className="underline"
-              onClick={() => submit(lastFailed)}
-              disabled={pendingDecision !== null}
-            >
-              Retry
-            </button>
-          )}
+          <span>That decision didn&apos;t send.</span>
+          <button
+            type="button"
+            className="underline"
+            onClick={() => submit(lastFailed)}
+            disabled={pendingDecision !== null}
+          >
+            Retry
+          </button>
         </div>
       )}
     </div>

@@ -26,13 +26,13 @@ Runtime-appended state is PRESERVED across the regen
 ``write_user_configs`` writes a FRESH ``build_openclaw_config_dict()`` over
 the EFS file. Some openclaw.json subtrees are NOT produced by the generator
 — they are appended at runtime AFTER provision and would be silently
-clobbered by a blind overwrite. The generator emits ``channels.<provider>``
-with only provider defaults (``enabled`` / ``dmPolicy``), but channel
-pairing writes ``channels.<provider>.accounts.<agent_id>.allowFrom`` at
-runtime (``channel_link_service.complete_link`` via ``config_patcher``),
-plus a matching top-level ``bindings`` route entry. The generator emits
-neither ``accounts``, ``bindings``, nor the top-level ``identity`` OpenClaw
-adds at boot.
+clobbered by a blind overwrite. The generator now emits ``channels: {}``
+(empty until configured) and re-injects carried-forward
+``channels.<provider>.accounts`` + sibling top-level ``bindings`` from the
+live EFS config; the per-pairing ``allowFrom`` lists written at runtime
+(``channel_link_service.complete_link`` via ``config_patcher``) ride along
+inside those carried-forward accounts. The generator still does not emit the
+top-level ``identity`` OpenClaw adds at boot.
 
 So this script reads the FULL on-disk config BEFORE the regen, runs the
 full regen (which applies the new model tiers / params / aux AND resolves

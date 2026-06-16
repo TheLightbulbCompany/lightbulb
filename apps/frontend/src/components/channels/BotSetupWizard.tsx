@@ -363,9 +363,9 @@ export function BotSetupWizard({
                 botToken: token.trim(),
                 dmPolicy: "pairing",
               };
-      // Single PATCH with enabled + accounts. Channels ship enabled:true at
-      // provision time, so this is a pure hot reload of the plugin with the
-      // new account — seconds, not the full gateway restart.
+      // Single PATCH with enabled + accounts. Channels now ship empty until
+      // configured, so this first enable LOADS the plugin — a full gateway
+      // restart, deferred up to ~300s; awaitChannelReady (below) waits it out.
       const patch: Record<string, unknown> = {
         channels: {
           [provider]: {

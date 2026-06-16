@@ -122,6 +122,8 @@ async def test_reconcile_writes_each_block_per_server(monkeypatch):
         "build_connected_integration_servers",
         AsyncMock(return_value={"stripe": {"command": "npx", "args": [], "env": {"STRIPE_SECRET_KEY": "sk_X"}}}),
     )
+    # No openclaw_paths providers connected — the reconcile's second pass no-ops.
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
     writes = []
 
     async def _set(owner, path, value):
@@ -150,3 +152,59 @@ async def test_reconcile_noops_when_config_missing(monkeypatch):
 
     monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", _raise)
     await m.reconcile_integrations("org_1")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_reconcile_reapplies_openclaw_paths_provider(monkeypatch):
+    """A connected openclaw_paths provider (parallel) is re-asserted on reconcile:
+    each owned config path is re-written from the retained secret, so the bundled
+    web-search selection + key survive a config overwrite. Uses the real registry
+    entry, so it also pins the parallel YAML wiring."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "parallel", "status": "connected"}]),
+    )
+    monkeypatch.setattr(
+        m.integration_secret_store,
+        "get",
+        AsyncMock(return_value={"token": "par-secret123"}),
+    )
+    writes = []
+
+    async def _set(owner, path, value):
+        writes.append((path, value))
+
+    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", _set)
+    await m.reconcile_integrations("org_1")
+    assert writes == [
+        (["tools", "web", "search", "provider"], "parallel-free"),
+        (["tools", "web", "search", "parallel", "apiKey"], "par-secret123"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_disconnected_openclaw_paths_provider(monkeypatch):
+    """A disconnected openclaw_paths row is not re-applied (no stale re-write)."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "parallel", "status": "disconnected"}]),
+    )
+    secret_get = AsyncMock(return_value={"token": "par-x"})
+    monkeypatch.setattr(m.integration_secret_store, "get", secret_get)
+    writes = []
+
+    async def _set(owner, path, value):
+        writes.append((path, value))
+
+    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", _set)
+    await m.reconcile_integrations("org_1")
+    assert writes == []
+    secret_get.assert_not_awaited()

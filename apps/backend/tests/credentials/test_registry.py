@@ -17,6 +17,23 @@ def test_paste_key_provider_shape():
     assert p.wiring.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
 
 
+def test_parallel_openclaw_paths_provider_shape():
+    p = registry.get_provider("parallel")
+    assert p.acquisition == "paste_token"
+    assert p.refresh_owner == "none"
+    # web-search provider plugin — rides the openclaw_paths rail, not mcp/cli.
+    assert p.wiring.mcp_server is None
+    assert p.wiring.materializer is None
+    assert {op.path: op.source for op in (p.wiring.openclaw_paths or [])} == {
+        "tools.web.search.provider": "literal:parallel-free",
+        "tools.web.search.parallel.apiKey": "input.token",
+    }
+    # No validate endpoint (key checked at first search); public + ungated.
+    assert p.validation is None
+    assert p.internal is False
+    assert p.requires_bedrock is False
+
+
 def test_direct_oauth_provider_shape():
     p = registry.get_provider("google")
     assert p.acquisition == "direct_oauth"

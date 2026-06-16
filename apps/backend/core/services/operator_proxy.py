@@ -41,6 +41,7 @@ import logging
 
 from core.containers import get_ecs_manager
 from core.gateway.node_connection import NodeUpstreamConnection
+from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,12 @@ async def handle_operator_connect(
             owner_id,
             connection_id,
         )
+        # The container dropped the relay upstream — the load-bearing signal that
+        # a per-user container is too unhealthy to hold a Paperclip agent
+        # connection. Surface it as a fleet metric so the relay-churn alarm can
+        # fire (owner is a denied high-cardinality dimension; it stays in the
+        # structured log above for per-owner drill-down).
+        put_metric("operator.upstream.closed")
         await handle_operator_disconnect(connection_id)
 
     upstream.set_on_upstream_closed(on_upstream_closed)
@@ -124,6 +131,10 @@ async def handle_operator_connect(
         # Roll back so a failed handshake doesn't leave a stale upstream.
         # pop-with-default stays idempotent with the disconnect path.
         _operator_upstreams.pop(connection_id, None)
+        # Handshake never completed (connect.challenge timeout, version
+        # mismatch, dead container). This is the connect-time counterpart to
+        # operator.upstream.closed.
+        put_metric("operator.connect.failed")
         try:
             await upstream.close()
         except Exception:
@@ -154,6 +165,10 @@ async def handle_operator_connect(
         connection_id,
         (upstream.device_id or "?")[:16],
     )
+    # Pairs with operator.upstream.closed: a healthy relay establishes once and
+    # stays; a high established rate is churn — the container keeps dropping and
+    # the adapter keeps reconnecting.
+    put_metric("operator.relay.established")
     return hello
 
 

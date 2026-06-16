@@ -66,6 +66,38 @@ def _strip_provider_plugins(plugins: dict[str, Any]) -> dict[str, Any]:
 # webhookToken). The publisher's values never leave their container.
 _SECRET_FIELD_NAMES = frozenset({"apiKey", "env", "headers", "webhookToken"})
 
+# Secret CLI flags whose following value (or ``=``-joined value) is a credential.
+# MCP servers commonly launch via ``npx -y <pkg> --api-key <KEY>``; the field-name
+# scrub never sees these because the secret sits positionally in ``args``.
+_SECRET_ARG_FLAGS = frozenset({"--api-key", "--apikey", "--key", "--token", "--secret", "--password"})
+
+
+def _scrub_arg_secrets(args: list[Any]) -> list[Any]:
+    """Copy of ``args`` with the value of any secret flag blanked.
+
+    Separated ``["--api-key", "<VAL>"]`` -> ``"<VAL>"`` becomes ``""``.
+    Joined ``["--api-key=<VAL>"]`` -> ``"--api-key="``. Flag tokens are kept so
+    the buyer sees which credential to supply. Non-string elements pass through.
+    """
+    out: list[Any] = []
+    blank_next = False
+    for a in args:
+        if blank_next:
+            out.append("" if isinstance(a, str) else a)
+            blank_next = False
+            continue
+        if isinstance(a, str):
+            if a.lower() in _SECRET_ARG_FLAGS:
+                out.append(a)
+                blank_next = True
+                continue
+            eq = a.find("=")
+            if eq != -1 and a[:eq].lower() in _SECRET_ARG_FLAGS:
+                out.append(a[: eq + 1])
+                continue
+        out.append(a)
+    return out
+
 
 class SkillBucket(str, enum.Enum):
     """Where a skill lives on the seller's container.
@@ -115,6 +147,9 @@ def _scrub_secret_fields(entry: dict[str, Any]) -> dict[str, Any]:
             result[k] = []
         else:
             result[k] = ""
+    args = result.get("args")
+    if isinstance(args, list):
+        result["args"] = _scrub_arg_secrets(args)
     return result
 
 

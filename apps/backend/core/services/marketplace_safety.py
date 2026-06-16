@@ -261,12 +261,94 @@ _SLICE_FILE = "openclaw-slice.json"
 # Pattern names for the two slice-leak classes. has_blocking_credential_findings
 # keys off this set, so adding a new high-severity slice rule means adding its
 # name here too.
-_BLOCKING_CREDENTIAL_PATTERNS = frozenset({"unscrubbed-credential", "oauth-client-secret"})
+_BLOCKING_CREDENTIAL_PATTERNS = frozenset({"unscrubbed-credential", "oauth-client-secret", "arg-secret-suspected"})
 
 # OAuth client-secret literal keys. A scrub keyed on the canonical sensitive
 # field names (apiKey/env/headers/webhookToken) won't touch a config that
 # stores the OAuth client secret under its own key, so detect it by name.
 _CLIENT_SECRET_KEY_RE = re.compile(r"client[_-]?secret", re.IGNORECASE)
+
+# Secret CLI flags whose following value is a credential (mirrors catalog_slice).
+_SECRET_ARG_FLAGS = frozenset({"--api-key", "--apikey", "--key", "--token", "--secret", "--password"})
+
+# High-confidence credential prefixes.
+_PROVIDER_KEY_PREFIXES = (
+    "sk-",
+    "sk-ant-",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "github_pat_",
+    "xoxb-",
+    "xoxp-",
+    "xapp-",
+)
+_AWS_KEY_RE = re.compile(r"^(?:AKIA|ASIA)[0-9A-Z]{16}$")
+# npm package spec shape — NOT a secret (e.g. "@perplexity-ai/mcp-server", "instantly-mcp").
+_NPM_PACKAGE_RE = re.compile(r"^@?[a-z0-9][a-z0-9._/-]*$")
+# Generic high-entropy token: >=40 base64/hex-ish chars.
+_HIGH_ENTROPY_RE = re.compile(r"^[A-Za-z0-9+/=_-]{40,}$")
+
+
+def _looks_like_arg_secret(value: str) -> bool:
+    """True for a standalone arg that looks like a credential, excluding npm
+    package specs. Conservative: high-confidence prefixes, AWS keys, or a long
+    high-entropy mixed-case+digit token.
+
+    Intentionally narrow: a credential that is neither a known-prefix token nor
+    long-and-high-entropy (e.g. short Stripe/Google-style keys, all-lowercase-hex
+    tokens) is NOT caught when it appears as a bare positional. The flag-value
+    path (a value following ``--api-key`` etc.) is the primary net; this
+    standalone check is a secondary backstop tuned to avoid false-blocking
+    legitimate package specs and paths, so the false-negatives here are the
+    deliberate cost of that low false-positive rate.
+    """
+    if not isinstance(value, str) or value == "":
+        return False
+    if any(value.startswith(p) for p in _PROVIDER_KEY_PREFIXES):
+        return True
+    if _AWS_KEY_RE.match(value):
+        return True
+    if _NPM_PACKAGE_RE.match(value):
+        return False
+    return bool(
+        _HIGH_ENTROPY_RE.match(value)
+        and any(c.islower() for c in value)
+        and any(c.isupper() for c in value)
+        and any(c.isdigit() for c in value)
+    )
+
+
+def _walk_for_arg_secrets(slice_: dict) -> list[tuple[str, str]]:
+    """(path, value) for credential-looking ``args`` across mcp.servers /
+    skills.entries: a non-empty value after a secret flag, a non-empty
+    ``--flag=value``, or a standalone credential-shaped token."""
+    found: list[tuple[str, str]] = []
+    for path, entry in _walk_slice_entries(slice_):
+        args = entry.get("args")
+        if not isinstance(args, list):
+            continue
+        expect_value_for_flag = False
+        for i, a in enumerate(args):
+            if not isinstance(a, str):
+                expect_value_for_flag = False
+                continue
+            if expect_value_for_flag:
+                if a != "":
+                    found.append((f"{path}.args[{i}]", a))
+                expect_value_for_flag = False
+                continue
+            if a.lower() in _SECRET_ARG_FLAGS:
+                expect_value_for_flag = True
+                continue
+            eq = a.find("=")
+            if eq != -1 and a[:eq].lower() in _SECRET_ARG_FLAGS:
+                if a[eq + 1 :] != "":
+                    found.append((f"{path}.args[{i}]", a[eq + 1 :]))
+                continue
+            if _looks_like_arg_secret(a):
+                found.append((f"{path}.args[{i}]", a))
+    return found
 
 
 def _redact(value: str) -> str:
@@ -411,6 +493,17 @@ def assert_slice_scrubbed(openclaw_slice: dict) -> list[SafetyFlag]:
                 file=_SLICE_FILE,
                 line=None,
                 snippet=f"{child_path.lstrip('.')} = {_redact(secret)}",
+            )
+        )
+
+    for child_path, secret in _walk_for_arg_secrets(openclaw_slice):
+        flags.append(
+            SafetyFlag(
+                pattern="arg-secret-suspected",
+                severity="high",
+                file=_SLICE_FILE,
+                line=None,
+                snippet=f"{child_path} = {_redact(secret)}",
             )
         )
 

@@ -630,30 +630,22 @@ def test_enumerate_for_preview_lists_available_mcps(fake_efs, tmp_path):
 
 
 def test_enumerate_for_preview_classifies_each_skill(fake_efs, tmp_path):
-    """agent.skills referenced in the seller config get bucket-classified
-    against the seller's full openclaw.json + workspace contents."""
+    """available_skills lists the container's global skills.entries (the
+    selectable additions); workspace skills auto-ship separately."""
     seller_id, agent_id, agent_dir = fake_efs
-    # Pre-populate seller config: skill `jira` configured in entries,
-    # `search` is bundled, `custom-skill` lives in agent workspace.
     user_config = tmp_path / "users" / seller_id / "openclaw.json"
     cfg = json.loads(user_config.read_text())
-    cfg["skills"] = {
-        "entries": {"jira": {"apiKey": "secret"}},
-        "allowBundled": ["search"],
-    }
-    # Reflect them into the agent's skills list so they show up in available.
-    cfg["agents"]["list"][0]["skills"] = ["jira", "search", "custom-skill"]
+    cfg["skills"] = {"entries": {"jira": {"apiKey": "secret"}}, "allowBundled": ["search"]}
     user_config.write_text(json.dumps(cfg))
-    # Workspace skill: a file under the agent's workspace skills/ dir.
     skills_dir = agent_dir / "skills"
     skills_dir.mkdir()
     (skills_dir / "custom-skill.md").write_text("# custom skill\n", encoding="utf-8")
 
     preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
     by_name = {s["name"]: s["bucket"] for s in preview["available_skills"]}
-    assert by_name["jira"] == "entries"
-    assert by_name["search"] == "bundled"
-    assert by_name["custom-skill"] == "workspace"
+    assert by_name == {"jira": "entries"}
+    assert "custom-skill" in preview["auto_ship_skills"]
+    assert "search" not in by_name
 
 
 def test_enumerate_for_preview_lists_persona_files_present(fake_efs, tmp_path):
@@ -724,6 +716,31 @@ def test_export_raises_when_slice_credential_survives_scrub(fake_efs, tmp_path):
     assert "sk_live_DO_NOT_LEAK_123" not in msg, msg
 
 
+def test_export_raises_when_arg_credential_present(fake_efs, tmp_path):
+    """A bare credential-shaped token in an MCP server's ``args`` (no secret
+    flag, so the real arg scrub leaves it) is caught by the gate end-to-end:
+    export_agent_from_efs raises CredentialLeakError naming the args path,
+    never the secret. Real scrub runs (not patched) — this proves scrub+gate
+    compose for the args path.
+    """
+    seller_id, agent_id, _ = fake_efs
+    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["mcp"] = {"servers": {"leaky": {"command": "npx", "args": ["-y", "sk-ant-DO_NOT_LEAK_0123456789ABCDEFabcdef"]}}}
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    with pytest.raises(agent_export.CredentialLeakError) as exc_info:
+        agent_export.export_agent_from_efs(
+            seller_id=seller_id,
+            agent_id=agent_id,
+            selected_mcps=["leaky"],
+        )
+
+    msg = str(exc_info.value)
+    assert "mcp.servers.leaky.args" in msg, msg
+    assert "DO_NOT_LEAK" not in msg, msg
+
+
 def test_export_clean_slice_does_not_raise(fake_efs, tmp_path):
     """A properly-scrubbed slice (the normal path) builds the artifact with no
     CredentialLeakError. The real scrub blanks env values to "".
@@ -758,3 +775,26 @@ def test_preview_surfaces_slice_leak_without_raising(fake_efs, tmp_path):
     for f in flags:
         if f["pattern"] == "unscrubbed-credential":
             assert "sk_live_PREVIEW_LEAK" not in f["snippet"], f
+
+
+def test_preview_workspace_skills_autoship_global_entries_addable(monkeypatch, tmp_path):
+    agent_dir = tmp_path / "ws"
+    (agent_dir / "skills" / "researcher").mkdir(parents=True)
+    (agent_dir / "skills" / "writer").mkdir(parents=True)
+    monkeypatch.setattr(agent_export, "_resolve_agent_dir", lambda *, seller_id, agent_id: agent_dir)
+
+    config = {
+        "agents": {"list": [{"id": "agent_x"}]},
+        "skills": {"entries": {"image-lab": {"enabled": True}}},  # global, addable
+    }
+
+    class _WS:
+        def read_openclaw_config(self, _):
+            return config
+
+    monkeypatch.setattr(agent_export, "get_workspace", lambda: _WS())
+
+    out = agent_export.enumerate_for_preview(seller_id="u1", agent_id="agent_x")
+    assert sorted(out["auto_ship_skills"]) == ["researcher", "writer"]
+    assert [s["name"] for s in out["available_skills"]] == ["image-lab"]
+    assert all(s["name"] not in ("researcher", "writer") for s in out["available_skills"])

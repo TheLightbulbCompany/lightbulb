@@ -543,8 +543,9 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     workspace = get_workspace()
     config = workspace.read_openclaw_config(seller_id) or {}
 
-    # Walk agent.skills to get the seller's per-agent skill list; classify
-    # each against the full container config + workspace.
+    # Validate the agent is registered in the seller's config; the entry
+    # itself is NOT used as a skills source (no per-agent skill scoping
+    # exists at runtime — see the addable-skills note below).
     agents_list = (config.get("agents") or {}).get("list") or []
     agent_entry = next(
         (a for a in agents_list if isinstance(a, dict) and a.get("id") == agent_id),
@@ -554,24 +555,25 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
         raise AgentNotInConfigError(f"agent {agent_id!r} is not registered in seller's openclaw.json agents.list")
 
     workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
-    raw_skills = agent_entry.get("skills") or []
-    skill_names: list[str] = []
-    if isinstance(raw_skills, list):
-        skill_names = [s for s in raw_skills if isinstance(s, str)]
-    elif isinstance(raw_skills, dict):  # {list: [...]} shape
-        nested = raw_skills.get("list") or []
-        skill_names = [s for s in nested if isinstance(s, str)]
 
+    # Workspace skills auto-ship via the tarball + buyer-side discovery — they are
+    # informational, NOT a selectable bundle choice.
+    auto_ship_skills = sorted(workspace_skill_names)
+
+    # Addable skills = the container's GLOBAL skills.entries the buyer would not
+    # otherwise have. There is no per-agent skill scoping, so the agent's config
+    # entry is NOT a reliable source; the global skills.entries are. Bundled
+    # skills already ship in the buyer's image, and workspace skills auto-ship
+    # above, so neither belongs in the selectable add-list.
+    skills_cfg = config.get("skills") if isinstance(config.get("skills"), dict) else {}
+    entries_cfg = skills_cfg.get("entries") if isinstance(skills_cfg.get("entries"), dict) else {}
+    addable_skill_names = sorted(entries_cfg.keys())
     available_skills = [
         {
             "name": name,
-            "bucket": classify_skill(
-                name,
-                config,
-                workspace_skill_names=workspace_skill_names,
-            ).value,
+            "bucket": classify_skill(name, config, workspace_skill_names=workspace_skill_names).value,
         }
-        for name in skill_names
+        for name in addable_skill_names
     ]
 
     mcp_servers = (config.get("mcp") or {}).get("servers") or {}
@@ -596,7 +598,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
             config,
             agent_id,
             selected_mcps=available_mcps,
-            selected_skills=skill_names,
+            selected_skills=addable_skill_names,
             workspace_skill_names=workspace_skill_names,
         )
         slice_leak_flags = marketplace_safety.assert_slice_scrubbed(preview_slice)
@@ -608,6 +610,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
         "agent_id": agent_id,
         "available_mcps": available_mcps,
         "available_skills": available_skills,
+        "auto_ship_skills": auto_ship_skills,
         "persona_files": persona_files,
         "safety_flags": safety_flags,
     }

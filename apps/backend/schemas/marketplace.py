@@ -318,6 +318,7 @@ class ArtifactPreviewResponse(BaseModel):
     agent_id: str
     available_mcps: list[str] = Field(default_factory=list)
     available_skills: list[AvailableSkill] = Field(default_factory=list)
+    auto_ship_skills: list[str] = Field(default_factory=list)
     persona_files: list[str] = Field(default_factory=list)
     safety_flags: list[SafetyFlag] = Field(default_factory=list)
     needs_config_patch: bool = False

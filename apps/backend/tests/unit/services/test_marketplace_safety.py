@@ -315,3 +315,43 @@ def test_slice_scrubbed_uses_catalog_slice_field_names():
     slice_ = {"mcp": {"servers": {"hook": {"webhookToken": "whsec_live"}}}}
     flags = marketplace_safety.assert_slice_scrubbed(slice_)
     assert any(f.pattern == "unscrubbed-credential" for f in flags), flags
+
+
+# ---------------------------------------------------------------------------
+# assert_slice_scrubbed — credential-shaped MCP ``args[]`` gate. The scrub
+# blanks the value AFTER a secret flag, but a residual value the scrub missed
+# (or a bare positional credential token) must still block publish — without
+# false-blocking normal ``npx -y <package>`` args.
+# ---------------------------------------------------------------------------
+
+
+def _slice_with_args(args):
+    return {"mcp": {"servers": {"s": {"command": "npx", "args": args}}}}
+
+
+def test_gate_blocks_residual_value_after_secret_flag():
+    flags = marketplace_safety.assert_slice_scrubbed(_slice_with_args(["--api-key", "STILL-LEAKED-aaaaaaaa"]))
+    assert marketplace_safety.has_blocking_credential_findings(flags)
+    assert any(f.pattern == "arg-secret-suspected" for f in flags)
+
+
+def test_gate_blocks_standalone_provider_prefix_token():
+    flags = marketplace_safety.assert_slice_scrubbed(_slice_with_args(["sk-ant-0123456789ABCDEFabcdef"]))
+    assert marketplace_safety.has_blocking_credential_findings(flags)
+
+
+def test_gate_blocks_high_entropy_standalone_token():
+    flags = marketplace_safety.assert_slice_scrubbed(_slice_with_args(["aZ09" * 12]))  # 48 chars, mixed
+    assert marketplace_safety.has_blocking_credential_findings(flags)
+
+
+def test_gate_allows_npx_package_specs():
+    flags = marketplace_safety.assert_slice_scrubbed(
+        _slice_with_args(["-y", "@perplexity-ai/mcp-server", "instantly-mcp"])
+    )
+    assert not marketplace_safety.has_blocking_credential_findings(flags)
+
+
+def test_gate_allows_properly_scrubbed_args():
+    flags = marketplace_safety.assert_slice_scrubbed(_slice_with_args(["-y", "instantly-mcp", "--api-key", ""]))
+    assert not marketplace_safety.has_blocking_credential_findings(flags)

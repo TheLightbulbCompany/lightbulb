@@ -125,6 +125,26 @@ class TestValidateToken:
             ),
         )
 
+    def _xoxp_provider(self):
+        # A provider whose validate spec pins a token_prefix — checked pre-flight
+        # (before any HTTP call). Self-contained, independent of the registry.
+        from core.services.credentials.registry import Provider, ValidateSpec, Wiring
+
+        return Provider(
+            key="prefixed",
+            display_name="Prefixed",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(mcp_server={"key": "prefixed", "command": "npx", "env": {"TOKEN": "input.token"}}),
+            validate=ValidateSpec(
+                method="POST",
+                url="https://example.com/auth.test",
+                success_json_field="ok",
+                token_prefix="xoxp-",
+            ),
+        )
+
     @pytest.mark.asyncio
     async def test_success_json_field_false_fails_despite_200(self, monkeypatch):
         from routers import connections
@@ -185,27 +205,25 @@ class TestValidateToken:
 
     @pytest.mark.asyncio
     async def test_token_prefix_rejects_wrong_type_without_http(self, monkeypatch):
-        # Slack requires an `xoxp-` user token; a bot `xoxb-` token is rejected
-        # pre-flight (no HTTP call), since auth.test would otherwise ok it.
+        # A provider with a token_prefix rejects a wrong-prefix token pre-flight
+        # (no HTTP call) — the validate endpoint would otherwise ok it.
         from routers import connections
-        from core.services.credentials import registry
 
         async def fake_request(self, method, url, **kwargs):
             raise AssertionError("HTTP must not run for a wrong-prefix token")
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
-        assert await connections._validate_token(registry.get_provider("slack"), "xoxb-bot") is False
+        assert await connections._validate_token(self._xoxp_provider(), "xoxb-bot") is False
 
     @pytest.mark.asyncio
     async def test_token_prefix_allows_matching_type(self, monkeypatch):
         from routers import connections
-        from core.services.credentials import registry
 
         async def fake_request(self, method, url, **kwargs):
             return httpx.Response(200, json={"ok": True})
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
-        assert await connections._validate_token(registry.get_provider("slack"), "xoxp-good") is True
+        assert await connections._validate_token(self._xoxp_provider(), "xoxp-good") is True
 
 
 class TestListConnections:

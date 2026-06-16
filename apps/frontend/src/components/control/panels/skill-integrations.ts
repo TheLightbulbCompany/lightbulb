@@ -9,6 +9,5 @@ export const SKILL_INTEGRATIONS: Record<string, { provider: string; label: strin
   "gh-issues": { provider: "github", label: "GitHub" },
   gog: { provider: "google", label: "Google" },
   notion: { provider: "notion", label: "Notion" },
-  slack: { provider: "slack", label: "Slack" },
   stripe: { provider: "stripe", label: "Stripe" },
 };

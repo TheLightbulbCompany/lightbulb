@@ -16,6 +16,8 @@ vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => <div /> }));
 vi.mock("../panels/SkillsTab", () => ({ SkillsTab: () => <div data-testid="skills-store" /> }));
 vi.mock("../panels/IntegrationsPanel", () => ({ IntegrationsPanel: () => <div /> }));
 vi.mock("../panels/ChannelsStatusPanel", () => ({ ChannelsStatusPanel: () => <div /> }));
+vi.mock("../panels/DreamsPanel", () => ({ DreamsPanel: () => <div>DreamsPanel</div> }));
+vi.mock("../panels/SkillProposalsPanel", () => ({ SkillProposalsPanel: () => <div>SkillProposalsPanel</div> }));
 
 describe("ControlPanelRouter credits redirect", () => {
   it("renders Model & Credits when the legacy ?panel=credits key arrives", () => {

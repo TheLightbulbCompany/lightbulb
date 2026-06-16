@@ -149,14 +149,14 @@ class TestOpenclawConfigShape:
         assert entries["lobster"] == {"enabled": True}
         assert entries["llm-task"] == {"enabled": True}
 
-    def test_memory_core_dreaming_enabled_light_only(self):
+    def test_memory_core_dreaming_enabled_light_and_rem(self):
         """memory-core's dreaming subsystem is enabled at provision with the
-        light phase ON and both REM and deep phases OFF. Light-phase
-        consolidates recent session transcripts into dated memory/<day>.md
-        notes that auto-load — cross-session continuity without relying on
-        discretionary writes. REM only writes DREAMS.md (nothing reads it);
-        deep needs sustained memory_search recall traffic that is ~zero today.
-        Only schema-legal keys may appear under
+        light and REM phases ON and deep OFF. Light-phase consolidates recent
+        session transcripts into dated memory/<day>.md notes that auto-load —
+        cross-session continuity without relying on discretionary writes. REM
+        writes DREAMS.md narratives, now surfaced by the Dreams control panel's
+        Diary tab. Deep stays OFF by default — it is an opt-in per-container
+        toggle, not a builder flip. Only schema-legal keys may appear under
         plugins.entries.memory-core.config — the upstream configSchema is
         additionalProperties:false at every level, so a stray key bricks the
         container at boot."""
@@ -168,7 +168,7 @@ class TestOpenclawConfigShape:
         assert dreaming["frequency"] == "0 3 * * *"
         assert dreaming["timezone"] == "UTC"
         assert dreaming["phases"]["light"] == {"enabled": True}
-        assert dreaming["phases"]["rem"] == {"enabled": False}
+        assert dreaming["phases"]["rem"] == {"enabled": True}
         assert dreaming["phases"]["deep"] == {"enabled": False}
         assert set(entry["config"].keys()) == {"dreaming"}
 

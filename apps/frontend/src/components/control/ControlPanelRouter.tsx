@@ -10,6 +10,8 @@ import { SkillsTab } from "./panels/SkillsTab";
 import { LLMPanel } from "./panels/LLMPanel";
 import { IntegrationsPanel } from "./panels/IntegrationsPanel";
 import { ChannelsStatusPanel } from "./panels/ChannelsStatusPanel";
+import { DreamsPanel } from "./panels/DreamsPanel";
+import { SkillProposalsPanel } from "./panels/SkillProposalsPanel";
 
 
 interface ControlPanelRouterProps {
@@ -27,6 +29,8 @@ const PANELS: Record<string, React.ComponentType> = {
   skills: SkillsTab,
   llm: LLMPanel,
   integrations: IntegrationsPanel,
+  dreams: DreamsPanel,
+  "skill-proposals": SkillProposalsPanel,
 };
 
 export function ControlPanelRouter({ panel, onPanelChange }: ControlPanelRouterProps) {

@@ -654,6 +654,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "factory-boy" },
+    { name = "hypothesis" },
     { name = "moto", extra = ["dynamodb"] },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -688,6 +689,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "factory-boy", specifier = "==3.3.0" },
+    { name = "hypothesis", specifier = ">=6.100.0" },
     { name = "moto", extras = ["dynamodb"], specifier = ">=5.1.22" },
     { name = "pre-commit", specifier = ">=3.0.0" },
     { name = "pytest", specifier = "==8.0.2" },

@@ -12,8 +12,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import { notifyApiError } from "@/lib/notify";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+vi.mock("@/lib/notify", () => ({
+  notifyApiError: vi.fn(),
+  notifyError: vi.fn(),
+  notify: vi.fn(),
+  notifySuccess: vi.fn(),
+}));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
 let eventHandlers: Array<(name: string, data: unknown) => void> = [];
@@ -174,7 +181,7 @@ describe("useAgentChat — F-STEER", () => {
     // The live primary run is untouched: still streaming, and a new send still
     // QUEUES (gate still armed) — proving clientRunIdRef wasn't cleared.
     expect(result.current.isStreaming).toBe(true);
-    expect(result.current.error).toBeTruthy();
+    expect(notifyApiError).toHaveBeenCalled();
     await act(async () => {
       await result.current.sendMessage("follow-up");
     });

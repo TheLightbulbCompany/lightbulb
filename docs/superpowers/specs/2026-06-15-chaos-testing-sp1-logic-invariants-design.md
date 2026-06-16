@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-15
 **Status:** Approved design, pending implementation plan
-**Goal:** Catch latent business-logic, idempotency, and config-bricking bugs **before launch**, on every PR, without touching AWS.
+**Goal:** Catch latent business-logic, idempotency, and config-bricking bugs **before launch**, on every PR, without touching AWS. As a byproduct, audit the quality of the existing unit tests — chaos failures reveal exactly where current coverage is vacuous or missing (see §7).
 
 ---
 
@@ -178,6 +178,50 @@ Metronome / real money movement stays out** — the billing machine drives synth
 with `respx`-stubbed outbound calls; it asserts our handler/state logic, never that Stripe itself
 behaves. End-to-end billing against test-mode Stripe belongs to the E2E gate, not SP1. SP1 is purely
 hermetic Python + the vendored zod validator.
+
+## SP1 §7 — Test-quality audit & findings workflow
+
+Building this suite doubles as an audit of the existing unit tests. SP1 captures that signal two ways.
+
+### Part A — Proactive pre-chaos audit pass (bounded)
+
+Before (or alongside) writing each machine, review the **existing** test files that already cover that
+area for false confidence. **Scope is strictly the test files for the five invariant areas** — not
+the whole 249-file suite — to keep this bounded:
+
+- Marketplace: `tests/unit/routers/test_marketplace_purchases.py` + any `test_marketplace*`
+- Provisioning: `tests/test_paperclip_provisioning.py`, `test_paperclip_repo.py`
+- Billing: `test_stripe_webhook_handlers.py`, `test_webhook_dedup.py`, `test_billing_idempotency.py`,
+  `tests/unit/billing/test_metronome_*`, `test_billing_*`
+- Usage counters: `test_usage*`, repo-level usage tests
+- Config: `tests/unit/containers/test_config.py`, `test_config_patcher.py`, `test_catalog_slice.py`
+
+Each file is checked against a short rubric:
+- **Over-mocking:** does the test exercise the real repository / `ConditionExpression` / transaction,
+  or does it mock the data layer away so the invariant is never actually exercised?
+- **Vacuous assertions:** are there assertions that cannot fail (asserting on a mock's own return,
+  no negative cases, only happy paths)?
+- **Masking constructs:** any `xfail` / `skip` / loosened assertion hiding a known regression
+  (project history: `xfail-strict=false` has silently passed a stub before).
+- **Coverage shape:** happy-path-only where the chaos machine will explore failure/ordering space.
+
+Findings are logged (not auto-fixed) to the findings doc below; genuinely broken/vacuous tests are
+fixed in the same PR when cheap, or filed as follow-ups when they imply a real code bug.
+
+### Part B — Empirical findings workflow (chaos-driven)
+
+When a chaos machine finds a failure:
+1. **Fix the code** (or confirm the invariant was wrong and correct the invariant).
+2. **Capture the shrunk minimal repro as a fast, deterministic regression unit test** next to the
+   relevant existing tests — so it's caught in milliseconds forever, not re-discovered by the fuzzer.
+3. **Log the gap** in the findings doc: which invariant broke, which existing test *should* have
+   caught it but didn't, and why (over-mock? missing case? wrong assertion?).
+
+### Findings artifact
+
+A running `docs/superpowers/research/2026-06-15-chaos-sp1-findings.md` accumulates Part A and Part B
+entries — this is the audit trail / deliverable that answers "how good were our unit tests, and what
+changed." It is the empirical record, not a speculative up-front rewrite of the suite.
 
 ## Open risks / notes
 

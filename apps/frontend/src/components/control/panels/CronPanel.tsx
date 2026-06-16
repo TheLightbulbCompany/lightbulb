@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 
 import { capture } from "@/lib/analytics";
+import { notifyApiError } from "@/lib/notify";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
@@ -207,7 +208,7 @@ export function CronPanel() {
       mutate();
       showFeedback("success", `Created "${form.name.trim()}"`);
     } catch (err) {
-      showFeedback("error", `Failed to create: ${err instanceof Error ? err.message : String(err)}`);
+      notifyApiError(err, "Couldn't create the cron job");
     } finally {
       setSaving(false);
     }
@@ -231,7 +232,7 @@ export function CronPanel() {
       mutate();
       showFeedback("success", `Updated "${form.name.trim()}"`);
     } catch (err) {
-      showFeedback("error", `Failed to update: ${err instanceof Error ? err.message : String(err)}`);
+      notifyApiError(err, "Couldn't update the cron job");
     } finally {
       setSaving(false);
     }
@@ -244,7 +245,7 @@ export function CronPanel() {
       mutate();
       showFeedback("success", "Job deleted");
     } catch (err) {
-      showFeedback("error", `Failed to delete: ${err instanceof Error ? err.message : String(err)}`);
+      notifyApiError(err, "Couldn't delete the cron job");
     }
   };
 
@@ -272,7 +273,7 @@ export function CronPanel() {
         delete rest[id];
         return rest;
       });
-      showFeedback("error", `Failed to toggle: ${err instanceof Error ? err.message : String(err)}`);
+      notifyApiError(err, "Couldn't toggle the cron job");
     }
   };
 
@@ -283,7 +284,7 @@ export function CronPanel() {
       showFeedback("success", "Job triggered");
       mutate();
     } catch (err) {
-      showFeedback("error", `Failed to run: ${err instanceof Error ? err.message : String(err)}`);
+      notifyApiError(err, "Couldn't run the cron job");
     }
   };
 

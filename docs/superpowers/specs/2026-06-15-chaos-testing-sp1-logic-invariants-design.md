@@ -32,8 +32,9 @@ This document specifies **SP1 only**.
 A **hermetic** pytest suite (no AWS, no live containers) that fuzzes inputs and asserts
 **invariants** over isol8's stateful business logic, run on every PR. It targets the failure
 classes the project's own history keeps hitting: illegal state-machine transitions, idempotency
-holes, usage-counter drift, and **config bricking** (an invalid `openclaw.json` value crash-loops
-the container at boot — the Isol8 config-write path currently has no schema validation).
+holes, usage-counter drift, **billing/webhook ordering bugs**, and **config bricking** (an invalid
+`openclaw.json` value crash-loops the container at boot — the Isol8 config-write path currently has
+no schema validation).
 
 This is *property / stateful* testing — generate many random-but-valid input sequences and assert
 a property holds after every step — **not** more example-based unit tests. That property-driven
@@ -41,7 +42,14 @@ generation is what makes it "chaos" rather than additions to the existing ~249 e
 
 **New tooling:** add `hypothesis` (stateful `RuleBasedStateMachine` + `@given`). **Reuse**
 `moto[dynamodb]` (already a dev dependency) so invariants execute against real repository code over
-a real-shaped in-memory DynamoDB, not hand-written mocks.
+a real-shaped in-memory DynamoDB, not hand-written mocks, and `respx` (already a dev dependency) to
+stub outbound Stripe/Metronome HTTP calls for the billing machine.
+
+**Relationship to existing tests.** Billing/Stripe/Metronome already has heavy *example-based*
+coverage (`test_stripe_webhook_handlers`, `test_webhook_dedup`, `test_billing_idempotency`, the
+`test_metronome_*` suite, `test_marketplace_purchases`, etc.). SP1's billing target is deliberately
+scoped to the **sequence / ordering / duplication** properties those tests don't explore — it
+complements them, it does not re-test the happy paths they already cover.
 
 ### Why hermetic-first serves "catch issues before launch"
 
@@ -59,6 +67,7 @@ apps/backend/tests/chaos/
   machines/
     marketplace_machine.py    # RuleBasedStateMachine: create → submit → approve/reject → publish → retire/takedown
     provisioning_machine.py   # RuleBasedStateMachine: provision_org / member-add / duplicate-signup
+    billing_machine.py        # RuleBasedStateMachine: Stripe/Metronome webhooks (duplicated + out-of-order) → billing/entitlement state
   invariants/
     test_usage_counters.py    # @given token-event sequences → counter arithmetic invariants
     test_config_schema.py     # @given config inputs → emitted openclaw.json validates against vendored zod schema
@@ -92,6 +101,30 @@ re-implemented; the suite is a harness around production code paths.
 - Duplicate signup / member-add 409s are treated as success and **never corrupt** the row.
 - A failed Atlas seed never undoes a successful Friday seed.
 - No member-join sequence produces the orphan-422 loop (redundant-approve must be skipped).
+
+### Billing & entitlements machine (`core/services/stripe_webhook_handlers.py`, `billing_service.py`, `webhook_dedup.py`, `metronome_gate.py`, `core/billing/metronome_client.py`, `routers/marketplace_purchases.py`)
+
+Scoped to **ordering / duplication / idempotency** under hostile webhook delivery — the gap the
+existing example tests don't cover. Outbound Stripe/Metronome HTTP is stubbed via `respx`; no live
+Stripe. Synthetic webhook events are replayed in random orders and with duplicates.
+
+- **Webhook idempotency:** for any permutation-with-duplicates of a webhook event set, dedup
+  processes each unique event exactly once and never drops a unique event. Replaying the same event
+  N times == processing it once.
+- **Out-of-order resilience:** final billing state is identical regardless of delivery order
+  (e.g. `subscription.updated` arriving before `subscription.created`, refund interleaved with
+  checkout) — converges to the same correct state.
+- **Subscription lifecycle:** random event sequences keep the subscription in a legal state
+  (`trialing / active / past_due / canceled`); no illegal transitions; `provision_gate` stays
+  consistent (never both blocks-when-entitled and allows-when-not).
+- **Marketplace purchase entitlement:** `checkout.session.completed` — even duplicated, even
+  followed by a refund event — flips the buyer's entitlement **exactly once**; ties into the
+  marketplace machine's "entitlements survive retire/takedown" invariant.
+- **Metronome credit lifecycle:** duplicated/out-of-order funding + gate events leave credit balance
+  and `metronome_gate` consistent (newest code path — least battle-tested, highest pre-launch risk).
+- **Owner resolution:** webhook owner is resolved via `subscription.metadata.owner_id` first
+  (per the email-keyed-customer model); a shared `stripe_customer_id` across rows never misattributes
+  usage/entitlement to the wrong owner.
 
 ### Usage counters (`core/services/usage_service.py`)
 - Owner period total == Σ per-member period totals == sum of recorded events.
@@ -140,8 +173,11 @@ update `_schema/PINNED_TAG`. Enforced by the staleness guard in §5.
 ## SP1 §6 — Out of scope (other sub-projects)
 
 Real AWS / FIS / network faults (SP2); load & concurrency-at-scale against dev (SP4); API contract
-fuzzing via `schemathesis` (SP3); frontend chaos; Paperclip **Aurora SQL** invariants; live Stripe.
-SP1 is purely hermetic Python + the vendored zod validator.
+fuzzing via `schemathesis` (SP3); frontend chaos; Paperclip **Aurora SQL** invariants. **Live Stripe /
+Metronome / real money movement stays out** — the billing machine drives synthetic webhook payloads
+with `respx`-stubbed outbound calls; it asserts our handler/state logic, never that Stripe itself
+behaves. End-to-end billing against test-mode Stripe belongs to the E2E gate, not SP1. SP1 is purely
+hermetic Python + the vendored zod validator.
 
 ## Open risks / notes
 
@@ -154,3 +190,7 @@ SP1 is purely hermetic Python + the vendored zod validator.
   but not true wall-clock races. True races belong to SP4.
 - **Vendored-schema maintenance:** the staleness guard catches drift but the re-vendor step is manual;
   document it in the OpenClaw bump runbook.
+- **Webhook signature verification:** the billing machine feeds synthetic Stripe/Metronome payloads,
+  so the plan must construct them through the same parsing path the handlers use (and stub/skip
+  signature verification cleanly) — not bypass the handler and assert on internals. The invariant is
+  about handler+dedup+state behavior, so it must enter through the real handler entry point.

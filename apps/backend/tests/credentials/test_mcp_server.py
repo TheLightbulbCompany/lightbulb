@@ -48,19 +48,6 @@ def test_build_block_mixes_literal_and_credential_env(monkeypatch):
     assert block["env"] == {"FLAG": "true", "TOKEN": "xoxb-123"}
 
 
-def test_build_block_slack_resolves_literals_and_token():
-    # Slack's three write-tool flags ship as `literal:true` so they resolve to
-    # the static string "true" regardless of the credential, while the token
-    # resolves from the pasted credential — the curated full-access default.
-    block = build_mcp_server_block("slack", {"token": "xoxp-abc"})
-    assert block["env"] == {
-        "SLACK_MCP_XOXP_TOKEN": "xoxp-abc",
-        "SLACK_MCP_ADD_MESSAGE_TOOL": "true",
-        "SLACK_MCP_REACTION_TOOL": "true",
-        "SLACK_MCP_MARK_TOOL": "true",
-    }
-
-
 def test_build_block_none_for_non_mcp_provider():
     assert build_mcp_server_block("google", {"access_token": "a"}) is None  # materializer, not mcp_server
 

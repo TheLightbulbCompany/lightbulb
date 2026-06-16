@@ -143,18 +143,6 @@ def test_wiring_accepts_exactly_one_of_three():
 # expectations below pin the bits that are unique per provider (env keys, the
 # success-field/header/scheme that a wrong value would silently break).
 _CURATED_MCP = {
-    "slack": {
-        "mcp_key": "slack",
-        "env_keys": {
-            "SLACK_MCP_XOXP_TOKEN",
-            "SLACK_MCP_ADD_MESSAGE_TOOL",
-            "SLACK_MCP_REACTION_TOOL",
-            "SLACK_MCP_MARK_TOOL",
-        },
-        "success_json_field": "ok",
-        "headers": {},
-        "auth_scheme": "Bearer",
-    },
     "notion": {
         "mcp_key": "notion",
         "env_keys": {"NOTION_TOKEN"},

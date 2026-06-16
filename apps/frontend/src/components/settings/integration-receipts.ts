@@ -11,7 +11,6 @@ export interface IntegrationReceipt {
 
 export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   stripe: { delivers: "payment tools — look up customers, invoices & charges" },
-  slack: { delivers: "Slack tools for reading & posting messages" },
   notion: { delivers: "Notion page search & editing tools" },
   sentry: { delivers: "issue search & triage tools for your projects" },
   linear: { delivers: "Linear issue & project tools" },

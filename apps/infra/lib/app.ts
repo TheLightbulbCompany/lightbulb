@@ -331,17 +331,6 @@ pipeline.addStageWithGitHubOptions(devStage, {
         },
       ],
     }),
-    // Build, sign, notarize, and publish the dev desktop DMG. Runs on
-    // every merge to main so installed dev clients get an auto-update
-    // prompt at next launch. Published (not draft) and prerelease: true
-    // so it's visible but flagged non-prod. macos-15 runner is enforced
-    // via the workflowFile.patch() call below — GitHubActionStep itself
-    // has no per-step runner prop in cdk-pipelines-github. Default
-    // permissions for GitHubActionStep are { contents: write }, which is
-    // exactly what tauri-action needs to create + upload the release.
-    new GitHubActionStep("BuildDesktopDev", {
-      jobSteps: devDesktopSteps,
-    }),
   ],
 });
 
@@ -352,6 +341,23 @@ const prodStage = new Isol8Stage(app, "prod", {
   env: awsEnv,
   environment: "prod",
 });
+
+// Desktop DMG builds run as prod-stage POST steps — siblings of the Vercel
+// prod deploy, NOT gating dev/prod stage steps. A desktop notarization failure
+// (e.g. a lapsed Apple membership) therefore never blocks the infra + frontend
+// prod deploys; the DMGs just build (or fail) alongside them. Previously the
+// dev DMG was a DEV-stage post step, which made every prod deploy transitively
+// depend on the macOS notarization succeeding.
+const buildDesktopDevStep = new GitHubActionStep("BuildDesktopDev", {
+  jobSteps: devDesktopSteps,
+});
+const buildDesktopProdStep = new GitHubActionStep("BuildDesktopProd", {
+  jobSteps: prodDesktopSteps,
+});
+// Ordering-only dependency: the prod build runs after the dev build so it
+// reuses the dev build's warm cargo cache (same shared-key). Neither step gates
+// the deploy — both are prod-stage post steps that fan out from the prod stacks.
+buildDesktopProdStep.addStepDependency(buildDesktopDevStep);
 
 pipeline.addStageWithGitHubOptions(prodStage, {
   stackCapabilities: [
@@ -394,13 +400,10 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         },
       ],
     }),
-    // Prod desktop build — same step list as dev with prod URLs/tag.
-    // Runs after BuildDesktopDev (sequential via stage ordering), so it
-    // inherits the populated cargo cache from the same run (same key +
-    // shared-key).
-    new GitHubActionStep("BuildDesktopProd", {
-      jobSteps: prodDesktopSteps,
-    }),
+    // Desktop DMGs (declared above) — prod-stage post siblings of the Vercel
+    // deploy, dev→prod ordered, NOT gating any deploy job.
+    buildDesktopDevStep,
+    buildDesktopProdStep,
   ],
 });
 
@@ -518,12 +521,12 @@ pipeline.workflowFile.patch(
     "id-token": "write",
     contents: "write",
   }),
-  JsonPatch.replace("/jobs/dev-BuildDesktopDev/runs-on", "macos-15"),
+  JsonPatch.replace("/jobs/prod-BuildDesktopDev/runs-on", "macos-15"),
   JsonPatch.replace("/jobs/prod-BuildDesktopProd/runs-on", "macos-15"),
-  ...gateDesktopJobOnPaths("dev-BuildDesktopDev", devDesktopSteps),
+  ...gateDesktopJobOnPaths("prod-BuildDesktopDev", devDesktopSteps),
   ...gateDesktopJobOnPaths("prod-BuildDesktopProd", prodDesktopSteps),
   JsonPatch.replace(
-    `/jobs/dev-BuildDesktopDev/steps/${findStepIndexInPatchedJob(devDesktopSteps, TAURI_BUILD_STEP_NAME)}/with`,
+    `/jobs/prod-BuildDesktopDev/steps/${findStepIndexInPatchedJob(devDesktopSteps, TAURI_BUILD_STEP_NAME)}/with`,
     tauriActionWithBlock({
       tagName: `desktop-dev-v${DESKTOP_VERSION}`,
       releaseName: `Isol8 Desktop [DEV] v${DESKTOP_VERSION}`,

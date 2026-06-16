@@ -92,3 +92,56 @@ likely places a real bug could still hide:
 4. **Marketplace multi-version atomicity** (`publish_new_version` TransactWriteItems
    flipping v_new→published + v_prev→retired) is not tested — only single-version
    transitions. Leans on moto's TransactWriteItems fidelity.
+
+---
+
+# SP3 — API Contract Fuzzing (schemathesis)
+
+Suite: `apps/backend/tests/chaos/api/`. Two hermetic passes over the FastAPI
+surface (190 operations), in-process over ASGI under moto. Spec:
+`docs/superpowers/specs/2026-06-15-chaos-testing-sp3-api-contract-fuzzing-design.md`.
+
+**Headline: no unhandled-exception (5xx) bugs found.** Every operation fuzzed
+either survived hostile input without a 500, or was excluded as a hermetic-env
+artifact (documented).
+
+### Results
+
+| Pass | What | Result |
+|------|------|--------|
+| 1 — negative/auth (unauth, all ops) | `not_a_server_error` across 190 ops | **186 pass, 4 excluded** (0 real 5xx) |
+| 2 — authed deep slice (pure-DDB allowlist) | billing usage ×2 + marketplace search, authed under moto | **3 pass** (0 5xx) |
+
+### Findings
+
+1. **(low-sev, real) The API under-documents its error responses.** schemathesis
+   v4's default checks (`positive_data_acceptance`, `response_schema_conformance`,
+   `status_code_conformance`) flagged ~all 190 operations because the OpenAPI
+   document rarely declares the `400/401/403/422` responses the handlers actually
+   return. We therefore gate only on `not_a_server_error` (the true resilience
+   signal). **Improving the declared response models would let the contract-
+   conformance checks run** and catch response-shape drift — a worthwhile
+   hardening follow-up, not a launch blocker.
+2. **4 operations excluded** (documented in `api/conftest.py:NEGATIVE_PASS_EXCLUSIONS`),
+   all hermetic-env artifacts, not product bugs:
+   - `POST /ws/message`, `POST /hooks/u/{owner_id}/{hook_path}` — proxy to a live
+     container after a DDB lookup (table + container absent hermetically).
+   - `GET /oauth/{provider}/callback` — external OAuth code exchange.
+   - `GET /marketplace/seller/handle/{handle}` — seller-profile table env not wired
+     into the fixture → boto `ParamValidationError` (empty `TableName`).
+
+### Harness note
+
+schemathesis v4 **mutates the HTTP method** during fuzzing (we observed `TRACE`
+variants of `GET` operations), so exclusion/allowlist keys must use the stable
+`case.operation.label`, not the generated `case.method`. Keying on the generated
+method silently skipped everything.
+
+### Deferred / follow-ups
+
+- **Widen the deep slice:** wire the seller-profile, oauth, and ws-connections
+  tables into the fixture to fuzz those endpoints for real instead of excluding.
+- **Document error responses** in the route models to enable schema/status
+  conformance checking (finding #1).
+- **Runtime:** the two passes add ~3 min to backend CI (Pass 1 ~120s @ 15
+  examples/op, Pass 2 ~57s). Dial `max_examples` if PR latency matters.

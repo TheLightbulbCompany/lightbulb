@@ -5,6 +5,7 @@ import { Loader2, RefreshCw, Save, AlertCircle, ToggleLeft, ToggleRight } from "
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { notifyApiError } from "@/lib/notify";
 import type { AgentConfigEntry, ConfigSnapshot, ToolsCatalogResponse } from "./agents-types";
 
 const PROFILE_POLICIES: Record<string, string[]> = {
@@ -102,7 +103,6 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
   const [localDeny, setLocalDeny] = useState<string[]>([]);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
 
   const configInner = configSnapshot?.config;
   const agentConfigEntry = configInner?.agents?.list?.find(
@@ -219,14 +219,12 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
 
   const handleReload = useCallback(() => {
     setDirty(false);
-    setSaveError(null);
     mutateCatalog();
     mutateConfig();
   }, [mutateCatalog, mutateConfig]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
-    setSaveError(null);
     try {
       const toolsPayload: Record<string, unknown> = {};
       if (localProfile !== null) {
@@ -242,7 +240,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
       setDirty(false);
       mutateConfig();
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
+      notifyApiError(err, "Couldn't save tool settings");
     } finally {
       setSaving(false);
     }
@@ -305,12 +303,6 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
         </div>
       </div>
 
-      {saveError && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[#fce4ec] border border-[#dc2626]/20">
-          <AlertCircle className="h-3 w-3 text-[#dc2626] flex-shrink-0" />
-          <span className="text-xs text-[#dc2626]">{saveError}</span>
-        </div>
-      )}
 
       {globalToolsConfig?.allow && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-yellow-50 border border-yellow-300/40">

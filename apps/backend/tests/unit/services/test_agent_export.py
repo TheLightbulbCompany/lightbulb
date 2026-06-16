@@ -716,6 +716,31 @@ def test_export_raises_when_slice_credential_survives_scrub(fake_efs, tmp_path):
     assert "sk_live_DO_NOT_LEAK_123" not in msg, msg
 
 
+def test_export_raises_when_arg_credential_present(fake_efs, tmp_path):
+    """A bare credential-shaped token in an MCP server's ``args`` (no secret
+    flag, so the real arg scrub leaves it) is caught by the gate end-to-end:
+    export_agent_from_efs raises CredentialLeakError naming the args path,
+    never the secret. Real scrub runs (not patched) — this proves scrub+gate
+    compose for the args path.
+    """
+    seller_id, agent_id, _ = fake_efs
+    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["mcp"] = {"servers": {"leaky": {"command": "npx", "args": ["-y", "sk-ant-DO_NOT_LEAK_0123456789ABCDEFabcdef"]}}}
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    with pytest.raises(agent_export.CredentialLeakError) as exc_info:
+        agent_export.export_agent_from_efs(
+            seller_id=seller_id,
+            agent_id=agent_id,
+            selected_mcps=["leaky"],
+        )
+
+    msg = str(exc_info.value)
+    assert "mcp.servers.leaky.args" in msg, msg
+    assert "DO_NOT_LEAK" not in msg, msg
+
+
 def test_export_clean_slice_does_not_raise(fake_efs, tmp_path):
     """A properly-scrubbed slice (the normal path) builds the artifact with no
     CredentialLeakError. The real scrub blanks env values to "".

@@ -355,3 +355,11 @@ def test_gate_allows_npx_package_specs():
 def test_gate_allows_properly_scrubbed_args():
     flags = marketplace_safety.assert_slice_scrubbed(_slice_with_args(["-y", "instantly-mcp", "--api-key", ""]))
     assert not marketplace_safety.has_blocking_credential_findings(flags)
+
+
+def test_secret_arg_flags_mirror_catalog_slice():
+    """The gate's secret-flag set must stay identical to the scrub's, or the two
+    layers would disagree on which flags to handle (scrub blanks, gate blocks)."""
+    from core.services import catalog_slice
+
+    assert marketplace_safety._SECRET_ARG_FLAGS == catalog_slice._SECRET_ARG_FLAGS

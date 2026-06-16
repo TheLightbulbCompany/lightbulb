@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiError, type Connection } from "@/hooks/useConnections";
+import { notifyApiError } from "@/lib/notify";
 
 interface ConnectButtonProps {
   connection: Connection;
@@ -80,7 +81,15 @@ export function ConnectButton({
       await fn();
       setToken("");
     } catch (e) {
-      setErr(errorMessage(e));
+      // Persistent permission / Bedrock-lock 403s stay inline: the lock is
+      // already the "Switch to Bedrock" upsell, and a non-admin denial is a
+      // standing state a toast would auto-dismiss. Everything else is a
+      // transient failure -> toast (with the Report action).
+      if (bedrockLockMessage(e) || (e instanceof ApiError && e.status === 403)) {
+        setErr(errorMessage(e));
+      } else {
+        notifyApiError(e, "Couldn't update the connection. Please try again.");
+      }
     } finally {
       setBusy(false);
     }

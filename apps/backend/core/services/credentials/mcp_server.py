@@ -64,13 +64,47 @@ async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
 
 
 async def reconcile_integrations(owner_id: str) -> None:
-    """Re-assert every connected integration's MCP server into the LIVE
-    openclaw.json. Per-server REPLACE of mcp.servers.<key> (preserves the
-    paperclip block + user-owned keys); idempotent (set no-ops when unchanged).
-    No-op if the container has no config yet (ConfigPatchError swallowed — a
-    provision will inject the blocks instead)."""
+    """Re-assert every connected integration's config into the LIVE openclaw.json
+    from the durable sources (registry spec x Secrets-Manager secret). Both
+    openclaw.json-resident rails are re-applied, because a full config overwrite
+    (reprovision) wipes both:
+
+      - mcp_server: REPLACE mcp.servers.<key> (preserves the paperclip block +
+        user-owned keys).
+      - openclaw_paths: re-write each owned config path (e.g. a bundled web-search
+        provider's tools.web.search.* selection + key).
+
+    Materializer providers persist via their own EFS files (not openclaw.json), so
+    they survive the overwrite and are not re-applied here. Per-path / per-server
+    REPLACE is idempotent (set no-ops when unchanged). No-op if the container has
+    no config yet (ConfigPatchError swallowed — a provision will inject instead)."""
     for key, block in (await build_connected_integration_servers(owner_id)).items():
         try:
             await config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", key], block)
         except config_patcher.ConfigPatchError:
             return
+    # openclaw_paths providers live in openclaw.json (unlike materializer files),
+    # so a config overwrite drops them — re-write each owned path from the retained
+    # secret. Lazy import keeps the module-load dependency one-directional.
+    from core.services.credentials.apply_connection import _resolve_source
+
+    for row in await integrations_repo.list_for_owner(owner_id):
+        provider = row.get("provider")
+        if not provider or row.get("status", "connected") != "connected":
+            continue
+        try:
+            paths = registry.get_provider(provider).wiring.openclaw_paths
+        except KeyError:
+            continue
+        if not paths:
+            continue
+        cred = await integration_secret_store.get(owner_id, provider)
+        if not cred:
+            continue
+        for op in paths:
+            try:
+                await config_patcher.set_openclaw_config_path(
+                    owner_id, op.path.split("."), _resolve_source(op.source, cred, cred)
+                )
+            except config_patcher.ConfigPatchError:
+                return

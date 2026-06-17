@@ -271,17 +271,34 @@ def _build_exec_policy() -> dict:
     provision`` deep-merge path produce identical policy — one source
     of truth.
 
-    * security="allowlist": unknown commands are gated by an approval.
-    * ask="on-miss": emit exec.approval.requested on allowlist misses
-      so the in-chat approval card (#305) can decide.
+    mode="full": exec runs without an approval gate. The per-user
+    container is an isolated single-tenant sandbox AND its agents run
+    autonomously via the Paperclip openclaw_gateway adapter (issue
+    assignment, routines, manual wake) with NO operator connected to
+    answer an approval. The previous ``security="allowlist" / ask="on-miss"``
+    policy made every non-allowlisted exec in an autonomous run hang on
+    an approval that never arrives, until the 120s gateway timeout —
+    Paperclip then re-dispatched, looping forever (every heartbeat_run
+    ``timed_out`` with ``blocked_tool_call activeTool=exec``). This
+    mirrors Paperclip's own design: every local adapter defaults to
+    skipping permission prompts for unattended agents
+    (``dangerouslySkipPermissions``/``yolo``), "required for headless
+    runs where interactive approval is impossible". ``full`` is the
+    openclaw-gateway equivalent.
 
-    Without this OpenClaw defaults to security="deny", which blocks
+    ``mode`` is mutually exclusive with ``security``/``ask`` (the config
+    schema rejects combining them). Valid ``mode`` values: deny |
+    allowlist | ask | auto | full. ``auto`` (allowlist + LLM
+    auto-review) would keep a safety layer without a human, but it
+    requires a ``tools.exec.reviewer`` model to be wired, which the
+    deployed image does not have — so it falls back to hanging.
+
+    Without any policy OpenClaw defaults to security="deny", which blocks
     every exec call silently (openclaw/src/agents/exec-defaults.ts:98).
     """
     return {
         "exec": {
-            "security": "allowlist",
-            "ask": "on-miss",
+            "mode": "full",
         },
     }
 

@@ -173,13 +173,20 @@ class TestOpenclawConfigShape:
         assert set(entry["config"].keys()) == {"dreaming"}
 
     def test_tools_exec_approval_policy(self):
-        """allowlist + on-miss lets the in-chat approval card decide on
-        unknown commands. OpenClaw's default security=deny silently blocks
-        every exec call (exec-defaults.ts:98)."""
+        """mode="full" runs exec without an approval gate. Agents run
+        autonomously via the Paperclip openclaw_gateway adapter with no
+        operator to answer an approval; the old allowlist/on-miss policy
+        made every autonomous exec hang on an approval that never arrived
+        (120s gateway timeout). The per-user container is an isolated
+        sandbox; this mirrors Paperclip's dangerouslySkipPermissions
+        default for unattended agents. `mode` is mutually exclusive with
+        security/ask. OpenClaw's default security=deny would silently
+        block every exec call (exec-defaults.ts:98)."""
         config = _cfg()
         exec_cfg = config["tools"]["exec"]
-        assert exec_cfg["security"] == "allowlist"
-        assert exec_cfg["ask"] == "on-miss"
+        assert exec_cfg["mode"] == "full"
+        assert "security" not in exec_cfg
+        assert "ask" not in exec_cfg
 
     def test_tools_image_understanding_enabled(self):
         config = _cfg()
@@ -381,7 +388,7 @@ class TestWriteOpenclawConfigAsync:
         assert cfg["gateway"]["auth"]["token"] == "t-1"
         assert cfg["agents"]["defaults"]["verboseDefault"] == "full"
         assert cfg["memory"]["backend"] == "builtin"
-        assert cfg["tools"]["exec"]["security"] == "allowlist"
+        assert cfg["tools"]["exec"]["mode"] == "full"
         assert cfg["channels"] == {}
         assert cfg["browser"]["defaultProfile"] == "openclaw"
         assert "nodeHost" not in cfg

@@ -443,6 +443,21 @@ Updated from the audit's 10 workstreams / 8-13 eng-weeks. Verification **increas
 
 ---
 
+## 12. Business-model fit (2026-06-17)
+
+The flat **$50/mo** model = uniform **0.5 vCPU / 1 GB** box; inference via Bedrock-credits / ChatGPT-OAuth / BYO (orthogonal to runtime). Hermes must not break that. **Verdict: fits — via lazy-start single-active-daemon — with one live measurement gating go/no-go.**
+
+- **One Hermes daemon is designed for tiny hardware.** Nous ships it to *"run on a $5 VPS… costs nearly nothing when idle"* (`README.md:15`). Base = Debian + Python 3.13 (uv venv) + Node/npm; Playwright Chromium is baked **outside** the `/opt/data` volume (`PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright`, Dockerfile) → no per-boot browser reinstall. A single idle daemon on the existing box is plausible — same ballpark as OpenClaw today.
+- **Concurrency reality favors us.** A user chats with one agent at a time; Friday/Atlas/marketplace agents rarely all compute at once. **Lazy per-profile daemon start** (spin a profile's daemon up on first message, idle it down after inactivity) keeps the box to ~1 active daemon → runtime load ≈ OpenClaw today (already ~72-85% of the fee on the CPU axis, `project_openclaw_mcp_connect_storm_crashloop`). **Always-on multi-daemon is rejected on unit economics** (N Python daemons on a 1 GB box).
+- **Inference billing unchanged.** Runtime is orthogonal to provider (§1); Hermes draws the same Bedrock-credits / OAuth / BYO through the same gate + the same `cost_microcents` self-pricing (Rev 2 §2). No new inference-cost path; the $50 math is unchanged. (Hermes's value is its runtime/learning-loop capabilities, not a cheaper box.)
+- **Cold-start cost.** Heavy image (Node + Playwright + `[all]` Python extras) → larger ECR pull on task placement (one-time, warm-ECR mitigated) + lazy spin-up latency on first message to an idle agent (seconds). Mitigation: keep Friday's daemon warm, idle the rest.
+- **New work: an in-container supervisor.** Lazy-start needs a process that starts the right profile's daemon on demand, allocates its port, health-checks, and idles it. This is the "multi-daemon lifecycle" workstream in the Rev 2 effort (~1-2wk).
+- **The ONE must-measure-live item (go/no-go):** idle + under-load **RSS of a single Hermes daemon on the 1 GB box**. Source can't give exact RSS; a ~1-hour spike (boot a Hermes container; measure RSS idle, during a Friday run, during a Playwright task) closes it. If one-daemon idle RSS is materially above OpenClaw's, the answer is a **Hermes-specific box size = a pricing decision**, not a redesign.
+
+**Net:** business-model-compatible on the existing $50 box **assuming (a) lazy-start and (b) one-daemon idle RSS ≈ OpenClaw**. (b) is the single live measurement to take before committing the build.
+
+---
+
 ## Executive summary (10 bullets)
 
 1. **Decision: additive, beta-flagged signup-time `OpenClaw|Hermes` full-runtime selector.** Greenfield (zero `runtime_kind`/`hermes` hits in the repo); no OpenClaw teardown; new users default OpenClaw.

@@ -21,10 +21,48 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.config import settings
 from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
+
+# Appended to Atlas's AGENTS.md ONLY when ``settings.ACP_ENABLED`` is on, so
+# the recruiter teaches harness delegation exactly when the platform actually
+# supports it (the acpx runtime is baked + promoted behind that flag). ACP is a
+# container-wide capability — OpenClaw's root ``acp.enabled`` gate, not a
+# per-agent config key — so the per-agent intent is carried by an agent's
+# prompt + its marketplace listing's ``enable_acp``/``requires_acp``, never by
+# a key on the strict openclaw.json agent entry. Atlas, as the builder, has to
+# know this to architect specialists that delegate rather than grind code
+# inline.
+_ACP_DELEGATION_SECTION = """
+
+## Coding-Harness Delegation (ACP)
+
+Some specialists you build do heavy code work — write code across a repo, run
+builds, iterate against test output. Those agents should **delegate to a coding
+harness** rather than edit inline: at architecture time (Step 2) design them to
+call `sessions_spawn({ runtime: "acp" })`, which hands the task to Claude Code
+or Codex and streams the result back. Surface this as a vetted requirement in
+Step 4 like any other.
+
+- **It is a container-wide capability, not a per-agent flag.** The harness
+  runtime is gated by the owner container's root `acp.enabled` + the bundled
+  `acpx` backend. You cannot turn it on from an agent's openclaw.json entry
+  (that schema is strict). What you control per agent is (a) the agent's
+  prompt — does it reach for `sessions_spawn` — and (b) marking the
+  marketplace listing `enable_acp` at publish so the buyer's container turns
+  the runtime on at deploy.
+- **It only works when the owner's provider can authenticate a harness.**
+  Claude Code needs Anthropic creds (Bedrock or an Anthropic key); Codex needs
+  OpenAI creds (ChatGPT OAuth or an OpenAI key). An owner with neither gets no
+  harness — design the agent to degrade to inline work, and say so in its
+  AGENTS.md rather than promising delegation it can't deliver.
+- **No aspirational capability claims (H4).** Only describe an agent as
+  delegating to a harness if it actually calls `sessions_spawn`. Don't ship a
+  prompt that claims harness delegation an agent never invokes.
+"""
 
 # Matched by display name: Atlas is seeded with role="general" (shared with
 # marketplace hires), so role is not a unique handle. A user-renamed Atlas or a
@@ -81,6 +119,26 @@ async def pre_stage_atlas(
     except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
         put_metric("atlas_seed.state_error")
         logger.warning("atlas_seed: workspace-state write failed owner=%s: %s", owner_id, exc)
+
+    # When ACP is rolled out, write Atlas's AGENTS.md with the harness-
+    # delegation section appended BEFORE the generic vendored-file loop. The
+    # loop's ``write_file_if_missing`` then no-ops on AGENTS.md (already
+    # present), so the augmented copy wins. When ACP is off, this is skipped
+    # and the loop writes the vanilla vendored AGENTS.md. Best-effort: a
+    # failure here just means Atlas ships the vanilla AGENTS.md the loop writes.
+    if settings.ACP_ENABLED:
+        try:
+            base_agents = (_FILES_DIR / "AGENTS.md").read_text(encoding="utf-8")
+            wrote_acp = workspace.write_file_if_missing(
+                owner_id,
+                f"workspaces/{atlas_uuid}/AGENTS.md",
+                base_agents + _ACP_DELEGATION_SECTION,
+            )
+            if wrote_acp:
+                put_metric("atlas_seed.acp_section_written")
+        except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+            put_metric("atlas_seed.acp_section_error")
+            logger.warning("atlas_seed: ACP AGENTS.md augmentation failed owner=%s: %s", owner_id, exc)
 
     written = 0
     skipped = 0

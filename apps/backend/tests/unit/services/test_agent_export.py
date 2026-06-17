@@ -115,6 +115,18 @@ def test_export_skips_junk_dirs(fake_efs):
     assert not any(".git" in n for n in names)
 
 
+def test_export_requires_acp_defaults_false(fake_efs):
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    assert pkg.manifest["requires_acp"] is False
+
+
+def test_export_requires_acp_when_declared(fake_efs):
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, enable_acp=True)
+    assert pkg.manifest["requires_acp"] is True
+
+
 def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
     """Regression: a guard that strips any top-level ``sessions/`` or
     ``agent/`` dir from the tarball is unnecessary now that exports come

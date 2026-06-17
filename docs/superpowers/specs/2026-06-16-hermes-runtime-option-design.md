@@ -4,7 +4,7 @@
 **Status:** Verified design spec — buildable. Supersedes `docs/audit-2026-05-17-hermes-vs-openclaw.md` (commit `c9562d39`).
 **Source basis:** Hermes v0.14.0 at `/Users/prasiddhaparthsarthy/Desktop/isol8.nosync/hermes-agent`; OpenClaw upstream clone (sibling, gitignored); Isol8 backend/frontend/infra in this worktree; Paperclip read-only clone. Every load-bearing claim cites a `file:line` read during the 11-agent verification pass (`docs/superpowers/research/2026-06-16-hermes-runtime-verification/`).
 
-**Adversarial verification (2026-06-16):** four independent skeptic agents re-read the source to refute the load-bearing claims — SSE resume/framing, `metadata` propagation, ChatGPT-OAuth refresh ownership, OAuth Provider Proxy multi-tenancy, the auth/trust topology, and the RuntimeBackend caller list. **All conclusions held.** Six citation/scoping corrections were applied to this revision: (1) the `Last-Event-ID` claim narrowed to the HTTP SSE path (unrelated kanban/Matrix hits exist) + the mid-run stream-orphan bug surfaced; (2) the device-trust evidence narrowed (a DM-user `pairing` subsystem exists but is not operator-device attestation); (3) the `gateway_pool` caller table fixed (`main.py` added, `connection_pool.py` removed as non-caller); (4) `resolve_provider_choice` relocated to `container_provision.py`; (5) `_register_task_definition` def line corrected; (6) the `ProvisioningStepper` phase array corrected to the real 6-phase `STEPS_PAID`. The architecturally load-bearing claims — **4 WS clients, runtime-orthogonal provider gate, flat single-bearer Hermes auth, non-resumable SSE** — are confirmed against source.
+**Adversarial verification (2026-06-16):** four independent skeptic agents re-read the source to refute the load-bearing claims — SSE resume/framing, `metadata` propagation, ChatGPT-OAuth refresh ownership, OAuth Provider Proxy multi-tenancy, the auth/trust topology, and the Runtime-port caller list. **All conclusions held.** Six citation/scoping corrections were applied to this revision: (1) the `Last-Event-ID` claim narrowed to the HTTP SSE path (unrelated kanban/Matrix hits exist) + the mid-run stream-orphan bug surfaced; (2) the device-trust evidence narrowed (a DM-user `pairing` subsystem exists but is not operator-device attestation); (3) the `gateway_pool` caller table fixed (`main.py` added, `connection_pool.py` removed as non-caller); (4) `resolve_provider_choice` relocated to `container_provision.py`; (5) `_register_task_definition` def line corrected; (6) the `ProvisioningStepper` phase array corrected to the real 6-phase `STEPS_PAID`. The architecturally load-bearing claims — **4 WS clients, runtime-orthogonal provider gate, flat single-bearer Hermes auth, non-resumable SSE** — are confirmed against source.
 
 > Citation convention: `hermes-agent/...` = Hermes source; bare `apps/backend/...`, `apps/frontend/...`, `apps/infra/...` = this repo; `openclaw/...` = upstream OpenClaw clone; `paperclip/...` = Paperclip clone.
 
@@ -14,7 +14,7 @@
 
 **Decision: add a signup-time runtime selector — `OpenClaw | Hermes` — that provisions a Hermes container as a FULL runtime replacement (not ACP delegation), additive and beta-flagged.**
 
-- **Additive, not a migration.** OpenClaw containers and their entire WS-RPC / VPC-Link / device-pairing apparatus stay untouched. Hermes is a parallel `RuntimeBackend` behind a per-container `runtime_kind` discriminator. No OpenClaw teardown. Verified greenfield: a repo-wide grep for `runtime_kind`, `hermes`, `RuntimeBackend` across `apps/backend`, `apps/frontend`, `apps/infra` returns **zero** hits (08-blast-radius §Headline; re-confirmed this pass).
+- **Additive, not a migration.** OpenClaw containers and their entire WS-RPC / VPC-Link / device-pairing apparatus stay untouched. Hermes is a second `Runtime` **adapter** behind a per-container `runtime_kind` discriminator; the backend depends on the abstract port + a `Capabilities` descriptor, never on a brand (§4). No OpenClaw teardown. Verified greenfield: a repo-wide grep for `runtime_kind`, `hermes`, `RuntimeBackend` across `apps/backend`, `apps/frontend`, `apps/infra` returns **zero** hits (08-blast-radius §Headline; re-confirmed this pass).
 - **Beta-flagged.** New users default to `runtime_kind="openclaw"`. A beta opt-in sets `"hermes"` on the billing row, stamped onto the containers row at provision time. Existing OpenClaw users never auto-migrate.
 - **Full runtime swap.** A Hermes container runs `python -m gateway.run` (Hermes daemon), exposes the OpenAI-compat HTTP+SSE API server (`hermes-agent/gateway/platforms/api_server.py`), and replaces the OpenClaw Node daemon entirely. The backend talks to it over HTTP+SSE instead of WS-RPC.
 - **The runtime axis is orthogonal to the provider axis.** Hermes consumes Bedrock / ChatGPT-OAuth / BYOK through the *same* `provider_choice`-keyed provision gate; runtime selection adds **no new gate** (11-onboarding §2, grounded in `apps/backend/core/services/provision_gate.py:156-324`).
@@ -28,7 +28,7 @@
 | OAuth Provider Proxy wraps Claude Pro/ChatGPT/SuperGrok; could centralize auth | **FALSE.** Nous-only, loopback, unauthenticated, single-tenant | Dropped from scope (05-oauth-provider-proxy) |
 | Personalities/`ephemeral_system_prompt` interchangeable; `workspace` is a run/init field | Personalities is a **daemon-global toggle** (one persona at a time); **no `workspace` run field exists** | Seed Friday/Atlas via per-call `ephemeral_system_prompt`; per-agent cwd is soft (04-personality) |
 | `_OPENCLAW_RUNTIME_STATE_DIRS` strips `sessions/`,`agent/` in export | **GONE.** Export now tars `workspaces/{agent_id}/` directly | Marketplace §6 mapping rewritten (08-blast-radius Drift #1) |
-| RuntimeBackend wraps `connection_pool.py` → covers RPC surface | **FALSE.** There are **4 independent OpenClaw-WS clients**, 3 bypass the pool | Abstraction must absorb all 4 (08-blast-radius Drift #2) |
+| RuntimeBackend wraps `connection_pool.py` → covers RPC surface | **FALSE.** There are **4 independent OpenClaw-WS clients**, 3 bypass the pool | OpenClaw adapter must absorb all 4 (08-blast-radius Drift #2) |
 | 57 OpenClaw-coupled files | **72 `.py` files** today (133 incl. seed assets) | Larger blast radius |
 
 ---
@@ -41,7 +41,7 @@
 
 **Contradiction with audit framing:** the audit assumed an "ALB 60s idle timeout" risk. **Both halves are wrong for our stack:** the internal backend ALB idle timeout is already **300s** (`apps/infra/lib/stacks/network-stack.ts:79`), AND the per-user container is **not reached through the ALB at all** — the backend dials the container by direct private IP via ECS `describe_tasks` (`apps/backend/core/containers/ecs_manager.py:1182,1263,1979`). The only ceiling on the client→backend leg is API Gateway WS's hard 10-min idle / 2-hr max (defeated by existing ping/pong) (01-sse-framing §4).
 
-**Design consequence:** the SSE event taxonomy the `HermesBackend` must parse is fixed (table below). Recovery on a genuine network blip = **poll `GET /v1/runs/{id}` for terminal `output`/`usage`** (loses intermediate deltas, never the final answer). Gapless mid-run resume would require forking `api_server.py` to add `id:` + a replay ring — defer unless product demands it.
+**Design consequence:** the SSE event taxonomy the **Hermes adapter** (Transport facet) must parse is fixed (table below). Recovery on a genuine network blip = **poll `GET /v1/runs/{id}` for terminal `output`/`usage`** (loses intermediate deltas, never the final answer). Gapless mid-run resume would require forking `api_server.py` to add `id:` + a replay ring — defer unless product demands it.
 
 Hermes `/v1/runs/{id}/events` event taxonomy (01-sse-framing §3):
 
@@ -194,41 +194,87 @@ There are **two physically distinct authenticated hops**, with completely differ
 
 ---
 
-## 4. RuntimeBackend abstraction
+## 4. Runtime port & adapters
 
-### Interface (`apps/backend/core/runtime/`)
+**Design principle: ONE `Runtime` contract; OpenClaw and Hermes are interchangeable adapters.** The rest of the backend depends only on the port + a `Capabilities` descriptor and **never names a runtime brand**. Every runtime-specific divergence — wire protocol, on-disk config/auth formats, identity-seeding shape, marketplace artifact codec — is **contained inside `core/runtime/<kind>/`**, not leaked across the tree.
 
-```py
-class RuntimeBackend(Protocol):
-    async def connect(self, owner_id: str) -> RuntimeConnection: ...
-    async def list_agents(self, owner_id: str) -> list[Agent]: ...
-    async def create_agent(self, owner_id: str, spec: AgentSpec) -> Agent: ...
-    async def send_chat(self, owner_id: str, agent_id: str, message: str,
-                        session_key: str,
-                        on_event: Callable[[ChatEvent], Awaitable[None]]) -> ChatResult: ...
-    async def abort_chat(self, owner_id: str, run_id: str) -> None: ...
-    async def resolve_approval(self, owner_id: str, run_id: str, choice: ApprovalChoice) -> None: ...
+### Package layout
 
-class OpenClawBackend(RuntimeBackend):
-    # Wraps today's connection_pool.py — WS-RPC, ws://<ip>:18789, v4 signed-device handshake.
-
-class HermesBackend(RuntimeBackend):
-    # HTTP+SSE: POST /v1/runs, GET /v1/runs/{id}/events (header bearer), 
-    # POST /v1/runs/{id}/approval, POST /v1/runs/{id}/stop. Maps SSE events (Q1 table) → ChatEvent.
-
-def get_runtime_backend(runtime_kind: str) -> RuntimeBackend: ...  # factory, switches on containers.runtime_kind
+```
+core/runtime/
+  __init__.py     # registry: get_runtime(runtime_kind) -> Runtime   (the ONLY brand switch point)
+  base.py         # Runtime port (Protocol) + Capabilities + shared types
+                  #   (ChatEvent, AgentSpec, OwnerProfile, ContainerSpec, Artifact) — all brand-blind
+  openclaw/       # adapter #1 — consolidates today's scattered OpenClaw code behind the port
+  hermes/         # adapter #2 — new cohesive package
 ```
 
-### CRITICAL — the abstraction must absorb FOUR OpenClaw-WS clients, not one pool
+### The port — one cohesive adapter implements every facet
 
-**CORRECTION to audit §8.4** (which assumed wrapping `connection_pool.py` covers the RPC surface). There are **4 independent OpenClaw-WS clients, 3 of which bypass the pool** (08-blast-radius Drift #2):
+```py
+class Runtime(Protocol):
+    kind: str
+    capabilities: "Capabilities"
 
-1. `core/gateway/connection_pool.py` — the pool (`GATEWAY_PORT` re-declared at `:25`; grew 1761→2152 lines).
-2. `routers/container_rpc.py` — own `ws_connect` (`:22`), private `_openclaw_handshake` (`:40`) + `_call_gateway_rpc` (`:85`). The generic `POST /rpc` proxy. **Never touches `get_gateway_pool`.**
-3. `routers/control_ui_proxy.py` — raw HTTP+WS proxy to `http://{ip}:{GATEWAY_PORT}/` (`:149/:204/:271`). No pool. (Hermes has no built-in control-UI SPA — this proxy has no Hermes target; the control dashboard for Hermes must be reconstructed from `/v1` endpoints or shelved for beta.)
-4. `core/services/container_auth.py` (new 2026-06-13) — raw `ws_connect` (`:62`) to revoke a provider credential from a running container.
+    # — Transport (live session) —
+    async def connect(self, owner_id: str) -> RuntimeConnection: ...
+    async def send_chat(self, owner_id: str, agent_id: str, message: str, session_key: str,
+                        on_event: Callable[[ChatEvent], Awaitable[None]]) -> ChatResult: ...
+    async def abort(self, owner_id: str, run_id: str) -> None: ...
+    async def resolve_approval(self, owner_id: str, run_id: str, choice: ApprovalChoice) -> None: ...
+    async def list_agents(self, owner_id: str) -> list[Agent]: ...
+    async def create_agent(self, owner_id: str, spec: AgentSpec) -> Agent: ...
+    async def list_sessions(self, owner_id: str, agent_id: str) -> list[Session]: ...
+    async def revoke_provider(self, owner_id: str, provider: str) -> None: ...
 
-`GATEWAY_PORT=18789` is triplicated (`ecs_manager.py:37` canonical, `connection_pool.py:25`, `node_connection.py:42`).
+    # — Provisioner (artifacts the brand-blind ecs_manager consumes) —
+    def container_spec(self, owner_id: str, ctx: ProvisionCtx) -> ContainerSpec: ...  # image, port, env, healthcheck, EFS layout
+    async def write_config(self, owner_id: str, profile: ConfigProfile) -> None: ...   # to EFS
+    async def write_auth(self, owner_id: str, creds: ProviderCreds) -> None: ...       # to EFS
+
+    # — IdentitySeeder —
+    async def seed_owner_agents(self, owner_id: str, profile: OwnerProfile) -> None: ...  # Friday + Atlas
+
+    # — ArtifactCodec (marketplace) —
+    async def export_agent(self, owner_id: str, agent_id: str) -> Artifact: ...
+    async def deploy_artifact(self, owner_id: str, artifact: Artifact) -> str: ...
+    safety_format: str   # which marketplace_safety scanner profile applies
+
+def get_runtime(runtime_kind: str) -> Runtime: ...   # registry — the ONE place that maps kind -> adapter
+```
+
+### Capabilities descriptor — what actually kills `if runtime_kind == "hermes"`
+
+Generic code asks a **capability**, never a brand. A new runtime (or a Hermes upgrade that gains a feature) = flip one flag in one adapter, touch nothing else:
+
+| Capability | OpenClaw | Hermes | Brand-blind consumer that queries it |
+|---|---|---|---|
+| `desktop_pairing` | ✅ | ❌ | `routers/desktop_auth.py`; container-row pairing fields |
+| `device_exec_approval` | ✅ | ❌ | approval-forward gate / `ApprovalCard` policy |
+| `control_ui_proxy` | ✅ | ❌ | `routers/control_ui_proxy.py` (hides / 404s for Hermes) |
+| `resumable_stream` | ✅ | ❌ | reconnect logic (poll-for-terminal when ❌, Q1) |
+| `per_agent_workspace` | ✅ | ❌ | per-agent cwd isolation expectation (Q8) |
+| `structured_run_context` | ✅ | ❌ | Paperclip context: structured metadata vs wake-text (Q2) |
+
+### Why this is *separation*, not two parallel stacks
+
+- **Shared once** (lives in `base.py` / the generic layer, brand-blind): the `ChatEvent` shape; the canonical `OwnerProfile`; the provisioning orchestration in `ecs_manager` (it consumes `container_spec()`, never builds one); the marketplace state machine; the provision gate; Paperclip synthesis *dispatch*; the usage/metering callback.
+- **Adapter-internal** (the irreducible divergence the port exists to *contain*): WS-RPC vs HTTP+SSE; `openclaw.json` vs `~/.hermes/config.yaml`; the two auth-file shapes; markdown-file seeding vs `ephemeral_system_prompt`; the tarball/slice codec. Making these *identical* is not the goal — keeping them behind a stable contract is.
+
+### Migration order — consolidate OpenClaw behind the port FIRST
+
+Workstream 1 is **not** "add an abstraction + wrap chat." It is **extract the port, then move today's scattered OpenClaw specifics behind it** — standalone-valuable cleanup that de-risks Hermes, because the contract is proven by OpenClaw filling it *before* any Hermes code exists. Today's OpenClaw logic is scattered across **four WS clients + four writer/codec modules**; the OpenClaw adapter must absorb all eight.
+
+**(i) Four independent OpenClaw-WS clients** — CORRECTION to audit §8.4, which assumed wrapping `connection_pool.py` covers the surface; **3 of the 4 bypass the pool entirely** (08-blast-radius Drift #2):
+
+1. `core/gateway/connection_pool.py` — the persistent pool; v4 signed-device handshake (`:490`); grew 1761→2152 lines → adapter **Transport** (live session).
+2. `routers/container_rpc.py` — own `ws_connect` (`:22`), `_openclaw_handshake` (`:40`) + `_call_gateway_rpc` (`:85`); the generic `POST /rpc` proxy; **never touches the pool** → adapter `list_agents`/`create_agent`/`list_sessions`/generic RPC.
+3. `routers/control_ui_proxy.py` — raw HTTP+WS proxy to `http://{ip}:18789/` (`:149/:204/:271`) → gated by `capabilities.control_ui_proxy` (no Hermes target; reconstruct from `/v1` or shelve for beta).
+4. `core/services/container_auth.py` (2026-06-13) — raw `ws_connect` (`:62`) to revoke a provider credential → adapter `revoke_provider`.
+
+`GATEWAY_PORT=18789` is triplicated (`ecs_manager.py:37` canonical, `connection_pool.py:25`, `node_connection.py:42`) — collapse into the OpenClaw adapter.
+
+**(ii) Four writer/codec modules** holding OpenClaw on-disk/format specifics → become the OpenClaw adapter's Provisioner / IdentitySeeder / ArtifactCodec facets: `core/containers/config.py` (`write_openclaw_config`), `workspace.pre_stage_auth_profile_store`, `friday_identity.py`, `agent_export.py` + `catalog_service`.
 
 ### Verified current caller list (the refactor surface)
 
@@ -248,17 +294,21 @@ def get_runtime_backend(runtime_kind: str) -> RuntimeBackend: ...  # factory, sw
 | `routers/teams/agents.py` | Teams agent CRUD |
 | `routers/websocket_chat.py` | primary chat path (`:183/:356/:528/:877/:1197`) |
 
-Plus the 3 non-pool raw clients above. **All must route through `get_runtime_backend(runtime_kind)`.** Files to relocate/split: move `connection_pool.py` → `core/runtime/openclaw/`; add `core/runtime/hermes/client.py`; add `core/runtime/__init__.py` factory.
+Plus the 3 non-pool raw clients above. **Every one becomes a `get_runtime(runtime_kind)` call against the port — no caller references a brand.** The OpenClaw transport code relocates under `core/runtime/openclaw/`; the Hermes adapter is `core/runtime/hermes/`; the registry is `core/runtime/__init__.py`.
 
 ---
 
-## 5. Per-runtime writers
+## 5. Adapter facets (Provisioner / auth / IdentitySeeder)
 
-| Concern | OpenClaw writer (today) | Hermes writer (new) |
+These are **facets of the two adapters from §4**, not free-standing `*_hermes.py` twins bolted next to each OpenClaw function. Each adapter owns its Provisioner (`container_spec`/`write_config`), auth writer (`write_auth`), and IdentitySeeder (`seed_owner_agents`) — all implementing the shared port. The canonical `OwnerProfile` + persona template text live **once** in the generic layer; each adapter only renders them into its own on-disk shape.
+
+| Facet | OpenClaw adapter (`core/runtime/openclaw/`) | Hermes adapter (`core/runtime/hermes/`) |
 |---|---|---|
-| **Config** | `write_openclaw_config` → `openclaw.json` on EFS (`apps/backend/core/containers/config.py:1209`; file grew to 1349 lines) | `core/runtime/hermes/config_writer.py` → `~/.hermes/config.yaml`: `model`, `mcp_servers`, `platform_toolsets.api_server.enabled`, `terminal.cwd` (= EFS workspace), `platforms.api_server.key` (or via env). BYOK → `~/.hermes/.env` lines |
-| **Auth** | `pre_stage_auth_profile_store` → EFS `credentials/oauth.json`, `chown 1000` (`workspace.py:725-836`); BYOK inlined into `openclaw.json` | `core/runtime/hermes/auth_writer.py` → `~/.hermes/auth.json` (Q4 shape), `0o600`/parent `0o700`/UID 1000; BYOK → `~/.hermes/.env`. No write-back; DDB=seed (Q3) |
-| **Friday/Atlas seeding** | `friday_identity.py` (728 lines) writes IDENTITY/SOUL/USER/BOOTSTRAP markdown into `agents/<id>/agent/`; OpenClaw auto-loads them | **`core/services/friday_hermes.py`** — does NOT write per-agent identity files. The full persona is held by the backend and passed as `ephemeral_system_prompt` (run-create `instructions`) on **every** `/v1/runs`, with `skip_context_files=True`, `load_soul_identity=False` (Q5/Q8). Both writers compile from the same canonical `OwnerProfile` (`friday_identity._resolve_owner_profile`); the persona template text is shared, rendered to markdown (OpenClaw) vs concatenated to one string (Hermes) |
+| **`write_config`** | wraps `write_openclaw_config` → `openclaw.json` on EFS (`apps/backend/core/containers/config.py:1209`; file grew to 1349 lines) | `~/.hermes/config.yaml`: `model`, `mcp_servers`, `platform_toolsets.api_server.enabled`, `terminal.cwd` (= EFS workspace), `platforms.api_server.key` (or via env). BYOK → `~/.hermes/.env` lines |
+| **`write_auth`** | wraps `pre_stage_auth_profile_store` → EFS `credentials/oauth.json`, `chown 1000` (`workspace.py:725-836`); BYOK inlined into `openclaw.json` | `~/.hermes/auth.json` (Q4 shape), `0o600`/parent `0o700`/UID 1000; BYOK → `~/.hermes/.env`. No write-back; DDB=seed (Q3) |
+| **`seed_owner_agents`** | wraps `friday_identity.py` (728 lines): writes IDENTITY/SOUL/USER/BOOTSTRAP markdown into `agents/<id>/agent/`; OpenClaw auto-loads them | Does NOT write per-agent identity files. The full persona is held by the backend and passed as `ephemeral_system_prompt` (run-create `instructions`) on **every** `/v1/runs`, with `skip_context_files=True`, `load_soul_identity=False` (Q5/Q8) |
+
+Both `seed_owner_agents` implementations compile from the same canonical `OwnerProfile` (`friday_identity._resolve_owner_profile`, hoisted into the generic layer); the shared persona template renders to markdown (OpenClaw) vs concatenates to one string (Hermes). **No `friday_hermes.py` beside `friday_identity.py`** — the divergence lives inside the Hermes adapter only.
 
 **Verified personality mechanism:** Friday and Atlas are **per-run `ephemeral_system_prompt` strings**, keyed by which agent the inbound request targets — NOT `personalities[]` (daemon-global, single-persona) and NOT SOUL.md files (20k-capped + injection-scanned). Uncapped, unscanned, both-agents-concurrent (04-personality §5).
 
@@ -270,7 +320,7 @@ Plus the 3 non-pool raw clients above. **All must route through `get_runtime_bac
 - **ECS_manager branch.** The branch point is `background_provision` → `provision_user_container` (`apps/backend/core/services/container_provision.py:32-59`, `ecs_manager.py:1438-1496+`). Add `runtime_kind` to `resolve_provider_choice`'s return (it lives in `apps/backend/core/services/container_provision.py:18`, **not** `ecs_manager.py`) and thread it through `background_provision` → `provision_user_container`; branch on it for **image / config builder / port / healthcheck** parallel to the existing provider branches. The task def is re-registered every provision (`_register_task_definition`, def at `ecs_manager.py:376`; `:1625` is a call site), so the image legitimately differs per provision. `ensure_user_ready` (`user_provision.py:49-138`) needs **no change** (runtime-agnostic) (11-onboarding §3).
 - **Hermes image / ECR.** Build a pinned Hermes image (`python -m gateway.run`) → new ECR repo (e.g. `isol8/hermes-extended`), tagged per-env in a `hermes-version.json` mirroring `openclaw-version.json`'s SSOT discipline. Bind api_server on the container IP (non-loopback) with `API_SERVER_KEY` set (forces a key, §3).
 - **EFS layout.** Per-user access point maps `/users/{owner_id}/hermes/` → `~/.hermes` inside the container. Contains `config.yaml`, `auth.json`, `.env`, `skills/`, `cron/jobs.json`, `state.db`, `workspace/`. **Note `project_efs_sqlite_wal_two_task_corruption`:** Hermes also uses WAL-SQLite (`state.db`, kanban.db) on EFS — provision with **single-writer maxPercent=100** to avoid two-task corruption, same as OpenClaw 6.6.
-- **Ingress — backend-mediated (recommended).** Backend dials the Hermes container by **direct private IP** via ECS `describe_tasks` (same path as OpenClaw, `ecs_manager.discover_ip` at `:1182`) over HTTP+SSE. No new ALB host route, no browser→container SSE (impossible anyway — EventSource can't set the bearer header, §3 / 10-auth-hermes §1). Frontend stays WS→backend; backend translates to `HermesBackend`. This keeps the frontend runtime-agnostic (audit §8.2 option (a)).
+- **Ingress — backend-mediated (recommended).** Backend dials the Hermes container by **direct private IP** via ECS `describe_tasks` (same path as OpenClaw, `ecs_manager.discover_ip` at `:1182`) over HTTP+SSE. No new ALB host route, no browser→container SSE (impossible anyway — EventSource can't set the bearer header, §3 / 10-auth-hermes §1). Frontend stays WS→backend; backend translates via the **Hermes adapter**. This keeps the frontend runtime-agnostic (audit §8.2 option (a)).
 - **CDK deltas:** Hermes ECR repo; per-container `API_SERVER_KEY` Secrets Manager secret + task-def `secrets` wiring; Hermes task-definition scaffolding (image, `HERMES_HOME=/mnt/efs/users/{owner_id}/hermes`, env). **No teardown** of the WS API Gateway / VPC Link V1 / NLB / `ws-connections` table — all stay for OpenClaw (08-blast-radius §infra: `api-stack.ts:451/474/126/258` intact).
 
 ---
@@ -305,7 +355,7 @@ The runtime selector reuses the existing provider/credential plumbing — concre
 |---|---|---|
 | **Credential-gated matrix** | `provision_gate.py:156-324` (Layer 1 subscription → Layer 2 provider-picked → Layer 3 provider creds) | **Unchanged.** Gate is provider-keyed, runtime-orthogonal. Hermes user satisfies the identical `oauth_required`/`byo_provider_required`/`credits_required` gate (11-onboarding §2) |
 | **`ACP_ENABLED`-style flag** | (beta opt-in pattern) | New beta opt-in → sets `runtime_kind="hermes"` on the billing row; default `"openclaw"` keeps every existing row + legacy fallback safe. No symmetric `runtime_required` gate |
-| **Metering hook** | `usage_service` records per-owner/per-member counters → Stripe Meters; `record_usage()` invoked from the usage callback (`core/containers/__init__.py`) | `HermesBackend.send_chat` must surface token `usage` from the `run.completed` event (`api_server.py:3073-3079`) into the same `record_usage()` callback. Hermes also exposes `GET /v1/runs/{id}` with `usage` for polling fallback. Wire the metering hook per `runtime_kind` so both runtimes feed one ledger |
+| **Metering hook** | `usage_service` records per-owner/per-member counters → Stripe Meters; `record_usage()` invoked from the usage callback (`core/containers/__init__.py`) | the Hermes adapter's `send_chat` must surface token `usage` from the `run.completed` event (`api_server.py:3073-3079`) into the same `record_usage()` callback. Hermes also exposes `GET /v1/runs/{id}` with `usage` for polling fallback. Wire the metering hook per `runtime_kind` so both runtimes feed one ledger |
 | **Provider-specific pre-task setup** | `provision_user_container` OAuth pre-stage (`_pre_stage_oauth_for_user`, `ecs_manager.py:1480`) + BYO secrets (`_build_byo_secrets_for_user`, `:1490`) | Branch by `runtime_kind` to call the Hermes auth/config writers (§5) instead of the OpenClaw ones, after the provider branch |
 
 ---
@@ -321,12 +371,12 @@ The runtime selector reuses the existing provider/credential plumbing — concre
 
 ## 10. Workstreams, effort, risks
 
-Updated from the audit's 10 workstreams / 8-13 eng-weeks. Verification **increased** the estimate: the RuntimeBackend must absorb 4 WS clients (not 1), there is a new `credentials/mcp_server.py` rail that writes `openclaw.json` (`core/services/credentials/mcp_server.py:67-77`, new 2026-06-01), and the desktop/exec-approval trust model has no Hermes analog.
+Updated from the audit's 10 workstreams / 8-13 eng-weeks. Verification **increased** the estimate: the OpenClaw adapter must absorb 4 WS clients (not 1) plus 4 writer/codec modules, there is a new `credentials/mcp_server.py` rail that writes `openclaw.json` (`core/services/credentials/mcp_server.py:67-77`, new 2026-06-01), and the desktop/exec-approval trust model has no Hermes analog.
 
 | # | Workstream | Audit est. | Revised | Why changed |
 |---|---|---|---|---|
-| 1 | RuntimeBackend abstraction + OpenClaw wrap | 2-3 | **3-5** | 4 WS clients to absorb, not 1 (08 Drift #2); 72 coupled files |
-| 2 | HermesBackend HTTP+SSE client | 1-2 | 1-2 | event taxonomy fixed (Q1); poll-fallback recovery, no resume |
+| 1 | Runtime port + consolidate OpenClaw behind it (4 WS clients + 4 writer/codec modules) | 2-3 | **3-5** | ports-and-adapters extract; 8 scattered OpenClaw modules to absorb (08 Drift #2); 72 coupled files |
+| 2 | Hermes adapter — HTTP+SSE Transport + facets | 1-2 | 1-2 | event taxonomy fixed (Q1); poll-fallback recovery, no resume |
 | 3 | Hermes provisioning + CDK + ECR + Secrets Manager key | 1-2 | 1-2 | + per-container `API_SERVER_KEY` secret + single-writer constraint |
 | 4 | Hermes config writer (`config.yaml`/`.env`) | 0.5-1 | 0.5-1 | — |
 | 5 | Hermes auth writer (`auth.json`) | 0.5-1 | **0.5** | simpler — one file, no two-file dance (Q3/Q4) |
@@ -370,17 +420,17 @@ Updated from the audit's 10 workstreams / 8-13 eng-weeks. Verification **increas
 4. **Friday/Atlas seed via per-call `ephemeral_system_prompt` (run `instructions`), NOT `personalities[]` or SOUL.md** — the only uncapped, unscanned, both-agents-concurrent path (`personalities[]` is daemon-global single-persona; SOUL.md files are 20k-capped + injection-scanned).
 5. **SSE is non-resumable** — no `id:`/`event:` lines, no replay buffer; recovery = poll `GET /v1/runs/{id}` for the terminal `output` (loses intermediate deltas). The audit's "ALB 60s timeout" premise is wrong (ALB is 300s and not even on the container path).
 6. **`metadata` does NOT reach the agent** — Paperclip issue/thread context must ride in the wake text (v1, zero fork) or via a small Hermes fork patch into `session_context` (`HERMES_SESSION_THREAD_ID`).
-7. **RuntimeBackend must absorb FOUR OpenClaw-WS clients, not one pool** (`connection_pool`, `container_rpc`, `control_ui_proxy`, `container_auth`); only 11 files reference the pool (not the audit's ~25), 3 raw clients bypass it.
+7. **One `Runtime` port + two interchangeable adapters (OpenClaw/Hermes), NOT two parallel backends** — generic code depends on the port + a `Capabilities` descriptor, never a brand. Consolidating OpenClaw behind the port is workstream 1 (de-risks Hermes); the OpenClaw adapter must absorb FOUR scattered WS clients (`connection_pool`, `container_rpc`, `control_ui_proxy`, `container_auth`; 3 bypass the pool) plus its config/auth/identity/export writers. Only 11 files reference the pool (not the audit's ~25).
 8. **Four audit claims falsified:** the OAuth "two-file dance" (one file in v0.14.0), the OAuth Provider Proxy capabilities (Nous-only vaporware, contradicts its own release notes), `_OPENCLAW_RUNTIME_STATE_DIRS` (removed), and the `workspace` run field (does not exist).
 9. **ChatGPT-OAuth refresh model is identical to today's OpenClaw posture** (container-owns, in-place EFS write, no write-back, DDB=seed) — not a new problem; one file `~/.hermes/auth.json`, JWT-derived expiry, schema mapped.
-10. **Effort revised up to ~10-15 eng-weeks** (+buffer) — RuntimeBackend is bigger (4 clients, 72 coupled files, new `credentials/mcp_server.py` openclaw.json rail), partly offset by the simpler auth writer.
+10. **Effort revised up to ~10-15 eng-weeks** (+buffer) — the OpenClaw-consolidation (workstream 1) is bigger than the audit thought (4 WS clients + 4 writers, 72 coupled files, new `credentials/mcp_server.py` openclaw.json rail), partly offset by the simpler Hermes auth writer.
 
 ### Claims I am LESS than confident about (feed to adversarial verification)
 
 - **`API_SERVER_KEY` rotation via Secrets Manager + single-writer redeploy is clean** — reasoned from the OpenClaw `gateway_token` + KMS pattern, but no Hermes-side rotation behavior was tested; Hermes reads the key once at boot (`api_server.py:647`), so a rotate definitely needs a restart — confirm no in-flight-run breakage.
 - **Per-container `API_SERVER_KEY` belongs in Secrets Manager vs KMS-on-the-containers-row** — I recommended Secrets Manager as "strictly better" than today's `gateway_token` storage; this is a design preference, not source-forced. Either works.
 - **Backend-mediated ingress (no ALB host route) is correct for Hermes** — strongly indicated (EventSource can't set the bearer header; backend already dials by direct IP), but I did not verify the Hermes container's non-loopback bind + intra-VPC reachability end-to-end.
-- **`HermesBackend.send_chat` can feed `record_usage()` faithfully** — depends on `run.completed.usage` field names + cost presence, which I did NOT field-verify (unknown #3).
+- **The Hermes adapter's `send_chat` can feed `record_usage()` faithfully** — depends on `run.completed.usage` field names + cost presence, which I did NOT field-verify (unknown #3).
 - **Wake-text Paperclip context is sufficient for Friday/Atlas behavior** — the mechanism exists but reliable agent action on embedded context is untested (unknown #2).
 - **`control_ui_proxy` panels are reconstructible from Hermes `/v1`** — flagged as a risk, but the actual reconstruction cost / feasibility is unquantified (unknown #7).
 - **`friday_hermes.py` can share `friday_identity._resolve_owner_profile` cleanly** — assumes the template text is separable from the markdown-file rendering; not verified by reading `friday_identity.py`'s internal structure this pass.

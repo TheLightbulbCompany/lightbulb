@@ -91,6 +91,18 @@ export class ObservabilityStack extends cdk.Stack {
    * alarms — warn/cost alarms are deliberately excluded.
    */
   public readonly pageAlarmArns: string[] = [];
+  /**
+   * Curated subset of alarms used as FIS experiment stop-conditions (dev only).
+   * NOT the full page set: FIS caps stop-conditions at 5 per template, and the
+   * stop-condition alarm must be a stable blast-radius gauge — not a
+   * breach-on-missing heartbeat (those flip to ALARM when dev goes quiet or
+   * when a scenario intentionally stops a heartbeat, aborting the run for the
+   * wrong reason) and not the very signal a scenario induces (e.g. the
+   * dynamodb-throttle alarm, which the DDB-throttle scenario would self-trip).
+   * Curated to the real outage gauges: P1 container-error, P9 ALB 5xx, P10
+   * API-GW WS 5xx — all NOT_BREACHING, ≤5, dev-stable.
+   */
+  public readonly fisStopAlarmArns: string[] = [];
   private readonly envName: string;
 
   constructor(scope: Construct, id: string, props: ObservabilityStackProps) {
@@ -204,9 +216,13 @@ export class ObservabilityStack extends cdk.Stack {
       ),
     );
 
-    // Collect page-tier alarms as FIS stop-condition sources (dev only).
+    // Collect page-tier alarms (pager set).
     if (def.severity === "page") {
       this.pageAlarmArns.push(alarm.alarmArn);
+    }
+    // P1 (container error-state) is a stable blast gauge → FIS stop-condition.
+    if (def.id === "P1") {
+      this.fisStopAlarmArns.push(alarm.alarmArn);
     }
 
     return alarm;
@@ -367,6 +383,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
     p9.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
     this.pageAlarmArns.push(p9.alarmArn);
+    this.fisStopAlarmArns.push(p9.alarmArn); // ALB 5xx — FIS stop-condition
 
     // P10: apigw-ws-5xx-rate (AWS-native metric math)
     const apiGwErrors = new cloudwatch.Metric({
@@ -401,6 +418,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
     p10.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
     this.pageAlarmArns.push(p10.alarmArn);
+    this.fisStopAlarmArns.push(p10.alarmArn); // API-GW WS 5xx — FIS stop-condition
 
     // -------------------------------------------------------------------
     // Free-tier scale-to-zero reaper alarms

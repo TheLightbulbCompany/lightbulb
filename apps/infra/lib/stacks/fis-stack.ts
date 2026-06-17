@@ -13,9 +13,12 @@ export interface FisStackProps extends cdk.StackProps {
   environment: string;
   /** ARN of the ECS cluster running the per-user + backend services. */
   clusterArn: string;
-  /** Page-tier CloudWatch alarm ARNs from ObservabilityStack — wired in as
-   * FIS stop-conditions so a real customer-impacting alarm aborts the run. */
-  pageAlarmArns: string[];
+  /** Curated, dev-stable blast-gauge alarm ARNs from ObservabilityStack
+   * (P1/P9/P10) — wired in as FIS stop-conditions so a real customer-impacting
+   * alarm aborts the run. NOT the full page set: FIS caps stop-conditions at 5,
+   * and breach-on-missing heartbeat alarms / a scenario's own induced signal
+   * must be excluded (see ObservabilityStack.fisStopAlarmArns). */
+  stopAlarmArns: string[];
 }
 
 /**
@@ -52,7 +55,7 @@ export class FisStack extends cdk.Stack {
     // requires at least one stop-condition; when no alarms are wired yet we
     // fall back to the explicit "none" source.
     const stopConditions: fis.CfnExperimentTemplate.ExperimentTemplateStopConditionProperty[] =
-      props.pageAlarmArns.map((arn) => ({
+      props.stopAlarmArns.map((arn) => ({
         source: "aws:cloudwatch:alarm",
         value: arn,
       }));

@@ -204,15 +204,16 @@ export class Isol8Stage extends cdk.Stage {
 
     // FisStack — Chaos Testing SP2 AWS FIS experiment templates. DEV ONLY:
     // these inject real infra faults, so they are never instantiated for
-    // prod. clusterArn comes from the container stack; pageAlarmArns are the
-    // page-tier alarm ARNs exported by ObservabilityStack and wired in as FIS
-    // stop-conditions.
+    // prod. clusterArn comes from the container stack; stopAlarmArns are the
+    // curated, dev-stable blast-gauge alarm ARNs (P1/P9/P10) exported by
+    // ObservabilityStack and wired in as FIS stop-conditions (FIS caps these at
+    // 5; breach-on-missing heartbeat alarms are excluded).
     if (env === "dev") {
       new FisStack(this, `isol8-${env}-fis`, {
         stackName: `isol8-${env}-fis`,
         environment: env,
         clusterArn: container.cluster.clusterArn,
-        pageAlarmArns: observability.pageAlarmArns,
+        stopAlarmArns: observability.fisStopAlarmArns,
       });
     }
 

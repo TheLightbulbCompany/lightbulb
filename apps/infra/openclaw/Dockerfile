@@ -214,8 +214,10 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
 # openclaw.json. We bake them into the stock plugin root /app/dist/extensions/<id>
 # so they are root-owned (the loader rejects any plugin dir not owned by uid 0)
 # and auto-activate from the existing channels.<id>.enabled config. A runtime
-# `openclaw plugins install` cannot be used: the per-user EFS mount forces
-# uid 1000, which the loader blocks. Each plugin's runtime deps are co-located
+# `openclaw plugins install` would also work — it installs into the per-user EFS
+# plugin root as uid 1000, which the loader accepts there — but baking avoids the
+# per-container download/install cost on the constrained box and keeps the plugin
+# present uniformly across the whole fleet. Each plugin's runtime deps are co-located
 # under its own node_modules so node resolution finds them. Versions are pinned
 # to the host OpenClaw version; bump them in lockstep with the FROM tag /
 # openclaw-version.json#upstream.
@@ -236,9 +238,10 @@ RUN set -eux; \
 # Upstream externalized the Bedrock provider out of the core image at this
 # version: the gateway logs "plugin not installed: amazon-bedrock" and every
 # Bedrock-backed run fails with "No API provider registered for api:
-# bedrock-converse-stream". The runtime `openclaw plugins install` path is
-# blocked here (the per-user EFS mount forces uid 1000, which the loader
-# rejects), so bake it root-owned into the stock plugin root. The npm package
+# bedrock-converse-stream". A runtime `openclaw plugins install` would also work
+# (into the per-user EFS plugin root as uid 1000), but we bake it root-owned into
+# the stock plugin root to avoid the per-container install cost and keep it
+# uniform across the fleet. The npm package
 # is `@openclaw/amazon-bedrock-provider`; the plugin id (and the discovery dir
 # the loader keys on) is `amazon-bedrock`. anthropic/openai providers stay
 # bundled in the base image, so only Bedrock needs baking. Pin in lockstep with
@@ -253,6 +256,30 @@ RUN set -eux; \
     rm -rf /app/dist/extensions/amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider; \
     rm -rf /opt/stage-amazon-bedrock; \
     chown -R root:root /app/dist/extensions/amazon-bedrock
+
+# ---- Layer 12: externalized lobster workflow plugin ----
+# Upstream externalized the `lobster` workflow engine out of the core image in
+# the same wave as the channel/provider plugins above: the gateway logs
+# "plugin not installed: lobster" and every `.lobster` pipeline fails to run.
+# Lobster is the execution engine behind the Atlas recruiter seed agent (whose
+# entire methodology is .lobster pipelines) and any agent built on pipelines,
+# and core/containers/config.py enables it on every container via
+# workflow_plugin_entries(), so it must be present fleet-wide. The npm package
+# and plugin id are both `lobster`; its discovery dir is /app/dist/extensions/lobster.
+# (`llm-task`, the other workflow extension we enable, stays bundled in the base
+# image, so only lobster needs baking.) A runtime `openclaw plugins install` would
+# also work, but bake it root-owned for the same reasons as the layers above,
+# pinned in lockstep with the FROM tag / openclaw-version.json#upstream.
+RUN set -eux; \
+    mkdir -p /opt/stage-lobster; \
+    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.6.6"; \
+    mkdir -p /app/dist/extensions/lobster; \
+    cp -R /opt/stage-lobster/node_modules/@openclaw/lobster/. /app/dist/extensions/lobster/; \
+    mkdir -p /app/dist/extensions/lobster/node_modules; \
+    cp -R /opt/stage-lobster/node_modules/. /app/dist/extensions/lobster/node_modules/; \
+    rm -rf /app/dist/extensions/lobster/node_modules/@openclaw/lobster; \
+    rm -rf /opt/stage-lobster; \
+    chown -R root:root /app/dist/extensions/lobster
 
 # ---- Restore runtime context ----
 USER node

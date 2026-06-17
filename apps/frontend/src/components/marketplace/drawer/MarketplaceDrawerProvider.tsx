@@ -6,6 +6,13 @@ import type { Listing } from "@/lib/marketplace/types";
 
 export type DrawerView = "browse" | "mine" | "publish" | "detail";
 
+/** ACP coding-harness delegation outcome surfaced under the install toast.
+ * "enabled" — the buyer's container got ACP turned on (delegation live).
+ * "unavailable" — the listing wants ACP but the buyer's provider can't run a
+ * harness yet (agent still deploys, just no delegation). Absent = not an ACP
+ * listing, no note shown. */
+export type AcpNote = "enabled" | "unavailable";
+
 export interface DrawerState {
   isOpen: boolean;
   view: DrawerView;
@@ -20,7 +27,7 @@ export interface DrawerState {
    * on view changes keeps a stale id from leaking back into the page. */
   detailListingId?: string | null;
   freshlyInstalledAgentId: string | null;
-  toast: { agentName: string; agentId: string } | null;
+  toast: { agentName: string; agentId: string; acpNote?: AcpNote } | null;
 }
 
 export interface OpenOptions {
@@ -36,7 +43,7 @@ interface DrawerContextValue {
   setView: (view: DrawerView) => void;
   startEditListing: (listing: Listing) => void;
   openListingDetail: (listingId: string) => void;
-  showInstallToast: (toast: { agentName: string; agentId: string }) => void;
+  showInstallToast: (toast: { agentName: string; agentId: string; acpNote?: AcpNote }) => void;
   dismissToast: () => void;
   setFreshlyInstalled: (agentId: string | null) => void;
 }
@@ -121,9 +128,12 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
     }));
   }, []);
 
-  const showInstallToast = useCallback((toast: { agentName: string; agentId: string }) => {
-    setState((prev) => ({ ...prev, toast }));
-  }, []);
+  const showInstallToast = useCallback(
+    (toast: { agentName: string; agentId: string; acpNote?: AcpNote }) => {
+      setState((prev) => ({ ...prev, toast }));
+    },
+    [],
+  );
 
   const dismissToast = useCallback(() => {
     setState((prev) => ({ ...prev, toast: null }));

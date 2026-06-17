@@ -52,6 +52,7 @@ function baseForm(overrides: Partial<PublishForm> = {}): PublishForm {
     priceDollars: 10,
     bundleMcps: [],
     bundleSkills: [],
+    enableAcp: false,
     ...overrides,
   };
 }
@@ -155,6 +156,32 @@ describe("BundleStep", () => {
     render(<BundleStep form={baseForm()} onChange={vi.fn()} />);
     await screen.findByRole("alert");
     expect(screen.getByRole("alert")).toHaveTextContent("network down");
+  });
+
+  it("renders the ACP delegation toggle (unchecked by default) even with no MCPs / skills", async () => {
+    mockArtifactPreview.mockResolvedValue(basePreview());
+    render(<BundleStep form={baseForm()} onChange={vi.fn()} />);
+    const cb = await screen.findByLabelText("Enable ACP coding-harness delegation");
+    expect(cb).not.toBeChecked();
+    // Helper caption explains the harness is provider-matched.
+    expect(screen.getByText(/Claude Code/)).toBeInTheDocument();
+    expect(screen.getByText(/Codex/)).toBeInTheDocument();
+  });
+
+  it("toggling the ACP checkbox calls onChange with enableAcp", async () => {
+    mockArtifactPreview.mockResolvedValue(basePreview());
+    const onChange = vi.fn();
+    render(<BundleStep form={baseForm()} onChange={onChange} />);
+    const cb = await screen.findByLabelText("Enable ACP coding-harness delegation");
+    fireEvent.click(cb);
+    expect(onChange).toHaveBeenCalledWith({ enableAcp: true });
+  });
+
+  it("reflects enableAcp=true from form state as a checked box", async () => {
+    mockArtifactPreview.mockResolvedValue(basePreview());
+    render(<BundleStep form={baseForm({ enableAcp: true })} onChange={vi.fn()} />);
+    const cb = await screen.findByLabelText("Enable ACP coding-harness delegation");
+    expect(cb).toBeChecked();
   });
 });
 

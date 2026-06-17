@@ -5,7 +5,7 @@
   "tag": "2026.5.28",
   "full": "ghcr.io/openclaw/openclaw:2026.5.28",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended",
-  "dev":  { "tag": "2026.6.6-isol8.2-ed62db0" },
+  "dev":  { "tag": "2026.6.6-isol8.2-e9a32e9" },
   "prod": { "tag": "2026.6.6-isol8.2-ed62db0" },
   "notes": "`upstream` is the base image the extended Dockerfile FROMs — now the Isol8 fork (Isol8AI/agent) built from upstream OpenClaw 2026.6.6 plus the bundled-MCP fix (non-blocking materialization + a shared-runtime-scope code path); tag scheme `<upstream-version>-isol8.<n>`. This is a PRIVATE GHCR package, only pulled by the authenticated build-openclaw-image.yml workflow. `image`/`tag`/`full` are the LEGACY PUBLIC upstream image (ghcr.io/openclaw/openclaw): container-stack.ts uses `full` as the bootstrap/unknown-env fallback, pulled by per-user ECS tasks that carry NO registry credentials — so it must stay anonymously pullable and must NOT point at the private fork. `tag` also feeds the OPENCLAW_UPSTREAM_VERSION env-var fallback; keep it at the upstream version currently deployed (the `dev.tag`/`prod.tag` extended images, which drive meta.lastTouchedVersion, are the authoritative deployed baseline). `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev and prod (re-stamped by build-openclaw-image.yml on each base/extended build)."
 }

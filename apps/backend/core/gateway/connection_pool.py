@@ -18,11 +18,10 @@ from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
+from core.gateway.operator_rpc import GATEWAY_PORT, perform_signed_connect
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 from core.services.connection_service import ConnectionService
-
-GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with containers/)
 
 logger = logging.getLogger(__name__)
 
@@ -512,88 +511,19 @@ class GatewayConnection:
         identity is bound by the signature to the specific gateway token +
         nonce, so captured signatures can't be replayed against different
         tokens or different connects.
+
+        The signed handshake itself lives in `operator_rpc.perform_signed_connect`
+        (shared with the one-shot operator calls). The pool opts into
+        `tool-events` so OpenClaw streams `stream:"tool"` events to us — without
+        that capability the gateway silently drops them.
         """
-        from core.crypto import kms_secrets
-        from core.crypto.operator_device import (
-            BACKEND_CLIENT_ID,
-            BACKEND_CLIENT_MODE,
-            BACKEND_OPERATOR_SCOPES,
-            BACKEND_ROLE,
-            load_operator_device_from_seed,
-            sign_connect_request,
-        )
-        from core.repositories import container_repo
-
-        # Step 1: receive connect.challenge (nonce for the signature)
-        raw = await asyncio.wait_for(self._ws.recv(), timeout=_HANDSHAKE_TIMEOUT)
-        challenge = json.loads(raw)
-        if challenge.get("event") != "connect.challenge":
-            raise RuntimeError(f"Expected connect.challenge, got: {challenge.get('event', 'unknown')}")
-        nonce = challenge.get("payload", {}).get("nonce") or challenge.get("nonce")
-        if not nonce:
-            raise RuntimeError(f"connect.challenge missing nonce: {challenge}")
-
-        # Step 2: load the operator device identity for this container.
-        # The private seed is KMS-encrypted in DynamoDB and bound by
-        # encryption context to the owner_id — a stolen row can't be
-        # replayed against a different container.
-        container = await container_repo.get_by_owner_id(self.user_id)
-        if not container:
-            raise RuntimeError(f"No container row for user {self.user_id}")
-        enc_seed = container.get("operator_priv_key_enc")
-        if not enc_seed:
-            raise RuntimeError(
-                f"Container row for user {self.user_id} has no operator_priv_key_enc — "
-                "re-provision needed (pre-4.5 row without signed-device auth)"
-            )
-        seed_bytes = kms_secrets.decrypt_bytes(
-            enc_seed,
-            encryption_context={"owner_id": self.user_id, "purpose": "operator-device-seed"},
-        )
-        identity = load_operator_device_from_seed(seed_bytes)
-
-        # Step 3: sign the v2 payload with the nonce from the challenge.
-        device = sign_connect_request(
-            identity=identity,
+        await perform_signed_connect(
+            self._ws,
+            owner_id=self.user_id,
             token=self.token,
-            nonce=nonce,
-            scopes=BACKEND_OPERATOR_SCOPES,
+            caps=["tool-events"],
+            recv_timeout=_HANDSHAKE_TIMEOUT,
         )
-
-        # Step 4: send the connect request with both the token AND the
-        # signed device. The scopes field in params must exactly match the
-        # scopes in the signed payload — the server re-builds the v2 string
-        # from these fields and compares signatures.
-        connect_msg = {
-            "type": "req",
-            "id": str(uuid.uuid4()),
-            "method": "connect",
-            "params": {
-                "minProtocol": 4,
-                "maxProtocol": 4,
-                "client": {
-                    "id": BACKEND_CLIENT_ID,
-                    "version": "1.0.0",
-                    "platform": "linux",
-                    "mode": BACKEND_CLIENT_MODE,
-                },
-                "role": BACKEND_ROLE,
-                "scopes": list(BACKEND_OPERATOR_SCOPES),
-                "auth": {"token": self.token},
-                "device": device,
-                # Opt in to real-time tool events. Without this capability,
-                # OpenClaw silently drops stream:"tool" events for this client.
-                "caps": ["tool-events"],
-            },
-        }
-        await self._ws.send(json.dumps(connect_msg))
-
-        # Step 5: verify hello-ok
-        resp_raw = await asyncio.wait_for(self._ws.recv(), timeout=_HANDSHAKE_TIMEOUT)
-        resp = json.loads(resp_raw)
-        if not resp.get("ok"):
-            err = resp.get("error", {}).get("message", "unknown error")
-            raise RuntimeError(f"Gateway connect failed: {err}")
 
     async def _verify_health(self) -> None:
         """Send health RPC to verify gateway is operational after handshake.

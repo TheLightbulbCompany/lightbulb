@@ -1,21 +1,19 @@
-"""Container recovery endpoint.
+"""Container recovery + gateway-control endpoints.
 
-Single endpoint that inspects current container + gateway state
-and dispatches the appropriate recovery action.
+`/recover` inspects current container + gateway state and dispatches the
+appropriate recovery action. `/gateway/restart` forces a config reload on a
+running gateway. Both reach the gateway through the shared signed one-shot
+helper.
 """
 
 import asyncio
-import json
 import logging
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
-import websockets
-
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager
-from core.containers.ecs_manager import GATEWAY_PORT
+from core.gateway.operator_rpc import gateway_rpc_oneshot
 from core.repositories import container_repo
 from core.services.container_provision import (
     resolve_provider_choice as _resolve_provider_choice,
@@ -43,105 +41,23 @@ async def _call_gateway_rpc(
     method: str,
     params: dict | None = None,
 ) -> dict:
-    """Short-lived WebSocket RPC call to a gateway container.
+    """Short-lived signed RPC to the owner's gateway container.
 
-    Uses the same OpenClaw 4.5 signed-device handshake as the long-lived
-    pool in `core.gateway.connection_pool`: loads the per-container operator
-    device seed from DynamoDB (KMS-decrypted), signs the v2 payload with
-    the nonce from connect.challenge, and sends both the token AND the
-    signed device in the connect request.
-
-    Falls back cleanly if the container row doesn't have an
-    `operator_priv_key_enc` field yet (pre-4.5 row) — propagates a
-    RuntimeError the caller already catches and turns into a reprovision.
+    Thin wrapper over the shared `gateway_rpc_oneshot` helper, keeping
+    recovery's tight timeouts: a wedged gateway should fail fast so the
+    recovery flow escalates to restart / reprovision rather than hanging the
+    request.
     """
-    from core.crypto import kms_secrets
-    from core.crypto.operator_device import (
-        BACKEND_CLIENT_ID,
-        BACKEND_CLIENT_MODE,
-        BACKEND_OPERATOR_SCOPES,
-        BACKEND_ROLE,
-        load_operator_device_from_seed,
-        sign_connect_request,
+    return await gateway_rpc_oneshot(
+        ip,
+        owner_id=owner_id,
+        token=token,
+        method=method,
+        params=params,
+        open_timeout=5,
+        recv_timeout=5,
+        rpc_timeout=10,
     )
-
-    container = await container_repo.get_by_owner_id(owner_id)
-    if not container:
-        raise RuntimeError(f"No container row for owner {owner_id}")
-    enc_seed = container.get("operator_priv_key_enc")
-    if not enc_seed:
-        raise RuntimeError(
-            f"Container row for owner {owner_id} missing operator_priv_key_enc "
-            "(pre-4.5 provision — reprovision required)"
-        )
-    seed_bytes = kms_secrets.decrypt_bytes(
-        enc_seed,
-        encryption_context={"owner_id": owner_id, "purpose": "operator-device-seed"},
-    )
-    identity = load_operator_device_from_seed(seed_bytes)
-
-    uri = f"ws://{ip}:{GATEWAY_PORT}"
-    async with websockets.connect(uri, open_timeout=5, close_timeout=2) as ws:
-        # Receive challenge + extract nonce
-        challenge = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
-        if challenge.get("event") != "connect.challenge":
-            raise RuntimeError("Unexpected handshake message")
-        nonce = challenge.get("payload", {}).get("nonce") or challenge.get("nonce")
-        if not nonce:
-            raise RuntimeError("connect.challenge missing nonce")
-
-        # Sign the v2 payload with our operator identity
-        device = sign_connect_request(
-            identity=identity,
-            token=token,
-            nonce=nonce,
-            scopes=BACKEND_OPERATOR_SCOPES,
-        )
-
-        req_id = str(uuid.uuid4())
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "req",
-                    "id": req_id,
-                    "method": "connect",
-                    "params": {
-                        "minProtocol": 4,
-                        "maxProtocol": 4,
-                        "client": {
-                            "id": BACKEND_CLIENT_ID,
-                            "version": "1.0.0",
-                            "platform": "linux",
-                            "mode": BACKEND_CLIENT_MODE,
-                        },
-                        "role": BACKEND_ROLE,
-                        "scopes": list(BACKEND_OPERATOR_SCOPES),
-                        "auth": {"token": token},
-                        "device": device,
-                    },
-                }
-            )
-        )
-        connect_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
-        if not connect_resp.get("ok"):
-            err = connect_resp.get("error", {}).get("message", "unknown")
-            raise RuntimeError(f"Handshake rejected: {err}")
-
-        rpc_id = str(uuid.uuid4())
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "req",
-                    "id": rpc_id,
-                    "method": method,
-                    "params": params or {},
-                }
-            )
-        )
-        while True:
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
-            if msg.get("type") == "res" and msg.get("id") == rpc_id:
-                return msg.get("payload", {})
 
 
 @router.post(
@@ -266,3 +182,53 @@ async def container_recover(
                 "state": "GATEWAY_DOWN_DEAD",
                 "reason": "Gateway restart failed — reprovisioning",
             }
+
+
+@router.post(
+    "/gateway/restart",
+    summary="Restart the OpenClaw gateway on the user's container",
+    description=(
+        "Sends a config.apply RPC to the user's running gateway container, "
+        "which triggers a gateway process restart. "
+        "Use this when the WebSocket connection is down but the container is running."
+    ),
+    operation_id="gateway_restart",
+    responses={
+        404: {"description": "No running container for this user"},
+        502: {"description": "Gateway is not responding"},
+    },
+)
+async def gateway_restart(
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = resolve_owner_id(auth)
+    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+    if not container:
+        raise HTTPException(status_code=404, detail="No running container")
+    if not ip:
+        raise HTTPException(status_code=502, detail="Container gateway is starting up")
+
+    try:
+        # config.apply is an operator.admin-reserved method, so this must use
+        # the signed one-shot (a token-only connect would have its scope
+        # stripped and the apply rejected). Keep the original generous budget —
+        # config.apply re-reads config and restarts the gateway.
+        await gateway_rpc_oneshot(
+            ip,
+            owner_id=owner_id,
+            token=container["gateway_token"],
+            method="config.apply",
+            params={},
+            open_timeout=30,
+            recv_timeout=10,
+            rpc_timeout=30,
+        )
+    except ConnectionRefusedError:
+        raise HTTPException(status_code=502, detail="Gateway is not responding")
+    except TimeoutError:
+        raise HTTPException(status_code=502, detail="Gateway restart timed out")
+    except Exception as e:
+        logger.error("Gateway restart failed for user %s: %s", owner_id, e)
+        raise HTTPException(status_code=502, detail="Gateway restart failed")
+
+    return {"ok": True}

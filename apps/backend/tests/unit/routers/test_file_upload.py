@@ -43,8 +43,8 @@ async def test_upload_single_file(app, auth_override, mock_container, mock_works
     app.dependency_overrides[get_current_user] = auth_override
     try:
         with (
-            patch("routers.container_rpc.get_ecs_manager") as mock_ecs,
-            patch("routers.container_rpc.get_workspace", return_value=mock_workspace),
+            patch("routers.container_files.get_ecs_manager") as mock_ecs,
+            patch("routers.container_files.get_workspace", return_value=mock_workspace),
         ):
             mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
 
@@ -74,8 +74,8 @@ async def test_upload_multiple_files(app, auth_override, mock_container, mock_wo
     app.dependency_overrides[get_current_user] = auth_override
     try:
         with (
-            patch("routers.container_rpc.get_ecs_manager") as mock_ecs,
-            patch("routers.container_rpc.get_workspace", return_value=mock_workspace),
+            patch("routers.container_files.get_ecs_manager") as mock_ecs,
+            patch("routers.container_files.get_workspace", return_value=mock_workspace),
         ):
             mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
 
@@ -102,8 +102,8 @@ async def test_upload_rejects_oversized_file(app, auth_override, mock_container,
     app.dependency_overrides[get_current_user] = auth_override
     try:
         with (
-            patch("routers.container_rpc.get_ecs_manager") as mock_ecs,
-            patch("routers.container_rpc.get_workspace", return_value=mock_workspace),
+            patch("routers.container_files.get_ecs_manager") as mock_ecs,
+            patch("routers.container_files.get_workspace", return_value=mock_workspace),
         ):
             mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
 
@@ -126,8 +126,8 @@ async def test_upload_no_container(app, auth_override, mock_workspace):
     app.dependency_overrides[get_current_user] = auth_override
     try:
         with (
-            patch("routers.container_rpc.get_ecs_manager") as mock_ecs,
-            patch("routers.container_rpc.get_workspace", return_value=mock_workspace),
+            patch("routers.container_files.get_ecs_manager") as mock_ecs,
+            patch("routers.container_files.get_workspace", return_value=mock_workspace),
         ):
             mock_ecs.return_value.get_service_status = AsyncMock(return_value=None)
 
@@ -148,8 +148,8 @@ async def test_upload_sanitizes_filename(app, auth_override, mock_container, moc
     app.dependency_overrides[get_current_user] = auth_override
     try:
         with (
-            patch("routers.container_rpc.get_ecs_manager") as mock_ecs,
-            patch("routers.container_rpc.get_workspace", return_value=mock_workspace),
+            patch("routers.container_files.get_ecs_manager") as mock_ecs,
+            patch("routers.container_files.get_workspace", return_value=mock_workspace),
         ):
             mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
 

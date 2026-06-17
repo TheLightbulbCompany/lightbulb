@@ -318,20 +318,48 @@ export class ObservabilityStack extends cdk.Stack {
         "Update worker heartbeat absent for 5 min — loop may have died",
     });
 
-    // P8: dynamodb-throttle-sustained
-    this.createAlarm({
-      id: "P8",
-      name: "dynamodb-throttle-sustained",
-      metricName: "dynamodb.throttle",
+    // P8: dynamodb-throttle-sustained (AWS-native metric math)
+    // Repointed off the never-emitted custom `Isol8/dynamodb.throttle` to the
+    // AWS-native `AWS/DynamoDB ThrottledRequests` metric so this is a real page
+    // without any backend change. ThrottledRequests is per-table, so we sum
+    // across the same table set W40/W41/W42 enumerate (account-wide math sum is
+    // the acceptable fallback when a table set isn't available).
+    const ddbThrottleTables: [string, dynamodb.ITable][] = [
+      ["users", props.databaseTables.usersTable],
+      ["containers", props.databaseTables.containersTable],
+      ["billing", props.databaseTables.billingTable],
+      ["usageCounters", props.databaseTables.usageCountersTable],
+      ["pendingUpdates", props.databaseTables.pendingUpdatesTable],
+      ["channelLinks", props.databaseTables.channelLinksTable],
+    ];
+    const ddbThrottlePerTable: Record<string, cloudwatch.IMetric> = {};
+    for (const [key, table] of ddbThrottleTables) {
+      ddbThrottlePerTable[key] = new cloudwatch.Metric({
+        namespace: "AWS/DynamoDB",
+        metricName: "ThrottledRequests",
+        statistic: "Sum",
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: { TableName: table.tableName },
+      });
+    }
+    const ddbThrottleTotal = new cloudwatch.MathExpression({
+      expression: Object.keys(ddbThrottlePerTable).join(" + "),
+      usingMetrics: ddbThrottlePerTable,
+      period: cdk.Duration.minutes(1),
+    });
+    const p8 = new cloudwatch.Alarm(this, "P8", {
+      alarmName: `isol8-${this.envName}-P8-dynamodb-throttle-sustained`,
+      alarmDescription:
+        "DynamoDB throttling sustained for 2 consecutive minutes",
+      metric: ddbThrottleTotal,
       threshold: 0,
       evaluationPeriods: 2,
-      periodMinutes: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "page",
-      description:
-        "DynamoDB throttling sustained for 2 consecutive minutes",
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+    p8.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+    this.pageAlarmArns.push(p8.alarmArn);
 
     // P9: alb-5xx-rate (AWS-native metric math)
     const albFullName = props.alb.loadBalancerFullName;
@@ -403,28 +431,20 @@ export class ObservabilityStack extends cdk.Stack {
     this.pageAlarmArns.push(p10.alarmArn);
 
     // -------------------------------------------------------------------
-    // Free-tier scale-to-zero reaper alarms
+    // P12: backend metrics-loop liveness heartbeat
     // -------------------------------------------------------------------
-    // Two alarms protect the free-tier idle-reaper:
-    //   P12 (heartbeat): sample-count of gateway.running.count over the last
-    //        10 min. Task 5's reaper emits gauge("gateway.running.count", ...)
-    //        unconditionally every 60s cycle, so sample presence IS the
-    //        heartbeat. Alive => ~10 samples/10min; dead => 0 samples => alarm.
-    //        This replaces an earlier allOf(no-stops, has-running) composite
-    //        that false-paged in legitimate scenarios (e.g., free user stays
-    //        active so running.count>=1 but no one goes idle 5+ min, or a
-    //        fresh deploy before any reap has occurred).
-    //   P13 (crash): any gateway.idle_checker.crash in the last 5 min.
+    // The free-tier idle-reaper (and its scale-to-zero path) was REMOVED in the
+    // flat-fee cutover, so this is no longer a "reaper-dead" page. It survives
+    // as a generic BACKEND-LIVENESS check: the backend metrics loop still emits
+    // gateway.running.count every ~60s regardless of workload, so absence of
+    // samples means the backend's metrics loop is dead. Expect ~10 samples per
+    // 10-min window when healthy; threshold 5 tolerates one skipped cycle.
+    // Companion P13 (reaper-crash) was deleted with the reaper.
     //
-    // Metric names MUST match the backend exactly:
-    //   - gateway.running.count       (emitted by the DDB-backed reaper, Task 5)
-    //   - gateway.idle_checker.crash  (emitted at main.py:~62)
+    // Do NOT use as a FIS stop-condition — it self-trips any backend-touching
+    // experiment (stopping/stressing the backend stops the heartbeat gauge).
     const reaperDims = { env: this.envName, service: "isol8-backend" };
 
-    // P12: reaper heartbeat. SampleCount on gateway.running.count.
-    // Reaper emits this gauge every ~60s regardless of workload, so absence
-    // of samples = reaper loop is dead. Expect ~10 samples per 10-min window
-    // when healthy; threshold 5 tolerates one skipped cycle.
     const heartbeatMetric = new cloudwatch.Metric({
       namespace: "Isol8",
       metricName: "gateway.running.count",
@@ -434,46 +454,22 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     const heartbeatAlarm = new cloudwatch.Alarm(this, "ReaperHeartbeatAlarm", {
-      alarmName: `isol8-${this.envName}-P12-reaper-dead`,
+      alarmName: `isol8-${this.envName}-P12-backend-liveness`,
       alarmDescription:
-        "PAGE: free-tier reaper has emitted no heartbeat in 10 minutes. " +
-        "Task 5 emits gateway.running.count every 60s regardless of whether " +
-        "any container was actually reaped, so absence of samples = reaper " +
-        "loop is dead.",
+        "PAGE: backend metrics loop has emitted no heartbeat in 10 minutes. " +
+        "The backend emits gateway.running.count every ~60s regardless of " +
+        "workload, so absence of samples = the backend metrics loop is dead.",
       metric: heartbeatMetric,
       threshold: 5,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      // Legit liveness check: missing data IS the failure signal.
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
     heartbeatAlarm.addAlarmAction(
       new cloudwatch_actions.SnsAction(this.pageTopic),
     );
     this.pageAlarmArns.push(heartbeatAlarm.alarmArn);
-
-    // P13: any reaper crash in the last 5 min.
-    const crashMetric = new cloudwatch.Metric({
-      namespace: "Isol8",
-      metricName: "gateway.idle_checker.crash",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: reaperDims,
-    });
-
-    const reaperCrashAlarm = new cloudwatch.Alarm(this, "ReaperCrashAlarm", {
-      alarmName: `isol8-${this.envName}-P13-reaper-crash`,
-      alarmDescription: "PAGE: free-tier reaper threw an exception.",
-      metric: crashMetric,
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    reaperCrashAlarm.addAlarmAction(
-      new cloudwatch_actions.SnsAction(this.pageTopic),
-    );
-    this.pageAlarmArns.push(reaperCrashAlarm.alarmArn);
   }
 
   // =========================================================================
@@ -565,7 +561,12 @@ export class ObservabilityStack extends cdk.Stack {
       description: "ECS task definition registration failed",
     });
 
-    // W5: gateway-connection-drop (anomaly detection on gauge)
+    // W5: gateway-connection-drop (gauge → zero)
+    // NOT anomaly detection: with NOT_BREACHING this only catches a non-zero →
+    // zero transition (open connections present, then gone). It deliberately
+    // does NOT fire when the metric is simply absent — that was the old
+    // BREACHING config, which paged constantly on idle dev (no connections at
+    // all = no samples).
     const gwOpenMetric = new cloudwatch.Metric({
       namespace: "Isol8",
       metricName: "gateway.connection.open",
@@ -581,7 +582,7 @@ export class ObservabilityStack extends cdk.Stack {
       evaluationPeriods: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w5.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
@@ -614,7 +615,12 @@ export class ObservabilityStack extends cdk.Stack {
         "Frontend connection prune storm — over 100 in 1 hour",
     });
 
-    // W8: gateway-rpc-error-rate (metric math)
+    // W8: gateway-rpc-error-count
+    // Was a metric-math RATE with chat.message.count as the denominator, but
+    // RPC volume ≫ chat volume (every chat is many RPCs), so that ratio was
+    // meaningless. No true RPC-total metric is emitted, so this is an ABSOLUTE
+    // error-count threshold on gateway.rpc.error instead.
+    // TODO(observability Phase 2): emit gateway.rpc.count for a true rate.
     const rpcErrors = new cloudwatch.Metric({
       namespace: "Isol8",
       metricName: "gateway.rpc.error",
@@ -622,23 +628,11 @@ export class ObservabilityStack extends cdk.Stack {
       period: cdk.Duration.minutes(5),
       dimensionsMap: dims,
     });
-    const rpcTotal = new cloudwatch.Metric({
-      namespace: "Isol8",
-      metricName: "chat.message.count",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: dims,
-    });
-    const rpcErrorRate = new cloudwatch.MathExpression({
-      expression: "100 * errors / IF(total > 0, total, 1)",
-      usingMetrics: { errors: rpcErrors, total: rpcTotal },
-      period: cdk.Duration.minutes(5),
-    });
     const w8 = new cloudwatch.Alarm(this, "W8", {
-      alarmName: `isol8-${this.envName}-W8-gateway-rpc-error-rate`,
-      alarmDescription: "Gateway RPC error rate exceeds 1%",
-      metric: rpcErrorRate,
-      threshold: 1,
+      alarmName: `isol8-${this.envName}-W8-gateway-rpc-error-count`,
+      alarmDescription: "Gateway RPC errors exceed 10 in 5 min",
+      metric: rpcErrors,
+      threshold: 10,
       evaluationPeriods: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
@@ -709,19 +703,9 @@ export class ObservabilityStack extends cdk.Stack {
       description: "Failed to fetch session usage from container",
     });
 
-    // W12: chat-bedrock-throttle
-    this.createAlarm({
-      id: "W12",
-      name: "chat-bedrock-throttle",
-      metricName: "chat.bedrock.throttle",
-      threshold: 5,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Bedrock throttle count exceeds 5 in 1 min",
-    });
+    // W12 (chat-bedrock-throttle) DELETED: the custom chat.bedrock.throttle
+    // metric was never emitted. Bedrock throttles are covered by the AWS-native
+    // W46-bedrock-throttles alarm (AWS/Bedrock InvocationThrottles).
 
     // -- Channels (W13-W15) --
 
@@ -755,102 +739,18 @@ export class ObservabilityStack extends cdk.Stack {
       description: "Channel configure step failed",
     });
 
-    // W15: channel-webhook-inbound-absent
-    this.createAlarm({
-      id: "W15",
-      name: "channel-webhook-inbound-absent",
-      metricName: "channel.webhook.inbound",
-      threshold: 0,
-      evaluationPeriods: 15,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
-      severity: "warn",
-      description:
-        "No inbound channel webhooks for 15 min — provider may be down",
-    });
+    // W15 (channel-webhook-inbound-absent) DELETED: the channel.webhook.inbound
+    // metric is never emitted, so a BREACHING absence alarm fired constantly.
+    // Re-add prod-gated + NOT_BREACHING in Phase 2 if we emit the metric.
 
     // -- Stripe & billing (W16-W20) --
 
-    // W16: stripe-meter-event-fail
-    this.createAlarm({
-      id: "W16",
-      name: "stripe-meter-event-fail",
-      metricName: "stripe.meter_event.fail",
-      threshold: 5,
-      evaluationPeriods: 1,
-      periodMinutes: 1440, // 1 day
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Stripe meter event failures exceed 5 per day",
-    });
-
-    // W17: stripe-subscription-latency
-    this.createAlarm({
-      id: "W17",
-      name: "stripe-subscription-latency",
-      metricName: "stripe.subscription.latency",
-      statistic: "p99",
-      threshold: 2000,
-      evaluationPeriods: 1,
-      periodMinutes: 5,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description:
-        "Stripe subscription webhook p99 latency exceeds 2s",
-    });
-
-    // W18: stripe-api-error-rate (metric math)
-    const stripeApiErrors = new cloudwatch.Metric({
-      namespace: "Isol8",
-      metricName: "stripe.api.error",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: dims,
-    });
-    const stripeApiTotal = new cloudwatch.Metric({
-      namespace: "Isol8",
-      metricName: "stripe.api.latency",
-      statistic: "SampleCount",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: dims,
-    });
-    const stripeApiErrorRate = new cloudwatch.MathExpression({
-      expression: "100 * errors / IF(total > 0, total, 1)",
-      usingMetrics: {
-        errors: stripeApiErrors,
-        total: stripeApiTotal,
-      },
-      period: cdk.Duration.minutes(5),
-    });
-    const w18 = new cloudwatch.Alarm(this, "W18", {
-      alarmName: `isol8-${this.envName}-W18-stripe-api-error-rate`,
-      alarmDescription: "Stripe API error rate exceeds 1%",
-      metric: stripeApiErrorRate,
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    w18.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
-
-    // W19: billing-budget-check-error
-    this.createAlarm({
-      id: "W19",
-      name: "billing-budget-check-error",
-      metricName: "billing.budget_check.error",
-      threshold: 10,
-      evaluationPeriods: 1,
-      periodMinutes: 1440,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Budget check errors exceed 10 per day",
-    });
+    // W16 (stripe-meter-event-fail), W17 (stripe-subscription-latency),
+    // W18 (stripe-api-error-rate), W19 (billing-budget-check-error) DELETED:
+    // none of their metrics (stripe.meter_event.fail, stripe.subscription.latency,
+    // stripe.api.error, billing.budget_check.error) are ever emitted, so the
+    // alarms never fired. W18 (stripe-api-error-rate) re-adds in Phase 2 once
+    // stripe.api.error is actually emitted.
 
     // W20: webhook-clerk-sig-fail
     this.createAlarm({
@@ -929,35 +829,9 @@ export class ObservabilityStack extends cdk.Stack {
       description: "EFS file write errors exceed 10 per hour",
     });
 
-    // W25: proxy-upstream-5xx
-    this.createAlarm({
-      id: "W25",
-      name: "proxy-upstream-5xx",
-      metricName: "proxy.upstream",
-      threshold: 5,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { status: "5xx" },
-      severity: "warn",
-      description: "Proxy upstream 5xx errors exceed 5 per minute",
-    });
-
-    // W26: proxy-budget-check-fail
-    this.createAlarm({
-      id: "W26",
-      name: "proxy-budget-check-fail",
-      metricName: "proxy.budget_check.fail",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description:
-        "Proxy budget check failed — free-tier user exceeded limit",
-    });
+    // W25 (proxy-upstream-5xx) and W26 (proxy-budget-check-fail) DELETED:
+    // proxy.upstream is never emitted, and proxy.budget_check.fail was a
+    // free-tier construct removed in the flat-fee cutover. Neither alarm fired.
 
     // W27: update-worker-error
     this.createAlarm({
@@ -1100,6 +974,9 @@ export class ObservabilityStack extends cdk.Stack {
     w31.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W32: API GW WS ConnectCount drop (static threshold — zero connections)
+    // NOT_BREACHING: only catches a real non-zero → zero transition, not the
+    // simple absence of connections on idle dev (the old BREACHING config
+    // false-fired constantly when nobody was connected).
     const w32 = new cloudwatch.Alarm(this, "W32", {
       alarmName: `isol8-${this.envName}-W32-apigw-ws-connect-drop`,
       alarmDescription:
@@ -1115,7 +992,7 @@ export class ObservabilityStack extends cdk.Stack {
       evaluationPeriods: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w32.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
@@ -1251,7 +1128,13 @@ export class ObservabilityStack extends cdk.Stack {
       dimensionsMap: { ClusterName: clusterName },
     });
 
-    // EventBridge rule for ECS task stopped events
+    // EventBridge rule for ECS task stopped events.
+    // The rule itself stays broad (every STOPPED task in the cluster) because
+    // the authoritative "is this stop unexpected?" decision needs the full
+    // event (per-container exitCode + the free-text stoppedReason), which is
+    // easier to evaluate in the Lambda than in an EventBridge content filter.
+    // The Lambda below only emits the alarm metric for genuinely-unexpected
+    // stops, so normal per-user teardown + deploys no longer fire W39.
     const taskStoppedRule = new events.Rule(this, "TaskStoppedRule", {
       ruleName: `isol8-${this.envName}-ecs-task-stopped`,
       description: "Captures ECS task stopped events for alarming",
@@ -1265,17 +1148,57 @@ export class ObservabilityStack extends cdk.Stack {
       },
     });
 
-    // Lambda to publish custom metric on task stopped
+    // Lambda to publish custom metric ONLY on unexpected task stops.
+    // A stop is treated as EXPECTED (and ignored) when either:
+    //   - every container exited cleanly (exitCode == 0 / absent), OR
+    //   - the stoppedReason matches a normal-lifecycle phrase (scaling,
+    //     deployment, service-scheduler, user-initiated).
+    // Anything else (non-zero container exit, OOM, host failure, unknown
+    // reason) is emitted as TaskStoppedUnexpected and pages W39.
     const taskStoppedFn = new lambda.Function(this, "TaskStoppedFn", {
       functionName: `isol8-${this.envName}-task-stopped-metric`,
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
       timeout: cdk.Duration.seconds(10),
       code: lambda.Code.fromInline(`
-import boto3, json, os
+import boto3
 cw = boto3.client('cloudwatch')
+
+# Substrings (lowercased) of stoppedReason values that represent NORMAL
+# lifecycle stops we must NOT alarm on: autoscaling, rolling deploys, the
+# service scheduler draining/replacing tasks, and operator/user-initiated
+# stops (incl. per-user container teardown).
+EXPECTED_REASON_SUBSTRINGS = (
+    'scaling',
+    'deployment',
+    'service-scheduler',
+    'service scheduler',
+    'user initiated',
+    'user-initiated',
+    'stopped by user',
+)
+
+def _is_unexpected(detail):
+    # Clean container exits (exitCode 0 / absent) are never unexpected.
+    containers = detail.get('containers') or []
+    if all((c.get('exitCode') or 0) == 0 for c in containers):
+        # Still flag if a non-zero exit hid behind an empty container list
+        # AND the reason looks abnormal — handled by the reason check below.
+        pass
+    else:
+        # At least one container exited non-zero → genuinely unexpected.
+        return True
+    reason = (detail.get('stoppedReason') or '').lower()
+    if not reason:
+        # No reason + clean exits → benign (e.g. normal shutdown).
+        return False
+    return not any(s in reason for s in EXPECTED_REASON_SUBSTRINGS)
+
 def handler(event, context):
-    cluster = event.get('detail', {}).get('clusterArn', '').split('/')[-1]
+    detail = event.get('detail', {}) or {}
+    if not _is_unexpected(detail):
+        return {'statusCode': 200, 'emitted': False}
+    cluster = detail.get('clusterArn', '').split('/')[-1]
     cw.put_metric_data(
         Namespace='Isol8/ECS',
         MetricData=[{
@@ -1285,7 +1208,7 @@ def handler(event, context):
             'Unit': 'Count',
         }],
     )
-    return {'statusCode': 200}
+    return {'statusCode': 200, 'emitted': True}
 `),
     });
 
@@ -1449,6 +1372,9 @@ def handler(event, context):
     w44.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W45: EFS ClientConnections drop
+    // NOT_BREACHING: only catches a real non-zero → zero transition, not the
+    // simple absence of the metric on idle dev (the old BREACHING config
+    // false-fired when no clients were mounted).
     const w45 = new cloudwatch.Alarm(this, "W45", {
       alarmName: `isol8-${this.envName}-W45-efs-client-connections`,
       alarmDescription: "EFS client connections dropped to zero",
@@ -1463,7 +1389,7 @@ def handler(event, context):
       evaluationPeriods: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w45.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
@@ -1810,24 +1736,17 @@ def handler(event, context):
         width: 8,
         height: 6,
       }),
-      new cloudwatch.GraphWidget({
-        title: "Bedrock throttles",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "chat.bedrock.throttle",
-            statistic: "Sum",
-            dimensionsMap: dims,
-          }),
-        ],
-        width: 8,
-        height: 6,
-      }),
+      // "Bedrock throttles" widget removed — chat.bedrock.throttle is never
+      // emitted; AWS-native Bedrock throttles are on the W46 alarm.
     );
 
-    // ----- Row 3.5: Free-tier scale-to-zero (4 widgets) -----
-    // Source-of-truth for the heartbeat is the P12 alarm (reaper-dead) — these
-    // widgets are for at-a-glance visibility, not gating.
+    // ----- Row 3.5: Runtime gauges (2 widgets) -----
+    // Backend-liveness heartbeat is the P12 alarm; these widgets are for
+    // at-a-glance visibility, not gating. The old free-tier scale-to-zero
+    // widgets ("Running by tier" → gateway.running.count.by_tier,
+    // "record_activity outcomes & scale-to-zero events" →
+    // gateway.record_activity.count / gateway.idle.scale_to_zero) were removed:
+    // those metrics are never emitted (reaper deleted in the flat-fee cutover).
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: "Running containers (gauge)",
@@ -1837,41 +1756,6 @@ def handler(event, context):
             metricName: "gateway.running.count",
             statistic: "Maximum",
             dimensionsMap: dims,
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: "Running by tier",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "gateway.running.count.by_tier",
-            statistic: "Maximum",
-            dimensionsMap: { ...dims, tier: "free" },
-            label: "free",
-          }),
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "gateway.running.count.by_tier",
-            statistic: "Maximum",
-            dimensionsMap: { ...dims, tier: "starter" },
-            label: "starter",
-          }),
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "gateway.running.count.by_tier",
-            statistic: "Maximum",
-            dimensionsMap: { ...dims, tier: "pro" },
-            label: "pro",
-          }),
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "gateway.running.count.by_tier",
-            statistic: "Maximum",
-            dimensionsMap: { ...dims, tier: "enterprise" },
-            label: "enterprise",
           }),
         ],
         width: 6,
@@ -1909,41 +1793,6 @@ def handler(event, context):
             statistic: "p99",
             dimensionsMap: dims,
             label: "p99 latency",
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: "record_activity outcomes & scale-to-zero events",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "gateway.record_activity.count",
-            statistic: "Sum",
-            dimensionsMap: { ...dims, outcome: "success" },
-            label: "success",
-          }),
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "gateway.record_activity.count",
-            statistic: "Sum",
-            dimensionsMap: { ...dims, outcome: "noop" },
-            label: "noop (cold-start race)",
-          }),
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "gateway.record_activity.count",
-            statistic: "Sum",
-            dimensionsMap: { ...dims, outcome: "error" },
-            label: "error (DDB)",
-          }),
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "gateway.idle.scale_to_zero",
-            statistic: "Sum",
-            dimensionsMap: { ...dims, tier: "free" },
-            label: "scale-to-zero (free)",
           }),
         ],
         width: 6,
@@ -2004,19 +1853,8 @@ def handler(event, context):
         width: 6,
         height: 6,
       }),
-      new cloudwatch.GraphWidget({
-        title: "Billing budget check errors",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "billing.budget_check.error",
-            statistic: "Sum",
-            dimensionsMap: dims,
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
+      // "Billing budget check errors" widget removed —
+      // billing.budget_check.error is never emitted.
     );
 
     // ----- Row 5: Auth & Security (3 widgets) -----
@@ -2202,29 +2040,50 @@ def handler(event, context):
       }),
     );
 
-    // ----- Row 8: DynamoDB + Proxy + Update worker (4 widgets) -----
+    // ----- Row 8: DynamoDB + Update worker + Bedrock (3 widgets) -----
+    // "Proxy upstream errors" widget removed — proxy.upstream is never emitted.
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        title: "DynamoDB throttles (custom metric)",
+        // Repointed off the never-emitted custom Isol8/dynamodb.throttle to the
+        // AWS-native AWS/DynamoDB ThrottledRequests (summed across our tables),
+        // matching the P8 alarm.
+        title: "DynamoDB throttled requests (AWS-native)",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "dynamodb.throttle",
+            namespace: "AWS/DynamoDB",
+            metricName: "ThrottledRequests",
             statistic: "Sum",
-            dimensionsMap: dims,
+            dimensionsMap: {
+              TableName: props.databaseTables.usersTable.tableName,
+            },
+            label: "users",
           }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: "Proxy upstream errors",
-        left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
-            metricName: "proxy.upstream",
+            namespace: "AWS/DynamoDB",
+            metricName: "ThrottledRequests",
             statistic: "Sum",
-            dimensionsMap: { ...dims, status: "5xx" },
+            dimensionsMap: {
+              TableName: props.databaseTables.containersTable.tableName,
+            },
+            label: "containers",
+          }),
+          new cloudwatch.Metric({
+            namespace: "AWS/DynamoDB",
+            metricName: "ThrottledRequests",
+            statistic: "Sum",
+            dimensionsMap: {
+              TableName: props.databaseTables.billingTable.tableName,
+            },
+            label: "billing",
+          }),
+          new cloudwatch.Metric({
+            namespace: "AWS/DynamoDB",
+            metricName: "ThrottledRequests",
+            statistic: "Sum",
+            dimensionsMap: {
+              TableName: props.databaseTables.usageCountersTable.tableName,
+            },
+            label: "usage-counters",
           }),
         ],
         width: 6,

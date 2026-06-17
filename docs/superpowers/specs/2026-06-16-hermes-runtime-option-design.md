@@ -150,7 +150,7 @@ Track `version:1` against `AUTH_STORE_VERSION` (`auth.py:63`) on every Hermes bu
 
 **Behavior delta:** `personalities[]` is **daemon-global, config-mutating, one-persona-at-a-time** (`run.py:9670-9683`) — it cannot host Friday AND Atlas simultaneously. `ephemeral_system_prompt` (run-create `instructions`) is **per-run, never persisted, never shared** (`api_server.py:2978-2984`) — two concurrent runs carry two different personas (04-personality §2).
 
-**Design consequence:** **seed Friday and Atlas via per-call `ephemeral_system_prompt` (run-create `instructions`), with `skip_context_files=True` + `load_soul_identity=False`.** Do NOT use `personalities[]` (single-persona) or SOUL.md files (capped + scanned). This keeps both agents independently addressable on one daemon and delivers the full persona uncapped/unscanned.
+**Design consequence (corrected by Rev 2 — profiles model):** Friday and Atlas are **separate Hermes profiles** (each its own daemon). Seed each profile's persona **once** as its default personality in that profile's `config.yaml` (resolved to the daemon's `ephemeral_system_prompt` — uncapped, sidestepping the 20k SOUL.md cap). A personality being daemon-global is exactly right here because **one profile = one agent**. Do NOT rely on per-run `ephemeral_system_prompt` resend or shared SOUL.md files. (The "one daemon, two personas via per-run prompt" framing this paragraph originally carried is superseded — see Rev 2 §1.)
 
 ### Q6 — OAuth Provider Proxy (v0.14.0): usable in hosted multi-tenant?
 
@@ -185,7 +185,7 @@ Context-file gating (`agent/system_prompt.py:89-98,222-231`):
 | True | False | **not** → `DEFAULT_AGENT_IDENTITY` | not injected |
 | True | True | injected | not injected |
 
-**Design consequence:** per-USER workspace isolation = the container boundary (`TERMINAL_CWD` → that user's EFS dir), exactly today's OpenClaw posture. Per-AGENT (Friday vs Atlas, marketplace agents) cwd isolation *within one container* is **NOT available as a hard config field** — it must be soft (encoded in `ephemeral_system_prompt` + enforced via the model's `workdir` arg). This is weaker than OpenClaw's per-agent `AgentEntrySchema.workspace` (audit §3.2). Accept the limitation for v1.
+**Design consequence (corrected by Rev 2 — profiles model):** per-AGENT workspace/cwd isolation **IS** available — each agent is its own profile with its own `HERMES_HOME` and `TERMINAL_CWD`, set per-profile at provision. So `per_agent_workspace` = ✅ for Hermes (capability table updated). The "no hard per-agent cwd field / accept the limitation" conclusion this paragraph originally carried applied only to the single-daemon multiplexing model and is superseded — see Rev 2 §1. (Per-USER isolation = the container boundary, as before.)
 
 ---
 
@@ -337,11 +337,11 @@ These are **facets of the two adapters from §4**, not free-standing `*_hermes.p
 |---|---|---|
 | **`write_config`** | wraps `write_openclaw_config` → `openclaw.json` on EFS (`apps/backend/core/containers/config.py:1209`; file grew to 1349 lines) | `~/.hermes/config.yaml`: `model`, `mcp_servers`, `platform_toolsets.api_server.enabled`, `terminal.cwd` (= EFS workspace), `platforms.api_server.key` (or via env). BYOK → `~/.hermes/.env` lines |
 | **`write_auth`** | wraps `pre_stage_auth_profile_store` → EFS `credentials/oauth.json`, `chown 1000` (`workspace.py:725-836`); BYOK inlined into `openclaw.json` | `~/.hermes/auth.json` (Q4 shape), `0o600`/parent `0o700`/UID 1000; BYOK → `~/.hermes/.env`. No write-back; DDB=seed (Q3) |
-| **`seed_owner_agents`** | wraps `friday_identity.py` (728 lines): writes IDENTITY/SOUL/USER/BOOTSTRAP markdown into `agents/<id>/agent/`; OpenClaw auto-loads them | Does NOT write per-agent identity files. The full persona is held by the backend and passed as `ephemeral_system_prompt` (run-create `instructions`) on **every** `/v1/runs`, with `skip_context_files=True`, `load_soul_identity=False` (Q5/Q8) |
+| **`seed_owner_agents`** | wraps `friday_identity.py` (728 lines): writes IDENTITY/SOUL/USER/BOOTSTRAP markdown into `agents/<id>/agent/`; OpenClaw auto-loads them | **(Rev 2)** Each agent = a profile; write each profile's persona **once** into its `config.yaml` default personality (uncapped) at provision — seeded, not re-sent per run. Per-profile, mirrors OpenClaw's seed-once posture. |
 
 Both `seed_owner_agents` implementations compile from the same canonical `OwnerProfile` (`friday_identity._resolve_owner_profile`, hoisted into the generic layer); the shared persona template renders to markdown (OpenClaw) vs concatenates to one string (Hermes). **No `friday_hermes.py` beside `friday_identity.py`** — the divergence lives inside the Hermes adapter only.
 
-**Verified personality mechanism:** Friday and Atlas are **per-run `ephemeral_system_prompt` strings**, keyed by which agent the inbound request targets — NOT `personalities[]` (daemon-global, single-persona) and NOT SOUL.md files (20k-capped + injection-scanned). Uncapped, unscanned, both-agents-concurrent (04-personality §5).
+**Verified personality mechanism (Rev 2):** Friday and Atlas are **separate profiles**, each with its persona set **once** in its own `config.yaml` (resolved to that daemon's `ephemeral_system_prompt` — uncapped, unscanned). `personalities[]` being daemon-global is a non-issue (one profile = one agent). SOUL.md files are avoided (20k-capped + injection-scanned).
 
 ---
 
@@ -386,7 +386,7 @@ The runtime selector reuses the existing provider/credential plumbing — concre
 |---|---|---|
 | **Credential-gated matrix** | `provision_gate.py:156-324` (Layer 1 subscription → Layer 2 provider-picked → Layer 3 provider creds) | **Unchanged.** Gate is provider-keyed, runtime-orthogonal. Hermes user satisfies the identical `oauth_required`/`byo_provider_required`/`credits_required` gate (11-onboarding §2) |
 | **`ACP_ENABLED`-style flag** | (beta opt-in pattern) | New beta opt-in → sets `runtime_kind="hermes"` on the billing row; default `"openclaw"` keeps every existing row + legacy fallback safe. No symmetric `runtime_required` gate |
-| **Metering hook** | `usage_service` records per-owner/per-member counters → Stripe Meters; `record_usage()` invoked from the usage callback (`core/containers/__init__.py`) | the Hermes adapter's `send_chat` must surface token `usage` from the `run.completed` event (`api_server.py:3073-3079`) into the same `record_usage()` callback. Hermes also exposes `GET /v1/runs/{id}` with `usage` for polling fallback. Wire the metering hook per `runtime_kind` so both runtimes feed one ledger |
+| **Metering hook** | `usage_service` records per-owner/per-member counters → Stripe Meters; `record_usage()` invoked from the usage callback (`core/containers/__init__.py`) | **(Rev 2)** Isol8 **self-prices Bedrock** via `cost_microcents` (`usage_service.py:91-96`) — Hermes USD not needed. The adapter feeds token counts from `run.completed.usage` (3 ints) into `record_usage()`; since Bedrock cost is cache-dominated, an **optional trivial 2-field Hermes fork** surfaces `cache_read/cache_write` (already tracked, `conversation_loop.py:1498-1499`) for accuracy. Non-Bedrock = user-paid (cost moot). Both runtimes feed one ledger. |
 | **Provider-specific pre-task setup** | `provision_user_container` OAuth pre-stage (`_pre_stage_oauth_for_user`, `ecs_manager.py:1480`) + BYO secrets (`_build_byo_secrets_for_user`, `:1490`) | Branch by `runtime_kind` to call the Hermes auth/config writers (§5) instead of the OpenClaw ones, after the provider branch |
 
 ---
@@ -471,13 +471,13 @@ The flat **$50/mo** model = uniform **0.5 vCPU / 1 GB** box; inference via Bedro
 1. **Decision: additive, beta-flagged signup-time `OpenClaw|Hermes` full-runtime selector.** Greenfield (zero `runtime_kind`/`hermes` hits in the repo); no OpenClaw teardown; new users default OpenClaw.
 2. **The runtime axis is orthogonal to the provider/credential axis** — Hermes reuses the identical Bedrock/OAuth/BYOK provision gate (`provision_gate.py:156-324`), so **no new gate code** is needed, only a `runtime_kind` field + a `provision_user_container` branch.
 3. **Auth collapses from OpenClaw's KMS-sealed Ed25519 operator-device + scoped v4 handshake to a single per-container `API_SERVER_KEY` bearer** (Secrets Manager, header-only, no `?token=` SSE fallback). Simpler but flatter — desktop pairing and device-attested exec-approval have **no Hermes analog** and are dropped for v1 (web only).
-4. **Friday/Atlas seed via per-call `ephemeral_system_prompt` (run `instructions`), NOT `personalities[]` or SOUL.md** — the only uncapped, unscanned, both-agents-concurrent path (`personalities[]` is daemon-global single-persona; SOUL.md files are 20k-capped + injection-scanned).
+4. **Friday/Atlas are separate Hermes profiles (daemon-per-agent), each persona seeded once into its profile `config.yaml`** (uncapped; Rev 2 §1). The earlier "per-run `ephemeral_system_prompt` on one daemon" framing is superseded — Hermes's per-agent model is profiles (#3681), not in-daemon multiplexing.
 5. **SSE is non-resumable** — no `id:`/`event:` lines, no replay buffer; recovery = poll `GET /v1/runs/{id}` for the terminal `output` (loses intermediate deltas). The audit's "ALB 60s timeout" premise is wrong (ALB is 300s and not even on the container path).
 6. **`metadata` does NOT reach the agent** — Paperclip issue/thread context must ride in the wake text (v1, zero fork) or via a small Hermes fork patch into `session_context` (`HERMES_SESSION_THREAD_ID`).
 7. **One `Runtime` port + two interchangeable adapters (OpenClaw/Hermes), NOT two parallel backends** — generic code depends on the port + a `Capabilities` descriptor, never a brand. Consolidating OpenClaw behind the port is workstream 1 (de-risks Hermes); the OpenClaw adapter must absorb FOUR scattered WS clients (`connection_pool`, `container_rpc`, `control_ui_proxy`, `container_auth`; 3 bypass the pool) plus its config/auth/identity/export writers. Only 11 files reference the pool (not the audit's ~25).
 8. **Four audit claims falsified:** the OAuth "two-file dance" (one file in v0.14.0), the OAuth Provider Proxy capabilities (Nous-only vaporware, contradicts its own release notes), `_OPENCLAW_RUNTIME_STATE_DIRS` (removed), and the `workspace` run field (does not exist).
 9. **ChatGPT-OAuth refresh model is identical to today's OpenClaw posture** (container-owns, in-place EFS write, no write-back, DDB=seed) — not a new problem; one file `~/.hermes/auth.json`, JWT-derived expiry, schema mapped.
-10. **Effort revised up to ~10-15 eng-weeks** (+buffer) — the OpenClaw-consolidation (workstream 1) is bigger than the audit thought (4 WS clients + 4 writers, 72 coupled files, new `credentials/mcp_server.py` openclaw.json rail), partly offset by the simpler Hermes auth writer.
+10. **Effort ≈ ~10-14 eng-weeks (Rev 2)** — the false backend-agent-registry inflator is removed (profiles are native), a multi-daemon lifecycle + lazy-start workstream is added (§12), and Paperclip ingress + marketplace deploy *shrink* (§13). Maintenance tail 3-5 days/bump. **Headline open risk = resourcing N daemons on the $50 box (§12)**, with one live single-daemon RSS measurement gating go/no-go.
 
 ### Claims I am LESS than confident about (feed to adversarial verification)
 

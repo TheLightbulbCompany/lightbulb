@@ -458,6 +458,14 @@ The flat **$50/mo** model = uniform **0.5 vCPU / 1 GB** box; inference via Bedro
 
 ---
 
+## 13. Ingress & marketplace under the profiles model (2026-06-17, verified)
+
+**Paperclip ingress — keep backend-mediated; the Paperclip adapter stays thin.** Hermes ships a generic `WebhookAdapter` (`gateway/platforms/webhook.py`): HMAC-validated inbound, payload→prompt transform, per-route skills, idempotency cache, rate-limiting, and a `deliver`/`deliver_extra` response push-back (config under `platforms.webhook.extra.routes`). It is a near-exact issue→run→comment-back fit — **but** its `deliver` targets are a fixed built-in set (`_BUILTIN_DELIVER_PLATFORMS`: github/telegram/feishu/…) with **no generic `http_post`/Paperclip target**, so direct Hermes→Paperclip push-back is not free. **Decision: keep the recommended backend-mediated ingress (§6)** — Paperclip → Isol8 backend → (lazy-start the target profile daemon) → `POST /v1/runs` to that profile's port → response routed back to Paperclip. This mirrors today's `openclaw_gateway` path (the Paperclip adapter points at Isol8; the backend does the runtime-specific routing). So the Paperclip-side adapter for Hermes ≈ the existing `openclaw_gateway` adapter **repointed** (thin), and the Hermes-specifics live in the backend's Hermes adapter — **WS7 shrinks vs the audit's bespoke ~400-600 LoC transport.** `webhook.py` remains a viable *direct-ingress alternative* if we ever bypass the backend, but it's not on the v1 path.
+
+**Marketplace deploy + cron — simpler under profiles; cron-remap is MOOT.** Each profile has its own `HERMES_HOME` → its own `cron/jobs.json` (`cron/jobs.py:4,37-39`; job ids `uuid4().hex[:12]`), `skills/`, `SOUL.md`, `config.yaml`. A marketplace deploy = **create a new profile and drop in the agent's self-contained config/skills/cron/SOUL** — there is no shared container-wide cron table, so the OpenClaw "remap cron ids + agent refs into the buyer's shared table" problem **does not exist** (resolves pressure-test unknown #5 and the §9 cron caveat). `create_agent`/`deploy_artifact` for Hermes = profile-create + un-tar into the profile dir; the per-agent isolation that OpenClaw has to *simulate* via id-remapping is **native**. Cross-runtime deploy stays rejected (§9). Net: a simplification vs OpenClaw's shared-container deploy.
+
+---
+
 ## Executive summary (10 bullets)
 
 1. **Decision: additive, beta-flagged signup-time `OpenClaw|Hermes` full-runtime selector.** Greenfield (zero `runtime_kind`/`hermes` hits in the repo); no OpenClaw teardown; new users default OpenClaw.

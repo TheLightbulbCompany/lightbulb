@@ -27,21 +27,25 @@ import httpx
 import websockets
 
 WS_URL = "wss://ws-dev.isol8.co"
-CHAOS_USER_ID = os.environ["CHAOS_FIS_USER_ID"]  # dedicated dev test user (org or user id)
 
 
 async def mint_test_token() -> str:
     """Mint a session token for the chaos test user via Clerk's API.
 
-    CLERK_SECRET_KEY (dev) must be set. Uses the sign-in-token flow, which
-    returns a JWT the gateway authorizer accepts on the ``?token=`` query param.
+    CLERK_SECRET_KEY (dev) and CHAOS_FIS_USER_ID (the dedicated dev test
+    user — org or user id) must be set. Both are read lazily here at call
+    time, not at module import, so importing this module never raises and
+    collection of importing scenario modules can skip cleanly. Uses the
+    sign-in-token flow, which returns a JWT the gateway authorizer accepts on
+    the ``?token=`` query param.
     """
     secret = os.environ["CLERK_SECRET_KEY"]
+    chaos_user_id = os.environ["CHAOS_FIS_USER_ID"]
     async with httpx.AsyncClient(base_url="https://api.clerk.com/v1", timeout=30) as c:
         r = await c.post(
             "/sign_in_tokens",
             headers={"Authorization": f"Bearer {secret}"},
-            json={"user_id": CHAOS_USER_ID},
+            json={"user_id": chaos_user_id},
         )
         r.raise_for_status()
         return r.json()["token"]

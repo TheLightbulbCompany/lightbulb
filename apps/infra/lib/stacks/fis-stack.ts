@@ -71,12 +71,23 @@ export class FisStack extends cdk.Stack {
         "isol8:chaos": "sp2",
       },
       targets: {
+        // PREREQUISITE (Phase B / game-day): the dedicated chaos test
+        // container's ECS task MUST be tagged isol8:owner=CHAOS_TEST_USER
+        // at the ECS level for this selector to match. The per-user
+        // create_service in ecs_manager.py does NOT currently propagate
+        // owner tags onto its tasks, so the chaos test service must be
+        // tagged manually (or via the game-day runbook) before running S1.
+        // Until then this target resolves to zero tasks and the experiment
+        // is a no-op. The ClusterArn filter below additionally scopes the
+        // selection to the dev cluster at the target level (not just via
+        // the IAM ecs:cluster condition).
         userTask: {
           resourceType: "aws:ecs:task",
           selectionMode: "COUNT(1)",
           // Resource tags select per-user tasks; the dedicated chaos test
           // user's task carries isol8:owner=CHAOS_TEST_USER.
           resourceTags: { "isol8:owner": "CHAOS_TEST_USER" },
+          filters: [{ path: "ClusterArn", values: [props.clusterArn] }],
         },
       },
       actions: {

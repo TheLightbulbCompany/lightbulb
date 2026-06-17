@@ -836,14 +836,16 @@ class TestGatewayRestart:
 
     @pytest.fixture
     def mock_ecs_manager(self):
-        with patch("routers.container_rpc.get_ecs_manager") as mock_getter:
+        with patch("routers.container_recover.get_ecs_manager") as mock_getter:
             manager = AsyncMock()
             mock_getter.return_value = manager
             yield manager
 
     @pytest.fixture
     def mock_call_gateway_rpc(self):
-        with patch("routers.container_rpc._call_gateway_rpc", new_callable=AsyncMock) as mock_rpc:
+        # gateway_restart now lives in container_recover and reaches the gateway
+        # through the shared signed one-shot helper.
+        with patch("routers.container_recover.gateway_rpc_oneshot", new_callable=AsyncMock) as mock_rpc:
             mock_rpc.return_value = {}
             yield mock_rpc
 
@@ -863,16 +865,18 @@ class TestGatewayRestart:
     async def test_gateway_restart_success(
         self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
     ):
-        """Happy path: should return ok=true and call config.apply RPC."""
+        """Happy path: should return ok=true and call config.apply via the
+        signed one-shot (config.apply is operator.admin-reserved)."""
         response = await async_client.post("/api/v1/container/gateway/restart")
         assert response.status_code == 200
         assert response.json() == {"ok": True}
-        mock_call_gateway_rpc.assert_called_once_with(
-            ip="10.0.1.5",
-            token="test-gw-token",
-            method="config.apply",
-            params={},
-        )
+        mock_call_gateway_rpc.assert_awaited_once()
+        call = mock_call_gateway_rpc.await_args
+        assert call.args[0] == "10.0.1.5"  # ip (positional)
+        assert call.kwargs["token"] == "test-gw-token"
+        assert call.kwargs["method"] == "config.apply"
+        assert call.kwargs["params"] == {}
+        assert call.kwargs["owner_id"]  # signed handshake is scoped to the owner
 
     @pytest.mark.asyncio
     async def test_gateway_restart_no_container(self, async_client, mock_ecs_manager, mock_call_gateway_rpc):

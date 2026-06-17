@@ -35,8 +35,8 @@ from routers import (
     config,
     connections,
     container,
+    container_files,
     container_recover,
-    container_rpc,
     control_ui_proxy,
     debug,
     desktop_auth,
@@ -648,10 +648,10 @@ app.include_router(orgs.router, prefix="/api/v1/orgs", tags=["orgs"])
 # Container lifecycle management (GET /status, POST /retry)
 app.include_router(container.router, prefix="/api/v1/container", tags=["container"])
 
-# Container RPC proxy & file uploads (POST /rpc, POST /gateway/restart, POST /files)
-app.include_router(container_rpc.router, prefix="/api/v1/container", tags=["container"])
+# Workspace file uploads (POST /files)
+app.include_router(container_files.router, prefix="/api/v1/container", tags=["container"])
 
-# Container recovery (state-aware recover endpoint)
+# Container recovery + gateway control (POST /recover, POST /gateway/restart)
 app.include_router(container_recover.router, prefix="/api/v1/container", tags=["container"])
 
 # Container updates (pending updates, apply/schedule)

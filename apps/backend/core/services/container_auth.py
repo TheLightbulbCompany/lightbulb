@@ -13,116 +13,37 @@ that provider (``stopReason: "auth-revoked"``) — a true revoke with no restart
 
 ``operator.admin`` REQUIRES the signed operator-device handshake (the gateway
 strips self-declared scopes from clients that present only the shared token —
-see core/crypto/operator_device.py). So we load the per-container Ed25519
-device seed (KMS-decrypted from the container row) and sign the connect, the
-same way routers/container_recover.py and core/gateway/connection_pool.py do.
-
-NOTE: the signed WS connect+RPC pattern below is also in container_recover.py /
-connection_pool.py. It is duplicated here (rather than imported) to avoid a
-service -> router import cycle; a shared gateway RPC client is a reasonable
-future cleanup.
+see core/crypto/operator_device.py). The signed connect + one-shot RPC is the
+shared ``core.gateway.operator_rpc.gateway_rpc_oneshot`` helper, which loads the
+per-container Ed25519 device seed (KMS-decrypted from the container row) and
+signs the connect.
 """
 
-import asyncio
-import json
 import logging
-import uuid
-
-import websockets
 
 from core.containers import get_ecs_manager
-from core.containers.ecs_manager import GATEWAY_PORT
+from core.gateway.operator_rpc import gateway_rpc_oneshot
 
 logger = logging.getLogger(__name__)
 
 _WS_TIMEOUT = 10
 
 
-async def _logout_provider_via_gateway(ip: str, owner_id: str, enc_seed: str, token: str, provider: str) -> None:
-    """Open a short-lived WS to the gateway, complete the SIGNED operator-device
-    connect handshake (so the gateway grants ``operator.admin``), and call
-    ``models.authLogout`` for ``provider``. Raises on any failure (the caller
-    treats failure as best-effort)."""
-    from core.crypto import kms_secrets
-    from core.crypto.operator_device import (
-        BACKEND_CLIENT_ID,
-        BACKEND_CLIENT_MODE,
-        BACKEND_OPERATOR_SCOPES,
-        BACKEND_ROLE,
-        load_operator_device_from_seed,
-        sign_connect_request,
+async def _logout_provider_via_gateway(ip: str, owner_id: str, token: str, provider: str) -> None:
+    """Signed ``models.authLogout`` one-shot — drop ``provider``'s credential
+    from the running gateway's live auth store (grants ``operator.admin`` via
+    the signed device handshake). Raises on any failure (the caller treats
+    failure as best-effort)."""
+    await gateway_rpc_oneshot(
+        ip,
+        owner_id=owner_id,
+        token=token,
+        method="models.authLogout",
+        params={"provider": provider},
+        open_timeout=_WS_TIMEOUT,
+        recv_timeout=_WS_TIMEOUT,
+        rpc_timeout=_WS_TIMEOUT,
     )
-
-    seed_bytes = kms_secrets.decrypt_bytes(
-        enc_seed,
-        encryption_context={"owner_id": owner_id, "purpose": "operator-device-seed"},
-    )
-    identity = load_operator_device_from_seed(seed_bytes)
-
-    uri = f"ws://{ip}:{GATEWAY_PORT}"
-    async with websockets.connect(uri, open_timeout=_WS_TIMEOUT, close_timeout=5) as ws:
-        # connect.challenge -> signed connect (operator.admin) -> hello-ok.
-        challenge = json.loads(await asyncio.wait_for(ws.recv(), timeout=_WS_TIMEOUT))
-        if challenge.get("event") != "connect.challenge":
-            raise RuntimeError("expected connect.challenge from gateway")
-        nonce = challenge.get("payload", {}).get("nonce") or challenge.get("nonce")
-        if not nonce:
-            raise RuntimeError("connect.challenge missing nonce")
-
-        # Sign the v2 payload with the per-container operator identity — this is
-        # what gets the self-declared operator.admin scope honored.
-        device = sign_connect_request(
-            identity=identity,
-            token=token,
-            nonce=nonce,
-            scopes=BACKEND_OPERATOR_SCOPES,
-        )
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "req",
-                    "id": str(uuid.uuid4()),
-                    "method": "connect",
-                    "params": {
-                        "minProtocol": 4,
-                        "maxProtocol": 4,
-                        "client": {
-                            "id": BACKEND_CLIENT_ID,
-                            "version": "1.0.0",
-                            "platform": "linux",
-                            "mode": BACKEND_CLIENT_MODE,
-                        },
-                        "role": BACKEND_ROLE,
-                        "scopes": list(BACKEND_OPERATOR_SCOPES),
-                        "auth": {"token": token},
-                        "device": device,
-                    },
-                }
-            )
-        )
-        hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=_WS_TIMEOUT))
-        if not hello.get("ok"):
-            raise RuntimeError(f"gateway connect failed: {hello.get('error', {}).get('message')}")
-
-        # models.authLogout — drop the provider's credential from the live store.
-        req_id = str(uuid.uuid4())
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "req",
-                    "id": req_id,
-                    "method": "models.authLogout",
-                    "params": {"provider": provider},
-                }
-            )
-        )
-        # Skip event broadcasts until the matching response arrives.
-        while True:
-            data = json.loads(await asyncio.wait_for(ws.recv(), timeout=_WS_TIMEOUT))
-            if data.get("type") == "res" and data.get("id") == req_id:
-                if not data.get("ok"):
-                    raise RuntimeError(data.get("error", {}).get("message", "models.authLogout rejected"))
-                return
 
 
 async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "openai") -> bool:
@@ -158,7 +79,7 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
         return False
 
     try:
-        await _logout_provider_via_gateway(ip, owner_id, enc_seed, token, provider)
+        await _logout_provider_via_gateway(ip, owner_id, token, provider)
         logger.info(
             "revoked_provider_auth_in_container",
             extra={"owner_id": owner_id, "provider": provider},

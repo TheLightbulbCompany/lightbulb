@@ -1,0 +1,249 @@
+"""Tests for the shared signed operator-connect helper.
+
+`core.gateway.operator_rpc` is the single canonical place that performs the
+OpenClaw 4.5 signed-device connect handshake. The connection pool, the
+credential-revoke service, the recovery endpoint, and the gateway-restart
+endpoint all route their signed connect through it instead of carrying their
+own copy.
+
+These tests stub the same dependencies the pool's handshake test stubs:
+
+- ``container_repo.get_by_owner_id`` → a row carrying an
+  ``operator_priv_key_enc`` ciphertext (opaque; KMS is mocked).
+- ``kms_secrets.decrypt_bytes`` → a real 32-byte Ed25519 seed so
+  ``sign_connect_request`` produces a signature we can verify.
+"""
+
+import json
+import uuid as uuid_mod
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from core.gateway import operator_rpc
+
+
+@pytest.fixture
+def operator_seed():
+    """Fresh 32-byte Ed25519 seed for the test run."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        NoEncryption,
+        PrivateFormat,
+    )
+
+    priv = Ed25519PrivateKey.generate()
+    return priv.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+
+
+@pytest.fixture
+def mock_device_auth_deps(operator_seed):
+    """Patch container_repo + kms_secrets so the helper can load an identity."""
+    with (
+        patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as mock_get,
+        patch("core.crypto.kms_secrets.decrypt_bytes") as mock_decrypt,
+    ):
+        mock_get.return_value = {
+            "owner_id": "test-user",
+            "operator_priv_key_enc": "opaque-kms-ciphertext-blob",
+            "gateway_token": "test-token",
+        }
+        mock_decrypt.return_value = operator_seed
+        yield mock_get, mock_decrypt
+
+
+class _FakeWsCM:
+    """Minimal async-context-manager wrapper around a fake websocket."""
+
+    def __init__(self, ws):
+        self._ws = ws
+
+    async def __aenter__(self):
+        return self._ws
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+# --------------------------------------------------------------------------
+# perform_signed_connect
+# --------------------------------------------------------------------------
+
+
+class TestPerformSignedConnect:
+    @pytest.mark.asyncio
+    async def test_sends_signed_device_and_returns_hello(self, mock_device_auth_deps):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "nonce-abc"}}),
+                json.dumps({"ok": True, "payload": {"protocol": 4}}),
+            ]
+        )
+
+        hello = await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="test-token")
+
+        sent = json.loads(ws.send.call_args[0][0])
+        params = sent["params"]
+        assert sent["method"] == "connect"
+        assert params["role"] == "operator"
+        assert params["minProtocol"] == 4
+        assert params["maxProtocol"] == 4
+        assert params["scopes"] == ["operator.admin", "operator.read", "operator.write"]
+        assert params["auth"]["token"] == "test-token"
+        assert params["client"]["id"] == "gateway-client"
+        assert params["client"]["mode"] == "backend"
+
+        device = params["device"]
+        assert set(device.keys()) == {"id", "publicKey", "signature", "signedAt", "nonce"}
+        assert device["nonce"] == "nonce-abc"
+        assert device["signature"]
+
+        # Signature verifies against the v2 payload the server will rebuild.
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from core.crypto.operator_device import (
+            build_v2_connect_payload,
+            _b64url_nopad_decode,
+        )
+
+        expected = build_v2_connect_payload(
+            device_id=device["id"],
+            client_id="gateway-client",
+            client_mode="backend",
+            role="operator",
+            scopes=["operator.admin", "operator.read", "operator.write"],
+            signed_at_ms=device["signedAt"],
+            token="test-token",
+            nonce="nonce-abc",
+        )
+        pub = Ed25519PublicKey.from_public_bytes(_b64url_nopad_decode(device["publicKey"]))
+        pub.verify(_b64url_nopad_decode(device["signature"]), expected.encode("utf-8"))
+
+        assert hello == {"ok": True, "payload": {"protocol": 4}}
+
+    @pytest.mark.asyncio
+    async def test_no_caps_key_by_default(self, mock_device_auth_deps):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": True}),
+            ]
+        )
+        await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+        params = json.loads(ws.send.call_args[0][0])["params"]
+        assert "caps" not in params
+
+    @pytest.mark.asyncio
+    async def test_includes_caps_when_passed(self, mock_device_auth_deps):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": True}),
+            ]
+        )
+        await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t", caps=["tool-events"])
+        params = json.loads(ws.send.call_args[0][0])["params"]
+        assert params["caps"] == ["tool-events"]
+
+    @pytest.mark.asyncio
+    async def test_raises_on_wrong_first_event(self):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(return_value=json.dumps({"event": "something.else"}))
+        with pytest.raises(RuntimeError, match="Expected connect.challenge"):
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+
+    @pytest.mark.asyncio
+    async def test_raises_when_gateway_rejects(self, mock_device_auth_deps):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": False, "error": {"message": "invalid token"}}),
+            ]
+        )
+        with pytest.raises(RuntimeError, match="Gateway connect failed: invalid token"):
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+
+    @pytest.mark.asyncio
+    async def test_raises_when_no_operator_seed(self):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(return_value=json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}))
+        with patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = {"owner_id": "test-user"}  # no operator_priv_key_enc
+            with pytest.raises(RuntimeError, match="operator_priv_key_enc"):
+                await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+
+
+# --------------------------------------------------------------------------
+# gateway_rpc_oneshot
+# --------------------------------------------------------------------------
+
+
+class TestGatewayRpcOneshot:
+    @pytest.mark.asyncio
+    async def test_returns_payload_on_success(self, mock_device_auth_deps):
+        fixed = uuid_mod.UUID("12345678-1234-5678-1234-567812345678")
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": True}),
+                json.dumps({"type": "res", "id": str(fixed), "ok": True, "payload": {"status": "ok"}}),
+            ]
+        )
+        with (
+            patch.object(operator_rpc.websockets, "connect", return_value=_FakeWsCM(ws)),
+            patch.object(operator_rpc.uuid, "uuid4", return_value=fixed),
+        ):
+            payload = await operator_rpc.gateway_rpc_oneshot(
+                "10.0.0.1", owner_id="test-user", token="t", method="health"
+            )
+        assert payload == {"status": "ok"}
+        # The RPC frame was actually sent.
+        rpc_frame = json.loads(ws.send.call_args_list[-1][0][0])
+        assert rpc_frame["method"] == "health"
+
+    @pytest.mark.asyncio
+    async def test_raises_on_rpc_error(self, mock_device_auth_deps):
+        fixed = uuid_mod.UUID("12345678-1234-5678-1234-567812345678")
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": True}),
+                json.dumps({"type": "res", "id": str(fixed), "ok": False, "error": {"message": "nope"}}),
+            ]
+        )
+        with (
+            patch.object(operator_rpc.websockets, "connect", return_value=_FakeWsCM(ws)),
+            patch.object(operator_rpc.uuid, "uuid4", return_value=fixed),
+        ):
+            with pytest.raises(RuntimeError, match="nope"):
+                await operator_rpc.gateway_rpc_oneshot(
+                    "10.0.0.1", owner_id="test-user", token="t", method="config.apply"
+                )
+
+    @pytest.mark.asyncio
+    async def test_skips_event_broadcasts_before_response(self, mock_device_auth_deps):
+        fixed = uuid_mod.UUID("12345678-1234-5678-1234-567812345678")
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": True}),
+                json.dumps({"event": "health", "payload": {"noise": True}}),  # broadcast, ignored
+                json.dumps({"type": "res", "id": "other-id", "ok": True, "payload": {}}),  # not ours
+                json.dumps({"type": "res", "id": str(fixed), "ok": True, "payload": {"v": 1}}),
+            ]
+        )
+        with (
+            patch.object(operator_rpc.websockets, "connect", return_value=_FakeWsCM(ws)),
+            patch.object(operator_rpc.uuid, "uuid4", return_value=fixed),
+        ):
+            payload = await operator_rpc.gateway_rpc_oneshot(
+                "10.0.0.1", owner_id="test-user", token="t", method="health"
+            )
+        assert payload == {"v": 1}

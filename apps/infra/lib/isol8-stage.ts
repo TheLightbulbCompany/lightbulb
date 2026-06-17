@@ -6,6 +6,7 @@ import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
+import { FisStack } from "./stacks/fis-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
 import { PaperclipStack } from "./stacks/paperclip-stack";
@@ -160,26 +161,30 @@ export class Isol8Stage extends cdk.Stage {
     paperclip.addDependency(network);
 
     // ObservabilityStack — alarms, dashboard, canaries, account hardening
-    new ObservabilityStack(this, `isol8-${env}-observability`, {
-      stackName: `isol8-${env}-observability`,
-      envName: env,
-      backendService: service.service,
-      backendLogGroupName: `/ecs/isol8-${env}`,
-      alb: network.alb,
-      wsApiId: api.wsApiId,
-      cluster: container.cluster,
-      efsFileSystem: container.efsFileSystem,
-      databaseTables: {
-        usersTable: database.usersTable,
-        containersTable: database.containersTable,
-        billingTable: database.billingTable,
-        usageCountersTable: database.usageCountersTable,
-        pendingUpdatesTable: database.pendingUpdatesTable,
-        channelLinksTable: database.channelLinksTable,
+    const observability = new ObservabilityStack(
+      this,
+      `isol8-${env}-observability`,
+      {
+        stackName: `isol8-${env}-observability`,
+        envName: env,
+        backendService: service.service,
+        backendLogGroupName: `/ecs/isol8-${env}`,
+        alb: network.alb,
+        wsApiId: api.wsApiId,
+        cluster: container.cluster,
+        efsFileSystem: container.efsFileSystem,
+        databaseTables: {
+          usersTable: database.usersTable,
+          containersTable: database.containersTable,
+          billingTable: database.billingTable,
+          usageCountersTable: database.usageCountersTable,
+          pendingUpdatesTable: database.pendingUpdatesTable,
+          channelLinksTable: database.channelLinksTable,
+        },
+        connectionsTableName: api.connectionsTableName,
+        authorizerFunctionName: `isol8-${env}-ws-authorizer`,
       },
-      connectionsTableName: api.connectionsTableName,
-      authorizerFunctionName: `isol8-${env}-ws-authorizer`,
-    });
+    );
 
     // BedrockMeterStack — account-scoped usage meter, direct Metronome
     // ingest. Bedrock model-invocation logging is account+region-global (one
@@ -194,6 +199,20 @@ export class Isol8Stage extends cdk.Stage {
       new BedrockMeterStack(this, `isol8-${env}-bedrock-meter`, {
         stackName: `isol8-${env}-bedrock-meter`,
         envName: env,
+      });
+    }
+
+    // FisStack — Chaos Testing SP2 AWS FIS experiment templates. DEV ONLY:
+    // these inject real infra faults, so they are never instantiated for
+    // prod. clusterArn comes from the container stack; pageAlarmArns are the
+    // page-tier alarm ARNs exported by ObservabilityStack and wired in as FIS
+    // stop-conditions.
+    if (env === "dev") {
+      new FisStack(this, `isol8-${env}-fis`, {
+        stackName: `isol8-${env}-fis`,
+        environment: env,
+        clusterArn: container.cluster.clusterArn,
+        pageAlarmArns: observability.pageAlarmArns,
       });
     }
 

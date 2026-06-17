@@ -6,7 +6,6 @@ import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
-import { FisStack } from "./stacks/fis-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
 import { PaperclipStack } from "./stacks/paperclip-stack";
@@ -202,19 +201,14 @@ export class Isol8Stage extends cdk.Stage {
       });
     }
 
-    // FisStack — Chaos Testing SP2 AWS FIS experiment templates. DEV ONLY:
-    // these inject real infra faults, so they are never instantiated for
-    // prod. clusterArn comes from the container stack; pageAlarmArns are the
-    // page-tier alarm ARNs exported by ObservabilityStack and wired in as FIS
-    // stop-conditions.
-    if (env === "dev") {
-      new FisStack(this, `isol8-${env}-fis`, {
-        stackName: `isol8-${env}-fis`,
-        environment: env,
-        clusterArn: container.cluster.clusterArn,
-        pageAlarmArns: observability.pageAlarmArns,
-      });
-    }
+    // FisStack (Chaos Testing SP2 AWS FIS templates) is intentionally NOT
+    // instantiated yet. Its first deploy rolled back (FIS caps stop-conditions
+    // at 5; Phase A wired 12 page alarms), which blocked the prod stage. Rather
+    // than land interim, un-audited stop-conditions, FIS deployment is deferred
+    // until the observability audit defines the correct stop-condition + recovery
+    // signals. The stack code lives in stacks/fis-stack.ts and re-lands then.
+    // See docs/superpowers/specs/2026-06-16-chaos-testing-sp2-* and the
+    // observability-audit sub-project.
 
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "isol8");

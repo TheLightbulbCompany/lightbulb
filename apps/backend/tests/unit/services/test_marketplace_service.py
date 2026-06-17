@@ -1,5 +1,6 @@
 """Tests for marketplace_service."""
 
+import json
 import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -86,6 +87,47 @@ async def test_submit_listing_transitions_draft_to_review(mock_listings):
     # double-submit or submit from a wrong state.
     values = kwargs.get("ExpressionAttributeValues", {})
     assert ":draft" in values or "draft" in str(values)
+
+
+def _row_with_manifest(reqs):
+    return {
+        "Item": {
+            "artifact_uploaded": True,
+            "manifest_json": json.dumps({"requirements": reqs}),
+        }
+    }
+
+
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_blocks_on_unavailable_requirement(mock_listings):
+    mock_listings.return_value.get_item = MagicMock(
+        return_value=_row_with_manifest([{"key": "gog", "disposition": "unavailable"}])
+    )
+    with pytest.raises(marketplace_service.RequirementsBlockingError) as exc:
+        await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
+    assert "gog" in exc.value.unavailable
+
+
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_allows_unavailable_with_acknowledge(mock_listings):
+    mock_listings.return_value.get_item = MagicMock(
+        return_value=_row_with_manifest([{"key": "gog", "disposition": "unavailable"}])
+    )
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
+    result = await marketplace_service.submit_for_review(
+        listing_id="l1", seller_id="user_abc", acknowledge_unavailable=True
+    )
+    assert result["status"] == "review"
+
+
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_not_blocked_when_no_unavailable(mock_listings):
+    mock_listings.return_value.get_item = MagicMock(
+        return_value=_row_with_manifest([{"key": "stripe", "disposition": "connect"}])
+    )
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
+    result = await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
+    assert result["status"] == "review"
 
 
 @pytest.mark.asyncio

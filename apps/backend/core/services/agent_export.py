@@ -649,6 +649,18 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     except Exception as exc:  # noqa: BLE001 — preview must not raise
         logger.warning("agent_export: preview slice-leak scan failed for agent=%s: %s", agent_id, exc)
 
+    # Live requirements scan so the wizard's Requirements step renders what the
+    # agent actually needs. Same scanner the artifact build freezes into the
+    # manifest; selection (bundle) doesn't change detection, so this is cacheable.
+    effective_cfg = config
+    eff_path = agent_dir / "openclaw.json"
+    if eff_path.exists():
+        try:
+            effective_cfg = json.loads(eff_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            effective_cfg = config
+    reqs, scan_incomplete = requirements_scan(effective_cfg, agent_dir)
+
     return {
         "agent_id": agent_id,
         "available_mcps": available_mcps,
@@ -656,6 +668,8 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
         "auto_ship_skills": auto_ship_skills,
         "persona_files": persona_files,
         "safety_flags": safety_flags,
+        "requirements": [r.to_manifest() for r in reqs],
+        "scan_incomplete": scan_incomplete,
     }
 
 

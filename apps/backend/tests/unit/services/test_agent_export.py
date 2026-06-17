@@ -133,6 +133,20 @@ def test_export_manifest_carries_requirements(fake_efs):
     assert provs == {"stripe"}  # registry connect only; channel + byo + bundled excluded
 
 
+def test_preview_includes_requirements(fake_efs):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "pipelines").mkdir()
+    (agent_dir / "pipelines" / "p.lobster").write_text(
+        "--tool llm-task\ncurl https://production.plaid.com/x $PLAID_SECRET\n",
+        encoding="utf-8",
+    )
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    assert "requirements" in preview
+    keys = {r["key"]: r["disposition"] for r in preview["requirements"]}
+    assert keys["plaid"] == "byo"
+    assert keys["llm-task"] == "included"
+
+
 def test_export_skips_junk_dirs(fake_efs):
     seller_id, agent_id, _ = fake_efs
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)

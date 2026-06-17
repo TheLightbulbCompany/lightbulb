@@ -24,6 +24,30 @@ from botocore.exceptions import ClientError
 from core.config import settings
 
 
+def summarize_requirements(manifest: dict) -> dict:
+    """Denormalize ``manifest.requirements`` into counts + the connectable
+    provider set + a blocking flag, for fast listing render and the publish
+    gate. ``has_blocking`` is true when any ``unavailable`` ("won't run as
+    published") row exists.
+    """
+    reqs = (manifest or {}).get("requirements") or []
+    counts = {"included": 0, "connect": 0, "byo": 0, "unavailable": 0}
+    providers: list[str] = []
+    for r in reqs:
+        if not isinstance(r, dict):
+            continue
+        disp = r.get("disposition")
+        if disp in counts:
+            counts[disp] += 1
+        if disp == "connect" and r.get("kind") != "channel":
+            providers.append(r.get("key"))
+    return {
+        "counts": counts,
+        "requires_providers": sorted({p for p in providers if p}),
+        "has_blocking": counts["unavailable"] > 0,
+    }
+
+
 def _listings_table():
     return boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
 
@@ -34,6 +58,18 @@ def _dynamodb_client():
 
 class InvalidStateError(Exception):
     """Listing is not in the state required for the operation."""
+
+
+class RequirementsBlockingError(Exception):
+    """Submit blocked because the agent has requirements that won't run as
+    published (gated like gog, or phantom skills with no implementation). The
+    seller must fix the agent or acknowledge to list it anyway. ``unavailable``
+    lists the offending requirement keys so the wizard can name them.
+    """
+
+    def __init__(self, unavailable: list[str]):
+        self.unavailable = unavailable
+        super().__init__(f"won't run as published: {', '.join(unavailable)}")
 
 
 class ArtifactNotUploadedError(Exception):
@@ -565,7 +601,9 @@ async def discard_draft(*, listing_id: str, seller_id: str, version: int) -> Non
         raise
 
 
-async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1) -> dict:
+async def submit_for_review(
+    *, listing_id: str, seller_id: str, version: int = 1, acknowledge_unavailable: bool = False
+) -> dict:
     """Transition draft -> review. Idempotent: re-submitting from review is rejected.
 
     ``version`` defaults to 1 to match the create flow. Edit-mode callers
@@ -588,6 +626,24 @@ async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1
     pre_item = pre.get("Item") or {}
     if pre_item.get("artifact_uploaded") is False:
         raise ArtifactNotUploadedError("upload artifact before submitting for review")
+
+    # Publish gate: block (unless acknowledged) when the agent has requirements
+    # that won't run for buyers as published — gated (gog) or phantom skills.
+    if not acknowledge_unavailable:
+        manifest = {}
+        raw = pre_item.get("manifest_json")
+        if raw:
+            try:
+                manifest = json.loads(raw)
+            except (ValueError, TypeError):
+                manifest = {}
+        if summarize_requirements(manifest)["has_blocking"]:
+            unavailable = sorted(
+                r["key"]
+                for r in (manifest.get("requirements") or [])
+                if isinstance(r, dict) and r.get("disposition") == "unavailable" and r.get("key")
+            )
+            raise RequirementsBlockingError(unavailable)
 
     try:
         # Populate published_at at submit time even though the listing isn't

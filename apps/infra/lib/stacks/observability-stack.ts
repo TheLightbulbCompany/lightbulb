@@ -84,6 +84,13 @@ interface AlarmDef {
 export class ObservabilityStack extends cdk.Stack {
   public readonly pageTopic: sns.Topic;
   public readonly warnTopic: sns.Topic;
+  /**
+   * ARNs of the page-tier CloudWatch alarms. Consumed by FisStack (dev only)
+   * as FIS experiment stop-conditions: a real customer-impacting page alarm
+   * aborts a running chaos experiment. Populated only with page-severity
+   * alarms — warn/cost alarms are deliberately excluded.
+   */
+  public readonly pageAlarmArns: string[] = [];
   private readonly envName: string;
 
   constructor(scope: Construct, id: string, props: ObservabilityStackProps) {
@@ -196,6 +203,11 @@ export class ObservabilityStack extends cdk.Stack {
         def.severity === "page" ? this.pageTopic : this.warnTopic,
       ),
     );
+
+    // Collect page-tier alarms as FIS stop-condition sources (dev only).
+    if (def.severity === "page") {
+      this.pageAlarmArns.push(alarm.alarmArn);
+    }
 
     return alarm;
   }
@@ -354,6 +366,7 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     p9.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+    this.pageAlarmArns.push(p9.alarmArn);
 
     // P10: apigw-ws-5xx-rate (AWS-native metric math)
     const apiGwErrors = new cloudwatch.Metric({
@@ -387,6 +400,7 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     p10.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+    this.pageAlarmArns.push(p10.alarmArn);
 
     // -------------------------------------------------------------------
     // Free-tier scale-to-zero reaper alarms
@@ -435,6 +449,7 @@ export class ObservabilityStack extends cdk.Stack {
     heartbeatAlarm.addAlarmAction(
       new cloudwatch_actions.SnsAction(this.pageTopic),
     );
+    this.pageAlarmArns.push(heartbeatAlarm.alarmArn);
 
     // P13: any reaper crash in the last 5 min.
     const crashMetric = new cloudwatch.Metric({
@@ -458,6 +473,7 @@ export class ObservabilityStack extends cdk.Stack {
     reaperCrashAlarm.addAlarmAction(
       new cloudwatch_actions.SnsAction(this.pageTopic),
     );
+    this.pageAlarmArns.push(reaperCrashAlarm.alarmArn);
   }
 
   // =========================================================================

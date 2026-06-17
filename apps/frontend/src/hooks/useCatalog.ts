@@ -38,6 +38,13 @@ export interface DeployResult {
   name: string;
   skills_added: string[];
   plugins_enabled: string[];
+  /** ACP coding-harness delegation outcome (see catalog_service.deploy):
+   * - acp_requested: the listing's manifest carries requires_acp.
+   * - acp_enabled: the buyer's container actually got ACP turned on (false
+   *   when the provider can't run any harness or the platform flag is off).
+   * Both default-absent on listings published before ACP shipped. */
+  acp_requested?: boolean;
+  acp_enabled?: boolean;
 }
 
 interface MarketplaceListing {

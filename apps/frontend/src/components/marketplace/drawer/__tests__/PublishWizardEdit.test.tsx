@@ -209,7 +209,7 @@ describe("PublishWizard — republish entry threads editingListing.version", () 
     });
   });
 
-  function v2Draft(): Listing {
+  function v2Draft(overrides: Partial<Listing> = {}): Listing {
     // Republish output: a freshly-cloned draft row at version=2 that
     // points at the same listing_id as the live published v=1. The
     // wizard receives this via startEditListing.
@@ -220,6 +220,7 @@ describe("PublishWizard — republish entry threads editingListing.version", () 
       price_cents: 0, // free tier — skips Stripe Connect gate
       rejection_notes: null,
       rejected_at: null,
+      ...overrides,
     });
   }
 
@@ -264,6 +265,30 @@ describe("PublishWizard — republish entry threads editingListing.version", () 
       expect(mockApiPost).toHaveBeenCalledWith(
         expect.stringContaining("/submit?version=2"),
         expect.any(Object),
+      ),
+    );
+  });
+
+  it("artifact-from-agent POST body carries enable_acp (false when the toggle is off)", async () => {
+    renderEditing(v2Draft());
+    await walkToSubmit();
+    await waitFor(() =>
+      expect(mockApiPost).toHaveBeenCalledWith(
+        expect.stringContaining("/artifact-from-agent"),
+        expect.objectContaining({ enable_acp: false }),
+      ),
+    );
+  });
+
+  it("artifact-from-agent POST body carries enable_acp=true when the seller enables ACP", async () => {
+    // requires_acp rides in the manifest; the wizard round-trips it onto the
+    // form via manifest_json on edit, so a republish preserves the toggle.
+    renderEditing(v2Draft({ manifest_json: { requires_acp: true } }));
+    await walkToSubmit();
+    await waitFor(() =>
+      expect(mockApiPost).toHaveBeenCalledWith(
+        expect.stringContaining("/artifact-from-agent"),
+        expect.objectContaining({ enable_acp: true }),
       ),
     );
   });

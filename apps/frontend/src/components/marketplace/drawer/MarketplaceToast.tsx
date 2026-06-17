@@ -22,17 +22,34 @@ export function MarketplaceToast() {
   }
 
   return (
-    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[#06402b] text-white rounded-2xl px-5 py-3.5 flex items-center gap-3.5 text-sm shadow-xl">
-      <span>
-        ✓ <strong>{toast.agentName} installed</strong> in your workspace.
-      </span>
-      <button
-        type="button"
-        onClick={handleOpen}
-        className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-[12.5px] font-semibold"
-      >
-        Open in chat →
-      </button>
+    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[#06402b] text-white rounded-2xl px-5 py-3.5 shadow-xl">
+      <div className="flex items-center gap-3.5 text-sm">
+        <span>
+          ✓ <strong>{toast.agentName} installed</strong> in your workspace.
+        </span>
+        <button
+          type="button"
+          onClick={handleOpen}
+          className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-[12.5px] font-semibold"
+        >
+          Open in chat →
+        </button>
+      </div>
+      {toast.acpNote === "enabled" && (
+        <p data-testid="toast-acp-enabled" className="mt-2 text-[12px] text-white/85 leading-snug">
+          This agent can delegate coding tasks to a Claude Code / Codex harness
+          (matched to your provider).
+        </p>
+      )}
+      {toast.acpNote === "unavailable" && (
+        <p
+          data-testid="toast-acp-unavailable"
+          className="mt-2 text-[12px] text-white/85 leading-snug"
+        >
+          This agent wants a coding harness, but your current provider can&apos;t
+          run one yet.
+        </p>
+      )}
     </div>
   );
 }

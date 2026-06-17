@@ -549,3 +549,154 @@ async def test_deploy_reconcile_failure_does_not_abort(monkeypatch):
 
     # Deploy completed despite the reconcile failure.
     ws.write_template_sidecar.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# ACP coding-harness runtime enablement (manifest.requires_acp)
+# ---------------------------------------------------------------------------
+
+
+def _patch_acp_deps(monkeypatch, *, acp_enabled, provider=("bedrock_claude", None)):
+    """Wire up the three deploy-side ACP dependencies and return the
+    AsyncMock standing in for ``patch_openclaw_config`` so tests can assert
+    whether (and with what) the buyer's openclaw.json was patched.
+    """
+    import core.services.config_patcher as cp
+    import core.services.container_provision as cprov
+
+    monkeypatch.setattr("core.config.settings.ACP_ENABLED", acp_enabled)
+    monkeypatch.setattr(cprov, "resolve_provider_choice", AsyncMock(return_value=provider))
+    patch_cfg = AsyncMock(return_value=None)
+    monkeypatch.setattr(cp, "patch_openclaw_config", patch_cfg)
+    return patch_cfg
+
+
+@pytest.mark.asyncio
+async def test_deploy_enables_acp_when_required_and_flag_on(monkeypatch):
+    """requires_acp + ACP_ENABLED + a harness-capable provider → the buyer's
+    container-root acp block + acpx plugin are patched in, and the result
+    reports acp_enabled."""
+    patch_cfg = _patch_acp_deps(monkeypatch, acp_enabled=True)
+    svc, _ws, _aux, _pair, _gw = _make_service()
+
+    result = await svc.deploy_from_artifact(
+        owner_id="org_1",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1, "requires_acp": True},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    patch_cfg.assert_awaited_once()
+    owner_arg, patch_arg = patch_cfg.await_args.args
+    assert owner_arg == "org_1"
+    # Container-root acp capability (sibling of agents), not a per-agent key.
+    assert patch_arg["acp"]["enabled"] is True
+    assert patch_arg["acp"]["allowedAgents"] == ["claude"]  # bedrock_claude
+    assert "acpx" in patch_arg["plugins"]["entries"]
+    assert result["acp_requested"] is True
+    assert result["acp_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_skips_acp_when_flag_off(monkeypatch):
+    """Listing wants ACP but the platform flag is off → no patch, and the
+    result flags it as requested-but-not-enabled so the UI can soft-note."""
+    patch_cfg = _patch_acp_deps(monkeypatch, acp_enabled=False)
+    svc, _ws, _aux, _pair, _gw = _make_service()
+
+    result = await svc.deploy_from_artifact(
+        owner_id="org_1",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1, "requires_acp": True},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    patch_cfg.assert_not_awaited()
+    assert result["acp_requested"] is True
+    assert result["acp_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_deploy_skips_acp_when_provider_has_no_harness(monkeypatch):
+    """ACP on, but the buyer's provider can't authenticate any harness
+    (derive_enabled_harnesses → []) → no patch, acp_enabled False."""
+    patch_cfg = _patch_acp_deps(monkeypatch, acp_enabled=True, provider=("byo_key", "google"))
+    svc, _ws, _aux, _pair, _gw = _make_service()
+
+    result = await svc.deploy_from_artifact(
+        owner_id="org_1",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1, "requires_acp": True},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    patch_cfg.assert_not_awaited()
+    assert result["acp_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_deploy_no_acp_when_not_required(monkeypatch):
+    """A listing that doesn't declare requires_acp never touches the ACP path,
+    even with the flag on."""
+    patch_cfg = _patch_acp_deps(monkeypatch, acp_enabled=True)
+    svc, _ws, _aux, _pair, _gw = _make_service()
+
+    result = await svc.deploy_from_artifact(
+        owner_id="org_1",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    patch_cfg.assert_not_awaited()
+    assert result["acp_requested"] is False
+    assert result["acp_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_deploy_acp_failure_does_not_abort(monkeypatch):
+    """A config-patch hiccup while enabling ACP must not unwind an
+    already-deployed agent — the deploy completes, just without harness
+    delegation."""
+    import core.services.config_patcher as cp
+    import core.services.container_provision as cprov
+
+    monkeypatch.setattr("core.config.settings.ACP_ENABLED", True)
+    monkeypatch.setattr(cprov, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
+
+    async def _boom(owner_id, patch):
+        raise RuntimeError("EFS lock contention")
+
+    monkeypatch.setattr(cp, "patch_openclaw_config", _boom)
+
+    svc, ws, _aux, _pair, _gw = _make_service()
+
+    result = await svc.deploy_from_artifact(
+        owner_id="org_1",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1, "requires_acp": True},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    ws.write_template_sidecar.assert_called_once()
+    assert result["acp_enabled"] is False

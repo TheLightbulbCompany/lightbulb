@@ -395,6 +395,7 @@ def export_agent_from_efs(
     *,
     selected_mcps: list[str] | None = None,
     selected_skills: list[str] | None = None,
+    enable_acp: bool = False,
 ) -> CatalogPackage:
     """Read the seller's agent dir from EFS, tar it, return a CatalogPackage.
 
@@ -421,6 +422,9 @@ def export_agent_from_efs(
         agent_id: Subdirectory name under ``agents/`` to publish.
         selected_mcps: Names of MCP servers to bundle (from publish wizard).
         selected_skills: Names of skills to bundle (from publish wizard).
+        enable_acp: Seller's declaration that the agent delegates to ACP
+            coding harnesses. Recorded as ``manifest["requires_acp"]``; the
+            deploy side uses it to enable the buyer container's ACP runtime.
 
     Raises:
         InvalidAgentIdError: agent_id failed format / path-traversal check.
@@ -478,6 +482,12 @@ def export_agent_from_efs(
         "agent_id": agent_id,
         "file_count": len(contents),
         "safety_flags": safety_flags,
+        # Seller's per-agent ACP declaration (see ArtifactFromAgentRequest).
+        # The deploy side reads this to decide whether to turn on the buyer
+        # container's ACP coding-harness runtime. Always written as a bool so
+        # the deploy gate is a simple ``manifest.get("requires_acp")`` truthy
+        # check; pre-flag listings simply lack the key (→ falsy).
+        "requires_acp": bool(enable_acp),
     }
 
     return CatalogPackage(

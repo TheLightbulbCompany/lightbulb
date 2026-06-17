@@ -447,6 +447,22 @@ class CatalogService:
                 ),
             )
 
+        # ACP coding-harness runtime. If the seller declared the agent
+        # delegates to harnesses (manifest.requires_acp), turn on the buyer
+        # container's container-wide ACP capability. Best-effort: a failure
+        # here must not strand an already-deployed agent — the buyer just
+        # gets an agent that can't spawn a harness (same posture as the
+        # integration reconcile above).
+        acp_requested = bool(manifest.get("requires_acp"))
+        acp_enabled = False
+        try:
+            acp_enabled = await self._maybe_enable_acp(owner_id, manifest)
+        except Exception:
+            logger.exception(
+                "deploy: ACP enable failed for %s; agent deployed without harness delegation",
+                owner_id,
+            )
+
         return {
             "slug": slug,
             "version": manifest.get("version", 1),
@@ -459,7 +475,73 @@ class CatalogService:
             "plugins_enabled": list(((slice_.get("plugins") or {}).get("entries") or {}).keys()),
             "cron_jobs_added": (len(slice_.get("cron_jobs") or []) if slice_has_agent else 0),
             "config_registered": slice_has_agent,
+            # Lets the storefront distinguish "deployed with harness
+            # delegation live" from "needs ACP but it couldn't be turned on"
+            # (flag off, or the buyer's provider can't auth any harness) so it
+            # can render a soft note instead of silently shipping a degraded
+            # agent.
+            "acp_requested": acp_requested,
+            "acp_enabled": acp_enabled,
         }
+
+    async def _maybe_enable_acp(self, owner_id: str, manifest: dict) -> bool:
+        """Turn on the buyer container's ACP coding-harness runtime when the
+        deployed listing declares ``requires_acp``.
+
+        Returns True iff the ACP block was written. Returns False (no-op) when:
+          - the listing doesn't require ACP,
+          - ``settings.ACP_ENABLED`` is off (the platform-wide rollout flag —
+            the acpx runtime is only baked + promoted behind it),
+          - the buyer's provider can't authenticate any harness
+            (``derive_enabled_harnesses`` returns []; e.g. a Gemini-only owner).
+
+        ACP is a container-wide capability — OpenClaw's gate is the root
+        ``acp.enabled`` flag read by ``isAcpRuntimeSpawnAvailable``, plus a
+        registered backend (the acpx plugin). There is NO per-agent ACP config
+        key (the agent entry schema is ``.strict()``), so we patch the
+        container's root ``acp`` block + the ``plugins.entries.acpx`` entry —
+        reusing the exact builder the provision path uses so a deployed
+        container matches a freshly-provisioned one. Idempotent: re-deploying
+        another ACP agent just re-merges the same block.
+        """
+        if not manifest.get("requires_acp"):
+            return False
+
+        from core.config import settings
+
+        if not settings.ACP_ENABLED:
+            logger.info(
+                "deploy: listing requires ACP but ACP_ENABLED is off; skipping for %s",
+                owner_id,
+            )
+            return False
+
+        from core.containers.config import build_acp_config, derive_enabled_harnesses
+        from core.services.config_patcher import patch_openclaw_config
+        from core.services.container_provision import resolve_provider_choice
+
+        provider_choice, byo_provider = await resolve_provider_choice(owner_id)
+        harnesses = derive_enabled_harnesses(provider_choice, byo_provider)
+        if not harnesses:
+            logger.info(
+                "deploy: ACP requested but provider=%s (byo=%s) can't auth any harness; skipping for %s",
+                provider_choice,
+                byo_provider,
+                owner_id,
+            )
+            return False
+
+        acp_block, acpx_plugin_entry = build_acp_config(harnesses)
+        await patch_openclaw_config(
+            owner_id,
+            {"acp": acp_block, "plugins": {"entries": acpx_plugin_entry}},
+        )
+        logger.info(
+            "deploy: enabled ACP for %s (harnesses=%s)",
+            owner_id,
+            harnesses,
+        )
+        return True
 
     # ---- deployed ----
 

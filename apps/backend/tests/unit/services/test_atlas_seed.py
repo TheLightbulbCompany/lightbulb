@@ -32,6 +32,25 @@ def fake_files_dir(tmp_path, monkeypatch):
     return root
 
 
+@pytest.fixture
+def captured_ws():
+    """Workspace stub that records (path -> content) AND emulates the real
+    ``write_file_if_missing`` skip-if-exists semantics — first write wins,
+    later writes to the same path no-op. That's what makes the ACP pre-write
+    of AGENTS.md beat the generic loop's vanilla write."""
+    ws = MagicMock()
+    ws.written = {}
+
+    def _write(user_id, path, content):
+        if path in ws.written:
+            return False
+        ws.written[path] = content
+        return True
+
+    ws.write_file_if_missing.side_effect = _write
+    return ws
+
+
 @pytest.mark.asyncio
 async def test_seeds_atlas_files_keyed_by_uuid(workspace_stub, fake_files_dir):
     agents = [
@@ -117,3 +136,43 @@ async def test_all_existing_emits_skipped_not_success(workspace_stub, fake_files
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     assert "atlas_seed.skipped_existing" in metrics
     assert "atlas_seed.success" not in metrics
+
+
+def _acp_files_dir(tmp_path, monkeypatch):
+    root = tmp_path / "files"
+    root.mkdir(parents=True)
+    (root / "AGENTS.md").write_text("# AGENTS.md\n\nbase recruiter copy\n", encoding="utf-8")
+    (root / "IDENTITY.md").write_text("# Atlas", encoding="utf-8")
+    monkeypatch.setattr(atlas_seed, "_FILES_DIR", root)
+    return root
+
+
+@pytest.mark.asyncio
+async def test_acp_section_appended_to_agents_when_flag_on(captured_ws, tmp_path, monkeypatch):
+    """With ACP_ENABLED on, Atlas's AGENTS.md ships the harness-delegation
+    section appended to the vendored base copy."""
+    _acp_files_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr("core.config.settings.ACP_ENABLED", True)
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
+
+    agents_md = captured_ws.written["workspaces/uuid-atlas/AGENTS.md"]
+    assert "base recruiter copy" in agents_md  # vendored base preserved
+    assert "Coding-Harness Delegation (ACP)" in agents_md  # section appended
+    assert 'sessions_spawn({ runtime: "acp" })' in agents_md
+
+
+@pytest.mark.asyncio
+async def test_acp_section_absent_when_flag_off(captured_ws, tmp_path, monkeypatch):
+    """Default (flag off): AGENTS.md is the vanilla vendored copy — no ACP
+    section leaks into the recruiter prompt before the feature is rolled out."""
+    _acp_files_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr("core.config.settings.ACP_ENABLED", False)
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
+
+    agents_md = captured_ws.written["workspaces/uuid-atlas/AGENTS.md"]
+    assert "base recruiter copy" in agents_md
+    assert "Coding-Harness Delegation (ACP)" not in agents_md

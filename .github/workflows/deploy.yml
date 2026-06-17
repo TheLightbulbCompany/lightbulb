@@ -1206,11 +1206,11 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset18
+      - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-service-Deploy
-      - dev-isol8-dev-database-Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1766,11 +1766,11 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset29
+      - prod-isol8-prod-database-Deploy
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-api-Deploy
       - prod-isol8-prod-container-Deploy
       - prod-isol8-prod-service-Deploy
-      - prod-isol8-prod-database-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy

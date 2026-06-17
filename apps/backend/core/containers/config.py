@@ -670,6 +670,73 @@ def memory_plugin_entries() -> dict:
     }
 
 
+def derive_enabled_harnesses(provider_choice: str, byo_provider: str | None) -> list[str]:
+    """Which ACP coding harnesses the owner can spawn, DERIVED from their
+    provider choice — no stored per-owner state.
+
+    An ACP harness can only authenticate if the owner already has that
+    harness's model-provider credentials, so harness availability is a pure
+    function of ``provider_choice`` (+ ``byo_provider``):
+
+    - ``bedrock_claude`` -> ``["claude"]`` (Claude Code via
+      ``CLAUDE_CODE_USE_BEDROCK=1`` + the container task-role IAM).
+    - ``chatgpt_oauth``  -> ``["codex"]``  (Codex via the OAuth tokens we
+      pre-stage onto EFS; codex-auth-bridge reads host auth — works for
+      personal AND org owners, the latter via the org connector).
+    - ``byo_key`` + ``anthropic`` -> ``["claude"]`` (``ANTHROPIC_API_KEY``).
+    - ``byo_key`` + ``openai``    -> ``["codex"]``  (``OPENAI_API_KEY``).
+
+    Gemini is intentionally absent: there is no Google credential path on the
+    platform today, so no owner can authenticate it. Returns ``[]`` for any
+    unrecognized combination (caller emits no ACP block).
+    """
+    if provider_choice == "bedrock_claude":
+        return ["claude"]
+    if provider_choice == "chatgpt_oauth":
+        return ["codex"]
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            return ["claude"]
+        if byo_provider == "openai":
+            return ["codex"]
+    return []
+
+
+def build_acp_config(harnesses: list[str]) -> tuple[dict, dict]:
+    """Build the ``acp`` block + the ``plugins.entries.acpx`` entry for a
+    container whose owner can spawn ``harnesses``.
+
+    Returns ``(acp_block, acpx_plugin_entry)``. The acp block is the gateway's
+    ACP control-plane config (``backend: "acpx"`` is the bundled runtime baked
+    into the extended image at Dockerfile Layer 12); ``allowedAgents`` is the
+    derived harness set so policy refuses any harness the owner can't auth.
+
+    Permissions: ACP sessions are non-interactive (no TTY in the container), so
+    the acpx defaults (``approve-reads`` / ``fail``) would abort any
+    write/exec turn. Each container is the owner's own isolated sandbox —
+    equivalent trust to the native loop's ``allowCommands`` — so we
+    ``approve-all`` and ``deny`` (degrade gracefully) rather than crash a turn.
+    """
+    acp_block = {
+        "enabled": True,
+        "backend": "acpx",
+        "allowedAgents": list(harnesses),
+        "defaultAgent": harnesses[0],
+        "runtime": {"ttlMinutes": 120},
+        "stream": {"coalesceIdleMs": 300, "maxChunkChars": 1200},
+    }
+    acpx_plugin_entry = {
+        "acpx": {
+            "enabled": True,
+            "config": {
+                "permissionMode": "approve-all",
+                "nonInteractivePermissions": "deny",
+            },
+        },
+    }
+    return acp_block, acpx_plugin_entry
+
+
 def build_openclaw_config_dict(
     *,
     user_id: str,
@@ -685,6 +752,7 @@ def build_openclaw_config_dict(
     integration_mcp_servers: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
+    acp_enabled: bool = False,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -1203,6 +1271,22 @@ def build_openclaw_config_dict(
                 if binding not in bindings:
                     bindings.append(binding)
 
+    # ACP coding-harness runtime (Jarvis-style delegation: a native agent can
+    # ``sessions_spawn({runtime:"acp"})`` Claude Code / Codex / Gemini). Gated
+    # behind ``acp_enabled`` (a backend feature flag the I/O caller resolves
+    # from ``settings.ACP_ENABLED``) so it stays dark until the acpx-baked image
+    # (Dockerfile Layer 12) is promoted and we choose to roll it out. Harnesses
+    # are DERIVED from the provider choice — no stored per-owner state. Emitting
+    # ``acp.enabled`` is what teaches a native agent it can spawn (upstream
+    # ``isAcpRuntimeSpawnAvailable`` -> ``acpEnabled: true`` in the system
+    # prompt), so a no-harness owner gets no block at all.
+    if acp_enabled:
+        harnesses = derive_enabled_harnesses(provider_choice, byo_provider)
+        if harnesses:
+            acp_block, acpx_plugin_entry = build_acp_config(harnesses)
+            config["acp"] = acp_block
+            config["plugins"]["entries"].update(acpx_plugin_entry)
+
     return config
 
 
@@ -1222,6 +1306,7 @@ async def write_openclaw_config(
     integration_mcp_servers: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
+    acp_enabled: bool | None = None,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -1258,6 +1343,12 @@ async def write_openclaw_config(
         ValueError: when ``provider_choice`` is unknown or
             ``byo_provider`` is missing/invalid for ``byo_key``.
     """
+    # ACP rollout is a backend-level feature flag, not per-owner state. When the
+    # caller doesn't pin it explicitly, resolve from settings so the whole fleet
+    # flips with one env var (dark by default).
+    if acp_enabled is None:
+        acp_enabled = settings.ACP_ENABLED
+
     config = build_openclaw_config_dict(
         user_id=user_id,
         gateway_token=gateway_token,
@@ -1272,6 +1363,7 @@ async def write_openclaw_config(
         integration_mcp_servers=integration_mcp_servers,
         aip_arns=aip_arns,
         channel_accounts=channel_accounts,
+        acp_enabled=acp_enabled,
     )
 
     def _write() -> None:

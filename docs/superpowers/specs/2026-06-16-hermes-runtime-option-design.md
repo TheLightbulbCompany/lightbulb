@@ -4,9 +4,38 @@
 **Status:** Verified design spec — buildable. Supersedes `docs/audit-2026-05-17-hermes-vs-openclaw.md` (commit `c9562d39`).
 **Source basis:** Hermes v0.14.0 at `/Users/prasiddhaparthsarthy/Desktop/isol8.nosync/hermes-agent`; OpenClaw upstream clone (sibling, gitignored); Isol8 backend/frontend/infra in this worktree; Paperclip read-only clone. Every load-bearing claim cites a `file:line` read during the 11-agent verification pass (`docs/superpowers/research/2026-06-16-hermes-runtime-verification/`).
 
-**Adversarial verification (2026-06-16):** four independent skeptic agents re-read the source to refute the load-bearing claims — SSE resume/framing, `metadata` propagation, ChatGPT-OAuth refresh ownership, OAuth Provider Proxy multi-tenancy, the auth/trust topology, and the Runtime-port caller list. **All conclusions held.** Six citation/scoping corrections were applied to this revision: (1) the `Last-Event-ID` claim narrowed to the HTTP SSE path (unrelated kanban/Matrix hits exist) + the mid-run stream-orphan bug surfaced; (2) the device-trust evidence narrowed (a DM-user `pairing` subsystem exists but is not operator-device attestation); (3) the `gateway_pool` caller table fixed (`main.py` added, `connection_pool.py` removed as non-caller); (4) `resolve_provider_choice` relocated to `container_provision.py`; (5) `_register_task_definition` def line corrected; (6) the `ProvisioningStepper` phase array corrected to the real 6-phase `STEPS_PAID`. The architecturally load-bearing claims — **4 WS clients, runtime-orthogonal provider gate, flat single-bearer Hermes auth, non-resumable SSE** — are confirmed against source.
+**Adversarial verification (2026-06-16):** four independent skeptic agents re-read the source to refute the load-bearing claims — SSE resume/framing, `metadata` propagation, ChatGPT-OAuth refresh ownership, OAuth Provider Proxy multi-tenancy, the auth/trust topology, and the Runtime-port caller list. **All conclusions held at that pass — but a later whole-repo pressure-test plus founder review overturned two of them (the agent model and the metering framing). See "Revision 2" immediately below, which supersedes the affected passages.** Six citation/scoping corrections were applied in that pass: (1) the `Last-Event-ID` claim narrowed to the HTTP SSE path (unrelated kanban/Matrix hits exist) + the mid-run stream-orphan bug surfaced; (2) the device-trust evidence narrowed (a DM-user `pairing` subsystem exists but is not operator-device attestation); (3) the `gateway_pool` caller table fixed (`main.py` added, `connection_pool.py` removed as non-caller); (4) `resolve_provider_choice` relocated to `container_provision.py`; (5) `_register_task_definition` def line corrected; (6) the `ProvisioningStepper` phase array corrected to the real 6-phase `STEPS_PAID`. The architecturally load-bearing claims — **4 WS clients, runtime-orthogonal provider gate, flat single-bearer Hermes auth, non-resumable SSE** — are confirmed against source.
 
 > Citation convention: `hermes-agent/...` = Hermes source; bare `apps/backend/...`, `apps/frontend/...`, `apps/infra/...` = this repo; `openclaw/...` = upstream OpenClaw clone; `paperclip/...` = Paperclip clone.
+
+---
+
+## ⚠ Revision 2 (2026-06-17) — corrections after deeper pressure-test (READ FIRST)
+
+A whole-repo pressure-test against a writable fork (**Isol8AI/hermes-agent**, clone `~/Desktop/hermes-agent`, basis `4c46c35e`), prompted by founder review, **overturned two load-bearing claims below.** Where this section conflicts with §1–§11, **this section wins.** Evidence trail: `docs/superpowers/research/2026-06-17-hermes-pressure-test/` + memory `project_hermes_profiles_per_agent`.
+
+**1. Hermes HAS a first-class per-agent model — "profiles." (Reverses §2 Q5, §4, §5, §2 Q8.)**
+`hermes_cli/profiles.py` (commit `f6db1b27b`, *"feat: add profiles — run multiple isolated Hermes instances"*, #3681) — each profile is a fully independent `HERMES_HOME` with its **own** config.yaml/.env/SOUL/memory/sessions/skills/cron **+ own gateway daemon + own api_server port + own systemd/launchd service** (`profiles.py:923-961`). The `agent:main` hardcoding (`gateway/run.py:_parse_session_key`) and the `gateway/status.py:9-11` "multi-agent is future" comment describe only the *single-daemon* axis — and that comment is **stale** (profiles already shipped). The earlier maps + attack agents mis-read this twice.
+- **Isol8 model:** an agent = a Hermes **profile = its own daemon on its own port** inside the per-owner container → **multi-daemon-per-container** (Friday, Atlas, marketplace agents each a profile). *Stronger* isolation than OpenClaw's shared `agents.list` (per-agent memory/skills/cron/creds/cwd are native).
+- **Port methods are implementable, not synthesized:** `create_agent` ≈ `hermes profile create` + start daemon; `list_agents` ≈ list profiles; `send_chat(agent_id)` routes to that profile's port; `delete_agent` ≈ profile delete + service teardown. Backend keeps a thin `agent_id → profile → port` map — **not** the re-implemented agent-orchestration layer the pressure-test report's "WS1b backend agent registry" assumed (that workstream is deleted).
+- **Seeding is once-per-profile, not per-run** (reverses §5 Hermes `seed_owner_agents`): write each agent's persona as its profile's default persona in `config.yaml` (resolved to the daemon's `ephemeral_system_prompt` — **uncapped**, sidestepping the 20k SOUL.md cap) at provision. Mirrors OpenClaw's seed-once posture.
+- **Per-agent workspace/cwd IS native** (reverses Q8): each profile owns its `TERMINAL_CWD`/`HERMES_HOME`. Capability `per_agent_workspace` = ✅ for Hermes.
+- **The real new cost (replaces the false backend-registry workstream):** running N subprocess-heavy daemons on the 0.5 vCPU / 1 GB box. **Default design: lazy per-profile daemon start** (spin a profile's daemon up on first invocation, idle it down) → a typical container runs ~1 active daemon. Adds a multi-daemon lifecycle + port-allocation concern *inside* the container; the `os.environ["HERMES_SESSION_ID"]` last-writer-wins hazard (`agent_init.py:867`) is *avoided* by process-per-profile. **Resourcing N daemons is the headline open risk — feasibility is not in question.** (Founder decision pending on lazy-start vs cap vs always-on; lazy-start is the spec default.)
+
+**2. Metering does NOT need Hermes to report cost. (Reverses §8 metering hook + §11 unknown #3.)**
+Isol8 already self-prices Bedrock via `cost_microcents` (`usage_service.py:6,91-96`). The `/v1/runs` `usage` payload's 3 token ints / no-USD (`api_server.py:3046-3049`) is irrelevant — Isol8 prices from tokens. Hermes *does* track cache tokens internally (`agent.session_cache_read_tokens`, `conversation_loop.py:1498-1499`) but omits them from the payload; since Bedrock cost is cache-dominated, the only real gap is an **optional trivial 2-field fork** to surface `cache_read`/`cache_write`. Non-Bedrock (OAuth/BYO) is user-paid → cost moot. No "self-pricing workstream."
+
+**3. Smaller corrections (confirmed against source in the re-run):**
+- **Codex creds are clean** — the credential-pool does NOT forage `~/.codex/auth.json`; only the *anthropic* pool path writes back to `~/.claude/.credentials.json` (`credential_pool.py:767-779`). Hardening targets the anthropic/host paths only.
+- **Boot enable** — api_server auto-enables on the `API_SERVER_KEY` env var alone (`config.py:1477`); no `platforms.api_server.enabled:true` stanza needed. Prereqs = `API_SERVER_KEY` (≥8, non-placeholder) + `API_SERVER_HOST=0.0.0.0` (else silent loopback no-bind).
+- **UID** — container UID 10000 vs EFS-AP 1000 has a clean `HERMES_UID=1000` lever + best-effort non-fatal chown (`entrypoint.sh:13-15,40-41`) — a validation task, not a redesign.
+- **EFS still needs hardening** — cross-process locks are `fcntl.flock` (NFS no-op) incl. the gateway boot lock (`status.py:329`); single-writer `maxPercent=100` necessary but **not sufficient**; and **single-writer redeploy itself orphans in-flight `/v1/runs`** (volatile in-process state, no terminal frame, `api_server.py:658-671`) → drain runs before deploy. Now per-profile (each daemon owns its own SQLite dir), so no two daemons share a DB within a task.
+- **Drift** — basis is **+201 commits past `v2026.5.16`** (not "v0.14.0"); recent Hermes makes `API_SERVER_KEY` mandatory day-one; releases are 800–1300 commits → **3-5 days/bump**, not 1-2.
+- **Webhook ingress** — `gateway/platforms/webhook.py` is a real HMAC-inbound + push-back plugin path that may shrink the bespoke Paperclip adapter (WS7); evaluate before building — *not free* (needs a Python `BasePlatformAdapter` plugin).
+
+**Recalibrated effort:** drop the false "+1.5-2.5wk backend agent-identity layer"; add a multi-daemon lifecycle + lazy-start + resourcing workstream (~1-2wk) and the heavier maintenance tail (3-5 days/bump). Net ≈ **10-14 eng-weeks**, container resourcing of N daemons being the headline open risk.
+
+**Still unverified (rate-limited in both passes):** marketplace Hermes deploy / cron-remap semantics; the effort number lacks an independent adversarial pass.
 
 ---
 
@@ -253,7 +282,9 @@ Generic code asks a **capability**, never a brand. A new runtime (or a Hermes up
 | `device_exec_approval` | ✅ | ❌ | approval-forward gate / `ApprovalCard` policy |
 | `control_ui_proxy` | ✅ | ❌ | `routers/control_ui_proxy.py` (hides / 404s for Hermes) |
 | `resumable_stream` | ✅ | ❌ | reconnect logic (poll-for-terminal when ❌, Q1) |
-| `per_agent_workspace` | ✅ | ❌ | per-agent cwd isolation expectation (Q8) |
+| `per_agent_workspace` | ✅ | ✅ | native per Hermes profile (own `HERMES_HOME`/cwd) — **Rev 2 flip** |
+| `multi_agent` | ✅ `agents.list` | ✅ profiles (daemon-per-agent) | agent CRUD + routing — **Rev 2 flip** |
+| `durable_runs` | ✅ | ❌ | in-flight `/v1/runs` lost on task replacement; drain before deploy (Rev 2) |
 | `structured_run_context` | ✅ | ❌ | Paperclip context: structured metadata vs wake-text (Q2) |
 
 ### Why this is *separation*, not two parallel stacks
@@ -385,7 +416,7 @@ Updated from the audit's 10 workstreams / 8-13 eng-weeks. Verification **increas
 | 8 | Backend adapter synthesis (`synthesize_hermes_adapter`) | 0.5 | 0.5 | — |
 | 9 | Beta-flag + onboarding `runtime_kind` plumbing | 0.5 | 0.5 | folds into ProviderPicker (11) |
 | 10 | Marketplace `runtime_kind` filter + Hermes safety scanner | 0.5 | **1** | + publish-time hermes-skill scanner (Q7) |
-| — | **Total** | **8-13** | **~10-15 eng-weeks** | + ~4 weeks buffer |
+| — | **Total** | **8-13** | **~10-14 eng-weeks (Rev 2)** | Rev 2 deletes the false backend-registry inflator, adds a multi-daemon lifecycle + lazy-start + resourcing workstream (~1-2wk); maintenance tail 3-5 days/bump; container resourcing of N daemons is the headline open risk |
 
 **Out of scope for v1** (carried from audit §9.2, confirmed): Hermes-flavored seller publish flow; cross-runtime artifact translation; tearing down WS ingress; exposing Hermes kanban to Paperclip (audit §7B.8 option (a) — ignore, matches OpenClaw); **Hermes desktop app + device-attested exec-approval** (no Hermes analog — §3; web app only).
 

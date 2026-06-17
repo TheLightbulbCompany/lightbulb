@@ -33,6 +33,7 @@ from core.services.catalog_slice import (
     extract_agent_slice,
     filter_cron_jobs_for_agent,
 )
+from core.services.marketplace.requirements import requirements_scan
 
 
 # Persona files (per upstream openclaw/src/agents/workspace.ts) — these get
@@ -488,6 +489,38 @@ def export_agent_from_efs(
         # the deploy gate is a simple ``manifest.get("requires_acp")`` truthy
         # check; pre-flag listings simply lack the key (→ falsy).
         "requires_acp": bool(enable_acp),
+    }
+
+    # Scan the agent for what it actually needs (tools, skills, external APIs,
+    # credentials) so the manifest discloses requirements accurately. The
+    # effective config is the per-workspace openclaw.json when present (what the
+    # agent runs from), else the seller's global config.
+    effective_cfg = config
+    eff_path = agent_dir / "openclaw.json"
+    if eff_path.exists():
+        try:
+            effective_cfg = json.loads(eff_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            effective_cfg = config
+    reqs, scan_incomplete = requirements_scan(
+        effective_cfg,
+        agent_dir,
+        bundled_mcps=set(selected_mcps or []),
+        bundled_skills=set(selected_skills or []),
+    )
+    manifest["requirements"] = [r.to_manifest() for r in reqs]
+    manifest["scan_incomplete"] = scan_incomplete
+    # Feed the existing hire gate (catalog_service.assert_credentials_satisfied):
+    # only registry-provider CONNECT rows can be verified against the buyer's
+    # connected integrations. Channel rows gate via the Channels tab; byo /
+    # unavailable rows can't be verified, so they surface in `requirements` for
+    # the buyer ledger but never hard-block a hire.
+    manifest["requires"] = {
+        "credentials": [
+            {"provider": r.key, "optional": not r.required}
+            for r in reqs
+            if r.disposition.value == "connect" and r.kind != "channel"
+        ]
     }
 
     return CatalogPackage(

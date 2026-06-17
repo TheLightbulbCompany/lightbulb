@@ -107,6 +107,32 @@ def test_export_happy_path(fake_efs):
     assert any("scripts/run.sh" in n for n in names)
 
 
+def test_export_manifest_carries_requirements(fake_efs):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "pipelines").mkdir()
+    (agent_dir / "pipelines" / "daily-feed.lobster").write_text(
+        "\n".join(
+            [
+                "--tool slack",
+                "--tool llm-task",
+                "curl https://api.stripe.com/v1/charges",
+                "curl https://production.plaid.com/x -d $PLAID_SECRET",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    keys = {r["key"]: r["disposition"] for r in pkg.manifest["requirements"]}
+    assert keys["llm-task"] == "included"
+    assert keys["slack"] == "connect"
+    assert keys["stripe"] == "connect"  # host-only, no env -> connectable
+    assert keys["plaid"] == "byo"
+    assert pkg.manifest["scan_incomplete"] is False
+
+    provs = {c["provider"] for c in pkg.manifest["requires"]["credentials"]}
+    assert provs == {"stripe"}  # registry connect only; channel + byo + bundled excluded
+
+
 def test_export_skips_junk_dirs(fake_efs):
     seller_id, agent_id, _ = fake_efs
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)

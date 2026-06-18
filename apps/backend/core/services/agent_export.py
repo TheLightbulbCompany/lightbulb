@@ -33,7 +33,11 @@ from core.services.catalog_slice import (
     extract_agent_slice,
     filter_cron_jobs_for_agent,
 )
-from core.services.marketplace.requirements import requirements_scan
+from core.services.marketplace.requirements import (
+    build_manifest_requirements,
+    load_effective_config,
+    requirements_scan,
+)
 
 
 # Persona files (per upstream openclaw/src/agents/workspace.ts) — these get
@@ -495,33 +499,14 @@ def export_agent_from_efs(
     # credentials) so the manifest discloses requirements accurately. The
     # effective config is the per-workspace openclaw.json when present (what the
     # agent runs from), else the seller's global config.
-    effective_cfg = config
-    eff_path = agent_dir / "openclaw.json"
-    if eff_path.exists():
-        try:
-            effective_cfg = json.loads(eff_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            effective_cfg = config
+    effective_cfg = load_effective_config(agent_dir, config)
     reqs, scan_incomplete = requirements_scan(
         effective_cfg,
         agent_dir,
         bundled_mcps=set(selected_mcps or []),
         bundled_skills=set(selected_skills or []),
     )
-    manifest["requirements"] = [r.to_manifest() for r in reqs]
-    manifest["scan_incomplete"] = scan_incomplete
-    # Feed the existing hire gate (catalog_service.assert_credentials_satisfied):
-    # only registry-provider CONNECT rows can be verified against the buyer's
-    # connected integrations. Channel rows gate via the Channels tab; byo /
-    # unavailable rows can't be verified, so they surface in `requirements` for
-    # the buyer ledger but never hard-block a hire.
-    manifest["requires"] = {
-        "credentials": [
-            {"provider": r.key, "optional": not r.required}
-            for r in reqs
-            if r.disposition.value == "connect" and r.kind != "channel"
-        ]
-    }
+    manifest.update(build_manifest_requirements(reqs, scan_incomplete))
 
     return CatalogPackage(
         format="openclaw",
@@ -652,13 +637,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     # Live requirements scan so the wizard's Requirements step renders what the
     # agent actually needs. Same scanner the artifact build freezes into the
     # manifest; selection (bundle) doesn't change detection, so this is cacheable.
-    effective_cfg = config
-    eff_path = agent_dir / "openclaw.json"
-    if eff_path.exists():
-        try:
-            effective_cfg = json.loads(eff_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            effective_cfg = config
+    effective_cfg = load_effective_config(agent_dir, config)
     reqs, scan_incomplete = requirements_scan(effective_cfg, agent_dir)
 
     return {

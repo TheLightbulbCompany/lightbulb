@@ -12,6 +12,7 @@ never enter a ``Requirement`` — only env-var *names*.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from enum import Enum
 from pathlib import Path
@@ -45,8 +46,55 @@ class Requirement:
         return d
 
 
-# disposition sort order for a stable, buyer-legible ledger (worst first)
-_ORDER = {"unavailable": 0, "byo": 1, "connect": 2, "included": 3}
+# disposition sort order for a stable, buyer-legible ledger (worst first).
+# Derived from the enum so a new Disposition can't silently fall to a default.
+_DISPOSITION_ORDER = (
+    Disposition.UNAVAILABLE,
+    Disposition.BYO,
+    Disposition.CONNECT,
+    Disposition.INCLUDED,
+)
+_ORDER = {d.value: i for i, d in enumerate(_DISPOSITION_ORDER)}
+
+
+def load_effective_config(directory, fallback: dict) -> dict:
+    """The agent's effective config: its per-workspace ``openclaw.json`` if
+    present, else ``fallback`` (the seller's global config). Never raises — a
+    missing or malformed per-workspace file falls back.
+    """
+    cfg_path = Path(directory) / "openclaw.json"
+    if cfg_path.exists():
+        try:
+            return json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return fallback
+    return fallback
+
+
+def build_manifest_requirements(reqs: list[Requirement], scan_incomplete: bool) -> dict:
+    """Manifest fragment disclosing what an agent needs.
+
+    ``requirements`` is the full classified ledger (every disposition). The
+    ``requires.credentials`` block feeds the hire gate
+    (``catalog_service.assert_credentials_satisfied``), but the scanner
+    over-reports — it surfaces providers from prose/host mentions — so every
+    detected ``connect`` row is marked ``optional`` and must NOT hard-block a
+    hire. Genuine hard dependencies (a provider MCP shipped in the slice) still
+    gate via the slice-MCP path. Channel rows gate through the Channels tab;
+    ``byo`` / ``unavailable`` rows surface in ``requirements`` for the buyer
+    ledger but never block.
+    """
+    return {
+        "requirements": [r.to_manifest() for r in reqs],
+        "scan_incomplete": scan_incomplete,
+        "requires": {
+            "credentials": [
+                {"provider": r.key, "optional": True}
+                for r in reqs
+                if r.disposition == Disposition.CONNECT and r.kind != "channel"
+            ]
+        },
+    }
 
 
 def requirements_scan(

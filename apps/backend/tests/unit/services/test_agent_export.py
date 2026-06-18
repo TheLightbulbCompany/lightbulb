@@ -129,8 +129,13 @@ def test_export_manifest_carries_requirements(fake_efs):
     assert keys["plaid"] == "byo"
     assert pkg.manifest["scan_incomplete"] is False
 
-    provs = {c["provider"] for c in pkg.manifest["requires"]["credentials"]}
+    creds = pkg.manifest["requires"]["credentials"]
+    provs = {c["provider"] for c in creds}
     assert provs == {"stripe"}  # registry connect only; channel + byo + bundled excluded
+    # Scanned connect deps are advisory — the scanner over-reports, so a
+    # detected connect must never hard-block a hire (only slice-bundled MCP
+    # providers do). assert_credentials_satisfied skips optional entries.
+    assert all(c["optional"] is True for c in creds)
 
 
 def test_preview_includes_requirements(fake_efs):

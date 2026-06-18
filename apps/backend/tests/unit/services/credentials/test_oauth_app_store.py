@@ -44,3 +44,23 @@ async def test_get_missing_returns_none(mock_client):
     sm.exceptions.ResourceNotFoundException = Exception
     sm.get_secret_value.side_effect = sm.exceptions.ResourceNotFoundException()
     assert await oauth_app_store.get("user_1", "google") is None
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.oauth_app_store._client")
+async def test_get_returns_none_on_client_error(mock_client):
+    # A non-not-found ClientError (e.g. no creds / throttling) must NOT propagate:
+    # list_connections calls this per byo-required provider on every catalog GET,
+    # so an unhandled error would 500 the whole connections list. Degrade to None.
+    from botocore.exceptions import ClientError
+
+    sm = MagicMock()
+    mock_client.return_value = sm
+    # Distinct not-found class so the broad ClientError branch handles this, not
+    # the not-found branch.
+    sm.exceptions.ResourceNotFoundException = type("RNF", (Exception,), {})
+    sm.get_secret_value.side_effect = ClientError(
+        {"Error": {"Code": "UnrecognizedClientException", "Message": "invalid token"}},
+        "GetSecretValue",
+    )
+    assert await oauth_app_store.get("user_1", "google") is None

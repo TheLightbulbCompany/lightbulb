@@ -13,13 +13,17 @@ re-reads this app config on every connect/reconnect.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.secrets_manager import create_or_update_secret
+
+logger = logging.getLogger(__name__)
 
 
 def _secret_name(owner_id: str, provider: str) -> str:
@@ -51,6 +55,16 @@ async def get(owner_id: str, provider: str) -> dict[str, Any] | None:
         try:
             resp = sm.get_secret_value(SecretId=name)
         except sm.exceptions.ResourceNotFoundException:
+            return None
+        except ClientError:
+            # Secrets Manager unreachable / unauthorized / throttled: treat the
+            # BYO app as not-configured rather than letting it propagate. A
+            # catalog read calls this per byo-required provider on every
+            # /connections GET, so an unhandled error here would 500 the whole
+            # connections list. byo_configured degrades to false (the owner can
+            # re-store their app), and the dance still fails closed — there is no
+            # shared-app fallback to wrongly slip into.
+            logger.warning("oauth_app_store.get failed for owner=%s provider=%s", owner_id, provider, exc_info=True)
             return None
         return json.loads(resp["SecretString"])
 

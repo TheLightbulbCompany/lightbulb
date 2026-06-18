@@ -95,6 +95,25 @@ export class ObservabilityStack extends cdk.Stack {
    * alarms — warn/cost alarms are deliberately excluded.
    */
   public readonly pageAlarmArns: string[] = [];
+  /**
+   * CURATED FIS stop-condition set — the *universal* one applied to every
+   * chaos experiment. ONLY rate-based, NOT_BREACHING blast-gauge alarms that
+   * cannot self-trip on the absence of traffic and that measure real
+   * customer impact: P9 (alb-5xx-rate), P10 (apigw-ws-5xx-rate),
+   * W10 (chat-error-rate). FIS caps stop-conditions at 5 per template, so
+   * this list is deliberately small — it is NOT `pageAlarmArns` (~12 alarms,
+   * over the cap and full of breach-on-event trip-wires that would abort an
+   * experiment for unrelated reasons). Wired in FisStack as the universal
+   * stop set.
+   */
+  public readonly fisStopAlarmArns: string[] = [];
+  /**
+   * CURATED FIS stop-condition set for CONTAINER scenarios (S1 container-kill,
+   * S2 cpu-stress). These additionally watch P1 (container-error-state) on top
+   * of the universal `fisStopAlarmArns`, so a container scenario that drives a
+   * per-user box into a stuck/error state aborts. Still ≤5 entries.
+   */
+  public readonly fisContainerStopAlarmArns: string[] = [];
   private readonly envName: string;
 
   constructor(scope: Construct, id: string, props: ObservabilityStackProps) {
@@ -223,7 +242,7 @@ export class ObservabilityStack extends cdk.Stack {
 
   private createPageAlarms(props: ObservabilityStackProps): void {
     // P1: container-error-state
-    this.createAlarm({
+    const p1 = this.createAlarm({
       id: "P1",
       name: "container-error-state",
       metricName: "container.error_state",
@@ -235,6 +254,12 @@ export class ObservabilityStack extends cdk.Stack {
       severity: "page",
       description: "Per-user OpenClaw container in stuck/error state",
     });
+    // P1 is the container-scenario-specific FIS stop-condition (added on top
+    // of the universal P9/P10/W10 set). A container-kill / cpu-stress
+    // experiment that drives a per-user box into a stuck/error state should
+    // abort. Container scenarios do NOT stop-condition on a fault they
+    // themselves induce beyond this recovery signal.
+    this.fisContainerStopAlarmArns.push(p1.alarmArn);
 
     // P2: stripe-webhook-sig-fail
     this.createAlarm({
@@ -421,6 +446,11 @@ export class ObservabilityStack extends cdk.Stack {
     });
     p9.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
     this.pageAlarmArns.push(p9.alarmArn);
+    // P9 is a curated FIS stop-condition — rate-based + NOT_BREACHING, so it
+    // can't self-trip on idle. Part of the universal set (every scenario)
+    // AND the container set.
+    this.fisStopAlarmArns.push(p9.alarmArn);
+    this.fisContainerStopAlarmArns.push(p9.alarmArn);
 
     // P10: apigw-ws-5xx-rate (AWS-native metric math)
     const apiGwErrors = new cloudwatch.Metric({
@@ -455,6 +485,10 @@ export class ObservabilityStack extends cdk.Stack {
     });
     p10.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
     this.pageAlarmArns.push(p10.alarmArn);
+    // P10 is a curated FIS stop-condition — rate-based + NOT_BREACHING.
+    // Universal set + container set.
+    this.fisStopAlarmArns.push(p10.alarmArn);
+    this.fisContainerStopAlarmArns.push(p10.alarmArn);
 
     // -------------------------------------------------------------------
     // P12: backend metrics-loop liveness heartbeat
@@ -714,6 +748,11 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w10.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+    // W10 is a curated FIS stop-condition — rate-based + NOT_BREACHING. It is
+    // a warn-tier alarm (NOT on pageAlarmArns) but is a faithful chat blast
+    // gauge, so it joins the universal FIS stop set + the container set.
+    this.fisStopAlarmArns.push(w10.alarmArn);
+    this.fisContainerStopAlarmArns.push(w10.alarmArn);
 
     // W11: chat-session-usage-fetch-error
     this.createAlarm({

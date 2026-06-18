@@ -66,6 +66,13 @@ _RUN_LONG_IDLE_S = 300
 # one. Far above any realistic count of concurrent `/btw` runs on one session.
 _SIDE_RUN_IDS_CAP = 256
 
+# A chat run whose terminal arrives later than this is a hung/stale outlier
+# (e.g. a terminal re-delivered after a reconnect), NOT a real latency
+# datapoint — emitting its elapsed would inflate the chat.e2e.latency p99 and
+# can false-fire W9 (p99 > 20s SLO). 10 min is far past any legitimate chat
+# round-trip; over-ceiling terminals bump chat.run.abandoned instead.
+_E2E_LATENCY_CEILING_MS = 10 * 60 * 1000  # 10 minutes
+
 
 def _deliver_to_recipients(
     recipients: list[tuple[str, str, str]],
@@ -1373,7 +1380,14 @@ class GatewayConnection:
                 if primary_started_at is not None:
                     try:
                         elapsed_ms = max(0.0, (time.monotonic() - primary_started_at) * 1000.0)
-                        put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds")
+                        if elapsed_ms <= _E2E_LATENCY_CEILING_MS:
+                            put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds")
+                        else:
+                            # Late/stale terminal (e.g. re-delivered after a
+                            # reconnect, or a hung run). Exclude it from the SLO
+                            # p99 — a multi-minute outlier would false-fire W9 —
+                            # but count the abandonment so it stays visible.
+                            put_metric("chat.run.abandoned")
                     except Exception:
                         logger.warning(
                             "chat.e2e.latency emit failed for run_id=%s",

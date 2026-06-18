@@ -409,7 +409,7 @@ async def put_byo_app(
         provider,
         client_id=body.client_id,
         client_secret=body.client_secret,
-        acknowledged_at=datetime.datetime.utcnow().isoformat() + "Z",
+        acknowledged_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
     )
     return {"status": "stored"}
 

@@ -1186,6 +1186,17 @@ async def test_byo_active_false_without_app(mock_get):
 
 @pytest.mark.asyncio
 @patch("routers.connections.oauth_app_store.get", new_callable=AsyncMock)
+async def test_byo_active_false_when_app_not_acknowledged(mock_get):
+    from routers import connections
+
+    # A stored app with no `acknowledged_at` key is NOT active: storing client
+    # credentials without the Limited-Use acknowledgement must not lift the gate.
+    mock_get.return_value = {"client_id": "x", "client_secret": "y"}
+    assert await connections._byo_active("user_1", "google") is False
+
+
+@pytest.mark.asyncio
+@patch("routers.connections.oauth_app_store.get", new_callable=AsyncMock)
 async def test_byo_active_false_for_non_byo_provider(mock_get):
     from routers import connections
 
@@ -1405,13 +1416,13 @@ class TestByoApp:
         assert ok.status_code == 200
         mock_put.assert_awaited_once()
         # Stored under (owner, provider) with the submitted client credentials and
-        # an ISO8601-Z acknowledgement timestamp.
+        # a timezone-aware ISO8601 acknowledgement timestamp (UTC -> "+00:00").
         put_call = mock_put.await_args
         assert put_call.args[0] == "user_test_123"
         assert put_call.args[1] == "google"
         assert put_call.kwargs["client_id"] == "cid"
         assert put_call.kwargs["client_secret"] == "csec"
-        assert put_call.kwargs["acknowledged_at"].endswith("Z")
+        assert put_call.kwargs["acknowledged_at"].endswith("+00:00")
 
         # Acknowledgement without consent is rejected and stores nothing.
         mock_put.reset_mock()

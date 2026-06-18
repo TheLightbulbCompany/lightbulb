@@ -121,6 +121,38 @@ describe("ConnectButton BYO branch", () => {
     await waitFor(() => expect(startOAuth).toHaveBeenCalledWith("google"));
   });
 
+  it("renders the normal Connect path for a configured-but-not-connected locked row", () => {
+    // Once an owner has STORED a BYO app (`byo_configured: true`), the backend
+    // lifts the Bedrock gate (`_byo_active`), and the fixed parent stops marking
+    // the row locked (`!connection.byo_configured`) — so it passes
+    // lockedForBedrock={false}. The row must then offer the normal OAuth Connect
+    // affordance, NOT a dead-end "Switch to Bedrock" upsell.
+    const configuredRow: Connection = {
+      ...googleByoRow,
+      byo_configured: true,
+    };
+    render(
+      <ConnectButton
+        connection={configuredRow}
+        canManage
+        lockedForBedrock={false}
+        connectPaste={vi.fn()}
+        startOAuth={vi.fn().mockResolvedValue(undefined)}
+        disconnect={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /connect google workspace/i }),
+    ).toBeInTheDocument();
+    // No Bedrock upsell, and no BYO "use your own app" dead-end either.
+    expect(screen.queryByRole("link", { name: /switch to bedrock/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /switch to bedrock/i })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /use your own google workspace app/i }),
+    ).toBeNull();
+  });
+
   it("disables Save until both fields and acknowledgment are present", () => {
     renderByo();
     fireEvent.click(

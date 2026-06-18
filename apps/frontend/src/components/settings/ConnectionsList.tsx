@@ -72,7 +72,13 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
         const connected = connection.status === "connected";
         // Lock only the connect path: a row already connected before a
         // provider switch keeps Disconnect (so `locked` excludes connected).
-        const locked = !!connection.requires_bedrock && !connected && offBedrock;
+        // An owner who has configured their OWN OAuth app carries their own
+        // data-use posture, so the Bedrock requirement is lifted server-side
+        // (`_byo_active`) — excluding configured rows here keeps the UI in
+        // lockstep, so a configured-but-not-connected owner falls through to
+        // the normal Connect path instead of a dead-end "Switch to Bedrock".
+        const locked =
+          !!connection.requires_bedrock && !connected && offBedrock && !connection.byo_configured;
         const receipt = INTEGRATION_RECEIPTS[connection.provider];
         return (
           <div

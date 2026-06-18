@@ -37,8 +37,7 @@ const googleByoRow: Connection = {
   display_name: "Google Workspace",
   acquisition: "direct_oauth",
   status: "disconnected",
-  requires_bedrock: true,
-  byo_capable: true,
+  byo_required: true,
   byo_configured: false,
   byo_setup_url: "https://console.cloud.google.com/apis/credentials",
 };
@@ -52,7 +51,6 @@ function renderByo(
     <ConnectButton
       connection={googleByoRow}
       canManage
-      lockedForBedrock
       connectPaste={vi.fn()}
       startOAuth={startOAuth}
       disconnect={vi.fn()}
@@ -68,13 +66,11 @@ describe("ConnectButton BYO branch", () => {
     putMock.mockClear();
   });
 
-  it("offers 'Use your own Google app' for a byo_capable, locked, not-configured provider", () => {
+  it("offers 'Use your own Google app' for a byo_required, not-configured provider (no lock needed)", () => {
     renderByo();
     expect(
       screen.getByRole("button", { name: /use your own google workspace app/i }),
     ).toBeInTheDocument();
-    // The Bedrock upsell is replaced by the BYO affordance, not shown alongside.
-    expect(screen.queryByRole("link", { name: /switch to bedrock/i })).toBeNull();
   });
 
   it("opens a panel with the setup link, redirect URI, inputs and acknowledgment", () => {
@@ -93,7 +89,7 @@ describe("ConnectButton BYO branch", () => {
     // Inputs + acknowledgment.
     expect(screen.getByLabelText(/client id/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/client secret/i)).toBeInTheDocument();
-    expect(screen.getByText(/limited use policy/i)).toBeInTheDocument();
+    expect(screen.getByText(/limited use requirements/i)).toBeInTheDocument();
   });
 
   it("PUTs the byo-app then proceeds to OAuth on Save", async () => {
@@ -178,12 +174,10 @@ describe("ConnectButton BYO branch", () => {
     expect(screen.getByRole("checkbox")).not.toBeChecked();
   });
 
-  it("renders the normal Connect path for a configured-but-not-connected locked row", () => {
-    // Once an owner has STORED a BYO app (`byo_configured: true`), the backend
-    // lifts the Bedrock gate (`_byo_active`), and the fixed parent stops marking
-    // the row locked (`!connection.byo_configured`) — so it passes
-    // lockedForBedrock={false}. The row must then offer the normal OAuth Connect
-    // affordance, NOT a dead-end "Switch to Bedrock" upsell.
+  it("renders the normal Connect path for a configured-but-not-connected row", () => {
+    // Once an owner has STORED a BYO app (`byo_configured: true`), the BYO panel
+    // condition (`byo_required && !byo_configured`) no longer matches, so the row
+    // falls through to the normal OAuth Connect affordance.
     const configuredRow: Connection = {
       ...googleByoRow,
       byo_configured: true,
@@ -192,7 +186,6 @@ describe("ConnectButton BYO branch", () => {
       <ConnectButton
         connection={configuredRow}
         canManage
-        lockedForBedrock={false}
         connectPaste={vi.fn()}
         startOAuth={vi.fn().mockResolvedValue(undefined)}
         disconnect={vi.fn()}
@@ -202,9 +195,7 @@ describe("ConnectButton BYO branch", () => {
     expect(
       screen.getByRole("button", { name: /connect google workspace/i }),
     ).toBeInTheDocument();
-    // No Bedrock upsell, and no BYO "use your own app" dead-end either.
-    expect(screen.queryByRole("link", { name: /switch to bedrock/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /switch to bedrock/i })).toBeNull();
+    // No BYO "use your own app" dead-end once a BYO app is already stored.
     expect(
       screen.queryByRole("button", { name: /use your own google workspace app/i }),
     ).toBeNull();

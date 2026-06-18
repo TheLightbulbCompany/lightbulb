@@ -22,24 +22,13 @@ export interface Connection {
   acquisition: "paste_token" | "direct_oauth";
   status: "connected" | "disconnected";
   /**
-   * Static product flag from the catalog: this provider may only be granted
-   * by owners on Bedrock-managed inference. The UI pairs it with the owner's
-   * `provider_choice` to render a "switch to Bedrock to unlock" upsell in
-   * place of the connect action. The grant endpoints enforce the same rule
-   * server-side (a structured `requires_bedrock` 403).
+   * BYO ("bring your own") OAuth app affordance:
+   *   - `byo_required`   → this provider has no managed app; the owner MUST
+   *                        register their own OAuth app to connect it.
+   *   - `byo_configured` → THIS owner already stored + acknowledged one.
+   *   - `byo_setup_url`  → where to register one (provider console deep link).
    */
-  requires_bedrock?: boolean;
-  /**
-   * BYO ("bring your own") OAuth app affordance. When a provider is
-   * `requires_bedrock`-locked for this owner, they can instead register their
-   * OWN OAuth app to unlock the Connect flow without switching to Bedrock:
-   *   - `byo_capable`     → the provider accepts an owner-supplied OAuth app.
-   *   - `byo_configured`  → THIS owner already stored + acknowledged one.
-   *   - `byo_setup_url`   → where to register one (provider console deep link).
-   * The grant paths enforce the same gate server-side (a stored, acknowledged
-   * BYO app lifts the internal + requires_bedrock checks).
-   */
-  byo_capable?: boolean;
+  byo_required?: boolean;
   byo_configured?: boolean;
   byo_setup_url?: string | null;
 }

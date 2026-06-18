@@ -13,13 +13,6 @@ interface ConnectButtonProps {
   connection: Connection;
   /** Whether the current user may manage connections (org admin). */
   canManage: boolean;
-  /**
-   * This provider is `requires_bedrock` and the owner is NOT on
-   * Bedrock-managed inference, so the connect action is replaced with a
-   * "switch to Bedrock to unlock" upsell. The parent passes false for
-   * already-connected rows so disconnect stays reachable.
-   */
-  lockedForBedrock?: boolean;
   connectPaste: (provider: string, token: string) => Promise<void>;
   startOAuth: (provider: string) => Promise<void>;
   disconnect: (provider: string) => Promise<void>;
@@ -34,17 +27,10 @@ interface ConnectButtonProps {
 }
 
 const NON_ADMIN_MSG = "Only organization admins can manage connections.";
-// Deep link into the LLM panel's change-provider flow — mirrors the backend's
-// `action_href` so the click-through path is identical whether the upsell is
-// rendered upfront (locked row) or surfaced from a grant-path 403.
-const SWITCH_PROVIDER_HREF = "/chat?panel=llm&action=change-provider";
-const BEDROCK_LOCK_FALLBACK =
-  "This integration requires Bedrock-managed inference. Switch to Bedrock credits to unlock it.";
 
 // Limited-Use acknowledgment shown before an owner stores their own OAuth app.
-// FOUNDER: finalize wording — this is a placeholder, not final legal copy.
 const BYO_ACK_COPY =
-  "I understand I'm using my own Google app and accept responsibility for its compliance with Google's Limited Use policy."; // FOUNDER: finalize wording
+  "I'm connecting with my own Google OAuth app and I'm responsible for its compliance with Google's API Services User Data Policy, including the Limited Use requirements, for any Google data my agents access.";
 
 /**
  * The OAuth redirect URI an owner must register in their own provider app.
@@ -59,26 +45,13 @@ function byoRedirectUri(provider: string): string {
   return `${BACKEND_URL}/oauth/${provider}/callback`;
 }
 
-/** The structured Bedrock-lock 403's message, or null when `e` is any other error. */
-function bedrockLockMessage(e: unknown): string | null {
-  if (!(e instanceof ApiError) || e.status !== 403) return null;
-  const detail = (e.body as { detail?: unknown } | null)?.detail;
-  if (detail && typeof detail === "object" && (detail as { reason?: string }).reason === "requires_bedrock") {
-    return (detail as { message?: string }).message ?? BEDROCK_LOCK_FALLBACK;
-  }
-  return null;
-}
-
 /**
  * Maps an ApiError from a connect/disconnect/authorize call to a short,
  * user-facing string. The backend already hands back a useful `detail`
  * via ApiError.message for most cases (e.g. the 422 validation copy); we
- * special-case 403 so non-admins get a clear permissions message — except
- * the Bedrock-lock 403, whose structured detail we surface as the upsell.
+ * special-case 403 so non-admins get a clear permissions message.
  */
 function errorMessage(e: unknown): string {
-  const lock = bedrockLockMessage(e);
-  if (lock) return lock;
   if (e instanceof ApiError) {
     if (e.status === 403) return NON_ADMIN_MSG;
     if (e.message && e.message !== `API ${e.status}`) return e.message;
@@ -91,7 +64,6 @@ function errorMessage(e: unknown): string {
 export function ConnectButton({
   connection,
   canManage,
-  lockedForBedrock = false,
   connectPaste,
   startOAuth,
   disconnect,
@@ -103,9 +75,9 @@ export function ConnectButton({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // BYO ("use your own app") panel state. Lives only on the locked, not-yet-
-  // configured branch; opening it reveals the client_id/secret + acknowledge
-  // form. Kept local (no SWR) — a successful PUT hands off to the OAuth flow.
+  // BYO ("use your own app") panel state. Lives only on the byo_required,
+  // not-yet-configured branch; opening it reveals the client_id/secret +
+  // acknowledge form. Kept local (no SWR) — a successful PUT hands off to OAuth.
   const [byoOpen, setByoOpen] = useState(false);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -118,11 +90,10 @@ export function ConnectButton({
       await fn();
       setToken("");
     } catch (e) {
-      // Persistent permission / Bedrock-lock 403s stay inline: the lock is
-      // already the "Switch to Bedrock" upsell, and a non-admin denial is a
-      // standing state a toast would auto-dismiss. Everything else is a
-      // transient failure -> toast (with the Report action).
-      if (bedrockLockMessage(e) || (e instanceof ApiError && e.status === 403)) {
+      // A non-admin 403 is a standing permission state a toast would
+      // auto-dismiss, so keep it inline. Everything else is a transient
+      // failure -> toast (with the Report action).
+      if (e instanceof ApiError && e.status === 403) {
         setErr(errorMessage(e));
       } else {
         notifyApiError(e, "Couldn't update the connection. Please try again.");
@@ -155,13 +126,10 @@ export function ConnectButton({
     );
   }
 
-  // BYO escape hatch: a locked provider that accepts an owner-supplied OAuth
-  // app, where this owner hasn't stored one yet. Offer "Use your own … app" in
-  // place of the Bedrock upsell — storing + acknowledging an app lifts the lock
-  // server-side, after which the normal Connect (OAuth) flow proceeds. Once
-  // `byo_configured` is true the parent's lock is moot (the gate is lifted), so
-  // we fall through to the standard branches below.
-  if (lockedForBedrock && connection.byo_capable && !connection.byo_configured) {
+  // BYO connect path: a provider that has no managed app, where this owner
+  // hasn't stored one yet. This IS the connect action (not an upsell) — storing
+  // + acknowledging the app, then the normal OAuth redirect, connects it.
+  if (connection.byo_required && !connection.byo_configured) {
     const ackId = `byo-ack-${provider}`;
     // Scrub the typed secret + form state. Called on Cancel/close and after a
     // successful save so a typed client secret never persists in React state to
@@ -236,6 +204,12 @@ export function ConnectButton({
             Register an OAuth app →
           </Link>
         )}
+        <ol className="list-decimal pl-4 text-xs text-[#8a8578] space-y-0.5">
+          <li>Create an OAuth client ID — application type <strong>Web application</strong>.</li>
+          <li>Add the authorized redirect URI shown below.</li>
+          <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
+          <li>Paste the Client ID and secret here.</li>
+        </ol>
         <div className="flex flex-col gap-1">
           <span className="text-xs text-[#8a8578]">Authorized redirect URI to register:</span>
           <code className="break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[#e0dbd0]">
@@ -307,31 +281,6 @@ export function ConnectButton({
           </p>
         )}
       </div>
-    );
-  }
-
-  // Bedrock-gated provider, owner not on Bedrock → swap Connect for an
-  // upsell that deep-links to the change-provider flow. Reached only for
-  // not-yet-connected rows (the connected branch above wins first), so a
-  // provider already linked before a provider switch keeps its Disconnect.
-  if (lockedForBedrock) {
-    // Switching providers (POST /billing/provider) is org-admin gated, so a
-    // non-admin member can't complete it. Show the reason but a disabled
-    // control — consistent with how Connect/Disconnect disable here — rather
-    // than a live link into a flow they'd be blocked from.
-    if (!canManage) {
-      return (
-        <Button size="sm" variant="outline" disabled aria-label={`Switch to Bedrock to unlock ${display_name}`}>
-          Switch to Bedrock
-        </Button>
-      );
-    }
-    return (
-      <Button asChild size="sm" variant="outline">
-        <Link href={SWITCH_PROVIDER_HREF} aria-label={`Switch to Bedrock to unlock ${display_name}`}>
-          Switch to Bedrock
-        </Link>
-      </Button>
     );
   }
 

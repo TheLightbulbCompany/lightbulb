@@ -952,6 +952,30 @@ export class ObservabilityStack extends cdk.Stack {
       description:
         "Metronome webhook signature verification failing — secret drift or forged-webhook probe; credit gate not getting trustworthy balance updates",
     });
+
+    // W64: provision-gate-block-spike.
+    // Backend emits provision.gate.blocked (dimensionless, plus a {code}
+    // breakdown stream) in core/services/provision_gate.py whenever the gate
+    // blocks an owner. This alarm passes NO dimensions, so it queries the
+    // {env,service} stream — matching the dimensionless emission (NOT the
+    // {code} streams, each of which only sees one code's blocks). A provider
+    // outage that silently gates all new chats shows as a spike in blocks, so
+    // the threshold is a spike (not >0 — some blocks are normal, e.g. a
+    // genuinely-unsubscribed user).
+    this.createAlarm({
+      id: "W64",
+      name: "provision-gate-block-spike",
+      metricName: "provision.gate.blocked",
+      threshold: 10,
+      evaluationPeriods: 1,
+      periodMinutes: 15,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "warn",
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      description:
+        "Provision gate blocking >10 owners in 15 min — likely a provider outage (Stripe/Metronome/OAuth) silently gating users, not normal unsubscribed traffic. Provisional threshold; sums across all codes.",
+    });
   }
 
   // =========================================================================

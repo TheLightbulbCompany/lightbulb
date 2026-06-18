@@ -95,10 +95,6 @@ class Provider(BaseModel):
     wiring: Wiring
     requires: Requires = Requires()
     oauth: OAuthSpec | None = None
-    # internal + requires_bedrock are removed in Task 2 once the marketplace
-    # classifier stops reading them. Do not add new readers.
-    internal: bool = False
-    requires_bedrock: bool = False
     # BYO-required: this provider has no Isol8-managed OAuth app, so the owner
     # MUST connect with their own OAuth app (client_id/secret). It is visible to
     # every owner and gated only by "have you stored your app yet". Today only

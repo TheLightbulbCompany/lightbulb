@@ -30,8 +30,6 @@ def test_parallel_openclaw_paths_provider_shape():
     }
     # No validate endpoint (key checked at first search); public + ungated.
     assert p.validation is None
-    assert p.internal is False
-    assert p.requires_bedrock is False
 
 
 def test_direct_oauth_provider_shape():

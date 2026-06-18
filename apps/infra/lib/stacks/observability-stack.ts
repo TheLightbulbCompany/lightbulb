@@ -1320,6 +1320,123 @@ def handler(event, context):
     });
     w39.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
+    // W58: per-user container crash-loop. W39 fires on ANY single unexpected
+    // stop; a crash-LOOP (CPU-starve → healthcheck SIGKILL → restart → repeat)
+    // produces a burst of unexpected stops. Reuses the same TaskStoppedUnexpected
+    // metric the free TaskStoppedFn Lambda already emits — no new emission.
+    // Sum >= 3 in 5min distinguishes a loop from a one-off. Provisional
+    // threshold, baseline after observation.
+    const crashLoopMetric = new cloudwatch.Metric({
+      namespace: "Isol8/ECS",
+      metricName: "TaskStoppedUnexpected",
+      statistic: "Sum",
+      period: cdk.Duration.minutes(5),
+      dimensionsMap: { ClusterName: clusterName },
+    });
+    const w58 = new cloudwatch.Alarm(this, "W58", {
+      alarmName: `isol8-${this.envName}-W58-per-user-crash-loop`,
+      alarmDescription:
+        "≥3 unexpected container stops in 5 min — a per-user container is in a crash/restart loop (likely CPU-starve healthcheck SIGKILL). Provisional threshold.",
+      metric: crashLoopMetric,
+      threshold: 3,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w58.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W59: EFS >1-task-per-access-point detector. Two RUNNING tasks on one
+    // per-user service write the same EFS access point → OpenClaw WAL-SQLite
+    // corruption (root cause mitigated by maxPercent=100 single-writer deploys;
+    // this detects a REGRESSION). Basic AWS/ECS has no RunningTaskCount (that's
+    // Container Insights, which we keep off for cost), so a tiny EventBridge→
+    // Lambda checks running-task count on each RUNNING transition. Reuses the
+    // free-Lambda pattern; events are low-volume.
+    const multiTaskRule = new events.Rule(this, "TaskRunningRule", {
+      ruleName: `isol8-${this.envName}-ecs-task-running`,
+      description:
+        "Captures ECS task RUNNING transitions for >1-task-per-service detection",
+      eventPattern: {
+        source: ["aws.ecs"],
+        detailType: ["ECS Task State Change"],
+        detail: {
+          clusterArn: [props.cluster.clusterArn],
+          lastStatus: ["RUNNING"],
+        },
+      },
+    });
+    const multiTaskFn = new lambda.Function(this, "MultiTaskFn", {
+      functionName: `isol8-${this.envName}-multi-task-metric`,
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      timeout: cdk.Duration.seconds(15),
+      code: lambda.Code.fromInline(`
+import boto3
+ecs = boto3.client('ecs')
+cw = boto3.client('cloudwatch')
+
+def handler(event, _ctx):
+    detail = event.get('detail') or {}
+    group = detail.get('group') or ''            # e.g. "service:openclaw-<uid>-<hash>"
+    cluster_arn = detail.get('clusterArn') or ''
+    if not group.startswith('service:'):
+        return                                   # only per-user SERVICE tasks
+    service = group.split(':', 1)[1]
+    if 'openclaw' not in service:
+        return                                   # ignore the backend/paperclip services
+    # Count currently-RUNNING tasks for this service. >1 = the double-writer
+    # precondition for EFS WAL-SQLite corruption.
+    running = ecs.list_tasks(cluster=cluster_arn, serviceName=service, desiredStatus='RUNNING')
+    count = len(running.get('taskArns') or [])
+    if count > 1:
+        cw.put_metric_data(Namespace='Isol8/ECS', MetricData=[{
+            'MetricName': 'MultiTaskPerService',
+            'Dimensions': [{'Name': 'ClusterName', 'Value': cluster_arn.split('/')[-1]}],
+            'Value': 1.0, 'Unit': 'Count',
+        }])
+`),
+    });
+    // TWO separate statements: cloudwatch:PutMetricData does NOT support the
+    // ecs:cluster condition key, so combining them would make IAM evaluate the
+    // condition as non-matching and DENY the metric write (the alarm would get
+    // no datapoints). ecs:ListTasks keeps the cluster condition; PutMetricData
+    // is scoped instead by a cloudwatch:namespace condition.
+    multiTaskFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ecs:ListTasks"],
+        resources: ["*"],
+        conditions: { StringEquals: { "ecs:cluster": props.cluster.clusterArn } },
+      }),
+    );
+    multiTaskFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"],
+        conditions: { StringEquals: { "cloudwatch:namespace": "Isol8/ECS" } },
+      }),
+    );
+    multiTaskRule.addTarget(new events_targets.LambdaFunction(multiTaskFn));
+
+    const multiTaskMetric = new cloudwatch.Metric({
+      namespace: "Isol8/ECS",
+      metricName: "MultiTaskPerService",
+      statistic: "Sum",
+      period: cdk.Duration.minutes(1),
+      dimensionsMap: { ClusterName: clusterName },
+    });
+    const w59 = new cloudwatch.Alarm(this, "W59", {
+      alarmName: `isol8-${this.envName}-W59-efs-multi-task-per-ap`,
+      alarmDescription:
+        "A per-user service has >1 RUNNING task — two writers on one EFS access point, the OpenClaw WAL-SQLite corruption precondition. Single-writer deploy (maxPercent=100) should prevent this; firing = regression.",
+      metric: multiTaskMetric,
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w59.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
     // -- DynamoDB (W40-W42) --
     // Create alarms for each table
     const allTables: [string, dynamodb.ITable][] = [

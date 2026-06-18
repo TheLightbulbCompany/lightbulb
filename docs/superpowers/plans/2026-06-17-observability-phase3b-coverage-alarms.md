@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Add CloudWatch alarms for the four uncovered chaos failure modes (per-user CPU saturation, per-user crash-loop, EFS >1-task-per-AP, Aurora/Paperclip outage) plus a provision-gate-block signal — using native AWS metrics + the existing free Lambda, no Container Insights, no new managed cost.
+**Goal:** Add CloudWatch alarms for the uncovered chaos failure modes (per-user crash-loop, EFS >1-task-per-AP, Aurora/Paperclip outage) plus a provision-gate-block signal, a Paperclip-upstream-error signal, and a chat-latency late-terminal guard — using native AWS metrics + the existing event Lambdas + a few bounded custom metrics, at negligible cost (~<$1/month), no Container Insights.
 
-**Architecture:** Two PRs. **Part A (infra)** edits `observability-stack.ts` (+ one cross-stack prop in `isol8-stage.ts`, + extend the inline `TaskStoppedFn` Lambda). **Part B (backend)** adds a metric emission in `provision_gate.py` and its alarm. Per-user services are dynamic (`openclaw-{user_id}-{hash}`), so per-user CPU uses a CloudWatch `SEARCH()` metric-math alarm (not a static per-service alarm).
+**Architecture:** Two PRs. **Part A (infra)** edits `observability-stack.ts` (+ cross-stack props in `isol8-stage.ts`, + extend the inline `TaskStoppedFn` Lambda). **Part B (backend)** adds metric emissions in `provision_gate.py`, `paperclip_proxy.py`/`paperclip_admin_client.py`, and a latency ceiling guard in `connection_pool.py`, plus their alarms. Per-user services are dynamic (`openclaw-{user_id}-{hash}`), so there is NO standalone per-user-CPU alarm — see the Decision note in Task 1.
 
 **Tech Stack:** AWS CDK (TypeScript, aws-cdk-lib 2.190.0), CloudWatch (Metric, MathExpression, Alarm), EventBridge, inline Python Lambda (boto3), FastAPI backend (Python), pytest.
 
@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- **No Container Insights** — it stays `false` (`container-stack.ts:92`); use native `AWS/ECS`/`AWS/RDS` metrics + the existing free Lambda only.
+- **No Container Insights** — it stays `false` (`container-stack.ts:92`); use native `AWS/ECS`/`AWS/RDS` metrics + the existing event Lambdas + a few bounded custom metrics only.
+- **Cost:** negligible cost (~<$1/month: event Lambdas are pennies even if past the perpetual free tier, plus ~$0.30/metric/month for the custom metrics) — vs ~$10s/month for the rejected Container Insights alternative. Container Insights stays off.
 - **All new alarms `treatMissingData: NOT_BREACHING`** (absent metric = healthy) — never breach-on-missing (Phase 1 lesson).
 - **No high-cardinality metric dimensions** — `_DENIED_DIMENSIONS` in `metrics.py` forbids `user_id`/`owner_id`/`container_id`/`request_id`/`admin_user_id`/`tool_id`; the gate `code` set is bounded (safe).
 - **deploy.yml drift (Part A only):** adding cross-stack props to `ObservabilityStackProps` changes the generated `.github/workflows/deploy.yml` `needs:` graph. After `cdk synth`, COMMIT the regenerated `deploy.yml` — `cdk-pipelines-github` (`pipeline.ts:469`) has a synth-time drift check that fails the build and blocks ALL dev+prod deploys if it's stale. NEVER revert the regen.
@@ -23,64 +24,9 @@
 
 # PART A — Infra alarms (PR 1: `feat(observability): Phase 3B-infra — coverage alarms`)
 
-## Task 1: Per-user container CPU saturation alarm (W57, SEARCH metric-math)
+## Task 1: Per-user crash-loop alarm (W58, windowed count on existing metric)
 
-**Files:**
-- Modify: `apps/infra/lib/stacks/observability-stack.ts` (in `createWarnAwsNativeAlarms`, after the W36/W37 backend-ECS block ~line 1110)
-
-**Interfaces:**
-- Consumes: `props.cluster.clusterName` (already on `ObservabilityStackProps`), `this.warnTopic`.
-- Produces: alarm `isol8-${env}-W57-per-user-container-cpu`.
-
-- [ ] **Step 1: Add the SEARCH metric-math CPU alarm**
-
-Per-user services are dynamic, so use a `SEARCH` expression that matches all `openclaw-` services' `AWS/ECS CPUUtilization` in the per-user cluster and takes the MAX. Insert after W37:
-
-```typescript
-    // W57: per-user container CPU saturation (dynamic fleet → Metrics Insights).
-    // Per-user services are named openclaw-{user_id}-{hash} and created at
-    // runtime, so a static per-service alarm is impossible. CloudWatch alarms
-    // CANNOT be based on a SEARCH() expression (AWS docs), so we use a Metrics
-    // Insights query — which CAN back an alarm — that MAXes CPUUtilization across
-    // all openclaw-* services in this cluster. `LIKE 'openclaw%'` scopes to the
-    // per-user fleet and excludes the backend/paperclip services. Returns no data
-    // when zero per-user containers exist → NOT_BREACHING = no false alarm.
-    const perUserCpuQuery = new cloudwatch.MathExpression({
-      expression:
-        `SELECT MAX(CPUUtilization) FROM SCHEMA("AWS/ECS", ClusterName, ServiceName) ` +
-        `WHERE ClusterName = '${clusterName}' AND ServiceName LIKE 'openclaw%'`,
-      label: "Max per-user container CPU %",
-      period: cdk.Duration.minutes(5),
-    });
-    const w57 = new cloudwatch.Alarm(this, "W57", {
-      alarmName: `isol8-${this.envName}-W57-per-user-container-cpu`,
-      alarmDescription:
-        "A per-user OpenClaw container is CPU-saturated (>90% for 15 min) — MCP/agent storm risk; the 0.5-vCPU box is starving and may healthcheck-SIGKILL. Provisional threshold, baseline after observation.",
-      metric: perUserCpuQuery,
-      threshold: 90,
-      evaluationPeriods: 3,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    w57.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
-```
-> A Metrics Insights query (`SELECT ... FROM SCHEMA(...)`) IS a valid alarm source (unlike `SEARCH()`), and supports `LIKE`/`%` on dimension values. In CDK it's a `MathExpression` whose `expression` is the SQL (no `usingMetrics`). Verify the query alarm synthesizes with `AlarmRule`/`Metrics` containing the `SELECT` string.
-
-- [ ] **Step 2: Verify it synthesizes + the Metrics Insights query is well-formed**
-
-From `apps/infra` (symlink parent node_modules if absent: `ln -s /Users/prasiddhaparthsarthy/Desktop/isol8.nosync/apps/infra/node_modules ./node_modules`, remove after):
-Run: `npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability 2>/dev/null | grep -A8 "W57"`
-Expected: tsc exit 0; the synthesized `AWS::CloudWatch::Alarm` for W57 has a `Metrics` entry whose `Expression` is the `SELECT MAX(CPUUtilization) FROM SCHEMA(...)` query with the cluster name interpolated and `ServiceName LIKE 'openclaw%'`.
-> NOTE: confirm CloudFormation accepts the Metrics Insights query as an alarm metric (it does — unlike SEARCH). The empty-result case (zero per-user containers) returns no data → NOT_BREACHING means no false alarm. The `LIKE 'openclaw%'` scoping can only be fully validated against live metric data; reason through the service-name prefix at implementation time.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add apps/infra/lib/stacks/observability-stack.ts
-git commit -m "feat(observability): W57 per-user container CPU-saturation alarm (SEARCH math)"
-```
-
-## Task 2: Per-user crash-loop alarm (W58, windowed count on existing metric)
+> **Decision — NO standalone per-user-CPU alarm.** The earlier draft built a W57 per-user-CPU alarm via a Metrics Insights query with `WHERE ServiceName LIKE 'openclaw%'`. This is **un-implementable**: CloudWatch Metrics Insights has **no `LIKE`/wildcard operator** (only `=`, `!=`, `AND`), and the per-user + backend + paperclip services **share one ECS cluster** — so an unfiltered `MAX(CPUUtilization)` would wrongly fold in the backend/paperclip services with no way to name-filter to the `openclaw-*` fleet. Tag-based filtering is fragile and a separate cluster is out of scope. So **no W57 is built.** The CPU-storm failure mode that actually causes incidents (0.5-vCPU starve → healthcheck SIGKILL → restart) is caught by **this crash-loop alarm (W58)** plus the live `chat.e2e.latency` SLO (alarm W9). Pure CPU-saturation-*without*-a-kill is a documented **accepted gap**.
 
 **Files:**
 - Modify: `apps/infra/lib/stacks/observability-stack.ts` (right after the existing W39 TaskStopped block)
@@ -132,7 +78,7 @@ git add apps/infra/lib/stacks/observability-stack.ts
 git commit -m "feat(observability): W58 per-user crash-loop alarm (windowed TaskStoppedUnexpected)"
 ```
 
-## Task 3: EFS >1-task-per-access-point detector (extend Lambda + alarm)
+## Task 2: EFS >1-task-per-access-point detector (extend Lambda + alarm)
 
 **Files:**
 - Modify: `apps/infra/lib/stacks/observability-stack.ts` (the `TaskStoppedFn`/`TaskStoppedRule` region ~line 1130-1300 — add a sibling RUNNING rule + handler + IAM + alarm)
@@ -250,16 +196,16 @@ git add apps/infra/lib/stacks/observability-stack.ts
 git commit -m "feat(observability): W59 EFS >1-task-per-AP detector (RUNNING-event Lambda + alarm)"
 ```
 
-## Task 4: Aurora + Paperclip outage alarms (cross-stack props + native alarms + deploy.yml regen)
+## Task 3: Aurora + Paperclip-CPU outage alarms (cross-stack props + native alarms + deploy.yml regen)
 
 **Files:**
 - Modify: `apps/infra/lib/stacks/observability-stack.ts` (props interface + a new `createPaperclipTierAlarms` block)
-- Modify: `apps/infra/lib/isol8-stage.ts` (pass the two refs)
+- Modify: `apps/infra/lib/isol8-stage.ts` (pass the two refs + explicit deps)
 - Modify (generated): `.github/workflows/deploy.yml`
 
 **Interfaces:**
-- Consumes: `database.paperclipDbCluster` (`rds.IDatabaseCluster`), `paperclip.service` (`ecs.IBaseService`), and the Paperclip ALB **target group** (`elbv2.IApplicationTargetGroup`) from the stage. Confirm the target group is exposed on the Paperclip stack (it has an ALB host route + healthCheck; if the TG isn't a public property, add a `public readonly` for it). The existing backend ALB full-name (`albFullName`, already computed in this stack for W28/W29/W48 from `props.alb`) is REUSED for W63's `LoadBalancer` dimension since Paperclip shares the same ALB.
-- Produces: alarms W60 (aurora-cpu), W61 (aurora-connections-saturation), W62 (paperclip-cpu), W63 (paperclip-down via ALB healthy hosts); EventBridge rule `AuroraFailoverRule` (failover/failure → warn).
+- Consumes: `database.paperclipDbCluster` (`rds.IDatabaseCluster`) and `paperclip.service` (`ecs.IBaseService`) from the stage. **NO Paperclip ALB target group** — VERIFIED: `PaperclipStack` has no ALB target group; it registers via `cloudMapOptions` on the FargateService and is reached *through* the backend, so there is no `HealthyHostCount` to alarm on. The Paperclip-down signal is delivered by the Part B `paperclip.upstream.error` metric + alarm instead (see Part B).
+- Produces: alarms W60 (aurora-cpu), W61 (aurora-connections-saturation), W62 (paperclip-cpu via `AWS/ECS`); EventBridge rule `AuroraFailoverRule` (failover/failure → warn). **No W63 here** — the old ALB-`HealthyHostCount` W63 is dropped (no target group exists) and replaced by the Part B `paperclip.upstream.error` alarm, which also keeps the `W63` id.
 
 - [ ] **Step 1: Add the props to `ObservabilityStackProps`**
 
@@ -267,19 +213,22 @@ In the `ObservabilityStackProps` interface (~line 34), add:
 ```typescript
   paperclipDbCluster: rds.IDatabaseCluster;
   paperclipService: ecs.IBaseService;
-  paperclipTargetGroup: elbv2.IApplicationTargetGroup;
 ```
-Add imports if absent: `import * as rds from "aws-cdk-lib/aws-rds";` and `import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";` (ecs already imported; check whether elbv2 is already imported for the existing ALB alarms). Also confirm `events_targets.SnsTopic` is importable (used by `AuroraFailoverRule`) — `aws-cdk-lib/aws-events-targets` is already imported as `events_targets` for the TaskStopped Lambda target.
+Add the import if absent: `import * as rds from "aws-cdk-lib/aws-rds";` (ecs is already imported). Also confirm `events_targets.SnsTopic` is importable (used by `AuroraFailoverRule`) — `aws-cdk-lib/aws-events-targets` is already imported as `events_targets` for the TaskStopped Lambda target.
 
-- [ ] **Step 2: Thread them from the stage**
+- [ ] **Step 2: Thread them from the stage + add explicit deps**
 
-In `apps/infra/lib/isol8-stage.ts`, find the `new ObservabilityStack(...)` call (~line 164) and add to its props:
+In `apps/infra/lib/isol8-stage.ts`, the `new ObservabilityStack(...)` call (~line 163) is currently un-captured. Capture it (`const observability = new ObservabilityStack(...)`) and add to its props:
 ```typescript
         paperclipDbCluster: database.paperclipDbCluster,
         paperclipService: paperclip.service,
-        paperclipTargetGroup: paperclip.targetGroup,
 ```
-(Use the actual public property name for the Paperclip target group — confirm in `paperclip-stack.ts`; add a `public readonly targetGroup` export there if missing.) ObservabilityStack is constructed after both `database` and `paperclip` in the stage (verify ordering; if observability precedes paperclip, move its construction after paperclip — it has no reverse dependency). Add `observability.addDependency(paperclip)` / `addDependency(database)` if the refs don't auto-create the dependency.
+Then, after the call, add explicit dependencies:
+```typescript
+    observability.addDependency(database);
+    observability.addDependency(paperclip);
+```
+VERIFIED construction order is `database` (line 40) → `paperclip` (line 143) → `observability` (line 163), so observability already follows both — these explicit deps are safe and mirror the existing `paperclip.addDependency(database)` precedent (lines 157-160). They guarantee the cross-stack `needs:` edges the deploy.yml regen (Step 5) depends on. (`paperclip.service` is `public readonly service: ecs.FargateService` and `database.paperclipDbCluster` is `public readonly paperclipDbCluster: rds.DatabaseCluster` — both already exported, no stack edits needed.)
 
 - [ ] **Step 3: Add the native RDS + Paperclip-ECS alarms**
 
@@ -343,8 +292,9 @@ Add a new private method `createPaperclipTierAlarms()` called from the construct
     });
     auroraEventRule.addTarget(new events_targets.SnsTopic(this.warnTopic));
 
-    // W62 + W63: Paperclip Fargate service. It is singular + CDK-known, so
-    // static per-service alarms work (unlike the per-user fleet).
+    // W62: Paperclip Fargate service CPU. The Paperclip service is singular +
+    // CDK-known, so a static per-service AWS/ECS alarm works (unlike the
+    // per-user fleet).
     const clusterName = props.cluster.clusterName;
     const pcServiceName = cdk.Fn.select(2, cdk.Fn.split("/", props.paperclipService.serviceArn));
     const w62 = new cloudwatch.Alarm(this, "W62", {
@@ -364,69 +314,58 @@ Add a new private method `createPaperclipTierAlarms()` called from the construct
     });
     w62.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
-    // W63: Paperclip service DOWN (zero running tasks). NOTE: AWS/ECS service
-    // metrics are emitted ONLY for RUNNING tasks — when a service has zero tasks
-    // it reports NO datapoints, so a SampleCount/CPU alarm with NOT_BREACHING
-    // stays healthy exactly when the service is down. Use the ALB target group's
-    // HealthyHostCount instead — the ALB emits it continuously (including 0)
-    // regardless of task count. This mirrors the backend W28/W48 pattern.
-    const w63 = new cloudwatch.Alarm(this, "W63", {
-      alarmName: `isol8-${this.envName}-W63-paperclip-service-down`,
-      alarmDescription: "Paperclip has 0 healthy targets for 5 min — service down (ALB HealthyHostCount, which is emitted even at zero tasks unlike AWS/ECS metrics)",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/ApplicationELB",
-        metricName: "HealthyHostCount",
-        statistic: "Maximum",
-        period: cdk.Duration.minutes(1),
-        dimensionsMap: {
-          TargetGroup: props.paperclipTargetGroup.targetGroupFullName,
-          LoadBalancer: props.albFullName,
-        },
-      }),
-      threshold: 1,
-      evaluationPeriods: 5,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
-    });
-    w63.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+    // NO W63 here. The "Paperclip down" signal does NOT come from an ALB
+    // HealthyHostCount alarm — VERIFIED: PaperclipStack has no ALB target group
+    // (it registers via cloudMapOptions and is reached through the backend), so
+    // there is no HealthyHostCount metric to alarm on. The down signal is the
+    // Part B `paperclip.upstream.error{kind:"unreachable"}` metric + its alarm
+    // (which keeps the W63 id), emitted from the backend's Paperclip-call paths.
   }
 ```
-Call it from the constructor next to the other `this.create*Alarms()` calls. NOTE on W63 `treatMissingData: BREACHING`: HealthyHostCount is emitted continuously by the ALB, so "missing" here genuinely means the ALB/target-group is gone (a real problem) — unlike the AWS/ECS metrics, BREACHING is correct here. If the existing backend W48 (`alb-healthy-hosts-drop`) uses the same pattern, mirror its `treatMissingData` choice for consistency.
+Call it from the constructor next to the other `this.create*Alarms()` calls. Note: the RDS-event rule filters on the cluster id via `SourceIdentifier`. Cluster-level failover events carry the cluster id in `SourceIdentifier`, so the `dbId` filter catches **failover** — the primary 3C signal. Instance-failure events carry instance ids and will NOT match the cluster-id filter — that's an accepted gap; broaden `SourceIdentifier` to include instance ids later if instance-failure coverage is wanted.
 
 - [ ] **Step 4: Verify synth (incl. cross-stack refs resolve)**
 
-Run: `npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability 2>/dev/null | grep -E "W60-aurora|W61-aurora|W62-paperclip|W63-paperclip|AuroraFailoverRule" | head`
-Expected: tsc 0; all four alarms + the `AuroraFailoverRule` EventBridge rule present; W63's metric is `AWS/ApplicationELB HealthyHostCount` (NOT an AWS/ECS metric); no "cannot find" cross-stack errors. Verify the RDS-event rule's `SourceIdentifier`/`EventCategories` filter against the real event shape (cluster-level failover events carry the cluster id; instance-level failure events carry instance ids — the cluster filter catches failover, the primary 3C signal; broaden if instance-failure coverage is wanted).
+Run (from `apps/infra`; symlink parent node_modules if absent: `ln -s /Users/prasiddhaparthsarthy/Desktop/isol8.nosync/apps/infra/node_modules ./node_modules`, remove after):
+`npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability 2>/dev/null | grep -E "W60-aurora|W61-aurora|W62-paperclip|AuroraFailoverRule" | head`
+Expected: tsc 0; the three alarms (W60, W61, W62) + the `AuroraFailoverRule` EventBridge rule present; W62's metric is `AWS/ECS CPUUtilization`; no `W63` in this stack from this task; no "cannot find" cross-stack errors.
 
 - [ ] **Step 5: Regenerate + COMMIT deploy.yml (the prod-blocking step)**
 
 Run: `npx cdk synth >/dev/null 2>&1` then from repo root `git status --short`.
-Expected: `.github/workflows/deploy.yml` shows as modified (new observability→paperclip/database `needs:` edges). `git add` it. If it does NOT change, note that (means the dependency already existed). Then remove any node_modules symlink so the tree is clean.
+Expected: `.github/workflows/deploy.yml` shows as modified (new observability→paperclip/database `needs:` edges, created by the Step 2 explicit deps). `git add` it. If it does NOT change, note that (means the dependency already existed). Then remove any node_modules symlink so the tree is clean.
+> VERIFIED required: `cdk-pipelines-github` has a synth-time deploy.yml drift check (`pipeline.ts:469`); cross-stack refs change the `needs:` graph, so a stale `deploy.yml` fails Synthesize and blocks ALL dev+prod deploys. NEVER revert the regen.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add apps/infra/lib/stacks/observability-stack.ts apps/infra/lib/isol8-stage.ts .github/workflows/deploy.yml
-git commit -m "feat(observability): W60-W63 Aurora + Paperclip outage alarms (cross-stack props + deploy.yml regen)"
+git commit -m "feat(observability): W60-W62 Aurora + Paperclip-CPU outage alarms (cross-stack props + deploy.yml regen)"
 ```
 
 ---
 
-# PART B — Provision-gate-block signal (PR 2: `feat(observability): Phase 3B-backend — provision-gate-block metric + alarm`)
+# PART B — Backend signals + their alarms (PR 2: `feat(observability): Phase 3B-backend — provision-gate + paperclip-upstream + latency-guard`)
 
-> Branch off the SAME `chore/observability-phase3b` after Part A, OR a separate branch `chore/observability-phase3b-backend` off main. Emission + alarm ship together (no phantom-alarm window). This PR touches backend + one alarm in observability-stack.ts; that alarm does NOT add a stack dependency, so deploy.yml is unchanged.
+> Branch off the SAME `chore/observability-phase3b` after Part A, OR a separate branch `chore/observability-phase3b-backend` off main. Each emission + its alarm ship together (no phantom-alarm window). This PR touches the backend + alarms in observability-stack.ts; those alarms do NOT add a stack dependency, so deploy.yml is unchanged.
+>
+> Part B adds three signals: (4) `provision.gate.blocked{code}` + the W64 spike alarm; (5) `paperclip.upstream.error{kind}` + the W63 Paperclip-down alarm (REPLACES the dropped ALB-based W63 from Part A); (6) a `chat.e2e.latency` late-terminal ceiling guard in `connection_pool.py` (no new alarm — protects the existing W9 p99 SLO).
 
-## Task 5: Emit `provision.gate.blocked{code}` from the gate
+## Task 4: Emit `provision.gate.blocked{code}` from the gate
 
 **Files:**
 - Modify: `apps/backend/core/services/provision_gate.py`
-- Test: `apps/backend/tests/unit/services/test_provision_gate_metric.py` (new)
+- Test: `apps/backend/tests/unit/services/test_provision_gate_metric.py` (NEW file)
 
 **Interfaces:**
-- Consumes: the `Gate` dataclass `.code` field (bounded: `signup_required`, `payment_past_due`, `subscription_required`, `provider_required`, `credits_required`, `oauth_required`, `byo_provider_required`).
+- VERIFIED real signature: `async def evaluate_provision_gate(*, owner_id: str, is_admin: bool = True) -> Gate | None`. It takes ONLY `owner_id` + `is_admin` (keyword-only). It fetches `account` internally via `billing_repo.get_by_owner_id(owner_id)` and derives `provider_choice`/`owner_role` itself — there are NO `account`/`provider_choice`/`token_owner`/`owner_role` params.
+- Consumes: the `Gate` dataclass `.code` field. The 7 real `code` values (VERIFIED, use exactly): `signup_required`, `payment_past_due`, `subscription_required`, `provider_required`, `credits_required`, `oauth_required`, `byo_provider_required`.
 - Produces: TWO emissions whenever `evaluate_provision_gate` returns a non-None Gate — a dimensionless `provision.gate.blocked` (for the W64 total-across-codes alarm) AND a `provision.gate.blocked{code}` (for the per-code dashboard/Insights breakdown). Both are needed because EMF publishes one stream per full dimension-key set, so an alarm querying `{env,service}` only would NOT match a `{code}`-dimensioned stream.
+- Callers: there are exactly **3 production callers** — `routers/container.py` (x2), `routers/teams/agents.py`, `core/services/user_provision.py` — all invoking `evaluate_provision_gate(owner_id=..., is_admin=...)`. The single wrapper emit covers all of them; no caller changes needed.
 
 - [ ] **Step 1: Write the failing test**
+
+The test must call the REAL signature `evaluate_provision_gate(owner_id=..., is_admin=True)` and drive a blocked branch by mocking `core.services.provision_gate.billing_repo.get_by_owner_id` to return an account dict that triggers a gate (e.g. inactive subscription), plus mock `is_subscription_active`/`is_trial_blocked`/`metronome_gate.is_owner_blocked`/`_has_oauth_tokens` as needed — mirror the existing `tests/unit/services/test_provision_gate.py` + `test_provision_gate_credits.py` patterns.
 
 ```python
 # apps/backend/tests/unit/services/test_provision_gate_metric.py
@@ -441,12 +380,14 @@ async def test_blocked_gate_emits_metric_with_code():
     account = {"subscription_status": "canceled"}  # shape that triggers a gate
     with (
         patch("core.services.provision_gate.put_metric") as mock_put,
+        patch(
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=account),
+        ),
         patch("core.services.provision_gate.is_subscription_active", return_value=False),
+        patch("core.services.provision_gate.is_trial_blocked", return_value=True),
     ):
-        gate = await provision_gate.evaluate_provision_gate(
-            account=account, owner_id="org_x", provider_choice="bedrock_claude",
-            token_owner="org_x", owner_role="admin",
-        )
+        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x", is_admin=True)
     assert gate is not None
     calls = [c for c in mock_put.call_args_list if c.args and c.args[0] == "provision.gate.blocked"]
     # Two emissions: one dimensionless (for the W64 total alarm) + one coded
@@ -459,21 +400,30 @@ async def test_blocked_gate_emits_metric_with_code():
 
 @pytest.mark.asyncio
 async def test_allowed_provision_emits_no_metric():
+    account = {"subscription_status": "active"}
     with (
         patch("core.services.provision_gate.put_metric") as mock_put,
+        patch(
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=account),
+        ),
         patch("core.services.provision_gate.is_subscription_active", return_value=True),
         patch("core.services.provision_gate.is_trial_blocked", return_value=False),
-        patch("core.services.provision_gate._has_oauth_tokens", new=AsyncMock(return_value=True)),
+        patch(
+            "core.services.provision_gate.metronome_gate.is_owner_blocked",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "core.services.provision_gate._has_oauth_tokens",
+            new=AsyncMock(return_value=True),
+        ),
     ):
-        gate = await provision_gate.evaluate_provision_gate(
-            account={"subscription_status": "active"}, owner_id="org_x",
-            provider_choice="bedrock_claude", token_owner="org_x", owner_role="admin",
-        )
+        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x", is_admin=True)
     blocked = [c for c in mock_put.call_args_list if c.args and c.args[0] == "provision.gate.blocked"]
     assert gate is None
     assert blocked == []
 ```
-> Adjust the `evaluate_provision_gate(...)` kwargs + the account shape to the REAL signature (read the function head ~line 156 and `is_subscription_active`/`is_trial_blocked` inputs) before running. The assertion contract (emit once with `{code}` on block, never on allow) is the fixed part.
+> Adjust the exact set of mocks + the account shape to match the REAL gate layers (read the function body from line 156 and the credits/oauth layers it falls through). The fixed contract: blocked → exactly one dimensionless emit + one `{code}` emit; allowed (gate None) → zero `provision.gate.blocked` emits. Confirm the actual mock targets for `metronome_gate.is_owner_blocked` (lazy-imported as `is_owner_blocked` inside the function — patch where it's imported FROM, i.e. `core.services.metronome_gate.is_owner_blocked`) before running.
 
 - [ ] **Step 2: Run it — fails (no emission yet)**
 
@@ -482,14 +432,22 @@ Expected: FAIL (no `provision.gate.blocked` call).
 
 - [ ] **Step 3: Wrap the gate to emit once at the return boundary**
 
-In `provision_gate.py`: import `put_metric`, and rename the existing function body to a private `_evaluate_provision_gate_inner` (keeping all its `return Gate(...)`/`return None` logic unchanged), then add a thin public wrapper that emits on a non-None result. This is the single-point, all-branches-covered approach (don't instrument each `return Gate`):
+VERIFIED the module has NO `put_metric` import and NO `logger` — both must be added. The body of `evaluate_provision_gate` is confirmed clean (no decorators, not in `__all__`, no internal self-references), so renaming it to a private inner + adding a thin same-signature wrapper is safe. The wrapper MUST reproduce the exact keyword-only signature `(*, owner_id: str, is_admin: bool = True)`. This is the single-point, all-branches-covered approach (don't instrument each `return Gate`):
 
 ```python
+import logging
 from core.observability.metrics import put_metric
 # ... existing imports ...
 
-async def evaluate_provision_gate(*args, **kwargs) -> Gate | None:
-    gate = await _evaluate_provision_gate_inner(*args, **kwargs)
+logger = logging.getLogger(__name__)  # if the module has none
+
+
+async def evaluate_provision_gate(
+    *,
+    owner_id: str,
+    is_admin: bool = True,
+) -> Gate | None:
+    gate = await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
     if gate is not None:
         # Bounded `code` set → safe metric dimension. Best-effort: a metrics
         # outage must never block the gate decision (which is the request path).
@@ -504,12 +462,12 @@ async def evaluate_provision_gate(*args, **kwargs) -> Gate | None:
             logger.debug("provision.gate.blocked metric emission failed", exc_info=True)
     return gate
 ```
-Rename the existing `async def evaluate_provision_gate(...)` to `async def _evaluate_provision_gate_inner(...)` (same signature). Ensure `logger` exists in the module (add `logger = logging.getLogger(__name__)` if not).
+Rename the existing `async def evaluate_provision_gate(*, owner_id, is_admin=True)` to `async def _evaluate_provision_gate_inner(*, owner_id, is_admin=True)` (same keyword-only signature, body unchanged).
 
 - [ ] **Step 4: Run — passes**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_provision_gate_metric.py -o addopts="" -q`
-Expected: PASS. Then regression: `uv run pytest tests/unit/services/test_provision_gate_credits.py -o addopts="" -q` (existing gate tests) → PASS.
+Expected: PASS. Then regression: `uv run pytest tests/unit/services/test_provision_gate.py tests/unit/services/test_provision_gate_credits.py -o addopts="" -q` (existing gate tests) → PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -518,13 +476,13 @@ git add apps/backend/core/services/provision_gate.py apps/backend/tests/unit/ser
 git commit -m "feat(observability): emit provision.gate.blocked{code} on a blocked gate"
 ```
 
-## Task 6: Provision-gate-block alarm (ships with the emission)
+## Task 5: Provision-gate-block alarm (ships with the emission)
 
 **Files:**
 - Modify: `apps/infra/lib/stacks/observability-stack.ts` (warn-tier custom-metric group, near the other Isol8-namespace alarms)
 
 **Interfaces:**
-- Consumes: the `provision.gate.blocked` metric (Task 5), `this.warnTopic`.
+- Consumes: the `provision.gate.blocked` metric (Task 4), `this.warnTopic`.
 - Produces: alarm `isol8-${env}-W64-provision-gate-block-spike`.
 
 - [ ] **Step 1: Add the alarm via the createAlarm helper**
@@ -544,7 +502,7 @@ A provider outage that silently gates all new chats shows as a spike in blocks. 
         "Provision gate blocking >10 owners in 15 min — likely a provider outage (Stripe/Metronome/OAuth) silently gating users, not normal unsubscribed traffic. Provisional threshold; sums across all codes.",
     });
 ```
-> This alarm passes NO `dimensions`, so it queries the `{env,service}` stream — which matches the **dimensionless** `provision.gate.blocked` emission Task 5 produces (Task 5 emits both a dimensionless metric for this alarm and a `{code}` metric for the breakdown). No `SEARCH`/math needed. Do NOT add a `code` dimension here, or it would query a stream that only sees one code's blocks.
+> This alarm passes NO `dimensions`, so it queries the `{env,service}` stream — which matches the **dimensionless** `provision.gate.blocked` emission Task 4 produces (Task 4 emits both a dimensionless metric for this alarm and a `{code}` metric for the breakdown). No `SEARCH`/math needed. Do NOT add a `code` dimension here, or it would query a stream that only sees one code's blocks.
 
 - [ ] **Step 2: Verify synth**
 
@@ -563,11 +521,171 @@ git add apps/infra/lib/stacks/observability-stack.ts
 git commit -m "feat(observability): W64 provision-gate-block-spike alarm"
 ```
 
+## Task 6: Paperclip-down signal via `paperclip.upstream.error{kind}` + W63 alarm
+
+> REPLACES the dropped ALB-based W63 from Part A. VERIFIED: PaperclipStack has no ALB target group, so there is no `HealthyHostCount` to alarm on — the Paperclip-down signal is a backend custom metric instead. VERIFIED there is NO single shared httpx client, so the emit is added in TWO call paths. The W63 alarm ships in THIS same Part B PR alongside the emission, so there is no phantom-alarm window.
+
+**Files:**
+- Modify: `apps/backend/routers/paperclip_proxy.py` (PRIMARY emit)
+- Modify: `apps/backend/core/services/paperclip_admin_client.py` (SECONDARY emit)
+- Modify: `apps/infra/lib/stacks/observability-stack.ts` (W63 alarm)
+- Test: `apps/backend/tests/unit/routers/test_paperclip_proxy_metric.py` (NEW file)
+
+**Interfaces:**
+- Produces: metric `paperclip.upstream.error{kind}` where `kind` is the ONLY dimension and is low-cardinality/bounded (`"unreachable"`, `"5xx"`) — safe. Plus alarm `isol8-${env}-W63-paperclip-down` (warn-tier) on the `{kind:"unreachable"}` stream.
+
+- [ ] **Step 1: Write the failing test for the proxy emit**
+
+Mock `put_metric` and force an `httpx.HTTPError` through the proxy's request path; assert a single `paperclip.upstream.error` emit with `dimensions={"kind":"unreachable"}`.
+
+```python
+# apps/backend/tests/unit/routers/test_paperclip_proxy_metric.py
+import httpx
+import pytest
+from unittest.mock import patch
+# import the proxy handler / the function that contains the
+# `except httpx.HTTPError` block (~line 1259) and drive it so the upstream
+# request raises httpx.ConnectError (a subclass of httpx.HTTPError).
+
+
+@pytest.mark.asyncio
+async def test_proxy_upstream_unreachable_emits_metric():
+    with patch("routers.paperclip_proxy.put_metric") as mock_put:
+        # ... arrange the proxy call so the upstream httpx request raises
+        # httpx.ConnectError("down"); execute through the handler ...
+        ...
+    kinds = [
+        c.kwargs.get("dimensions", {}).get("kind")
+        for c in mock_put.call_args_list
+        if c.args and c.args[0] == "paperclip.upstream.error"
+    ]
+    assert "unreachable" in kinds
+```
+> Read the proxy function around line 1259 to wire the test to the real entry point + the existing `_record_outcome(502)` call site before running. The fixed contract: a forced `httpx.HTTPError` → exactly one `paperclip.upstream.error{kind:"unreachable"}` emit.
+
+- [ ] **Step 2: Run it — fails (no emission yet)**
+
+Run: `cd apps/backend && uv run pytest tests/unit/routers/test_paperclip_proxy_metric.py -o addopts="" -q`
+Expected: FAIL.
+
+- [ ] **Step 3: Add the PRIMARY emit in `paperclip_proxy.py`**
+
+At the `except httpx.HTTPError` handler (~line 1259), alongside the existing `_record_outcome(502)`, emit:
+```python
+            put_metric("paperclip.upstream.error", dimensions={"kind": "unreachable"})
+```
+Add `from core.observability.metrics import put_metric` if not already imported. Best-effort — wrap in `try/except` if the surrounding handler is on the request path and a metrics failure must not mask the original error (mirror the gate's best-effort pattern).
+
+- [ ] **Step 4: Add the SECONDARY emit in `paperclip_admin_client.py`**
+
+The four request helpers `_post`/`_get`/`_delete`/`_patch` (~lines 223-303) each `await self._http.<verb>(...)` then raise `PaperclipApiError` on `status_code >= 500`. Add emissions:
+- Wrap the `await self._http.<verb>` so that on `httpx.RequestError` it emits `put_metric("paperclip.upstream.error", dimensions={"kind": "unreachable"})` and **re-raises** (do not swallow the error).
+- In the existing `status_code >= 500` branch (before `raise PaperclipApiError(...)`), emit `put_metric("paperclip.upstream.error", dimensions={"kind": "5xx"})`.
+
+Add `from core.observability.metrics import put_metric` if not already imported. Keep these best-effort (a metrics failure must not mask the upstream error). Consider a tiny private helper to avoid duplicating the wrap across all four verbs.
+
+- [ ] **Step 5: Add the W63 alarm in `observability-stack.ts`**
+
+In the warn-tier custom-metric group (next to W64), add a W63 alarm on `paperclip.upstream.error{kind:"unreachable"}` Sum over a short window, `NOT_BREACHING`:
+```typescript
+    this.createAlarm({
+      id: "W63",
+      name: "paperclip-down",
+      metricName: "paperclip.upstream.error",
+      dimensionsMap: { kind: "unreachable" },
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "warn",
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      description:
+        "Paperclip BFF is unreachable from the backend (httpx connect/transport errors) — Teams/agent flows are degraded. Replaces the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target group).",
+    });
+```
+> Confirm the `createAlarm` helper accepts a `dimensionsMap`/`dimensions` field + a `treatMissingData` override; if it does not, hand-build the `cloudwatch.Alarm` mirroring W60/W62 with `dimensionsMap: { kind: "unreachable" }` and `this.warnTopic`. A short window + `> 0` over Sum means any unreachable burst trips it; `NOT_BREACHING` keeps it quiet when Paperclip is healthy (no error emissions).
+
+- [ ] **Step 6: Run backend + synth — passes**
+
+Run: `cd apps/backend && uv run pytest tests/unit/routers/test_paperclip_proxy_metric.py -o addopts="" -q` → PASS.
+Run (from apps/infra): `npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability 2>/dev/null | grep -c "W63-paperclip-down"` → tsc 0; ≥1. Remove any node_modules symlink.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add apps/backend/routers/paperclip_proxy.py apps/backend/core/services/paperclip_admin_client.py apps/backend/tests/unit/routers/test_paperclip_proxy_metric.py apps/infra/lib/stacks/observability-stack.ts
+git commit -m "feat(observability): paperclip.upstream.error{kind} + W63 paperclip-down alarm"
+```
+
+## Task 7: `chat.e2e.latency` late-terminal ceiling guard (protect the W9 p99 SLO)
+
+> No new alarm — this hardens the existing Phase 2 `chat.e2e.latency` emit so a late/stale terminal cannot inflate the p99 and false-fire W9 (p99 > 20s SLO).
+
+**Files:**
+- Modify: `apps/backend/core/gateway/connection_pool.py` (~line 1373-1376)
+- Test: `apps/backend/tests/unit/gateway/test_e2e_latency_ceiling.py` (NEW file)
+
+**Interfaces:**
+- VERIFIED current emit (~line 1373-1376): `if primary_started_at is not None:` → `elapsed_ms = max(0.0, (time.monotonic() - primary_started_at) * 1000.0); put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds")`. It clamps the FLOOR (`max(0.0, …)`) but has NO ceiling. A hung run whose terminal arrives minutes late (or a stale/re-delivered terminal after a reconnect) emits a multi-minute `elapsed_ms` that inflates the p99 and can false-fire W9. ("End never comes" is fine — `primary_started_at` stays set but nothing emits; only a LATE end spikes.)
+- Produces: same `chat.e2e.latency` emit, now bounded `0 <= elapsed_ms <= _E2E_LATENCY_CEILING_MS`; optionally a `chat.run.abandoned` counter when over the ceiling.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# apps/backend/tests/unit/gateway/test_e2e_latency_ceiling.py
+# Drive the terminal-event branch (state "final") twice: once with a normal
+# elapsed (started_at = now - 2s) and once with an over-ceiling elapsed
+# (started_at = now - 20min). Assert chat.e2e.latency is emitted in the first
+# case and NOT in the second (and that chat.run.abandoned bumps in the second,
+# IF that counter is added).
+```
+> Wire the test to the smallest unit that contains the emit (the terminal-handling method on the pool, or extract the clamp into a tiny pure helper `_clamped_e2e_latency_ms(started_at, now) -> float | None` and unit-test that). The fixed contract: normal elapsed emits `chat.e2e.latency`; over-ceiling elapsed does NOT emit `chat.e2e.latency`.
+
+- [ ] **Step 2: Run it — fails**
+
+Run: `cd apps/backend && uv run pytest tests/unit/gateway/test_e2e_latency_ceiling.py -o addopts="" -q`
+Expected: FAIL (over-ceiling still emits).
+
+- [ ] **Step 3: Add the ceiling guard**
+
+Add a module constant and gate the emit:
+```python
+# A run longer than this is a hung/stale outlier, not a real latency
+# datapoint — emitting it would inflate the chat.e2e.latency p99 and can
+# false-fire W9 (p99 > 20s SLO). 10 min is far past any legitimate chat.
+_E2E_LATENCY_CEILING_MS = 10 * 60 * 1000  # 10 minutes
+```
+Then in the emit block (~line 1373):
+```python
+                if primary_started_at is not None:
+                    elapsed_ms = max(0.0, (time.monotonic() - primary_started_at) * 1000.0)
+                    if elapsed_ms <= _E2E_LATENCY_CEILING_MS:
+                        put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds")
+                    else:
+                        # Late/stale terminal — exclude from the SLO p99; count it
+                        # separately so the abandonment is still visible.
+                        put_metric("chat.run.abandoned")
+```
+Best-effort, on the same passive event path, never raises (keep within the existing surrounding error handling).
+
+- [ ] **Step 4: Run — passes**
+
+Run: `cd apps/backend && uv run pytest tests/unit/gateway/test_e2e_latency_ceiling.py -o addopts="" -q`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/backend/core/gateway/connection_pool.py apps/backend/tests/unit/gateway/test_e2e_latency_ceiling.py
+git commit -m "feat(observability): cap chat.e2e.latency emit at a ceiling so a late terminal can't false-fire W9"
+```
+
 ---
 
 ## Final Verification
 
-- [ ] **Part A infra:** `cd apps/infra && npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability >/dev/null` succeeds; W57–W63 + the MultiTaskFn Lambda all synthesize; `deploy.yml` regenerated + committed (Task 4); prod synth still has the observability stack.
-- [ ] **Part B backend:** `cd apps/backend && uv run pytest tests/unit/services/test_provision_gate_metric.py tests/unit/services/test_provision_gate_credits.py -o addopts="" -q` PASS; `uv run ruff check core/services/provision_gate.py tests/unit/services/test_provision_gate_metric.py` clean.
-- [ ] **Both:** every new alarm is `NOT_BREACHING`; no high-cardinality dims; `code` dim is the only metric dim and it's bounded.
-- [ ] **Findings doc:** append a 3B section to `docs/superpowers/research/2026-06-17-observability-audit.md` recording which gaps are now covered + the provisional thresholds to baseline.
+- [ ] **Part A infra:** `cd apps/infra && npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability >/dev/null` succeeds; W58 (crash-loop), W59 (EFS multi-task) + the MultiTaskFn Lambda, W60/W61/W62 (Aurora + Paperclip-CPU) + the AuroraFailoverRule all synthesize (NO W57; NO ALB-based W63 — W63 ships in Part B); `deploy.yml` regenerated + committed (Task 3); prod synth still has the observability stack.
+- [ ] **Part B backend:** `cd apps/backend && uv run pytest tests/unit/services/test_provision_gate_metric.py tests/unit/services/test_provision_gate.py tests/unit/services/test_provision_gate_credits.py tests/unit/routers/test_paperclip_proxy_metric.py tests/unit/gateway/test_e2e_latency_ceiling.py -o addopts="" -q` PASS; `uv run ruff check core/services/provision_gate.py core/gateway/connection_pool.py routers/paperclip_proxy.py core/services/paperclip_admin_client.py tests/unit/services/test_provision_gate_metric.py tests/unit/routers/test_paperclip_proxy_metric.py tests/unit/gateway/test_e2e_latency_ceiling.py` clean.
+- [ ] **Part B infra:** W64 (provision-gate spike) + W63 (paperclip-down) synthesize; `deploy.yml` unchanged (alarm-only, no stack-dependency change).
+- [ ] **Both:** every new alarm is `NOT_BREACHING`; no high-cardinality dims; the only metric dims are the bounded `code` (provision gate) and `kind` (paperclip upstream error).
+- [ ] **Findings doc:** append a 3B section to `docs/superpowers/research/2026-06-17-observability-audit.md` recording which gaps are now covered (and the accepted gaps: no standalone per-user-CPU alarm; instance-level Aurora failures not caught by the cluster-id event filter) + the provisional thresholds to baseline.

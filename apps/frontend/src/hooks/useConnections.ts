@@ -29,6 +29,19 @@ export interface Connection {
    * server-side (a structured `requires_bedrock` 403).
    */
   requires_bedrock?: boolean;
+  /**
+   * BYO ("bring your own") OAuth app affordance. When a provider is
+   * `requires_bedrock`-locked for this owner, they can instead register their
+   * OWN OAuth app to unlock the Connect flow without switching to Bedrock:
+   *   - `byo_capable`     → the provider accepts an owner-supplied OAuth app.
+   *   - `byo_configured`  → THIS owner already stored + acknowledged one.
+   *   - `byo_setup_url`   → where to register one (provider console deep link).
+   * The grant paths enforce the same gate server-side (a stored, acknowledged
+   * BYO app lifts the internal + requires_bedrock checks).
+   */
+  byo_capable?: boolean;
+  byo_configured?: boolean;
+  byo_setup_url?: string | null;
 }
 
 interface ConnectionsResponse {

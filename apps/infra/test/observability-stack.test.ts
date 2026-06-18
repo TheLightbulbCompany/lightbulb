@@ -183,7 +183,9 @@ describe("ObservabilityStack", () => {
   });
 
   // ---------------------------------------------------------------------
-  // Free-tier scale-to-zero reaper alarms
+  // Backend-liveness heartbeat (formerly the reaper heartbeat; the metric
+  // gateway.running.count survived the flat-fee cutover, the alarm was
+  // renamed backend-liveness in Phase 1).
   // ---------------------------------------------------------------------
 
   test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
@@ -197,31 +199,13 @@ describe("ObservabilityStack", () => {
     });
   });
 
-  test("creates the reaper-crash alarm on Sum(gateway.idle_checker.crash)", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "gateway.idle_checker.crash",
-      Namespace: "Isol8",
-      Statistic: "Sum",
-      Threshold: 1,
-    });
-  });
-
-  // ---------------------------------------------------------------------
-  // Scale-to-zero dashboard widgets (smoke tests — confirm rendered into
-  // the CloudFormation Dashboard body, not a typo)
-  // ---------------------------------------------------------------------
-
-  test("dashboard widgets reference the new scale-to-zero metrics", () => {
-    const dashboards = template.findResources("AWS::CloudWatch::Dashboard");
-    const bodies = Object.values(dashboards).map((r) =>
-      JSON.stringify(r.Properties.DashboardBody),
-    );
-    const allBodies = bodies.join("");
-
-    // Each new metric should appear at least once in the dashboard body.
-    expect(allBodies).toContain("gateway.running.count.by_tier");
-    expect(allBodies).toContain("gateway.cold_start.count");
-    expect(allBodies).toContain("gateway.cold_start.latency");
-    expect(allBodies).toContain("gateway.record_activity.count");
-  });
+  // NOTE: the former "reaper-crash alarm" test (Sum gateway.idle_checker.crash)
+  // and the "scale-to-zero dashboard widgets" test (gateway.running.count.by_tier
+  // / record_activity.count / idle.scale_to_zero) were removed here: Phase 1
+  // (alarm hygiene) deleted both the reaper-crash phantom alarm and the
+  // scale-to-zero dashboard widgets (the reaper/scale-to-zero feature was
+  // removed in the 2026-04 flat-fee cutover). They asserted deleted resources
+  // and had been failing on main since Phase 1. The heartbeat test above still
+  // holds — Phase 1 kept gateway.running.count, renaming its alarm to
+  // backend-liveness.
 });

@@ -15,7 +15,7 @@ import httpx
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import oauth_state_repo
-from core.services.credentials import registry
+from core.services.credentials import oauth_app_store, registry
 
 
 def _pkce() -> tuple[str, str]:
@@ -24,8 +24,8 @@ def _pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-async def _oauth_client(provider_key: str) -> tuple[str, str]:
-    """(client_id, client_secret) for our BYO OAuth app, from Secrets Manager.
+async def _isol8_oauth_client(provider_key: str) -> tuple[str, str]:
+    """(client_id, client_secret) for Isol8's shared OAuth app, from Secrets Manager.
 
     Mirrors ``key_service``'s Secrets Manager access: a boto3 ``secretsmanager``
     client built with ``settings.AWS_REGION``, and the ``isol8/{env}/...``
@@ -41,6 +41,16 @@ async def _oauth_client(provider_key: str) -> tuple[str, str]:
     return data["client_id"], data["client_secret"]
 
 
+async def _oauth_client(owner_id: str, provider_key: str) -> tuple[str, str]:
+    """The OAuth app to use for this owner: their BYO app if configured, else
+    Isol8's shared app. The single resolution point — start/exchange both call
+    it, so refresh-by-stored-creds is automatic on the actor (gog) side."""
+    byo = await oauth_app_store.get(owner_id, provider_key)
+    if byo:
+        return byo["client_id"], byo["client_secret"]
+    return await _isol8_oauth_client(provider_key)
+
+
 def _expiry_iso(expires_in: int | None) -> str:
     if not expires_in:
         return ""
@@ -54,7 +64,7 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str) -> str:
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(32)
     await oauth_state_repo.put(state, owner_id=owner_id, provider=provider_key, verifier=verifier)
-    client_id, _ = await _oauth_client(provider_key)
+    client_id, _ = await _oauth_client(owner_id, provider_key)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -73,7 +83,7 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     if not rec:
         raise ValueError("invalid or expired OAuth state")
     p = registry.get_provider(rec["provider"])
-    client_id, client_secret = await _oauth_client(rec["provider"])
+    client_id, client_secret = await _oauth_client(rec["owner_id"], rec["provider"])
     async with httpx.AsyncClient(timeout=15) as http:
         resp = await http.post(
             p.oauth.token_url,

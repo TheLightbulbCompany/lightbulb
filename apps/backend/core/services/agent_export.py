@@ -33,6 +33,11 @@ from core.services.catalog_slice import (
     extract_agent_slice,
     filter_cron_jobs_for_agent,
 )
+from core.services.marketplace.requirements import (
+    build_manifest_requirements,
+    load_effective_config,
+    requirements_scan,
+)
 
 
 # Persona files (per upstream openclaw/src/agents/workspace.ts) — these get
@@ -396,6 +401,7 @@ def export_agent_from_efs(
     selected_mcps: list[str] | None = None,
     selected_skills: list[str] | None = None,
     enable_acp: bool = False,
+    requires_desktop: bool = False,
 ) -> CatalogPackage:
     """Read the seller's agent dir from EFS, tar it, return a CatalogPackage.
 
@@ -425,6 +431,13 @@ def export_agent_from_efs(
         enable_acp: Seller's declaration that the agent delegates to ACP
             coding harnesses. Recorded as ``manifest["requires_acp"]``; the
             deploy side uses it to enable the buyer container's ACP runtime.
+        requires_desktop: Seller's declaration that the agent needs the Isol8
+            desktop app (its local node-host — browser automation, local exec
+            via the operator relay). We can't scan for this — it's a runtime
+            capability, not a tool name — so the publisher sets it. Recorded as
+            ``manifest["requires_desktop"]`` for buyer-facing disclosure only
+            (a web-only buyer must know the agent won't fully run without the
+            desktop app). Nothing on the deploy side can "install" it.
 
     Raises:
         InvalidAgentIdError: agent_id failed format / path-traversal check.
@@ -488,7 +501,28 @@ def export_agent_from_efs(
         # the deploy gate is a simple ``manifest.get("requires_acp")`` truthy
         # check; pre-flag listings simply lack the key (→ falsy).
         "requires_acp": bool(enable_acp),
+        # Publisher-declared "needs the desktop app" flag — disclosure only (we
+        # can't scan or provision it). pre-flag listings lack the key (→ falsy).
+        "requires_desktop": bool(requires_desktop),
     }
+
+    # Scan the agent for what it actually needs (tools, skills, external APIs,
+    # credentials) so the manifest discloses requirements accurately. The
+    # effective config is the per-workspace openclaw.json when present (what the
+    # agent runs from), else the seller's global config.
+    effective_cfg = load_effective_config(agent_dir, config)
+    reqs, scan_incomplete = requirements_scan(
+        effective_cfg,
+        agent_dir,
+        bundled_mcps=set(selected_mcps or []),
+        bundled_skills=set(selected_skills or []),
+        # Scan EXACTLY the files that ship (the tarball contents) so the ledger
+        # never discloses a dep from a file the export filter dropped.
+        scan_files=contents,
+        workspace_skills=workspace_skill_names,
+        declared_skills=_agent_declared_skills(config, agent_id),
+    )
+    manifest.update(build_manifest_requirements(reqs, scan_incomplete))
 
     return CatalogPackage(
         format="openclaw",
@@ -502,6 +536,16 @@ def export_agent_from_efs(
 # ---------------------------------------------------------------------------
 # Publish-wizard dry-run preview
 # ---------------------------------------------------------------------------
+
+
+def _agent_declared_skills(config: dict, agent_id: str) -> set[str]:
+    """The skills the agent declares on its ``agents.list[]`` entry — what it
+    uses even when no pipeline ``--tool``s them. The slice carries this list, so
+    a declared-but-unbundled skill must still surface in the requirements ledger.
+    """
+    entries = (config.get("agents") or {}).get("list") or []
+    entry = next((a for a in entries if isinstance(a, dict) and a.get("id") == agent_id), {})
+    return {s for s in (entry.get("skills") or []) if isinstance(s, str)}
 
 
 def _enumerate_workspace_skill_names(agent_dir: Path) -> set[str]:
@@ -592,8 +636,9 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     persona_files = _enumerate_persona_files(agent_dir)
 
     # Build the tarball + scan for safety_flags. We don't return the
-    # tarball itself — just the flags.
-    tarball_bytes, _ = _build_tarball(agent_dir)
+    # tarball itself — just the flags. ``contents`` (the shipped-file list)
+    # scopes the requirements scan below to exactly what ships.
+    tarball_bytes, contents = _build_tarball(agent_dir)
     safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
 
     # Surface (but do NOT block on) any credential that would survive the
@@ -616,6 +661,21 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     except Exception as exc:  # noqa: BLE001 — preview must not raise
         logger.warning("agent_export: preview slice-leak scan failed for agent=%s: %s", agent_id, exc)
 
+    # Live requirements scan so the wizard's Requirements step renders what the
+    # agent needs. Classify optimistically — assume everything available is
+    # bundled — so the wizard shows the full ledger up front (the frozen manifest
+    # at submit reflects the seller's actual selection). Scoped to shipped files.
+    effective_cfg = load_effective_config(agent_dir, config)
+    reqs, scan_incomplete = requirements_scan(
+        effective_cfg,
+        agent_dir,
+        bundled_mcps=set(available_mcps),
+        bundled_skills=set(addable_skill_names),
+        scan_files=contents,
+        workspace_skills=workspace_skill_names,
+        declared_skills={s for s in (agent_entry.get("skills") or []) if isinstance(s, str)},
+    )
+
     return {
         "agent_id": agent_id,
         "available_mcps": available_mcps,
@@ -623,6 +683,8 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
         "auto_ship_skills": auto_ship_skills,
         "persona_files": persona_files,
         "safety_flags": safety_flags,
+        "requirements": [r.to_manifest() for r in reqs],
+        "scan_incomplete": scan_incomplete,
     }
 
 

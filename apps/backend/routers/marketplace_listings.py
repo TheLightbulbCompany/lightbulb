@@ -25,7 +25,7 @@ from core.services import (
     seller_display,
     seller_profile,
 )
-from core.services.catalog_service import MissingCredentialsError, get_catalog_service
+from core.services.catalog_service import MissingCredentialsError, get_catalog_service, warn_rows
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
@@ -540,7 +540,11 @@ async def deploy_listing(
             detail="deploy failed",
         ) from exc
 
-    return {"agent_uuid": result["agent_id"], **result}
+    # Surface the honest "these steps will skip" warnings at hire time: byo /
+    # unavailable requirements the platform can't inject or verify. These never
+    # block the deploy (the hard gate already ran inside deploy_from_artifact);
+    # they let the buyer-facing UI tell the truth about what won't run.
+    return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
 
 
 @router.post("/listings")
@@ -619,11 +623,18 @@ async def submit(
     version: int = Query(default=1, ge=1),
 ):
     """Transition draft -> review. ``version`` lets edit-mode resubmit a
-    rejected v_new row instead of always targeting v=1."""
+    rejected v_new row instead of always targeting v=1.
+
+    Requirements are disclosed (manifest + hire-time warnings), never gated:
+    the publisher built the agent, an admin reviews before it goes live, and
+    the buyer sees the ledger before hiring — so a publish is never blocked on
+    the scanner's classification."""
     require_org_admin(auth)
     try:
         result = await marketplace_service.submit_for_review(
-            listing_id=listing_id, seller_id=auth.user_id, version=version
+            listing_id=listing_id,
+            seller_id=auth.user_id,
+            version=version,
         )
     except marketplace_service.ArtifactNotUploadedError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -752,6 +763,8 @@ async def my_agent_artifact_preview(
         auto_ship_skills=preview["auto_ship_skills"],
         persona_files=preview["persona_files"],
         safety_flags=[schemas.SafetyFlag(**f) for f in preview["safety_flags"]],
+        requirements=[schemas.RequirementRow(**r) for r in preview.get("requirements", [])],
+        scan_incomplete=preview.get("scan_incomplete", False),
         needs_config_patch=needs_config_patch,
     )
 
@@ -813,6 +826,7 @@ async def upload_artifact_from_agent(
             selected_mcps=selected_mcps,
             selected_skills=selected_skills,
             enable_acp=payload.enable_acp,
+            requires_desktop=payload.requires_desktop,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))

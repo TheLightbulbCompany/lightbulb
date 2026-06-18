@@ -129,6 +129,21 @@ async def assert_credentials_satisfied(
         raise MissingCredentialsError(missing)
 
 
+def warn_rows(manifest: dict) -> list[dict]:
+    """Requirements the buyer should SEE at hire but that never block a deploy.
+
+    ``byo`` (bring-your-own-key) and ``unavailable`` (gated / phantom) rows
+    can't be verified or injected by the platform, so the hire gate surfaces
+    them as honest warnings ("these steps will skip") rather than 409ing on
+    something the buyer has no way to satisfy here.
+    """
+    return [
+        r
+        for r in (manifest or {}).get("requirements", []) or []
+        if isinstance(r, dict) and r.get("disposition") in ("byo", "unavailable")
+    ]
+
+
 def _substitute_agent_dir_sentinel(mcp_patch: dict | None, new_agent_id: str) -> dict | None:
     """In-place substitute ``__AGENT_DIR__`` → ``new_agent_id`` in any
     ``args`` entry of every mcp.servers.X dict. Returns the patch

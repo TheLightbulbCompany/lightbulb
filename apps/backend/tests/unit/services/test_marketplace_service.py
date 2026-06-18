@@ -88,6 +88,40 @@ async def test_submit_listing_transitions_draft_to_review(mock_listings):
     assert ":draft" in values or "draft" in str(values)
 
 
+def _row_with_manifest(reqs):
+    return {
+        "Item": {
+            "artifact_uploaded": True,
+            "manifest_json": {"requirements": reqs},
+        }
+    }
+
+
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_publishes_even_with_unavailable_requirement(mock_listings):
+    """Requirements are DISCLOSED, not gated: an agent with a gated/phantom
+    (`unavailable`) requirement still transitions draft->review. The publisher
+    built the agent, an admin reviews before it goes live, and the buyer sees
+    the requirements ledger before hiring — a publish is never blocked on the
+    scanner's classification."""
+    mock_listings.return_value.get_item = MagicMock(
+        return_value=_row_with_manifest([{"key": "gog", "disposition": "unavailable"}])
+    )
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
+    result = await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
+    assert result["status"] == "review"
+    mock_listings.return_value.update_item.assert_called_once()
+
+
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_blocks_only_on_missing_artifact(mock_listings):
+    """The one remaining precondition: a draft with no uploaded artifact can't
+    submit (that's a 'nothing to publish' guard, not a requirements gate)."""
+    mock_listings.return_value.get_item = MagicMock(return_value={"Item": {"artifact_uploaded": False}})
+    with pytest.raises(marketplace_service.ArtifactNotUploadedError):
+        await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
+
+
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
 async def test_submit_for_review_populates_published_at_for_moderation_gsi(mock_listings):

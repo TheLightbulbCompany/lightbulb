@@ -24,6 +24,30 @@ from botocore.exceptions import ClientError
 from core.config import settings
 
 
+def summarize_requirements(manifest: dict) -> dict:
+    """Denormalize ``manifest.requirements`` into counts + the connectable
+    provider set + a blocking flag, for fast listing render and the publish
+    gate. ``has_blocking`` is true when any ``unavailable`` ("won't run as
+    published") row exists.
+    """
+    reqs = (manifest or {}).get("requirements") or []
+    counts = {"included": 0, "connect": 0, "byo": 0, "unavailable": 0}
+    providers: list[str] = []
+    for r in reqs:
+        if not isinstance(r, dict):
+            continue
+        disp = r.get("disposition")
+        if disp in counts:
+            counts[disp] += 1
+        if disp == "connect" and r.get("kind") != "channel":
+            providers.append(r.get("key"))
+    return {
+        "counts": counts,
+        "requires_providers": sorted({p for p in providers if p}),
+        "has_blocking": counts["unavailable"] > 0,
+    }
+
+
 def _listings_table():
     return boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
 
@@ -571,6 +595,12 @@ async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1
     ``version`` defaults to 1 to match the create flow. Edit-mode callers
     pass the rejected row's version so re-submitting a v_new=2 row (a
     future republish path) targets the same row instead of v=1.
+
+    Requirements are DISCLOSED, never gated: the publisher built the agent, an
+    admin reviews every listing before it goes live, and the buyer sees the
+    full requirements ledger (incl. gated/byo rows) before hiring. We do not
+    block a publish on what the scanner classifies — a self-installed tool we
+    can't recognize would otherwise be wrongly blocked.
 
     Precondition: artifact_uploaded must be True. Listings created via
     create_draft start with artifact_uploaded=False; the seller must

@@ -107,6 +107,51 @@ def test_export_happy_path(fake_efs):
     assert any("scripts/run.sh" in n for n in names)
 
 
+def test_export_manifest_carries_requirements(fake_efs):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "pipelines").mkdir()
+    (agent_dir / "pipelines" / "daily-feed.lobster").write_text(
+        "\n".join(
+            [
+                "--tool slack",
+                "--tool llm-task",
+                "curl https://api.stripe.com/v1/charges",
+                "curl https://production.plaid.com/x -d $PLAID_SECRET",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    keys = {r["key"]: r["disposition"] for r in pkg.manifest["requirements"]}
+    assert keys["llm-task"] == "included"
+    assert keys["slack"] == "connect"
+    assert keys["stripe"] == "connect"  # host-only, no env -> connectable
+    assert keys["plaid"] == "byo"
+    assert pkg.manifest["scan_incomplete"] is False
+
+    creds = pkg.manifest["requires"]["credentials"]
+    provs = {c["provider"] for c in creds}
+    assert provs == {"stripe"}  # registry connect only; channel + byo + bundled excluded
+    # Scanned connect deps are advisory — the scanner over-reports, so a
+    # detected connect must never hard-block a hire (only slice-bundled MCP
+    # providers do). assert_credentials_satisfied skips optional entries.
+    assert all(c["optional"] is True for c in creds)
+
+
+def test_preview_includes_requirements(fake_efs):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "pipelines").mkdir()
+    (agent_dir / "pipelines" / "p.lobster").write_text(
+        "--tool llm-task\ncurl https://production.plaid.com/x $PLAID_SECRET\n",
+        encoding="utf-8",
+    )
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    assert "requirements" in preview
+    keys = {r["key"]: r["disposition"] for r in preview["requirements"]}
+    assert keys["plaid"] == "byo"
+    assert keys["llm-task"] == "included"
+
+
 def test_export_skips_junk_dirs(fake_efs):
     seller_id, agent_id, _ = fake_efs
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
@@ -125,6 +170,20 @@ def test_export_requires_acp_when_declared(fake_efs):
     seller_id, agent_id, _ = fake_efs
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, enable_acp=True)
     assert pkg.manifest["requires_acp"] is True
+
+
+def test_export_requires_desktop_defaults_false(fake_efs):
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    assert pkg.manifest["requires_desktop"] is False
+
+
+def test_export_requires_desktop_when_publisher_declares(fake_efs):
+    """'Needs the desktop app' is a publisher-set flag (not scanned) — recorded
+    on the manifest for buyer-facing disclosure."""
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, requires_desktop=True)
+    assert pkg.manifest["requires_desktop"] is True
 
 
 def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):

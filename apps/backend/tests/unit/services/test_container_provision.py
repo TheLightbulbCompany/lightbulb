@@ -84,10 +84,11 @@ async def test_background_provision_swallows_exceptions():
 @pytest.mark.asyncio
 async def test_background_provision_emits_error_metric_on_failure():
     """On failure, the swallowed exception must still be alarmable: emit
-    container.provision{status=error, phase=dispatch}. Matches the metric name
-    ecs_manager uses (dimensions={"status": ...}) plus a `phase` dim so this
-    fire-and-forget path aggregates with the sync emissions yet stays
-    separately alarmable."""
+    container.provision{status=error} — the SAME metric+dimension set the
+    synchronous ecs_manager failure path uses, so it lands on the exact
+    CloudWatch stream the W1 provision-error-rate alarm queries. (No `phase`
+    dim: EMF publishes one stream per full dimension-key set, so an extra dim
+    would create a stream no alarm watches.)"""
     fake_ecs = MagicMock()
     fake_ecs.provision_user_container = AsyncMock(side_effect=RuntimeError("boom"))
     with (
@@ -106,7 +107,7 @@ async def test_background_provision_emits_error_metric_on_failure():
 
     error_calls = [c for c in mock_put.call_args_list if c.args and c.args[0] == "container.provision"]
     assert len(error_calls) == 1, f"expected one container.provision emission, got {error_calls}"
-    assert error_calls[0].kwargs.get("dimensions") == {"status": "error", "phase": "dispatch"}
+    assert error_calls[0].kwargs.get("dimensions") == {"status": "error"}
 
 
 @pytest.mark.asyncio

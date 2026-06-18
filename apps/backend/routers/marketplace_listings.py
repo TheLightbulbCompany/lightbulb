@@ -621,26 +621,20 @@ async def submit(
     listing_id: str,
     auth: Annotated[AuthContext, Depends(get_current_user)],
     version: int = Query(default=1, ge=1),
-    acknowledge_unavailable: bool = Query(default=False),
 ):
     """Transition draft -> review. ``version`` lets edit-mode resubmit a
     rejected v_new row instead of always targeting v=1.
 
-    ``acknowledge_unavailable`` lets the seller list an agent that has
-    requirements which won't run for buyers (gated / phantom), after the
-    wizard has shown them which ones."""
+    Requirements are disclosed (manifest + hire-time warnings), never gated:
+    the publisher built the agent, an admin reviews before it goes live, and
+    the buyer sees the ledger before hiring — so a publish is never blocked on
+    the scanner's classification."""
     require_org_admin(auth)
     try:
         result = await marketplace_service.submit_for_review(
             listing_id=listing_id,
             seller_id=auth.user_id,
             version=version,
-            acknowledge_unavailable=acknowledge_unavailable,
-        )
-    except marketplace_service.RequirementsBlockingError as e:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "requirements_blocking", "unavailable": e.unavailable},
         )
     except marketplace_service.ArtifactNotUploadedError as e:
         raise HTTPException(status_code=409, detail=str(e))

@@ -60,18 +60,6 @@ class InvalidStateError(Exception):
     """Listing is not in the state required for the operation."""
 
 
-class RequirementsBlockingError(Exception):
-    """Submit blocked because the agent has requirements that won't run as
-    published (gated like gog, or phantom skills with no implementation). The
-    seller must fix the agent or acknowledge to list it anyway. ``unavailable``
-    lists the offending requirement keys so the wizard can name them.
-    """
-
-    def __init__(self, unavailable: list[str]):
-        self.unavailable = unavailable
-        super().__init__(f"won't run as published: {', '.join(unavailable)}")
-
-
 class ArtifactNotUploadedError(Exception):
     """Seller called submit_for_review on a draft whose artifact bytes
     were never replaced. create_draft writes a metadata-only artifact
@@ -601,14 +589,18 @@ async def discard_draft(*, listing_id: str, seller_id: str, version: int) -> Non
         raise
 
 
-async def submit_for_review(
-    *, listing_id: str, seller_id: str, version: int = 1, acknowledge_unavailable: bool = False
-) -> dict:
+async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1) -> dict:
     """Transition draft -> review. Idempotent: re-submitting from review is rejected.
 
     ``version`` defaults to 1 to match the create flow. Edit-mode callers
     pass the rejected row's version so re-submitting a v_new=2 row (a
     future republish path) targets the same row instead of v=1.
+
+    Requirements are DISCLOSED, never gated: the publisher built the agent, an
+    admin reviews every listing before it goes live, and the buyer sees the
+    full requirements ledger (incl. gated/byo rows) before hiring. We do not
+    block a publish on what the scanner classifies — a self-installed tool we
+    can't recognize would otherwise be wrongly blocked.
 
     Precondition: artifact_uploaded must be True. Listings created via
     create_draft start with artifact_uploaded=False; the seller must
@@ -626,31 +618,6 @@ async def submit_for_review(
     pre_item = pre.get("Item") or {}
     if pre_item.get("artifact_uploaded") is False:
         raise ArtifactNotUploadedError("upload artifact before submitting for review")
-
-    # Publish gate: block (unless acknowledged) when the agent has requirements
-    # that won't run for buyers as published — gated (gog) or phantom skills.
-    if not acknowledge_unavailable:
-        # replace_artifact persists manifest_json as a native dict, so a
-        # resource-level get_item returns it as a DDB Map (dict) — by submit
-        # time (artifact_uploaded is required) the row always holds the Map.
-        # The legacy create_draft path stores a JSON string; accept both.
-        raw = pre_item.get("manifest_json")
-        if isinstance(raw, dict):
-            manifest = raw
-        elif isinstance(raw, str):
-            try:
-                manifest = json.loads(raw)
-            except ValueError:
-                manifest = {}
-        else:
-            manifest = {}
-        if summarize_requirements(manifest)["has_blocking"]:
-            unavailable = sorted(
-                r["key"]
-                for r in (manifest.get("requirements") or [])
-                if isinstance(r, dict) and r.get("disposition") == "unavailable" and r.get("key")
-            )
-            raise RequirementsBlockingError(unavailable)
 
     try:
         # Populate published_at at submit time even though the listing isn't

@@ -401,6 +401,7 @@ def export_agent_from_efs(
     selected_mcps: list[str] | None = None,
     selected_skills: list[str] | None = None,
     enable_acp: bool = False,
+    requires_desktop: bool = False,
 ) -> CatalogPackage:
     """Read the seller's agent dir from EFS, tar it, return a CatalogPackage.
 
@@ -430,6 +431,13 @@ def export_agent_from_efs(
         enable_acp: Seller's declaration that the agent delegates to ACP
             coding harnesses. Recorded as ``manifest["requires_acp"]``; the
             deploy side uses it to enable the buyer container's ACP runtime.
+        requires_desktop: Seller's declaration that the agent needs the Isol8
+            desktop app (its local node-host — browser automation, local exec
+            via the operator relay). We can't scan for this — it's a runtime
+            capability, not a tool name — so the publisher sets it. Recorded as
+            ``manifest["requires_desktop"]`` for buyer-facing disclosure only
+            (a web-only buyer must know the agent won't fully run without the
+            desktop app). Nothing on the deploy side can "install" it.
 
     Raises:
         InvalidAgentIdError: agent_id failed format / path-traversal check.
@@ -493,6 +501,9 @@ def export_agent_from_efs(
         # the deploy gate is a simple ``manifest.get("requires_acp")`` truthy
         # check; pre-flag listings simply lack the key (→ falsy).
         "requires_acp": bool(enable_acp),
+        # Publisher-declared "needs the desktop app" flag — disclosure only (we
+        # can't scan or provision it). pre-flag listings lack the key (→ falsy).
+        "requires_desktop": bool(requires_desktop),
     }
 
     # Scan the agent for what it actually needs (tools, skills, external APIs,

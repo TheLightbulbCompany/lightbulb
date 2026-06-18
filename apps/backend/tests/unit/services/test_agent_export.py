@@ -172,6 +172,20 @@ def test_export_requires_acp_when_declared(fake_efs):
     assert pkg.manifest["requires_acp"] is True
 
 
+def test_export_requires_desktop_defaults_false(fake_efs):
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    assert pkg.manifest["requires_desktop"] is False
+
+
+def test_export_requires_desktop_when_publisher_declares(fake_efs):
+    """'Needs the desktop app' is a publisher-set flag (not scanned) — recorded
+    on the manifest for buyer-facing disclosure."""
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, requires_desktop=True)
+    assert pkg.manifest["requires_desktop"] is True
+
+
 def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
     """Regression: a guard that strips any top-level ``sessions/`` or
     ``agent/`` dir from the tarball is unnecessary now that exports come

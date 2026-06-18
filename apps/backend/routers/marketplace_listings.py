@@ -824,6 +824,7 @@ async def upload_artifact_from_agent(
             selected_mcps=selected_mcps,
             selected_skills=selected_skills,
             enable_acp=payload.enable_acp,
+            requires_desktop=payload.requires_desktop,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))

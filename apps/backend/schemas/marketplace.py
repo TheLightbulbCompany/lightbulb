@@ -181,6 +181,12 @@ class ArtifactFromAgentRequest(BaseModel):
     # schema is ``.strict()`` — so the per-agent intent lives here + in the
     # agent's own prompt, never on the openclaw.json agent entry.
     enable_acp: bool = False
+    # Seller declares the agent needs the Isol8 desktop app (its local
+    # node-host — browser automation, local exec via the operator relay). We
+    # can't scan for this — it's a runtime capability, not a tool name — so the
+    # publisher sets it. Recorded as ``manifest.requires_desktop`` for
+    # buyer-facing disclosure only (nothing on deploy can provision it).
+    requires_desktop: bool = False
 
 
 class AvailableSkill(BaseModel):

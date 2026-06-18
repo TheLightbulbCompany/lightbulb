@@ -15,11 +15,15 @@ the same code path — see the call sites in ``core.gateway.connection_pool``,
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from core.observability.metrics import put_metric
 from core.repositories import billing_repo
+
+logger = logging.getLogger(__name__)
 
 
 # Stripe statuses that grant platform use right now. Trialing is included
@@ -154,6 +158,36 @@ async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
 
 
 async def evaluate_provision_gate(
+    *,
+    owner_id: str,
+    is_admin: bool = True,  # personal owners are always admin of themselves
+) -> Gate | None:
+    """Evaluate the provision gate, emitting a metric on a blocked decision.
+
+    Thin wrapper over ``_evaluate_provision_gate_inner`` that owns the single,
+    all-branches-covered metric emission. A non-None gate (provisioning blocked)
+    emits BOTH a dimensionless ``provision.gate.blocked`` (the W64 spike alarm
+    queries the {env,service} stream and — per EMF's one-stream-per-dim-set
+    rule — can only match a no-dim stream) AND a ``provision.gate.blocked{code}``
+    for the per-reason dashboard/Insights breakdown.
+    """
+    gate = await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
+    if gate is not None:
+        # Bounded ``code`` set → safe metric dimension. Best-effort: a metrics
+        # outage must never block the gate decision (which is the request path).
+        try:
+            # Dimensionless: the W64 spike alarm queries {env,service} and (per
+            # EMF one-stream-per-dim-set) can only match a no-dim stream.
+            put_metric("provision.gate.blocked")
+            # Coded: per-reason breakdown for dashboards/Insights. ``code`` is a
+            # bounded set, so it's a safe dimension.
+            put_metric("provision.gate.blocked", dimensions={"code": gate.code})
+        except Exception:  # noqa: BLE001 — telemetry must not break provisioning
+            logger.debug("provision.gate.blocked metric emission failed", exc_info=True)
+    return gate
+
+
+async def _evaluate_provision_gate_inner(
     *,
     owner_id: str,
     is_admin: bool = True,  # personal owners are always admin of themselves

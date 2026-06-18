@@ -91,9 +91,23 @@ calls ``sign_up_user``; it relies on this network-level closure.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import httpx
+
+from core.observability.metrics import put_metric
+
+
+def _emit_upstream_error(kind: str) -> None:
+    """Best-effort ``paperclip.upstream.error{kind}`` emit for the W63 alarm.
+
+    ``kind`` is a bounded dim ("unreachable" | "5xx"). A metrics failure must
+    never mask the upstream error this fires alongside, so it swallows.
+    """
+    try:
+        put_metric("paperclip.upstream.error", dimensions={"kind": kind})
+    except Exception:  # noqa: BLE001 — telemetry must not break the request path
+        logger.debug("paperclip.upstream.error metric emission failed", exc_info=True)
 
 
 def _extract_session_cookie(resp: httpx.Response) -> Optional[str]:
@@ -220,6 +234,21 @@ class PaperclipAdminClient:
             headers["Idempotency-Key"] = idempotency_key
         return headers
 
+    async def _send(self, send: Callable[[], Awaitable[httpx.Response]]) -> httpx.Response:
+        """Run an httpx request, signalling Paperclip-down on a transport error.
+
+        On an ``httpx.RequestError`` (connect/transport failure — Paperclip is
+        unreachable) emits ``paperclip.upstream.error{kind:"unreachable"}`` for
+        the W63 alarm and re-raises (never swallows the original error). A
+        ``status_code >= 500`` response is handled by the per-verb branches via
+        ``_emit_upstream_error("5xx")``.
+        """
+        try:
+            return await send()
+        except httpx.RequestError:
+            _emit_upstream_error("unreachable")
+            raise
+
     async def _post(
         self,
         path: str,
@@ -227,11 +256,15 @@ class PaperclipAdminClient:
         session_cookie: str,
         idempotency_key: Optional[str] = None,
     ) -> dict:
-        resp = await self._http.post(
-            path,
-            json=json,
-            headers=self._headers(session_cookie, idempotency_key=idempotency_key),
+        resp = await self._send(
+            lambda: self._http.post(
+                path,
+                json=json,
+                headers=self._headers(session_cookie, idempotency_key=idempotency_key),
+            )
         )
+        if resp.status_code >= 500:
+            _emit_upstream_error("5xx")
         if resp.status_code >= 400:
             raise PaperclipApiError(
                 f"POST {path} -> {resp.status_code}",
@@ -245,10 +278,14 @@ class PaperclipAdminClient:
         path: str,
         session_cookie: str,
     ) -> dict:
-        resp = await self._http.delete(
-            path,
-            headers=self._headers(session_cookie),
+        resp = await self._send(
+            lambda: self._http.delete(
+                path,
+                headers=self._headers(session_cookie),
+            )
         )
+        if resp.status_code >= 500:
+            _emit_upstream_error("5xx")
         # 404 on delete is treated as already-gone (idempotent cleanup).
         if resp.status_code >= 400 and resp.status_code != 404:
             raise PaperclipApiError(
@@ -269,11 +306,15 @@ class PaperclipAdminClient:
         session_cookie: str,
         params: Optional[dict[str, Any]] = None,
     ) -> dict:
-        resp = await self._http.get(
-            path,
-            params=params,
-            headers=self._headers(session_cookie),
+        resp = await self._send(
+            lambda: self._http.get(
+                path,
+                params=params,
+                headers=self._headers(session_cookie),
+            )
         )
+        if resp.status_code >= 500:
+            _emit_upstream_error("5xx")
         if resp.status_code >= 400:
             raise PaperclipApiError(
                 f"GET {path} -> {resp.status_code}",
@@ -289,11 +330,15 @@ class PaperclipAdminClient:
         session_cookie: str,
         idempotency_key: Optional[str] = None,
     ) -> dict:
-        resp = await self._http.patch(
-            path,
-            json=json,
-            headers=self._headers(session_cookie, idempotency_key=idempotency_key),
+        resp = await self._send(
+            lambda: self._http.patch(
+                path,
+                json=json,
+                headers=self._headers(session_cookie, idempotency_key=idempotency_key),
+            )
         )
+        if resp.status_code >= 500:
+            _emit_upstream_error("5xx")
         if resp.status_code >= 400:
             raise PaperclipApiError(
                 f"PATCH {path} -> {resp.status_code}",

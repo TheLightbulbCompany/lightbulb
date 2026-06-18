@@ -161,26 +161,34 @@ export class LocalStage extends cdk.Stage {
     paperclip.addDependency(network);
 
     // ObservabilityStack — alarms, dashboard, canaries, account hardening
-    new ObservabilityStack(this, `isol8-${env}-observability`, {
-      stackName: `isol8-${env}-observability`,
-      envName: env,
-      backendService: service.service,
-      backendLogGroupName: `/ecs/isol8-${env}`,
-      alb: network.alb,
-      wsApiId: api.wsApiId,
-      cluster: container.cluster,
-      efsFileSystem: container.efsFileSystem,
-      databaseTables: {
-        usersTable: database.usersTable,
-        containersTable: database.containersTable,
-        billingTable: database.billingTable,
-        usageCountersTable: database.usageCountersTable,
-        pendingUpdatesTable: database.pendingUpdatesTable,
-        channelLinksTable: database.channelLinksTable,
+    const observability = new ObservabilityStack(
+      this,
+      `isol8-${env}-observability`,
+      {
+        stackName: `isol8-${env}-observability`,
+        envName: env,
+        backendService: service.service,
+        backendLogGroupName: `/ecs/isol8-${env}`,
+        alb: network.alb,
+        wsApiId: api.wsApiId,
+        cluster: container.cluster,
+        efsFileSystem: container.efsFileSystem,
+        databaseTables: {
+          usersTable: database.usersTable,
+          containersTable: database.containersTable,
+          billingTable: database.billingTable,
+          usageCountersTable: database.usageCountersTable,
+          pendingUpdatesTable: database.pendingUpdatesTable,
+          channelLinksTable: database.channelLinksTable,
+        },
+        connectionsTableName: api.connectionsTableName,
+        authorizerFunctionName: `isol8-${env}-ws-authorizer`,
+        paperclipDbCluster: database.paperclipDbCluster,
+        paperclipService: paperclip.service,
       },
-      connectionsTableName: api.connectionsTableName,
-      authorizerFunctionName: `isol8-${env}-ws-authorizer`,
-    });
+    );
+    observability.addDependency(database);
+    observability.addDependency(paperclip);
 
     cdk.Tags.of(this).add("Project", "isol8");
     cdk.Tags.of(this).add("Environment", env);

@@ -13,6 +13,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as rds from "aws-cdk-lib/aws-rds";
 import { Construct } from "constructs";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,9 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   connectionsTableName: string;
   // Lambda authorizer function name (for Lambda alarms)
   authorizerFunctionName: string;
+  // Paperclip tier references (for Aurora + Paperclip-service alarms)
+  paperclipDbCluster: rds.IDatabaseCluster;
+  paperclipService: ecs.IBaseService;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +134,7 @@ export class ObservabilityStack extends cdk.Stack {
     this.createPageAlarms(props);
     this.createWarnCustomMetricAlarms();
     this.createWarnAwsNativeAlarms(props);
+    this.createPaperclipTierAlarms(props);
     this.createCostAlarms(props);
 
     // -----------------------------------------------------------------------
@@ -1320,6 +1325,123 @@ def handler(event, context):
     });
     w39.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
+    // W58: per-user container crash-loop. W39 fires on ANY single unexpected
+    // stop; a crash-LOOP (CPU-starve → healthcheck SIGKILL → restart → repeat)
+    // produces a burst of unexpected stops. Reuses the same TaskStoppedUnexpected
+    // metric the free TaskStoppedFn Lambda already emits — no new emission.
+    // Sum >= 3 in 5min distinguishes a loop from a one-off. Provisional
+    // threshold, baseline after observation.
+    const crashLoopMetric = new cloudwatch.Metric({
+      namespace: "Isol8/ECS",
+      metricName: "TaskStoppedUnexpected",
+      statistic: "Sum",
+      period: cdk.Duration.minutes(5),
+      dimensionsMap: { ClusterName: clusterName },
+    });
+    const w58 = new cloudwatch.Alarm(this, "W58", {
+      alarmName: `isol8-${this.envName}-W58-per-user-crash-loop`,
+      alarmDescription:
+        "≥3 unexpected container stops in 5 min — a per-user container is in a crash/restart loop (likely CPU-starve healthcheck SIGKILL). Provisional threshold.",
+      metric: crashLoopMetric,
+      threshold: 3,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w58.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W59: EFS >1-task-per-access-point detector. Two RUNNING tasks on one
+    // per-user service write the same EFS access point → OpenClaw WAL-SQLite
+    // corruption (root cause mitigated by maxPercent=100 single-writer deploys;
+    // this detects a REGRESSION). Basic AWS/ECS has no RunningTaskCount (that's
+    // Container Insights, which we keep off for cost), so a tiny EventBridge→
+    // Lambda checks running-task count on each RUNNING transition. Reuses the
+    // free-Lambda pattern; events are low-volume.
+    const multiTaskRule = new events.Rule(this, "TaskRunningRule", {
+      ruleName: `isol8-${this.envName}-ecs-task-running`,
+      description:
+        "Captures ECS task RUNNING transitions for >1-task-per-service detection",
+      eventPattern: {
+        source: ["aws.ecs"],
+        detailType: ["ECS Task State Change"],
+        detail: {
+          clusterArn: [props.cluster.clusterArn],
+          lastStatus: ["RUNNING"],
+        },
+      },
+    });
+    const multiTaskFn = new lambda.Function(this, "MultiTaskFn", {
+      functionName: `isol8-${this.envName}-multi-task-metric`,
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      timeout: cdk.Duration.seconds(15),
+      code: lambda.Code.fromInline(`
+import boto3
+ecs = boto3.client('ecs')
+cw = boto3.client('cloudwatch')
+
+def handler(event, _ctx):
+    detail = event.get('detail') or {}
+    group = detail.get('group') or ''            # e.g. "service:openclaw-<uid>-<hash>"
+    cluster_arn = detail.get('clusterArn') or ''
+    if not group.startswith('service:'):
+        return                                   # only per-user SERVICE tasks
+    service = group.split(':', 1)[1]
+    if 'openclaw' not in service:
+        return                                   # ignore the backend/paperclip services
+    # Count currently-RUNNING tasks for this service. >1 = the double-writer
+    # precondition for EFS WAL-SQLite corruption.
+    running = ecs.list_tasks(cluster=cluster_arn, serviceName=service, desiredStatus='RUNNING')
+    count = len(running.get('taskArns') or [])
+    if count > 1:
+        cw.put_metric_data(Namespace='Isol8/ECS', MetricData=[{
+            'MetricName': 'MultiTaskPerService',
+            'Dimensions': [{'Name': 'ClusterName', 'Value': cluster_arn.split('/')[-1]}],
+            'Value': 1.0, 'Unit': 'Count',
+        }])
+`),
+    });
+    // TWO separate statements: cloudwatch:PutMetricData does NOT support the
+    // ecs:cluster condition key, so combining them would make IAM evaluate the
+    // condition as non-matching and DENY the metric write (the alarm would get
+    // no datapoints). ecs:ListTasks keeps the cluster condition; PutMetricData
+    // is scoped instead by a cloudwatch:namespace condition.
+    multiTaskFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ecs:ListTasks"],
+        resources: ["*"],
+        conditions: { StringEquals: { "ecs:cluster": props.cluster.clusterArn } },
+      }),
+    );
+    multiTaskFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"],
+        conditions: { StringEquals: { "cloudwatch:namespace": "Isol8/ECS" } },
+      }),
+    );
+    multiTaskRule.addTarget(new events_targets.LambdaFunction(multiTaskFn));
+
+    const multiTaskMetric = new cloudwatch.Metric({
+      namespace: "Isol8/ECS",
+      metricName: "MultiTaskPerService",
+      statistic: "Sum",
+      period: cdk.Duration.minutes(1),
+      dimensionsMap: { ClusterName: clusterName },
+    });
+    const w59 = new cloudwatch.Alarm(this, "W59", {
+      alarmName: `isol8-${this.envName}-W59-efs-multi-task-per-ap`,
+      alarmDescription:
+        "A per-user service has >1 RUNNING task — two writers on one EFS access point, the OpenClaw WAL-SQLite corruption precondition. Single-writer deploy (maxPercent=100) should prevent this; firing = regression.",
+      metric: multiTaskMetric,
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w59.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
     // -- DynamoDB (W40-W42) --
     // Create alarms for each table
     const allTables: [string, dynamodb.ITable][] = [
@@ -1538,6 +1660,102 @@ def handler(event, context):
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
     w48.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+  }
+
+  // =========================================================================
+  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62)
+  // =========================================================================
+
+  private createPaperclipTierAlarms(props: ObservabilityStackProps): void {
+    const dbId = props.paperclipDbCluster.clusterIdentifier;
+    // W60: Aurora CPU
+    const w60 = new cloudwatch.Alarm(this, "W60", {
+      alarmName: `isol8-${this.envName}-W60-aurora-cpu`,
+      alarmDescription: "Paperclip Aurora CPU >80% for 15 min",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/RDS",
+        metricName: "CPUUtilization",
+        statistic: "Average",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { DBClusterIdentifier: dbId },
+      }),
+      threshold: 80,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w60.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W61: Aurora connections — SATURATION only (high watermark). Provisional.
+    const w61 = new cloudwatch.Alarm(this, "W61", {
+      alarmName: `isol8-${this.envName}-W61-aurora-connections`,
+      alarmDescription:
+        "Paperclip Aurora DatabaseConnections >100 for 15 min — connection saturation. Provisional threshold.",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/RDS",
+        metricName: "DatabaseConnections",
+        statistic: "Maximum",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { DBClusterIdentifier: dbId },
+      }),
+      threshold: 100,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w61.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W61b: Aurora OUTAGE / FAILOVER — distinct from saturation. W60/W61 (CPU,
+    // high-connections, NOT_BREACHING) do NOT fire when a failover/outage drops
+    // connections toward zero or stops reporting. RDS publishes failover +
+    // failure events to EventBridge; route them straight to the warn topic so
+    // the 3C Aurora-failover scenario has a recovery signal. (Event categories:
+    // "failover" + "failure"; covers RDS-EVENT-0031/0071/0036 etc.)
+    const auroraEventRule = new events.Rule(this, "AuroraFailoverRule", {
+      ruleName: `isol8-${this.envName}-aurora-failover`,
+      description: "Paperclip Aurora failover/failure events → warn",
+      eventPattern: {
+        source: ["aws.rds"],
+        detailType: ["RDS DB Cluster Event", "RDS DB Instance Event"],
+        detail: {
+          SourceIdentifier: [dbId],
+          EventCategories: ["failover", "failure"],
+        },
+      },
+    });
+    auroraEventRule.addTarget(new events_targets.SnsTopic(this.warnTopic));
+
+    // W62: Paperclip Fargate service CPU. The Paperclip service is singular +
+    // CDK-known, so a static per-service AWS/ECS alarm works (unlike the
+    // per-user fleet).
+    const clusterName = props.cluster.clusterName;
+    const pcServiceName = cdk.Fn.select(
+      2,
+      cdk.Fn.split("/", props.paperclipService.serviceArn),
+    );
+    const w62 = new cloudwatch.Alarm(this, "W62", {
+      alarmName: `isol8-${this.envName}-W62-paperclip-service-cpu`,
+      alarmDescription: "Paperclip Fargate service CPU >80% for 15 min",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ECS",
+        metricName: "CPUUtilization",
+        statistic: "Average",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { ClusterName: clusterName, ServiceName: pcServiceName },
+      }),
+      threshold: 80,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w62.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // NO W63 here. The "Paperclip down" signal does NOT come from an ALB
+    // HealthyHostCount alarm — VERIFIED: PaperclipStack has no ALB target group
+    // (it registers via cloudMapOptions and is reached through the backend), so
+    // there is no HealthyHostCount metric to alarm on. The down signal is the
+    // Part B `paperclip.upstream.error{kind:"unreachable"}` metric + its alarm
+    // (which keeps the W63 id), emitted from the backend's Paperclip-call paths.
   }
 
   // =========================================================================

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import datetime
 import logging
 import subprocess
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
@@ -63,6 +64,12 @@ def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credenti
 
 class PasteBody(BaseModel):
     token: str
+
+
+class ByoAppRequest(BaseModel):
+    client_id: str = Field(min_length=1, max_length=512)
+    client_secret: str = Field(min_length=1, max_length=512)
+    acknowledge: bool = False
 
 
 def _get_provider_or_404(provider: str) -> registry.Provider:
@@ -238,6 +245,13 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
                     "acquisition": v.acquisition,
                     "status": connected.get(k, "disconnected"),
                     "requires_bedrock": v.requires_bedrock,
+                    # BYO-app affordance: whether the provider CAN take an owner's
+                    # own OAuth app, whether THIS owner has one configured (reuse
+                    # the `byo` already computed above — no second _byo_active
+                    # call), and where to register one.
+                    "byo_capable": bool(v.allow_byo_app),
+                    "byo_configured": byo,
+                    "byo_setup_url": v.byo_setup_url,
                 }
             )
     return {"connections": connections}
@@ -372,6 +386,45 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
         # entry around.
         await config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", p.wiring.mcp_server.key])
     return {"status": "disconnected", "provider": provider}
+
+
+@router.put("/{provider}/byo-app")
+async def put_byo_app(
+    provider: str,
+    body: ByoAppRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Store the owner's OWN OAuth app for a BYO-capable provider. Once stored
+    (and acknowledged), `_byo_active` returns True for this owner, lifting the
+    internal + requires_bedrock gates so they can connect via their own app."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    p = _get_provider_or_404(provider)
+    if not p.allow_byo_app:
+        raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
+    if not body.acknowledge:
+        raise HTTPException(status_code=400, detail="acknowledgment required")
+    await oauth_app_store.put(
+        owner_id,
+        provider,
+        client_id=body.client_id,
+        client_secret=body.client_secret,
+        acknowledged_at=datetime.datetime.utcnow().isoformat() + "Z",
+    )
+    return {"status": "stored"}
+
+
+@router.delete("/{provider}/byo-app")
+async def delete_byo_app(
+    provider: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Clear the owner's stored BYO OAuth app. This removes only the app
+    credentials — it does NOT disconnect an active connection."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await oauth_app_store.delete(owner_id, provider)
+    return {"status": "cleared"}
 
 
 def _redirect_uri(provider: str) -> str:

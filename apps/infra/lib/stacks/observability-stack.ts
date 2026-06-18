@@ -259,6 +259,27 @@ export class ObservabilityStack extends cdk.Stack {
       description: "Path traversal attempt blocked — security event",
     });
 
+    // P11: marketplace-path-traversal
+    // Backend emits marketplace.path_traversal_attempt (no extra dims) in
+    // core/services/agent_export.py when a seller's agent_id resolves outside
+    // their workspaces dir. Same breach-on-event security trip-wire shape as
+    // P3 (workspace path traversal). Pages so a marketplace export attack is
+    // never silent. Goes on pageAlarmArns via createAlarm, but a breach-on-event
+    // trip-wire must NOT be a FIS stop-condition — it is not in any FIS set.
+    this.createAlarm({
+      id: "P11",
+      name: "marketplace-path-traversal",
+      metricName: "marketplace.path_traversal_attempt",
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "page",
+      description:
+        "Marketplace agent export path traversal attempt blocked — security event",
+    });
+
     // P4: update-fleet-patch-invoked
     this.createAlarm({
       id: "P4",
@@ -866,6 +887,70 @@ export class ObservabilityStack extends cdk.Stack {
       severity: "warn",
       description:
         "A per-user container is dropping Paperclip relay connections >10/15min — agent heartbeats can't stay connected; find the owner via the operator_proxy 'Operator upstream closed' logs",
+    });
+
+    // W54: gateway-reconnect-throttle-storm (next free id after W53).
+    // Backend emits gateway.connection{event:reconnect_throttled} in
+    // core/gateway/connection_pool.py:_respect_reconnect_floor when a per-user
+    // reconnect fires inside the sub-second reconnect floor. A healthy fleet
+    // throttles occasionally; a spike means a reconnect storm (a misbehaving
+    // container + frontend exponential reconnect colliding with in-flight
+    // server retries). Same "storm counter" shape as W7 — Sum over a window.
+    this.createAlarm({
+      id: "W54",
+      name: "gateway-reconnect-throttle-storm",
+      metricName: "gateway.connection",
+      threshold: 20,
+      evaluationPeriods: 1,
+      periodMinutes: 15,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      dimensions: { event: "reconnect_throttled" },
+      severity: "warn",
+      description:
+        "Gateway reconnect throttles exceed 20 in 15 min — reconnect storm (misbehaving container burning the open-handshake budget)",
+    });
+
+    // W55: metronome-gate-refresh-error.
+    // Backend emits metronome.gate.refresh_error (no extra dims) in
+    // core/services/metronome_gate.py when the credit-gate balance refresh
+    // (getNetBalance) raises — i.e. Metronome is unreachable/erroring. The gate
+    // then falls back to the cached fast-gate row, so a Metronome outage is
+    // otherwise invisible until credits silently drift. Sum > 0, NOT_BREACHING
+    // (absent metric = healthy, no refresh failures).
+    this.createAlarm({
+      id: "W55",
+      name: "metronome-gate-refresh-error",
+      metricName: "metronome.gate.refresh_error",
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 5,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "warn",
+      description:
+        "Metronome credit-gate balance refresh failing — gate serving stale cached balances; possible Metronome outage",
+    });
+
+    // W56: metronome-webhook-bad-signature.
+    // Backend emits metronome.webhook{result:bad_signature} in
+    // routers/metronome_webhook.py on a failed HMAC verification. That explicit
+    // single-dim shape ({env,service,result}) is cleanly alarmable. A spike of
+    // bad-signature webhooks means a secret rotation drift or a forged-webhook
+    // probe — either way the credit gate stops getting trustworthy updates.
+    this.createAlarm({
+      id: "W56",
+      name: "metronome-webhook-bad-signature",
+      metricName: "metronome.webhook",
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 5,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      dimensions: { result: "bad_signature" },
+      severity: "warn",
+      description:
+        "Metronome webhook signature verification failing — secret drift or forged-webhook probe; credit gate not getting trustworthy balance updates",
     });
   }
 

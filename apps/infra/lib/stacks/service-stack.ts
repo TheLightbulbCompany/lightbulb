@@ -901,16 +901,6 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
-        // Owners allowed to see `internal`-flagged integration providers (e.g.
-        // Google before its OAuth app is verified) in GET /connections. Dev
-        // exposes it to the test account; prod to the founders' org. Drop these
-        // once Google verification lands and the `internal` flag is removed.
-        INTERNAL_INTEGRATION_OWNERS:
-          env === "prod"
-            ? "org_3DBS8G83oPrMm49yN2b70EjoFpN"
-            : env === "dev"
-              ? "user_3DYRa5Fn4SxXjbXVFoanzCIxKBT"
-              : "",
         // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
         // encrypt operator device seeds + gateway tokens at rest. Reuses the
         // same CMK as the BYOK Fernet layer since the blast radius is the same

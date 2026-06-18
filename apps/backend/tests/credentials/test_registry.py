@@ -44,6 +44,22 @@ def test_direct_oauth_provider_shape():
     assert p.wiring.materializer == "gog_cli"
 
 
+def test_google_is_byo_required():
+    from core.services.credentials import registry
+
+    g = registry.get_provider("google")
+    assert g.byo_required is True
+    assert g.byo_setup_url == "https://console.cloud.google.com/apis/credentials"
+    assert not hasattr(g, "allow_byo_app")
+
+
+def test_no_provider_is_byo_required_except_google():
+    from core.services.credentials import registry
+
+    byo = [k for k, v in registry.all_providers().items() if v.byo_required]
+    assert byo == ["google"]
+
+
 def test_unknown_provider_raises():
     with pytest.raises(KeyError):
         registry.get_provider("does-not-exist")

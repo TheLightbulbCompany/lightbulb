@@ -28,13 +28,20 @@ def test_scan_tarball_detects_requirements():
             ),
         }
     )
-    reqs = scan_tarball(tb)
-    keys = {r["key"]: r["disposition"] for r in reqs}
+    fragment = scan_tarball(tb)
+    keys = {r["key"]: r["disposition"] for r in fragment["requirements"]}
     assert keys["plaid"] == "byo"
     assert keys["slack"] == "connect"
     assert keys["llm-task"] == "included"
+    assert fragment["scan_incomplete"] is False
+    # requires.credentials carries only non-channel connect rows: slack is a
+    # channel (gated via the Channels tab), plaid is byo, llm-task is included
+    # — so none feed the credential hire gate here.
+    assert fragment["requires"]["credentials"] == []
 
 
 def test_scan_tarball_empty_tree_is_empty():
     tb = _make_tarball({"./openclaw.json": "{}"})
-    assert scan_tarball(tb) == []
+    fragment = scan_tarball(tb)
+    assert fragment["requirements"] == []
+    assert fragment["requires"]["credentials"] == []

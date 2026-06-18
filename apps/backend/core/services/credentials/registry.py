@@ -106,6 +106,12 @@ class Provider(BaseModel):
     # path Isol8 controls a no-training contract for. Doubles as a Bedrock-credits
     # funnel: non-Bedrock owners get a "switch to unlock" upsell.
     requires_bedrock: bool = False
+    # BYO OAuth app: when True, an owner may connect this provider with their
+    # OWN OAuth app (client_id/secret), which lifts the internal + requires_bedrock
+    # gates for that owner. Generic flag; only enabled for google today.
+    allow_byo_app: bool = False
+    # Help link shown in the BYO setup wizard (e.g. the Google Cloud OAuth guide).
+    byo_setup_url: str | None = None
     validation: ValidateSpec | None = Field(default=None, alias="validate")
 
     # populate_by_name lets us pass either the `validate` alias (YAML) or the

@@ -65,16 +65,20 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
     except Exception:
         logger.exception("Background provisioning failed for owner %s", owner_id)
         # This fire-and-forget task swallows exceptions, so its failures are
-        # otherwise invisible to alarms. Emit the same metric ecs_manager uses
-        # for provision outcomes, with a `phase` dim so it aggregates with the
-        # synchronous provision emissions while staying separately alarmable.
+        # otherwise invisible to alarms. Emit the SAME metric+dimension set the
+        # synchronous ecs_manager path uses on failure — {status: "error"}, no
+        # extra dims — so it lands on the exact CloudWatch stream the W1
+        # provision-error-rate alarm queries. (EMF publishes one stream per full
+        # dimension-key set, so a `phase` dim here would create a separate
+        # stream that NO alarm watches — defeating the point. The dispatch-vs-
+        # sync distinction lives in the logger.exception above instead.)
         # Best-effort: a metrics outage must not turn this swallow into a raise.
         try:
             from core.observability.metrics import put_metric
 
             put_metric(
                 "container.provision",
-                dimensions={"status": "error", "phase": "dispatch"},
+                dimensions={"status": "error"},
             )
         except Exception:  # noqa: BLE001 — telemetry must never break the task
             logger.debug("container.provision dispatch-failure metric emission failed", exc_info=True)

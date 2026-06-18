@@ -37,15 +37,18 @@
 Per-user services are dynamic, so use a `SEARCH` expression that matches all `openclaw-` services' `AWS/ECS CPUUtilization` in the per-user cluster and takes the MAX. Insert after W37:
 
 ```typescript
-    // W57: per-user container CPU saturation (dynamic fleet → SEARCH math).
+    // W57: per-user container CPU saturation (dynamic fleet → Metrics Insights).
     // Per-user services are named openclaw-{user_id}-{hash} and created at
-    // runtime, so a static per-service alarm is impossible. SEARCH matches every
-    // AWS/ECS CPUUtilization series whose ServiceName contains "openclaw" in this
-    // cluster; MAX fires if ANY one per-user container is CPU-saturated. The
-    // free-text "openclaw" token scopes to per-user services and excludes the
-    // backend service (whose name has no "openclaw"). Average stat per service.
-    const perUserCpuSearch = new cloudwatch.MathExpression({
-      expression: `MAX(SEARCH('{AWS/ECS,ClusterName,ServiceName} MetricName="CPUUtilization" ClusterName="${clusterName}" openclaw', 'Average', 300))`,
+    // runtime, so a static per-service alarm is impossible. CloudWatch alarms
+    // CANNOT be based on a SEARCH() expression (AWS docs), so we use a Metrics
+    // Insights query — which CAN back an alarm — that MAXes CPUUtilization across
+    // all openclaw-* services in this cluster. `LIKE 'openclaw%'` scopes to the
+    // per-user fleet and excludes the backend/paperclip services. Returns no data
+    // when zero per-user containers exist → NOT_BREACHING = no false alarm.
+    const perUserCpuQuery = new cloudwatch.MathExpression({
+      expression:
+        `SELECT MAX(CPUUtilization) FROM SCHEMA("AWS/ECS", ClusterName, ServiceName) ` +
+        `WHERE ClusterName = '${clusterName}' AND ServiceName LIKE 'openclaw%'`,
       label: "Max per-user container CPU %",
       period: cdk.Duration.minutes(5),
     });
@@ -53,7 +56,7 @@ Per-user services are dynamic, so use a `SEARCH` expression that matches all `op
       alarmName: `isol8-${this.envName}-W57-per-user-container-cpu`,
       alarmDescription:
         "A per-user OpenClaw container is CPU-saturated (>90% for 15 min) — MCP/agent storm risk; the 0.5-vCPU box is starving and may healthcheck-SIGKILL. Provisional threshold, baseline after observation.",
-      metric: perUserCpuSearch,
+      metric: perUserCpuQuery,
       threshold: 90,
       evaluationPeriods: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
@@ -61,13 +64,14 @@ Per-user services are dynamic, so use a `SEARCH` expression that matches all `op
     });
     w57.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 ```
+> A Metrics Insights query (`SELECT ... FROM SCHEMA(...)`) IS a valid alarm source (unlike `SEARCH()`), and supports `LIKE`/`%` on dimension values. In CDK it's a `MathExpression` whose `expression` is the SQL (no `usingMetrics`). Verify the query alarm synthesizes with `AlarmRule`/`Metrics` containing the `SELECT` string.
 
-- [ ] **Step 2: Verify it synthesizes + the SEARCH expression is well-formed**
+- [ ] **Step 2: Verify it synthesizes + the Metrics Insights query is well-formed**
 
 From `apps/infra` (symlink parent node_modules if absent: `ln -s /Users/prasiddhaparthsarthy/Desktop/isol8.nosync/apps/infra/node_modules ./node_modules`, remove after):
 Run: `npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability 2>/dev/null | grep -A8 "W57"`
-Expected: tsc exit 0; the synthesized template shows a `AWS::CloudWatch::Alarm` for W57 with `Metrics` containing the `SEARCH(...)` expression string and the cluster name interpolated.
-> NOTE: SEARCH results can't be fully validated without live metrics. Confirm the expression string in the template references `MetricName="CPUUtilization"`, `ClusterName="isol8-dev-container-..."`, and the `openclaw` token. The MAX-of-empty-set case returns no data → NOT_BREACHING means no false alarm when zero per-user containers exist.
+Expected: tsc exit 0; the synthesized `AWS::CloudWatch::Alarm` for W57 has a `Metrics` entry whose `Expression` is the `SELECT MAX(CPUUtilization) FROM SCHEMA(...)` query with the cluster name interpolated and `ServiceName LIKE 'openclaw%'`.
+> NOTE: confirm CloudFormation accepts the Metrics Insights query as an alarm metric (it does — unlike SEARCH). The empty-result case (zero per-user containers) returns no data → NOT_BREACHING means no false alarm. The `LIKE 'openclaw%'` scoping can only be fully validated against live metric data; reason through the service-name prefix at implementation time.
 
 - [ ] **Step 3: Commit**
 
@@ -192,16 +196,27 @@ def handler(event, _ctx):
         }])
 `),
     });
+    // TWO separate statements: cloudwatch:PutMetricData does NOT support the
+    // ecs:cluster condition key, so combining them would make IAM evaluate the
+    // condition as non-matching and DENY the metric write (the alarm would get
+    // no datapoints). ecs:ListTasks keeps the cluster condition; PutMetricData
+    // is scoped instead by a cloudwatch:namespace condition.
     multiTaskFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["ecs:ListTasks", "cloudwatch:PutMetricData"],
+        actions: ["ecs:ListTasks"],
         resources: ["*"],
         conditions: { StringEquals: { "ecs:cluster": props.cluster.clusterArn } },
       }),
     );
+    multiTaskFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"],
+        conditions: { StringEquals: { "cloudwatch:namespace": "Isol8/ECS" } },
+      }),
+    );
     multiTaskRule.addTarget(new events_targets.LambdaFunction(multiTaskFn));
 ```
-> `cloudwatch:PutMetricData` does not support the `ecs:cluster` condition; if synth/IAM rejects the combined statement, split into two statements (ecs:ListTasks with the cluster condition, cloudwatch:PutMetricData unconditioned on `*` with a `cloudwatch:namespace` condition of `Isol8/ECS`). Verify in Step 2.
 
 - [ ] **Step 2: Add the alarm + verify synth**
 
@@ -243,17 +258,18 @@ git commit -m "feat(observability): W59 EFS >1-task-per-AP detector (RUNNING-eve
 - Modify (generated): `.github/workflows/deploy.yml`
 
 **Interfaces:**
-- Consumes: `database.paperclipDbCluster` (`rds.IDatabaseCluster`) and `paperclip.service` (`ecs.IBaseService`) from the stage. Both already exist as public properties (confirmed: `database.paperclipDbCluster`, `paperclip.service`).
-- Produces: alarms W60 (aurora-cpu), W61 (aurora-connections), W62 (paperclip-service-cpu), W63 (paperclip-no-running-task).
+- Consumes: `database.paperclipDbCluster` (`rds.IDatabaseCluster`), `paperclip.service` (`ecs.IBaseService`), and the Paperclip ALB **target group** (`elbv2.IApplicationTargetGroup`) from the stage. Confirm the target group is exposed on the Paperclip stack (it has an ALB host route + healthCheck; if the TG isn't a public property, add a `public readonly` for it). The existing backend ALB full-name (`albFullName`, already computed in this stack for W28/W29/W48 from `props.alb`) is REUSED for W63's `LoadBalancer` dimension since Paperclip shares the same ALB.
+- Produces: alarms W60 (aurora-cpu), W61 (aurora-connections-saturation), W62 (paperclip-cpu), W63 (paperclip-down via ALB healthy hosts); EventBridge rule `AuroraFailoverRule` (failover/failure → warn).
 
-- [ ] **Step 1: Add the two props to `ObservabilityStackProps`**
+- [ ] **Step 1: Add the props to `ObservabilityStackProps`**
 
 In the `ObservabilityStackProps` interface (~line 34), add:
 ```typescript
   paperclipDbCluster: rds.IDatabaseCluster;
   paperclipService: ecs.IBaseService;
+  paperclipTargetGroup: elbv2.IApplicationTargetGroup;
 ```
-Add the import if absent: `import * as rds from "aws-cdk-lib/aws-rds";` (ecs is already imported).
+Add imports if absent: `import * as rds from "aws-cdk-lib/aws-rds";` and `import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";` (ecs already imported; check whether elbv2 is already imported for the existing ALB alarms). Also confirm `events_targets.SnsTopic` is importable (used by `AuroraFailoverRule`) — `aws-cdk-lib/aws-events-targets` is already imported as `events_targets` for the TaskStopped Lambda target.
 
 - [ ] **Step 2: Thread them from the stage**
 
@@ -261,8 +277,9 @@ In `apps/infra/lib/isol8-stage.ts`, find the `new ObservabilityStack(...)` call 
 ```typescript
         paperclipDbCluster: database.paperclipDbCluster,
         paperclipService: paperclip.service,
+        paperclipTargetGroup: paperclip.targetGroup,
 ```
-ObservabilityStack is constructed after both `database` and `paperclip` in the stage (verify ordering; if observability precedes paperclip, move its construction after paperclip — it has no reverse dependency). Add `observability.addDependency(paperclip)` / `addDependency(database)` if the refs don't auto-create the dependency.
+(Use the actual public property name for the Paperclip target group — confirm in `paperclip-stack.ts`; add a `public readonly targetGroup` export there if missing.) ObservabilityStack is constructed after both `database` and `paperclip` in the stage (verify ordering; if observability precedes paperclip, move its construction after paperclip — it has no reverse dependency). Add `observability.addDependency(paperclip)` / `addDependency(database)` if the refs don't auto-create the dependency.
 
 - [ ] **Step 3: Add the native RDS + Paperclip-ECS alarms**
 
@@ -288,8 +305,7 @@ Add a new private method `createPaperclipTierAlarms()` called from the construct
     });
     w60.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
-    // W61: Aurora connections (a failover/outage drops connections to ~0;
-    // saturation spikes them). Alarm on a high ceiling — provisional.
+    // W61: Aurora connections — SATURATION only (high watermark). Provisional.
     const w61 = new cloudwatch.Alarm(this, "W61", {
       alarmName: `isol8-${this.envName}-W61-aurora-connections`,
       alarmDescription: "Paperclip Aurora DatabaseConnections >100 for 15 min — connection saturation. Provisional threshold.",
@@ -306,6 +322,26 @@ Add a new private method `createPaperclipTierAlarms()` called from the construct
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w61.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W61b: Aurora OUTAGE / FAILOVER — distinct from saturation. W60/W61 (CPU,
+    // high-connections, NOT_BREACHING) do NOT fire when a failover/outage drops
+    // connections toward zero or stops reporting. RDS publishes failover +
+    // failure events to EventBridge; route them straight to the warn topic so
+    // the 3C Aurora-failover scenario has a recovery signal. (Event categories:
+    // "failover" + "failure"; covers RDS-EVENT-0031/0071/0036 etc.)
+    const auroraEventRule = new events.Rule(this, "AuroraFailoverRule", {
+      ruleName: `isol8-${this.envName}-aurora-failover`,
+      description: "Paperclip Aurora failover/failure events → warn",
+      eventPattern: {
+        source: ["aws.rds"],
+        detailType: ["RDS DB Cluster Event", "RDS DB Instance Event"],
+        detail: {
+          SourceIdentifier: [dbId],
+          EventCategories: ["failover", "failure"],
+        },
+      },
+    });
+    auroraEventRule.addTarget(new events_targets.SnsTopic(this.warnTopic));
 
     // W62 + W63: Paperclip Fargate service. It is singular + CDK-known, so
     // static per-service alarms work (unlike the per-user fleet).
@@ -328,35 +364,39 @@ Add a new private method `createPaperclipTierAlarms()` called from the construct
     });
     w62.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
-    // W63: Paperclip running-task count drops to 0 (service down). The ECS
-    // SampleCount of CPUUtilization is a proxy for "task reporting"; use the
-    // AWS/ECS service metric. A genuinely-absent service stops reporting →
-    // NOT_BREACHING avoids a false page in dev when Paperclip isn't running,
-    // but a transition to 0 reporting datapoints over the window is the signal.
+    // W63: Paperclip service DOWN (zero running tasks). NOTE: AWS/ECS service
+    // metrics are emitted ONLY for RUNNING tasks — when a service has zero tasks
+    // it reports NO datapoints, so a SampleCount/CPU alarm with NOT_BREACHING
+    // stays healthy exactly when the service is down. Use the ALB target group's
+    // HealthyHostCount instead — the ALB emits it continuously (including 0)
+    // regardless of task count. This mirrors the backend W28/W48 pattern.
     const w63 = new cloudwatch.Alarm(this, "W63", {
       alarmName: `isol8-${this.envName}-W63-paperclip-service-down`,
-      alarmDescription: "Paperclip Fargate service reporting no CPU samples for 15 min — service likely down",
+      alarmDescription: "Paperclip has 0 healthy targets for 5 min — service down (ALB HealthyHostCount, which is emitted even at zero tasks unlike AWS/ECS metrics)",
       metric: new cloudwatch.Metric({
-        namespace: "AWS/ECS",
-        metricName: "CPUUtilization",
-        statistic: "SampleCount",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { ClusterName: clusterName, ServiceName: pcServiceName },
+        namespace: "AWS/ApplicationELB",
+        metricName: "HealthyHostCount",
+        statistic: "Maximum",
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: {
+          TargetGroup: props.paperclipTargetGroup.targetGroupFullName,
+          LoadBalancer: props.albFullName,
+        },
       }),
-      threshold: 0,
-      evaluationPeriods: 3,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      threshold: 1,
+      evaluationPeriods: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
     w63.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
   }
 ```
-Call it from the constructor next to the other `this.create*Alarms()` calls.
+Call it from the constructor next to the other `this.create*Alarms()` calls. NOTE on W63 `treatMissingData: BREACHING`: HealthyHostCount is emitted continuously by the ALB, so "missing" here genuinely means the ALB/target-group is gone (a real problem) — unlike the AWS/ECS metrics, BREACHING is correct here. If the existing backend W48 (`alb-healthy-hosts-drop`) uses the same pattern, mirror its `treatMissingData` choice for consistency.
 
 - [ ] **Step 4: Verify synth (incl. cross-stack refs resolve)**
 
-Run: `npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability 2>/dev/null | grep -E "W60-aurora|W61-aurora|W62-paperclip|W63-paperclip" | head`
-Expected: tsc 0; all four alarms present; no "cannot find" cross-stack errors.
+Run: `npx tsc --noEmit && npx cdk synth dev/isol8-dev-observability 2>/dev/null | grep -E "W60-aurora|W61-aurora|W62-paperclip|W63-paperclip|AuroraFailoverRule" | head`
+Expected: tsc 0; all four alarms + the `AuroraFailoverRule` EventBridge rule present; W63's metric is `AWS/ApplicationELB HealthyHostCount` (NOT an AWS/ECS metric); no "cannot find" cross-stack errors. Verify the RDS-event rule's `SourceIdentifier`/`EventCategories` filter against the real event shape (cluster-level failover events carry the cluster id; instance-level failure events carry instance ids — the cluster filter catches failover, the primary 3C signal; broaden if instance-failure coverage is wanted).
 
 - [ ] **Step 5: Regenerate + COMMIT deploy.yml (the prod-blocking step)**
 

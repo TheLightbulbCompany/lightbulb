@@ -23,6 +23,14 @@ interface ConnectButtonProps {
   connectPaste: (provider: string, token: string) => Promise<void>;
   startOAuth: (provider: string) => Promise<void>;
   disconnect: (provider: string) => Promise<void>;
+  /**
+   * Re-fetch the connections list (the `useConnections` SWR `mutate`). Called
+   * after the BYO-app PUT succeeds so `byo_configured` reflects the server
+   * BEFORE the OAuth redirect: if `startOAuth` then fails, the row leaves the
+   * BYO panel for the normal Connect path instead of being stuck (the app is
+   * already stored server-side, so re-showing the BYO form is wrong).
+   */
+  refreshConnections?: () => Promise<unknown>;
 }
 
 const NON_ADMIN_MSG = "Only organization admins can manage connections.";
@@ -87,6 +95,7 @@ export function ConnectButton({
   connectPaste,
   startOAuth,
   disconnect,
+  refreshConnections,
 }: ConnectButtonProps) {
   const { provider, display_name, acquisition, status } = connection;
   const api = useApi();
@@ -154,6 +163,18 @@ export function ConnectButton({
   // we fall through to the standard branches below.
   if (lockedForBedrock && connection.byo_capable && !connection.byo_configured) {
     const ackId = `byo-ack-${provider}`;
+    // Scrub the typed secret + form state. Called on Cancel/close and after a
+    // successful save so a typed client secret never persists in React state to
+    // re-populate the masked input on reopen.
+    const resetByoForm = () => {
+      setClientId("");
+      setClientSecret("");
+      setAcknowledged(false);
+    };
+    const closeByo = () => {
+      resetByoForm();
+      setByoOpen(false);
+    };
     const saveByoApp = () => {
       if (!clientId.trim() || !clientSecret.trim() || !acknowledged || busy || !canManage) {
         return;
@@ -167,6 +188,16 @@ export function ConnectButton({
           client_secret: clientSecret.trim(),
           acknowledge: acknowledged,
         });
+        // Refresh the connections list BEFORE the OAuth redirect so
+        // `byo_configured` reflects the now-stored app. If startOAuth then
+        // fails, the row falls through to the normal Connect path instead of
+        // staying stuck on the BYO panel (the app is already stored).
+        if (refreshConnections) {
+          await refreshConnections();
+        }
+        // Secret is persisted server-side now; scrub it from React state so it
+        // can't re-populate the masked input.
+        resetByoForm();
         await startOAuth(provider);
       });
     };
@@ -255,7 +286,7 @@ export function ConnectButton({
             size="sm"
             variant="outline"
             disabled={busy}
-            onClick={() => setByoOpen(false)}
+            onClick={closeByo}
           >
             Cancel
           </Button>

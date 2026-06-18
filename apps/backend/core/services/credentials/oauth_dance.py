@@ -46,7 +46,11 @@ async def _oauth_client(owner_id: str, provider_key: str) -> tuple[str, str]:
     Isol8's shared app. The single resolution point — start/exchange both call
     it, so refresh-by-stored-creds is automatic on the actor (gog) side."""
     byo = await oauth_app_store.get(owner_id, provider_key)
-    if byo:
+    # Only honor a BYO app when BOTH halves are present and truthy. The API path
+    # always writes both, so this guards against a malformed row (an out-of-band
+    # write, a partial migration) rather than a normal state — a half-populated
+    # row falls back to Isol8's shared app instead of failing the dance.
+    if byo and byo.get("client_id") and byo.get("client_secret"):
         return byo["client_id"], byo["client_secret"]
     return await _isol8_oauth_client(provider_key)
 

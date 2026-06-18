@@ -423,6 +423,13 @@ async def delete_byo_app(
     credentials — it does NOT disconnect an active connection."""
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    # Mirror put_byo_app's guards so DELETE on an unknown or non-BYO provider
+    # 4xxs instead of silently no-opping (a clear signal the route is wrong,
+    # not a request that quietly succeeded against a provider that never had a
+    # BYO app to clear).
+    p = _get_provider_or_404(provider)
+    if not p.allow_byo_app:
+        raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
     await oauth_app_store.delete(owner_id, provider)
     return {"status": "cleared"}
 

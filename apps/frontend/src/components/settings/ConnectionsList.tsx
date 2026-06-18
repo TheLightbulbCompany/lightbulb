@@ -119,6 +119,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               connectPaste={connectPaste}
               startOAuth={startOAuth}
               disconnect={disconnect}
+              refreshConnections={mutate}
             />
           </div>
         );

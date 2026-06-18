@@ -1463,6 +1463,23 @@ class TestByoApp:
         assert resp.status_code == 200
         mock_delete.assert_awaited_once_with("user_test_123", "google")
 
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_app_store.delete", new_callable=AsyncMock)
+    async def test_delete_byo_app_rejected_for_non_byo_provider(self, mock_delete, async_client):
+        # stripe is not allow_byo_app -> DELETE is rejected (400) before any
+        # store delete, mirroring PUT's guard instead of silently no-opping.
+        resp = await async_client.delete("/api/v1/connections/stripe/byo-app")
+        assert resp.status_code == 400
+        mock_delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_app_store.delete", new_callable=AsyncMock)
+    async def test_delete_byo_app_unknown_provider_returns_404(self, mock_delete, async_client):
+        # An unknown provider 404s before any store delete (mirrors PUT).
+        resp = await async_client.delete("/api/v1/connections/does-not-exist/byo-app")
+        assert resp.status_code == 404
+        mock_delete.assert_not_awaited()
+
 
 class TestListByoExposure:
     """GET /api/v1/connections exposes byo_capable / byo_configured / byo_setup_url

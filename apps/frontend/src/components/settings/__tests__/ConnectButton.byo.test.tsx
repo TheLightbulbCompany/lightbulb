@@ -47,6 +47,7 @@ function renderByo(
   overrides: Partial<React.ComponentProps<typeof ConnectButton>> = {},
 ) {
   const startOAuth = vi.fn().mockResolvedValue(undefined);
+  const refreshConnections = vi.fn().mockResolvedValue(undefined);
   render(
     <ConnectButton
       connection={googleByoRow}
@@ -55,10 +56,11 @@ function renderByo(
       connectPaste={vi.fn()}
       startOAuth={startOAuth}
       disconnect={vi.fn()}
+      refreshConnections={refreshConnections}
       {...overrides}
     />,
   );
-  return { startOAuth };
+  return { startOAuth, refreshConnections };
 }
 
 describe("ConnectButton BYO branch", () => {
@@ -119,6 +121,61 @@ describe("ConnectButton BYO branch", () => {
       acknowledge: true,
     });
     await waitFor(() => expect(startOAuth).toHaveBeenCalledWith("google"));
+  });
+
+  it("refreshes the connections list after Save, before redirecting to OAuth", async () => {
+    // After the PUT stores the app server-side, the connections list must be
+    // re-fetched BEFORE startOAuth so `byo_configured` reflects the server. If
+    // startOAuth then fails, the row leaves the BYO panel for the normal
+    // Connect path instead of staying stuck.
+    const { startOAuth, refreshConnections } = renderByo();
+    fireEvent.click(
+      screen.getByRole("button", { name: /use your own google workspace app/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/client id/i), {
+      target: { value: "my-client-id" },
+    });
+    fireEvent.change(screen.getByLabelText(/client secret/i), {
+      target: { value: "my-secret" },
+    });
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /save your own google workspace app/i }));
+
+    await waitFor(() => expect(refreshConnections).toHaveBeenCalledTimes(1));
+    // The refresh happens before the OAuth redirect is kicked off.
+    expect(refreshConnections.mock.invocationCallOrder[0]).toBeLessThan(
+      startOAuth.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("clears the typed inputs when Cancel is clicked", () => {
+    // A typed client secret must not persist in React state — Cancel scrubs the
+    // fields so reopening the panel shows empty inputs, not the prior secret.
+    renderByo();
+    fireEvent.click(
+      screen.getByRole("button", { name: /use your own google workspace app/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/client id/i), {
+      target: { value: "typed-id" },
+    });
+    fireEvent.change(screen.getByLabelText(/client secret/i), {
+      target: { value: "typed-secret" },
+    });
+    fireEvent.click(screen.getByRole("checkbox"));
+
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    // Panel closed back to the affordance button.
+    expect(
+      screen.getByRole("button", { name: /use your own google workspace app/i }),
+    ).toBeInTheDocument();
+
+    // Reopen — the inputs and acknowledgment are back to empty/unchecked.
+    fireEvent.click(
+      screen.getByRole("button", { name: /use your own google workspace app/i }),
+    );
+    expect(screen.getByLabelText(/client id/i)).toHaveValue("");
+    expect(screen.getByLabelText(/client secret/i)).toHaveValue("");
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
   });
 
   it("renders the normal Connect path for a configured-but-not-connected locked row", () => {

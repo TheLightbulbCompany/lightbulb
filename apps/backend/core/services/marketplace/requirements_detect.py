@@ -95,28 +95,40 @@ def detect_in_text(text: str, source: str) -> list[Hit]:
     return hits
 
 
-def _tool_head(command: str) -> str | None:
-    """The buyer-relevant tool a command line invokes via DIRECT CLI form, e.g.
-    ``gog.gmail.search --query …`` → ``gog`` and ``inbox list --json`` → ``inbox``.
+# Shell-level separators that chain independent commands. Splitting a command
+# value on these lets us see the tool AFTER a `cd x && tool` or `a; b` prefix,
+# not just the first head. `_NAME` + `_NON_TOOL_HEADS` reject any junk a split
+# through a quoted/JSON arg might produce.
+_SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;]")
 
-    Returns None for execution plumbing (``openclaw.invoke``, ``exec``, shell
-    runners): ``--tool`` already captures the wrapped tool, and curl/wget hosts
-    are captured by the host regex. The leading segment of a dotted head is the
-    tool/plugin (``gog.gmail.search`` is the ``gog`` plugin).
+
+def _tool_heads(command: str) -> list[str]:
+    """Buyer-relevant tools a command line invokes via DIRECT CLI form, e.g.
+    ``gog.gmail.search --query …`` → ``gog`` and ``cd /app && inbox list`` →
+    ``inbox``. Splits on shell separators (``|``, ``&&``, ``;``) and returns the
+    head of each segment.
+
+    Skips execution plumbing (``openclaw.invoke``, ``exec``, shell runners):
+    ``--tool`` already captures the wrapped tool and curl/wget hosts are caught
+    by the host regex. The leading segment of a dotted head is the tool/plugin
+    (``gog.gmail.search`` is the ``gog`` plugin).
     """
-    stripped = command.strip()
-    if not stripped:
-        return None
-    head = stripped.split(maxsplit=1)[0].split(".", 1)[0]
-    if head in _NON_TOOL_HEADS or not _NAME.match(head):
-        return None
-    return head
+    heads: list[str] = []
+    for segment in _SEGMENT_SPLIT.split(command):
+        stripped = segment.strip().lstrip("(")
+        if not stripped:
+            continue
+        head = stripped.split(maxsplit=1)[0].split(".", 1)[0]
+        if head and head not in _NON_TOOL_HEADS and _NAME.match(head):
+            heads.append(head)
+    return heads
 
 
 def _detect_in_yaml(text: str, source: str) -> list[Hit]:
     """Structurally walk a .lobster/pipeline YAML and pull the tool head out of
-    every ``command:``/``run:``/``pipeline:`` value, including ``|``-composed
-    pipelines. Falls back to text-only detection on a parse error.
+    every ``command:``/``run:``/``pipeline:`` value — string or list-of-strings,
+    and shell-chained (``|``/``&&``/``;``) segments. Falls back to text-only
+    detection on a parse error.
     """
     try:
         doc = yaml.safe_load(text)
@@ -124,16 +136,21 @@ def _detect_in_yaml(text: str, source: str) -> list[Hit]:
         return []
     hits: list[Hit] = []
 
+    def _emit(command: str) -> None:
+        for head in _tool_heads(command):
+            hits.append(Hit("tool", head, source))
+
     def walk(node) -> None:
         if isinstance(node, dict):
             for key, value in node.items():
-                if key in _COMMAND_KEYS and isinstance(value, str):
-                    # A command value may be a `|`-composed pipeline; each
-                    # segment is its own invocation.
-                    for segment in value.split("|"):
-                        head = _tool_head(segment)
-                        if head is not None:
-                            hits.append(Hit("tool", head, source))
+                if key in _COMMAND_KEYS:
+                    if isinstance(value, str):
+                        _emit(value)
+                    elif isinstance(value, list):
+                        # A command expressed as a YAML sequence of command lines.
+                        for item in value:
+                            if isinstance(item, str):
+                                _emit(item)
                 walk(value)
         elif isinstance(node, list):
             for item in node:

@@ -32,7 +32,6 @@ BUNDLED_TOOLS = frozenset(
         "capability-evolver",
     }
 )
-BUNDLED_SKILLS = frozenset({"capability-evolver", "skill-vetter"})
 # The backend-provisionable channel providers (Channels tab). Imported from the
 # single source of truth so this can't drift — e.g. listing whatsapp here would
 # tell a buyer to "connect" a channel the backend never provisions.
@@ -153,11 +152,16 @@ def classify_hits(
 
 
 def _apply_wiring_mismatch(by_key: dict[str, Requirement]) -> None:
-    """Downgrade a registry CONNECT row to BYO when the agent references an env
-    var the integration's MCP won't set (e.g. STRIPE_API_KEY when the tab wires
+    """Downgrade a registry CONNECT row to BYO when the agent references ONLY env
+    vars the integration's MCP won't set (e.g. STRIPE_API_KEY when the tab wires
     STRIPE_SECRET_KEY). Order-independent: evaluated once over each row's full
-    accumulated env, so the result is the same regardless of which of the
-    host/env hits arrived first.
+    accumulated env, so the result is the same regardless of host/env hit order.
+
+    Only applies to MCP-wired providers — the "mismatch" is specifically that
+    the MCP is keyed on a particular env var. A CLI/materializer-rail provider
+    (no mcp_server) is connectable regardless of how the agent names its env, so
+    it stays CONNECT. And if the agent references the wired key at all (even
+    alongside a stray off-key), connecting the integration still satisfies it.
     """
     providers = _providers()
     for r in by_key.values():
@@ -165,11 +169,13 @@ def _apply_wiring_mismatch(by_key: dict[str, Requirement]) -> None:
             continue
         prov = providers.get(r.key)
         mcp = prov.wiring.mcp_server if prov else None
-        mcp_env = set(mcp.env.keys()) if mcp else set()
-        unexpected = [e for e in r.env if e not in mcp_env]
-        if unexpected:
+        if mcp is None:
+            continue  # non-MCP rail: the env-var name isn't the binding
+        mcp_env = set(mcp.env.keys())
+        # Downgrade only when the agent uses env vars and NONE is the wired key.
+        if r.env and all(e not in mcp_env for e in r.env):
             r.disposition = Disposition.BYO
             r.reason = (
-                f"wiring mismatch: the {r.display_name} integration wires an MCP; "
-                f"this agent references {unexpected[0]} directly"
+                f"wiring mismatch: the {r.display_name} integration wires {sorted(mcp_env)[0]}; "
+                f"this agent references {r.env[0]} directly"
             )

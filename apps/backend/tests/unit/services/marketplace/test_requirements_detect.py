@@ -92,6 +92,37 @@ def test_detect_skips_plumbing_heads():
     assert any(h.kind == "host" and h.value == "api.stripe.com" for h in tree_hits)
 
 
+def test_detect_shell_chained_tool_head(tmp_path):
+    """A tool after a `cd x && ` or `a; b` prefix must still be detected."""
+    from pathlib import Path
+
+    p = tmp_path / "pipelines" / "chain.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        "steps:\n  - command: cd /app && gog.gmail.search --query x\n  - command: 'echo hi; inbox list'\n",
+        encoding="utf-8",
+    )
+    tools = {h.value for h in detect_in_tree(Path(tmp_path)) if h.kind == "tool"}
+    assert "gog" in tools
+    assert "inbox" in tools
+    assert "cd" not in tools and "echo" not in tools
+
+
+def test_detect_list_valued_command(tmp_path):
+    """A command expressed as a YAML sequence of command lines is scanned."""
+    from pathlib import Path
+
+    p = tmp_path / "pipelines" / "seq.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        "steps:\n  - command:\n      - gog.gmail.search --query x\n      - inbox list\n",
+        encoding="utf-8",
+    )
+    tools = {h.value for h in detect_in_tree(Path(tmp_path)) if h.kind == "tool"}
+    assert "gog" in tools
+    assert "inbox" in tools
+
+
 def test_detect_in_tree_recurses_nested_scripts(tmp_path):
     """Tool/env/host references in nested script files must be detected."""
     from pathlib import Path

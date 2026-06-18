@@ -117,20 +117,29 @@ def main() -> None:
         if not args.apply:
             continue
 
-        # Merge the fragment into the existing manifest.json (preserving
-        # safety_flags etc.), falling back to the row's manifest_json if the S3
-        # object is missing/unreadable.
+        # Read the authoritative S3 manifest.json (it carries safety_flags,
+        # file_count, etc.). On ANY read error, SKIP — never rewrite the
+        # manifest from a degraded source. A published listing should always
+        # have one; a missing/unreadable manifest is an anomaly to inspect, not
+        # to overwrite blind.
         try:
-            existing = json.loads(s3.get_object(Bucket=bucket, Key=manifest_key)["Body"].read())
-            if not isinstance(existing, dict):
-                existing = _normalize_manifest(row.get("manifest_json"))
-        except Exception:  # noqa: BLE001 — fall back to the row's copy
-            existing = _normalize_manifest(row.get("manifest_json"))
-        existing.update(fragment)
+            s3_manifest = json.loads(s3.get_object(Bucket=bucket, Key=manifest_key)["Body"].read())
+            if not isinstance(s3_manifest, dict):
+                raise ValueError("manifest.json is not a JSON object")
+        except Exception as exc:  # noqa: BLE001 — report + skip
+            print(f"  SKIP {listing_id} v{version}: cannot read {manifest_key}: {exc}")
+            continue
+
+        # Merge the fragment into EACH store's own manifest shape — the rich S3
+        # manifest and the (separately-shaped) DDB row manifest_json — so neither
+        # store's existing fields are clobbered by the other's.
+        s3_manifest.update(fragment)
+        ddb_manifest = _normalize_manifest(row.get("manifest_json"))
+        ddb_manifest.update(fragment)
 
         # manifest_sha256 covers manifest.json (see _upload_artifact_to_s3), so
         # recompute it over the same canonical bytes we write to S3.
-        manifest_bytes = json.dumps(existing, sort_keys=True).encode("utf-8")
+        manifest_bytes = json.dumps(s3_manifest, sort_keys=True).encode("utf-8")
         sha = hashlib.sha256(manifest_bytes).hexdigest()
         s3.put_object(
             Bucket=bucket,
@@ -140,8 +149,8 @@ def main() -> None:
         )
         marketplace_service._listings_table().update_item(
             Key={"listing_id": listing_id, "version": version},
-            UpdateExpression=("SET manifest_json = :mj, manifest_sha256 = :sha, requirements_summary = :s"),
-            ExpressionAttributeValues={":mj": existing, ":sha": sha, ":s": summary},
+            UpdateExpression="SET manifest_json = :mj, manifest_sha256 = :sha",
+            ExpressionAttributeValues={":mj": ddb_manifest, ":sha": sha},
         )
     if not args.apply:
         print("\n(dry-run — pass --apply to write manifest.json + row updates)")

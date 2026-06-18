@@ -80,6 +80,27 @@ def test_stripe_correct_env_stays_connect():
     assert reqs["stripe"].disposition == Disposition.CONNECT
 
 
+def test_stripe_mixed_env_with_wired_key_stays_connect():
+    """If the agent references the wired key (STRIPE_SECRET_KEY) AND a stray
+    off-key (STRIPE_API_KEY), connecting still satisfies it — not BYO."""
+    reqs = _classify([Hit("env", "STRIPE_SECRET_KEY", "p"), Hit("env", "STRIPE_API_KEY", "p")])
+    assert reqs["stripe"].disposition == Disposition.CONNECT
+
+
+def test_tool_named_after_registry_provider_resolves_connect():
+    """A bare `--tool stripe` resolves to the registry provider via the tool
+    path (not the host/env path) and is connectable."""
+    reqs = _classify([Hit("tool", "stripe", "p")])
+    assert reqs["stripe"].disposition == Disposition.CONNECT
+    assert reqs["stripe"].kind == "mcp"
+
+
+def test_gated_provider_tool_is_unavailable():
+    """A bare `--tool google` resolves to the gated registry provider → UNAVAILABLE."""
+    reqs = _classify([Hit("tool", "google", "p")])
+    assert reqs["google"].disposition == Disposition.UNAVAILABLE
+
+
 def test_whatsapp_is_not_a_backend_channel():
     """whatsapp isn't a backend-provisionable channel; it must not classify as a
     connect channel (would tell buyers to connect it where it can't be)."""

@@ -133,6 +133,8 @@ async def test_submit_allows_unavailable_with_acknowledge(mock_listings):
         listing_id="l1", seller_id="user_abc", acknowledge_unavailable=True
     )
     assert result["status"] == "review"
+    # The draft->review transition must actually fire, not just return cleanly.
+    mock_listings.return_value.update_item.assert_called_once()
 
 
 @patch("core.services.marketplace_service._listings_table")
@@ -143,6 +145,7 @@ async def test_submit_not_blocked_when_no_unavailable(mock_listings):
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
     result = await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
     assert result["status"] == "review"
+    mock_listings.return_value.update_item.assert_called_once()
 
 
 @patch("core.services.marketplace_service._listings_table")

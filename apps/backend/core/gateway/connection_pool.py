@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, Set
 from websockets import connect as ws_connect
 
 from core.gateway.operator_rpc import GATEWAY_PORT, perform_signed_connect
+from core.observability.logging import bind_log_context
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 from core.services.connection_service import ConnectionService
@@ -1362,6 +1363,12 @@ class GatewayConnection:
 
     async def _reader_loop(self) -> None:
         """Background task: read all messages from gateway WebSocket."""
+        # Re-bind correlation ids onto the log contextvars: this loop runs in a
+        # detached asyncio task spawned at connect, so the HTTP-middleware binds
+        # never reached here. Bind the connection's owner_id as user_id so every
+        # event-forwarding log line is queryable. Passive logging context only —
+        # this touches no frame/event delivery. (See bind_log_context docstring.)
+        bind_log_context(user_id=self.owner_id)
         try:
             async for raw in self._ws:
                 try:

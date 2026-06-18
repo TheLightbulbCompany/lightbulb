@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from core.containers import get_ecs_manager
+from core.observability.logging import bind_log_context
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,12 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
     asyncio.create_task target.
     """
     from core.auth import is_org_owner_id
+
+    # Re-bind correlation ids onto the log contextvars: this runs in a detached
+    # asyncio task, so the HTTP-middleware binds did not propagate here. Bind
+    # owner_id as user_id so provisioning log lines are queryable by the same
+    # field as the rest of the owner's flows. (See bind_log_context docstring.)
+    bind_log_context(user_id=owner_id)
 
     try:
         provider_choice, byo_provider = await resolve_provider_choice(owner_id)

@@ -25,6 +25,10 @@ from datetime import datetime, timezone
 
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_id", default=None)
 user_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("user_id", default=None)
+# A logical operation id (e.g. a chat run id) for flows that have no HTTP
+# request_id — set at the top of detached background tasks so their log lines
+# are queryable. None for ordinary HTTP requests.
+run_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("run_id", default=None)
 
 # Standard LogRecord attributes we don't want to forward as extras
 _SKIP_FIELDS = {
@@ -73,6 +77,13 @@ class JsonFormatter(logging.Formatter):
             "user_id": user_id_var.get(),
         }
 
+        # run_id is only meaningful for background flows that set it (chat
+        # runs, etc.). Omit it for ordinary HTTP requests so their log shape
+        # is unchanged rather than carrying a null field.
+        run_id = run_id_var.get()
+        if run_id is not None:
+            data["run_id"] = run_id
+
         # Forward any extra fields the caller passed
         for key, value in record.__dict__.items():
             if key not in _SKIP_FIELDS and key not in data:
@@ -114,3 +125,33 @@ def bind_request_context(request_id: str, user_id: str | None = None) -> None:
     request_id_var.set(request_id)
     if user_id is not None:
         user_id_var.set(user_id)
+
+
+def bind_log_context(
+    *,
+    user_id: str | None = None,
+    request_id: str | None = None,
+    run_id: str | None = None,
+) -> None:
+    """Bind correlation ids onto the log contextvars for the current async task.
+
+    Contextvars set inside a ``BaseHTTPMiddleware`` dispatch do NOT propagate
+    into ``asyncio.create_task`` / ``BackgroundTasks`` children — the detached
+    task gets a fresh copy of the context at creation time. Call this at the
+    TOP of a background-task entry point to re-bind whatever ids are in scope
+    (``user_id``, an optional HTTP ``request_id``, and an optional logical
+    ``run_id``) so the structured JSON log fields populate for that flow.
+
+    Each argument is only applied when provided, so a caller can bind just the
+    ids it has. Best-effort: never raises, since logging context must not be
+    able to break a request/task.
+    """
+    try:
+        if user_id is not None:
+            user_id_var.set(user_id)
+        if request_id is not None:
+            request_id_var.set(request_id)
+        if run_id is not None:
+            run_id_var.set(run_id)
+    except Exception:  # pragma: no cover — defensive; contextvar.set can't realistically raise
+        pass

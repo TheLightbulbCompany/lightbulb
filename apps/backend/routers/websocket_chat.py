@@ -1591,6 +1591,18 @@ async def _process_agent_chat_background(
         logger.info("[%s] chat.send ACK agent=%s result=%s", user_id, agent_id, result)
         # Streaming response events are forwarded by the connection pool's reader task
 
+        # START of the chat.e2e.latency SLO span (alarm W9). The matching END
+        # is recorded on the terminal chat event (final/error/aborted) in the
+        # gateway reader loop, keyed by this same run id — they run in different
+        # async tasks, so the run id is the only correlation handle. Recorded
+        # only after a successful ACK so a gated/failed send never opens a span
+        # that no terminal will ever close. Best-effort: record_chat_start never
+        # raises. Skip side (`/btw`) runs — they aren't user-perceived turns.
+        if not side:
+            from core.observability.e2e_latency import record_chat_start
+
+            await record_chat_start(run_id_for_send)
+
     except asyncio.TimeoutError:
         chat_err = "RPC timed out"
         put_metric("chat.error", dimensions={"reason": "timeout"})

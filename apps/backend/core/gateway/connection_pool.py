@@ -1225,7 +1225,11 @@ class GatewayConnection:
                 # upstream's per-runId run tracking + the clients' separate
                 # btw-id sets (app-gateway.ts chatSideResultTerminalRuns /
                 # tui-event-handlers.ts isLocalBtwRunId).
-                if self._is_side_run(run_id):
+                # Captured before _forget_side_run drops the id, so the
+                # chat.e2e.latency END guard at the bottom of this block can
+                # tell a side (`/btw`) run from a primary run reliably.
+                run_is_side = self._is_side_run(run_id)
+                if run_is_side:
                     self._forget_side_run(run_id)
                     is_true_terminal = True
                 else:
@@ -1335,6 +1339,21 @@ class GatewayConnection:
                     if event_agent_id:
                         run_ended["agent_id"] = event_agent_id
                     await self._forward_to_frontends(run_ended, target_member)
+
+                # END of the chat.e2e.latency SLO span (alarm W9). Keyed by the
+                # run id the dispatch task recorded its START under (== this
+                # event's runId). Fires on EVERY primary-run terminal — final
+                # (success), error, aborted — so the metric reflects real
+                # completions of all kinds. Side (`/btw`) runs were never given
+                # a START in the dispatcher, so this no-ops for them; we still
+                # guard here to keep the intent explicit and avoid the await.
+                # PASSIVE measurement: this runs AFTER all frame forwarding
+                # above, and record_chat_end is best-effort (never raises), so
+                # it cannot alter/drop/delay any frame the frontend receives.
+                if not run_is_side:
+                    from core.observability.e2e_latency import record_chat_end
+
+                    await record_chat_end(run_id)
 
             else:
                 # Forward other events as-is for SWR revalidation (broadcast to all)

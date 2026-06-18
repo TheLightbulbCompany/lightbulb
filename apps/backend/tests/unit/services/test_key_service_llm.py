@@ -234,6 +234,33 @@ async def test_delete_absent_key_returns_false_but_still_calls_delete():
 
 
 @pytest.mark.asyncio
+async def test_orphan_delete_metric_omits_tool_id_dimension():
+    """When the Secrets Manager delete fails, the orphan metric is emitted but
+    MUST NOT carry tool_id — it is user-supplied/unbounded (the now-stricter
+    cardinality guard would otherwise raise inside the delete handler)."""
+    sm = _make_sm_mock("arn:orphan", present=True)
+    # describe reports the secret exists; the delete itself blows up with a
+    # non-ResourceNotFound error → orphan metric path.
+    sm.delete_secret.side_effect = RuntimeError("delete failed")
+
+    with (
+        patch("core.services.key_service.boto3.client", return_value=sm),
+        patch("core.observability.metrics.put_metric") as mock_put,
+    ):
+        from core.services.key_service import KeyService
+
+        svc = KeyService()
+        # delete_key swallows the SM failure (returns prior existence).
+        ok = await svc.delete_key("u_orphan", "openai")
+
+    assert ok is True
+    orphan_calls = [c for c in mock_put.call_args_list if c.args and c.args[0] == "key_service.secret_delete_orphan"]
+    assert len(orphan_calls) == 1, f"expected one orphan metric, got {orphan_calls}"
+    dims = orphan_calls[0].kwargs.get("dimensions") or {}
+    assert "tool_id" not in dims, f"tool_id leaked into orphan-delete dims: {dims}"
+
+
+@pytest.mark.asyncio
 async def test_save_raises_on_secrets_manager_failure_with_no_ddb_rollback():
     """If Secrets Manager push fails, the error surfaces — there is no DDB row
     to roll back (keys live only in Secrets Manager post Phase-3)."""

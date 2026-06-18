@@ -81,6 +81,58 @@ async def test_background_provision_swallows_exceptions():
         await background_provision("user_123", "user_123")
 
 
+@pytest.mark.asyncio
+async def test_background_provision_emits_error_metric_on_failure():
+    """On failure, the swallowed exception must still be alarmable: emit
+    container.provision{status=error, phase=dispatch}. Matches the metric name
+    ecs_manager uses (dimensions={"status": ...}) plus a `phase` dim so this
+    fire-and-forget path aggregates with the sync emissions yet stays
+    separately alarmable."""
+    fake_ecs = MagicMock()
+    fake_ecs.provision_user_container = AsyncMock(side_effect=RuntimeError("boom"))
+    with (
+        patch(
+            "core.services.container_provision.resolve_provider_choice",
+            new=AsyncMock(return_value=("bedrock_claude", None)),
+        ),
+        patch(
+            "core.services.container_provision.get_ecs_manager",
+            return_value=fake_ecs,
+        ),
+        patch("core.observability.metrics.put_metric") as mock_put,
+    ):
+        # Should NOT raise even though provisioning failed.
+        await background_provision("user_123", "user_123")
+
+    error_calls = [c for c in mock_put.call_args_list if c.args and c.args[0] == "container.provision"]
+    assert len(error_calls) == 1, f"expected one container.provision emission, got {error_calls}"
+    assert error_calls[0].kwargs.get("dimensions") == {"status": "error", "phase": "dispatch"}
+
+
+@pytest.mark.asyncio
+async def test_background_provision_metric_failure_does_not_raise():
+    """A metrics outage in the except handler must not turn the swallow into a
+    raise (the task is fire-and-forget)."""
+    fake_ecs = MagicMock()
+    fake_ecs.provision_user_container = AsyncMock(side_effect=RuntimeError("boom"))
+    with (
+        patch(
+            "core.services.container_provision.resolve_provider_choice",
+            new=AsyncMock(return_value=("bedrock_claude", None)),
+        ),
+        patch(
+            "core.services.container_provision.get_ecs_manager",
+            return_value=fake_ecs,
+        ),
+        patch(
+            "core.observability.metrics.put_metric",
+            side_effect=RuntimeError("cloudwatch down"),
+        ),
+    ):
+        # Should NOT raise.
+        await background_provision("user_123", "user_123")
+
+
 async def test_pre_stage_oauth_reads_connector_writes_owner():
     """The token READ key (connector / workspace owner) is decoupled from
     the EFS WRITE key (container owner / org_id). For an org, tokens live

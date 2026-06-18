@@ -21,6 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
+from core.observability.logging import bind_log_context
 from core.observability.metrics import put_metric
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient
@@ -1090,6 +1091,11 @@ async def _process_rpc_background(
     params: dict,
 ) -> None:
     """Process an OpenClaw RPC request via the gateway connection pool."""
+    # Re-bind correlation ids onto the log contextvars: this runs in a detached
+    # BackgroundTask, so the HTTP-middleware binds did not propagate here. Use
+    # the WS request id as the run_id so all log lines for this RPC are
+    # queryable. (See bind_log_context docstring.)
+    bind_log_context(user_id=user_id, run_id=req_id)
     # Log non-noisy RPCs at INFO (skip health/channels.status which fire every 3s)
     if method not in ("health", "channels.status"):
         logger.info("[%s] rpc %s owner=%s conn=%s", user_id, method, owner_id, connection_id[:12])
@@ -1355,6 +1361,11 @@ async def _process_agent_chat_background(
     send: a side run does not own the parked-vs-dead window, so it is tracked
     separately (``mark_side_run``) and leaves the primary run's window intact.
     """
+    # Re-bind correlation ids onto the log contextvars: this runs in a detached
+    # BackgroundTask, so the HTTP-middleware binds did not propagate here. Bind
+    # the frontend-minted client_run_id as the run_id when present so every log
+    # line for this turn is queryable. (See bind_log_context docstring.)
+    bind_log_context(user_id=user_id, run_id=client_run_id)
     logger.info(
         "[%s] chat.send START agent=%s owner=%s conn=%s msg_len=%d",
         user_id,
@@ -1590,6 +1601,13 @@ async def _process_agent_chat_background(
         )
         logger.info("[%s] chat.send ACK agent=%s result=%s", user_id, agent_id, result)
         # Streaming response events are forwarded by the connection pool's reader task
+
+        # The chat.e2e.latency SLO span (alarm W9) opens here implicitly: the
+        # mark_run_active call above stamped the run's started_at on the pool's
+        # active-run window (BEFORE this chat.send RPC was forwarded). The END
+        # is emitted from that same window on the terminal chat event in the
+        # gateway reader loop (connection_pool._handle_message), so no separate
+        # start-record is needed here — the pool already tracks the start.
 
     except asyncio.TimeoutError:
         chat_err = "RPC timed out"

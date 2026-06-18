@@ -6,7 +6,13 @@ from unittest.mock import patch
 
 import pytest
 
-from core.observability.metrics import NAMESPACE, gauge, put_metric, timing
+from core.observability.metrics import (
+    _DENIED_DIMENSIONS,
+    NAMESPACE,
+    gauge,
+    put_metric,
+    timing,
+)
 
 
 def test_put_metric_emits_valid_emf_json(capsys):
@@ -69,3 +75,17 @@ def test_put_metric_default_value_is_one(capsys):
     put_metric("chat.message.count")
     data = json.loads(capsys.readouterr().out.strip())
     assert data["chat.message.count"] == 1.0
+
+
+def test_admin_user_id_and_tool_id_are_denied_dimensions():
+    """The guard set must cover the two previously-leaking unbounded dims."""
+    assert "admin_user_id" in _DENIED_DIMENSIONS
+    assert "tool_id" in _DENIED_DIMENSIONS
+
+
+def test_put_metric_rejects_admin_user_id_and_tool_id():
+    """Both newly-denied dims raise — so the emission sites MUST drop them."""
+    with pytest.raises(ValueError, match="high-cardinality"):
+        put_metric("admin_api.call_count", dimensions={"admin_user_id": "user_42"})
+    with pytest.raises(ValueError, match="high-cardinality"):
+        put_metric("key_service.secret_delete_orphan", dimensions={"tool_id": "openai"})

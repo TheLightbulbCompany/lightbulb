@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from core.containers import get_ecs_manager
+from core.observability.logging import bind_log_context
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,12 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
     """
     from core.auth import is_org_owner_id
 
+    # Re-bind correlation ids onto the log contextvars: this runs in a detached
+    # asyncio task, so the HTTP-middleware binds did not propagate here. Bind
+    # owner_id as user_id so provisioning log lines are queryable by the same
+    # field as the rest of the owner's flows. (See bind_log_context docstring.)
+    bind_log_context(user_id=owner_id)
+
     try:
         provider_choice, byo_provider = await resolve_provider_choice(owner_id)
         # owner_type drives org-specific config (e.g. gateway.nodes.browser.mode
@@ -57,3 +64,17 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
         )
     except Exception:
         logger.exception("Background provisioning failed for owner %s", owner_id)
+        # This fire-and-forget task swallows exceptions, so its failures are
+        # otherwise invisible to alarms. Emit the same metric ecs_manager uses
+        # for provision outcomes, with a `phase` dim so it aggregates with the
+        # synchronous provision emissions while staying separately alarmable.
+        # Best-effort: a metrics outage must not turn this swallow into a raise.
+        try:
+            from core.observability.metrics import put_metric
+
+            put_metric(
+                "container.provision",
+                dimensions={"status": "error", "phase": "dispatch"},
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never break the task
+            logger.debug("container.provision dispatch-failure metric emission failed", exc_info=True)

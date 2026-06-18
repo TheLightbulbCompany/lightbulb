@@ -1,8 +1,11 @@
 """Unit tests for the Stripe webhook event-dedup helper."""
 
 import time
+from unittest.mock import MagicMock, patch
+
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.services.webhook_dedup import (
@@ -65,3 +68,73 @@ async def test_recorded_item_has_30day_ttl(dedup_table, monkeypatch):
     item = client.get_item(TableName=dedup_table, Key={"event_id": {"S": "evt_ttl"}})["Item"]
     ttl = int(item["ttl"]["N"])
     assert before + 2_592_000 - 5 <= ttl <= after + 2_592_000 + 5
+
+
+# ---------------------------------------------------------------------------
+# Telemetry: dedup-decision metric + non-conditional ClientError log/re-raise
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_emits_metric_recorded_on_first_call(dedup_table, monkeypatch):
+    """RECORDED decision emits webhook.dedup{source, outcome=recorded}."""
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    with patch("core.observability.metrics.put_metric") as mock_put:
+        result = await record_event_or_skip("evt_metric_1", source="stripe")
+
+    assert result is WebhookDedupResult.RECORDED
+    mock_put.assert_called_once_with("webhook.dedup", dimensions={"source": "stripe", "outcome": "recorded"})
+
+
+@pytest.mark.asyncio
+async def test_emits_metric_already_seen_on_replay(dedup_table, monkeypatch):
+    """ALREADY_SEEN decision emits webhook.dedup{source, outcome=already_seen}."""
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    await record_event_or_skip("evt_metric_2", source="clerk")
+    with patch("core.observability.metrics.put_metric") as mock_put:
+        result = await record_event_or_skip("evt_metric_2", source="clerk")
+
+    assert result is WebhookDedupResult.ALREADY_SEEN
+    mock_put.assert_called_once_with("webhook.dedup", dimensions={"source": "clerk", "outcome": "already_seen"})
+
+
+@pytest.mark.asyncio
+async def test_metric_failure_does_not_break_decision(dedup_table, monkeypatch):
+    """A metrics outage must never turn a successful dedup into a raise."""
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    with patch(
+        "core.observability.metrics.put_metric",
+        side_effect=RuntimeError("cloudwatch unavailable"),
+    ):
+        result = await record_event_or_skip("evt_metric_safe", source="stripe")
+
+    assert result is WebhookDedupResult.RECORDED
+
+
+@pytest.mark.asyncio
+async def test_non_conditional_client_error_logs_and_reraises(monkeypatch, caplog):
+    """A non-ConditionalCheckFailedException ClientError is logged (WARNING with
+    event_id + source) and re-raised — never silently swallowed, no metric."""
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
+
+    boom = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow down"}},
+        "PutItem",
+    )
+    fake_table = MagicMock()
+    fake_table.put_item.side_effect = boom
+
+    with (
+        patch("core.services.webhook_dedup._table", return_value=fake_table),
+        patch("core.observability.metrics.put_metric") as mock_put,
+        caplog.at_level("WARNING", logger="core.services.webhook_dedup"),
+    ):
+        with pytest.raises(ClientError) as exc_info:
+            await record_event_or_skip("evt_throttled", source="stripe")
+
+    assert exc_info.value is boom
+    # No dedup-decision metric on the error path.
+    mock_put.assert_not_called()
+    # WARNING carries the event_id + source for diagnosis.
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("evt_throttled" in m and "stripe" in m for m in warnings), warnings

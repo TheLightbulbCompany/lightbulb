@@ -165,7 +165,10 @@ class KeyService:
             )
             from core.observability.metrics import put_metric
 
-            put_metric("key_service.secret_delete_orphan", dimensions={"tool_id": tool_id})
+            # tool_id is intentionally NOT a dimension — it is user-supplied /
+            # unbounded (see _DENIED_DIMENSIONS); the provider is captured in the
+            # log line above for diagnosis.
+            put_metric("key_service.secret_delete_orphan")
         return existed
 
     async def list_keys(self, user_id: str) -> list[dict]:

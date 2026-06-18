@@ -30,7 +30,9 @@ NAMESPACE = "Isol8"
 
 # Dimensions that must NOT appear in metrics (high cardinality = cost explosion).
 # These belong in structured log fields instead.
-_DENIED_DIMENSIONS = frozenset({"user_id", "container_id", "request_id", "owner_id"})
+#   - admin_user_id: unbounded per admin identity (admin_api.* middleware).
+#   - tool_id: user-supplied/unbounded (key_service orphan-delete metric).
+_DENIED_DIMENSIONS = frozenset({"user_id", "container_id", "request_id", "owner_id", "admin_user_id", "tool_id"})
 
 
 def _get_env() -> str:

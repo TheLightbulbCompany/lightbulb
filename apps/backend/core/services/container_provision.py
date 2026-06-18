@@ -64,3 +64,17 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
         )
     except Exception:
         logger.exception("Background provisioning failed for owner %s", owner_id)
+        # This fire-and-forget task swallows exceptions, so its failures are
+        # otherwise invisible to alarms. Emit the same metric ecs_manager uses
+        # for provision outcomes, with a `phase` dim so it aggregates with the
+        # synchronous provision emissions while staying separately alarmable.
+        # Best-effort: a metrics outage must not turn this swallow into a raise.
+        try:
+            from core.observability.metrics import put_metric
+
+            put_metric(
+                "container.provision",
+                dimensions={"status": "error", "phase": "dispatch"},
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never break the task
+            logger.debug("container.provision dispatch-failure metric emission failed", exc_info=True)

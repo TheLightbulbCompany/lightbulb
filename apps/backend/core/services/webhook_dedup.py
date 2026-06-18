@@ -18,6 +18,7 @@ idempotency contract is testable in isolation.
 from __future__ import annotations
 
 import enum
+import logging
 import os
 import time
 
@@ -26,8 +27,24 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 
+logger = logging.getLogger(__name__)
+
 
 _TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
+
+
+def _emit_dedup_metric(source: str, outcome: str) -> None:
+    """Best-effort dedup-decision metric. Both dims are bounded (``source``
+    is the small provider set stripe/clerk/etc.; ``outcome`` is one of
+    recorded/already_seen), so neither explodes the dimension space. Never
+    raises — a metrics outage must not break webhook ingestion.
+    """
+    try:
+        from core.observability.metrics import put_metric
+
+        put_metric("webhook.dedup", dimensions={"source": source, "outcome": outcome})
+    except Exception:  # noqa: BLE001 — telemetry must never break ingestion
+        logger.debug("webhook.dedup metric emission failed", exc_info=True)
 
 
 class WebhookDedupResult(str, enum.Enum):
@@ -87,8 +104,16 @@ async def record_event_or_skip(event_id: str, *, source: str) -> WebhookDedupRes
             },
             ConditionExpression="attribute_not_exists(event_id)",
         )
+        _emit_dedup_metric(source, "recorded")
         return WebhookDedupResult.RECORDED
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            _emit_dedup_metric(source, "already_seen")
             return WebhookDedupResult.ALREADY_SEEN
+        logger.warning(
+            "webhook dedup PutItem failed (non-conditional) event_id=%s source=%s: %s",
+            event_id,
+            source,
+            e,
+        )
         raise

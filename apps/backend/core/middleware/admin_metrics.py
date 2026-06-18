@@ -1,9 +1,8 @@
 """AdminMetricsMiddleware — emit admin_api.* CloudWatch metrics for /admin/* requests.
 
-Per CEO review O1 (#351): every request under /api/v1/admin/* emits two
-metrics (call_count + latency_ms), tagged with the endpoint path and the
-admin's Clerk user_id. 5xx responses additionally emit admin_api.errors
-tagged with endpoint + status code.
+Every request under /api/v1/admin/* emits two metrics (call_count +
+latency_ms), tagged with the endpoint path. 5xx responses additionally emit
+admin_api.errors tagged with endpoint + status code.
 
 Non-admin paths pass through with zero metric emission. Metric emission
 errors are swallowed — a metrics outage must not double-fail the request.
@@ -11,7 +10,9 @@ errors are swallowed — a metrics outage must not double-fail the request.
 Note on cardinality: `endpoint` uses the FastAPI route pattern when
 available (e.g. /api/v1/admin/users/{user_id}/agents) so {user_id} doesn't
 explode the dimension space. Falls back to raw path if the route hasn't
-been matched yet.
+been matched yet. The admin's Clerk user_id is deliberately NOT a dimension
+— it is unbounded per admin identity; it belongs in structured log fields
+(see _DENIED_DIMENSIONS in core/observability/metrics.py).
 """
 
 import logging
@@ -37,15 +38,6 @@ def _endpoint_label(request: Request) -> str:
     return request.url.path
 
 
-def _admin_user_id(request: Request) -> str:
-    """Pull the admin's user_id from request.state if a prior dependency set it.
-
-    Defaults to "unknown" since the metric runs at middleware time —
-    earlier than the auth dependency that would set state.
-    """
-    return getattr(request.state, "admin_user_id", None) or "unknown"
-
-
 class AdminMetricsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         if not request.url.path.startswith(_ADMIN_PREFIX):
@@ -64,8 +56,7 @@ class AdminMetricsMiddleware(BaseHTTPMiddleware):
 
         elapsed_ms = (time.monotonic() - started) * 1000.0
         endpoint = _endpoint_label(request)
-        admin_user_id = _admin_user_id(request)
-        base_dims = {"endpoint": endpoint, "admin_user_id": admin_user_id}
+        base_dims = {"endpoint": endpoint}
 
         try:
             put_metric("admin_api.call_count", value=1, unit="Count", dimensions=base_dims)

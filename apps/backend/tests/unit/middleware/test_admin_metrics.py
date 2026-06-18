@@ -230,32 +230,31 @@ def test_latency_metric_value_reflects_request_duration():
     assert float(value) >= 50.0, f"expected latency >= 50ms, got {value}"
 
 
-def test_admin_user_id_dimension_when_authenticated():
-    """When request.state.admin_user_id is set, dimensions include that ID."""
+def test_admin_user_id_never_emitted_when_authenticated():
+    """admin_user_id is unbounded per admin identity — it must NOT be a metric
+    dimension even when request.state.admin_user_id is set (cardinality guard)."""
     with patch("core.middleware.admin_metrics.put_metric") as mock_put:
         app = _build_test_app(with_auth_user="user_admin_42")
         client = TestClient(app)
         res = client.get("/api/v1/admin/foo")
 
     assert res.status_code == 200
-    count_calls = _calls_named(mock_put, "admin_api.call_count")
-    assert len(count_calls) == 1
-    dims = count_calls[0].get("dimensions") or {}
-    assert dims.get("admin_user_id") == "user_admin_42"
+    for _name, merged in _all_metric_calls(mock_put):
+        dims = merged.get("dimensions") or {}
+        assert "admin_user_id" not in dims, f"admin_user_id leaked into {_name} dims: {dims}"
 
 
-def test_admin_user_id_defaults_to_unknown_without_auth_context():
-    """No auth context → dimension is the literal string ``unknown``."""
+def test_admin_user_id_never_emitted_without_auth_context():
+    """No auth context → still no admin_user_id dimension on any metric."""
     with patch("core.middleware.admin_metrics.put_metric") as mock_put:
         app = _build_test_app()  # no auth user injected
         client = TestClient(app)
         res = client.get("/api/v1/admin/foo")
 
     assert res.status_code == 200
-    count_calls = _calls_named(mock_put, "admin_api.call_count")
-    assert len(count_calls) == 1
-    dims = count_calls[0].get("dimensions") or {}
-    assert dims.get("admin_user_id") == "unknown"
+    for _name, merged in _all_metric_calls(mock_put):
+        dims = merged.get("dimensions") or {}
+        assert "admin_user_id" not in dims, f"admin_user_id leaked into {_name} dims: {dims}"
 
 
 @pytest.mark.parametrize("path", ["/", "/healthz"])

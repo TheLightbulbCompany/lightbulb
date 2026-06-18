@@ -1207,6 +1207,7 @@ jobs:
       - Build-Synth
       - Assets-FileAsset18
       - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
@@ -1767,6 +1768,7 @@ jobs:
       - Build-Synth
       - Assets-FileAsset29
       - prod-isol8-prod-database-Deploy
+      - prod-isol8-prod-paperclip-Deploy
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-api-Deploy
       - prod-isol8-prod-container-Deploy

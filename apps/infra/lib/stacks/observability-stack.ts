@@ -13,6 +13,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as rds from "aws-cdk-lib/aws-rds";
 import { Construct } from "constructs";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,9 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   connectionsTableName: string;
   // Lambda authorizer function name (for Lambda alarms)
   authorizerFunctionName: string;
+  // Paperclip tier references (for Aurora + Paperclip-service alarms)
+  paperclipDbCluster: rds.IDatabaseCluster;
+  paperclipService: ecs.IBaseService;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +134,7 @@ export class ObservabilityStack extends cdk.Stack {
     this.createPageAlarms(props);
     this.createWarnCustomMetricAlarms();
     this.createWarnAwsNativeAlarms(props);
+    this.createPaperclipTierAlarms(props);
     this.createCostAlarms(props);
 
     // -----------------------------------------------------------------------
@@ -1655,6 +1660,102 @@ def handler(event, _ctx):
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
     w48.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+  }
+
+  // =========================================================================
+  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62)
+  // =========================================================================
+
+  private createPaperclipTierAlarms(props: ObservabilityStackProps): void {
+    const dbId = props.paperclipDbCluster.clusterIdentifier;
+    // W60: Aurora CPU
+    const w60 = new cloudwatch.Alarm(this, "W60", {
+      alarmName: `isol8-${this.envName}-W60-aurora-cpu`,
+      alarmDescription: "Paperclip Aurora CPU >80% for 15 min",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/RDS",
+        metricName: "CPUUtilization",
+        statistic: "Average",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { DBClusterIdentifier: dbId },
+      }),
+      threshold: 80,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w60.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W61: Aurora connections — SATURATION only (high watermark). Provisional.
+    const w61 = new cloudwatch.Alarm(this, "W61", {
+      alarmName: `isol8-${this.envName}-W61-aurora-connections`,
+      alarmDescription:
+        "Paperclip Aurora DatabaseConnections >100 for 15 min — connection saturation. Provisional threshold.",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/RDS",
+        metricName: "DatabaseConnections",
+        statistic: "Maximum",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { DBClusterIdentifier: dbId },
+      }),
+      threshold: 100,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w61.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // W61b: Aurora OUTAGE / FAILOVER — distinct from saturation. W60/W61 (CPU,
+    // high-connections, NOT_BREACHING) do NOT fire when a failover/outage drops
+    // connections toward zero or stops reporting. RDS publishes failover +
+    // failure events to EventBridge; route them straight to the warn topic so
+    // the 3C Aurora-failover scenario has a recovery signal. (Event categories:
+    // "failover" + "failure"; covers RDS-EVENT-0031/0071/0036 etc.)
+    const auroraEventRule = new events.Rule(this, "AuroraFailoverRule", {
+      ruleName: `isol8-${this.envName}-aurora-failover`,
+      description: "Paperclip Aurora failover/failure events → warn",
+      eventPattern: {
+        source: ["aws.rds"],
+        detailType: ["RDS DB Cluster Event", "RDS DB Instance Event"],
+        detail: {
+          SourceIdentifier: [dbId],
+          EventCategories: ["failover", "failure"],
+        },
+      },
+    });
+    auroraEventRule.addTarget(new events_targets.SnsTopic(this.warnTopic));
+
+    // W62: Paperclip Fargate service CPU. The Paperclip service is singular +
+    // CDK-known, so a static per-service AWS/ECS alarm works (unlike the
+    // per-user fleet).
+    const clusterName = props.cluster.clusterName;
+    const pcServiceName = cdk.Fn.select(
+      2,
+      cdk.Fn.split("/", props.paperclipService.serviceArn),
+    );
+    const w62 = new cloudwatch.Alarm(this, "W62", {
+      alarmName: `isol8-${this.envName}-W62-paperclip-service-cpu`,
+      alarmDescription: "Paperclip Fargate service CPU >80% for 15 min",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ECS",
+        metricName: "CPUUtilization",
+        statistic: "Average",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { ClusterName: clusterName, ServiceName: pcServiceName },
+      }),
+      threshold: 80,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    w62.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+
+    // NO W63 here. The "Paperclip down" signal does NOT come from an ALB
+    // HealthyHostCount alarm — VERIFIED: PaperclipStack has no ALB target group
+    // (it registers via cloudMapOptions and is reached through the backend), so
+    // there is no HealthyHostCount metric to alarm on. The down signal is the
+    // Part B `paperclip.upstream.error{kind:"unreachable"}` metric + its alarm
+    // (which keeps the W63 id), emitted from the backend's Paperclip-call paths.
   }
 
   // =========================================================================

@@ -182,8 +182,12 @@ export class Isol8Stage extends cdk.Stage {
         },
         connectionsTableName: api.connectionsTableName,
         authorizerFunctionName: `isol8-${env}-ws-authorizer`,
+        paperclipDbCluster: database.paperclipDbCluster,
+        paperclipService: paperclip.service,
       },
     );
+    observability.addDependency(database);
+    observability.addDependency(paperclip);
 
     // BedrockMeterStack — account-scoped usage meter, direct Metronome
     // ingest. Bedrock model-invocation logging is account+region-global (one

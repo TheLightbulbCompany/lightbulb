@@ -4,6 +4,7 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as rds from "aws-cdk-lib/aws-rds";
 import { Template } from "aws-cdk-lib/assertions";
 import {
   ObservabilityStack,
@@ -53,6 +54,30 @@ describe("ObservabilityStack", () => {
       taskDefinition: taskDef,
     });
 
+    const paperclipService = new ecs.FargateService(
+      supportStack,
+      "PaperclipService",
+      {
+        cluster,
+        taskDefinition: taskDef,
+      },
+    );
+
+    const paperclipDbCluster = new rds.DatabaseCluster(
+      supportStack,
+      "PaperclipDb",
+      {
+        engine: rds.DatabaseClusterEngine.auroraPostgres({
+          version: rds.AuroraPostgresEngineVersion.VER_16_4,
+        }),
+        writer: rds.ClusterInstance.serverlessV2("writer"),
+        serverlessV2MinCapacity: 0,
+        serverlessV2MaxCapacity: 4,
+        vpc,
+        clusterIdentifier: "isol8-dev-paperclip-db",
+      },
+    );
+
     const makeTable = (id: string) =>
       new dynamodb.Table(supportStack, id, {
         partitionKey: {
@@ -82,6 +107,8 @@ describe("ObservabilityStack", () => {
       },
       connectionsTableName: "isol8-dev-ws-connections",
       authorizerFunctionName: "isol8-dev-ws-authorizer",
+      paperclipDbCluster,
+      paperclipService,
     };
 
     const obsStack = new ObservabilityStack(
@@ -111,7 +138,9 @@ describe("ObservabilityStack", () => {
   // GuardDuty + Access Analyzer already exist at account level — not created by CDK.
   // We only create EventBridge rules to route their findings to SNS.
   test("creates EventBridge rules for security findings", () => {
-    template.resourceCountIs("AWS::Events::Rule", 3); // GuardDuty + Access Analyzer + ECS TaskStopped
+    // GuardDuty + Access Analyzer + ECS TaskStopped (W39) + ECS TaskRunning
+    // (W59 multi-task detector) + Aurora failover/failure (W61b).
+    template.resourceCountIs("AWS::Events::Rule", 5);
   });
 
   test("creates AWS Budget", () => {

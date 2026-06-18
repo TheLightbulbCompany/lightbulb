@@ -42,6 +42,25 @@ def test_scan_orders_worst_first(tmp_path):
     assert order == sorted(order, key=lambda d: {"unavailable": 0, "byo": 1, "connect": 2, "included": 3}[d])
 
 
+def test_declared_skill_unbundled_surfaces_as_unavailable(tmp_path):
+    """A skill on the agent's agents.list[].skills that no pipeline --tool's, and
+    isn't bundled/present, must still surface (UNAVAILABLE), not silently ship."""
+    reqs, _ = requirements_scan({"skills": {"entries": {"jira": {}}}}, tmp_path, declared_skills={"jira"})
+    by_key = {r.key: r for r in reqs}
+    assert "jira" in by_key
+    assert by_key["jira"].disposition == Disposition.UNAVAILABLE
+
+
+def test_declared_skill_bundled_is_included(tmp_path):
+    reqs, _ = requirements_scan(
+        {"skills": {"entries": {"jira": {}}}},
+        tmp_path,
+        declared_skills={"jira"},
+        bundled_skills={"jira"},
+    )
+    assert {r.key: r.disposition for r in reqs}["jira"] == Disposition.INCLUDED
+
+
 def test_scan_never_raises_on_garbage(tmp_path):
     (tmp_path / "pipelines").mkdir()
     (tmp_path / "pipelines" / "x.lobster").write_bytes(b"\xff\xfe not utf8 \x00 --tool foo")

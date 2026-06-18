@@ -52,6 +52,23 @@ def test_scan_tarball_empty_tree_is_empty():
     assert fragment["requires"]["credentials"] == []
 
 
+def test_scan_tarball_seeds_bundled_slice_mcp():
+    """A bundled registry MCP (from the slice) not referenced in any shipped file
+    still surfaces as a requirement, matching the deploy credential gate."""
+    tb = _make_tarball({"./openclaw.json": "{}"})
+    fragment = scan_tarball(tb, bundled_mcps={"stripe"})
+    keys = {r["key"]: r["disposition"] for r in fragment["requirements"]}
+    assert keys.get("stripe") == "connect"
+
+
+def test_slice_bundled_mcps_parses_server_keys():
+    from scripts.backfill_marketplace_requirements import _slice_bundled_mcps
+
+    slice_bytes = json.dumps({"mcp": {"servers": {"stripe": {}, "notion": {}}}}).encode()
+    assert _slice_bundled_mcps(slice_bytes) == {"stripe", "notion"}
+    assert _slice_bundled_mcps(b"not json") == set()
+
+
 def _s3_stub(tar_bytes: bytes, manifest_obj: dict):
     """A boto3-S3-like stub: serves the tarball + manifest.json and records puts."""
     puts: dict[str, bytes] = {}

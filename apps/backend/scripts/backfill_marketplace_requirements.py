@@ -37,13 +37,15 @@ from core.services.marketplace.requirements import (
 )
 
 
-def scan_tarball(tarball_bytes: bytes) -> dict:
+def scan_tarball(tarball_bytes: bytes, bundled_mcps: set[str] | None = None) -> dict:
     """Extract a listing's ``workspace.tar.gz`` and scan it into a manifest
     fragment ``{requirements, scan_incomplete, requires}`` — the same shape
     ``agent_export`` freezes at publish, ready to merge into the manifest.
 
     The agent tree is at the tar root (``./openclaw.json``, ``./pipelines``,
-    ``./scripts``), so the extracted root IS the agent dir.
+    ``./scripts``), so the extracted root IS the agent dir. ``bundled_mcps`` (the
+    slice's ``mcp.servers`` keys) seeds bundled provider-MCP rows so the ledger
+    matches what the deploy gate enforces.
     """
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -53,16 +55,32 @@ def scan_tarball(tarball_bytes: bytes) -> dict:
         # The extracted tree IS the shipped set (already filtered at publish), so
         # the default walk scans the right files. Workspace skills auto-ship —
         # enumerate them so a `--tool <workspace-skill>` classifies INCLUDED, not
-        # phantom. (Bundle selection isn't recoverable from the tarball alone, so
-        # config-declared MCPs stay best-effort for legacy backfills.)
+        # phantom.
         skills_root = root / "skills"
         workspace_skills = set()
         if skills_root.is_dir():
             workspace_skills = {
                 (e.stem if e.is_file() else e.name) for e in skills_root.iterdir() if not e.name.startswith(".")
             }
-        reqs, scan_incomplete = requirements_scan(effective_cfg, root, workspace_skills=workspace_skills)
+        reqs, scan_incomplete = requirements_scan(
+            effective_cfg,
+            root,
+            bundled_mcps=bundled_mcps or set(),
+            workspace_skills=workspace_skills,
+        )
         return build_manifest_requirements(reqs, scan_incomplete)
+
+
+def _slice_bundled_mcps(slice_bytes: bytes) -> set[str]:
+    """The ``mcp.servers`` keys carried by an ``openclaw-slice.json`` — the MCPs
+    actually bundled into a published listing (recovers the seller's selection
+    for legacy backfills, which the tarball alone doesn't carry)."""
+    try:
+        slice_obj = json.loads(slice_bytes)
+        servers = ((slice_obj.get("mcp") or {}).get("servers")) or {}
+        return set(servers) if isinstance(servers, dict) else set()
+    except (ValueError, AttributeError):
+        return set()
 
 
 def _normalize_manifest(raw) -> dict:
@@ -119,7 +137,16 @@ def main() -> None:
             print(f"  SKIP {listing_id} v{version}: cannot read {tar_key}: {exc}")
             continue
 
-        fragment = scan_tarball(body)
+        # Recover the bundled MCPs from the slice so bundled provider-MCP rows
+        # (which the deploy gate hard-enforces) appear in the backfilled ledger.
+        bundled_mcps: set[str] = set()
+        try:
+            slice_bytes = s3.get_object(Bucket=bucket, Key=f"{s3_prefix}openclaw-slice.json")["Body"].read()
+            bundled_mcps = _slice_bundled_mcps(slice_bytes)
+        except Exception:  # noqa: BLE001 — slice optional / pre-slice listings
+            pass
+
+        fragment = scan_tarball(body, bundled_mcps=bundled_mcps)
         summary = marketplace_service.summarize_requirements(fragment)
         print(
             f"  {listing_id} v{version}: {summary['counts']} "

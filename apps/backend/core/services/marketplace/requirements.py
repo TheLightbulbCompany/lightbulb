@@ -105,6 +105,7 @@ def requirements_scan(
     bundled_skills: set[str] | None = None,
     scan_files: list[str] | None = None,
     workspace_skills: set[str] | None = None,
+    declared_skills: set[str] | None = None,
 ) -> tuple[list[Requirement], bool]:
     """Scan an agent → ``(requirements, scan_incomplete)``. Never raises.
 
@@ -118,9 +119,12 @@ def requirements_scan(
             exactly what ships (so the ledger never discloses a dep from a file
             the export filter drops). Omit to walk the dir (backfill path).
         workspace_skills: auto-shipped workspace skill names; classified INCLUDED.
+        declared_skills: the agent's ``agents.list[].skills`` declaration — skills
+            the agent uses even when no pipeline ``--tool``s them. Seeded as hits
+            so an unbundled declared skill surfaces as UNAVAILABLE, not silently.
     """
     from core.services.marketplace.requirements_classify import classify_hits
-    from core.services.marketplace.requirements_detect import detect_in_tree
+    from core.services.marketplace.requirements_detect import Hit, detect_in_tree
 
     try:
         cfg = effective_config or {}
@@ -129,6 +133,10 @@ def requirements_scan(
         allow_bundled = skills_cfg.get("allowBundled") or []
         config_mcps = (cfg.get("mcp") or {}).get("servers") or {}
         hits = detect_in_tree(Path(agent_dir), scan_files=scan_files)
+        # Seed the agent's declared skills (agents.list[].skills) as tool hits so
+        # they classify alongside body-detected ones — a declared-but-unbundled
+        # skill discloses as UNAVAILABLE instead of shipping referenced-but-silent.
+        hits = [Hit("tool", s, "agent.skills") for s in (declared_skills or ())] + hits
         reqs = classify_hits(
             hits,
             bundled_mcps=set(bundled_mcps or ()),

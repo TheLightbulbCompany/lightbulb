@@ -520,6 +520,7 @@ def export_agent_from_efs(
         # never discloses a dep from a file the export filter dropped.
         scan_files=contents,
         workspace_skills=workspace_skill_names,
+        declared_skills=_agent_declared_skills(config, agent_id),
     )
     manifest.update(build_manifest_requirements(reqs, scan_incomplete))
 
@@ -535,6 +536,16 @@ def export_agent_from_efs(
 # ---------------------------------------------------------------------------
 # Publish-wizard dry-run preview
 # ---------------------------------------------------------------------------
+
+
+def _agent_declared_skills(config: dict, agent_id: str) -> set[str]:
+    """The skills the agent declares on its ``agents.list[]`` entry — what it
+    uses even when no pipeline ``--tool``s them. The slice carries this list, so
+    a declared-but-unbundled skill must still surface in the requirements ledger.
+    """
+    entries = (config.get("agents") or {}).get("list") or []
+    entry = next((a for a in entries if isinstance(a, dict) and a.get("id") == agent_id), {})
+    return {s for s in (entry.get("skills") or []) if isinstance(s, str)}
 
 
 def _enumerate_workspace_skill_names(agent_dir: Path) -> set[str]:
@@ -662,6 +673,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
         bundled_skills=set(addable_skill_names),
         scan_files=contents,
         workspace_skills=workspace_skill_names,
+        declared_skills={s for s in (agent_entry.get("skills") or []) if isinstance(s, str)},
     )
 
     return {

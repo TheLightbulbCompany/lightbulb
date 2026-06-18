@@ -1192,3 +1192,198 @@ async def test_byo_active_false_for_non_byo_provider(mock_get):
     mock_get.return_value = {"client_id": "x", "client_secret": "y", "acknowledged_at": "t"}
     # stripe has allow_byo_app False → predicate short-circuits, never True
     assert await connections._byo_active("user_1", "stripe") is False
+
+
+class TestByoCarvesGogGates:
+    """When the owner has an active BYO Google app (`_byo_active` True), the four
+    gog-blocking gate-sites lift — but ONLY then. With BYO inactive every gate
+    plus the catalog filter must behave exactly as the managed (non-BYO) path,
+    so each carve is tested in BOTH directions. `_byo_active` is mocked
+    (AsyncMock) so the carve is exercised in isolation from the app store.
+
+    The default-bedrock autouse fixture means the bedrock-dependent carves
+    (sites 2 + 4) are exercised against a NON-Bedrock owner explicitly: those
+    tests override billing to a non-bedrock provider so BYO is the only thing
+    that can open the gate."""
+
+    def _set_non_bedrock(self, monkeypatch, choice: str = "byo_key"):
+        monkeypatch.setattr(
+            "routers.connections.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"provider_choice": choice}),
+        )
+
+    # --- Site 3: the LIST/catalog filter (the load-bearing dead-code trap) ---
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    @patch("routers.connections.integrations_repo")
+    async def test_list_includes_google_for_byo_owner(self, mock_repo, mock_byo, async_client, monkeypatch):
+        # A non-allowlisted owner with an active BYO Google app must SEE google in
+        # the catalog — else the UI never renders a Connect row and the BYO grant
+        # paths are unreachable dead code.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        mock_byo.return_value = True
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+        keys = {c["provider"] for c in response.json()["connections"]}
+        assert "google" in keys
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    @patch("routers.connections.integrations_repo")
+    async def test_list_excludes_google_for_non_byo_non_allowlisted(
+        self, mock_repo, mock_byo, async_client, monkeypatch
+    ):
+        # Managed behavior unchanged: no BYO app + not allowlisted -> hidden.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        mock_byo.return_value = False
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+        keys = {c["provider"] for c in response.json()["connections"]}
+        assert "google" not in keys
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    @patch("routers.connections.integrations_repo")
+    async def test_list_keeps_connected_survivor_clause_without_byo(
+        self, mock_repo, mock_byo, async_client, monkeypatch
+    ):
+        # The `connected == "connected"` survivor clause must remain after the
+        # carve: an already-connected internal google stays visible for removal
+        # even with BYO inactive and the owner de-allowlisted.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_repo.list_for_owner = AsyncMock(return_value=[{"provider": "google", "status": "connected"}])
+        mock_byo.return_value = False
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["google"]["status"] == "connected"
+
+    # --- Site 1: _require_grantable_provider (internal 404) ---
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    @patch("routers.connections.oauth_dance")
+    async def test_authorize_passes_internal_gate_for_byo_owner(self, mock_dance, mock_byo, async_client, monkeypatch):
+        # A non-allowlisted owner with an active BYO app clears the internal 404 on
+        # the authorize grant path (and, on bedrock, also clears site 2).
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_byo.return_value = True
+        mock_dance.start = AsyncMock(return_value="https://accounts.google.com/o/oauth2/v2/auth?x=1")
+
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 200
+        assert response.json()["authorize_url"].startswith("https://accounts.google.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    async def test_authorize_internal_404_without_byo(self, mock_byo, async_client, monkeypatch):
+        # Managed behavior unchanged: no BYO + not allowlisted -> 404.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_byo.return_value = False
+
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    async def test_connect_paste_internal_404_without_byo(self, mock_byo, async_client, monkeypatch):
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "")
+        mock_byo.return_value = False
+
+        response = await async_client.post("/api/v1/connections/google", json={"token": "x"})
+        assert response.status_code == 404
+
+    # --- Site 2: _require_bedrock_for (403 upsell) ---
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    @patch("routers.connections.oauth_dance")
+    async def test_authorize_passes_bedrock_gate_for_byo_owner(self, mock_dance, mock_byo, async_client, monkeypatch):
+        # Allowlisted but NOT on Bedrock: the bedrock gate would 403, but an active
+        # BYO app lifts it (owner's own app + own compliance posture).
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
+        self._set_non_bedrock(monkeypatch)
+        mock_byo.return_value = True
+        mock_dance.start = AsyncMock(return_value="https://accounts.google.com/o/oauth2/v2/auth?x=1")
+
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 200
+        assert response.json()["authorize_url"].startswith("https://accounts.google.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    async def test_authorize_bedrock_403_without_byo(self, mock_byo, async_client, monkeypatch):
+        # Managed behavior unchanged: allowlisted, non-Bedrock, no BYO -> 403 upsell.
+        monkeypatch.setattr(settings, "INTERNAL_INTEGRATION_OWNERS", "user_test_123")
+        self._set_non_bedrock(monkeypatch)
+        mock_byo.return_value = False
+
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 403
+        assert response.json()["detail"]["reason"] == "requires_bedrock"
+
+    # --- Site 4: the OAuth-callback bedrock re-check ---
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_completes_for_byo_owner_off_bedrock(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, mock_byo, async_client, monkeypatch
+    ):
+        # Owner is OFF bedrock at callback time, but has an active BYO app: the
+        # post-exchange re-check must NOT bounce to ?error=requires_bedrock — the
+        # connection completes.
+        self._set_non_bedrock(monkeypatch)
+        mock_byo.return_value = True
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("user_test_123", "google", cred))
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value="alice@example.com")
+        mock_accounts.add_account = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "/settings/connections?connected=google" in response.headers["location"]
+        mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "google", cred)
+        mock_repo.put_status.assert_awaited_once_with("user_test_123", "google", "connected")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._byo_active", new_callable=AsyncMock)
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_bounces_off_bedrock_owner_without_byo(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_byo, async_client, monkeypatch
+    ):
+        # Managed behavior unchanged: off bedrock + no BYO -> bounce to the upsell,
+        # the just-exchanged token discarded.
+        self._set_non_bedrock(monkeypatch)
+        mock_byo.return_value = False
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("user_test_123", "google", cred))
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "error=requires_bedrock" in response.headers["location"]
+        mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()

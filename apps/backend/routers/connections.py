@@ -72,7 +72,7 @@ def _get_provider_or_404(provider: str) -> registry.Provider:
         raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
 
 
-def _require_grantable_provider(provider: str, owner_id: str) -> registry.Provider:
+async def _require_grantable_provider(provider: str, owner_id: str) -> registry.Provider:
     """Resolve a provider for the connect/authorize grant paths, treating an
     `internal` provider as nonexistent (404) for owners outside the allowlist.
 
@@ -84,9 +84,18 @@ def _require_grantable_provider(provider: str, owner_id: str) -> registry.Provid
     provider-side gate of its own (Google's own Testing-mode block does not
     generalize). Disconnect is intentionally NOT gated: a de-allowlisted owner
     must still be able to remove a previously connected internal provider.
+
+    An owner running their OWN OAuth app for the provider (`_byo_active`) is a
+    first-class grantee: the internal/allowlist gate exists to keep the shared
+    unverified Isol8 app away from non-allowlisted owners, and a BYO app is not
+    that shared app, so the 404 must lift for them.
     """
     p = _get_provider_or_404(provider)
-    if p.internal and owner_id not in settings.internal_integration_owners:
+    if (
+        p.internal
+        and owner_id not in settings.internal_integration_owners
+        and not await _byo_active(owner_id, provider)
+    ):
         raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
     return p
 
@@ -126,8 +135,14 @@ async def _require_bedrock_for(p: registry.Provider, owner_id: str) -> None:
     Always called AFTER `_require_grantable_provider` so a non-allowlisted owner
     gets the internal 404 first — this 403 must not leak that a still-internal
     provider exists to owners who shouldn't see it at all.
+
+    An owner on their OWN OAuth app (`_byo_active`) carries their own data-use
+    compliance posture, so the Bedrock-only requirement — which exists to keep
+    Google data off training-capable managed inference — does not apply.
     """
     if not p.requires_bedrock:
+        return
+    if await _byo_active(owner_id, p.key):
         return
     if not await _owner_on_bedrock(owner_id):
         raise HTTPException(status_code=403, detail=_bedrock_lock())
@@ -207,26 +222,32 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     # Bedrock to unlock" upsell — so the catalog needs no per-owner billing read
     # on this polled path. The connect/authorize grant paths do the real
     # server-side enforcement.
-    return {
-        "connections": [
-            {
-                "provider": k,
-                "display_name": v.display_name,
-                "acquisition": v.acquisition,
-                "status": connected.get(k, "disconnected"),
-                "requires_bedrock": v.requires_bedrock,
-            }
-            for k, v in registry.all_providers().items()
-            if allowlisted or not v.internal or connected.get(k) == "connected"
-        ]
-    }
+    connections = []
+    for k, v in registry.all_providers().items():
+        # An owner with an active BYO app for an internal provider must SEE it,
+        # else the catalog hides the only surface that renders a Connect row and
+        # the BYO grant paths become unreachable dead code. The `connected`
+        # survivor clause stays so an already-connected internal provider remains
+        # visible for removal even when neither allowlisted nor BYO-active.
+        byo = await _byo_active(owner_id, k)
+        if allowlisted or not v.internal or byo or connected.get(k) == "connected":
+            connections.append(
+                {
+                    "provider": k,
+                    "display_name": v.display_name,
+                    "acquisition": v.acquisition,
+                    "status": connected.get(k, "disconnected"),
+                    "requires_bedrock": v.requires_bedrock,
+                }
+            )
+    return {"connections": connections}
 
 
 @router.post("/{provider}")
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _require_grantable_provider(provider, owner_id)
+    p = await _require_grantable_provider(provider, owner_id)
     await _require_bedrock_for(p, owner_id)
     if p.acquisition != "paste_token":
         raise HTTPException(status_code=400, detail=f"{provider} is not a paste-key integration")
@@ -363,7 +384,7 @@ def _redirect_uri(provider: str) -> str:
 async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _require_grantable_provider(provider, owner_id)
+    p = await _require_grantable_provider(provider, owner_id)
     await _require_bedrock_for(p, owner_id)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
@@ -390,7 +411,9 @@ async def oauth_callback(provider: str, code: str, state: str):
     # authorize's check stale. Bounce to the upsell rather than wire Google data
     # into a training-capable path. Done before any secret/keyring write below,
     # so there is nothing to roll back — the just-exchanged token is discarded.
-    if p.requires_bedrock and not await _owner_on_bedrock(owner_id):
+    # An owner on their own BYO app owns their compliance posture, so the
+    # Bedrock-only requirement does not apply to them (mirrors _require_bedrock_for).
+    if p.requires_bedrock and not await _byo_active(owner_id, p.key) and not await _owner_on_bedrock(owner_id):
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=requires_bedrock")
     # Retain the credential in Secrets Manager only when the backend is the
     # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the

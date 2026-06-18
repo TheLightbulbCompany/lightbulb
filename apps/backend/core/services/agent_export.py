@@ -516,6 +516,10 @@ def export_agent_from_efs(
         agent_dir,
         bundled_mcps=set(selected_mcps or []),
         bundled_skills=set(selected_skills or []),
+        # Scan EXACTLY the files that ship (the tarball contents) so the ledger
+        # never discloses a dep from a file the export filter dropped.
+        scan_files=contents,
+        workspace_skills=workspace_skill_names,
     )
     manifest.update(build_manifest_requirements(reqs, scan_incomplete))
 
@@ -621,8 +625,9 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     persona_files = _enumerate_persona_files(agent_dir)
 
     # Build the tarball + scan for safety_flags. We don't return the
-    # tarball itself — just the flags.
-    tarball_bytes, _ = _build_tarball(agent_dir)
+    # tarball itself — just the flags. ``contents`` (the shipped-file list)
+    # scopes the requirements scan below to exactly what ships.
+    tarball_bytes, contents = _build_tarball(agent_dir)
     safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
 
     # Surface (but do NOT block on) any credential that would survive the
@@ -646,10 +651,18 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
         logger.warning("agent_export: preview slice-leak scan failed for agent=%s: %s", agent_id, exc)
 
     # Live requirements scan so the wizard's Requirements step renders what the
-    # agent actually needs. Same scanner the artifact build freezes into the
-    # manifest; selection (bundle) doesn't change detection, so this is cacheable.
+    # agent needs. Classify optimistically — assume everything available is
+    # bundled — so the wizard shows the full ledger up front (the frozen manifest
+    # at submit reflects the seller's actual selection). Scoped to shipped files.
     effective_cfg = load_effective_config(agent_dir, config)
-    reqs, scan_incomplete = requirements_scan(effective_cfg, agent_dir)
+    reqs, scan_incomplete = requirements_scan(
+        effective_cfg,
+        agent_dir,
+        bundled_mcps=set(available_mcps),
+        bundled_skills=set(addable_skill_names),
+        scan_files=contents,
+        workspace_skills=workspace_skill_names,
+    )
 
     return {
         "agent_id": agent_id,

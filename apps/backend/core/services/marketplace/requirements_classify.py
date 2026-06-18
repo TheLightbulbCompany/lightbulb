@@ -58,10 +58,14 @@ def _kind_for_provider(prov) -> str:
 
 
 def _provider_for_tool(name: str):
-    """Return ``(key, Provider)`` if a registry provider owns this tool name."""
+    """Return ``(key, Provider)`` if a registry provider owns this tool name —
+    by provider key, its MCP server key, OR a CLI binary it declares
+    (``requires.bins``, e.g. ``gh`` → github, so a ``gh issue list`` pipeline
+    maps to the connectable github provider, not a phantom)."""
     for key, prov in _providers().items():
         mcp = prov.wiring.mcp_server
-        if key == name or (mcp and mcp.key == name):
+        bins = getattr(prov.requires, "bins", None) or []
+        if key == name or (mcp and mcp.key == name) or name in bins:
             return key, prov
     return None
 
@@ -73,8 +77,16 @@ def classify_hits(
     bundled_skills: set[str],
     config_skills: dict,
     config_mcps: dict,
+    workspace_skills: set[str] | None = None,
+    allow_bundled_skills: set[str] | None = None,
 ) -> list[Requirement]:
     by_key: dict[str, Requirement] = {}
+    # Skills that actually reach the buyer: workspace skills auto-ship in the
+    # tarball, image-bundled (``skills.allowBundled``) skills are already on the
+    # buyer's image, and selected ``skills.entries`` ride the slice. A referenced
+    # skill that is in NONE of these won't run for the buyer.
+    present_skills = set(bundled_skills) | set(workspace_skills or ()) | set(allow_bundled_skills or ())
+    _NOT_BUNDLED = "declared but not bundled — won't ship to buyers"
 
     def _ensure(key, display, kind, disposition, *, env=None, reason=None) -> Requirement:
         r = by_key.get(key)
@@ -115,12 +127,19 @@ def classify_hits(
                         Disposition.UNAVAILABLE if gated else Disposition.CONNECT,
                         reason=_GATED_REASON if gated else None,
                     )
-                elif name in config_mcps:
-                    # The agent's own MCP server, declared in its openclaw.json
-                    # and shipped in the workspace tarball — not a phantom.
+                elif name in bundled_mcps:
+                    # The agent's own MCP server, bundled into the slice → ships.
                     r = _ensure(name, name, "mcp", Disposition.INCLUDED)
-                elif name in config_skills or name in bundled_skills:
-                    r = _ensure(name, name, "skill", Disposition.BYO)
+                elif name in config_mcps:
+                    # Declared in the agent's config but NOT bundled, so the slice
+                    # won't carry it and the buyer never gets it.
+                    r = _ensure(name, name, "mcp", Disposition.UNAVAILABLE, reason=_NOT_BUNDLED)
+                elif name in present_skills:
+                    # Workspace / image-bundled / selected skill — reaches the buyer.
+                    r = _ensure(name, name, "skill", Disposition.INCLUDED)
+                elif name in config_skills:
+                    # An entries skill the seller didn't bundle → won't ship.
+                    r = _ensure(name, name, "skill", Disposition.UNAVAILABLE, reason=_NOT_BUNDLED)
                 else:
                     r = _ensure(name, name, "skill", Disposition.UNAVAILABLE, reason="no implementation found")
             r.detected_via.append(hit.source)
@@ -152,6 +171,26 @@ def classify_hits(
                 r = _ensure(key, display, "external_api", Disposition.BYO, env=env)
             r.detected_via.append(hit.source)
 
+    # A bundled registry-provider MCP (in the slice) is hard-gated by the deploy
+    # credential check even when no pipeline references it via --tool — so the
+    # buyer could 409 on a credential the ledger never disclosed. Seed a row for
+    # each so the ledger matches what the deploy gate enforces.
+    for name in bundled_mcps:
+        if name in by_key:
+            continue
+        prov = _providers().get(name)
+        if prov is None:
+            continue
+        gated = prov.internal or prov.requires_bedrock
+        r = _ensure(
+            name,
+            prov.display_name,
+            _kind_for_provider(prov),
+            Disposition.UNAVAILABLE if gated else Disposition.CONNECT,
+            reason=_GATED_REASON if gated else None,
+        )
+        r.detected_via.append("bundle")
+
     _apply_wiring_mismatch(by_key)
 
     for r in by_key.values():
@@ -175,7 +214,10 @@ def _apply_wiring_mismatch(by_key: dict[str, Requirement]) -> None:
     """
     providers = _providers()
     for r in by_key.values():
-        if r.disposition != Disposition.CONNECT or r.kind != "external_api":
+        # Any registry-provider CONNECT row, whether detected via host/env
+        # (kind external_api) or via --tool (kind mcp). Non-provider rows
+        # (channels) resolve to no provider below and are skipped.
+        if r.disposition != Disposition.CONNECT:
             continue
         prov = providers.get(r.key)
         mcp = prov.wiring.mcp_server if prov else None

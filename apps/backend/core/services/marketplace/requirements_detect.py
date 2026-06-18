@@ -35,16 +35,27 @@ _NPX = re.compile(
     re.IGNORECASE,
 )
 
-# `**` recurses, so nested scripts (scripts/lib/fetch.sh) and pipelines are
-# scanned, not just direct children. Markdown stays top-level to avoid walking
-# vendored trees (node_modules/*/README.md).
+# Fallback recursive globs (used when no explicit shipped-file list is given —
+# e.g. the backfill over an already-filtered extracted tarball). `.lobster`
+# pipelines live at the ROOT or under pipelines/; agents also keep invocations
+# in scripts/, skills/, and markdown anywhere.
 _SCAN_GLOBS = (
-    "pipelines/**/*.lobster",
-    "pipelines/**/*.yaml",
-    "pipelines/**/*.yml",
+    "**/*.lobster",
+    "**/*.yaml",
+    "**/*.yml",
     "scripts/**/*",
-    "*.md",
+    "skills/**/*",
+    "**/*.md",
 )
+
+# File suffixes that can carry tool/env/host references. A path under a
+# ``scripts/`` segment is scanned regardless of suffix (extensionless scripts).
+_SCANNABLE_SUFFIXES = frozenset(
+    {".lobster", ".yaml", ".yml", ".md", ".sh", ".bash", ".js", ".mjs", ".cjs", ".ts", ".py", ".txt"}
+)
+# Dirs never scanned — mirrors the export tarball filter so the ledger can't
+# disclose a dep from a file that won't ship. Dotfiles/dotdirs are skipped too.
+_SKIP_SCAN_DIRS = frozenset({"node_modules", "__pycache__", ".git", ".venv", "venv", ".cache"})
 
 # YAML keys whose string values are command lines in the .lobster DSL.
 _COMMAND_KEYS = frozenset({"command", "run", "pipeline", "cmd"})
@@ -172,23 +183,62 @@ def _detect_in_yaml(text: str, source: str) -> list[Hit]:
     return hits
 
 
-def detect_in_tree(agent_dir: Path) -> list[Hit]:
+def _scannable_rel(rel: Path) -> bool:
+    """A workspace-relative path is scanned when it carries a scannable suffix
+    (or sits under a ``scripts/`` dir) AND none of its segments is a junk dir or
+    a dotfile/dotdir."""
+    parts = rel.parts
+    for p in parts:
+        if p in _SKIP_SCAN_DIRS or p.startswith("."):
+            return False
+    return rel.suffix in _SCANNABLE_SUFFIXES or "scripts" in parts
+
+
+def detect_in_tree(agent_dir, scan_files: list[str] | None = None) -> list[Hit]:
+    """Scan an agent dir for tool/env/host/cli references.
+
+    ``scan_files`` (the export tarball's shipped-file list) scopes the scan to
+    EXACTLY what ships — so the ledger never discloses a dep from a file the
+    export filter drops. When omitted, fall back to a filtered recursive walk
+    (used by the backfill over an already-filtered extracted tarball).
+    """
+    agent_dir = Path(agent_dir)
+    rels: list[Path] = []
+    if scan_files is not None:
+        for raw in scan_files:
+            rel = Path(raw[2:] if raw.startswith("./") else raw)
+            if _scannable_rel(rel):
+                rels.append(rel)
+    else:
+        for pattern in _SCAN_GLOBS:
+            for path in agent_dir.glob(pattern):
+                if not path.is_file():
+                    continue
+                try:
+                    rel = path.relative_to(agent_dir)
+                except ValueError:
+                    continue
+                if _scannable_rel(rel):
+                    rels.append(rel)
+
     hits: list[Hit] = []
     seen: set[Path] = set()
-    for pattern in _SCAN_GLOBS:
-        for path in sorted(agent_dir.glob(pattern)):
-            if not path.is_file() or path in seen:
-                continue
-            seen.add(path)
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            hits.extend(detect_in_text(text, source=path.name))
-            # Pipeline files are YAML: also pull direct-CLI tool heads
-            # (gog.gmail.search, inbox list) that the --tool regex can't see.
-            if path.suffix in _YAML_SUFFIXES:
-                hits.extend(_detect_in_yaml(text, source=path.name))
+    for rel in sorted(set(rels), key=str):
+        if rel in seen:
+            continue
+        seen.add(rel)
+        path = agent_dir / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        hits.extend(detect_in_text(text, source=rel.name))
+        # Pipeline files are YAML: also pull direct-CLI tool heads
+        # (gog.gmail.search, inbox list) that the --tool regex can't see.
+        if path.suffix in _YAML_SUFFIXES:
+            hits.extend(_detect_in_yaml(text, source=rel.name))
     return hits
 
 

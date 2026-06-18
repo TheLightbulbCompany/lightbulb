@@ -53,13 +53,18 @@ def test_bundled_selection_marks_row():
     assert reqs["plaid"].bundled is True
 
 
-def test_config_declared_mcp_is_included_not_phantom():
-    """A tool resolving to the agent's OWN configured MCP server (declared in
-    its openclaw.json mcp.servers) ships in the artifact — it must not be
-    classified UNAVAILABLE 'no implementation found' and block publish."""
-    reqs = _classify([Hit("tool", "my-custom-mcp", "p")], config_mcps={"my-custom-mcp": {"command": "node"}})
-    assert reqs["my-custom-mcp"].disposition == Disposition.INCLUDED
-    assert reqs["my-custom-mcp"].kind == "mcp"
+def test_config_mcp_included_only_when_bundled():
+    """The agent's own MCP ships ONLY if the seller bundled it (it rides the
+    slice). Bundled → INCLUDED; declared-but-not-bundled → UNAVAILABLE, since
+    the buyer never receives it."""
+    cfg = {"my-custom-mcp": {"command": "node"}}
+    bundled = _classify([Hit("tool", "my-custom-mcp", "p")], config_mcps=cfg, bundled_mcps={"my-custom-mcp"})
+    assert bundled["my-custom-mcp"].disposition == Disposition.INCLUDED
+    assert bundled["my-custom-mcp"].kind == "mcp"
+
+    unbundled = _classify([Hit("tool", "my-custom-mcp", "p")], config_mcps=cfg)
+    assert unbundled["my-custom-mcp"].disposition == Disposition.UNAVAILABLE
+    assert "not bundled" in (unbundled["my-custom-mcp"].reason or "")
 
 
 def test_stripe_mismatch_is_byo_regardless_of_hit_order():
@@ -109,6 +114,54 @@ def test_cli_pkg_is_included_runtime_resolved():
     assert row.disposition == Disposition.INCLUDED
     assert row.kind == "cli"
     assert "npx" in (row.note or "")
+
+
+def test_gh_cli_bin_maps_to_github_provider():
+    """`gh issue list` → head `gh`, which is github's declared CLI bin, so it
+    resolves to the connectable github provider — not a phantom skill."""
+    reqs = _classify([Hit("tool", "gh", "p")])
+    assert "github" in reqs
+    assert reqs["github"].disposition == Disposition.CONNECT
+    assert "gh" not in reqs  # not classified as a bare phantom
+
+
+def test_workspace_skill_is_included():
+    """A pipeline `--tool custom-skill` with skills/custom-skill.md present
+    auto-ships → INCLUDED, not phantom."""
+    reqs = _classify([Hit("tool", "custom-skill", "p")], workspace_skills={"custom-skill"})
+    assert reqs["custom-skill"].disposition == Disposition.INCLUDED
+    assert reqs["custom-skill"].kind == "skill"
+
+
+def test_allow_bundled_skill_is_included():
+    """An image-bundled skill exposed via skills.allowBundled is present on the
+    buyer's image → INCLUDED."""
+    reqs = _classify([Hit("tool", "search", "p")], allow_bundled_skills={"search"})
+    assert reqs["search"].disposition == Disposition.INCLUDED
+
+
+def test_entries_skill_unbundled_is_unavailable():
+    """A skills.entries skill the seller didn't select won't ship → UNAVAILABLE."""
+    reqs = _classify([Hit("tool", "jira", "p")], config_skills={"jira": {"apiKey": ""}})
+    assert reqs["jira"].disposition == Disposition.UNAVAILABLE
+    assert "not bundled" in (reqs["jira"].reason or "")
+
+
+def test_bundled_provider_mcp_seeds_ledger_row():
+    """A bundled registry-provider MCP (in the slice) appears in the ledger even
+    when no pipeline references it — matching the deploy credential gate."""
+    reqs = _classify([], bundled_mcps={"stripe"})
+    assert "stripe" in reqs
+    assert reqs["stripe"].disposition == Disposition.CONNECT
+    assert reqs["stripe"].bundled is True
+
+
+def test_wiring_mismatch_applies_to_tool_detected_provider():
+    """`--tool stripe` (kind=mcp) + a stray $STRIPE_API_KEY must still downgrade
+    to BYO, not just host/env-detected (external_api) rows."""
+    reqs = _classify([Hit("tool", "stripe", "p"), Hit("env", "STRIPE_API_KEY", "p")])
+    assert reqs["stripe"].disposition == Disposition.BYO
+    assert "mismatch" in (reqs["stripe"].reason or "").lower()
 
 
 def test_whatsapp_is_not_a_backend_channel():

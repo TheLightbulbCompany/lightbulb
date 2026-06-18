@@ -50,7 +50,18 @@ def scan_tarball(tarball_bytes: bytes) -> dict:
         with tarfile.open(fileobj=io.BytesIO(tarball_bytes)) as tf:
             tf.extractall(root, filter="data")
         effective_cfg = load_effective_config(root, {})
-        reqs, scan_incomplete = requirements_scan(effective_cfg, root)
+        # The extracted tree IS the shipped set (already filtered at publish), so
+        # the default walk scans the right files. Workspace skills auto-ship —
+        # enumerate them so a `--tool <workspace-skill>` classifies INCLUDED, not
+        # phantom. (Bundle selection isn't recoverable from the tarball alone, so
+        # config-declared MCPs stay best-effort for legacy backfills.)
+        skills_root = root / "skills"
+        workspace_skills = set()
+        if skills_root.is_dir():
+            workspace_skills = {
+                (e.stem if e.is_file() else e.name) for e in skills_root.iterdir() if not e.name.startswith(".")
+            }
+        reqs, scan_incomplete = requirements_scan(effective_cfg, root, workspace_skills=workspace_skills)
         return build_manifest_requirements(reqs, scan_incomplete)
 
 

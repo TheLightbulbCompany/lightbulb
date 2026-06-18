@@ -103,6 +103,8 @@ def requirements_scan(
     *,
     bundled_mcps: set[str] | None = None,
     bundled_skills: set[str] | None = None,
+    scan_files: list[str] | None = None,
+    workspace_skills: set[str] | None = None,
 ) -> tuple[list[Requirement], bool]:
     """Scan an agent → ``(requirements, scan_incomplete)``. Never raises.
 
@@ -112,21 +114,29 @@ def requirements_scan(
         agent_dir: ``workspaces/<agent_id>`` — pipelines/, scripts/, *.md.
         bundled_mcps / bundled_skills: what the seller chose to bundle (Bundle
             step); marks the matching requirement rows ``bundled=True``.
+        scan_files: the export tarball's shipped-file list — scopes the scan to
+            exactly what ships (so the ledger never discloses a dep from a file
+            the export filter drops). Omit to walk the dir (backfill path).
+        workspace_skills: auto-shipped workspace skill names; classified INCLUDED.
     """
     from core.services.marketplace.requirements_classify import classify_hits
     from core.services.marketplace.requirements_detect import detect_in_tree
 
     try:
         cfg = effective_config or {}
-        config_skills = (cfg.get("skills") or {}).get("entries") or {}
+        skills_cfg = cfg.get("skills") or {}
+        config_skills = skills_cfg.get("entries") or {}
+        allow_bundled = skills_cfg.get("allowBundled") or []
         config_mcps = (cfg.get("mcp") or {}).get("servers") or {}
-        hits = detect_in_tree(Path(agent_dir))
+        hits = detect_in_tree(Path(agent_dir), scan_files=scan_files)
         reqs = classify_hits(
             hits,
             bundled_mcps=set(bundled_mcps or ()),
             bundled_skills=set(bundled_skills or ()),
             config_skills=config_skills,
             config_mcps=config_mcps,
+            workspace_skills=set(workspace_skills or ()),
+            allow_bundled_skills=set(allow_bundled or ()),
         )
         reqs.sort(key=lambda r: (_ORDER.get(r.disposition.value, 9), r.key))
         return reqs, False

@@ -763,6 +763,8 @@ async def my_agent_artifact_preview(
         auto_ship_skills=preview["auto_ship_skills"],
         persona_files=preview["persona_files"],
         safety_flags=[schemas.SafetyFlag(**f) for f in preview["safety_flags"]],
+        requirements=[schemas.RequirementRow(**r) for r in preview.get("requirements", [])],
+        scan_incomplete=preview.get("scan_incomplete", False),
         needs_config_patch=needs_config_patch,
     )
 

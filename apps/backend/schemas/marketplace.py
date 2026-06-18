@@ -320,11 +320,28 @@ class HandleAvailability(BaseModel):
     reason: Literal["format", "reserved", "taken", None] = None
 
 
+class RequirementRow(BaseModel):
+    """One classified dependency in the requirements ledger (mirrors
+    ``core.services.marketplace.requirements.Requirement.to_manifest``)."""
+
+    key: str
+    display_name: str
+    kind: str
+    disposition: Literal["included", "connect", "byo", "unavailable"]
+    env: list[str] = Field(default_factory=list)
+    detected_via: list[str] = Field(default_factory=list)
+    bundled: bool = False
+    required: bool = True
+    note: str | None = None
+    reason: str | None = None
+
+
 class ArtifactPreviewResponse(BaseModel):
     """Dry-run preview of the artifact the seller would publish.
 
     Drives the publish wizard's Bundle step (MCP / skill checkboxes with
-    bucket tags) and Review step (manifest breakdown + safety_flags).
+    bucket tags), Review step (manifest breakdown + safety_flags), and the
+    Requirements ledger (what the agent needs, classified).
     Computed by snapshotting the agent's EFS dir (no S3 upload, no DDB
     write) so the seller sees exactly what will ship before they submit.
     """
@@ -335,4 +352,6 @@ class ArtifactPreviewResponse(BaseModel):
     auto_ship_skills: list[str] = Field(default_factory=list)
     persona_files: list[str] = Field(default_factory=list)
     safety_flags: list[SafetyFlag] = Field(default_factory=list)
+    requirements: list[RequirementRow] = Field(default_factory=list)
+    scan_incomplete: bool = False
     needs_config_patch: bool = False

@@ -418,8 +418,12 @@ export class FisStack extends cdk.Stack {
         backendPaperclipSubnets: {
           resourceType: "aws:ec2:subnet",
           selectionMode: "ALL",
+          // Subnets selected by explicit ARN. FIS forbids specifying BOTH
+          // resourceArns and target `parameters` on one target ("cannot
+          // specify both resource ARNs and parameters") — and the disruption
+          // `scope` lives on the ACTION, not the target — so no target
+          // parameters here. (vpc was an invalid target param alongside ARNs.)
           resourceArns: props.privateSubnetArns,
-          parameters: { vpc: props.vpcId },
         },
       },
       actions: {
@@ -462,8 +466,12 @@ export class FisStack extends cdk.Stack {
         backendSubnets: {
           resourceType: "aws:ec2:subnet",
           selectionMode: "ALL",
+          // Subnets selected by explicit ARN. FIS forbids specifying BOTH
+          // resourceArns and target `parameters` on one target ("cannot
+          // specify both resource ARNs and parameters") — and the disruption
+          // `scope` lives on the ACTION, not the target — so no target
+          // parameters here. (vpc was an invalid target param alongside ARNs.)
           resourceArns: props.privateSubnetArns,
-          parameters: { vpc: props.vpcId },
         },
       },
       actions: {
@@ -545,8 +553,12 @@ export class FisStack extends cdk.Stack {
         billingEgressSubnets: {
           resourceType: "aws:ec2:subnet",
           selectionMode: "ALL",
+          // Subnets selected by explicit ARN. FIS forbids specifying BOTH
+          // resourceArns and target `parameters` on one target ("cannot
+          // specify both resource ARNs and parameters") — and the disruption
+          // `scope` lives on the ACTION, not the target — so no target
+          // parameters here. (vpc was an invalid target param alongside ARNs.)
           resourceArns: props.privateSubnetArns,
-          parameters: { vpc: props.vpcId },
         },
       },
       actions: {

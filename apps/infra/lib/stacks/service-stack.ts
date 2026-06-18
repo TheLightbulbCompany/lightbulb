@@ -2,7 +2,6 @@ import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as ecr from "aws-cdk-lib/aws-ecr";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
@@ -139,22 +138,6 @@ export class ServiceStack extends cdk.Stack {
     super(scope, id, props);
 
     const env = props.environment;
-
-    // -------------------------------------------------------------------------
-    // ECR Repository
-    // -------------------------------------------------------------------------
-    const repository = new ecr.Repository(this, "BackendRepo", {
-      repositoryName: `isol8-${env}-backend`,
-      removalPolicy:
-        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
-      emptyOnDelete: env !== "prod",
-      lifecycleRules: [
-        {
-          maxImageCount: 10,
-          description: "Keep last 10 images",
-        },
-      ],
-    });
 
     // -------------------------------------------------------------------------
     // Docker Image Asset (built & pushed by CDK Pipeline)

@@ -90,6 +90,21 @@ async def test_submit_listing_transitions_draft_to_review(mock_listings):
 
 
 def _row_with_manifest(reqs):
+    # replace_artifact writes manifest_json as a native dict, which a
+    # resource-level get_item returns as a DDB Map (dict) — NOT a JSON string.
+    # The fixture mirrors the real shape so the gate is tested against what it
+    # actually receives at submit time.
+    return {
+        "Item": {
+            "artifact_uploaded": True,
+            "manifest_json": {"requirements": reqs},
+        }
+    }
+
+
+def _row_with_manifest_json_string(reqs):
+    # Legacy/low-level write path (create_draft) stores manifest_json as a JSON
+    # string. The gate must still parse it.
     return {
         "Item": {
             "artifact_uploaded": True,
@@ -128,6 +143,18 @@ async def test_submit_not_blocked_when_no_unavailable(mock_listings):
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
     result = await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
     assert result["status"] == "review"
+
+
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_blocks_on_unavailable_when_manifest_json_is_a_string(mock_listings):
+    """Legacy create_draft path stores manifest_json as a JSON string. The gate
+    must still parse it and block on an unavailable requirement."""
+    mock_listings.return_value.get_item = MagicMock(
+        return_value=_row_with_manifest_json_string([{"key": "gog", "disposition": "unavailable"}])
+    )
+    with pytest.raises(marketplace_service.RequirementsBlockingError) as exc:
+        await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
+    assert "gog" in exc.value.unavailable
 
 
 @pytest.mark.asyncio

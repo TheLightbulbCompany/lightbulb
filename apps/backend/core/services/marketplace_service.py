@@ -630,13 +630,20 @@ async def submit_for_review(
     # Publish gate: block (unless acknowledged) when the agent has requirements
     # that won't run for buyers as published — gated (gog) or phantom skills.
     if not acknowledge_unavailable:
-        manifest = {}
+        # replace_artifact persists manifest_json as a native dict, so a
+        # resource-level get_item returns it as a DDB Map (dict) — by submit
+        # time (artifact_uploaded is required) the row always holds the Map.
+        # The legacy create_draft path stores a JSON string; accept both.
         raw = pre_item.get("manifest_json")
-        if raw:
+        if isinstance(raw, dict):
+            manifest = raw
+        elif isinstance(raw, str):
             try:
                 manifest = json.loads(raw)
-            except (ValueError, TypeError):
+            except ValueError:
                 manifest = {}
+        else:
+            manifest = {}
         if summarize_requirements(manifest)["has_blocking"]:
             unavailable = sorted(
                 r["key"]

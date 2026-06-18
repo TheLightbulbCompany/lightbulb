@@ -1230,6 +1230,16 @@ class GatewayConnection:
                 # chat.e2e.latency END guard at the bottom of this block can
                 # tell a side (`/btw`) run from a primary run reliably.
                 run_is_side = self._is_side_run(run_id)
+                # START monotonic of the chat.e2e.latency SLO span (alarm W9),
+                # reused from the active-run window the dispatcher opened via
+                # mark_run_active (which stamps started_at BEFORE the chat.send
+                # RPC is forwarded). Captured here, at the clear site, BEFORE
+                # _clear_active_run pops the entry — the END emit at the bottom
+                # of this block computes elapsed from it. None when this session
+                # had no active-run window (e.g. a side run, an interim approval
+                # bracket that stays active, or a run we never marked), in which
+                # case no metric is emitted.
+                primary_started_at: float | None = None
                 if run_is_side:
                     self._forget_side_run(run_id)
                     is_true_terminal = True
@@ -1246,6 +1256,9 @@ class GatewayConnection:
                     # authoritative `run_ended` forward below.
                     is_true_terminal = bool(session_key) and self._is_true_terminal(session_key, state)
                     if is_true_terminal:
+                        active = self._active_runs.get(session_key)
+                        if active is not None:
+                            primary_started_at = active.get("started_at")
                         self._clear_active_run(session_key)
                 if state == "final":
                     put_metric("chat.message.count")
@@ -1341,20 +1354,32 @@ class GatewayConnection:
                         run_ended["agent_id"] = event_agent_id
                     await self._forward_to_frontends(run_ended, target_member)
 
-                # END of the chat.e2e.latency SLO span (alarm W9). Keyed by the
-                # run id the dispatch task recorded its START under (== this
-                # event's runId). Fires on EVERY primary-run terminal — final
-                # (success), error, aborted — so the metric reflects real
-                # completions of all kinds. Side (`/btw`) runs were never given
-                # a START in the dispatcher, so this no-ops for them; we still
-                # guard here to keep the intent explicit and avoid the await.
-                # PASSIVE measurement: this runs AFTER all frame forwarding
-                # above, and record_chat_end is best-effort (never raises), so
-                # it cannot alter/drop/delay any frame the frontend receives.
-                if not run_is_side:
-                    from core.observability.e2e_latency import record_chat_end
-
-                    await record_chat_end(run_id)
+                # END of the chat.e2e.latency SLO span (alarm W9). Elapsed is
+                # computed from the active-run window's started_at — stamped by
+                # mark_run_active BEFORE the chat.send RPC was forwarded and
+                # captured above at the clear site — so no parallel correlation
+                # map is needed: the pool already records the run start. Emits on
+                # EVERY primary-run TRUE terminal — final (success), error,
+                # aborted — so the metric reflects real completions of all kinds.
+                # Side (`/btw`) runs and interim approval brackets leave
+                # primary_started_at None and emit nothing, so the p99 reflects
+                # genuine user-perceived round-trips only. No dimensions: alarm
+                # W9 queries chat.e2e.latency on {env,service} only (auto-injected
+                # by put_metric); a custom dim would create a separate,
+                # un-alarmed metric stream.
+                # PASSIVE measurement: this runs AFTER all frame forwarding above
+                # and is wrapped best-effort (never raises), so it cannot
+                # alter/drop/delay/reorder any frame the frontend receives.
+                if primary_started_at is not None:
+                    try:
+                        elapsed_ms = max(0.0, (time.monotonic() - primary_started_at) * 1000.0)
+                        put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds")
+                    except Exception:
+                        logger.warning(
+                            "chat.e2e.latency emit failed for run_id=%s",
+                            run_id,
+                            exc_info=True,
+                        )
 
             else:
                 # Forward other events as-is for SWR revalidation (broadcast to all)

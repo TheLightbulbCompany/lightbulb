@@ -953,6 +953,29 @@ export class ObservabilityStack extends cdk.Stack {
         "Metronome webhook signature verification failing — secret drift or forged-webhook probe; credit gate not getting trustworthy balance updates",
     });
 
+    // W63: paperclip-down.
+    // Backend emits paperclip.upstream.error{kind:"unreachable"} in
+    // routers/paperclip_proxy.py + core/services/paperclip_admin_client.py
+    // when the Paperclip BFF raises an httpx connect/transport error. Replaces
+    // the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target
+    // group, so there is no HealthyHostCount to alarm on). Sum > 0 over a short
+    // window, NOT_BREACHING (absent metric = healthy, no error emissions).
+    this.createAlarm({
+      id: "W63",
+      name: "paperclip-down",
+      metricName: "paperclip.upstream.error",
+      dimensions: { kind: "unreachable" },
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 5,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "warn",
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      description:
+        "Paperclip BFF is unreachable from the backend (httpx connect/transport errors) — Teams/agent flows are degraded. Replaces the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target group).",
+    });
+
     // W64: provision-gate-block-spike.
     // Backend emits provision.gate.blocked (dimensionless, plus a {code}
     // breakdown stream) in core/services/provision_gate.py whenever the gate

@@ -89,6 +89,7 @@ from websockets.exceptions import ConnectionClosed
 from core.auth import AuthContext, _decode_token, _extract_org_claims, resolve_owner_id
 from core.config import settings
 from core.encryption import decrypt
+from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_redaction import strip_agent_secrets
@@ -1265,6 +1266,13 @@ async def proxy(path: str, request: Request) -> Response:
                 e,
             )
             _record_outcome(502)
+            # Best-effort signal for the W63 paperclip-down alarm. ``kind`` is a
+            # bounded dim ("unreachable"); a metrics failure must never mask the
+            # original upstream error or change the 502 we return.
+            try:
+                put_metric("paperclip.upstream.error", dimensions={"kind": "unreachable"})
+            except Exception:  # noqa: BLE001 — telemetry must not break the proxy
+                logger.debug("paperclip.upstream.error metric emission failed", exc_info=True)
             return Response(
                 content=b"Bad gateway",
                 status_code=502,

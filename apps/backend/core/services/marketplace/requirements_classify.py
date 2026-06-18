@@ -124,6 +124,16 @@ def classify_hits(
                 else:
                     r = _ensure(name, name, "skill", Disposition.UNAVAILABLE, reason="no implementation found")
             r.detected_via.append(hit.source)
+        elif hit.kind == "cli_pkg":
+            # An `npx <pkg>` / `uvx <pkg>` invocation: the package re-resolves
+            # from the public registry on the buyer's container on demand, so it
+            # rides along for free — no install, no shipping. Disclosed as
+            # INCLUDED with a note; any credentials it needs surface separately
+            # via the env/host hits. (A private/unpublished package is the
+            # buyer/agent's to provide — we can't tell statically.)
+            r = _ensure(hit.value, hit.value, "cli", Disposition.INCLUDED)
+            r.note = "resolved at runtime via npx/uvx — no install needed"
+            r.detected_via.append(hit.source)
         else:  # env / host -> external API
             ident = identify_service(hit)
             if ident is None:

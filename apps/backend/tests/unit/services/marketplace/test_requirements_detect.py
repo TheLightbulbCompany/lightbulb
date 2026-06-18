@@ -123,6 +123,27 @@ def test_detect_list_valued_command(tmp_path):
     assert "inbox" in tools
 
 
+def test_detect_npx_uvx_package():
+    """npx/uvx invocations capture the runtime-resolved package (scoped + version
+    stripped), tagged cli_pkg — not as the plumbing head `npx`."""
+    hits = detect_in_text("npx -y @stripe/mcp@1.2 --tools=all\nuvx some-tool\nnpx opencli", "s")
+    pkgs = {h.value for h in hits if h.kind == "cli_pkg"}
+    assert pkgs == {"@stripe/mcp", "some-tool", "opencli"}
+    # `npx`/`uvx` themselves are not emitted as tools.
+    assert not any(h.kind == "tool" and h.value in ("npx", "uvx") for h in hits)
+
+
+def test_detect_npx_in_mcp_command(tmp_path):
+    """A pipeline declaring an MCP via `npx -y <pkg>` surfaces the package."""
+    from pathlib import Path
+
+    p = tmp_path / "pipelines" / "mcp.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text("steps:\n  - command: npx -y @notionhq/notion-mcp-server\n", encoding="utf-8")
+    hits = detect_in_tree(Path(tmp_path))
+    assert any(h.kind == "cli_pkg" and h.value == "@notionhq/notion-mcp-server" for h in hits)
+
+
 def test_detect_in_tree_recurses_nested_scripts(tmp_path):
     """Tool/env/host references in nested script files must be detected."""
     from pathlib import Path

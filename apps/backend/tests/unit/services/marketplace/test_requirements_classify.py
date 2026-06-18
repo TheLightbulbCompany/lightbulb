@@ -101,6 +101,16 @@ def test_gated_provider_tool_is_unavailable():
     assert reqs["google"].disposition == Disposition.UNAVAILABLE
 
 
+def test_cli_pkg_is_included_runtime_resolved():
+    """An npx/uvx package re-resolves on the buyer's container, so it's INCLUDED
+    ( rides along for free) — NOT phantom 'no implementation found'."""
+    reqs = _classify([Hit("cli_pkg", "@notionhq/notion-mcp-server", "p")])
+    row = reqs["@notionhq/notion-mcp-server"]
+    assert row.disposition == Disposition.INCLUDED
+    assert row.kind == "cli"
+    assert "npx" in (row.note or "")
+
+
 def test_whatsapp_is_not_a_backend_channel():
     """whatsapp isn't a backend-provisionable channel; it must not classify as a
     connect channel (would tell buyers to connect it where it can't be)."""

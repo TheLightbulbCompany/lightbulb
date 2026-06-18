@@ -24,6 +24,16 @@ _ENV = re.compile(r"\$\{?([A-Z][A-Z0-9_]{2,})\}?")
 _HOST = re.compile(r"https?://([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})")
 # A tool name: lowercase, identifier-shaped.
 _NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
+# `npx [-flags] <pkg>` / `uvx [-flags] <pkg>`: the runtime-resolved package an
+# agent invokes without a persistent install. Captures the package spec
+# (optionally @scoped) and stops before any @version — so `npx -y @stripe/mcp@1`
+# yields `@stripe/mcp`. These re-resolve on the buyer's container on demand, so
+# they ride along for free (no shipping needed) — see classify's cli_pkg branch.
+_NPX = re.compile(
+    r"\b(?:npx|uvx)\s+(?:-{1,2}[a-z][a-z0-9-]*\s+)*"
+    r"(@?[a-z0-9][a-z0-9._-]*(?:/[a-z0-9._-]+)?)",
+    re.IGNORECASE,
+)
 
 # `**` recurses, so nested scripts (scripts/lib/fetch.sh) and pipelines are
 # scanned, not just direct children. Markdown stays top-level to avoid walking
@@ -79,7 +89,7 @@ _TABLE_PATH = Path(__file__).with_name("known_services.yaml")
 
 @dataclasses.dataclass(frozen=True)
 class Hit:
-    kind: str  # "tool" | "env" | "host"
+    kind: str  # "tool" | "env" | "host" | "cli_pkg"
     value: str
     source: str
 
@@ -88,6 +98,8 @@ def detect_in_text(text: str, source: str) -> list[Hit]:
     hits: list[Hit] = []
     for m in _TOOL_FLAG.finditer(text):
         hits.append(Hit("tool", m.group(1), source))
+    for m in _NPX.finditer(text):
+        hits.append(Hit("cli_pkg", m.group(1), source))
     for m in _ENV.finditer(text):
         hits.append(Hit("env", m.group(1), source))
     for m in _HOST.finditer(text):

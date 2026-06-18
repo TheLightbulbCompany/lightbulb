@@ -73,6 +73,28 @@ describe("ConnectButton BYO branch", () => {
     ).toBeInTheDocument();
   });
 
+  it("exposes BYO setup for an owner already connected via the old shared-app flow (no destructive disconnect)", () => {
+    renderByo({ connection: { ...googleByoRow, status: "connected", byo_configured: false } });
+    // Disconnect stays available...
+    expect(
+      screen.getByRole("button", { name: /disconnect google workspace/i }),
+    ).toBeInTheDocument();
+    // ...AND the owner can store their own app without disconnecting first.
+    expect(
+      screen.getByRole("button", { name: /use your own google workspace app/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("does NOT show the BYO affordance once a connected owner has configured their own app", () => {
+    renderByo({ connection: { ...googleByoRow, status: "connected", byo_configured: true } });
+    expect(
+      screen.getByRole("button", { name: /disconnect google workspace/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /use your own google workspace app/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("opens a panel with the setup link, redirect URI, inputs and acknowledgment", () => {
     renderByo();
     fireEvent.click(

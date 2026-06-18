@@ -75,9 +75,9 @@ export function ConnectButton({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // BYO ("use your own app") panel state. Lives only on the byo_required,
-  // not-yet-configured branch; opening it reveals the client_id/secret +
-  // acknowledge form. Kept local (no SWR) — a successful PUT hands off to OAuth.
+  // BYO ("use your own app") panel state. Opening it reveals the
+  // client_id/secret + acknowledge form. Kept local (no SWR) — a successful
+  // PUT hands off to OAuth.
   const [byoOpen, setByoOpen] = useState(false);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -103,33 +103,19 @@ export function ConnectButton({
     }
   };
 
-  // Connected → offer Disconnect (admin-gated). Same shape for both
-  // acquisition modes.
-  if (status === "connected") {
-    return (
-      <div className="flex flex-col items-end gap-1">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy || !canManage}
-          onClick={() => run(() => disconnect(provider))}
-          aria-label={`Disconnect ${display_name}`}
-        >
-          {busy ? "Disconnecting…" : "Disconnect"}
-        </Button>
-        {err && (
-          <p className="text-xs text-[#b63025]" role="alert">
-            {err}
-          </p>
-        )}
-      </div>
-    );
-  }
+  // The BYO setup affordance is needed when the provider has no managed app and
+  // this owner hasn't stored their own one yet. It is reachable from TWO states:
+  //   - a not-yet-connected provider — the BYO panel IS the connect path;
+  //   - an owner already connected via the old allowlisted/shared-app flow
+  //     (status "connected", byo_configured false) — so they can store their own
+  //     app and re-auth against it WITHOUT first disconnecting, which would tear
+  //     down their live Google connection.
+  const needsByoSetup = connection.byo_required && !connection.byo_configured;
 
-  // BYO connect path: a provider that has no managed app, where this owner
-  // hasn't stored one yet. This IS the connect action (not an upsell) — storing
-  // + acknowledging the app, then the normal OAuth redirect, connects it.
-  if (connection.byo_required && !connection.byo_configured) {
+  // Renders the "Use your own … app" button, or — once opened — the
+  // client_id/secret + acknowledge form. Extracted so both the connected and
+  // not-connected branches render the identical affordance (no duplication).
+  const renderByoSetup = () => {
     const ackId = `byo-ack-${provider}`;
     // Scrub the typed secret + form state. Called on Cancel/close and after a
     // successful save so a typed client secret never persists in React state to
@@ -148,9 +134,10 @@ export function ConnectButton({
         return;
       }
       void run(async () => {
-        // Store the owner's app, then hand straight off to OAuth. The PUT
-        // lifts the lock server-side, so the redirect that follows authorizes
-        // against the freshly-stored client_id.
+        // Store the owner's app, then hand straight off to OAuth. The PUT lifts
+        // the authorize gate server-side, so the redirect that follows
+        // authorizes against the freshly-stored client_id — re-pointing an
+        // existing connection at the owner's own app when migrating.
         await api.put(`/connections/${encodeURIComponent(provider)}/byo-app`, {
           client_id: clientId.trim(),
           client_secret: clientSecret.trim(),
@@ -172,22 +159,15 @@ export function ConnectButton({
 
     if (!byoOpen) {
       return (
-        <div className="flex flex-col items-end gap-1">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!canManage}
-            onClick={() => setByoOpen(true)}
-            aria-label={`Use your own ${display_name} app`}
-          >
-            Use your own {display_name} app
-          </Button>
-          {err && (
-            <p className="text-xs text-[#b63025]" role="alert">
-              {err}
-            </p>
-          )}
-        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!canManage}
+          onClick={() => setByoOpen(true)}
+          aria-label={`Use your own ${display_name} app`}
+        >
+          Use your own {display_name} app
+        </Button>
       );
     }
 
@@ -256,25 +236,53 @@ export function ConnectButton({
           <span>{BYO_ACK_COPY}</span>
         </label>
         <div className="flex items-center justify-end gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={closeByo}
-          >
+          <Button size="sm" variant="outline" disabled={busy} onClick={closeByo}>
             Cancel
           </Button>
           <Button
             size="sm"
-            disabled={
-              busy || !canManage || !clientId.trim() || !clientSecret.trim() || !acknowledged
-            }
+            disabled={busy || !canManage || !clientId.trim() || !clientSecret.trim() || !acknowledged}
             onClick={saveByoApp}
             aria-label={`Save your own ${display_name} app`}
           >
             {busy ? "Saving…" : "Save & connect"}
           </Button>
         </div>
+      </div>
+    );
+  };
+
+  // Connected → Disconnect, plus the BYO setup affordance when this owner still
+  // needs to store their own app (non-destructive migration off the old
+  // shared-app connection — no disconnect-first required).
+  if (status === "connected") {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy || !canManage}
+          onClick={() => run(() => disconnect(provider))}
+          aria-label={`Disconnect ${display_name}`}
+        >
+          {busy ? "Working…" : "Disconnect"}
+        </Button>
+        {needsByoSetup && renderByoSetup()}
+        {err && (
+          <p className="text-xs text-[#b63025]" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // BYO connect path for a not-yet-connected provider: storing + acknowledging
+  // the app, then the normal OAuth redirect, connects it.
+  if (needsByoSetup) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        {renderByoSetup()}
         {err && (
           <p className="text-xs text-[#b63025]" role="alert">
             {err}

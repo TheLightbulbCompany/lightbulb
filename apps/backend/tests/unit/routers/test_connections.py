@@ -825,6 +825,26 @@ class TestOAuthCallback:
         mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected")
 
     @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_redirects_when_token_exchange_fails(self, mock_dance, async_client):
+        # With a BYO app the owner's own client secret is user input: a wrong
+        # secret makes the provider's token endpoint return 4xx, which exchange()
+        # turns into an httpx.HTTPError. The callback must land on the connections
+        # page with a retryable error, NOT raise a 500 after consuming the state.
+        import httpx
+
+        req = httpx.Request("POST", "https://oauth2.googleapis.com/token")
+        resp = httpx.Response(400, request=req, json={"error": "invalid_client"})
+        mock_dance.exchange = AsyncMock(side_effect=httpx.HTTPStatusError("invalid_client", request=req, response=resp))
+
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "error=oauth_exchange" in response.headers["location"]
+
+    @pytest.mark.asyncio
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")

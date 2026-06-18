@@ -367,6 +367,13 @@ async def oauth_callback(provider: str, code: str, state: str):
         owner_id, prov, credential = await oauth_dance.exchange(state, code, redirect_uri=_redirect_uri(provider))
     except ValueError:
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_state")
+    except httpx.HTTPError:
+        # With a BYO app the owner's own client_id/secret is user input: a wrong
+        # secret or a misconfigured app makes the provider's token endpoint
+        # return 4xx, which exchange()'s raise_for_status turns into an
+        # HTTPError. The single-use state is already consumed, so land back on
+        # the connections page with a retryable error instead of a 500.
+        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_exchange")
     p = registry.get_provider(prov)
     # Retain the credential in Secrets Manager only when the backend is the
     # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the

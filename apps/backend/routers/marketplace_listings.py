@@ -25,7 +25,7 @@ from core.services import (
     seller_display,
     seller_profile,
 )
-from core.services.catalog_service import MissingCredentialsError, get_catalog_service
+from core.services.catalog_service import MissingCredentialsError, get_catalog_service, warn_rows
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
@@ -540,7 +540,11 @@ async def deploy_listing(
             detail="deploy failed",
         ) from exc
 
-    return {"agent_uuid": result["agent_id"], **result}
+    # Surface the honest "these steps will skip" warnings at hire time: byo /
+    # unavailable requirements the platform can't inject or verify. These never
+    # block the deploy (the hard gate already ran inside deploy_from_artifact);
+    # they let the buyer-facing UI tell the truth about what won't run.
+    return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
 
 
 @router.post("/listings")

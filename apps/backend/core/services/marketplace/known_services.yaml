@@ -26,7 +26,9 @@ perplexity:
 
 quickbooks:
   display_name: QuickBooks
-  hosts: [quickbooks.api.intuit.com, intuit.com]
+  # API subdomains only — a bare ``intuit.com`` suffix matched marketing/docs
+  # links (turbotax.intuit.com, quickbooks.intuit.com/pricing) as phantom deps.
+  hosts: [quickbooks.api.intuit.com, sandbox-quickbooks.api.intuit.com]
   env_prefixes: [QBO_]
 
 xero:

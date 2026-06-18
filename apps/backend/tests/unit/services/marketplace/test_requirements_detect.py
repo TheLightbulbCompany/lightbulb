@@ -114,3 +114,11 @@ def test_identify_service_host_and_env():
     assert identify_service(Hit("env", "PLAID_SECRET", "s")) == ("plaid", "Plaid")
     assert identify_service(Hit("env", "PERPLEXITY_API_KEY", "s")) == ("perplexity", "Perplexity")
     assert identify_service(Hit("host", "example.invalid", "s")) is None
+
+
+def test_quickbooks_marketing_host_is_not_a_requirement():
+    """A bare intuit.com suffix matched marketing/docs links as phantom QBO
+    deps; only the API subdomains should resolve."""
+    assert identify_service(Hit("host", "quickbooks.api.intuit.com", "s")) == ("quickbooks", "QuickBooks")
+    assert identify_service(Hit("host", "turbotax.intuit.com", "s")) is None
+    assert identify_service(Hit("host", "quickbooks.intuit.com", "s")) is None

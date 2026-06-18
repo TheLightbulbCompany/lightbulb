@@ -290,6 +290,17 @@ export class FisStack extends cdk.Stack {
         },
       },
       actions: {
+        // PREREQ / TODO(gameday): aws:ecs:task-cpu-stress runs an injected
+        // process INSIDE the task, so AWS FIS requires the target task to be
+        // registered as an SSM managed instance (an amazon-ssm-agent sidecar in
+        // the task def) AND requires ECS Exec to be DISABLED on it. Our per-user
+        // tasks are created WITH ECS Exec enabled and only the `ssmmessages`
+        // perms (container-stack.ts) + no SSM-agent sidecar, so starting S2
+        // as-is fails at launch rather than stressing CPU. Before a game-day,
+        // run S2 against a DEDICATED chaos-test task def that adds the SSM-agent
+        // sidecar and disables Exec — do NOT add a sidecar to the product
+        // per-user task def (it ships to every user). Until then S2 deploys but
+        // is not runnable.
         cpuStress: {
           actionId: "aws:ecs:task-cpu-stress",
           parameters: { duration: "PT5M", percent: "100" },
@@ -354,6 +365,13 @@ export class FisStack extends cdk.Stack {
         },
       },
       actions: {
+        // PREREQ / TODO(gameday): aws:rds:failover-db-cluster promotes an
+        // Aurora replica/readable-standby. The dev Paperclip cluster is
+        // writer-only (serverlessV2 "writer", no reader — database-stack.ts),
+        // so failover has nothing to promote and the experiment fails at start.
+        // Before running S6, add a serverlessV2 reader to the dev cluster (a
+        // dev-only topology + cost decision) so there is a standby to flip to.
+        // Until then S6 deploys but is not runnable.
         failover: {
           actionId: "aws:rds:failover-db-cluster",
           targets: { Clusters: "auroraCluster" },

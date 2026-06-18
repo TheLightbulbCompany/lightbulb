@@ -22,7 +22,7 @@ import os
 import pytest
 
 from ._chat_driver import drive_one_chat_turn, mint_test_token
-from ._recovery import poll_until, wait_experiment_terminal
+from ._recovery import poll_until, wait_experiment_running, wait_experiment_terminal
 from ._templates import resolve_template_id
 
 pytestmark = pytest.mark.fis
@@ -82,6 +82,18 @@ async def test_s8_billing_egress(fis_client):
     # (c) START.
     experiment = fis_client.start_experiment(experimentTemplateId=template_id)["experiment"]
     experiment_id = experiment["id"]
+
+    # (d-pre) WAIT FOR THE FAULT TO BE LIVE. start_experiment returns while the
+    # experiment is still pending/initiating — the NACL egress cut is NOT yet
+    # applied. Probing now would sample BEFORE the outage window and S8 could
+    # pass without ever exercising the cut. Block until the experiment state is
+    # 'running' (the action is applied) so the during-fault probe samples during
+    # the real outage. If it terminated already we fail loudly below.
+    running_state = wait_experiment_running(fis_client, experiment_id)
+    assert running_state == "running", (
+        f"S8: experiment reached {running_state!r} before becoming 'running' — "
+        "the egress cut was never live to probe during the fault"
+    )
 
     # (e-during) DURING the cut, the billing/provision path must stay clean —
     # a structured blocked-state, never a 5xx storm or a hung request. Sample

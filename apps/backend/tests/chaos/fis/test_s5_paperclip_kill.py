@@ -67,20 +67,23 @@ async def test_s5_paperclip_kill(fis_client):
     state = wait_experiment_terminal(fis_client, experiment_id)
     assert state == "completed", f"S5 ended {state!r}, expected 'completed'"
 
-    # (e) RECOVERY — Teams/Paperclip path recovers. Primary signal is a chat
-    # turn (routes through the Paperclip-bound seed agent). The Paperclip
-    # reachability probe is a cheap supplementary signal; it is OR'd in so a
-    # transient probe failure never masks a working chat path.
+    # (e) RECOVERY — Teams/Paperclip path recovers. The poll exit condition is
+    # CHAT SUCCESS ONLY: a chat turn routes through Friday's openclaw_gateway
+    # adapter and exercises the Paperclip BFF, so a successful turn proves the
+    # whole path is back. Paperclip URL reachability is NOT an exit condition —
+    # the URL can answer non-5xx while the chat path is still reconnecting, so
+    # gating on it would let the poll stop too early and the final assertion
+    # would fire before recovery completes. We keep it purely as a diagnostic
+    # signal logged while we wait.
     async def _recovered() -> bool:
         fresh = await mint_test_token()
         chat_ok = await drive_one_chat_turn(fresh, agent_id, timeout_s=30.0)
-        if chat_ok:
-            return True
-        # Chat not back yet — surface Paperclip reachability as a leading signal.
-        return await _paperclip_reachable()
+        if not chat_ok:
+            # Diagnostic only — log Paperclip reachability while chat is not yet
+            # back; this NEVER short-circuits the poll to success.
+            reachable = await _paperclip_reachable()
+            print(f"[S5] chat not recovered yet; paperclip_url_reachable={reachable}")
+        return chat_ok
 
-    # Resolve once at the end as the hard assertion: the chat path must work.
     seconds = await poll_until(_recovered, timeout_s=180.0, interval_s=5.0)
     assert seconds <= 180.0
-    final = await mint_test_token()
-    assert await drive_one_chat_turn(final, agent_id, timeout_s=30.0), "S5: chat path did not fully recover"

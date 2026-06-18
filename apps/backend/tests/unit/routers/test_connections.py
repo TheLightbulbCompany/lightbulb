@@ -1164,3 +1164,31 @@ class TestOAuthCallback:
         mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("routers.connections.oauth_app_store.get", new_callable=AsyncMock)
+async def test_byo_active_true_when_allowed_and_acknowledged(mock_get):
+    from routers import connections
+
+    mock_get.return_value = {"client_id": "x", "client_secret": "y", "acknowledged_at": "2026-06-18T00:00:00Z"}
+    assert await connections._byo_active("user_1", "google") is True
+
+
+@pytest.mark.asyncio
+@patch("routers.connections.oauth_app_store.get", new_callable=AsyncMock)
+async def test_byo_active_false_without_app(mock_get):
+    from routers import connections
+
+    mock_get.return_value = None
+    assert await connections._byo_active("user_1", "google") is False
+
+
+@pytest.mark.asyncio
+@patch("routers.connections.oauth_app_store.get", new_callable=AsyncMock)
+async def test_byo_active_false_for_non_byo_provider(mock_get):
+    from routers import connections
+
+    mock_get.return_value = {"client_id": "x", "client_secret": "y", "acknowledged_at": "t"}
+    # stripe has allow_byo_app False → predicate short-circuits, never True
+    assert await connections._byo_active("user_1", "stripe") is False

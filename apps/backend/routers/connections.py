@@ -15,6 +15,7 @@ from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
     integration_secret_store,
+    oauth_app_store,
     oauth_dance,
     registry,
 )
@@ -130,6 +131,16 @@ async def _require_bedrock_for(p: registry.Provider, owner_id: str) -> None:
         return
     if not await _owner_on_bedrock(owner_id):
         raise HTTPException(status_code=403, detail=_bedrock_lock())
+
+
+async def _byo_active(owner_id: str, provider_key: str) -> bool:
+    """True when this owner may use their OWN OAuth app for the provider — the
+    single condition under which the internal + requires_bedrock gates lift."""
+    prov = registry.all_providers().get(provider_key)
+    if not prov or not prov.allow_byo_app:
+        return False
+    app = await oauth_app_store.get(owner_id, provider_key)
+    return bool(app and app.get("acknowledged_at"))
 
 
 async def _validate_token(p: registry.Provider, token: str) -> bool:

@@ -22,13 +22,56 @@ _TOOL_FLAG = re.compile(r"--tool\s+([a-z0-9][a-z0-9._-]*)")
 _ENV = re.compile(r"\$\{?([A-Z][A-Z0-9_]{2,})\}?")
 # scheme://host — capture the host (must contain a dot + TLD).
 _HOST = re.compile(r"https?://([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})")
+# A tool name: lowercase, identifier-shaped.
+_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
 
+# `**` recurses, so nested scripts (scripts/lib/fetch.sh) and pipelines are
+# scanned, not just direct children. Markdown stays top-level to avoid walking
+# vendored trees (node_modules/*/README.md).
 _SCAN_GLOBS = (
-    "pipelines/*.lobster",
-    "pipelines/*.yaml",
-    "pipelines/*.yml",
-    "scripts/*",
+    "pipelines/**/*.lobster",
+    "pipelines/**/*.yaml",
+    "pipelines/**/*.yml",
+    "scripts/**/*",
     "*.md",
+)
+
+# YAML keys whose string values are command lines in the .lobster DSL.
+_COMMAND_KEYS = frozenset({"command", "run", "pipeline", "cmd"})
+# Pipeline files are YAML.
+_YAML_SUFFIXES = (".lobster", ".yaml", ".yml")
+# Command heads that are execution plumbing, not buyer-relevant tool deps:
+# the openclaw.invoke wrapper (its real tool comes via --tool), shell runners,
+# and common shell builtins. Hosts referenced via curl/wget are captured by the
+# host regex; their command head is irrelevant.
+_NON_TOOL_HEADS = frozenset(
+    {
+        "openclaw",
+        "exec",
+        "node",
+        "python",
+        "python3",
+        "bash",
+        "sh",
+        "deno",
+        "bun",
+        "npx",
+        "uv",
+        "uvx",
+        "curl",
+        "wget",
+        "jq",
+        "echo",
+        "cat",
+        "set",
+        "export",
+        "cd",
+        "source",
+        "true",
+        "false",
+        "sleep",
+        "test",
+    }
 )
 
 _TABLE_PATH = Path(__file__).with_name("known_services.yaml")
@@ -52,17 +95,71 @@ def detect_in_text(text: str, source: str) -> list[Hit]:
     return hits
 
 
+def _tool_head(command: str) -> str | None:
+    """The buyer-relevant tool a command line invokes via DIRECT CLI form, e.g.
+    ``gog.gmail.search --query …`` → ``gog`` and ``inbox list --json`` → ``inbox``.
+
+    Returns None for execution plumbing (``openclaw.invoke``, ``exec``, shell
+    runners): ``--tool`` already captures the wrapped tool, and curl/wget hosts
+    are captured by the host regex. The leading segment of a dotted head is the
+    tool/plugin (``gog.gmail.search`` is the ``gog`` plugin).
+    """
+    stripped = command.strip()
+    if not stripped:
+        return None
+    head = stripped.split(maxsplit=1)[0].split(".", 1)[0]
+    if head in _NON_TOOL_HEADS or not _NAME.match(head):
+        return None
+    return head
+
+
+def _detect_in_yaml(text: str, source: str) -> list[Hit]:
+    """Structurally walk a .lobster/pipeline YAML and pull the tool head out of
+    every ``command:``/``run:``/``pipeline:`` value, including ``|``-composed
+    pipelines. Falls back to text-only detection on a parse error.
+    """
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return []
+    hits: list[Hit] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _COMMAND_KEYS and isinstance(value, str):
+                    # A command value may be a `|`-composed pipeline; each
+                    # segment is its own invocation.
+                    for segment in value.split("|"):
+                        head = _tool_head(segment)
+                        if head is not None:
+                            hits.append(Hit("tool", head, source))
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(doc)
+    return hits
+
+
 def detect_in_tree(agent_dir: Path) -> list[Hit]:
     hits: list[Hit] = []
+    seen: set[Path] = set()
     for pattern in _SCAN_GLOBS:
         for path in sorted(agent_dir.glob(pattern)):
-            if not path.is_file():
+            if not path.is_file() or path in seen:
                 continue
+            seen.add(path)
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
             hits.extend(detect_in_text(text, source=path.name))
+            # Pipeline files are YAML: also pull direct-CLI tool heads
+            # (gog.gmail.search, inbox list) that the --tool regex can't see.
+            if path.suffix in _YAML_SUFFIXES:
+                hits.extend(_detect_in_yaml(text, source=path.name))
     return hits
 
 

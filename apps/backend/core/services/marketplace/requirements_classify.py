@@ -14,6 +14,7 @@ classified against the platform's integration rail:
 
 from __future__ import annotations
 
+from core.containers.config import CHANNEL_PROVIDER_IDS
 from core.services.marketplace.requirements import Disposition, Requirement
 from core.services.marketplace.requirements_detect import Hit, identify_service
 
@@ -32,7 +33,10 @@ BUNDLED_TOOLS = frozenset(
     }
 )
 BUNDLED_SKILLS = frozenset({"capability-evolver", "skill-vetter"})
-CHANNELS = frozenset({"slack", "discord", "telegram", "whatsapp"})
+# The backend-provisionable channel providers (Channels tab). Imported from the
+# single source of truth so this can't drift — e.g. listing whatsapp here would
+# tell a buyer to "connect" a channel the backend never provisions.
+CHANNELS = frozenset(CHANNEL_PROVIDER_IDS)
 # Tool/provider names that resolve to gated Google Workspace access.
 GATED_PROVIDERS = frozenset({"gog", "google"})
 
@@ -112,6 +116,10 @@ def classify_hits(
                         Disposition.UNAVAILABLE if gated else Disposition.CONNECT,
                         reason=_GATED_REASON if gated else None,
                     )
+                elif name in config_mcps:
+                    # The agent's own MCP server, declared in its openclaw.json
+                    # and shipped in the workspace tarball — not a phantom.
+                    r = _ensure(name, name, "mcp", Disposition.INCLUDED)
                 elif name in config_skills or name in bundled_skills:
                     r = _ensure(name, name, "skill", Disposition.BYO)
                 else:
@@ -125,27 +133,43 @@ def classify_hits(
             prov = _providers().get(key)
             env = [hit.value] if hit.kind == "env" else []
             if prov is not None and not (prov.internal or prov.requires_bedrock):
-                disp = Disposition.CONNECT
-                reason = None
-                mcp = prov.wiring.mcp_server
-                mcp_env = set(mcp.env.keys()) if mcp else set()
-                # Stripe-style mismatch: the tab wires an MCP keyed on one env
-                # var, but the agent references a different one the tab won't set.
-                if hit.kind == "env" and hit.value not in mcp_env:
-                    disp = Disposition.BYO
-                    reason = (
-                        f"wiring mismatch: the {display} integration wires an MCP; "
-                        f"this agent references {hit.value} directly"
-                    )
-                r = _ensure(key, display, "external_api", disp, env=env, reason=reason)
+                # Connectable by default; the wiring-mismatch downgrade to BYO
+                # happens in a post-pass so it can't depend on host-vs-env hit
+                # order (see _apply_wiring_mismatch).
+                r = _ensure(key, display, "external_api", Disposition.CONNECT, env=env)
             elif prov is not None:
                 r = _ensure(key, display, "external_api", Disposition.UNAVAILABLE, env=env, reason=_GATED_REASON)
             else:
                 r = _ensure(key, display, "external_api", Disposition.BYO, env=env)
             r.detected_via.append(hit.source)
 
+    _apply_wiring_mismatch(by_key)
+
     for r in by_key.values():
         if r.key in bundled_mcps or r.key in bundled_skills:
             r.bundled = True
         r.detected_via = sorted(set(r.detected_via))
     return list(by_key.values())
+
+
+def _apply_wiring_mismatch(by_key: dict[str, Requirement]) -> None:
+    """Downgrade a registry CONNECT row to BYO when the agent references an env
+    var the integration's MCP won't set (e.g. STRIPE_API_KEY when the tab wires
+    STRIPE_SECRET_KEY). Order-independent: evaluated once over each row's full
+    accumulated env, so the result is the same regardless of which of the
+    host/env hits arrived first.
+    """
+    providers = _providers()
+    for r in by_key.values():
+        if r.disposition != Disposition.CONNECT or r.kind != "external_api":
+            continue
+        prov = providers.get(r.key)
+        mcp = prov.wiring.mcp_server if prov else None
+        mcp_env = set(mcp.env.keys()) if mcp else set()
+        unexpected = [e for e in r.env if e not in mcp_env]
+        if unexpected:
+            r.disposition = Disposition.BYO
+            r.reason = (
+                f"wiring mismatch: the {r.display_name} integration wires an MCP; "
+                f"this agent references {unexpected[0]} directly"
+            )

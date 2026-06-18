@@ -157,6 +157,11 @@ export function ConnectButton({
       });
     };
 
+    // A stored app means this is an edit/replace (e.g. fixing a wrong client
+    // secret that failed the OAuth exchange), not first-time setup.
+    const setupLabel = connection.byo_configured
+      ? `Edit your ${display_name} app`
+      : `Use your own ${display_name} app`;
     if (!byoOpen) {
       return (
         <Button
@@ -164,16 +169,16 @@ export function ConnectButton({
           variant="outline"
           disabled={!canManage}
           onClick={() => setByoOpen(true)}
-          aria-label={`Use your own ${display_name} app`}
+          aria-label={setupLabel}
         >
-          Use your own {display_name} app
+          {setupLabel}
         </Button>
       );
     }
 
     return (
       <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[#e0dbd0] bg-[#faf8f3] p-3">
-        <p className="text-sm font-medium text-[#1c1917]">Use your own {display_name} app</p>
+        <p className="text-sm font-medium text-[#1c1917]">{setupLabel}</p>
         {connection.byo_setup_url && (
           <Link
             href={connection.byo_setup_url}
@@ -282,6 +287,34 @@ export function ConnectButton({
   if (needsByoSetup) {
     return (
       <div className="flex flex-col items-end gap-1">
+        {renderByoSetup()}
+        {err && (
+          <p className="text-xs text-[#b63025]" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // A byo_required provider whose app IS stored but the connection is down
+  // (e.g. a wrong client secret failed the OAuth exchange). Offer BOTH a retry
+  // against the stored app AND an edit affordance to overwrite a bad app — else
+  // the row would fall to a plain Connect that reuses the bad secret on every
+  // retry, with no UI to fix the stored credentials.
+  if (connection.byo_required && connection.byo_configured) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        {!byoOpen && (
+          <Button
+            size="sm"
+            disabled={busy || !canManage}
+            onClick={() => run(() => startOAuth(provider))}
+            aria-label={`Connect ${display_name}`}
+          >
+            {busy ? "Redirecting…" : "Connect"}
+          </Button>
+        )}
         {renderByoSetup()}
         {err && (
           <p className="text-xs text-[#b63025]" role="alert">

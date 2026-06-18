@@ -95,6 +95,23 @@ describe("ConnectButton BYO branch", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("lets a disconnected owner with a stored app retry OR edit it (recover from a bad secret)", () => {
+    renderByo({ connection: { ...googleByoRow, status: "disconnected", byo_configured: true } });
+    // Retry the OAuth dance against the stored app...
+    expect(
+      screen.getByRole("button", { name: "Connect Google Workspace" }),
+    ).toBeInTheDocument();
+    // ...and an edit affordance to overwrite a bad stored app (not "use your own").
+    const edit = screen.getByRole("button", { name: /edit your google workspace app/i });
+    expect(edit).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /use your own google workspace app/i }),
+    ).not.toBeInTheDocument();
+    // Opening it reveals the client_id/secret form so the secret can be replaced.
+    fireEvent.click(edit);
+    expect(screen.getByLabelText(/client secret/i)).toBeInTheDocument();
+  });
+
   it("opens a panel with the setup link, redirect URI, inputs and acknowledgment", () => {
     renderByo();
     fireEvent.click(

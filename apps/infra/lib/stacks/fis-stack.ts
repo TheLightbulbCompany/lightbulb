@@ -81,8 +81,8 @@ export interface FisStackProps extends cdk.StackProps {
  * applied to every template; container scenarios additionally watch P1
  * (container-error-state). FIS caps stop-conditions at 5 per template, so the
  * full `pageAlarmArns` set (~12, with breach-on-event trip-wires) is NEVER
- * used here — wiring it is exactly what rolled back the first FIS deploy and
- * blocked prod (#917).
+ * used here — wiring the full page set is exactly what rolled back the first
+ * FIS deploy (stop-conditions over the cap) and blocked prod.
  *
  * SHARED-INFRA WARNING: S3/S4/S6/S7/S8 affect resources the whole dev
  * environment shares (backend task, Aurora, subnets). Run them only in a

@@ -271,3 +271,43 @@ async def test_clear_default_agent_noop_when_table_missing(fake_efs_root):
     con.close()
 
     await clear_default_agent_auth_profile_row(user_id="org_1")  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_clear_default_agent_locked_db_is_loud_not_silent(fake_efs_root, monkeypatch):
+    """A genuine write failure (SQLITE_BUSY — the live OpenClaw writer held the
+    lock past the busy-timeout) must NOT be masked as a benign no-op: the stale
+    row survives and would silently block the oauth.json re-import while the
+    switch reports success. Emit a failure metric + return False (no raise)."""
+    _make_agent_sqlite(fake_efs_root, "org_1", "main")  # file must exist to reach connect()
+
+    def _locked(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    metrics: list[str] = []
+    monkeypatch.setattr("core.containers.workspace.sqlite3.connect", _locked)
+    monkeypatch.setattr("core.containers.workspace.put_metric", lambda name, **kw: metrics.append(name))
+
+    result = await clear_default_agent_auth_profile_row(user_id="org_1")  # must not raise
+    assert result is False
+    assert any("clear" in m and "fail" in m for m in metrics), f"expected a failure metric, got {metrics}"
+
+
+@pytest.mark.asyncio
+async def test_clear_default_agent_missing_table_emits_no_failure_metric(fake_efs_root, monkeypatch):
+    """Missing auth_profile_store table (un-booted container) is a benign no-op —
+    return False WITHOUT a failure metric, so it's distinguishable from a real
+    write failure in monitoring."""
+    p = _agent_sqlite_path(fake_efs_root, "org_1", "main")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(p))
+    con.execute("CREATE TABLE other (x TEXT)")
+    con.commit()
+    con.close()
+
+    metrics: list[str] = []
+    monkeypatch.setattr("core.containers.workspace.put_metric", lambda name, **kw: metrics.append(name))
+
+    result = await clear_default_agent_auth_profile_row(user_id="org_1")
+    assert result is False
+    assert metrics == [], f"missing-table must not emit a failure metric, got {metrics}"

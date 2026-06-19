@@ -928,10 +928,25 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool:
         finally:
             con.close()
     except sqlite3.OperationalError as e:
-        # No auth_profile_store table yet (store never initialized), or a lock we
-        # couldn't win in time. Neither should fail the caller — the staged
-        # oauth.json import re-fires on the next clean load / reprovision.
-        logger.warning("clear_default_agent_auth_profile_row: %s — %s", db_path, e)
+        if "no such table" in str(e).lower():
+            # Store file exists but the auth_profile_store table was never
+            # created (container booted but no auth ever persisted). A true
+            # no-op: the boot import seeds it. Quiet — NOT a failure.
+            logger.info("clear_default_agent_auth_profile_row: no auth table yet for %s", user_id)
+            return False
+        # A genuine write failure — almost always SQLITE_BUSY: the live OpenClaw
+        # process held the auth-store write lock past the busy-timeout. This is
+        # NOT benign: the stale shadow row SURVIVES, so the freshly staged
+        # oauth.json will NOT import and a switch/reconnect silently keeps the old
+        # (often spent) token while reporting success. Surface it loudly +
+        # metered so it's observable and retried, instead of masked as a no-op.
+        logger.error(
+            "clear_default_agent_auth_profile_row: write FAILED for %s — stale auth row "
+            "survives; freshly staged oauth.json will NOT import until this is retried: %s",
+            user_id,
+            e,
+        )
+        put_metric("oauth.auth_row_clear_failed")
         return False
 
     logger.info(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime
 import logging
 import subprocess
 
@@ -69,7 +68,6 @@ class PasteBody(BaseModel):
 class ByoAppRequest(BaseModel):
     client_id: str = Field(min_length=1, max_length=512)
     client_secret: str = Field(min_length=1, max_length=512)
-    acknowledge: bool = False
 
 
 def _get_provider_or_404(provider: str) -> registry.Provider:
@@ -80,13 +78,13 @@ def _get_provider_or_404(provider: str) -> registry.Provider:
 
 
 async def _byo_active(owner_id: str, provider_key: str) -> bool:
-    """True when the owner has a stored, acknowledged OWN OAuth app for a
-    byo-required provider — the prerequisite for connecting it."""
+    """True when the owner has stored their OWN OAuth app (client id + secret)
+    for a byo-required provider — the prerequisite for connecting it."""
     prov = registry.all_providers().get(provider_key)
     if not prov or not prov.byo_required:
         return False
     app = await oauth_app_store.get(owner_id, provider_key)
-    return bool(app and app.get("acknowledged_at"))
+    return bool(app and app.get("client_id") and app.get("client_secret"))
 
 
 async def _validate_token(p: registry.Provider, token: str) -> bool:
@@ -149,7 +147,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
                 "acquisition": v.acquisition,
                 "status": connected.get(k, "disconnected"),
                 # byo_required: provider has no managed app, owner must bring one.
-                # byo_configured: whether THIS owner has stored + acknowledged it.
+                # byo_configured: whether THIS owner has stored their own app.
                 # byo_setup_url: where to register one.
                 "byo_required": v.byo_required,
                 "byo_configured": byo,
@@ -295,22 +293,19 @@ async def put_byo_app(
     body: ByoAppRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
-    """Store the owner's OWN OAuth app for a byo-required provider. Once stored
-    (and acknowledged), `_byo_active` returns True for this owner — the
-    prerequisite for connecting a BYO-required provider via their own app."""
+    """Store the owner's OWN OAuth app for a byo-required provider. Once stored,
+    `_byo_active` returns True for this owner — the prerequisite for connecting a
+    BYO-required provider via their own app."""
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
     if not p.byo_required:
         raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
-    if not body.acknowledge:
-        raise HTTPException(status_code=400, detail="acknowledgment required")
     await oauth_app_store.put(
         owner_id,
         provider,
         client_id=body.client_id,
         client_secret=body.client_secret,
-        acknowledged_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
     )
     return {"status": "stored"}
 

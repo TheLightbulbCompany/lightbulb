@@ -112,7 +112,7 @@ describe("ConnectButton BYO branch", () => {
     expect(screen.getByLabelText(/client secret/i)).toBeInTheDocument();
   });
 
-  it("opens a panel with the setup link, redirect URI, inputs and acknowledgment", () => {
+  it("opens a panel with the setup link, redirect URI and inputs", () => {
     renderByo();
     fireEvent.click(
       screen.getByRole("button", { name: /use your own google workspace app/i }),
@@ -125,10 +125,9 @@ describe("ConnectButton BYO branch", () => {
     );
     // Derived redirect URI (mirrors backend _redirect_uri).
     expect(screen.getByText(/\/oauth\/google\/callback$/)).toBeInTheDocument();
-    // Inputs + acknowledgment.
+    // Credential inputs.
     expect(screen.getByLabelText(/client id/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/client secret/i)).toBeInTheDocument();
-    expect(screen.getByText(/limited use requirements/i)).toBeInTheDocument();
   });
 
   it("PUTs the byo-app then proceeds to OAuth on Save", async () => {
@@ -143,17 +142,12 @@ describe("ConnectButton BYO branch", () => {
     fireEvent.change(screen.getByLabelText(/client secret/i), {
       target: { value: "my-secret" },
     });
-    // Acknowledgment checkbox gates Save.
-    const ack = screen.getByRole("checkbox");
-    fireEvent.click(ack);
-
     fireEvent.click(screen.getByRole("button", { name: /save your own google workspace app/i }));
 
     await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
     expect(putMock).toHaveBeenCalledWith("/connections/google/byo-app", {
       client_id: "my-client-id",
       client_secret: "my-secret",
-      acknowledge: true,
     });
     await waitFor(() => expect(startOAuth).toHaveBeenCalledWith("google"));
   });
@@ -173,7 +167,6 @@ describe("ConnectButton BYO branch", () => {
     fireEvent.change(screen.getByLabelText(/client secret/i), {
       target: { value: "my-secret" },
     });
-    fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: /save your own google workspace app/i }));
 
     await waitFor(() => expect(refreshConnections).toHaveBeenCalledTimes(1));
@@ -196,7 +189,6 @@ describe("ConnectButton BYO branch", () => {
     fireEvent.change(screen.getByLabelText(/client secret/i), {
       target: { value: "typed-secret" },
     });
-    fireEvent.click(screen.getByRole("checkbox"));
 
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     // Panel closed back to the affordance button.
@@ -204,13 +196,12 @@ describe("ConnectButton BYO branch", () => {
       screen.getByRole("button", { name: /use your own google workspace app/i }),
     ).toBeInTheDocument();
 
-    // Reopen — the inputs and acknowledgment are back to empty/unchecked.
+    // Reopen — the inputs are back to empty.
     fireEvent.click(
       screen.getByRole("button", { name: /use your own google workspace app/i }),
     );
     expect(screen.getByLabelText(/client id/i)).toHaveValue("");
     expect(screen.getByLabelText(/client secret/i)).toHaveValue("");
-    expect(screen.getByRole("checkbox")).not.toBeChecked();
   });
 
   it("renders the normal Connect path for a configured-but-not-connected row", () => {
@@ -240,7 +231,7 @@ describe("ConnectButton BYO branch", () => {
     ).toBeNull();
   });
 
-  it("disables Save until both fields and acknowledgment are present", () => {
+  it("disables Save until both client fields are present", () => {
     renderByo();
     fireEvent.click(
       screen.getByRole("button", { name: /use your own google workspace app/i }),
@@ -252,13 +243,12 @@ describe("ConnectButton BYO branch", () => {
     fireEvent.change(screen.getByLabelText(/client id/i), {
       target: { value: "id" },
     });
+    // Still disabled with only the client id.
+    expect(save).toBeDisabled();
+
     fireEvent.change(screen.getByLabelText(/client secret/i), {
       target: { value: "secret" },
     });
-    // Still disabled without the acknowledgment.
-    expect(save).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("checkbox"));
     expect(save).toBeEnabled();
   });
 });

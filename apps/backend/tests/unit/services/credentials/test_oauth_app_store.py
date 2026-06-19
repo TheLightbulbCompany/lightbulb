@@ -21,15 +21,13 @@ async def test_put_then_get_round_trips(mock_cou, mock_client):
     sm = MagicMock()
     mock_client.return_value = sm
     sm.describe_secret.return_value = {"ARN": "arn:aws:...:secret"}
-    await oauth_app_store.put(
-        "user_1", "google", client_id="cid", client_secret="csec", acknowledged_at="2026-06-18T00:00:00Z"
-    )
-    # create_or_update_secret received a JSON payload with the three fields.
+    await oauth_app_store.put("user_1", "google", client_id="cid", client_secret="csec")
+    # create_or_update_secret received a JSON payload with the client credentials.
     payload = mock_cou.call_args.args[2]
     import json
 
     data = json.loads(payload)
-    assert data == {"client_id": "cid", "client_secret": "csec", "acknowledged_at": "2026-06-18T00:00:00Z"}
+    assert data == {"client_id": "cid", "client_secret": "csec"}
 
     sm.get_secret_value.return_value = {"SecretString": payload}
     got = await oauth_app_store.get("user_1", "google")

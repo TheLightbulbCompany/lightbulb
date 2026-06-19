@@ -188,6 +188,53 @@ class HostDispatcherMiddleware:
         await self.app(new_scope, receive, send)
 
 
+class SecurityHeadersMiddleware:
+    """Add baseline security response headers to every HTTP response.
+
+    - ``X-Content-Type-Options: nosniff`` — stop MIME-sniffing of API responses.
+    - ``X-Frame-Options: SAMEORIGIN`` — clickjacking guard (the backend also
+      reverse-proxies the Paperclip SPA HTML, for which framing isn't expected).
+    - ``Referrer-Policy: strict-origin-when-cross-origin`` — limit referrer leak.
+
+    ``Strict-Transport-Security`` is set here too because the REST API path is
+    ALB -> ECS with no CloudFront in front, and an ALB can't add headers to
+    *forwarded* responses — so the app is the practical place to assert HSTS for
+    api.isol8.co + the proxied company.isol8.co. (Browsers ignore HSTS over
+    plain HTTP, so it's a no-op for local dev / internal health probes.)
+
+    Deliberately NO blanket Content-Security-Policy here: a strict CSP would
+    break the proxied Paperclip SPA, so CSP belongs on those responses
+    specifically (the Next.js frontend sets the app's CSP). Only adds a header
+    if the downstream response didn't already set it.
+    """
+
+    _HEADERS: tuple[tuple[bytes, bytes], ...] = (
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"SAMEORIGIN"),
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+        (b"strict-transport-security", b"max-age=31536000"),
+    )
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = message.setdefault("headers", [])
+                present = {name.lower() for name, _ in headers}
+                for name, value in self._HEADERS:
+                    if name not in present:
+                        headers.append((name, value))
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
 async def _running_count_gauge_loop():
     """Periodically emit the gateway running-count gauges.
 
@@ -603,6 +650,11 @@ app.add_middleware(E2ECorrelationMiddleware)
 from core.middleware.admin_metrics import AdminMetricsMiddleware  # noqa: E402
 
 app.add_middleware(AdminMetricsMiddleware)
+
+# Security response headers (nosniff / frame-options / referrer-policy). Added
+# last so it wraps outermost and stamps every response, including ones a
+# downstream middleware short-circuits.
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 def custom_openapi():

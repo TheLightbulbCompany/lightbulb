@@ -242,6 +242,9 @@ export interface ArtifactPreview {
   agent_id: string;
   available_mcps: string[];
   available_skills: AvailableSkill[];
+  // Skills dropped into the agent's workspace skills/ dir. These ride along
+  // in the tarball unconditionally — they are informational, not selectable.
+  auto_ship_skills: string[];
   persona_files: string[];
   safety_flags: SafetyFlag[];
   needs_config_patch: boolean;

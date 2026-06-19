@@ -204,6 +204,7 @@ describe("PublishWizard — republish entry threads editingListing.version", () 
     mockArtifactPreview.mockResolvedValue({
       available_mcps: [],
       available_skills: [],
+      auto_ship_skills: [],
       persona_files: [],
       safety_flags: [],
     });

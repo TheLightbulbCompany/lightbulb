@@ -62,6 +62,7 @@ function basePreview(overrides: Partial<ArtifactPreview> = {}): ArtifactPreview 
     agent_id: "agent_xyz",
     available_mcps: [],
     available_skills: [],
+    auto_ship_skills: [],
     persona_files: [],
     safety_flags: [],
     needs_config_patch: false,
@@ -131,6 +132,31 @@ describe("BundleStep", () => {
     const cb = await screen.findByLabelText("bundle skill jira");
     fireEvent.click(cb);
     expect(onChange).toHaveBeenCalledWith({ bundleSkills: ["jira"] });
+  });
+
+  it("lists workspace skills as always-included chips, not checkboxes", async () => {
+    mockArtifactPreview.mockResolvedValue(
+      basePreview({ auto_ship_skills: ["secretary", "secret-santa"] }),
+    );
+    render(<BundleStep form={baseForm()} onChange={vi.fn()} />);
+
+    await screen.findByTestId("bundle-auto-ship-skills");
+    expect(screen.getByText("secretary")).toBeInTheDocument();
+    expect(screen.getByText("secret-santa")).toBeInTheDocument();
+    expect(screen.getByText(/ship automatically/)).toBeInTheDocument();
+    // Workspace skills are informational — no selection checkbox.
+    expect(
+      screen.queryByLabelText("bundle skill secretary"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show the no-skills copy when only workspace skills exist", async () => {
+    mockArtifactPreview.mockResolvedValue(
+      basePreview({ auto_ship_skills: ["secretary"] }),
+    );
+    render(<BundleStep form={baseForm()} onChange={vi.fn()} />);
+    await screen.findByTestId("bundle-auto-ship-skills");
+    expect(screen.queryByText(/no skills configured/)).not.toBeInTheDocument();
   });
 
   it("lists persona files in the always-included section", async () => {

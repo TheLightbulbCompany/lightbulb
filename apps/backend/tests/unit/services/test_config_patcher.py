@@ -1735,3 +1735,33 @@ def test_assert_safe_patch_keys_unit():
         _assert_safe_patch_keys({"x" * 200: 1})
     with pytest.raises(ConfigPatchError):
         _assert_safe_patch_keys({"tab\tkey": 1})
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_unsafe_key_in_inserted_subtree(efs_dir):
+    """Regression: a patch that INSERTS a subtree absent from the base config
+    (so the merge never recurses into it) must still have its nested keys
+    validated — otherwise the proto-pollution guard is bypassed."""
+    # base fixture has no top-level "plugins" → this whole subtree is inserted.
+    with pytest.raises(ConfigPatchError):
+        await patch_openclaw_config("user_1", {"plugins": {"entries": {"x": {"__proto__": {}}}}})
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_unsafe_key_in_list_item(efs_dir):
+    """Dicts carried inside list entries (plugin/agent lists) are validated too."""
+    with pytest.raises(ConfigPatchError):
+        await patch_openclaw_config("user_1", {"somelist": [{"ok": 1}, {"constructor": {}}]})
+
+
+def test_assert_safe_patch_keys_recurses_into_inserted_and_list_values():
+    from core.services.config_patcher import _assert_safe_patch_keys
+
+    # Deeply nested unsafe key (no existing base to merge against).
+    with pytest.raises(ConfigPatchError):
+        _assert_safe_patch_keys({"a": {"b": {"c": {"__proto__": 1}}}})
+    # Unsafe key inside a list of dicts.
+    with pytest.raises(ConfigPatchError):
+        _assert_safe_patch_keys({"list": [{"clean": 1}, {"prototype": 2}]})
+    # Clean nested structure (incl. list of dicts) passes.
+    _assert_safe_patch_keys({"a": {"b": [{"id": "x", "model": "y"}]}, "mcp": {"servers": {"s.v2": {}}}})

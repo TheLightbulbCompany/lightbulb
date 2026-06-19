@@ -36,13 +36,17 @@ _MAX_CONFIG_KEY_LEN = 128
 
 
 def _assert_safe_patch_keys(patch: dict) -> None:
-    """Reject prototype-pollution, control-char, and absurdly long keys in one
-    level of an incoming patch dict. ``_deep_merge`` calls this on the patch
-    side at every recursion depth, so nested keys are covered too. Deliberately
-    NOT a key allowlist: legit configs carry caller-chosen keys (MCP server
-    names, model ids), so we only reject what is never a valid config key.
+    """Recursively reject prototype-pollution, control-char, and absurdly long
+    keys ANYWHERE in an incoming patch — including subtrees that the merge will
+    INSERT wholesale (a new key, or a value replacing a non-dict). The merge
+    recursion alone only descends when both sides are existing dicts, so without
+    this walk a patch like ``{"plugins":{"entries":{"x":{"__proto__":{}}}}}``
+    against a config lacking ``plugins.entries`` would copy the unsafe key in
+    unchecked. Deliberately NOT a key allowlist: legit configs carry
+    caller-chosen keys (MCP server names, model ids), so we only reject what is
+    never a valid config key.
     """
-    for key in patch:
+    for key, value in patch.items():
         if not isinstance(key, str):
             raise ConfigPatchError(f"config key must be a string, got {type(key).__name__}")
         if key in _UNSAFE_CONFIG_KEYS:
@@ -51,15 +55,32 @@ def _assert_safe_patch_keys(patch: dict) -> None:
             raise ConfigPatchError("config key exceeds maximum length")
         if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in key):
             raise ConfigPatchError(f"config key contains control characters: {key!r}")
+        _assert_safe_patch_values(value)
+
+
+def _assert_safe_patch_values(value: Any) -> None:
+    """Walk nested dicts/lists so keys inside inserted/replaced subtrees (and
+    dicts carried inside list entries, e.g. plugin/agent lists) are validated."""
+    if isinstance(value, dict):
+        _assert_safe_patch_keys(value)
+    elif isinstance(value, list):
+        for item in value:
+            _assert_safe_patch_values(item)
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
-    """Deep-merge patch into base. Dicts are merged recursively. Non-dict values are replaced."""
+    """Deep-merge patch into base. Dicts are merged recursively; non-dict values
+    replace. The ENTIRE patch (including inserted subtrees) is key-validated up
+    front, so the merge recursion below can stay focused on merging."""
     _assert_safe_patch_keys(patch)
+    return _merge(base, patch)
+
+
+def _merge(base: dict, patch: dict) -> dict:
     result = copy.deepcopy(base)
     for key, value in patch.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
+            result[key] = _merge(result[key], value)
         else:
             result[key] = copy.deepcopy(value)
     return result

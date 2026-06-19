@@ -611,11 +611,22 @@ async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1
     """
     table = _listings_table()
 
-    # Pre-check artifact_uploaded so we can return a specific error.
-    # Listings created before this field existed default to True (legacy
-    # safety) — the field is only stored for newly-created drafts.
     pre = table.get_item(Key={"listing_id": listing_id, "version": version})
     pre_item = pre.get("Item") or {}
+
+    # Ownership pre-check FIRST. The artifact_uploaded branch below returns a
+    # state-specific error, so without this a non-owner could tell "listing
+    # exists but artifact not uploaded" apart from "not in draft / not yours"
+    # — an existence/state oracle for other sellers' listings. Collapse both to
+    # the same error the update_item ConditionExpression raises (and use the
+    # identical message), so a non-owner / unknown listing is indistinguishable.
+    # The actual draft->review transition stays guarded by the conditional write.
+    if not pre_item or pre_item.get("seller_id") != seller_id:
+        raise InvalidStateError("listing is not in 'draft' state or you are not the seller")
+
+    # Pre-check artifact_uploaded so the OWNER gets a specific error.
+    # Listings created before this field existed default to True (legacy
+    # safety) — the field is only stored for newly-created drafts.
     if pre_item.get("artifact_uploaded") is False:
         raise ArtifactNotUploadedError("upload artifact before submitting for review")
 

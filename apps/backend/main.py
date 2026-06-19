@@ -502,6 +502,16 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
         return refresh
 
     status = exc.status_code if 400 <= exc.status_code < 600 else 502
+    if status >= 500:
+        # str(exc) is "GET /api/companies/<company_uuid>/... -> 5xx" — it embeds
+        # the internal Paperclip path + company UUID, and an upstream 5xx carries
+        # nothing client-actionable. Log the real detail server-side and return a
+        # generic body so we don't leak backend architecture to the caller.
+        logger.warning("paperclip upstream error: %s", exc, exc_info=True)
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "upstream error", "upstream_status": 502},
+        )
     return JSONResponse(
         status_code=status,
         content={"detail": str(exc), "upstream_status": exc.status_code},

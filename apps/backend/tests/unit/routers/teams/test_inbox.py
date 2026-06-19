@@ -62,6 +62,36 @@ def test_list_inbox_proxies_to_company_issues(client, monkeypatch):
     )
 
 
+def test_inbox_rejects_non_uuid_project_locally(client, monkeypatch):
+    """``projects.id`` is a Postgres uuid upstream, so a malformed ``project``
+    filter would 500 and leak the internal company path. The BFF must reject it
+    as a local 422 and never call upstream."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value=[])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get("/api/v1/teams/inbox?project=not-a-uuid", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 422
+    admin.list_issues.assert_not_called()
+
+
+def test_inbox_accepts_valid_uuid_project(client, monkeypatch):
+    """A canonical UUID ``project`` is forwarded upstream as ``projectId``."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value=[])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    uid = "11111111-2222-3333-4444-555555555555"
+    r = client.get(f"/api/v1/teams/inbox?project={uid}", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    params = admin.list_issues.await_args.kwargs["params"]
+    assert params["projectId"] == uid
+
+
 def test_list_inbox_forwards_rich_issue_rows(client, monkeypatch):
     """The BFF forwards Paperclip's full Issue rows verbatim inside
     ``{items: [...]}``.
@@ -219,7 +249,8 @@ def test_list_inbox_forwards_explicit_filter_params(client, monkeypatch):
     r = client.get(
         "/api/v1/teams/inbox",
         params={
-            "project": "proj_1",
+            # project is a uuid upstream; assignee/creator are text user ids.
+            "project": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "assignee": "user_2",
             "creator": "user_3",
             "search": "fix bug",
@@ -230,7 +261,7 @@ def test_list_inbox_forwards_explicit_filter_params(client, monkeypatch):
     assert r.status_code == 200
     call = admin.list_issues.call_args
     assert call.kwargs["params"] == {
-        "projectId": "proj_1",
+        "projectId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         "assigneeUserId": "user_2",
         "createdByUserId": "user_3",
         "search": "fix bug",

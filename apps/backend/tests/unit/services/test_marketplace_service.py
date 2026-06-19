@@ -78,6 +78,9 @@ async def test_create_draft_allows_duplicate_slug(mock_listings, monkeypatch):
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
 async def test_submit_listing_transitions_draft_to_review(mock_listings):
+    mock_listings.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "user_abc", "artifact_uploaded": True}}
+    )
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
     result = await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
     assert result["status"] == "review"
@@ -91,6 +94,7 @@ async def test_submit_listing_transitions_draft_to_review(mock_listings):
 def _row_with_manifest(reqs):
     return {
         "Item": {
+            "seller_id": "user_abc",
             "artifact_uploaded": True,
             "manifest_json": {"requirements": reqs},
         }
@@ -117,7 +121,9 @@ async def test_submit_publishes_even_with_unavailable_requirement(mock_listings)
 async def test_submit_blocks_only_on_missing_artifact(mock_listings):
     """The one remaining precondition: a draft with no uploaded artifact can't
     submit (that's a 'nothing to publish' guard, not a requirements gate)."""
-    mock_listings.return_value.get_item = MagicMock(return_value={"Item": {"artifact_uploaded": False}})
+    mock_listings.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "user_abc", "artifact_uploaded": False}}
+    )
     with pytest.raises(marketplace_service.ArtifactNotUploadedError):
         await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
 
@@ -129,6 +135,9 @@ async def test_submit_for_review_populates_published_at_for_moderation_gsi(mock_
     DynamoDB sparse-GSI semantics exclude items whose sort key is None, so
     submit_for_review MUST set published_at or the moderation queue is
     structurally empty."""
+    mock_listings.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "user_abc", "artifact_uploaded": True}}
+    )
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
     await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
     kwargs = mock_listings.return_value.update_item.call_args.kwargs
@@ -140,6 +149,11 @@ async def test_submit_for_review_populates_published_at_for_moderation_gsi(mock_
 async def test_submit_rejects_when_not_in_draft(mock_listings):
     from botocore.exceptions import ClientError
 
+    # Owner + artifact present so the ownership/artifact pre-checks pass and the
+    # conditional-write path (the assertion under test) is exercised.
+    mock_listings.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "user_abc", "artifact_uploaded": True}}
+    )
     mock_listings.return_value.update_item = MagicMock(
         side_effect=ClientError(
             {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
@@ -148,6 +162,50 @@ async def test_submit_rejects_when_not_in_draft(mock_listings):
     )
     with pytest.raises(marketplace_service.InvalidStateError):
         await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_non_owner_gets_generic_error_not_artifact_oracle(mock_listings):
+    """IDOR oracle fix: a non-owner submitting another seller's draft (artifact
+    NOT uploaded) must get the generic InvalidStateError — NOT the
+    artifact-specific error, which would reveal the listing exists + its state.
+    The ownership pre-check runs before the artifact check and before update_item.
+    """
+    mock_listings.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "owner_real", "artifact_uploaded": False}}
+    )
+    mock_listings.return_value.update_item = MagicMock()
+    with pytest.raises(marketplace_service.InvalidStateError):
+        await marketplace_service.submit_for_review(listing_id="l1", seller_id="attacker")
+    # Must not leak via the artifact branch, and must never reach the write.
+    mock_listings.return_value.update_item.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_non_owner_uploaded_artifact_also_generic(mock_listings):
+    """Same generic error whether or not the target's artifact is uploaded, so a
+    non-owner can't distinguish listing states (full oracle collapse)."""
+    mock_listings.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "owner_real", "artifact_uploaded": True, "status": "draft"}}
+    )
+    mock_listings.return_value.update_item = MagicMock()
+    with pytest.raises(marketplace_service.InvalidStateError):
+        await marketplace_service.submit_for_review(listing_id="l1", seller_id="attacker")
+    mock_listings.return_value.update_item.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_submit_unknown_listing_gets_generic_error(mock_listings):
+    """A non-existent listing yields the same generic error as a non-owned one,
+    so submit can't be used to probe which listing_ids exist."""
+    mock_listings.return_value.get_item = MagicMock(return_value={})
+    mock_listings.return_value.update_item = MagicMock()
+    with pytest.raises(marketplace_service.InvalidStateError):
+        await marketplace_service.submit_for_review(listing_id="ghost", seller_id="attacker")
+    mock_listings.return_value.update_item.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -270,7 +328,9 @@ async def test_submit_for_review_clears_prior_rejection_fields(mock_listings):
     marketplace_search returns raw listing dicts, so anything left on the
     item leaks to buyers once the listing is approved (including the
     internal admin identifier in rejected_by)."""
-    mock_listings.return_value.get_item = MagicMock(return_value={"Item": {"artifact_uploaded": True}})
+    mock_listings.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "user_abc", "artifact_uploaded": True}}
+    )
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
     await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
     kwargs = mock_listings.return_value.update_item.call_args.kwargs
@@ -345,7 +405,9 @@ async def test_update_draft_targets_specified_version(mock_listings):
 @patch("core.services.marketplace_service._listings_table")
 async def test_submit_for_review_targets_specified_version(mock_listings):
     """Same regression as update_draft: a v_new=2 resubmit must target v=2."""
-    mock_listings.return_value.get_item = MagicMock(return_value={"Item": {"artifact_uploaded": True}})
+    mock_listings.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "user_abc", "artifact_uploaded": True}}
+    )
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
     await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc", version=2)
     update_kwargs = mock_listings.return_value.update_item.call_args.kwargs

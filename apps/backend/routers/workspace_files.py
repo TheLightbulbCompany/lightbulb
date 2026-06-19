@@ -65,8 +65,46 @@ def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
     return f"workspaces/{agent_id}"
 
 
-def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_depth: int = 10):
-    """Recursively collect file entries up to max_depth."""
+def _guard_read_subpath(workspace, owner_id: str, agent_base: str, full_path: str, path: str) -> None:
+    """Path-traversal guard for the workspace READ endpoints.
+
+    The write path already validates via _write_file; the read endpoints
+    historically relied on Workspace._resolve_user_file, which only pins to the
+    user root (not the per-agent subtree) — so `path=../<other_agent>/...` read
+    across workspaces within the tenant. This mirrors the write path: reject
+    '..' segments and confirm the resolved target stays inside the agent's own
+    workspace subtree (which also blocks symlink escapes). `path` may be empty
+    for the tree root.
+    """
+    if path:
+        try:
+            _validate_relative_path(path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        _ensure_within_subtree(workspace, owner_id, full_path, agent_base)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
+def _within_subtree(workspace, owner_id: str, rel_path: str, subtree: str) -> bool:
+    """Boolean form of _ensure_within_subtree for filtering listing entries."""
+    try:
+        _ensure_within_subtree(workspace, owner_id, rel_path, subtree)
+        return True
+    except ValueError:
+        return False
+
+
+def _collect_recursive(workspace, owner_id: str, path: str, entries: list, subtree: str, max_depth: int = 10):
+    """Recursively collect file entries up to max_depth, staying inside ``subtree``.
+
+    Guarding only the root path isn't enough: list_directory resolves child paths
+    relative to the user root, not the agent subtree, so a symlinked subdir like
+    ``workspaces/agent-a/link -> ../agent-b`` would otherwise let the walk
+    enumerate a sibling workspace. We re-check every entry (files included, so a
+    symlinked file is dropped too) and never descend into an escaping dir.
+    """
     if max_depth <= 0:
         return
     try:
@@ -74,9 +112,11 @@ def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_d
     except WorkspaceError:
         return
     for item in items:
+        if not _within_subtree(workspace, owner_id, item["path"], subtree):
+            continue
         entries.append(item)
         if item["type"] == "dir":
-            _collect_recursive(workspace, owner_id, item["path"], entries, max_depth - 1)
+            _collect_recursive(workspace, owner_id, item["path"], entries, subtree, max_depth - 1)
 
 
 def _strip_agent_prefix(entries: list[dict], agent_id: str) -> list[dict]:
@@ -164,10 +204,11 @@ async def list_workspace_tree(
 
     agent_base = _agent_workspace_path(owner_id, agent_id)
     full_path = f"{agent_base}/{path}" if path else agent_base
+    _guard_read_subpath(workspace, owner_id, agent_base, full_path, path)
 
     if recursive:
         all_entries: list = []
-        _collect_recursive(workspace, owner_id, full_path, all_entries)
+        _collect_recursive(workspace, owner_id, full_path, all_entries, agent_base)
         return {"files": _strip_agent_prefix(all_entries, agent_id)}
     else:
         try:
@@ -177,8 +218,12 @@ async def list_workspace_tree(
                 raise HTTPException(status_code=404, detail=str(exc))
             if "traversal" in str(exc).lower():
                 raise HTTPException(status_code=403, detail="Access denied")
-            raise HTTPException(status_code=500, detail=str(exc))
+            logger.exception("Failed to list workspace directory for owner %s", owner_id)
+            raise HTTPException(status_code=500, detail="Failed to list workspace directory")
 
+        # Drop immediate entries that resolve outside the agent subtree (e.g. a
+        # symlink to a sibling workspace) so they're neither shown nor clickable.
+        entries = [e for e in entries if _within_subtree(workspace, owner_id, e["path"], agent_base)]
         return {"files": _strip_agent_prefix(entries, agent_id)}
 
 
@@ -194,6 +239,7 @@ async def read_workspace_file(
 
     agent_base = _agent_workspace_path(owner_id, agent_id)
     full_path = f"{agent_base}/{path}"
+    _guard_read_subpath(workspace, owner_id, agent_base, full_path, path)
 
     try:
         info = workspace.read_file_info(owner_id, full_path)
@@ -202,7 +248,8 @@ async def read_workspace_file(
             raise HTTPException(status_code=404, detail=str(exc))
         if "traversal" in str(exc).lower():
             raise HTTPException(status_code=403, detail="Access denied")
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.exception("Failed to read workspace file for owner %s", owner_id)
+        raise HTTPException(status_code=500, detail="Failed to read workspace file")
 
     return info
 

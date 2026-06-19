@@ -847,3 +847,160 @@ class TestWorkspaceTreeRoundTrip:
 
         info = await read_workspace_file(agent_id=AGENT_ID, path="notes.txt", auth=_auth())
         assert info["content"] == "hello world"
+
+
+# ===========================================================================
+# TestReadEndpointTraversal — P1 path-traversal hardening on the READ endpoints
+# ===========================================================================
+
+
+class TestReadEndpointTraversal:
+    """The read endpoints (tree + file) historically lacked the subtree
+    containment the write path already enforced, so ``path=../<other_agent>/...``
+    read across workspaces within the tenant. These tests lock in the guard.
+    """
+
+    VICTIM_AGENT = "agent-victim-999"
+
+    def _two_agents(self, workspace):
+        """Create the attacker (AGENT_ID) + victim agent workspaces; seed a
+        secret file in the victim. Returns the user root Path."""
+        root = workspace._mount / USER_ID
+        (root / "workspaces" / AGENT_ID).mkdir(parents=True)
+        victim = root / "workspaces" / self.VICTIM_AGENT
+        victim.mkdir(parents=True)
+        (victim / "secret.txt").write_text("cross-tenant-secret", encoding="utf-8")
+        return root
+
+    @pytest.mark.asyncio
+    async def test_read_rejects_parent_traversal_in_path(self, workspace, monkeypatch):
+        """read_workspace_file rejects a `..` path that would escape the agent subtree."""
+        from routers.workspace_files import read_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        self._two_agents(workspace)
+        with pytest.raises(HTTPException) as exc:
+            await read_workspace_file(
+                agent_id=AGENT_ID,
+                path=f"../{self.VICTIM_AGENT}/secret.txt",
+                auth=_auth(),
+            )
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_tree_rejects_parent_traversal_in_path(self, workspace, monkeypatch):
+        """list_workspace_tree rejects a `..` path that would escape the agent subtree."""
+        from routers.workspace_files import list_workspace_tree
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        self._two_agents(workspace)
+        with pytest.raises(HTTPException) as exc:
+            await list_workspace_tree(
+                agent_id=AGENT_ID,
+                path=f"../{self.VICTIM_AGENT}",
+                recursive=False,
+                auth=_auth(),
+            )
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_read_rejects_symlink_escape_to_sibling_agent(self, workspace, monkeypatch):
+        """A symlink inside the agent workspace pointing at a sibling agent's file
+        is rejected (403) even though the request path has no `..`."""
+        import os
+
+        from routers.workspace_files import read_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        root = self._two_agents(workspace)
+        os.symlink(
+            f"../{self.VICTIM_AGENT}/secret.txt",
+            root / "workspaces" / AGENT_ID / "evil",
+        )
+        with pytest.raises(HTTPException) as exc:
+            await read_workspace_file(agent_id=AGENT_ID, path="evil", auth=_auth())
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_read_allows_legit_nested_path(self, workspace, monkeypatch):
+        """Positive control: a normal nested path inside the agent subtree reads fine."""
+        from routers.workspace_files import read_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        root = self._two_agents(workspace)
+        nested = root / "workspaces" / AGENT_ID / "deep"
+        nested.mkdir()
+        (nested / "ok.txt").write_text("fine", encoding="utf-8")
+        info = await read_workspace_file(agent_id=AGENT_ID, path="deep/ok.txt", auth=_auth())
+        assert info["content"] == "fine"
+
+    @pytest.mark.asyncio
+    async def test_read_500_does_not_leak_internal_path(self, workspace, monkeypatch):
+        """An unexpected WorkspaceError returns a generic 500, not the EFS path."""
+        from routers.workspace_files import read_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        root = self._two_agents(workspace)
+        (root / "workspaces" / AGENT_ID / "notes.txt").write_text("hi", encoding="utf-8")
+        leaky = "/mnt/efs/users/" + USER_ID + "/workspaces/secret-internal-path boom"
+        monkeypatch.setattr(workspace, "read_file_info", lambda *a, **k: (_ for _ in ()).throw(WorkspaceError(leaky)))
+        with pytest.raises(HTTPException) as exc:
+            await read_workspace_file(agent_id=AGENT_ID, path="notes.txt", auth=_auth())
+        assert exc.value.status_code == 500
+        assert "/mnt/efs" not in exc.value.detail
+        assert exc.value.detail == "Failed to read workspace file"
+
+    @pytest.mark.asyncio
+    async def test_tree_500_does_not_leak_internal_path(self, workspace, monkeypatch):
+        """An unexpected WorkspaceError on list returns a generic 500, not the EFS path."""
+        from routers.workspace_files import list_workspace_tree
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        self._two_agents(workspace)
+        leaky = "/mnt/efs/users/" + USER_ID + "/workspaces/secret-internal-path boom"
+        monkeypatch.setattr(workspace, "list_directory", lambda *a, **k: (_ for _ in ()).throw(WorkspaceError(leaky)))
+        with pytest.raises(HTTPException) as exc:
+            await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=False, auth=_auth())
+        assert exc.value.status_code == 500
+        assert "/mnt/efs" not in exc.value.detail
+        assert exc.value.detail == "Failed to list workspace directory"
+
+    @pytest.mark.asyncio
+    async def test_tree_recursive_does_not_enumerate_symlinked_sibling(self, workspace, monkeypatch):
+        """A symlinked subdir to a sibling workspace must not be walked by the
+        recursive tree (guarding only the root path is insufficient)."""
+        import os
+
+        from routers.workspace_files import list_workspace_tree
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        root = self._two_agents(workspace)
+        (root / "workspaces" / AGENT_ID / "notes.txt").write_text("legit", encoding="utf-8")
+        # workspaces/<attacker>/link -> ../<victim> (a sibling agent workspace)
+        os.symlink(f"../{self.VICTIM_AGENT}", root / "workspaces" / AGENT_ID / "link")
+
+        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=True, auth=_auth())
+        paths = {f["path"] for f in tree["files"]}
+        assert "notes.txt" in paths  # legit content still listed
+        # The sibling's secret must not appear under any path, and the escaping
+        # symlink itself is dropped.
+        assert not any("secret.txt" in p for p in paths)
+        assert not any(self.VICTIM_AGENT in p for p in paths)
+        assert "link" not in paths
+
+    @pytest.mark.asyncio
+    async def test_tree_nonrecursive_omits_symlink_escape(self, workspace, monkeypatch):
+        """The non-recursive listing drops an immediate symlink that escapes the subtree."""
+        import os
+
+        from routers.workspace_files import list_workspace_tree
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        root = self._two_agents(workspace)
+        (root / "workspaces" / AGENT_ID / "notes.txt").write_text("legit", encoding="utf-8")
+        os.symlink(f"../{self.VICTIM_AGENT}", root / "workspaces" / AGENT_ID / "link")
+
+        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=False, auth=_auth())
+        names = {f["name"] for f in tree["files"]}
+        assert "notes.txt" in names
+        assert "link" not in names

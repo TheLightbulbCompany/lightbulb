@@ -50,6 +50,15 @@ export interface ApiStackProps extends cdk.StackProps {
    * as `paperclipServiceTokenKeySecretName`.
    */
   paperclipKmsKeyArn: string;
+  /**
+   * Secrets Manager name (NOT ISecret) of the WS internal shared secret. The
+   * three WebSocket Lambdas fetch it at cold-start and attach it as the
+   * `x-isol8-ws-internal` header so the backend `/ws/*` endpoints can tell them
+   * apart from forged callers arriving via the public HTTP API Gateway. Passed
+   * as a plain string for the same cross-stack reason as the service-token key;
+   * encrypted under the same CMK (`paperclipKmsKeyArn`).
+   */
+  wsInternalSecretSecretName: string;
 }
 
 const THROTTLE_CONFIG: Record<
@@ -437,6 +446,35 @@ export class ApiStack extends cdk.Stack {
         path.join(__dirname, "..", "..", "lambda", "ws-message"),
       ),
     });
+
+    // --- WS internal shared secret for the three Lambdas ---
+    // The backend /api/v1/ws/* endpoints derive identity from request headers
+    // and are reachable both via these trusted Lambdas AND via the public HTTP
+    // API Gateway $default route (which has no authorizer). Each Lambda fetches
+    // this secret at cold-start (via boto3, mirroring the authorizer's
+    // service-token handling) and attaches it as the `x-isol8-ws-internal`
+    // header that the public route cannot supply; the backend's
+    // require_ws_internal_caller dependency rejects callers that lack it. ARN
+    // (not value) goes in the env so the secret never lands in CFN/deploy logs.
+    const wsInternalSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "WsInternalSecretForLambdas",
+      props.wsInternalSecretSecretName,
+    );
+    for (const fn of [connectFn, disconnectFn, messageFn]) {
+      wsInternalSecret.grantRead(fn);
+      // grantRead adds only secretsmanager:GetSecretValue — KMS-encrypted
+      // secrets also need kms:Decrypt on the CMK (same as the authorizer).
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          sid: "KmsDecryptForWsInternalSecret",
+          effect: iam.Effect.ALLOW,
+          actions: ["kms:Decrypt"],
+          resources: [props.paperclipKmsKeyArn],
+        }),
+      );
+      fn.addEnvironment("WS_INTERNAL_SECRET_SECRET_ARN", wsInternalSecret.secretArn);
+    }
 
     // =========================================================================
     // WebSocket API Gateway (L2)

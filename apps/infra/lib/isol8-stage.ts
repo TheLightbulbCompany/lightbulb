@@ -73,6 +73,7 @@ export class Isol8Stage extends cdk.Stage {
       // Pass KMS key ARN (not Key object) so ApiStack can grant kms:Decrypt
       // on the authorizer's role without triggering CDK's auto-grant cycle.
       paperclipKmsKeyArn: auth.kmsKey.keyArn,
+      wsInternalSecretSecretName: auth.wsInternalSecret.secretName,
     });
 
     // ServiceStack replaces ComputeStack
@@ -114,6 +115,7 @@ export class Isol8Stage extends cdk.Stage {
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,
         resendApiKey: auth.resendApiKey.secretName,
+        wsInternalSecret: auth.wsInternalSecret.secretName,
       },
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {

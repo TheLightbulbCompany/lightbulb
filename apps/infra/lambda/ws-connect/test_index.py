@@ -131,3 +131,29 @@ def test_connect_writes_owner_id_personal_and_org():
     assert _put_item_for(user_id="u_solo", org_id="")["ownerId"] == "u_solo"
     # org: ownerId == orgId
     assert _put_item_for(user_id="u_member", org_id="org_z")["ownerId"] == "org_z"
+
+
+def test_attaches_ws_internal_header_when_secret_configured(monkeypatch):
+    """With WS_INTERNAL_SECRET_SECRET_ARN set, the Lambda fetches the secret and
+    attaches it as x-isol8-ws-internal so the backend can authenticate the caller."""
+    import index
+
+    monkeypatch.setenv("WS_INTERNAL_SECRET_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:ws")
+    fake_sm = MagicMock()
+    fake_sm.get_secret_value.return_value = {"SecretString": "s3cr3t-value"}
+    captured, fake_urlopen = _capture_headers()
+    with patch("index.boto3.client", return_value=fake_sm), patch(
+        "index.urllib.request.urlopen", side_effect=fake_urlopen
+    ):
+        index.handler(_make_event(qs={"token": "j"}), None)
+    assert captured["headers_lc"].get("x-isol8-ws-internal") == "s3cr3t-value"
+
+
+def test_omits_ws_internal_header_when_unconfigured():
+    """No WS_INTERNAL_SECRET_SECRET_ARN → no header (backend then runs unenforced)."""
+    import index
+
+    captured, fake_urlopen = _capture_headers()
+    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
+        index.handler(_make_event(qs={"token": "j"}), None)
+    assert "x-isol8-ws-internal" not in captured["headers_lc"]

@@ -27,6 +27,7 @@ export class AuthStack extends cdk.Stack {
   public readonly kmsKey: kms.Key;
   public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
+  public readonly wsInternalSecret: secretsmanager.Secret;
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
@@ -102,6 +103,21 @@ export class AuthStack extends cdk.Stack {
       "paperclip_service_token_key",
       { passwordLength: 64, excludePunctuation: true },
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
+    );
+
+    // Shared secret that authenticates the CALLER of the backend /api/v1/ws/*
+    // endpoints. The WebSocket Lambdas (ws-connect/disconnect/message) attach it
+    // as a header; the public HTTP API Gateway $default route — which proxies to
+    // the same ALB with no authorizer — cannot. Without it, anyone could POST to
+    // /api/v1/ws/connect with a forged x-user-id and pollute/evict the
+    // connection registry. Same CMK + createSecret shape as the service-token
+    // key; read by api-stack (the Lambdas) + service-stack (the backend). Safe to
+    // rotate — both sides read it live, never cache across the value change.
+    this.wsInternalSecret = createSecret(
+      "WsInternalSecret",
+      "ws_internal_secret",
+      { passwordLength: 64, excludePunctuation: true },
+      "Shared secret the WebSocket Lambdas attach so the backend /ws/* endpoints can distinguish them from forged public-gateway callers.",
     );
 
     // Metronome API key, shared by the backend's lifecycle + gating modules

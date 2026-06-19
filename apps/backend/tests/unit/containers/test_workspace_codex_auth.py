@@ -12,10 +12,12 @@ See project_openclaw_oauth_auth_model.
 """
 
 import json
+import sqlite3
 
 import pytest
 
 from core.containers.workspace import (
+    clear_default_agent_auth_profile_row,
     delete_auth_profile_store,
     pre_stage_auth_profile_store,
 )
@@ -182,3 +184,90 @@ async def test_delete_sweeps_legacy_per_agent_files(fake_efs_root):
 async def test_delete_no_op_when_absent(fake_efs_root):
     """Disconnect on a never-staged user must not raise."""
     await delete_auth_profile_store(user_id="u_never")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# clear_default_agent_auth_profile_row — make the default agent's persisted
+# auth store ABSENT so OpenClaw 6.6's boot import (mergeOAuthFileIntoStore,
+# which only fires on a missing store row) re-imports a freshly staged
+# oauth.json. authLogout/disconnect EMPTIES the row to {"profiles":{}}, which
+# still counts as "store exists" and shadows the import — so re-auth on a
+# running container needs the row deleted, not just emptied. See
+# project_openclaw_oauth_auth_model.
+# ---------------------------------------------------------------------------
+
+# Mirrors the live OpenClaw 6.6 per-agent auth store schema (verified on a
+# prod container): table auth_profile_store(store_key, store_json, updated_at),
+# the persisted store keyed store_key="primary".
+_EMPTY_SHADOW_STORE = '{"version":1,"profiles":{}}'
+
+
+def _agent_sqlite_path(efs_root, user_id, agent):
+    return efs_root / user_id / "agents" / agent / "agent" / "openclaw-agent.sqlite"
+
+
+def _make_agent_sqlite(efs_root, user_id, agent, store_json=_EMPTY_SHADOW_STORE):
+    p = _agent_sqlite_path(efs_root, user_id, agent)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(p))
+    con.execute("CREATE TABLE auth_profile_store (store_key TEXT, store_json TEXT, updated_at INTEGER)")
+    con.execute(
+        "INSERT INTO auth_profile_store (store_key, store_json, updated_at) VALUES ('primary', ?, 1)",
+        (store_json,),
+    )
+    con.commit()
+    con.close()
+    return p
+
+
+def _store_rows(path):
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return con.execute("SELECT store_key FROM auth_profile_store").fetchall()
+    finally:
+        con.close()
+
+
+@pytest.mark.asyncio
+async def test_clear_default_agent_deletes_primary_row(fake_efs_root):
+    """Deletes the 'primary' row from main's store so the row is ABSENT
+    (loadPersistedAuthProfileStore -> null -> the oauth.json import re-fires)."""
+    path = _make_agent_sqlite(fake_efs_root, "org_1", "main")
+    assert _store_rows(path) == [("primary",)]
+
+    await clear_default_agent_auth_profile_row(user_id="org_1")
+
+    assert _store_rows(path) == [], "primary row must be gone, not just emptied"
+
+
+@pytest.mark.asyncio
+async def test_clear_default_agent_only_touches_main(fake_efs_root):
+    """Single-source model: only the default agent (main) is cleared; non-default
+    agents read through main, so their rows are left intact (clearing them would
+    make each re-import its own copy -> refresh_token_reused fan-out)."""
+    main_path = _make_agent_sqlite(fake_efs_root, "org_1", "main")
+    other_path = _make_agent_sqlite(fake_efs_root, "org_1", "friday-uuid")
+
+    await clear_default_agent_auth_profile_row(user_id="org_1")
+
+    assert _store_rows(main_path) == []
+    assert _store_rows(other_path) == [("primary",)], "non-default agent untouched"
+
+
+@pytest.mark.asyncio
+async def test_clear_default_agent_noop_when_sqlite_missing(fake_efs_root):
+    """No store yet (fresh/un-booted container) must not raise."""
+    await clear_default_agent_auth_profile_row(user_id="u_never")  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_clear_default_agent_noop_when_table_missing(fake_efs_root):
+    """A sqlite without the auth_profile_store table must not raise."""
+    p = _agent_sqlite_path(fake_efs_root, "org_1", "main")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(p))
+    con.execute("CREATE TABLE other (x TEXT)")
+    con.commit()
+    con.close()
+
+    await clear_default_agent_auth_profile_row(user_id="org_1")  # should not raise

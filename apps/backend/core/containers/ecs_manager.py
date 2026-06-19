@@ -1459,9 +1459,19 @@ class EcsManager:
                 "caller should complete OAuth before provisioning",
                 user_id,
             )
-        from core.containers.workspace import pre_stage_auth_profile_store
+        from core.containers.workspace import (
+            clear_default_agent_auth_profile_row,
+            pre_stage_auth_profile_store,
+        )
 
         await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens)
+        # Reprovision PRESERVES the EFS per-agent SQLite store, and 6.6 imports
+        # oauth.json ONLY into an absent store row — so on a re-provision over an
+        # existing store (or one left empty by authLogout) the freshly staged
+        # credential would never load. Delete the default agent's row so the boot
+        # import re-fires. No-op on a first provision (no row yet). See
+        # project_openclaw_oauth_auth_model.
+        await clear_default_agent_auth_profile_row(user_id=user_id)
 
     async def provision_user_container(
         self,

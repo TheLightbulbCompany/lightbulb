@@ -552,6 +552,10 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
     async def _pre_stage(*, user_id, oauth_tokens):
         call_order.append("pre_stage")
 
+    async def _clear(*, user_id):
+        call_order.append("clear")
+        return True
+
     async def _replace(owner_id, *, providers, default_model, plugin_entries, ceo_model, cheap_model):
         call_order.append("replace")
         # The chatgpt_oauth branch sets ``models.providers`` to {} and the
@@ -590,6 +594,10 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
             new=AsyncMock(side_effect=_pre_stage),
         ),
         patch(
+            "core.containers.workspace.clear_default_agent_auth_profile_row",
+            new=AsyncMock(side_effect=_clear),
+        ),
+        patch(
             "core.services.config_patcher.replace_provider_block",
             new=AsyncMock(side_effect=_replace),
         ),
@@ -610,8 +618,11 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
     assert body["restart"] is False, "hot path must not restart the container"
     mock_bg.assert_not_awaited()
     # Pre-stage MUST land before the openclaw.json patch — chokidar would
-    # otherwise reload-plugins onto an absent auth-profiles.json.
-    assert call_order == ["pre_stage", "replace"], call_order
+    # otherwise reload-plugins onto an absent auth-profiles.json. The stale
+    # default-agent auth row is cleared AFTER staging (so the freshly staged
+    # oauth.json re-imports on the running container) and BEFORE the config
+    # patch triggers the reload.
+    assert call_order == ["pre_stage", "clear", "replace"], call_order
 
 
 @pytest.mark.asyncio

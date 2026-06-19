@@ -23,6 +23,13 @@ from .deps import TeamsContext, envelope_list
 router = APIRouter()
 _ctx = _agents._ctx
 
+# Paperclip ``projects.id`` is a Postgres ``uuid`` column, so a malformed
+# ``project`` filter makes upstream throw a uuid-cast error → 500 (whose body
+# leaked the internal company path). Validate the shape here so a bad value is a
+# local 422 before any upstream call. The user-id filters (assignee/creator) map
+# to ``text`` columns upstream, so they don't have this cast-error failure mode.
+_UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
 
 # Tab → upstream filter composition. Mirrors what Paperclip's own Inbox.tsx
 # does for board users (GET /api/companies/{co}/issues with these filters).
@@ -61,7 +68,7 @@ async def list_inbox(
     ctx: TeamsContext = Depends(_ctx),
     tab: Optional[str] = Query(default=None, pattern=r"^(mine|recent|all|unread|approvals|runs|joins)$"),
     status: Optional[str] = Query(default=None, max_length=40),
-    project: Optional[str] = Query(default=None, max_length=80),
+    project: Optional[str] = Query(default=None, pattern=_UUID_RE),
     assignee: Optional[str] = Query(default=None, max_length=80),
     creator: Optional[str] = Query(default=None, max_length=80),
     search: Optional[str] = Query(default=None, max_length=200),

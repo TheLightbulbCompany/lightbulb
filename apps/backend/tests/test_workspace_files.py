@@ -964,3 +964,43 @@ class TestReadEndpointTraversal:
         assert exc.value.status_code == 500
         assert "/mnt/efs" not in exc.value.detail
         assert exc.value.detail == "Failed to list workspace directory"
+
+    @pytest.mark.asyncio
+    async def test_tree_recursive_does_not_enumerate_symlinked_sibling(self, workspace, monkeypatch):
+        """A symlinked subdir to a sibling workspace must not be walked by the
+        recursive tree (guarding only the root path is insufficient)."""
+        import os
+
+        from routers.workspace_files import list_workspace_tree
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        root = self._two_agents(workspace)
+        (root / "workspaces" / AGENT_ID / "notes.txt").write_text("legit", encoding="utf-8")
+        # workspaces/<attacker>/link -> ../<victim> (a sibling agent workspace)
+        os.symlink(f"../{self.VICTIM_AGENT}", root / "workspaces" / AGENT_ID / "link")
+
+        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=True, auth=_auth())
+        paths = {f["path"] for f in tree["files"]}
+        assert "notes.txt" in paths  # legit content still listed
+        # The sibling's secret must not appear under any path, and the escaping
+        # symlink itself is dropped.
+        assert not any("secret.txt" in p for p in paths)
+        assert not any(self.VICTIM_AGENT in p for p in paths)
+        assert "link" not in paths
+
+    @pytest.mark.asyncio
+    async def test_tree_nonrecursive_omits_symlink_escape(self, workspace, monkeypatch):
+        """The non-recursive listing drops an immediate symlink that escapes the subtree."""
+        import os
+
+        from routers.workspace_files import list_workspace_tree
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        root = self._two_agents(workspace)
+        (root / "workspaces" / AGENT_ID / "notes.txt").write_text("legit", encoding="utf-8")
+        os.symlink(f"../{self.VICTIM_AGENT}", root / "workspaces" / AGENT_ID / "link")
+
+        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=False, auth=_auth())
+        names = {f["name"] for f in tree["files"]}
+        assert "notes.txt" in names
+        assert "link" not in names

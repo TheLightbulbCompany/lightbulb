@@ -87,8 +87,24 @@ def _guard_read_subpath(workspace, owner_id: str, agent_base: str, full_path: st
         raise HTTPException(status_code=403, detail="Access denied")
 
 
-def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_depth: int = 10):
-    """Recursively collect file entries up to max_depth."""
+def _within_subtree(workspace, owner_id: str, rel_path: str, subtree: str) -> bool:
+    """Boolean form of _ensure_within_subtree for filtering listing entries."""
+    try:
+        _ensure_within_subtree(workspace, owner_id, rel_path, subtree)
+        return True
+    except ValueError:
+        return False
+
+
+def _collect_recursive(workspace, owner_id: str, path: str, entries: list, subtree: str, max_depth: int = 10):
+    """Recursively collect file entries up to max_depth, staying inside ``subtree``.
+
+    Guarding only the root path isn't enough: list_directory resolves child paths
+    relative to the user root, not the agent subtree, so a symlinked subdir like
+    ``workspaces/agent-a/link -> ../agent-b`` would otherwise let the walk
+    enumerate a sibling workspace. We re-check every entry (files included, so a
+    symlinked file is dropped too) and never descend into an escaping dir.
+    """
     if max_depth <= 0:
         return
     try:
@@ -96,9 +112,11 @@ def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_d
     except WorkspaceError:
         return
     for item in items:
+        if not _within_subtree(workspace, owner_id, item["path"], subtree):
+            continue
         entries.append(item)
         if item["type"] == "dir":
-            _collect_recursive(workspace, owner_id, item["path"], entries, max_depth - 1)
+            _collect_recursive(workspace, owner_id, item["path"], entries, subtree, max_depth - 1)
 
 
 def _strip_agent_prefix(entries: list[dict], agent_id: str) -> list[dict]:
@@ -190,7 +208,7 @@ async def list_workspace_tree(
 
     if recursive:
         all_entries: list = []
-        _collect_recursive(workspace, owner_id, full_path, all_entries)
+        _collect_recursive(workspace, owner_id, full_path, all_entries, agent_base)
         return {"files": _strip_agent_prefix(all_entries, agent_id)}
     else:
         try:
@@ -203,6 +221,9 @@ async def list_workspace_tree(
             logger.exception("Failed to list workspace directory for owner %s", owner_id)
             raise HTTPException(status_code=500, detail="Failed to list workspace directory")
 
+        # Drop immediate entries that resolve outside the agent subtree (e.g. a
+        # symlink to a sibling workspace) so they're neither shown nor clickable.
+        entries = [e for e in entries if _within_subtree(workspace, owner_id, e["path"], agent_base)]
         return {"files": _strip_agent_prefix(entries, agent_id)}
 
 

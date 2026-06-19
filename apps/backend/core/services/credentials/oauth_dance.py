@@ -5,17 +5,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
 
-from core.config import settings
-from core.dynamodb import run_in_thread
 from core.repositories import oauth_state_repo
-from core.services.credentials import registry
+from core.services.credentials import oauth_app_store, registry
 
 
 def _pkce() -> tuple[str, str]:
@@ -24,21 +21,15 @@ def _pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-async def _oauth_client(provider_key: str) -> tuple[str, str]:
-    """(client_id, client_secret) for our BYO OAuth app, from Secrets Manager.
-
-    Mirrors ``key_service``'s Secrets Manager access: a boto3 ``secretsmanager``
-    client built with ``settings.AWS_REGION``, and the ``isol8/{env}/...``
-    naming where ``env`` falls back to ``"dev"`` when ``ENVIRONMENT`` is unset.
-    """
-    import boto3  # match how key_service builds its client
-
-    env = settings.ENVIRONMENT or "dev"
-    name = f"isol8/{env}/oauth-clients/{provider_key}"
-    client = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-    resp = await run_in_thread(client.get_secret_value, SecretId=name)
-    data = json.loads(resp["SecretString"])
-    return data["client_id"], data["client_secret"]
+async def _oauth_client(owner_id: str, provider_key: str) -> tuple[str, str]:
+    """The owner's OWN OAuth app for this provider. There is no Isol8-managed
+    shared app, so a missing or half-populated BYO app is an error — start() and
+    exchange() both call this, so a connect attempt without a stored app fails
+    fast instead of silently using a shared app."""
+    byo = await oauth_app_store.get(owner_id, provider_key)
+    if not (byo and byo.get("client_id") and byo.get("client_secret")):
+        raise ValueError(f"{provider_key} requires your own OAuth app; none configured for this owner")
+    return byo["client_id"], byo["client_secret"]
 
 
 def _expiry_iso(expires_in: int | None) -> str:
@@ -54,7 +45,7 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str) -> str:
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(32)
     await oauth_state_repo.put(state, owner_id=owner_id, provider=provider_key, verifier=verifier)
-    client_id, _ = await _oauth_client(provider_key)
+    client_id, _ = await _oauth_client(owner_id, provider_key)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -73,7 +64,7 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     if not rec:
         raise ValueError("invalid or expired OAuth state")
     p = registry.get_provider(rec["provider"])
-    client_id, client_secret = await _oauth_client(rec["provider"])
+    client_id, client_secret = await _oauth_client(rec["owner_id"], rec["provider"])
     async with httpx.AsyncClient(timeout=15) as http:
         resp = await http.post(
             p.oauth.token_url,

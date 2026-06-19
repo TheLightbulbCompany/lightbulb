@@ -40,21 +40,10 @@ class Settings(BaseSettings):
     # CDK service-stack environment block per environment.
     PUBLIC_API_BASE: str = os.getenv("PUBLIC_API_BASE", "http://localhost:8000")
 
-    # Owners (org_… / user_…) allowed to see integration providers flagged
-    # `internal: true` in the registry (e.g. Google before its OAuth app is
-    # verified). Comma-separated; everyone else gets those providers filtered
-    # out of GET /connections. Wired per-env via the CDK service-stack.
-    INTERNAL_INTEGRATION_OWNERS: str = ""
-
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
-
-    @property
-    def internal_integration_owners(self) -> set[str]:
-        """Parse INTERNAL_INTEGRATION_OWNERS as a comma-separated owner-id set."""
-        return {o.strip() for o in self.INTERNAL_INTEGRATION_OWNERS.split(",") if o.strip()}
 
     # --- ECS Fargate ---
     ECS_CLUSTER_ARN: str = os.getenv("ECS_CLUSTER_ARN", "")

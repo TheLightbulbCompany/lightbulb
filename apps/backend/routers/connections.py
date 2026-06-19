@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import datetime
 import logging
 import subprocess
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.repositories import billing_repo, google_accounts_repo, integrations_repo
+from core.repositories import google_accounts_repo, integrations_repo
 from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
     integration_secret_store,
+    oauth_app_store,
     oauth_dance,
     registry,
 )
@@ -64,6 +66,12 @@ class PasteBody(BaseModel):
     token: str
 
 
+class ByoAppRequest(BaseModel):
+    client_id: str = Field(min_length=1, max_length=512)
+    client_secret: str = Field(min_length=1, max_length=512)
+    acknowledge: bool = False
+
+
 def _get_provider_or_404(provider: str) -> registry.Provider:
     try:
         return registry.get_provider(provider)
@@ -71,65 +79,14 @@ def _get_provider_or_404(provider: str) -> registry.Provider:
         raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
 
 
-def _require_grantable_provider(provider: str, owner_id: str) -> registry.Provider:
-    """Resolve a provider for the connect/authorize grant paths, treating an
-    `internal` provider as nonexistent (404) for owners outside the allowlist.
-
-    The catalog filter in list_connections only hides internal providers from
-    the UI; without this an allowlisted-or-not org admin who knows the stable
-    slug could still POST a paste token or hit /authorize and connect one. Gate
-    the grant paths so the allowlist is real access control, not just hiding —
-    matters most for any future internal *paste-token* provider, which has no
-    provider-side gate of its own (Google's own Testing-mode block does not
-    generalize). Disconnect is intentionally NOT gated: a de-allowlisted owner
-    must still be able to remove a previously connected internal provider.
-    """
-    p = _get_provider_or_404(provider)
-    if p.internal and owner_id not in settings.internal_integration_owners:
-        raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
-    return p
-
-
-# provider_choice value (on the billing row) for the Isol8-managed Bedrock path.
-_BEDROCK_PROVIDER_CHOICE = "bedrock_claude"
-# Deep-link the upsell CTA points at — opens the LLM panel's change-provider flow.
-_SWITCH_PROVIDER_HREF = "/chat?panel=llm&action=change-provider"
-
-
-def _bedrock_lock() -> dict:
-    """The structured payload that tells the UI to render a provider as
-    locked-with-upsell (catalog `lock` object + grant-path 403 detail share it)."""
-    return {
-        "reason": "requires_bedrock",
-        "message": (
-            "Google integrations require Bedrock-managed inference so your Google "
-            "data is never used to train AI models. Switch to Bedrock credits to "
-            "unlock it."
-        ),
-        "action_label": "Switch to Bedrock",
-        "action_href": _SWITCH_PROVIDER_HREF,
-    }
-
-
-async def _owner_on_bedrock(owner_id: str) -> bool:
-    row = await billing_repo.get_by_owner_id(owner_id)
-    return bool(row) and row.get("provider_choice") == _BEDROCK_PROVIDER_CHOICE
-
-
-async def _require_bedrock_for(p: registry.Provider, owner_id: str) -> None:
-    """Block a `requires_bedrock` provider's grant paths unless the owner is on
-    Bedrock-managed inference. 403 (not 404) with a structured `requires_bedrock`
-    detail so the UI can render the "switch to Bedrock to unlock" upsell rather
-    than a dead end.
-
-    Always called AFTER `_require_grantable_provider` so a non-allowlisted owner
-    gets the internal 404 first — this 403 must not leak that a still-internal
-    provider exists to owners who shouldn't see it at all.
-    """
-    if not p.requires_bedrock:
-        return
-    if not await _owner_on_bedrock(owner_id):
-        raise HTTPException(status_code=403, detail=_bedrock_lock())
+async def _byo_active(owner_id: str, provider_key: str) -> bool:
+    """True when the owner has a stored, acknowledged OWN OAuth app for a
+    byo-required provider — the prerequisite for connecting it."""
+    prov = registry.all_providers().get(provider_key)
+    if not prov or not prov.byo_required:
+        return False
+    app = await oauth_app_store.get(owner_id, provider_key)
+    return bool(app and app.get("acknowledged_at"))
 
 
 async def _validate_token(p: registry.Provider, token: str) -> bool:
@@ -182,41 +139,31 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
-    # `internal` providers stay out of the catalog for non-allowlisted owners —
-    # but one that's already CONNECTED stays visible so the owner can still see
-    # and remove it (disconnect is ungated). Otherwise an owner who connected
-    # during the pre-gate window, or was later removed from the allowlist, would
-    # be left with a live connection and no UI path to manage it. They still
-    # can't (re)connect: the grant gate on authorize/connect_paste 404s. The UI
-    # is server-driven, so this also governs dependent surfaces — e.g. the Google
-    # per-agent assignment panel only renders when google reads back connected.
-    allowlisted = owner_id in settings.internal_integration_owners
-    # `requires_bedrock` is a static product flag. The UI pairs it with the
-    # owner's provider_choice (which it already has) to render the "switch to
-    # Bedrock to unlock" upsell — so the catalog needs no per-owner billing read
-    # on this polled path. The connect/authorize grant paths do the real
-    # server-side enforcement.
-    return {
-        "connections": [
+    connections = []
+    for k, v in registry.all_providers().items():
+        byo = await _byo_active(owner_id, k)
+        connections.append(
             {
                 "provider": k,
                 "display_name": v.display_name,
                 "acquisition": v.acquisition,
                 "status": connected.get(k, "disconnected"),
-                "requires_bedrock": v.requires_bedrock,
+                # byo_required: provider has no managed app, owner must bring one.
+                # byo_configured: whether THIS owner has stored + acknowledged it.
+                # byo_setup_url: where to register one.
+                "byo_required": v.byo_required,
+                "byo_configured": byo,
+                "byo_setup_url": v.byo_setup_url,
             }
-            for k, v in registry.all_providers().items()
-            if allowlisted or not v.internal or connected.get(k) == "connected"
-        ]
-    }
+        )
+    return {"connections": connections}
 
 
 @router.post("/{provider}")
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _require_grantable_provider(provider, owner_id)
-    await _require_bedrock_for(p, owner_id)
+    p = _get_provider_or_404(provider)
     if p.acquisition != "paste_token":
         raise HTTPException(status_code=400, detail=f"{provider} is not a paste-key integration")
     if not await _validate_token(p, body.token):
@@ -342,6 +289,52 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
     return {"status": "disconnected", "provider": provider}
 
 
+@router.put("/{provider}/byo-app")
+async def put_byo_app(
+    provider: str,
+    body: ByoAppRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Store the owner's OWN OAuth app for a byo-required provider. Once stored
+    (and acknowledged), `_byo_active` returns True for this owner — the
+    prerequisite for connecting a BYO-required provider via their own app."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    p = _get_provider_or_404(provider)
+    if not p.byo_required:
+        raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
+    if not body.acknowledge:
+        raise HTTPException(status_code=400, detail="acknowledgment required")
+    await oauth_app_store.put(
+        owner_id,
+        provider,
+        client_id=body.client_id,
+        client_secret=body.client_secret,
+        acknowledged_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    )
+    return {"status": "stored"}
+
+
+@router.delete("/{provider}/byo-app")
+async def delete_byo_app(
+    provider: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Clear the owner's stored BYO OAuth app. This removes only the app
+    credentials — it does NOT disconnect an active connection."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    # Mirror put_byo_app's guards so DELETE on an unknown or non-BYO provider
+    # 4xxs instead of silently no-opping (a clear signal the route is wrong,
+    # not a request that quietly succeeded against a provider that never had a
+    # BYO app to clear).
+    p = _get_provider_or_404(provider)
+    if not p.byo_required:
+        raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
+    await oauth_app_store.delete(owner_id, provider)
+    return {"status": "cleared"}
+
+
 def _redirect_uri(provider: str) -> str:
     # Server-derived, never caller-supplied. Must match the URI registered with
     # the provider and be identical in both authorize + callback legs.
@@ -352,10 +345,11 @@ def _redirect_uri(provider: str) -> str:
 async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _require_grantable_provider(provider, owner_id)
-    await _require_bedrock_for(p, owner_id)
+    p = _get_provider_or_404(provider)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
+    if p.byo_required and not await _byo_active(owner_id, provider):
+        raise HTTPException(status_code=400, detail=f"Set up your own {p.display_name} app before connecting")
     url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))
     return {"authorize_url": url}
 
@@ -373,14 +367,14 @@ async def oauth_callback(provider: str, code: str, state: str):
         owner_id, prov, credential = await oauth_dance.exchange(state, code, redirect_uri=_redirect_uri(provider))
     except ValueError:
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_state")
+    except httpx.HTTPError:
+        # With a BYO app the owner's own client_id/secret is user input: a wrong
+        # secret or a misconfigured app makes the provider's token endpoint
+        # return 4xx, which exchange()'s raise_for_status turns into an
+        # HTTPError. The single-use state is already consumed, so land back on
+        # the connections page with a retryable error instead of a 500.
+        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_exchange")
     p = registry.get_provider(prov)
-    # Re-verify the Bedrock requirement at the actual point of use: the owner
-    # could have switched providers during the OAuth round-trip, leaving
-    # authorize's check stale. Bounce to the upsell rather than wire Google data
-    # into a training-capable path. Done before any secret/keyring write below,
-    # so there is nothing to roll back — the just-exchanged token is discarded.
-    if p.requires_bedrock and not await _owner_on_bedrock(owner_id):
-        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=requires_bedrock")
     # Retain the credential in Secrets Manager only when the backend is the
     # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
     # container, so the backend stores nothing and the EFS keyring written by

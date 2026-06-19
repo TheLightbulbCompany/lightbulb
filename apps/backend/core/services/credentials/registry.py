@@ -95,17 +95,15 @@ class Provider(BaseModel):
     wiring: Wiring
     requires: Requires = Requires()
     oauth: OAuthSpec | None = None
-    # Hidden from the public /connections catalog unless the owner is on the
-    # internal allowlist (config.INTERNAL_INTEGRATION_OWNERS). For providers that
-    # are built but not yet reliably shippable to every user — e.g. Google while
-    # its OAuth app is still pending Google verification.
-    internal: bool = False
-    # Available only to owners on Bedrock-managed inference (provider_choice ==
-    # bedrock_claude). For providers whose third-party data is sent to the
-    # agent's LLM and must never be used for model training — Bedrock is the only
-    # path Isol8 controls a no-training contract for. Doubles as a Bedrock-credits
-    # funnel: non-Bedrock owners get a "switch to unlock" upsell.
-    requires_bedrock: bool = False
+    # BYO-required: this provider has no Isol8-managed OAuth app, so the owner
+    # MUST connect with their own OAuth app (client_id/secret). It is visible to
+    # every owner and gated only by "have you stored your app yet". Today only
+    # google: its scopes are Google *restricted* scopes that an unverified shared
+    # app cannot serve, and the owner's own app carries its own Limited-Use
+    # compliance.
+    byo_required: bool = False
+    # Help link shown in the BYO setup panel (the provider's OAuth-app console).
+    byo_setup_url: str | None = None
     validation: ValidateSpec | None = Field(default=None, alias="validate")
 
     # populate_by_name lets us pass either the `validate` alias (YAML) or the

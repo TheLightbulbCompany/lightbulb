@@ -30,8 +30,6 @@ def test_parallel_openclaw_paths_provider_shape():
     }
     # No validate endpoint (key checked at first search); public + ungated.
     assert p.validation is None
-    assert p.internal is False
-    assert p.requires_bedrock is False
 
 
 def test_direct_oauth_provider_shape():
@@ -42,6 +40,22 @@ def test_direct_oauth_provider_shape():
     assert p.oauth.token_url == "https://oauth2.googleapis.com/token"
     assert "https://www.googleapis.com/auth/gmail.modify" in p.oauth.scopes
     assert p.wiring.materializer == "gog_cli"
+
+
+def test_google_is_byo_required():
+    from core.services.credentials import registry
+
+    g = registry.get_provider("google")
+    assert g.byo_required is True
+    assert g.byo_setup_url == "https://console.cloud.google.com/apis/credentials"
+    assert not hasattr(g, "allow_byo_app")
+
+
+def test_no_provider_is_byo_required_except_google():
+    from core.services.credentials import registry
+
+    byo = [k for k, v in registry.all_providers().items() if v.byo_required]
+    assert byo == ["google"]
 
 
 def test_unknown_provider_raises():

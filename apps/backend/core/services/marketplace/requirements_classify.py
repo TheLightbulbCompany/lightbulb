@@ -6,7 +6,7 @@ classified against the platform's integration rail:
   - bundled image tool/skill, or keyless          -> INCLUDED
   - registry provider (providers.yaml) connectable -> CONNECT
   - channel tool (slack/discord/...)               -> CONNECT (via Channels)
-  - gog / Google (internal + Bedrock-only)         -> UNAVAILABLE (gated)
+  - byo-required provider (Google)                 -> BYO (your own OAuth app)
   - referenced tool/skill with no implementation   -> UNAVAILABLE (phantom)
   - registry provider but wiring mismatch          -> BYO + reason
   - anything else needing a key                    -> BYO
@@ -36,10 +36,16 @@ BUNDLED_TOOLS = frozenset(
 # single source of truth so this can't drift — e.g. listing whatsapp here would
 # tell a buyer to "connect" a channel the backend never provisions.
 CHANNELS = frozenset(CHANNEL_PROVIDER_IDS)
-# Tool/provider names that resolve to gated Google Workspace access.
-GATED_PROVIDERS = frozenset({"gog", "google"})
 
-_GATED_REASON = "internal + Bedrock-only on this platform"
+_BYO_APP_REASON = "requires your own Google OAuth app"
+
+
+def _provider_disposition(prov) -> tuple[Disposition, str | None]:
+    """How a registry provider is offered to a buyer: byo-required → BYO (bring
+    your own app), otherwise a normal connectable integration."""
+    if prov.byo_required:
+        return Disposition.BYO, _BYO_APP_REASON
+    return Disposition.CONNECT, None
 
 
 def _providers() -> dict:
@@ -113,20 +119,12 @@ def classify_hits(
                 r = _ensure(name, name, "bundled", Disposition.INCLUDED)
             elif name in CHANNELS:
                 r = _ensure(name, name.capitalize(), "channel", Disposition.CONNECT)
-            elif name in GATED_PROVIDERS:
-                r = _ensure(name, "Google Sheets/Drive", "cli", Disposition.UNAVAILABLE, reason=_GATED_REASON)
             else:
                 prov = _provider_for_tool(name)
                 if prov is not None:
                     key, spec = prov
-                    gated = spec.internal or spec.requires_bedrock
-                    r = _ensure(
-                        key,
-                        spec.display_name,
-                        _kind_for_provider(spec),
-                        Disposition.UNAVAILABLE if gated else Disposition.CONNECT,
-                        reason=_GATED_REASON if gated else None,
-                    )
+                    disp, reason = _provider_disposition(spec)
+                    r = _ensure(key, spec.display_name, _kind_for_provider(spec), disp, reason=reason)
                 elif name in bundled_mcps:
                     # The agent's own MCP server, bundled into the slice → ships.
                     r = _ensure(name, name, "mcp", Disposition.INCLUDED)
@@ -160,13 +158,13 @@ def classify_hits(
             key, display = ident
             prov = _providers().get(key)
             env = [hit.value] if hit.kind == "env" else []
-            if prov is not None and not (prov.internal or prov.requires_bedrock):
-                # Connectable by default; the wiring-mismatch downgrade to BYO
-                # happens in a post-pass so it can't depend on host-vs-env hit
-                # order (see _apply_wiring_mismatch).
-                r = _ensure(key, display, "external_api", Disposition.CONNECT, env=env)
-            elif prov is not None:
-                r = _ensure(key, display, "external_api", Disposition.UNAVAILABLE, env=env, reason=_GATED_REASON)
+            if prov is not None:
+                # Connectable (or BYO for a byo-required provider) by default; the
+                # wiring-mismatch downgrade of a CONNECT row to BYO happens in a
+                # post-pass so it can't depend on host-vs-env hit order (see
+                # _apply_wiring_mismatch).
+                disp, reason = _provider_disposition(prov)
+                r = _ensure(key, display, "external_api", disp, env=env, reason=reason)
             else:
                 r = _ensure(key, display, "external_api", Disposition.BYO, env=env)
             r.detected_via.append(hit.source)
@@ -181,14 +179,8 @@ def classify_hits(
         prov = _providers().get(name)
         if prov is None:
             continue
-        gated = prov.internal or prov.requires_bedrock
-        r = _ensure(
-            name,
-            prov.display_name,
-            _kind_for_provider(prov),
-            Disposition.UNAVAILABLE if gated else Disposition.CONNECT,
-            reason=_GATED_REASON if gated else None,
-        )
+        disp, reason = _provider_disposition(prov)
+        r = _ensure(name, prov.display_name, _kind_for_provider(prov), disp, reason=reason)
         r.detected_via.append("bundle")
 
     _apply_wiring_mismatch(by_key)

@@ -24,7 +24,7 @@ class Disposition(str, Enum):
     INCLUDED = "included"  # ships in the box (bundled tool/skill, or keyless)
     CONNECT = "connect"  # supported in the integrations / Channels tab
     BYO = "byo"  # buyer brings their own key
-    UNAVAILABLE = "unavailable"  # gated (gog) or phantom (no implementation)
+    UNAVAILABLE = "unavailable"  # phantom (no implementation) or declared-but-unbundled
 
 
 @dataclasses.dataclass

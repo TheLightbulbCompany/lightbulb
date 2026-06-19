@@ -39,13 +39,10 @@ function oauthReturnBanner(connected: string | null, error: string | null): Bann
     const message =
       error === "oauth_state"
         ? "We couldn't verify the sign-in. Please try connecting again."
-        : error === "apply_failed"
-          ? "We connected, but couldn't apply the credential. Please try again."
-          : error === "requires_bedrock"
-            ? // The OAuth callback bounces here when the owner switched off
-              // Bedrock mid-dance. Retrying won't help — they must switch
-              // providers — so don't show the generic "try again" copy.
-              "Google integrations require Bedrock-managed inference. Switch to Bedrock credits to unlock it."
+        : error === "oauth_exchange"
+          ? "Sign-in failed. Double-check your app's client ID and secret, then try again."
+          : error === "apply_failed"
+            ? "We connected, but couldn't apply the credential. Please try again."
             : "Connection failed. Please try again.";
     return { kind: "error", message };
   }

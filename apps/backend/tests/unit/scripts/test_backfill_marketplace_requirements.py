@@ -124,8 +124,9 @@ def test_main_apply_writes_requirements_to_both_stores():
         backfill.main()
 
     # S3 manifest.json rewritten WITH requirements, safety_flags preserved.
+    # `gog.gmail.search` resolves to the byo-required google provider → keyed "google".
     written = json.loads(puts["listings/l1/v1/manifest.json"])
-    assert any(r["key"] == "gog" for r in written["requirements"])
+    assert any(r["key"] == "google" for r in written["requirements"])
     assert "safety_flags" in written  # rich field not clobbered
     # sha256 matches the exact bytes written to S3.
     expected_sha = hashlib.sha256(json.dumps(written, sort_keys=True).encode("utf-8")).hexdigest()
@@ -135,7 +136,7 @@ def test_main_apply_writes_requirements_to_both_stores():
     kw = table.update_item.call_args.kwargs
     assert kw["Key"] == {"listing_id": "l1", "version": 1}
     vals = kw["ExpressionAttributeValues"]
-    assert any(r["key"] == "gog" for r in vals[":mj"]["requirements"])
+    assert any(r["key"] == "google" for r in vals[":mj"]["requirements"])
     assert vals[":sha"] == expected_sha
 
 

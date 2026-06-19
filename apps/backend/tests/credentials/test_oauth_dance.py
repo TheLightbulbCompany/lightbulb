@@ -78,7 +78,7 @@ async def test_start_builds_authorize_url(monkeypatch):
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put)
 
-    async def _fake_client(provider_key):
+    async def _fake_client(owner_id, provider_key):
         return ("cid", "secret")
 
     monkeypatch.setattr(oauth_dance, "_oauth_client", _fake_client)
@@ -120,7 +120,7 @@ async def test_exchange_consumes_state_and_returns_credential(monkeypatch):
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
 
-    async def _fake_client(provider_key):
+    async def _fake_client(owner_id, provider_key):
         return ("cid", "secret")
 
     monkeypatch.setattr(oauth_dance, "_oauth_client", _fake_client)

@@ -15,10 +15,16 @@ def test_bundled_tool_is_included():
     assert reqs["llm-task"].kind == "bundled"
 
 
-def test_gog_is_unavailable_gated():
+def test_gog_tool_is_byo():
     reqs = _classify([Hit("tool", "gog", "p")])
-    assert reqs["gog"].disposition == Disposition.UNAVAILABLE
-    assert "Bedrock" in (reqs["gog"].reason or "")
+    assert reqs["google"].disposition == Disposition.BYO
+    assert "own" in (reqs["google"].reason or "").lower()
+
+
+def test_google_tool_is_byo():
+    """A bare `--tool google` resolves to the byo-required google provider → BYO."""
+    reqs = _classify([Hit("tool", "google", "p")])
+    assert reqs["google"].disposition == Disposition.BYO
 
 
 def test_slack_tool_is_connect_channel():
@@ -98,12 +104,6 @@ def test_tool_named_after_registry_provider_resolves_connect():
     reqs = _classify([Hit("tool", "stripe", "p")])
     assert reqs["stripe"].disposition == Disposition.CONNECT
     assert reqs["stripe"].kind == "mcp"
-
-
-def test_gated_provider_tool_is_unavailable():
-    """A bare `--tool google` resolves to the gated registry provider → UNAVAILABLE."""
-    reqs = _classify([Hit("tool", "google", "p")])
-    assert reqs["google"].disposition == Disposition.UNAVAILABLE
 
 
 def test_cli_pkg_is_included_runtime_resolved():

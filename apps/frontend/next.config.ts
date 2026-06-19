@@ -1,9 +1,49 @@
 import type { NextConfig } from "next";
 import path from "path";
 
+// Content-Security-Policy shipped in REPORT-ONLY mode first: it never blocks,
+// only reports violations to the console, so we can refine the allowlist from
+// real traffic before switching to an enforcing `Content-Security-Policy`
+// header. PostHog is same-origin (reverse-proxied via /ingest below), so only
+// the cross-origin vendors need listing: Clerk (auth), Stripe (billing),
+// Cloudflare Turnstile (Clerk bot-check), Vercel (analytics scripts), plus our
+// own REST API + WebSocket gateway for connect-src. 'unsafe-inline'/'unsafe-eval'
+// are required until a nonce-based policy is wired (a follow-up before enforcing).
+const reportOnlyCsp = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://*.clerk.accounts.dev https://clerk.isol8.co https://challenges.cloudflare.com https://va.vercel-scripts.com",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "connect-src 'self' https://*.clerk.accounts.dev https://clerk.isol8.co https://api.isol8.co https://api-dev.isol8.co https://api.stripe.com wss://ws.isol8.co wss://ws-dev.isol8.co https://us.i.posthog.com https://us-assets.i.posthog.com",
+  "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://*.clerk.accounts.dev https://clerk.isol8.co",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "form-action 'self'",
+].join("; ");
+
+// Enforced response headers for the user-facing app. Vercel/Next.js is the
+// canonical place for these — the FastAPI backend only covers the JSON API and
+// the Paperclip SPA it proxies. HSTS is conservative (1y, no preload) and
+// reversible.
+const securityHeaders = [
+  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "SAMEORIGIN" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Content-Security-Policy-Report-Only", value: reportOnlyCsp },
+];
+
 const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
+
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
 
   turbopack: {
     root: path.resolve(__dirname, '../../'),

@@ -1676,3 +1676,62 @@ async def test_strip_provider_secrets_strips_discord_token_and_signing_secret(ef
     assert result["channels"]["discord"]["enabled"] is True
     assert "signingSecret" not in result["channels"]["slack"]
     assert "botToken" not in result["channels"]["slack"]
+
+
+# ---------------------------------------------------------------------------
+# P3: prototype-pollution / unsafe config-key hardening in _deep_merge
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_proto_pollution_top_level_key(efs_dir):
+    """A ``__proto__`` top-level key (stored via the pen-test fleet write) is
+    rejected at the merge boundary."""
+    with pytest.raises(ConfigPatchError):
+        await patch_openclaw_config("user_1", {"__proto__": {"polluted": True}})
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_nested_unsafe_key(efs_dir):
+    """Recursion covers nested keys too (e.g. ``constructor`` under a legit key)."""
+    with pytest.raises(ConfigPatchError):
+        await patch_openclaw_config("user_1", {"agents": {"constructor": {"x": 1}}})
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_control_char_key(efs_dir):
+    with pytest.raises(ConfigPatchError):
+        await patch_openclaw_config("user_1", {"bad\nkey": 1})
+
+
+@pytest.mark.asyncio
+async def test_patch_allows_legit_dotted_and_slashed_model_keys(efs_dir):
+    """Real configs key by model id (dots, slashes, hyphens) and caller-chosen
+    MCP server names — these must NOT be rejected (we block bad keys, not an
+    allowlist)."""
+    await patch_openclaw_config(
+        "user_1",
+        {
+            "agents": {"defaults": {"models": {"amazon-bedrock/qwen.qwen3-vl-235b-a22b": {"alias": "Q"}}}},
+            "mcp": {"servers": {"my-custom-server.v2": {"command": "npx", "args": []}}},
+        },
+    )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert "amazon-bedrock/qwen.qwen3-vl-235b-a22b" in result["agents"]["defaults"]["models"]
+    assert "my-custom-server.v2" in result["mcp"]["servers"]
+
+
+def test_assert_safe_patch_keys_unit():
+    from core.services.config_patcher import _assert_safe_patch_keys
+
+    # Clean keys pass.
+    _assert_safe_patch_keys({"gateway": 1, "amazon-bedrock/claude.x-1": 2, "server_name": 3})
+    # Each dangerous variant raises.
+    for bad in ({"__proto__": 1}, {"constructor": 1}, {"prototype": 1}, {"__reduce__": 1}):
+        with pytest.raises(ConfigPatchError):
+            _assert_safe_patch_keys(bad)
+    with pytest.raises(ConfigPatchError):
+        _assert_safe_patch_keys({"x" * 200: 1})
+    with pytest.raises(ConfigPatchError):
+        _assert_safe_patch_keys({"tab\tkey": 1})

@@ -23,8 +23,39 @@ class ConfigPatchError(Exception):
     pass
 
 
+# Object keys that would let an untrusted patch pollute the JS prototype chain
+# when OpenClaw (TypeScript) loads + re-merges openclaw.json on the container
+# side. Inert in Python's dict merge here, but never legitimate as a config key,
+# so reject them at the write boundary. The pen test stored ``__proto__`` (plus
+# SSTI / command-injection probe keys) via the fleet-config write — this is the
+# defense-in-depth for that, independent of the now-admin-only authz fix, and it
+# also guards the marketplace slice deploy (apply_deploy_aux_mutations merges
+# untrusted seller plugins/mcp through this same helper).
+_UNSAFE_CONFIG_KEYS = frozenset({"__proto__", "constructor", "prototype", "__reduce__", "__reduce_ex__", "__class__"})
+_MAX_CONFIG_KEY_LEN = 128
+
+
+def _assert_safe_patch_keys(patch: dict) -> None:
+    """Reject prototype-pollution, control-char, and absurdly long keys in one
+    level of an incoming patch dict. ``_deep_merge`` calls this on the patch
+    side at every recursion depth, so nested keys are covered too. Deliberately
+    NOT a key allowlist: legit configs carry caller-chosen keys (MCP server
+    names, model ids), so we only reject what is never a valid config key.
+    """
+    for key in patch:
+        if not isinstance(key, str):
+            raise ConfigPatchError(f"config key must be a string, got {type(key).__name__}")
+        if key in _UNSAFE_CONFIG_KEYS:
+            raise ConfigPatchError(f"refusing unsafe config key: {key!r}")
+        if len(key) > _MAX_CONFIG_KEY_LEN:
+            raise ConfigPatchError("config key exceeds maximum length")
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in key):
+            raise ConfigPatchError(f"config key contains control characters: {key!r}")
+
+
 def _deep_merge(base: dict, patch: dict) -> dict:
     """Deep-merge patch into base. Dicts are merged recursively. Non-dict values are replaced."""
+    _assert_safe_patch_keys(patch)
     result = copy.deepcopy(base)
     for key, value in patch.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):

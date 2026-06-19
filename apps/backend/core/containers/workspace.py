@@ -10,6 +10,7 @@ This module handles filesystem CRUD for agent workspaces on EFS.
 No S3 or Docker involved -- plain file operations on a mounted volume.
 """
 
+import asyncio
 import base64
 import io
 import json
@@ -878,6 +879,32 @@ async def delete_auth_profile_store(*, user_id: str) -> None:
 _DEFAULT_AGENT_DIR = "main"
 
 
+def _delete_default_agent_auth_row_blocking(db_path: Path) -> tuple[int, str | None]:
+    """Blocking SQLite delete of the default agent's ``primary`` store row.
+
+    Isolates the synchronous sqlite3 work — which, with a busy-timeout, can block
+    for seconds under lock contention — so the async caller can run it in a worker
+    thread and keep the event loop free. Returns ``(deleted_rows, failure)``:
+    ``failure`` is None on success, ``"no_table"`` when the store has no
+    auth_profile_store table yet (benign), or ``"write_failed: …"`` for a genuine
+    write error (e.g. SQLITE_BUSY past the timeout).
+    """
+    try:
+        # ``timeout`` is SQLite's busy-timeout (seconds) — wait out the live
+        # writer's lock rather than failing fast with SQLITE_BUSY.
+        con = sqlite3.connect(str(db_path), timeout=10.0)
+        try:
+            cur = con.execute("DELETE FROM auth_profile_store WHERE store_key = 'primary'")
+            con.commit()
+            return cur.rowcount, None
+        finally:
+            con.close()
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e).lower():
+            return 0, "no_table"
+        return 0, f"write_failed: {e}"
+
+
 async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool:
     """Delete the DEFAULT agent's persisted auth-profile store row so OpenClaw
     6.6 re-imports a freshly staged ``credentials/oauth.json`` on its next load.
@@ -916,24 +943,17 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool:
     if not db_path.exists():
         return False  # Container never booted / no per-agent store yet.
 
-    deleted = 0
-    try:
-        # ``timeout`` is SQLite's busy-timeout (seconds) — wait out the live
-        # writer's lock rather than failing fast with SQLITE_BUSY.
-        con = sqlite3.connect(str(db_path), timeout=10.0)
-        try:
-            cur = con.execute("DELETE FROM auth_profile_store WHERE store_key = 'primary'")
-            deleted = cur.rowcount
-            con.commit()
-        finally:
-            con.close()
-    except sqlite3.OperationalError as e:
-        if "no such table" in str(e).lower():
-            # Store file exists but the auth_profile_store table was never
-            # created (container booted but no auth ever persisted). A true
-            # no-op: the boot import seeds it. Quiet — NOT a failure.
-            logger.info("clear_default_agent_auth_profile_row: no auth table yet for %s", user_id)
-            return False
+    # Run the blocking sqlite work (incl. the busy-timeout wait) off the event
+    # loop so lock contention with the live writer can't stall the backend.
+    deleted, failure = await asyncio.to_thread(_delete_default_agent_auth_row_blocking, db_path)
+
+    if failure == "no_table":
+        # Store file exists but the auth_profile_store table was never created
+        # (container booted but no auth ever persisted). A true no-op: the boot
+        # import seeds it. Quiet — NOT a failure.
+        logger.info("clear_default_agent_auth_profile_row: no auth table yet for %s", user_id)
+        return False
+    if failure:
         # A genuine write failure — almost always SQLITE_BUSY: the live OpenClaw
         # process held the auth-store write lock past the busy-timeout. This is
         # NOT benign: the stale shadow row SURVIVES, so the freshly staged
@@ -942,9 +962,9 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool:
         # metered so it's observable and retried, instead of masked as a no-op.
         logger.error(
             "clear_default_agent_auth_profile_row: write FAILED for %s — stale auth row "
-            "survives; freshly staged oauth.json will NOT import until this is retried: %s",
+            "survives; freshly staged oauth.json will NOT import until this is retried (%s)",
             user_id,
-            e,
+            failure,
         )
         put_metric("oauth.auth_row_clear_failed")
         return False

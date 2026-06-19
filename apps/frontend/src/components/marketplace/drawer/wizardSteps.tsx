@@ -357,32 +357,59 @@ export function BundleStep({
             <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-2">
               Skills
             </h4>
-            {preview.available_skills.length === 0 ? (
+            {preview.available_skills.length === 0 &&
+            preview.auto_ship_skills.length === 0 ? (
               <p className="text-[12.5px] text-[#5b5b5b]">
                 This agent has no skills configured.
               </p>
             ) : (
-              <ul className="space-y-1.5">
-                {preview.available_skills.map((s) => (
-                  <li key={s.name}>
-                    <label className="flex items-center gap-2 cursor-pointer text-[13px]">
-                      <input
-                        type="checkbox"
-                        checked={form.bundleSkills.includes(s.name)}
-                        onChange={() => toggleSkill(s.name)}
-                        aria-label={`bundle skill ${s.name}`}
-                      />
-                      <span className="font-mono text-[12.5px]">{s.name}</span>
-                      <span
-                        className={`text-[10.5px] px-1.5 py-0.5 rounded-full ${BUCKET_TONE[s.bucket]}`}
-                        title={`bucket: ${s.bucket}`}
-                      >
-                        {BUCKET_LABEL[s.bucket]}
-                      </span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
+              <>
+                {preview.available_skills.length > 0 && (
+                  <ul className="space-y-1.5">
+                    {preview.available_skills.map((s) => (
+                      <li key={s.name}>
+                        <label className="flex items-center gap-2 cursor-pointer text-[13px]">
+                          <input
+                            type="checkbox"
+                            checked={form.bundleSkills.includes(s.name)}
+                            onChange={() => toggleSkill(s.name)}
+                            aria-label={`bundle skill ${s.name}`}
+                          />
+                          <span className="font-mono text-[12.5px]">{s.name}</span>
+                          <span
+                            className={`text-[10.5px] px-1.5 py-0.5 rounded-full ${BUCKET_TONE[s.bucket]}`}
+                            title={`bucket: ${s.bucket}`}
+                          >
+                            {BUCKET_LABEL[s.bucket]}
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {preview.auto_ship_skills.length > 0 && (
+                  <div
+                    className={preview.available_skills.length > 0 ? "mt-3" : ""}
+                    data-testid="bundle-auto-ship-skills"
+                  >
+                    <p className="text-[11.5px] text-[#5b5b5b] mb-1.5">
+                      Skills in this agent&apos;s workspace ship automatically — no
+                      selection needed.
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {preview.auto_ship_skills.map((name) => (
+                        <span
+                          key={name}
+                          className={`font-mono text-[11px] px-2 py-0.5 rounded-full ${BUCKET_TONE.workspace}`}
+                        >
+                          {name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </section>
 

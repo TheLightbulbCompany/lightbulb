@@ -903,11 +903,14 @@ export class ServiceStack extends cdk.Stack {
         WS_MANAGEMENT_API_URL: props.managementApiUrl,
         WS_GATEWAY_URL: props.webSocketUrl,
         WS_CONNECTIONS_TABLE: props.connectionsTableName,
-        // Off until the WS internal secret is confirmed flowing from the
-        // Lambdas (the x-isol8-ws-internal header). Flip to "true" — and only
-        // then — to make the backend reject /ws/* callers that lack the header.
-        // Deploying with this "false" makes the secret-wiring change a no-op.
-        WS_ENFORCE_INTERNAL_SECRET: "false",
+        // Dev-first rollout of the WS caller-attestation gate. The
+        // x-isol8-ws-internal header wiring is verified flowing from the WS
+        // Lambdas, so enforce on non-prod now and let prod soak behind it;
+        // once dev is confirmed clean, flip prod by dropping this condition.
+        // With the header attached on both sides, enabling this makes the
+        // backend reject /ws/* callers that lack it (the unauthenticated
+        // WebSocket-impersonation fix).
+        WS_ENFORCE_INTERNAL_SECRET: env === "prod" ? "false" : "true",
         WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
         CORS_ORIGINS:
           env === "local"

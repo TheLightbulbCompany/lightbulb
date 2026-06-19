@@ -10,6 +10,7 @@ This module handles filesystem CRUD for agent workspaces on EFS.
 No S3 or Docker involved -- plain file operations on a mounted volume.
 """
 
+import asyncio
 import base64
 import io
 import json
@@ -17,6 +18,7 @@ import logging
 import mimetypes
 import os
 import re
+import sqlite3
 from pathlib import Path
 from typing import Optional
 
@@ -746,12 +748,14 @@ async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> N
     ``/home/node/.openclaw/credentials/oauth.json`` =
     ``$STATE_DIR/credentials/oauth.json`` (``resolveOAuthPath`` upstream).
 
-    Re-OAuth overwrites the file. NOTE: 6.6 imports it only into an EMPTY
-    SQLite slot, so rewriting it updates only a fresh store -- a fresh provision
-    (or a switch into chatgpt_oauth, which hot-patches the config and triggers a
-    reload of an as-yet-empty Bedrock store) picks it up live; reconnecting on
-    an already-authed container needs a reprovision. After first import the
-    in-container OAuth manager refreshes the token in place.
+    Re-OAuth overwrites the file. NOTE: 6.6 imports it only into an ABSENT
+    SQLite store row (mergeOAuthFileIntoStore runs only when
+    loadPersistedAuthProfileStore returns null), so rewriting this file does NOT
+    by itself update an already-seeded container. Callers that re-stage onto an
+    existing container (switch/reconnect into chatgpt_oauth, reprovision) MUST
+    also call ``clear_default_agent_auth_profile_row`` so the import re-fires on
+    the next run. After first import the in-container OAuth manager refreshes the
+    token in place.
 
     Args:
         user_id: the container owner id (org_id for orgs, user_id personal).
@@ -866,3 +870,107 @@ async def delete_auth_profile_store(*, user_id: str) -> None:
             logger.warning("delete_auth_profile_store: %s -- %s", legacy, e)
 
     logger.info("deleted_oauth_credential", extra={"user_id": user_id, "removed": removed})
+
+
+# The default agent's on-disk dir name. OpenClaw's DEFAULT agent (Isol8's
+# Friday, config.py role=='ceo') is the single credential source; every other
+# agent reads through it (mergeAuthProfileStores(MAIN, agent)). Its store lives
+# at <EFS>/{user_id}/agents/main/agent/openclaw-agent.sqlite.
+_DEFAULT_AGENT_DIR = "main"
+
+
+def _delete_default_agent_auth_row_blocking(db_path: Path) -> tuple[int, str | None]:
+    """Blocking SQLite delete of the default agent's ``primary`` store row.
+
+    Isolates the synchronous sqlite3 work — which, with a busy-timeout, can block
+    for seconds under lock contention — so the async caller can run it in a worker
+    thread and keep the event loop free. Returns ``(deleted_rows, failure)``:
+    ``failure`` is None on success, ``"no_table"`` when the store has no
+    auth_profile_store table yet (benign), or ``"write_failed: …"`` for a genuine
+    write error (e.g. SQLITE_BUSY past the timeout).
+    """
+    try:
+        # ``timeout`` is SQLite's busy-timeout (seconds) — wait out the live
+        # writer's lock rather than failing fast with SQLITE_BUSY.
+        con = sqlite3.connect(str(db_path), timeout=10.0)
+        try:
+            cur = con.execute("DELETE FROM auth_profile_store WHERE store_key = 'primary'")
+            con.commit()
+            return cur.rowcount, None
+        finally:
+            con.close()
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e).lower():
+            return 0, "no_table"
+        return 0, f"write_failed: {e}"
+
+
+async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool:
+    """Delete the DEFAULT agent's persisted auth-profile store row so OpenClaw
+    6.6 re-imports a freshly staged ``credentials/oauth.json`` on its next load.
+
+    Why DELETE the row instead of emptying it: 6.6's ``mergeOAuthFileIntoStore``
+    (the only importer of ``oauth.json``) runs ONLY when
+    ``loadPersistedAuthProfileStore`` returns null — i.e. when there is no
+    persisted store row at all. ``models.authLogout`` (what disconnect calls)
+    deletes the *profiles* but saves the store, leaving a row of
+    ``{"version":1,"profiles":{}}`` that still coerces to a non-null store and
+    shadows the import forever. Deleting the row makes the store absent, so the
+    next agent run re-imports the fresh token (the store is re-read per run and
+    the auth-epoch resets reused sessions). See project_openclaw_oauth_auth_model.
+
+    Targets ONLY the default agent (``main``): it is the single credential source
+    and every other agent reads through it. Clearing non-default rows would make
+    each agent re-import its own copy of the one-time refresh token →
+    ``refresh_token_reused`` fan-out.
+
+    The 6.6 store is rollback-journal SQLite on EFS (NOT WAL — #91247 moved it off
+    WAL on NFS), so this short, lock-serialized DELETE is corruption-safe even
+    while the container is running; the busy-timeout absorbs transient contention
+    with the live writer.
+
+    Returns True if a row was deleted, False on no-op (no store yet / no row /
+    contention we couldn't win). Never raises on a missing store or table.
+    """
+    if not _USER_ID_PATTERN.match(user_id):
+        raise ValueError(f"user_id contains invalid characters: {user_id!r}")
+
+    efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
+    if not efs_root:
+        return False  # No EFS configured (e.g. tests without it) — nothing to do.
+
+    db_path = Path(efs_root) / user_id / "agents" / _DEFAULT_AGENT_DIR / "agent" / "openclaw-agent.sqlite"
+    if not db_path.exists():
+        return False  # Container never booted / no per-agent store yet.
+
+    # Run the blocking sqlite work (incl. the busy-timeout wait) off the event
+    # loop so lock contention with the live writer can't stall the backend.
+    deleted, failure = await asyncio.to_thread(_delete_default_agent_auth_row_blocking, db_path)
+
+    if failure == "no_table":
+        # Store file exists but the auth_profile_store table was never created
+        # (container booted but no auth ever persisted). A true no-op: the boot
+        # import seeds it. Quiet — NOT a failure.
+        logger.info("clear_default_agent_auth_profile_row: no auth table yet for %s", user_id)
+        return False
+    if failure:
+        # A genuine write failure — almost always SQLITE_BUSY: the live OpenClaw
+        # process held the auth-store write lock past the busy-timeout. This is
+        # NOT benign: the stale shadow row SURVIVES, so the freshly staged
+        # oauth.json will NOT import and a switch/reconnect silently keeps the old
+        # (often spent) token while reporting success. Surface it loudly +
+        # metered so it's observable and retried, instead of masked as a no-op.
+        logger.error(
+            "clear_default_agent_auth_profile_row: write FAILED for %s — stale auth row "
+            "survives; freshly staged oauth.json will NOT import until this is retried (%s)",
+            user_id,
+            failure,
+        )
+        put_metric("oauth.auth_row_clear_failed")
+        return False
+
+    logger.info(
+        "cleared_default_agent_auth_row",
+        extra={"user_id": user_id, "agent": _DEFAULT_AGENT_DIR, "deleted_rows": deleted},
+    )
+    return deleted > 0

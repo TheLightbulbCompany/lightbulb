@@ -811,7 +811,10 @@ async def _hot_swap_provider(
         # We already gated on tokens existing in the prerequisite check at
         # the top of change_provider. Re-read so the file we write reflects
         # whatever rotation may have happened concurrently.
-        from core.containers.workspace import pre_stage_auth_profile_store
+        from core.containers.workspace import (
+            clear_default_agent_auth_profile_row,
+            pre_stage_auth_profile_store,
+        )
         from core.services import oauth_service
 
         # READ the tokens under the switcher (the new connector): tokens live
@@ -834,6 +837,16 @@ async def _hot_swap_provider(
         # EFS workspace + auth-profiles.json are owner-scoped, not keyed on the
         # human connector. For personal owners owner_id == clerk_user_id.
         await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=tokens)
+        # Staging oauth.json alone is not enough on an ALREADY-RUNNING 6.6
+        # container: its per-agent SQLite auth store imports oauth.json ONLY when
+        # the store row is absent, and a prior session (or authLogout-on-
+        # disconnect) leaves an empty ``{"profiles":{}}`` row that shadows the
+        # import. Delete the default agent's row so the freshly staged credential
+        # re-imports on the next run — without this, a switch/reconnect into
+        # chatgpt_oauth keeps using the old (often spent) token. See
+        # project_openclaw_oauth_auth_model. Best-effort: a fresh container has no
+        # row (no-op) and the EFS file alone still seeds a cold boot.
+        await clear_default_agent_auth_profile_row(user_id=owner_id)
 
     providers, default_model, plugin_entries = build_provider_block(
         provider_choice=new_provider,

@@ -152,11 +152,11 @@ async def admin_create_update(
 async def patch_single_config(
     owner_id: str,
     body: ConfigPatchRequest,
-    auth: AuthContext = Depends(get_current_user),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
-    if auth.is_org_context:
-        require_org_admin(auth)
-
+    # Platform-admin only: the owner_id comes from the path, so any non-admin
+    # caller could otherwise patch an arbitrary tenant's config. Self-service
+    # config patching is served by the owner-scoped PATCH /api/v1/config.
     try:
         await patch_openclaw_config(owner_id, body.patch)
     except ConfigPatchError as e:
@@ -174,11 +174,11 @@ async def patch_single_config(
 )
 async def patch_fleet_config(
     body: ConfigPatchRequest,
-    auth: AuthContext = Depends(get_current_user),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
-    if auth.is_org_context:
-        require_org_admin(auth)
-
+    # Platform-admin only: this deep-merges into EVERY active owner's config,
+    # so it must never be reachable by an ordinary authenticated user. (The
+    # prior is_org_context-only guard passed personal-context callers through.)
     put_metric("update.fleet_patch.invoked")
 
     # Scan all owners from billing-accounts

@@ -65,6 +65,28 @@ def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
     return f"workspaces/{agent_id}"
 
 
+def _guard_read_subpath(workspace, owner_id: str, agent_base: str, full_path: str, path: str) -> None:
+    """Path-traversal guard for the workspace READ endpoints.
+
+    The write path already validates via _write_file; the read endpoints
+    historically relied on Workspace._resolve_user_file, which only pins to the
+    user root (not the per-agent subtree) — so `path=../<other_agent>/...` read
+    across workspaces within the tenant. This mirrors the write path: reject
+    '..' segments and confirm the resolved target stays inside the agent's own
+    workspace subtree (which also blocks symlink escapes). `path` may be empty
+    for the tree root.
+    """
+    if path:
+        try:
+            _validate_relative_path(path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        _ensure_within_subtree(workspace, owner_id, full_path, agent_base)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
 def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_depth: int = 10):
     """Recursively collect file entries up to max_depth."""
     if max_depth <= 0:
@@ -164,6 +186,7 @@ async def list_workspace_tree(
 
     agent_base = _agent_workspace_path(owner_id, agent_id)
     full_path = f"{agent_base}/{path}" if path else agent_base
+    _guard_read_subpath(workspace, owner_id, agent_base, full_path, path)
 
     if recursive:
         all_entries: list = []
@@ -177,7 +200,8 @@ async def list_workspace_tree(
                 raise HTTPException(status_code=404, detail=str(exc))
             if "traversal" in str(exc).lower():
                 raise HTTPException(status_code=403, detail="Access denied")
-            raise HTTPException(status_code=500, detail=str(exc))
+            logger.exception("Failed to list workspace directory for owner %s", owner_id)
+            raise HTTPException(status_code=500, detail="Failed to list workspace directory")
 
         return {"files": _strip_agent_prefix(entries, agent_id)}
 
@@ -194,6 +218,7 @@ async def read_workspace_file(
 
     agent_base = _agent_workspace_path(owner_id, agent_id)
     full_path = f"{agent_base}/{path}"
+    _guard_read_subpath(workspace, owner_id, agent_base, full_path, path)
 
     try:
         info = workspace.read_file_info(owner_id, full_path)
@@ -202,7 +227,8 @@ async def read_workspace_file(
             raise HTTPException(status_code=404, detail=str(exc))
         if "traversal" in str(exc).lower():
             raise HTTPException(status_code=403, detail="Access denied")
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.exception("Failed to read workspace file for owner %s", owner_id)
+        raise HTTPException(status_code=500, detail="Failed to read workspace file")
 
     return info
 

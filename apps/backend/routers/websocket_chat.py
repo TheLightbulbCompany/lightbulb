@@ -10,6 +10,7 @@ Responses are pushed via Management API, not returned in HTTP response body.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import secrets
@@ -17,7 +18,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response
 
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
@@ -57,7 +58,41 @@ from core.services.paperclip_openclaw_pairing import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["websocket"])
+
+def require_ws_internal_caller(
+    x_isol8_ws_internal: Optional[str] = Header(None, alias="x-isol8-ws-internal"),
+) -> None:
+    """Authenticate the CALLER of the /ws/* endpoints — the trusted WebSocket
+    Lambdas — not the user identity in x-user-id (which the caller chooses, so
+    validating its value would be pointless).
+
+    These endpoints have no get_current_user: they derive identity from request
+    headers and are meant to be reached only via the WS Lambdas, which run after
+    the API Gateway WS authorizer validates the Clerk JWT. The public HTTP API
+    Gateway $default route, by contrast, proxies every path to the same ALB with
+    no authorizer. The Lambdas attach settings.WS_INTERNAL_SECRET as a header the
+    public route cannot supply; this dependency rejects callers that lack it.
+
+    Off by default: enforcement activates only once WS_ENFORCE_INTERNAL_SECRET is
+    true, so the secret can be deployed to both the Lambdas and the backend before
+    the switch is flipped (zero-downtime rollout). When enforcement is on but no
+    secret is configured we fail closed (503) rather than silently allow forged
+    callers.
+    """
+    if not settings.WS_ENFORCE_INTERNAL_SECRET:
+        return
+    secret = settings.WS_INTERNAL_SECRET
+    if not secret:
+        logger.error(
+            "WS_ENFORCE_INTERNAL_SECRET is on but WS_INTERNAL_SECRET is empty; "
+            "rejecting /ws/* calls until the secret is configured"
+        )
+        raise HTTPException(status_code=503, detail="WebSocket gateway not configured")
+    if not x_isol8_ws_internal or not hmac.compare_digest(x_isol8_ws_internal, secret):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+router = APIRouter(tags=["websocket"], dependencies=[Depends(require_ws_internal_caller)])
 
 
 # Client IDs that handle their own connect.challenge via the upstream-relay

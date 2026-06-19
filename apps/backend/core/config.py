@@ -97,6 +97,22 @@ class Settings(BaseSettings):
     # api-stack's WebSocket stage URL.
     WS_GATEWAY_URL: str = os.getenv("WS_GATEWAY_URL", "wss://ws-dev.isol8.co")
 
+    # Shared secret that authenticates the CALLER of the /api/v1/ws/* endpoints.
+    # Those endpoints derive identity from request headers (x-user-id etc.) and
+    # are meant to be invoked only by the trusted WebSocket Lambdas, which run
+    # after the API Gateway WS authorizer validates the Clerk JWT. The public
+    # HTTP API Gateway $default route, however, proxies every path to the same
+    # ALB with no authorizer — so without this guard anyone can POST to
+    # /api/v1/ws/connect with a forged x-user-id. The Lambdas attach this secret
+    # as a header the public route cannot supply.
+    #
+    # Two flags so the mechanism can be rolled out with zero downtime: ship the
+    # secret to both the Lambdas (which always attach it) and the backend, deploy,
+    # confirm the header is arriving, then flip enforcement on. Enforcement is a
+    # no-op until WS_ENFORCE_INTERNAL_SECRET is true AND a secret is configured.
+    WS_INTERNAL_SECRET: str = os.getenv("WS_INTERNAL_SECRET", "")
+    WS_ENFORCE_INTERNAL_SECRET: bool = os.getenv("WS_ENFORCE_INTERNAL_SECRET", "false").lower() == "true"
+
     # OAuth tables (set by CDK)
     OAUTH_TOKENS_TABLE: str = ""
 

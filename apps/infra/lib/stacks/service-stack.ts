@@ -73,6 +73,15 @@ export interface SecretNames {
    * real re_… key is set (email_service gates on the key prefix).
    */
   resendApiKey: string;
+  /**
+   * Shared secret the WebSocket Lambdas attach to authenticate themselves to
+   * the backend /api/v1/ws/* endpoints. Same secret AuthStack creates and the
+   * WS Lambdas read; same CMK as the other auth secrets, so `KmsDecryptForSecrets`
+   * already covers it. Enforcement is gated by WS_ENFORCE_INTERNAL_SECRET (a
+   * plain env, default "false") so the secret can be wired to both sides before
+   * the backend starts rejecting callers that lack the header.
+   */
+  wsInternalSecret: string;
 }
 
 export interface ServiceStackProps extends cdk.StackProps {
@@ -894,6 +903,11 @@ export class ServiceStack extends cdk.Stack {
         WS_MANAGEMENT_API_URL: props.managementApiUrl,
         WS_GATEWAY_URL: props.webSocketUrl,
         WS_CONNECTIONS_TABLE: props.connectionsTableName,
+        // Off until the WS internal secret is confirmed flowing from the
+        // Lambdas (the x-isol8-ws-internal header). Flip to "true" — and only
+        // then — to make the backend reject /ws/* callers that lack the header.
+        // Deploying with this "false" makes the secret-wiring change a no-op.
+        WS_ENFORCE_INTERNAL_SECRET: "false",
         WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
         CORS_ORIGINS:
           env === "local"
@@ -1180,6 +1194,17 @@ export class ServiceStack extends cdk.Stack {
         ),
         RESEND_API_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportResendApiKey", props.secretNames.resendApiKey),
+        ),
+        // Shared secret the WS Lambdas attach as x-isol8-ws-internal. The
+        // backend compares it (require_ws_internal_caller) only when
+        // WS_ENFORCE_INTERNAL_SECRET is "true". Same CMK as the other auth
+        // secrets, so KmsDecryptForSecrets below already covers decrypt.
+        WS_INTERNAL_SECRET: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportWsInternalSecret",
+            props.secretNames.wsInternalSecret,
+          ),
         ),
       },
       healthCheck: {

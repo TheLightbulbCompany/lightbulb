@@ -254,9 +254,9 @@ class TestListConnections:
 
 class TestByoRequiredGate:
     """A `byo_required` provider (google) has no managed app, so its connect
-    path requires the owner to have stored + acknowledged their own OAuth app
-    first. The catalog lists it for everyone; authorize 400s until a BYO app
-    is configured."""
+    path requires the owner to have stored their own OAuth app first. The
+    catalog lists it for everyone; authorize 400s until a BYO app is
+    configured."""
 
     @pytest.mark.asyncio
     async def test_authorize_400_when_byo_app_not_configured(self, async_client, monkeypatch):
@@ -1011,10 +1011,10 @@ class TestOAuthCallback:
 
 @pytest.mark.asyncio
 @patch("routers.connections.oauth_app_store.get", new_callable=AsyncMock)
-async def test_byo_active_true_when_allowed_and_acknowledged(mock_get):
+async def test_byo_active_true_when_app_stored(mock_get):
     from routers import connections
 
-    mock_get.return_value = {"client_id": "x", "client_secret": "y", "acknowledged_at": "2026-06-18T00:00:00Z"}
+    mock_get.return_value = {"client_id": "x", "client_secret": "y"}
     assert await connections._byo_active("user_1", "google") is True
 
 
@@ -1029,12 +1029,12 @@ async def test_byo_active_false_without_app(mock_get):
 
 @pytest.mark.asyncio
 @patch("routers.connections.oauth_app_store.get", new_callable=AsyncMock)
-async def test_byo_active_false_when_app_not_acknowledged(mock_get):
+async def test_byo_active_false_when_app_incomplete(mock_get):
     from routers import connections
 
-    # A stored app with no `acknowledged_at` key is NOT active: storing client
-    # credentials without the Limited-Use acknowledgement must not lift the gate.
-    mock_get.return_value = {"client_id": "x", "client_secret": "y"}
+    # A half-populated row (missing the secret) is NOT active — the predicate
+    # requires both halves of the client credential.
+    mock_get.return_value = {"client_id": "x"}
     assert await connections._byo_active("user_1", "google") is False
 
 
@@ -1043,7 +1043,7 @@ async def test_byo_active_false_when_app_not_acknowledged(mock_get):
 async def test_byo_active_false_for_non_byo_provider(mock_get):
     from routers import connections
 
-    mock_get.return_value = {"client_id": "x", "client_secret": "y", "acknowledged_at": "t"}
+    mock_get.return_value = {"client_id": "x", "client_secret": "y"}
     # stripe is not byo_required → predicate short-circuits, never True
     assert await connections._byo_active("user_1", "stripe") is False
 
@@ -1056,31 +1056,21 @@ class TestByoApp:
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_app_store.put", new_callable=AsyncMock)
-    async def test_put_byo_app_requires_ack_and_stores(self, mock_put, async_client):
-        # google byo_required=True: an acknowledged PUT stores the app.
+    async def test_put_byo_app_stores_credentials(self, mock_put, async_client):
+        # google byo_required=True: a PUT stores the owner's app credentials.
         ok = await async_client.put(
             "/api/v1/connections/google/byo-app",
-            json={"client_id": "cid", "client_secret": "csec", "acknowledge": True},
+            json={"client_id": "cid", "client_secret": "csec"},
         )
         assert ok.status_code == 200
         mock_put.assert_awaited_once()
-        # Stored under (owner, provider) with the submitted client credentials and
-        # a timezone-aware ISO8601 acknowledgement timestamp (UTC -> "+00:00").
+        # Stored under (owner, provider) with the submitted client credentials.
         put_call = mock_put.await_args
         assert put_call.args[0] == "user_test_123"
         assert put_call.args[1] == "google"
         assert put_call.kwargs["client_id"] == "cid"
         assert put_call.kwargs["client_secret"] == "csec"
-        assert put_call.kwargs["acknowledged_at"].endswith("+00:00")
-
-        # Acknowledgement without consent is rejected and stores nothing.
-        mock_put.reset_mock()
-        bad = await async_client.put(
-            "/api/v1/connections/google/byo-app",
-            json={"client_id": "cid", "client_secret": "csec", "acknowledge": False},
-        )
-        assert bad.status_code == 400
-        mock_put.assert_not_awaited()
+        assert "acknowledged_at" not in put_call.kwargs
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_app_store.put", new_callable=AsyncMock)
@@ -1088,7 +1078,7 @@ class TestByoApp:
         # stripe is not byo_required -> a BYO PUT is rejected (400) and nothing stored.
         resp = await async_client.put(
             "/api/v1/connections/stripe/byo-app",
-            json={"client_id": "c", "client_secret": "s", "acknowledge": True},
+            json={"client_id": "c", "client_secret": "s"},
         )
         assert resp.status_code in (400, 404)  # stripe is not byo_required
         mock_put.assert_not_awaited()
@@ -1098,7 +1088,7 @@ class TestByoApp:
     async def test_put_byo_app_unknown_provider_returns_404(self, mock_put, async_client):
         resp = await async_client.put(
             "/api/v1/connections/does-not-exist/byo-app",
-            json={"client_id": "c", "client_secret": "s", "acknowledge": True},
+            json={"client_id": "c", "client_secret": "s"},
         )
         assert resp.status_code == 404
         mock_put.assert_not_awaited()
@@ -1160,7 +1150,7 @@ class TestListByoExposure:
     @patch("routers.connections._byo_active", new_callable=AsyncMock)
     @patch("routers.connections.integrations_repo")
     async def test_list_byo_configured_false_when_inactive(self, mock_repo, mock_byo, async_client):
-        # byo_configured reflects _byo_active: False when no acknowledged app.
+        # byo_configured reflects _byo_active: False when no stored app.
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         mock_byo.return_value = False
 

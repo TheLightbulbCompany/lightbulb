@@ -28,10 +28,6 @@ interface ConnectButtonProps {
 
 const NON_ADMIN_MSG = "Only organization admins can manage connections.";
 
-// Limited-Use acknowledgment shown before an owner stores their own OAuth app.
-const BYO_ACK_COPY =
-  "I'm connecting with my own Google OAuth app and I'm responsible for its compliance with Google's API Services User Data Policy, including the Limited Use requirements, for any Google data my agents access.";
-
 /**
  * The OAuth redirect URI an owner must register in their own provider app.
  *
@@ -76,12 +72,11 @@ export function ConnectButton({
   const [err, setErr] = useState<string | null>(null);
 
   // BYO ("use your own app") panel state. Opening it reveals the
-  // client_id/secret + acknowledge form. Kept local (no SWR) — a successful
-  // PUT hands off to OAuth.
+  // client_id/secret form. Kept local (no SWR) — a successful PUT hands off
+  // to OAuth.
   const [byoOpen, setByoOpen] = useState(false);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
-  const [acknowledged, setAcknowledged] = useState(false);
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -113,24 +108,22 @@ export function ConnectButton({
   const needsByoSetup = connection.byo_required && !connection.byo_configured;
 
   // Renders the "Use your own … app" button, or — once opened — the
-  // client_id/secret + acknowledge form. Extracted so both the connected and
-  // not-connected branches render the identical affordance (no duplication).
+  // client_id/secret form. Extracted so both the connected and not-connected
+  // branches render the identical affordance (no duplication).
   const renderByoSetup = () => {
-    const ackId = `byo-ack-${provider}`;
     // Scrub the typed secret + form state. Called on Cancel/close and after a
     // successful save so a typed client secret never persists in React state to
     // re-populate the masked input on reopen.
     const resetByoForm = () => {
       setClientId("");
       setClientSecret("");
-      setAcknowledged(false);
     };
     const closeByo = () => {
       resetByoForm();
       setByoOpen(false);
     };
     const saveByoApp = () => {
-      if (!clientId.trim() || !clientSecret.trim() || !acknowledged || busy || !canManage) {
+      if (!clientId.trim() || !clientSecret.trim() || busy || !canManage) {
         return;
       }
       void run(async () => {
@@ -141,7 +134,6 @@ export function ConnectButton({
         await api.put(`/connections/${encodeURIComponent(provider)}/byo-app`, {
           client_id: clientId.trim(),
           client_secret: clientSecret.trim(),
-          acknowledge: acknowledged,
         });
         // Refresh the connections list BEFORE the OAuth redirect so
         // `byo_configured` reflects the now-stored app. If startOAuth then
@@ -229,24 +221,13 @@ export function ConnectButton({
           onChange={(e) => setClientSecret(e.target.value)}
           className="h-9 bg-white"
         />
-        <label htmlFor={ackId} className="flex items-start gap-2 text-xs text-[#1c1917]">
-          <input
-            id={ackId}
-            type="checkbox"
-            checked={acknowledged}
-            disabled={busy || !canManage}
-            onChange={(e) => setAcknowledged(e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>{BYO_ACK_COPY}</span>
-        </label>
         <div className="flex items-center justify-end gap-2">
           <Button size="sm" variant="outline" disabled={busy} onClick={closeByo}>
             Cancel
           </Button>
           <Button
             size="sm"
-            disabled={busy || !canManage || !clientId.trim() || !clientSecret.trim() || !acknowledged}
+            disabled={busy || !canManage || !clientId.trim() || !clientSecret.trim()}
             onClick={saveByoApp}
             aria-label={`Save your own ${display_name} app`}
           >

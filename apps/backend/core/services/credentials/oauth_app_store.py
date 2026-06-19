@@ -35,9 +35,9 @@ def _client():
     return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 
 
-async def put(owner_id: str, provider: str, *, client_id: str, client_secret: str, acknowledged_at: str) -> str:
+async def put(owner_id: str, provider: str, *, client_id: str, client_secret: str) -> str:
     name = _secret_name(owner_id, provider)
-    payload = json.dumps({"client_id": client_id, "client_secret": client_secret, "acknowledged_at": acknowledged_at})
+    payload = json.dumps({"client_id": client_id, "client_secret": client_secret})
 
     def _put() -> str:
         sm = _client()

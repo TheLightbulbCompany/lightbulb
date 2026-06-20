@@ -92,6 +92,24 @@ from core.gateway.connection_pool import _parse_session_key  # noqa: E402
             "agent:sales:cron",
             {"agent_id": "sales", "source": "cron"},
         ),
+        # Paperclip issue session (openclaw_gateway adapter, strategy="issue").
+        # Shape from paperclip/.../openclaw-gateway/src/server/execute.ts
+        # resolveSessionKey. A real member id is always a Clerk "user_..." id,
+        # never the literal "paperclip", so this marker is unambiguous.
+        (
+            "agent:friday:paperclip:issue:ADM-455",
+            {"agent_id": "friday", "source": "paperclip", "issue_id": "ADM-455"},
+        ),
+        # Paperclip run session (strategy="run")
+        (
+            "agent:friday:paperclip:run:run-789",
+            {"agent_id": "friday", "source": "paperclip", "run_id": "run-789"},
+        ),
+        # Paperclip bare fallback (strategy="fixed", default sessionKey="paperclip")
+        (
+            "agent:friday:paperclip",
+            {"agent_id": "friday", "source": "paperclip"},
+        ),
         # Malformed
         ("garbage", {}),
         ("", {}),
@@ -112,6 +130,19 @@ def test_cron_session_is_not_webchat():
     assert result["source"] == "cron"
     assert result["source"] not in ("webchat", "dm", "group", "channel")
     assert "member_id" not in result
+
+
+def test_paperclip_issue_session_is_not_webchat():
+    """A Paperclip issue session (agent:<id>:paperclip:issue:<issueId>) must be
+    classified as 'paperclip', NOT 'unknown'/'webchat'. The previous parser
+    returned source='unknown' with no member_id, which the gateway fan-out
+    treats as a personal session and BROADCASTS to every member of the org —
+    leaking one issue's stream into every member's /chat."""
+    result = _parse_session_key("agent:friday:paperclip:issue:ADM-455")
+    assert result["source"] == "paperclip"
+    assert result["source"] not in ("webchat", "dm", "group", "channel")
+    assert "member_id" not in result
+    assert result["issue_id"] == "ADM-455"
 
 
 def test_group_key_does_not_return_literal_channel_as_member_id():

@@ -688,6 +688,108 @@ class TestHandleMessageChatEvents:
         mgmt.send_message.assert_called_once_with("frontend-1", msg)
 
 
+class TestPaperclipSessionFanoutLeak:
+    """Paperclip issue/run sessions must NOT reach the web /chat fan-out.
+
+    They carry no member_id, so the owner-keyed fan-out would broadcast them to
+    EVERY member of the org — leaking one issue's transcript (and its errors)
+    into every member's chat window. Regression test for the reported bug where
+    a member saw a background routine's (ADM-455) activity in their own chat.
+    """
+
+    @pytest.fixture
+    def connection(self):
+        mgmt = MagicMock()
+        conn = GatewayConnection(
+            frontend_connections=set(),
+            user_id="test-user",
+            ip="10.0.0.1",
+            token="tok",
+            management_api=mgmt,
+        )
+        # Two org members' chat tabs (member_id from the by-owner-id GSI).
+        conn._conn_svc.query_by_owner = AsyncMock(
+            return_value=[
+                ("frontend-owner", "user_owner", "chat"),
+                ("frontend-sibling", "user_sibling", "chat"),
+            ]
+        )
+        return conn, mgmt
+
+    @pytest.mark.asyncio
+    async def test_paperclip_issue_chat_final_not_forwarded(self, connection):
+        conn, mgmt = connection
+        await conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "runId": "run-1",
+                    "sessionKey": "agent:friday:paperclip:issue:ADM-455",
+                    "message": {"content": [{"type": "text", "text": "sweep done"}]},
+                },
+            }
+        )
+        mgmt.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_paperclip_issue_agent_chunk_not_forwarded(self, connection):
+        conn, mgmt = connection
+        await conn._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "assistant",
+                    "runId": "run-1",
+                    "sessionKey": "agent:friday:paperclip:issue:ADM-455",
+                    "data": {"text": "internal routine output"},
+                },
+            }
+        )
+        mgmt.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_paperclip_issue_chat_error_not_forwarded(self, connection):
+        """An error in the issue run (e.g. context overflow on a retry loop)
+        must not bleed into members' chat windows."""
+        conn, mgmt = connection
+        await conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "runId": "run-1",
+                    "sessionKey": "agent:friday:paperclip:issue:ADM-455",
+                    "error": {"message": "Context overflow"},
+                },
+            }
+        )
+        mgmt.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_personal_webchat_chat_final_still_forwards(self, connection):
+        """Positive control: a real web-chat session (agent:<id>:main) still
+        forwards — the fix must not over-drop legitimate chat."""
+        conn, mgmt = connection
+        await conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "runId": "run-2",
+                    "sessionKey": "agent:friday:main",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                },
+            }
+        )
+        # source=webchat, no member_id -> broadcast to both org tabs.
+        assert mgmt.send_message.call_count >= 1
+
+
 class _CrashingWs:
     """Minimal WebSocket mock that raises RuntimeError on first iteration."""
 

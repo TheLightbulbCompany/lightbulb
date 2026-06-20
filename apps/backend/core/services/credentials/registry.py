@@ -25,11 +25,44 @@ class OpenclawPath(BaseModel):
 
 class McpServer(BaseModel):
     key: str  # the mcp.servers.<key> this integration owns
-    command: str
+    # A stdio server bakes its own process: `command` (+ `args`) is required and
+    # the credential rides into the process env. A remote server is reached over
+    # the network instead: `transport` (e.g. "streamable-http") + `url` are set
+    # and there is no command. Exactly one of the two shapes must be present.
+    command: str | None = None
     args: list[str] = Field(default_factory=list)
+    transport: str | None = None
+    url: str | None = None
     # env var name -> credential source ("input.token", "credentials.access_token"),
     # resolved at delivery time via the same _resolve_source the openclaw_paths rail uses.
     env: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _stdio_or_remote(self) -> "McpServer":
+        is_stdio = bool(self.command)
+        is_remote = bool(self.transport and self.url)
+        if is_stdio == is_remote:
+            raise ValueError("mcp_server must be either stdio (command) or remote (transport+url), not neither/both")
+        return self
+
+
+class McpRemote(BaseModel):
+    """Remote MCP server metadata for a provider that delivers its OAuth tokens
+    via the ``mcp_oauth`` materializer rather than the ``mcp_server`` wiring rail.
+
+    The ``mcp_server`` wiring rail can't carry this provider because its credential
+    is not an env var fed to a baked stdio process — it is a token file the MCP
+    SDK's OAuthClientProvider reads + self-refreshes. So the provider rides the
+    materializer rail (which writes that token file) and ALSO needs to publish the
+    live ``mcp.servers.<key>`` block pointing the runtime at the remote endpoint.
+    That block is described HERE, at the provider level, so the ``materializer``
+    wiring stays the single declared rail and the "exactly one of
+    openclaw_paths | materializer | mcp_server" invariant is preserved.
+    """
+
+    key: str  # the mcp.servers.<key> this integration owns
+    url: str
+    transport: str
 
 
 class Wiring(BaseModel):
@@ -52,6 +85,10 @@ class OAuthSpec(BaseModel):
     scope_separator: str = " "
     pkce: bool = True
     extra_authorize_params: dict[str, str] = Field(default_factory=dict)
+    # Dynamic Client Registration endpoint. When set and the owner has no BYO app
+    # stored, the dance registers a fresh public OAuth client at this URL (RFC 7591)
+    # and caches it, so a headless owner never needs to pre-create an OAuth app.
+    registration_url: str | None = None
 
 
 class ValidateSpec(BaseModel):
@@ -104,6 +141,10 @@ class Provider(BaseModel):
     byo_required: bool = False
     # Help link shown in the BYO setup panel (the provider's OAuth-app console).
     byo_setup_url: str | None = None
+    # Remote MCP endpoint published into mcp.servers.<key> by the mcp_oauth
+    # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
+    # see McpRemote for why it lives at the provider level rather than in Wiring.
+    mcp_remote: McpRemote | None = None
     validation: ValidateSpec | None = Field(default=None, alias="validate")
 
     # populate_by_name lets us pass either the `validate` alias (YAML) or the

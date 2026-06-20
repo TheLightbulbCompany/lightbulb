@@ -1,4 +1,4 @@
-"""Per-owner BYO OAuth-app config (client_id/secret) in AWS Secrets Manager.
+"""Per-owner OAuth-app config (client_id/secret) in AWS Secrets Manager.
 
 Stored at ``isol8/<env>/integrations/<owner>/oauth-app/<provider>`` — under the
 ``integrations/`` prefix the backend task role has READ-WRITE on
@@ -8,6 +8,13 @@ and a write would AccessDenied).
 This holds ONLY the app config, never a token — for google the token lives in
 the in-container gog keyring (``refresh_owner: actor``); ``_oauth_client``
 re-reads this app config on every connect/reconnect.
+
+Two writers:
+- the BYO flow stores the owner's own ``client_id`` + ``client_secret``.
+- the Dynamic Client Registration flow stores a DCR-registered PUBLIC client
+  (``client_secret`` empty) plus the full registration response under
+  ``client_information`` so the mcp_oauth materializer can write it verbatim into
+  the MCP SDK's OAuth store.
 """
 
 from __future__ import annotations
@@ -35,9 +42,21 @@ def _client():
     return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 
 
-async def put(owner_id: str, provider: str, *, client_id: str, client_secret: str) -> str:
+async def put(
+    owner_id: str,
+    provider: str,
+    *,
+    client_id: str,
+    client_secret: str,
+    client_information: dict[str, Any] | None = None,
+) -> str:
     name = _secret_name(owner_id, provider)
-    payload = json.dumps({"client_id": client_id, "client_secret": client_secret})
+    record: dict[str, Any] = {"client_id": client_id, "client_secret": client_secret}
+    # Only DCR clients carry the full registration response; a BYO app stores just
+    # the id/secret pair, so omit the key entirely when absent.
+    if client_information is not None:
+        record["client_information"] = client_information
+    payload = json.dumps(record)
 
     def _put() -> str:
         sm = _client()

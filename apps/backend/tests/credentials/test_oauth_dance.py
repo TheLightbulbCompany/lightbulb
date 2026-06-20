@@ -169,3 +169,192 @@ async def test_exchange_invalid_state_raises(monkeypatch):
 
     with pytest.raises(ValueError):
         await oauth_dance.exchange("missing", "code", redirect_uri=REDIRECT)
+
+
+# --- Dynamic Client Registration (DCR) + public clients --------------------
+#
+# attio is the DCR provider in the registry: it has a registration_url and no BYO
+# app, so start() registers a fresh PUBLIC (no-secret) client and exchange() omits
+# the client_secret. google (BYO, with secret) must keep working unchanged.
+
+
+@pytest.fixture
+def fake_app_store(monkeypatch):
+    """In-memory stand-in for oauth_app_store keyed by (owner, provider)."""
+    store: dict[tuple[str, str], dict] = {}
+
+    async def _get(owner_id, provider):
+        return store.get((owner_id, provider))
+
+    async def _put(owner_id, provider, *, client_id, client_secret, client_information=None):
+        rec = {"client_id": client_id, "client_secret": client_secret}
+        if client_information is not None:
+            rec["client_information"] = client_information
+        store[(owner_id, provider)] = rec
+        return "arn:secret"
+
+    monkeypatch.setattr(oauth_dance.oauth_app_store, "get", _get)
+    monkeypatch.setattr(oauth_dance.oauth_app_store, "put", _put)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_start_registers_dcr_client_when_absent(monkeypatch, fake_app_store):
+    async def _fake_put_state(state, *, owner_id, provider, verifier):
+        pass
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
+
+    registered = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "client_id": "dcr_cid",
+                "redirect_uris": [REDIRECT],
+                "token_endpoint_auth_method": "none",
+            }
+
+    async def _fake_post(self, url, json=None, data=None, **kwargs):
+        registered["url"] = url
+        registered["json"] = json
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    url = await oauth_dance.start("org_1", "attio", redirect_uri=REDIRECT)
+
+    # Registration was POSTed to attio's registration endpoint with a public-client body.
+    assert registered["url"] == "https://app.attio.com/oauth/register"
+    body = registered["json"]
+    assert body["token_endpoint_auth_method"] == "none"
+    assert body["redirect_uris"] == [REDIRECT]
+    assert body["grant_types"] == ["authorization_code", "refresh_token"]
+    assert body["scope"] == "openid offline_access mcp"
+
+    # The registered client was cached (id + empty secret marks it public) with the
+    # full registration JSON for the materializer to write as clientInformation.
+    cached = fake_app_store[("org_1", "attio")]
+    assert cached["client_id"] == "dcr_cid"
+    assert cached["client_secret"] == ""
+    assert cached["client_information"]["token_endpoint_auth_method"] == "none"
+
+    # The authorize URL uses the freshly registered client_id.
+    q = parse_qs(urlsplit(url).query)
+    assert q["client_id"] == ["dcr_cid"]
+    assert q["scope"] == ["openid offline_access mcp"]
+
+
+@pytest.mark.asyncio
+async def test_start_reuses_cached_dcr_client(monkeypatch, fake_app_store):
+    # A previously registered client must NOT trigger a second registration.
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "existing_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "existing_cid"},
+    }
+
+    async def _fake_put_state(state, *, owner_id, provider, verifier):
+        pass
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
+
+    posts = []
+
+    async def _fake_post(self, url, **kwargs):
+        posts.append(url)
+        raise AssertionError("registration must not be called when a client is cached")
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    url = await oauth_dance.start("org_1", "attio", redirect_uri=REDIRECT)
+    assert posts == []
+    q = parse_qs(urlsplit(url).query)
+    assert q["client_id"] == ["existing_cid"]
+
+
+@pytest.mark.asyncio
+async def test_exchange_public_client_omits_client_secret(monkeypatch, fake_app_store):
+    # A cached public client (empty secret) drives a secret-less token exchange and
+    # the credential carries the cached client_information for the materializer.
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "dcr_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "dcr_cid", "token_endpoint_auth_method": "none"},
+    }
+
+    async def _fake_consume(state):
+        return {"state": state, "owner_id": "org_1", "provider": "attio", "verifier": "ver123"}
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
+
+    posted = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "at_tok", "refresh_token": "rt_tok", "expires_in": 3600}
+
+    async def _fake_post(self, url, data=None, **kwargs):
+        posted["url"] = url
+        posted["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    owner_id, provider, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+
+    assert owner_id == "org_1" and provider == "attio"
+    assert posted["url"] == "https://app.attio.com/oidc/token"
+    # The public client proves itself with PKCE only — NO client_secret in the body.
+    assert "client_secret" not in posted["data"]
+    assert posted["data"]["client_id"] == "dcr_cid"
+    assert posted["data"]["code_verifier"] == "ver123"
+    assert posted["data"]["grant_type"] == "authorization_code"
+    # Credential carries the token fields + an int expires_in + the cached client_information.
+    assert credential["access_token"] == "at_tok"
+    assert credential["refresh_token"] == "rt_tok"
+    assert credential["expires_in"] == 3600
+    assert credential["client_information"]["token_endpoint_auth_method"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_exchange_byo_client_still_sends_secret(monkeypatch, fake_app_store):
+    # The google (BYO, confidential) path is unchanged: a stored secret is sent in
+    # the token POST and the credential's client_information is the minimal pair.
+    fake_app_store[("org_1", "google")] = {"client_id": "cid", "client_secret": "secret"}
+
+    async def _fake_consume(state):
+        return {"state": state, "owner_id": "org_1", "provider": "google", "verifier": "ver123"}
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
+
+    posted = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "at_tok", "refresh_token": "rt_tok", "expires_in": 3600}
+
+    async def _fake_post(self, url, data=None, **kwargs):
+        posted["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    _, _, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+
+    # Confidential client: secret IS present in the token body.
+    assert posted["data"]["client_secret"] == "secret"
+    assert posted["data"]["client_id"] == "cid"
+    assert credential["client_id"] == "cid"
+    assert credential["client_secret"] == "secret"
+    # No cached client_information for a BYO app — synthesize the minimal shape.
+    assert credential["client_information"] == {"client_id": "cid", "client_secret": "secret"}

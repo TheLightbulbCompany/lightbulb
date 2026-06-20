@@ -1,9 +1,9 @@
 {
-  "upstream": "ghcr.io/paperclipai/paperclip@sha256:92f4f467154ad2b3d5b2c35b411a5312a504a833cdba3c1804979f036da13e4e",
-  "upstreamCommit": "1b89a8e3b86a68b1eb59c62863991fc50cb15fd1",
-  "upstreamCreated": "2026-06-15T19:34:17Z",
+  "upstream": "ghcr.io/isol8ai/paperclip@sha256:2f97564e5dfb4ac0cedd97715b91ea09c8b8228b789219ee9b528a6016ffaad8",
+  "upstreamCommit": "c92cb13f7a929ba8d940573cd7c0efc567f232e2",
+  "upstreamCreated": "2026-06-20T05:38:00Z",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/paperclip-extended",
   "dev": { "tag": "1b89a8e3-04d48dc" },
   "prod": { "tag": "1b89a8e3-04d48dc" },
-  "notes": "TEMPORARY OVERLAY of the official Paperclip image. `upstream` is the pinned official image the extended Dockerfile FROMs (pinned by DIGEST because upstream publishes only :latest + sha- tags). The overlay applies one patch to the openclaw-gateway adapter: negotiate gateway protocol v4 (upstream hard-codes v3) and drop the `paperclip` agentParams field that OpenClaw's v4 gateway rejects (strict schema). Without it, Paperclip agents cannot connect to our v4 OpenClaw containers. Upstream tracks this but has not shipped a fix. `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev/prod; the `bootstrap` placeholder falls back to `upstream` (unpatched) so an env keeps deploying before the extended image exists. TO REVERT to the official image once upstream fixes it: see apps/infra/paperclip-extended/README.md."
+  "notes": "`upstream` is now the Isol8 PAPERCLIP FORK image (ghcr.io/isol8ai/paperclip, built by the fork's own CI from branch isol8/2026.6-circuit-breaker, tag v2026.6-isol8.2), pinned by DIGEST. The fork carries our patches in REAL SOURCE — the openclaw-gateway protocol-v4 fix (formerly a runtime sed-overlay in apps/infra/paperclip-extended/Dockerfile) plus the routine circuit breaker. The extended Dockerfile is now a thin passthrough that re-tags this image into ECR so per-tenant ECS tasks can pull it with execution-role creds (the fork GHCR package is private; the build authenticates with GITHUB_TOKEN and the package grants Isol8AI/isol8 read access). `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev/prod. `upstreamCommit` is the FORK commit (drives the extended tag). Bump `upstream` here to the fork's new digest when shipping fork changes."
 }

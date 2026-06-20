@@ -523,8 +523,8 @@ def cheap_model_ref(
     never runs, context grows unbounded, and the turn dies with "Context overflow:
     prompt too large". Returning ``None`` lets compaction / memory-flush /
     heartbeat inherit the primary (gpt-5.5), which the OAuth token can actually
-    invoke — so compaction runs. The lesson generalizes: only return a model the
-    selected provider/auth path can invoke (cf. the memory_search/Titan bug).
+    invoke — so compaction runs. The general rule: only return a model the
+    selected provider/auth path can actually invoke as a summarizer.
 
     Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
     """

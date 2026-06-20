@@ -317,6 +317,42 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
     assert cfg["agents"]["defaults"]["params"]["cacheRetention"] == "long"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider",
+    [
+        ("chatgpt_oauth", None),
+        ("byo_key", "openai"),
+        ("byo_key", "anthropic"),
+        ("bedrock_claude", None),
+    ],
+)
+async def test_midturn_precheck_enabled_across_auth_paths(tmp_path, provider_choice, byo_provider):
+    """compaction.midTurnPrecheck.enabled is ON for every provider path.
+
+    The precheck detects context pressure after each tool result (before the
+    next model call) and truncates/compacts in-place, so a long tool-heavy
+    turn recovers instead of hard-failing with "Context overflow: prompt too
+    large for the model". It guards the context window, not model cost, so it
+    is provider-agnostic — it must be present regardless of which provider the
+    owner chose, including flat-rate chatgpt_oauth where there is no cheaper
+    tier to route aux compaction to.
+    """
+    kwargs = {
+        "config_path": tmp_path / "openclaw.json",
+        "gateway_token": "test-token",
+        "provider_choice": provider_choice,
+        "user_id": "u_1",
+        "aip_arns": _AIPS,
+    }
+    if byo_provider is not None:
+        kwargs["byo_provider"] = byo_provider
+    await write_openclaw_config(**kwargs)
+    cfg = json.loads((tmp_path / "openclaw.json").read_text())
+    compaction = cfg["agents"]["defaults"]["compaction"]
+    assert compaction["midTurnPrecheck"]["enabled"] is True
+
+
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected",
     [

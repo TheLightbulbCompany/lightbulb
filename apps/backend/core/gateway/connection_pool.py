@@ -1110,6 +1110,15 @@ class GatewayConnection:
             session_source = parsed_key.get("source", "")
             is_channel_session = session_source in ("dm", "group", "channel")
             is_cron_session = session_source == "cron"
+            # Paperclip issue/run sessions are NOT web chat: Paperclip activity
+            # reaches Teams via its own event stream, so forwarding it here
+            # leaks another surface's transcript into /chat — and because these
+            # keys carry no member_id, the owner-keyed fan-out would BROADCAST
+            # it to every member of the org. "unknown" covers any future
+            # structurally-recognised-but-unclassified key the same way (fail
+            # closed). Keyless control frames (sessions.updated, slash-command
+            # finals) parse to an empty source and still forward.
+            is_isolated_session = session_source in ("paperclip", "unknown")
 
             # Drop noisy periodic events (health, tick) entirely — they are
             # OpenClaw-internal keep-alives and should never reach frontends.
@@ -1186,11 +1195,13 @@ class GatewayConnection:
                     and payload["data"].get("phase") == "end"
                 ):
                     self._record_usage_from_session(payload)
-                # Skip forwarding channel and cron events to the web UI.
-                # Cron jobs run in isolated sessions inside OpenClaw — their
-                # streaming events must not leak into a user's active web chat
-                # (a cron "done" would terminate the user's streaming session).
-                if is_channel_session or is_cron_session:
+                # Skip forwarding channel, cron, and Paperclip (issue/run)
+                # events to the web UI. Each runs in its own isolated session
+                # inside OpenClaw with its own delivery path — their streaming
+                # events must not leak into a user's active web chat (a routine's
+                # "done"/error would terminate or corrupt the user's streaming
+                # session, and a member-less key would broadcast to the whole org).
+                if is_channel_session or is_cron_session or is_isolated_session:
                     return
                 transformed = self._transform_agent_event(payload)
                 if transformed:
@@ -1203,8 +1214,9 @@ class GatewayConnection:
                     await self._forward_to_frontends(transformed, target_member)
 
             elif event_name == "chat":
-                # Skip forwarding channel and cron chat events to the web UI.
-                if is_channel_session or is_cron_session:
+                # Skip forwarding channel, cron, and Paperclip chat events to
+                # the web UI (see the agent-event gate above).
+                if is_channel_session or is_cron_session or is_isolated_session:
                     return
                 # Chat events -- only terminal states.
                 # Delta states are skipped; agent events handle streaming.
@@ -2102,6 +2114,22 @@ def _parse_session_key(session_key: str) -> dict:
         }
         if len(parts) >= 4:
             result["cron_id"] = parts[3]
+        return result
+
+    # Paperclip adapter sessions: agent:<agentId>:paperclip(:issue:<id>|:run:<id>)?
+    # (paperclip/packages/adapters/openclaw-gateway/src/server/execute.ts
+    # resolveSessionKey). A real member id is always a Clerk "user_..." id,
+    # never the literal "paperclip", so this marker is unambiguous. Must check
+    # BEFORE webchat so the 3-part bare "agent:<id>:paperclip" fallback key
+    # isn't misread as an org member named "paperclip". These sessions are
+    # delivered to Teams via Paperclip's own event stream, NOT the web /chat
+    # fan-out — see the source gate in the agent/chat event handlers.
+    if parts[2] == "paperclip":
+        result = {"agent_id": agent_id, "source": "paperclip"}
+        if len(parts) >= 5 and parts[3] == "issue":
+            result["issue_id"] = parts[4]
+        elif len(parts) >= 5 and parts[3] == "run":
+            result["run_id"] = parts[4]
         return result
 
     # Webchat: 3 parts (agent:<agentId>:<sessionName>)

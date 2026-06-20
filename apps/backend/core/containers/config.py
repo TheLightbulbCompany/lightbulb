@@ -515,10 +515,16 @@ def cheap_model_ref(
     premium default model. Routing them to the cheapest tier cuts spend —
     compaction especially, since it processes the largest contexts.
 
-    Unlike ``premium_model_ref``, the flat-rate ``chatgpt_oauth`` path DOES get
-    a value: the bundled ``openai`` provider catalog carries a mini tier
-    (``gpt-5.4-mini``), and pushing aux work onto it buys rate-limit headroom on
-    the flat-rate plan.
+    The ``chatgpt_oauth`` path returns ``None`` — like ``premium_model_ref``.
+    Its agents run on OpenClaw's Codex runtime (``chatgpt.com/backend-api/codex``),
+    which uses native server-side compaction and does NOT honor an OpenClaw-side
+    summarizer override: a ``compaction.model`` other than the chat model is
+    ignored or rejected by the Codex backend, so the aux call fails, compaction
+    never runs, context grows unbounded, and the turn dies with "Context overflow:
+    prompt too large". Returning ``None`` lets compaction / memory-flush /
+    heartbeat inherit the primary (gpt-5.5), which the OAuth token can actually
+    invoke — so compaction runs. The lesson generalizes: only return a model the
+    selected provider/auth path can invoke (cf. the memory_search/Titan bug).
 
     Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
     """
@@ -530,9 +536,9 @@ def cheap_model_ref(
         if byo_provider == "anthropic":
             return "anthropic/claude-haiku-4-5"
         if byo_provider == "openai":
+            # byo_key openai is the DIRECT OpenAI API (not Codex) — the owner's
+            # key CAN invoke the mini tier as a summarizer, so route aux to it.
             return "openai/gpt-5.4-mini"
-    if provider_choice == "chatgpt_oauth":
-        return "openai/gpt-5.4-mini"
     return None
 
 

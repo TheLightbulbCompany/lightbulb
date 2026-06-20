@@ -358,10 +358,11 @@ async def test_midturn_precheck_enabled_across_auth_paths(tmp_path, provider_cho
     [
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
-        # chatgpt_oauth is flat-rate, but the codex provider DOES carry a
-        # mini tier (gpt-5.4-mini, in the openai catalog) — route aux
-        # work to it for rate-limit headroom on the flat-rate plan.
-        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
+        # chatgpt_oauth gets None: its Codex runtime ignores/rejects an
+        # OpenClaw-side compaction summarizer override, so routing aux to
+        # gpt-5.4-mini makes compaction fail and the session overflow.
+        # Returning None lets aux inherit the OAuth-invocable primary (gpt-5.5).
+        ("chatgpt_oauth", None, None),
     ],
 )
 def test_cheap_model_ref_matrix(provider_choice, byo_provider, expected):
@@ -381,7 +382,8 @@ def test_cheap_model_ref_matrix(provider_choice, byo_provider, expected):
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
-        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
+        # chatgpt_oauth deliberately excluded — it has no cheap tier (Codex
+        # rejects summarizer overrides). See test_chatgpt_oauth_aux_inherits_primary.
     ],
 )
 async def test_aux_operations_routed_to_cheap_tier(tmp_path, provider_choice, byo_provider, expected_cheap):
@@ -413,6 +415,33 @@ async def test_aux_operations_routed_to_cheap_tier(tmp_path, provider_choice, by
     assert "enabled" not in defaults["compaction"].get("memoryFlush", {})
     assert "mode" not in defaults["compaction"]
     # The pre-existing heartbeat cadence is preserved alongside the new model.
+    assert defaults["heartbeat"]["every"] == "30m"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_oauth_aux_inherits_primary(tmp_path):
+    """Regression: chatgpt_oauth must NOT pin compaction/memoryFlush/heartbeat to
+    a cheap model. Its Codex runtime ignores/rejects an OpenClaw-side summarizer
+    override (gpt-5.4-mini), so pinning it made compaction fail silently
+    (compactionCount stayed 0), context grew to the 272k budget, and the turn
+    died with "Context overflow: prompt too large". Leaving the aux .model unset
+    lets them inherit the OAuth-invocable primary (gpt-5.5) so compaction runs.
+    midTurnPrecheck stays on (it's model-free)."""
+    await write_openclaw_config(
+        config_path=tmp_path / "openclaw.json",
+        gateway_token="test-token",
+        provider_choice="chatgpt_oauth",
+        user_id="u_1",
+    )
+    defaults = json.loads((tmp_path / "openclaw.json").read_text())["agents"]["defaults"]
+
+    # No aux model overrides — they inherit the primary (gpt-5.5).
+    assert "model" not in defaults["compaction"]
+    assert "model" not in defaults["compaction"].get("memoryFlush", {})
+    assert "model" not in defaults["heartbeat"]
+    # The context-pressure precheck stays enabled (provider-agnostic, model-free).
+    assert defaults["compaction"]["midTurnPrecheck"]["enabled"] is True
+    # Heartbeat cadence still present.
     assert defaults["heartbeat"]["every"] == "30m"
 
 

@@ -6,6 +6,7 @@ import {
   GitHubWorkflow,
   GitHubActionStep,
   JsonPatch,
+  Runner,
   StackCapabilities,
 } from "cdk-pipelines-github";
 import { Isol8Stage } from "./isol8-stage";
@@ -249,6 +250,11 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     gitHubActionRoleArn: "arn:aws:iam::877352799272:role/isol8-dev-github-actions",
   }),
   workflowPath: "../../.github/workflows/deploy.yml",
+  // Run all pipeline jobs on the org's WSL self-hosted runners (this repo is
+  // private, so self-hosted CI is free). The 2 desktop build jobs are forced
+  // back to macos-15 by the JsonPatch.replace(".../runs-on", "macos-15") calls
+  // below, so they keep building the .dmg on a Mac as before.
+  runner: Runner.selfHosted(["self-hosted", "isol8-wsl"]),
 });
 
 // Desktop build steps for dev + prod. Held as variables so the post-synth

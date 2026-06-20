@@ -571,10 +571,14 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # chatgpt_oauth is flat-rate — no premium tier, so the CEO's stale
         # amazon-bedrock Opus override MUST be cleared (ceo_model=None).
         assert ceo_model is None
-        # chatgpt_oauth DOES have a cheap tier (openai mini), so the aux
-        # slots are re-pinned to it rather than cleared — verify the cheap_model
-        # is threaded through from cheap_model_ref(chatgpt_oauth, None).
-        assert cheap_model == "openai/gpt-5.4-mini"
+        # chatgpt_oauth has NO usable cheap tier: its Codex runtime ignores/
+        # rejects an OpenClaw-side compaction summarizer override, so a pinned
+        # aux model (gpt-5.4-mini) makes compaction fail and the session
+        # overflow. cheap_model_ref(chatgpt_oauth, None) returns None, so the
+        # aux slots MUST be cleared here too — critical on this hot path, where
+        # a bedrock owner switching to chatgpt would otherwise inherit the stale
+        # bedrock-haiku compaction override and hit the overflow bug.
+        assert cheap_model is None
 
     with (
         patch(

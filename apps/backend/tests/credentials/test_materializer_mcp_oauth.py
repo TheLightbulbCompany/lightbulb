@@ -142,3 +142,44 @@ def test_safe_server_name_strips_disallowed_chars():
     # identity behavior on them and drops anything outside the charset.
     assert mcp_oauth._safe_server_name("attio") == "attio"
     assert mcp_oauth._safe_server_name("My Server!") == "myserver"
+
+
+# The remove() call below intentionally hits the failing asyncio.run path, which
+# raises before awaiting the config_patcher coroutine — silence that expected
+# never-awaited warning so the regression test stays clean.
+@pytest.mark.filterwarnings("ignore:coroutine .* was never awaited:RuntimeWarning")
+@pytest.mark.asyncio
+async def test_remove_raises_runtime_error_when_called_on_running_loop(monkeypatch, tmp_path, cred, captured_config):
+    # The bug: remove() drives the async config_patcher via asyncio.run, which
+    # cannot run inside an already-running event loop. Calling it directly from a
+    # coroutine (the request handler's loop) raises. The disconnect path must
+    # therefore offload it to a worker thread — see the run_in_thread test below.
+    from core.dynamodb import run_in_thread
+
+    _patch_efs(monkeypatch, tmp_path)
+    # write() also drives asyncio.run, so seed the store off the loop via the same
+    # offload the real apply path uses.
+    await run_in_thread(mcp_oauth.write, "org_1", "attio", cred)
+
+    # This test body runs on a live event loop (pytest-asyncio), so a direct
+    # synchronous call to remove() reproduces the in-handler failure.
+    with pytest.raises(RuntimeError, match="asyncio.run"):
+        mcp_oauth.remove("org_1", "attio", {})
+
+
+@pytest.mark.asyncio
+async def test_remove_via_run_in_thread_succeeds_from_async_context(monkeypatch, tmp_path, cred, captured_config):
+    # The fix: offloading the remover through run_in_thread runs asyncio.run on a
+    # thread with no running loop, so a disconnect from inside an async handler
+    # removes the store file + server block WITHOUT raising RuntimeError.
+    from core.dynamodb import run_in_thread
+
+    _patch_efs(monkeypatch, tmp_path)
+    await run_in_thread(mcp_oauth.write, "org_1", "attio", cred)
+    expected = _expected_store_path(tmp_path, "org_1", "attio", "https://mcp.attio.com/mcp")
+    assert expected.is_file()
+
+    await run_in_thread(mcp_oauth.remove, "org_1", "attio", {})
+
+    assert not expected.exists()
+    assert captured_config["delete"] == [("org_1", ["mcp", "servers", "attio"])]

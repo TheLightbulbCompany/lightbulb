@@ -600,6 +600,45 @@ class TestDisconnect:
         mock_patcher.delete_openclaw_config_path.assert_awaited_once_with("user_test_123", ["mcp", "servers", "stripe"])
 
     @pytest.mark.asyncio
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_mcp_oauth_provider_does_not_raise(
+        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch, tmp_path
+    ):
+        # attio rides the mcp_oauth materializer, whose remover drives the async
+        # config_patcher via asyncio.run. The disconnect handler runs on the request
+        # loop, so the remover MUST be offloaded to a worker thread or asyncio.run
+        # raises RuntimeError. This drives the REAL mcp_oauth remover (not a mock)
+        # end-to-end so an un-offloaded call would surface as a 500.
+        from core.services.credentials.materializers import mcp_oauth
+
+        monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+        # The remover's asyncio.run targets mcp_oauth's own config_patcher import —
+        # stub it with an async no-op so the offloaded asyncio.run has work to drive.
+        deleted: list = []
+
+        async def _fake_delete(owner_id, path):
+            deleted.append((owner_id, path))
+
+        monkeypatch.setattr(mcp_oauth.config_patcher, "delete_openclaw_config_path", _fake_delete)
+
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_store.get = AsyncMock(return_value=None)  # actor-refresh: no retained secret
+        mock_patcher.delete_openclaw_config_path = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/attio")
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "attio"}
+
+        # The real remover ran on a worker thread (no RuntimeError) and dropped the
+        # live server block via its own config_patcher.
+        assert deleted == [("user_test_123", ["mcp", "servers", "attio"])]
+        mock_store.delete.assert_awaited_once_with("user_test_123", "attio")
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "attio")
+
+    @pytest.mark.asyncio
     async def test_disconnect_unknown_provider_returns_404(self, async_client):
         response = await async_client.delete("/api/v1/connections/does-not-exist")
         assert response.status_code == 404

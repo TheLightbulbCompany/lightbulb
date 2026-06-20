@@ -106,6 +106,12 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str) -> str:
         "code_challenge_method": "S256",
         **p.oauth.extra_authorize_params,
     }
+    # RFC 8707 resource indicator: a remote MCP server (mcp_remote) wants the
+    # canonical server URI on the authorization request so the token is audienced
+    # to it. Only set for MCP-remote providers — a BYO OAuth provider (google) has
+    # no mcp_remote and must not receive an unexpected resource param.
+    if p.mcp_remote is not None:
+        params["resource"] = p.mcp_remote.url
     return f"{p.oauth.authorization_url}?{urlencode(params)}"
 
 
@@ -127,6 +133,10 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     # The code_verifier is the client's proof for a public client.
     if client_secret:
         data["client_secret"] = client_secret
+    # RFC 8707 resource indicator: mirror the authorize request so the issued token
+    # is audienced to the canonical MCP server URI. Only for MCP-remote providers.
+    if p.mcp_remote is not None:
+        data["resource"] = p.mcp_remote.url
     async with httpx.AsyncClient(timeout=15) as http:
         resp = await http.post(p.oauth.token_url, data=data)
     resp.raise_for_status()

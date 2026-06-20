@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
+from core.dynamodb import run_in_thread
 from core.repositories import google_accounts_repo, integrations_repo
 from core.services import config_patcher
 from core.services.credentials import (
@@ -38,20 +39,25 @@ def _retains_secret(p: registry.Provider) -> bool:
     return p.refresh_owner != "actor"
 
 
-def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
+async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
     """On a FAILED apply, remove any partially-materialized on-disk artifacts so a
     failed connect leaves no durable credential residue on EFS (the row is deleted
     separately). A materializer can write one file before a later step raises — e.g.
     gog's `credentials set` succeeds but `tokens import` fails — and without this the
     artifact lingers while the UI shows disconnected and no row remains to clean it up
-    on a later disconnect. No-op for openclaw_paths/paste providers (no materializer)."""
+    on a later disconnect. No-op for openclaw_paths/paste providers (no materializer).
+
+    The remover runs in a worker thread (run_in_thread): a remover may drive an async
+    config_patcher via asyncio.run (mcp_oauth), which raises if called on the running
+    request loop — offloading gives it a thread with no running loop, matching the
+    write path's run_in_thread offload. Pure file-op removers are unaffected."""
     if not p.wiring.materializer:
         return
     remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
     if not remover:
         return
     try:
-        remover(owner_id, p.key, credential)
+        await run_in_thread(remover, owner_id, p.key, credential)
     except Exception:
         logger.warning(
             "failed to remove materialized artifacts for owner=%s provider=%s during rollback",
@@ -175,7 +181,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     try:
         await apply_connection.apply_connection(owner_id, provider, credential)
     except Exception:
-        _remove_materialized_artifacts(owner_id, p, credential)
+        await _remove_materialized_artifacts(owner_id, p, credential)
         await integration_secret_store.delete(owner_id, provider)
         raise HTTPException(
             status_code=502,
@@ -217,7 +223,10 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
         remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer) if p.wiring.materializer else None
         if remover:
             try:
-                remover(owner_id, p.key, {"email": account})
+                # Offload to a worker thread so a remover that drives an async
+                # config_patcher via asyncio.run isn't called on the request loop
+                # (matches the write path); the subprocess error still surfaces.
+                await run_in_thread(remover, owner_id, p.key, {"email": account})
             except subprocess.CalledProcessError:
                 # Account already absent from the keyring — treat as success so a
                 # double-disconnect doesn't surface a 500.
@@ -259,7 +268,10 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
             # secret before deleting it. Actor-refresh providers have none
             # (get -> {}), and their removers (gog) ignore the credential.
             cred = await integration_secret_store.get(owner_id, provider) or {}
-            remover(owner_id, provider, cred)
+            # Offload to a worker thread: a remover may drive an async
+            # config_patcher via asyncio.run (mcp_oauth), which can't run on the
+            # request loop. Matches the write path's run_in_thread offload.
+            await run_in_thread(remover, owner_id, provider, cred)
     # Drop the retained secret (no-op for actor providers, which never stored
     # one) and the status row, then blank any per-agent openclaw.json slots.
     await integration_secret_store.delete(owner_id, provider)
@@ -380,7 +392,7 @@ async def oauth_callback(provider: str, code: str, state: str):
     try:
         connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
     except Exception:
-        _remove_materialized_artifacts(owner_id, p, credential)
+        await _remove_materialized_artifacts(owner_id, p, credential)
         if _retains_secret(p):
             await integration_secret_store.delete(owner_id, prov)
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")

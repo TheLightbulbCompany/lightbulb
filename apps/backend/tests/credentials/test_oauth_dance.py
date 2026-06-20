@@ -323,6 +323,115 @@ async def test_exchange_public_client_omits_client_secret(monkeypatch, fake_app_
     assert credential["client_information"]["token_endpoint_auth_method"] == "none"
 
 
+# --- RFC 8707 resource indicator ------------------------------------------
+#
+# A remote MCP server (mcp_remote: attio) requires the canonical server URI in a
+# `resource` parameter on BOTH the authorize request and the token request so the
+# token is audienced to it. A BYO OAuth provider with no mcp_remote (google) must
+# NOT receive the param.
+
+
+@pytest.mark.asyncio
+async def test_start_includes_resource_for_mcp_remote_provider(monkeypatch, fake_app_store):
+    # A cached client skips registration; assert the authorize URL carries the
+    # canonical MCP server URL as the resource indicator.
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "dcr_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "dcr_cid"},
+    }
+
+    async def _fake_put_state(state, *, owner_id, provider, verifier):
+        pass
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
+
+    url = await oauth_dance.start("org_1", "attio", redirect_uri=REDIRECT)
+    q = parse_qs(urlsplit(url).query)
+    assert q["resource"] == ["https://mcp.attio.com/mcp"]
+
+
+@pytest.mark.asyncio
+async def test_start_omits_resource_for_byo_provider(monkeypatch):
+    # google has no mcp_remote — the authorize request must not carry a resource param.
+    async def _fake_put(state, *, owner_id, provider, verifier):
+        pass
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put)
+
+    async def _fake_client(owner_id, provider_key):
+        return ("cid", "secret")
+
+    monkeypatch.setattr(oauth_dance, "_oauth_client", _fake_client)
+
+    url = await oauth_dance.start("org_1", "google", redirect_uri=REDIRECT)
+    q = parse_qs(urlsplit(url).query)
+    assert "resource" not in q
+
+
+@pytest.mark.asyncio
+async def test_exchange_includes_resource_for_mcp_remote_provider(monkeypatch, fake_app_store):
+    # The token POST mirrors the authorize request: a mcp_remote provider sends the
+    # canonical server URL as the resource indicator.
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "dcr_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "dcr_cid"},
+    }
+
+    async def _fake_consume(state):
+        return {"state": state, "owner_id": "org_1", "provider": "attio", "verifier": "ver123"}
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
+
+    posted = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "at_tok", "refresh_token": "rt_tok", "expires_in": 3600}
+
+    async def _fake_post(self, url, data=None, **kwargs):
+        posted["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    assert posted["data"]["resource"] == "https://mcp.attio.com/mcp"
+
+
+@pytest.mark.asyncio
+async def test_exchange_omits_resource_for_byo_provider(monkeypatch, fake_app_store):
+    # google has no mcp_remote — the token POST must not carry a resource param.
+    fake_app_store[("org_1", "google")] = {"client_id": "cid", "client_secret": "secret"}
+
+    async def _fake_consume(state):
+        return {"state": state, "owner_id": "org_1", "provider": "google", "verifier": "ver123"}
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
+
+    posted = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "at_tok", "refresh_token": "rt_tok", "expires_in": 3600}
+
+    async def _fake_post(self, url, data=None, **kwargs):
+        posted["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    assert "resource" not in posted["data"]
+
+
 @pytest.mark.asyncio
 async def test_exchange_byo_client_still_sends_secret(monkeypatch, fake_app_store):
     # The google (BYO, confidential) path is unchanged: a stored secret is sent in

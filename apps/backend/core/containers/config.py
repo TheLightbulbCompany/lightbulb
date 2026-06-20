@@ -904,6 +904,15 @@ def build_openclaw_config_dict(
                 # contextLimits is a no-op stub (its schema doesn't change
                 # behavior when empty); kept as an explicit default.
                 "contextLimits": {},
+                # compaction.midTurnPrecheck.enabled is ON for every provider.
+                # It detects context pressure after each tool result, before
+                # the next model call, and truncates/compacts in-place — so a
+                # long tool-heavy turn recovers instead of hard-failing with
+                # "Context overflow: prompt too large for the model" before
+                # turn-end compaction can run. It guards the context window,
+                # not model cost, so it is provider-agnostic and lives outside
+                # the cheap_model guard below (flat-rate paths need it too).
+                #
                 # Route compaction + memory-flush to the cheap tier: both are
                 # pure-overhead operations that don't need the premium default.
                 # Compaction summarizes very large transcripts, so the per-turn
@@ -911,13 +920,15 @@ def build_openclaw_config_dict(
                 # `.model` on each slot — never an enabled/mode flag — so this
                 # never turns on a feature that wasn't already running upstream
                 # (memoryFlush has its own opt-in). On flat-rate paths with no
-                # cheaper tier (`cheap_model` is None) the block is omitted so
-                # both inherit the default model. Both keys are valid under
-                # upstream's strict AgentDefaultsSchema (compaction.model,
+                # cheaper tier (`cheap_model` is None) the model overrides are
+                # omitted so both inherit the default model. All three keys are
+                # valid under upstream's strict AgentDefaultsSchema
+                # (compaction.midTurnPrecheck.enabled, compaction.model,
                 # compaction.memoryFlush.model).
-                **(
-                    {"compaction": {"model": cheap_model, "memoryFlush": {"model": cheap_model}}} if cheap_model else {}
-                ),
+                "compaction": {
+                    "midTurnPrecheck": {"enabled": True},
+                    **({"model": cheap_model, "memoryFlush": {"model": cheap_model}} if cheap_model else {}),
+                },
                 # heartbeat is NOT a no-op: upstream treats a present
                 # `agents.defaults.heartbeat` as truthy and falls back to a
                 # 30m interval with `target: none`. That is OpenClaw's

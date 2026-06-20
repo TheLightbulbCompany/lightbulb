@@ -1,7 +1,7 @@
 {
-  "upstream": "ghcr.io/isol8ai/paperclip@sha256:2f97564e5dfb4ac0cedd97715b91ea09c8b8228b789219ee9b528a6016ffaad8",
-  "upstreamCommit": "c92cb13f7a929ba8d940573cd7c0efc567f232e2",
-  "upstreamCreated": "2026-06-20T05:38:00Z",
+  "upstream": "ghcr.io/isol8ai/paperclip@sha256:8d9627eb7aea421e35eed5d1261f3fb6d2d97d367d06e79d32d4df308002ab65",
+  "upstreamCommit": "9df185767000e00e2ee8ad85b8e1d11bb7bfb449",
+  "upstreamCreated": "2026-06-20T07:35:50Z",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/paperclip-extended",
   "dev": { "tag": "c92cb13f-b5284f3" },
   "prod": { "tag": "c92cb13f-b5284f3" },

@@ -37,21 +37,37 @@ def build_mcp_server_block(provider_key: str, credential: dict[str, Any]) -> dic
 
 
 async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
-    """{provider_key: full_block} for every connected mcp_server provider whose
-    credential is retained in Secrets Manager. The single source of truth used by
-    both the provision-time merge and the live reconcile. Skips actor-refresh
-    providers (SM get -> None) and non-mcp_server rails."""
+    """{server_key: live mcp.servers block} for every connected provider that owns
+    a server entry. The single source of truth used by both the provision-time
+    merge and the live reconcile. Two server-owning shapes are emitted:
+
+      - mcp_server wiring: the full {command, args, env} block, built from the
+        registry spec x the retained Secrets-Manager secret. Actor-refresh
+        providers retain no SM secret (get -> None) and are skipped.
+      - mcp_remote spec: a remote {transport, url} block. These providers ride the
+        materializer rail and self-refresh in-container (no retained SM secret), so
+        the block is emitted from the registry + connected status alone — without
+        it a full-config overwrite (reprovision) drops the live server entry even
+        though the OAuth token file survives on EFS.
+    """
     servers: dict[str, dict] = {}
     for row in await integrations_repo.list_for_owner(owner_id):
         provider = row.get("provider")
         if not provider or row.get("status", "connected") != "connected":
             continue
         try:
-            spec = registry.get_provider(provider).wiring.mcp_server
+            prov = registry.get_provider(provider)
         except KeyError:
             # Orphan status row for a provider no longer in the registry (e.g. a
             # since-removed integration). Skip it rather than failing the whole build.
             continue
+        # Remote MCP server (mcp_oauth rail): re-publish the {transport, url} block
+        # from the registry alone — actor-refresh, so there is no retained secret.
+        remote = prov.mcp_remote
+        if remote is not None:
+            servers[remote.key] = remote.server_block()
+            continue
+        spec = prov.wiring.mcp_server
         if spec is None:
             continue
         cred = await integration_secret_store.get(owner_id, provider)

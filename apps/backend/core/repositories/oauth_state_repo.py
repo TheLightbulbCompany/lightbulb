@@ -15,17 +15,21 @@ def _table():
     return get_table("oauth-state")
 
 
-async def put(state: str, *, owner_id: str, provider: str, verifier: str) -> None:
-    await run_in_thread(
-        _table().put_item,
-        Item={
-            "state": state,
-            "owner_id": owner_id,
-            "provider": provider,
-            "verifier": verifier,
-            "ttl": int(time.time()) + _TTL_SECONDS,
-        },
-    )
+async def put(state: str, *, owner_id: str, provider: str, verifier: str, client_id: str | None = None) -> None:
+    item: dict = {
+        "state": state,
+        "owner_id": owner_id,
+        "provider": provider,
+        "verifier": verifier,
+        "ttl": int(time.time()) + _TTL_SECONDS,
+    }
+    # Bind the OAuth client this authorization was issued to into the state, so the
+    # exchange uses THIS client_id rather than re-reading the app store (which a
+    # concurrent connect could have overwritten with a different DCR client). Omit
+    # when absent so the attribute is never written empty.
+    if client_id is not None:
+        item["client_id"] = client_id
+    await run_in_thread(_table().put_item, Item=item)
 
 
 async def consume(state: str) -> dict | None:

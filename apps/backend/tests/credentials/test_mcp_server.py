@@ -82,6 +82,59 @@ async def test_build_connected_map_skips_actor_and_unretained(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_build_connected_map_emits_remote_block_without_retained_secret(monkeypatch):
+    # An mcp_remote provider (attio) rides the materializer rail and self-refreshes
+    # in-container, so it has NO retained Secrets-Manager secret. Its live
+    # {transport, url} block must still be emitted from the registry + connected
+    # status alone — otherwise a reprovision drops the server entry. The mcp_server
+    # provider (stripe) is still included; the actor-refresh one (google) excluded.
+    # Uses the real registry attio entry, so it pins the YAML mcp_remote wiring.
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(
+            return_value=[
+                {"provider": "attio", "status": "connected"},
+                {"provider": "stripe", "status": "connected"},
+                {"provider": "google", "status": "connected"},
+            ]
+        ),
+    )
+    # attio + google have no retained secret; stripe does. get() must NOT gate the
+    # attio remote block (it is never consulted for it).
+    secret_get = AsyncMock(side_effect=lambda o, p: {"token": "sk_X"} if p == "stripe" else None)
+    monkeypatch.setattr(m.integration_secret_store, "get", secret_get)
+
+    servers = await m.build_connected_integration_servers("org_1")
+    # The rehydrated remote block carries auth: "oauth" so a reprovision re-arms the
+    # SDK OAuth provider — identical to what the live materializer write publishes.
+    assert servers == {
+        "attio": {"transport": "streamable-http", "url": "https://mcp.attio.com/mcp", "auth": "oauth"},
+        "stripe": {
+            "command": "npx",
+            "args": ["-y", "@stripe/mcp", "--tools=all"],
+            "env": {"STRIPE_SECRET_KEY": "sk_X"},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_skips_disconnected_remote_provider(monkeypatch):
+    # A disconnected mcp_remote row must not be re-published (no stale server block).
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "attio", "status": "disconnected"}]),
+    )
+    monkeypatch.setattr(m.integration_secret_store, "get", AsyncMock(return_value=None))
+    assert await m.build_connected_integration_servers("org_1") == {}
+
+
+@pytest.mark.asyncio
 async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
     # A real owner can have a status row for a provider that was since removed
     # from the registry (e.g. linear). The registry lookup KeyErrors for it;

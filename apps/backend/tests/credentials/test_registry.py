@@ -233,6 +233,60 @@ def test_github_is_on_materializer_rail():
     assert p.validation.headers == {"X-GitHub-Api-Version": "2022-11-28"}
 
 
+def test_mcp_server_accepts_remote_shape():
+    # A remote streamable-http server is expressible with transport+url and no command.
+    from core.services.credentials.registry import McpServer
+
+    s = McpServer(key="attio", transport="streamable-http", url="https://mcp.attio.com/mcp")
+    assert s.command is None
+    assert s.transport == "streamable-http"
+    assert s.url == "https://mcp.attio.com/mcp"
+
+
+def test_mcp_server_rejects_neither_stdio_nor_remote():
+    from pydantic import ValidationError
+
+    from core.services.credentials.registry import McpServer
+
+    # No command and no transport+url — neither shape is satisfied.
+    with pytest.raises(ValidationError):
+        McpServer(key="x")
+    # A url without a transport is still not a complete remote shape.
+    with pytest.raises(ValidationError):
+        McpServer(key="x", url="https://h/mcp")
+
+
+def test_mcp_server_rejects_both_stdio_and_remote():
+    from pydantic import ValidationError
+
+    from core.services.credentials.registry import McpServer
+
+    with pytest.raises(ValidationError):
+        McpServer(key="x", command="npx", transport="streamable-http", url="https://h/mcp")
+
+
+def test_attio_is_remote_mcp_oauth_provider():
+    # Attio rides the materializer rail (mcp_oauth) with its remote-server metadata
+    # under mcp_remote, keeping the exactly-one-of-three wiring invariant intact.
+    p = registry.get_provider("attio")
+    assert p.acquisition == "direct_oauth"
+    assert p.actor == "mcp"
+    assert p.refresh_owner == "actor"
+    assert p.wiring.materializer == "mcp_oauth"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    # DCR endpoint + public-client scopes.
+    assert p.oauth.registration_url == "https://app.attio.com/oauth/register"
+    assert p.oauth.scopes == ["openid", "offline_access", "mcp"]
+    assert p.oauth.pkce is True
+    # Not BYO — DCR mints the client, so no owner-provided app is required.
+    assert p.byo_required is False
+    # Remote-server metadata lives at the provider level.
+    assert p.mcp_remote is not None
+    assert p.mcp_remote.key == "attio"
+    assert p.mcp_remote.url == "https://mcp.attio.com/mcp"
+    assert p.mcp_remote.transport == "streamable-http"
+
+
 def test_registry_materializers_and_oauth_are_self_consistent():
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 

@@ -26,7 +26,18 @@ async def test_oauth_client_raises_when_no_byo_app(mock_byo_get):
 
 @pytest.mark.asyncio
 @patch("core.services.credentials.oauth_dance.oauth_app_store.get", new_callable=AsyncMock)
-async def test_oauth_client_raises_when_byo_row_incomplete(mock_byo_get):
+async def test_oauth_client_allows_empty_secret_for_public_client(mock_byo_get):
+    # A DCR-registered PUBLIC client legitimately has an empty secret (PKCE is its
+    # only proof), so a row with a client_id and an empty secret is valid — only a
+    # missing client_id is an error.
     mock_byo_get.return_value = {"client_id": "owner_cid", "client_secret": ""}
+    cid, sec = await oauth_dance._oauth_client("user_1", "attio")
+    assert (cid, sec) == ("owner_cid", "")
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.oauth_dance.oauth_app_store.get", new_callable=AsyncMock)
+async def test_oauth_client_raises_when_client_id_missing(mock_byo_get):
+    mock_byo_get.return_value = {"client_secret": "owner_sec"}
     with pytest.raises(ValueError):
         await oauth_dance._oauth_client("user_1", "google")

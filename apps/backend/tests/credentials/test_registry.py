@@ -117,17 +117,39 @@ def test_stripe_is_mcp_server():
     assert w.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
 
 
-# Linear re-enters the registry on the mcp_server rail with a real command, so
-# the previous "Linear is gone" expectation no longer holds — it must load and
-# carry the bare-key (no-Bearer) validate scheme its personal API tokens need.
-def test_linear_is_back_on_mcp_server_rail():
+# Linear, Notion, and Sentry deliver their hosted MCP over OAuth rather than a
+# local npx stdio process, so they ride the mcp_oauth materializer rail (their
+# remote-server metadata under mcp_remote), like Attio.
+@pytest.mark.parametrize(
+    "key,host",
+    [
+        ("notion", "https://mcp.notion.com"),
+        ("linear", "https://mcp.linear.app"),
+        ("sentry", "https://mcp.sentry.dev"),
+        ("intercom", "https://mcp.intercom.com"),
+    ],
+)
+def test_hosted_oauth_mcp_provider_shape(key, host):
     from core.services.credentials.registry import all_providers, get_provider
 
-    assert "linear" in all_providers()
-    p = get_provider("linear")
-    assert p.wiring.mcp_server is not None
-    assert p.wiring.mcp_server.command == "npx"
-    assert p.validation.auth_scheme == ""
+    assert key in all_providers()
+    p = get_provider(key)
+    assert p.acquisition == "direct_oauth"
+    assert p.actor == "mcp"
+    assert p.refresh_owner == "actor"
+    # Rides the mcp_oauth materializer rail; remote-server metadata under mcp_remote.
+    assert p.wiring.materializer == "mcp_oauth"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    assert p.mcp_remote is not None
+    assert p.mcp_remote.key == key
+    assert p.mcp_remote.url == f"{host}/mcp"
+    assert p.mcp_remote.transport == "streamable-http"
+    # DCR mints a public PKCE client; not BYO, no local validate spec.
+    assert p.oauth.registration_url is not None
+    assert p.oauth.pkce is True
+    assert p.oauth.scopes  # non-empty
+    assert p.byo_required is False
+    assert p.validation is None
 
 
 def test_mcp_server_wiring_parses():
@@ -167,51 +189,6 @@ def test_wiring_accepts_exactly_one_of_three():
             materializer="gog_cli",
             mcp_server=McpServer(key="x", command="npx", args=[], env={"K": "input.token"}),
         )
-
-
-# The four curated mcp_server integrations share a shape: paste-token / mcp /
-# no-refresh, one mcp.servers.<key> they own, and a validate spec. The per-row
-# expectations below pin the bits that are unique per provider (env keys, the
-# success-field/header/scheme that a wrong value would silently break).
-_CURATED_MCP = {
-    "notion": {
-        "mcp_key": "notion",
-        "env_keys": {"NOTION_TOKEN"},
-        "success_json_field": None,
-        "headers": {"Notion-Version": "2022-06-28"},
-        "auth_scheme": "Bearer",
-    },
-    "sentry": {
-        "mcp_key": "sentry",
-        "env_keys": {"SENTRY_ACCESS_TOKEN"},
-        "success_json_field": None,
-        "headers": {},
-        "auth_scheme": "Bearer",
-    },
-    "linear": {
-        "mcp_key": "linear",
-        "env_keys": {"LINEAR_API_TOKEN"},
-        "success_json_field": "data.viewer.id",
-        "headers": {},
-        "auth_scheme": "",
-    },
-}
-
-
-@pytest.mark.parametrize("key", sorted(_CURATED_MCP))
-def test_curated_mcp_provider_shape(key):
-    expected = _CURATED_MCP[key]
-    p = registry.get_provider(key)
-    assert p.acquisition == "paste_token"
-    assert p.actor == "mcp"
-    assert p.refresh_owner == "none"
-    assert p.wiring.mcp_server is not None
-    assert p.wiring.mcp_server.key == expected["mcp_key"]
-    assert set(p.wiring.mcp_server.env) == expected["env_keys"]
-    assert p.validation is not None
-    assert p.validation.success_json_field == expected["success_json_field"]
-    assert p.validation.headers == expected["headers"]
-    assert p.validation.auth_scheme == expected["auth_scheme"]
 
 
 def test_github_is_on_materializer_rail():

@@ -536,6 +536,16 @@ export class ContainerStack extends cdk.Stack {
       // like npm's.
       "[ -e /home/node/.cache/uv ] && [ ! -L /home/node/.cache/uv ] && { mv /home/node/.cache/uv /home/node/.cache/uv.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /tmp/openclaw-uv /home/node/.cache/uv || exit 1",
+      // Step C2 — mcporter (the MCP-to-CLI bridge lobster workflows use to reach
+      // hosted-OAuth MCP servers) reads its config + OAuth vault from ~/.mcporter.
+      // The backend materializes that vault onto the EFS state dir, so symlink
+      // ~/.mcporter there — same relocation pattern as the npm cache above — so the
+      // materialized creds are what mcporter sees and they survive restarts. The
+      // whole dir lives on EFS (config + vault are small, read-mostly, no extract
+      // storm), so it points straight at .openclaw, not /tmp.
+      "mkdir -p /home/node/.openclaw/mcporter || exit 1",
+      "[ -e /home/node/.mcporter ] && [ ! -L /home/node/.mcporter ] && { mv /home/node/.mcporter /home/node/.mcporter.efs-archive-$(date +%s) || exit 1; }",
+      "ln -sfn /home/node/.openclaw/mcporter /home/node/.mcporter || exit 1",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");

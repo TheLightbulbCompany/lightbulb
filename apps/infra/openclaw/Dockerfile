@@ -157,11 +157,18 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 # reliably (a bare command with no installed bin silently exposes zero tools).
 # The config switch is deferred to a follow-up so it only lands after this baked
 # tag is live. Pinned like the other bakes.
+# mcporter exposes any configured MCP server's tools as deterministic CLI
+# commands (`mcporter call <server>.<tool>`). Lobster workflow steps cannot
+# invoke MCP tools — those are surfaced only to the agent LLM's tool loop — so
+# this is the bridge that lets pipelines reach hosted-OAuth MCP servers (e.g.
+# Attio) the same way they call any other CLI. Baked as a global bin to stay
+# off the per-run npx connect storm; its auth comes from a pre-seeded vault.
 RUN npm i -g --ignore-scripts \
       clawhub openai \
       @steipete/oracle @steipete/summarize \
       @anthropic-ai/claude-code @google/gemini-cli \
       @xdevplatform/xurl \
+      mcporter@0.12.0 \
       @paperclipai/mcp-server@2026.529.0
 
 # ---- Layer 9: Playwright Chromium + Chromium system libs + /usr/bin symlink ----

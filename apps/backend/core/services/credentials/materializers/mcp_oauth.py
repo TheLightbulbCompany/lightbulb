@@ -39,6 +39,7 @@ from typing import Any
 
 from core.services import config_patcher
 from core.services.credentials import registry
+from core.services.credentials.materializers import mcporter_vault
 from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 
 _MCP_OAUTH_DIR = "mcp-oauth"
@@ -136,6 +137,11 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
     # async config_patcher either way to the same mcp.servers.<key> path the
     # mcp_server rail uses, keeping behavior identical for the live config.
     _run_sync(config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", remote.key], remote.server_block()))
+
+    # Second consumer of the SAME connect: seed mcporter's vault + config so lobster
+    # workflows (which can't invoke MCP tools directly) can reach this server via
+    # `mcporter call`. Reuses the OAuth tokens + DCR client we just wrote for the LLM.
+    mcporter_vault.seed(owner_id, remote.key, remote.url, credential, p.oauth.scopes if p.oauth else [])
     return remote.key
 
 
@@ -152,3 +158,5 @@ def remove(owner_id: str, provider_key: str, credential: dict) -> None:
     # Mirror the mcp_server rail's disconnect: remove the whole server entry rather
     # than blanking a leaf (a command/transport-less server is invalid config).
     _run_sync(config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", remote.key]))
+    # Tear down the mcporter side of the same connect.
+    mcporter_vault.unseed(owner_id, remote.key, remote.url)

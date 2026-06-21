@@ -137,8 +137,8 @@ async def test_build_connected_map_skips_disconnected_remote_provider(monkeypatc
 @pytest.mark.asyncio
 async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
     # A real owner can have a status row for a provider that was since removed
-    # from the registry (e.g. linear). The registry lookup KeyErrors for it;
-    # the build must skip the orphan row, not crash and drop every server.
+    # from the registry. The registry lookup KeyErrors for it; the build must
+    # skip the orphan row, not crash and drop every server.
     from core.services.credentials import mcp_server as m
 
     monkeypatch.setattr(
@@ -146,7 +146,7 @@ async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
         "list_for_owner",
         AsyncMock(
             return_value=[
-                {"provider": "linear", "status": "connected"},
+                {"provider": "since-removed-provider", "status": "connected"},
                 {"provider": "stripe", "status": "connected"},
             ]
         ),

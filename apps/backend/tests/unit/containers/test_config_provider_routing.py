@@ -8,6 +8,7 @@ from core.billing.bedrock_pricing import get_rate
 from core.containers.config import (
     build_provider_block,
     cheap_model_ref,
+    heartbeat_model_ref,
     premium_model_ref,
     write_openclaw_config,
 )
@@ -356,6 +357,94 @@ async def test_midturn_precheck_enabled_across_auth_paths(tmp_path, provider_cho
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected",
     [
+        # The maintenance heartbeat runs on the cheap tier for EVERY provider,
+        # including chatgpt_oauth — unlike compaction, the heartbeat is an
+        # ordinary turn the Codex OAuth token can serve on the mini tier.
+        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
+        ("byo_key", "openai", "openai/gpt-5.4-mini"),
+        ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
+        ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
+    ],
+)
+def test_heartbeat_model_ref_matrix(provider_choice, byo_provider, expected):
+    """heartbeat_model_ref resolves a cheap tier for every provider.
+
+    It diverges from cheap_model_ref only on chatgpt_oauth, where the
+    heartbeat (a normal turn) can use gpt-5.4-mini even though compaction
+    cannot override the Codex backend's native summarizer.
+    """
+    assert heartbeat_model_ref(provider_choice, byo_provider, aip_arns=_AIPS) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider,expected_model",
+    [
+        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
+        ("byo_key", "openai", "openai/gpt-5.4-mini"),
+        ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
+        ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
+    ],
+)
+async def test_heartbeat_runs_on_cheap_model(tmp_path, provider_choice, byo_provider, expected_model):
+    """agents.defaults.heartbeat keeps the 30m cadence but runs on the cheap
+    tier for every provider — never the premium default model.
+
+    Regression guard for chatgpt_oauth, which previously inherited the gpt-5.5
+    default for the per-agent 30-min maintenance poll because cheap_model was
+    None on that path.
+    """
+    kwargs = {
+        "config_path": tmp_path / "openclaw.json",
+        "gateway_token": "test-token",
+        "provider_choice": provider_choice,
+        "user_id": "u_1",
+        "aip_arns": _AIPS,
+    }
+    if byo_provider is not None:
+        kwargs["byo_provider"] = byo_provider
+    await write_openclaw_config(**kwargs)
+    cfg = json.loads((tmp_path / "openclaw.json").read_text())
+    heartbeat = cfg["agents"]["defaults"]["heartbeat"]
+    assert heartbeat["every"] == "30m"
+    assert heartbeat["model"] == expected_model
+    assert heartbeat["model"] != cfg["agents"]["defaults"]["model"]["primary"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider",
+    [
+        ("chatgpt_oauth", None),
+        ("byo_key", "openai"),
+        ("byo_key", "anthropic"),
+        ("bedrock_claude", None),
+    ],
+)
+async def test_cron_tool_denied_across_auth_paths(tmp_path, provider_choice, byo_provider):
+    """The in-container OpenClaw `cron` tool is denied on every provider path.
+
+    Recurring/scheduled agent work is governed by Paperclip routines (the
+    single scheduling authority); agents must not self-create ungoverned
+    container cron jobs, so `cron` is in tools.deny.
+    """
+    kwargs = {
+        "config_path": tmp_path / "openclaw.json",
+        "gateway_token": "test-token",
+        "provider_choice": provider_choice,
+        "user_id": "u_1",
+        "aip_arns": _AIPS,
+    }
+    if byo_provider is not None:
+        kwargs["byo_provider"] = byo_provider
+    await write_openclaw_config(**kwargs)
+    cfg = json.loads((tmp_path / "openclaw.json").read_text())
+    assert "cron" in cfg["tools"]["deny"]
+
+
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider,expected",
+    [
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         # chatgpt_oauth gets None: its Codex runtime ignores/rejects an
@@ -420,13 +509,17 @@ async def test_aux_operations_routed_to_cheap_tier(tmp_path, provider_choice, by
 
 @pytest.mark.asyncio
 async def test_chatgpt_oauth_aux_inherits_primary(tmp_path):
-    """Regression: chatgpt_oauth must NOT pin compaction/memoryFlush/heartbeat to
-    a cheap model. Its Codex runtime ignores/rejects an OpenClaw-side summarizer
-    override (gpt-5.4-mini), so pinning it made compaction fail silently
-    (compactionCount stayed 0), context grew to the 272k budget, and the turn
-    died with "Context overflow: prompt too large". Leaving the aux .model unset
-    lets them inherit the OAuth-invocable primary (gpt-5.5) so compaction runs.
-    midTurnPrecheck stays on (it's model-free)."""
+    """chatgpt_oauth: compaction/memoryFlush must NOT be pinned to a cheap model.
+    The Codex runtime ignores/rejects an OpenClaw-side summarizer override
+    (gpt-5.4-mini), so pinning it made compaction fail silently (compactionCount
+    stayed 0), context grew to the 272k budget, and the turn died with "Context
+    overflow: prompt too large". They inherit the OAuth-invocable primary
+    (gpt-5.5) so compaction runs.
+
+    The heartbeat is the exception: it's an ordinary turn (not compaction), so it
+    CAN run on the cheap tier and IS demoted to gpt-5.4-mini — keeping the 30-min
+    per-agent maintenance poll off the premium model. midTurnPrecheck stays on
+    (it's model-free)."""
     await write_openclaw_config(
         config_path=tmp_path / "openclaw.json",
         gateway_token="test-token",
@@ -435,10 +528,11 @@ async def test_chatgpt_oauth_aux_inherits_primary(tmp_path):
     )
     defaults = json.loads((tmp_path / "openclaw.json").read_text())["agents"]["defaults"]
 
-    # No aux model overrides — they inherit the primary (gpt-5.5).
+    # Compaction + memoryFlush inherit the primary (gpt-5.5) — no override.
     assert "model" not in defaults["compaction"]
     assert "model" not in defaults["compaction"].get("memoryFlush", {})
-    assert "model" not in defaults["heartbeat"]
+    # Heartbeat is demoted to the cheap tier (ordinary turn, not compaction).
+    assert defaults["heartbeat"]["model"] == "openai/gpt-5.4-mini"
     # The context-pressure precheck stays enabled (provider-agnostic, model-free).
     assert defaults["compaction"]["midTurnPrecheck"]["enabled"] is True
     # Heartbeat cadence still present.

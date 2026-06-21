@@ -542,6 +542,27 @@ def cheap_model_ref(
     return None
 
 
+def heartbeat_model_ref(
+    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
+) -> str | None:
+    """Model for the periodic maintenance heartbeat — the cheap tier for EVERY
+    provider, including ``chatgpt_oauth``.
+
+    This differs from ``cheap_model_ref`` only on the ``chatgpt_oauth`` path.
+    The heartbeat is an ordinary agentTurn (the synthetic "[heartbeat poll]"
+    that reads HEARTBEAT.md and replies HEARTBEAT_OK when idle), which the
+    Codex OAuth token CAN serve on the mini tier — unlike compaction, which
+    the Codex backend runs natively and which rejects an OpenClaw-side model
+    override (see ``cheap_model_ref``). So the OAuth heartbeat routes to
+    ``gpt-5.4-mini`` to keep the 30-min per-agent maintenance poll off the
+    premium model, while compaction/memory-flush keep using ``cheap_model``
+    (None on OAuth → inherits the chat model so Codex native compaction runs).
+    """
+    if provider_choice == "chatgpt_oauth":
+        return "openai/gpt-5.4-mini"
+    return cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
+
+
 def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = None) -> list[dict]:
     """Build the openclaw.json agents.list entries from Paperclip agents.
 
@@ -805,6 +826,7 @@ def build_openclaw_config_dict(
     # premium default, and compaction in particular processes very large
     # contexts where the cost difference is largest.
     cheap_model = cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
+    heartbeat_model = heartbeat_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
 
     # Token auth — shared secret between backend and container.
     # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
@@ -946,10 +968,14 @@ def build_openclaw_config_dict(
                 # assignment/comment) is independent of this.
                 #
                 # `model` routes the heartbeat to the cheap tier — it's pure
-                # overhead and doesn't need the premium default. `None` on
-                # flat-rate paths with no cheaper tier omits the override so
-                # the heartbeat inherits the default model.
-                "heartbeat": {"every": "30m", **({"model": cheap_model} if cheap_model else {})},
+                # overhead and doesn't need the premium default. The heartbeat
+                # is an ordinary turn (unlike compaction), so it uses
+                # `heartbeat_model` (cheap tier for EVERY provider, including
+                # chatgpt_oauth → gpt-5.4-mini) rather than `cheap_model`
+                # (which stays None on OAuth for the Codex native-compaction
+                # constraint). `None` only when a provider has no cheaper tier,
+                # in which case the heartbeat inherits the default model.
+                "heartbeat": {"every": "30m", **({"model": heartbeat_model} if heartbeat_model else {})},
                 "workspace": "/home/node/.openclaw/workspaces",
                 # Memory recall stays ON (matches main): memory-core registers
                 # memory_search/memory_get, and the "Memory Recall" prompt
@@ -1019,12 +1045,20 @@ def build_openclaw_config_dict(
             # surfaces them. ``deny`` still wins over the wildcard, so the
             # canvas/nodes denials below are unaffected.
             "allow": ["*"],
-            # Default-deny both canvas and nodes. node_proxy.py toggles
+            # Default-deny canvas, nodes, and cron. node_proxy.py toggles
             # "nodes" back to enabled dynamically when a desktop node
             # pairs, and back to denied when the last one disconnects.
             # Leaving nodes always-allowed here would expose the tool
             # even to users without the desktop app.
-            "deny": ["canvas", "nodes"],
+            #
+            # "cron" is denied because recurring/scheduled agent work is
+            # governed by Paperclip routines — the single scheduling
+            # authority — not the in-container OpenClaw cron tool. Agent
+            # self-created cron jobs are invisible to Paperclip's
+            # autopause / concurrency / budget controls (an ungoverned
+            # scheduling surface). Recurring work goes through the Paperclip
+            # routines API, which the bundled `paperclip` skill teaches.
+            "deny": ["canvas", "nodes", "cron"],
             **_build_exec_policy(),
             "web": {
                 "fetch": {"enabled": True},

@@ -90,9 +90,15 @@ def test_write_seeds_sdk_store_and_publishes_server_block(monkeypatch, tmp_path,
         "scope": "openid offline_access mcp",
     }
 
-    # The live mcp.servers.attio streamable-http block was published.
+    # The live mcp.servers.attio streamable-http block was published WITH auth:
+    # "oauth" — the field that arms OpenClaw's MCP SDK OAuthClientProvider so it
+    # reads the seeded token store (without it the server is treated as plain and 401s).
     assert captured_config["set"] == [
-        ("org_1", ["mcp", "servers", "attio"], {"transport": "streamable-http", "url": "https://mcp.attio.com/mcp"})
+        (
+            "org_1",
+            ["mcp", "servers", "attio"],
+            {"transport": "streamable-http", "url": "https://mcp.attio.com/mcp", "auth": "oauth"},
+        )
     ]
     assert captured_config["delete"] == []
 
@@ -144,27 +150,24 @@ def test_safe_server_name_strips_disallowed_chars():
     assert mcp_oauth._safe_server_name("My Server!") == "myserver"
 
 
-# The remove() call below intentionally hits the failing asyncio.run path, which
-# raises before awaiting the config_patcher coroutine — silence that expected
-# never-awaited warning so the regression test stays clean.
-@pytest.mark.filterwarnings("ignore:coroutine .* was never awaited:RuntimeWarning")
 @pytest.mark.asyncio
-async def test_remove_raises_runtime_error_when_called_on_running_loop(monkeypatch, tmp_path, cred, captured_config):
-    # The bug: remove() drives the async config_patcher via asyncio.run, which
-    # cannot run inside an already-running event loop. Calling it directly from a
-    # coroutine (the request handler's loop) raises. The disconnect path must
-    # therefore offload it to a worker thread — see the run_in_thread test below.
-    from core.dynamodb import run_in_thread
-
+async def test_remove_succeeds_when_called_on_running_loop(monkeypatch, tmp_path, cred, captured_config):
+    # The materializer's config-patcher invocation is robust to a running loop: when
+    # remove() is called directly from a coroutine (a caller that forgot the
+    # run_in_thread offload), _run_sync drives the coroutine on a fresh loop in a
+    # worker thread instead of letting asyncio.run raise. So a direct synchronous
+    # call from this live event loop (pytest-asyncio) removes the store file + the
+    # server block WITHOUT raising RuntimeError.
     _patch_efs(monkeypatch, tmp_path)
-    # write() also drives asyncio.run, so seed the store off the loop via the same
-    # offload the real apply path uses.
-    await run_in_thread(mcp_oauth.write, "org_1", "attio", cred)
+    # write() is robust the same way, so it can run directly on the loop too.
+    mcp_oauth.write("org_1", "attio", cred)
+    expected = _expected_store_path(tmp_path, "org_1", "attio", "https://mcp.attio.com/mcp")
+    assert expected.is_file()
 
-    # This test body runs on a live event loop (pytest-asyncio), so a direct
-    # synchronous call to remove() reproduces the in-handler failure.
-    with pytest.raises(RuntimeError, match="asyncio.run"):
-        mcp_oauth.remove("org_1", "attio", {})
+    mcp_oauth.remove("org_1", "attio", {})
+
+    assert not expected.exists()
+    assert captured_config["delete"] == [("org_1", ["mcp", "servers", "attio"])]
 
 
 @pytest.mark.asyncio

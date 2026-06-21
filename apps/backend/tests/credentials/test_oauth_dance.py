@@ -73,8 +73,8 @@ REDIRECT = "https://app.isol8.co/oauth/callback"
 async def test_start_builds_authorize_url(monkeypatch):
     stored = {}
 
-    async def _fake_put(state, *, owner_id, provider, verifier):
-        stored.update(state=state, owner_id=owner_id, provider=provider, verifier=verifier)
+    async def _fake_put(state, *, owner_id, provider, verifier, client_id=None):
+        stored.update(state=state, owner_id=owner_id, provider=provider, verifier=verifier, client_id=client_id)
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put)
 
@@ -108,6 +108,8 @@ async def test_start_builds_authorize_url(monkeypatch):
     assert stored["verifier"]
     assert stored["owner_id"] == "org_1"
     assert stored["provider"] == "google"
+    # The resolved client_id is bound into the state so exchange() uses THIS client.
+    assert stored["client_id"] == "cid"
 
 
 @pytest.mark.asyncio
@@ -200,7 +202,7 @@ def fake_app_store(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_start_registers_dcr_client_when_absent(monkeypatch, fake_app_store):
-    async def _fake_put_state(state, *, owner_id, provider, verifier):
+    async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
         pass
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
@@ -257,7 +259,7 @@ async def test_start_reuses_cached_dcr_client(monkeypatch, fake_app_store):
         "client_information": {"client_id": "existing_cid"},
     }
 
-    async def _fake_put_state(state, *, owner_id, provider, verifier):
+    async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
         pass
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
@@ -341,7 +343,7 @@ async def test_start_includes_resource_for_mcp_remote_provider(monkeypatch, fake
         "client_information": {"client_id": "dcr_cid"},
     }
 
-    async def _fake_put_state(state, *, owner_id, provider, verifier):
+    async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
         pass
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
@@ -354,7 +356,7 @@ async def test_start_includes_resource_for_mcp_remote_provider(monkeypatch, fake
 @pytest.mark.asyncio
 async def test_start_omits_resource_for_byo_provider(monkeypatch):
     # google has no mcp_remote — the authorize request must not carry a resource param.
-    async def _fake_put(state, *, owner_id, provider, verifier):
+    async def _fake_put(state, *, owner_id, provider, verifier, client_id=None):
         pass
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put)
@@ -467,3 +469,93 @@ async def test_exchange_byo_client_still_sends_secret(monkeypatch, fake_app_stor
     assert credential["client_secret"] == "secret"
     # No cached client_information for a BYO app — synthesize the minimal shape.
     assert credential["client_information"] == {"client_id": "cid", "client_secret": "secret"}
+
+
+# --- code↔client binding (concurrent-DCR race) ----------------------------
+#
+# start() binds the issued client_id into the OAuth state. exchange() must use
+# THAT client_id, not whatever the app store currently holds — a concurrent
+# connect could have re-registered a different DCR client between start() and the
+# callback. The binding makes the code↔client pairing atomic per-authorization.
+
+
+@pytest.mark.asyncio
+async def test_exchange_uses_state_bound_client_id_over_store(monkeypatch, fake_app_store):
+    # The app store was overwritten by a concurrent connect AFTER this authorization
+    # started: it now holds a different DCR client. exchange() must use the client_id
+    # bound into the state (the one this code was issued to), not the store's.
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "newer_concurrent_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "newer_concurrent_cid"},
+    }
+
+    async def _fake_consume(state):
+        # The state carries the client_id start() resolved for THIS authorization.
+        return {
+            "state": state,
+            "owner_id": "org_1",
+            "provider": "attio",
+            "verifier": "ver123",
+            "client_id": "this_auth_cid",
+        }
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
+
+    posted = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "at_tok", "refresh_token": "rt_tok", "expires_in": 3600}
+
+    async def _fake_post(self, url, data=None, **kwargs):
+        posted["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    _, _, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+
+    # The token POST + credential use the state's client_id, NOT the store's newer one.
+    assert posted["data"]["client_id"] == "this_auth_cid"
+    assert credential["client_id"] == "this_auth_cid"
+
+
+@pytest.mark.asyncio
+async def test_exchange_falls_back_to_store_client_id_for_legacy_state(monkeypatch, fake_app_store):
+    # Back-compat: a state minted before the binding existed has no client_id, so
+    # exchange() falls back to the app store's client_id (the prior behavior).
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "store_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "store_cid"},
+    }
+
+    async def _fake_consume(state):
+        # No client_id key — an in-flight authorization from before this change.
+        return {"state": state, "owner_id": "org_1", "provider": "attio", "verifier": "ver123"}
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
+
+    posted = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "at_tok", "refresh_token": "rt_tok", "expires_in": 3600}
+
+    async def _fake_post(self, url, data=None, **kwargs):
+        posted["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    _, _, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+
+    assert posted["data"]["client_id"] == "store_cid"
+    assert credential["client_id"] == "store_cid"

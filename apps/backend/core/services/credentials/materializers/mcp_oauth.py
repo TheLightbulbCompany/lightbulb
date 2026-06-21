@@ -34,12 +34,35 @@ import asyncio
 import hashlib
 import json
 import re
+from collections.abc import Coroutine
+from typing import Any
 
 from core.services import config_patcher
 from core.services.credentials import registry
 from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 
 _MCP_OAUTH_DIR = "mcp-oauth"
+
+
+def _run_sync(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Drive an async coroutine to completion from this synchronous materializer.
+
+    The apply/disconnect paths offload the materializer via run_in_thread, so the
+    common case is a worker thread with no running loop and a bare asyncio.run
+    suffices. But asyncio.run raises if a loop is already running, so guard against
+    a caller that forgot the offload: when a loop IS running, run the coroutine on
+    a fresh loop in a throwaway worker thread instead. This keeps the materializer
+    correct whether or not the offload is present, independent of the caller."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 # Our mcp.servers.<key> names are author-controlled and already lower-kebab/snake,
 # so OpenClaw's sanitizeServerName is the identity on them. A minimal sanitizer
 # (keep [a-z0-9_-], lowercase) reproduces that for our keys; we never register a
@@ -106,12 +129,13 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
     atomic_write(path, json.dumps(store, indent=2).encode(), mode=0o600)
 
     # Publish the live remote-server block so the runtime knows where to connect.
+    # The block (including auth: "oauth", which arms the SDK OAuth provider) is
+    # built from the registry so it matches the reprovision rehydration exactly.
     # The materializer runs in a worker thread (apply_connection offloads it via
-    # run_in_thread), so there is no running event loop here — asyncio.run drives
-    # the async config_patcher to the same mcp.servers.<key> path the mcp_server
-    # rail uses, keeping behavior identical for the live config.
-    block = {"transport": remote.transport, "url": remote.url}
-    asyncio.run(config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", remote.key], block))
+    # run_in_thread), so there is normally no running loop — _run_sync drives the
+    # async config_patcher either way to the same mcp.servers.<key> path the
+    # mcp_server rail uses, keeping behavior identical for the live config.
+    _run_sync(config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", remote.key], remote.server_block()))
     return remote.key
 
 
@@ -127,4 +151,4 @@ def remove(owner_id: str, provider_key: str, credential: dict) -> None:
     _store_path(owner_id, remote.key, remote.url).unlink(missing_ok=True)
     # Mirror the mcp_server rail's disconnect: remove the whole server entry rather
     # than blanking a leaf (a command/transport-less server is invalid config).
-    asyncio.run(config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", remote.key]))
+    _run_sync(config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", remote.key]))

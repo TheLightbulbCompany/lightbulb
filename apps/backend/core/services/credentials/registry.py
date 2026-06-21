@@ -64,6 +64,17 @@ class McpRemote(BaseModel):
     url: str
     transport: str
 
+    def server_block(self) -> dict[str, str]:
+        """The mcp.servers.<key> block published into the live openclaw.json.
+
+        ``auth: "oauth"`` is load-bearing: OpenClaw only attaches the MCP SDK's
+        OAuthClientProvider (which reads + self-refreshes the seeded token file)
+        when the raw server config carries ``auth === "oauth"`` — without it the
+        runtime treats the endpoint as a plain remote server, ignores the token
+        store, and the server 401s. The materializer write and the reprovision
+        rehydration both build the block from here, so they stay identical."""
+        return {"transport": self.transport, "url": self.url, "auth": "oauth"}
+
 
 class Wiring(BaseModel):
     openclaw_paths: list[OpenclawPath] | None = None

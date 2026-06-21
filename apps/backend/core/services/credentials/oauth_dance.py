@@ -94,8 +94,12 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str) -> str:
         await _register_dcr_client(owner_id, provider_key, p, redirect_uri=redirect_uri)
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(32)
-    await oauth_state_repo.put(state, owner_id=owner_id, provider=provider_key, verifier=verifier)
+    # Resolve the client BEFORE persisting the state so the state records the exact
+    # client_id this authorization is issued to. exchange() then reuses it rather
+    # than re-reading the app store, which a concurrent connect could have replaced
+    # with a different DCR-registered client (the code↔client binding stays atomic).
     client_id, _ = await _oauth_client(owner_id, provider_key)
+    await oauth_state_repo.put(state, owner_id=owner_id, provider=provider_key, verifier=verifier, client_id=client_id)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -120,7 +124,14 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     if not rec:
         raise ValueError("invalid or expired OAuth state")
     p = registry.get_provider(rec["provider"])
-    client_id, client_secret = await _oauth_client(rec["owner_id"], rec["provider"])
+    # The client this code was issued to. Prefer the state-bound client_id (written
+    # by start()) so a concurrent connect that re-registered a different DCR client
+    # in the app store can't make us exchange against the wrong client. The secret
+    # still comes from the store (a public DCR client has none; a BYO app's secret
+    # is keyed to its client_id). Fall back to the store's client_id for states
+    # minted before this binding existed (back-compat for in-flight authorizations).
+    store_client_id, client_secret = await _oauth_client(rec["owner_id"], rec["provider"])
+    client_id = rec.get("client_id") or store_client_id
     data = {
         "grant_type": "authorization_code",
         "code": code,

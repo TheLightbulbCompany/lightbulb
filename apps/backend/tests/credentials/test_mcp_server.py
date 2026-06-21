@@ -108,8 +108,10 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
     monkeypatch.setattr(m.integration_secret_store, "get", secret_get)
 
     servers = await m.build_connected_integration_servers("org_1")
+    # The rehydrated remote block carries auth: "oauth" so a reprovision re-arms the
+    # SDK OAuth provider — identical to what the live materializer write publishes.
     assert servers == {
-        "attio": {"transport": "streamable-http", "url": "https://mcp.attio.com/mcp"},
+        "attio": {"transport": "streamable-http", "url": "https://mcp.attio.com/mcp", "auth": "oauth"},
         "stripe": {
             "command": "npx",
             "args": ["-y", "@stripe/mcp", "--tools=all"],

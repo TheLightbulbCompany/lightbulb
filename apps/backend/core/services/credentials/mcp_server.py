@@ -65,7 +65,7 @@ async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
         # from the registry alone — actor-refresh, so there is no retained secret.
         remote = prov.mcp_remote
         if remote is not None:
-            servers[remote.key] = {"transport": remote.transport, "url": remote.url}
+            servers[remote.key] = remote.server_block()
             continue
         spec = prov.wiring.mcp_server
         if spec is None:

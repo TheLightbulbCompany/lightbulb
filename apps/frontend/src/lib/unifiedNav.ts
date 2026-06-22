@@ -29,3 +29,13 @@ export function applyUnifiedNavParam(param: string | null): boolean | null {
     return null;
   }
 }
+
+// Resolve the effective flag for a render: an explicit URL param overrides the
+// stored value SYNCHRONOUSLY, so `?unifiedNav=0` opts out on the very first
+// render (before the persistence effect runs) and `?unifiedNav=1` opts in; an
+// absent/invalid param falls back to the stored value.
+export function resolveUnifiedNav(param: string | null, stored: boolean): boolean {
+  if (param === "1") return true;
+  if (param === "0") return false;
+  return stored;
+}

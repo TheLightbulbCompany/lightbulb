@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
-import { UNIFIED_NAV_KEY, readUnifiedNav, applyUnifiedNavParam } from "../unifiedNav";
+import {
+  UNIFIED_NAV_KEY,
+  readUnifiedNav,
+  applyUnifiedNavParam,
+  resolveUnifiedNav,
+} from "../unifiedNav";
 
 // Node 22+ ships a built-in `localStorage` that requires `--localstorage-file`
 // to actually function. In our vitest+jsdom setup it shadows jsdom's
@@ -72,5 +77,19 @@ describe("unifiedNav storage helpers", () => {
   });
   it("applyUnifiedNavParam(null) is a no-op returning null", () => {
     expect(applyUnifiedNavParam(null)).toBeNull();
+  });
+});
+
+describe("resolveUnifiedNav (URL param overrides the stored value)", () => {
+  it("opt-out param wins over a stored '1'", () => {
+    expect(resolveUnifiedNav("0", true)).toBe(false);
+  });
+  it("opt-in param wins over no stored value", () => {
+    expect(resolveUnifiedNav("1", false)).toBe(true);
+  });
+  it("falls back to the stored value for an absent/invalid param", () => {
+    expect(resolveUnifiedNav(null, true)).toBe(true);
+    expect(resolveUnifiedNav(null, false)).toBe(false);
+    expect(resolveUnifiedNav("bogus", true)).toBe(true);
   });
 });

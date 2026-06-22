@@ -36,10 +36,14 @@ function ChatPageInner() {
   const panelParam = searchParams.get("panel");
   const viewParam = searchParams.get("view");
   const detailId = searchParams.get("detailId");
-  const activeView: "chat" | "control" =
-    viewParam === "control" || (viewParam !== "chat" && panelParam) ? "control" : "chat";
-  const activePanel: string = panelParam || "overview";
   const unifiedNav = useUnifiedNav();
+  // Under the unified nav there's no tab-switcher: the view is derived purely
+  // from ?panel (a Company/System panel → control; no panel → chat). Flag-off
+  // keeps the legacy ?view-aware derivation byte-for-byte (the else arm).
+  const activeView: "chat" | "control" = unifiedNav
+    ? (panelParam ? "control" : "chat")
+    : (viewParam === "control" || (viewParam !== "chat" && panelParam) ? "control" : "chat");
+  const activePanel: string = panelParam || "overview";
 
   const setActiveView = useCallback(
     (next: "chat" | "control") => {
@@ -63,6 +67,18 @@ function ChatPageInner() {
     },
     [router, searchParams],
   );
+  // Drops ?panel (and the per-panel filter/detail state) so the view falls
+  // back to chat. Used when selecting an agent under the unified nav — there's
+  // no tab-switcher, so chat is shown by absence of ?panel. Flag-off still sets
+  // ?view=chat to keep the legacy ?view-aware derivation pointing at chat.
+  const clearPanel = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("panel");
+    params.delete("agent");
+    params.delete("detailId");
+    if (!unifiedNav) params.set("view", "chat");
+    router.replace(`/chat?${params.toString()}`, { scroll: false });
+  }, [router, searchParams, unifiedNav]);
   // Opens a Teams detail view inline: mirrors setActivePanel but also records
   // the row id in ?detailId so InlineTeamsPanel can resolve the detail panel.
   const openDetail = useCallback(
@@ -141,6 +157,7 @@ function ChatPageInner() {
           onPanelChange={setActivePanel}
           openAgentIssues={openAgentIssues}
           openAgentInspector={openAgentInspector}
+          onClearPanel={clearPanel}
           unifiedNav={unifiedNav}
           fileViewerOpen={fileViewerOpen}
           activeFilePath={activeFilePath}

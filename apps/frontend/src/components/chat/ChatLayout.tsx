@@ -44,6 +44,7 @@ interface ChatLayoutProps {
   onPanelChange?: (panel: string) => void;
   openAgentIssues?: (agentId: string) => void;
   openAgentInspector?: (agentId: string) => void;
+  onClearPanel?: () => void;
   unifiedNav?: boolean;
   fileViewerOpen?: boolean;
   activeFilePath?: string | null;
@@ -65,6 +66,7 @@ export function ChatLayout({
   onPanelChange,
   openAgentIssues,
   openAgentInspector,
+  onClearPanel,
   unifiedNav,
   fileViewerOpen,
   activeFilePath,
@@ -268,6 +270,10 @@ export function ChatLayout({
     capture("agent_selected", { agent_id: agentId });
     setUserSelectedId(agentId);
     dispatchSelectAgentEvent(agentId);
+    // Under the unified nav there's no tab-switcher: the view is derived from
+    // ?panel. Selecting an agent must drop ?panel so the content area falls
+    // back to chat (with the just-selected agent).
+    if (unifiedNav) onClearPanel?.();
     setSidebarOpen(false);
   }
 
@@ -347,21 +353,25 @@ export function ChatLayout({
             </div>
           )}
 
-          {/* Tab Switcher */}
-          <div className="tab-switcher">
-            <button
-              className={`tab-btn${activeView === "chat" ? " active" : ""}`}
-              onClick={() => { onViewChange("chat"); setSidebarOpen(false); }}
-            >
-              Chat
-            </button>
-            <button
-              className={`tab-btn${activeView === "control" ? " active" : ""}`}
-              onClick={() => { capture("control_panel_opened"); onViewChange("control"); setSidebarOpen(false); }}
-            >
-              Control
-            </button>
-          </div>
+          {/* Tab Switcher — flag-off only. Under the unified nav the view is
+              derived from ?panel (selecting an agent shows chat; a Company/System
+              panel shows that panel), so the Chat|Control switcher is removed. */}
+          {!unifiedNav ? (
+            <div className="tab-switcher">
+              <button
+                className={`tab-btn${activeView === "chat" ? " active" : ""}`}
+                onClick={() => { onViewChange("chat"); setSidebarOpen(false); }}
+              >
+                Chat
+              </button>
+              <button
+                className={`tab-btn${activeView === "control" ? " active" : ""}`}
+                onClick={() => { capture("control_panel_opened"); onViewChange("control"); setSidebarOpen(false); }}
+              >
+                Control
+              </button>
+            </div>
+          ) : null}
 
           {/* Unified nav: ONE sidebar body regardless of view — the chat-branch
               body (roster + CompanyNav + SystemNav) already covers everything,

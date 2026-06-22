@@ -93,6 +93,31 @@ test("inside the inline nav shell, clicking the row opens the detail in-shell", 
   expect(clickEvent.defaultPrevented).toBe(true);
 });
 
+test("inside the shell, a modified click keeps native link behavior (new tab)", () => {
+  // Cmd/Ctrl-click → new tab, Shift → new window, middle-click must NOT be
+  // intercepted, or "open in new tab" on the /teams/issues/<id> href would be
+  // swallowed and replace the inline panel instead.
+  const openDetail = vi.fn();
+  const { container } = render(
+    <InlineTeamsNavProvider value={{ openDetail }}>
+      <IssueRow issue={issue} />
+    </InlineTeamsNavProvider>,
+  );
+  const link = container.querySelector(
+    "a[data-inbox-issue-link]",
+  ) as HTMLAnchorElement;
+
+  const cmdClick = new MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    metaKey: true,
+  });
+  link.dispatchEvent(cmdClick);
+
+  expect(openDetail).not.toHaveBeenCalled();
+  expect(cmdClick.defaultPrevented).toBe(false);
+});
+
 test("without a nav provider the row click is not intercepted", () => {
   // Standalone /teams: no provider → no openDetail, no preventDefault, the
   // <Link href> drives navigation exactly as before.

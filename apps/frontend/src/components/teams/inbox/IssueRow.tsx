@@ -79,6 +79,20 @@ export function IssueRow({
   const handleOpen = useCallback(
     (event: MouseEvent<HTMLAnchorElement>) => {
       if (!nav) return;
+      // Only plain left-clicks route in-shell. Preserve native <Link>
+      // behavior for modified / non-primary clicks (Cmd/Ctrl → new tab,
+      // Shift → new window, middle-click) and any click another handler has
+      // already handled — otherwise we'd swallow "open in new tab".
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
       event.preventDefault();
       nav.openDetail("issue-detail", issuePathId);
     },

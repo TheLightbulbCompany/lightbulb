@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import {
   NAV_ITEMS,
   ADMIN_ONLY_PANELS,
@@ -13,7 +14,6 @@ import {
 // management. Each button emits the PLAIN panel key (not teams--prefixed), so
 // onPanelChange routes through ControlPanelRouter exactly as ControlSidebar
 // does today.
-const SYSTEM_ITEMS = NAV_ITEMS.filter((item) => item.key !== "agents");
 
 export function SystemNav({
   activePanel,
@@ -23,6 +23,14 @@ export function SystemNav({
   onPanelChange?: (panel: string) => void;
 }): React.ReactElement {
   const isOrgAdmin = useIsControlAdmin();
+  // Filtered inside the component (not at module load) so importing this module
+  // never dereferences NAV_ITEMS — a test that mocks ControlSidebar without
+  // re-exporting NAV_ITEMS can still import ChatLayout (which pulls this in)
+  // without crashing at import time.
+  const systemItems = useMemo(
+    () => NAV_ITEMS.filter((item) => item.key !== "agents"),
+    [],
+  );
 
   return (
     // `min-h-0 overflow-y-auto`: mirrors CompanyNav — as a flex child of the
@@ -36,7 +44,7 @@ export function SystemNav({
       <div className="agent-section-label">
         <span>System</span>
       </div>
-      {SYSTEM_ITEMS.map(({ key, label, icon: Icon }) => {
+      {systemItems.map(({ key, label, icon: Icon }) => {
         if (ADMIN_ONLY_PANELS.has(key) && !isOrgAdmin) return null;
         const active = activePanel === key;
         return (

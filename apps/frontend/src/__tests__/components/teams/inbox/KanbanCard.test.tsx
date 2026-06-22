@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { DndContext } from "@dnd-kit/core";
 import { SortableContext } from "@dnd-kit/sortable";
 import { KanbanCard, KanbanCardOverlay } from "@/components/teams/inbox/KanbanCard";
+import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import type { Issue } from "@/components/teams/shared/types";
 
 const baseIssue: Issue = {
@@ -89,5 +90,51 @@ describe("KanbanCardOverlay", () => {
     const { container } = render(<KanbanCardOverlay issue={baseIssue} agents={[]} />);
     expect(container.querySelector(`[data-kanban-card-overlay="iss-1"]`)).toBeInTheDocument();
     expect(container.querySelector(`[data-kanban-card-id="iss-1"]`)).not.toBeInTheDocument();
+  });
+});
+
+describe("Kanban card inline-shell routing", () => {
+  // Rendered via the overlay (no dnd-kit / isDragging) — it shares CardContent
+  // with the sortable KanbanCard, so it exercises the same onClick.
+  const linkOf = (c: HTMLElement) =>
+    c.querySelector('a[href="/teams/issues/iss-1"]') as HTMLAnchorElement;
+
+  it("routes a plain click through openDetail when inside the nav shell", () => {
+    const openDetail = vi.fn();
+    const { container } = render(
+      <InlineTeamsNavProvider value={{ openDetail }}>
+        <KanbanCardOverlay issue={baseIssue} agents={[]} />
+      </InlineTeamsNavProvider>,
+    );
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    linkOf(container).dispatchEvent(click);
+    expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss-1");
+    expect(click.defaultPrevented).toBe(true);
+  });
+
+  it("keeps native link behavior for a modified click (new tab)", () => {
+    const openDetail = vi.fn();
+    const { container } = render(
+      <InlineTeamsNavProvider value={{ openDetail }}>
+        <KanbanCardOverlay issue={baseIssue} agents={[]} />
+      </InlineTeamsNavProvider>,
+    );
+    const cmdClick = new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      metaKey: true,
+    });
+    linkOf(container).dispatchEvent(cmdClick);
+    expect(openDetail).not.toHaveBeenCalled();
+    expect(cmdClick.defaultPrevented).toBe(false);
+  });
+
+  it("is not intercepted without a nav provider (standalone /teams)", () => {
+    const { container } = render(
+      <KanbanCardOverlay issue={baseIssue} agents={[]} />,
+    );
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    linkOf(container).dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(false);
   });
 });

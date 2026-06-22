@@ -25,6 +25,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { CompanyNav } from "@/components/chat/CompanyNav";
+import { SystemNav } from "@/components/chat/SystemNav";
 import { FileViewer } from "@/components/chat/FileViewer";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
@@ -470,6 +471,9 @@ export function ChatLayout({
               {unifiedNav ? (
                 <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
               ) : null}
+              {unifiedNav ? (
+                <SystemNav activePanel={activePanel} onPanelChange={onPanelChange} />
+              ) : null}
 
               {/* Marketplace block — Browse + Publish buttons that open the
                   MarketplaceDrawer. The drawer (mounted on the chat page) owns
@@ -485,6 +489,9 @@ export function ChatLayout({
                   highlight until switching back to Chat. */}
               {unifiedNav ? (
                 <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
+              ) : null}
+              {unifiedNav ? (
+                <SystemNav activePanel={activePanel} onPanelChange={onPanelChange} />
               ) : null}
               <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
             </>

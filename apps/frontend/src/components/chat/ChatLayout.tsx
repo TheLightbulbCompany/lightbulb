@@ -24,6 +24,7 @@ import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
+import { CompanyNav } from "@/components/chat/CompanyNav";
 import { FileViewer } from "@/components/chat/FileViewer";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
@@ -40,6 +41,7 @@ interface ChatLayoutProps {
   onViewChange: (view: "chat" | "control") => void;
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
+  unifiedNav?: boolean;
   fileViewerOpen?: boolean;
   activeFilePath?: string | null;
   onOpenFile?: (path: string) => void;
@@ -58,6 +60,7 @@ export function ChatLayout({
   onViewChange,
   activePanel,
   onPanelChange,
+  unifiedNav,
   fileViewerOpen,
   activeFilePath,
   onOpenFile,
@@ -429,6 +432,10 @@ export function ChatLayout({
                   );
                 })}
               </div>
+
+              {unifiedNav ? (
+                <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
+              ) : null}
 
               {/* Marketplace block — Browse + Publish buttons that open the
                   MarketplaceDrawer. The drawer (mounted on the chat page) owns

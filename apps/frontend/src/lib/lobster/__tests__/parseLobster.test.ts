@@ -46,6 +46,29 @@ describe("parseLobster", () => {
     expect(wf.steps[1].stdin).toContain("$a.json");
   });
 
+  it("normalizes `when` as an alias for `condition`", () => {
+    const wf = parseLobster(`steps:
+  - id: approve
+    command: exec
+  - id: send
+    command: exec
+    when: $approve.approved
+`);
+    expect(wf.steps[1].condition).toBe("$approve.approved");
+  });
+
+  it("captures `env` as a string so $refs passed through env stay scannable", () => {
+    const wf = parseLobster(`steps:
+  - id: recon
+    command: exec
+  - id: merge
+    command: exec
+    env:
+      XERO: $recon.stdout
+`);
+    expect(wf.steps[1].env).toContain("$recon.stdout");
+  });
+
   it("returns empty steps for YAML without a steps array", () => {
     expect(parseLobster("name: x\n").steps).toEqual([]);
   });

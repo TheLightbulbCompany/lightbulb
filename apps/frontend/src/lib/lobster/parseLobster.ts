@@ -5,6 +5,7 @@ export interface LobsterStep {
   command?: string;
   condition?: string;
   stdin?: string;
+  env?: string;
   isApproval: boolean;
 }
 
@@ -20,10 +21,12 @@ function asString(v: unknown): string | undefined {
 }
 
 // A .lobster file is YAML: an optional `name` plus a `steps` list. Each step
-// has an `id` and a `command`; `condition`/`stdin` are optional, and an
-// `approval` field marks a human-gated step. We keep `stdin` as a string even
-// when it parses to an object so $step references inside survive for edge
-// detection downstream.
+// has an `id` and a `command`; `condition`/`stdin`/`env` are optional, and an
+// `approval` field marks a human-gated step. `when` is lobster's alias for
+// `condition`, so we normalize it here. We keep `stdin` and `env` as strings
+// even when they parse to objects so $step references inside survive for edge
+// detection downstream (steps pass prior outputs through env, e.g.
+// `env: { XERO: $recon.stdout }`).
 export function parseLobster(content: string): LobsterWorkflow {
   const doc = parseYaml(content);
   if (doc == null || typeof doc !== "object") {
@@ -39,8 +42,9 @@ export function parseLobster(content: string): LobsterWorkflow {
     steps.push({
       id: r.id,
       command: asString(r.command),
-      condition: asString(r.condition),
+      condition: asString(r.condition ?? r.when),
       stdin: asString(r.stdin),
+      env: asString(r.env),
       isApproval: "approval" in r,
     });
   }

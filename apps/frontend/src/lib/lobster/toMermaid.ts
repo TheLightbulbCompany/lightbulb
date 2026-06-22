@@ -74,6 +74,7 @@ export function toMermaid(workflow: LobsterWorkflow): string {
     const dataRefs = new Set([
       ...extractStepRefs(step.command, ids),
       ...extractStepRefs(step.stdin, ids),
+      ...extractStepRefs(step.env, ids),
     ]);
     for (const ref of condRefs) {
       if (ref === step.id) continue;

@@ -58,4 +58,14 @@ describe("toMermaid", () => {
     expect(out).toContain("n_load_gog --> n_approve_send");
     expect(out).not.toContain("n_load_gog --> n_load_gog");
   });
+
+  it("draws data edges for $step refs passed through env", () => {
+    const out = toMermaid({
+      steps: [
+        { id: "recon", command: "exec", isApproval: false },
+        { id: "merge", command: "exec", env: '{"XERO":"$recon.stdout"}', isApproval: false },
+      ],
+    });
+    expect(out).toContain("n_recon --> n_merge");
+  });
 });

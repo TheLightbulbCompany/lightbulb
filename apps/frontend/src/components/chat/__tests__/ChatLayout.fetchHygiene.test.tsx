@@ -70,6 +70,9 @@ const syncUserMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ syncUser: syncUserMock }),
 }));
+vi.mock("@/components/support/SupportProvider", () => ({
+  useSupport: () => ({ openSupport: vi.fn() }),
+}));
 
 vi.mock("@/components/chat/ProvisioningStepper", () => ({
   ProvisioningStepper: ({ children }: { children?: React.ReactNode }) => children ?? null,

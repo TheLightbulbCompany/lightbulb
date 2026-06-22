@@ -91,6 +91,9 @@ vi.mock("@/components/chat/ProvisioningStepper", () => ({
 vi.mock("@/components/chat/GallerySection", () => ({
   GallerySection: () => null,
 }));
+vi.mock("@/components/support/SupportProvider", () => ({
+  useSupport: () => ({ openSupport: vi.fn() }),
+}));
 vi.mock("@/components/chat/HealthIndicator", () => ({
   HealthIndicator: () => null,
 }));

@@ -22,7 +22,11 @@ interface ControlSidebarProps {
   onPanelChange?: (panel: string) => void;
 }
 
-const NAV_ITEMS = [
+// Exported so the unified-nav System section (components/chat/SystemNav) can
+// reuse the same global control-panel list, labels, icons, and admin gating
+// rather than hand-duplicating them. Plain keys route through
+// ControlPanelRouter identically whether emitted here or from SystemNav.
+export const NAV_ITEMS = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "agents", label: "Agents", icon: Bot },
   { key: "skills", label: "Skills", icon: Wrench },
@@ -36,11 +40,18 @@ const NAV_ITEMS = [
 ];
 
 // Panels hidden from non-admin org members
-const ADMIN_ONLY_PANELS = new Set(["usage"]);
+export const ADMIN_ONLY_PANELS = new Set(["usage"]);
+
+// Personal owners (no org membership) are treated as admins; org members are
+// admins only with the org:admin role. Shared with SystemNav so both nav
+// surfaces gate ADMIN_ONLY_PANELS identically.
+export function useIsControlAdmin(): boolean {
+  const { membership } = useOrganization();
+  return !membership || membership.role === "org:admin";
+}
 
 export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarProps) {
-  const { membership } = useOrganization();
-  const isOrgAdmin = !membership || membership.role === "org:admin";
+  const isOrgAdmin = useIsControlAdmin();
 
   return (
     <ScrollArea className="flex-1 px-3 py-2">

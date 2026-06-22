@@ -46,10 +46,39 @@ vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({ isSubscribed: subscribed }),
 }));
 
+// The Overview tab folds in the Teams org controls (reports-to + lifecycle).
+// Stub AgentOrgControls so we can assert it mounts with the matched roster
+// agent without dragging its mutation deps into the sandbox.
+vi.mock("@/components/teams/agents/AgentOrgControls", () => ({
+  AgentOrgControls: ({ agent }: { agent: { id: string } }) => (
+    <div data-testid="org-controls">org:{agent.id}</div>
+  ),
+}));
+
+// The org section reads the Teams roster via useTeamsApi().read("/agents").
+// `rosterData`/`rosterError` drive the graceful-degrade branches.
+let rosterData: { agents?: Array<{ id: string; name: string }> } | undefined = {
+  agents: [{ id: "agent_42", name: "Scout" }],
+};
+let rosterError: Error | undefined;
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: (path: string) =>
+      path === "/agents"
+        ? { data: rosterData, error: rosterError, isLoading: false, mutate: vi.fn() }
+        : { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() },
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  }),
+}));
+
 describe("AgentInspectorPanel", () => {
   beforeEach(() => {
     agentParam = "agent_42";
     subscribed = true;
+    rosterData = { agents: [{ id: "agent_42", name: "Scout" }] };
+    rosterError = undefined;
   });
 
   it("renders the three tab labels", () => {
@@ -111,5 +140,34 @@ describe("AgentInspectorPanel", () => {
     expect(screen.getByText(/select an agent/i)).toBeInTheDocument();
     expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Overview" })).not.toBeInTheDocument();
+  });
+
+  it("renders the org controls when the Teams roster has the ?agent id", () => {
+    render(<AgentInspectorPanel />);
+    expect(screen.getByTestId("org-controls")).toHaveTextContent("org:agent_42");
+  });
+
+  it("renders nothing org-side when the Teams roster errors", () => {
+    rosterError = new Error("boom");
+    rosterData = undefined;
+    render(<AgentInspectorPanel />);
+    // Overview tab still mounts; the org section degrades to nothing so a
+    // pause/resume POST never fires against a missing Paperclip row.
+    expect(screen.getByTestId("overview-tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("org-controls")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing org-side when the agent is absent from the roster", () => {
+    rosterData = { agents: [{ id: "someone_else", name: "Other" }] };
+    render(<AgentInspectorPanel />);
+    expect(screen.getByTestId("overview-tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("org-controls")).not.toBeInTheDocument();
+  });
+
+  it("keeps the org section on the Overview tab only", () => {
+    render(<AgentInspectorPanel />);
+    expect(screen.getByTestId("org-controls")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    expect(screen.queryByTestId("org-controls")).not.toBeInTheDocument();
   });
 });

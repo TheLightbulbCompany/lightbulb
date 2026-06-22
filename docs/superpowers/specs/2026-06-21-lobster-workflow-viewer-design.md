@@ -1,8 +1,21 @@
 # Lobster Workflow Viewer — Design Spec
 
 **Date:** 2026-06-21
-**Status:** Approved design, pending implementation plan
+**Status:** Implemented — see UPDATE below
 **Surface:** Frontend (Next.js) — workspace file viewer in `/chat`
+
+> **UPDATE (2026-06-22): graph generation switched from a hand-rolled emitter
+> to vendoring lobster's own code.** The original plan hand-rolled a YAML→mermaid
+> emitter mirroring lobster's documented edge rules. In review that proved to
+> drift from real `lobster graph` behavior (it missed `env`/`when`/`for_each`
+> handling and the sequential `next` edges, and reimplemented id-collision
+> handling). lobster's actual emitter (`@clawdbot/lobster` `dist/src/workflows/graph.js`)
+> is **pure and self-contained (zero imports, no Node deps)**, so we now **vendor
+> it verbatim** (`src/lib/lobster/vendor/lobsterGraph.js`, pinned to the version
+> our container runs) and feed it the raw parsed YAML. The in-app graph now
+> matches `lobster graph` exactly and tracks upstream. `parseLobster.ts` /
+> `toMermaid.ts` were deleted; `index.ts` is a thin parse + `renderWorkflowGraph`
+> wrapper. Re-vendor when the openclaw/lobster pin bumps (see `vendor/README.md`).
 
 ## Goal
 

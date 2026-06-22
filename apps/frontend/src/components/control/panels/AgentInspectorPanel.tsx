@@ -1,14 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Bot, Wrench, MessageSquare } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
+import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
 import { useBilling } from "@/hooks/useBilling";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
+import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { AgentEntry, AgentsListResponse } from "./agents-types";
 
 type InspectorTab = "overview" | "tools" | "channels";
@@ -43,6 +46,22 @@ export function AgentInspectorPanel() {
   const { data } = useGatewayRpc<AgentsListResponse>("agents.list");
   const agent: AgentEntry | undefined = (data?.agents ?? []).find(
     (a) => a.id === agentId,
+  );
+
+  // Org controls (reports-to + lifecycle) need the Teams roster shape, which
+  // carries reportsTo/seeded/status — agents.list above does not. useTeamsApi
+  // needs only Clerk (no Teams provider), so mounting it here is fine. Graceful
+  // degrade: when the read errors OR the inspected agent isn't in the roster,
+  // render NO org section — a pause/reports-to write against a missing
+  // Paperclip row would 404.
+  const { read } = useTeamsApi();
+  const { data: roster, error: rosterError } =
+    read<{ agents: CompanyAgent[] }>("/agents");
+  const rosterAgents = useMemo(() => roster?.agents ?? [], [roster]);
+  const orgAgent = useMemo<CompanyAgent | undefined>(
+    () =>
+      rosterError ? undefined : rosterAgents.find((a) => a.id === agentId),
+    [rosterError, rosterAgents, agentId],
   );
 
   const [activeTab, setActiveTab] = useState<InspectorTab>("overview");
@@ -102,7 +121,17 @@ export function AgentInspectorPanel() {
         aria-labelledby={`inspector-tab-${activeTab}`}
       >
         {activeTab === "overview" ? (
-          <AgentOverviewTab agentId={agentId} agent={agent} />
+          <>
+            <AgentOverviewTab agentId={agentId} agent={agent} />
+            {orgAgent ? (
+              <section className="mt-6 border-t border-[#e0dbd0] pt-6">
+                <h3 className="text-[10px] uppercase tracking-wider text-[#8a8578]/60 mb-3">
+                  Organization
+                </h3>
+                <AgentOrgControls agent={orgAgent} agents={rosterAgents} />
+              </section>
+            ) : null}
+          </>
         ) : null}
         {activeTab === "tools" ? <AgentToolsTab agentId={agentId} /> : null}
         {activeTab === "channels" && channelsEnabled ? (

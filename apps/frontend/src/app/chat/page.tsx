@@ -88,6 +88,21 @@ function ChatPageInner() {
     },
     [router, searchParams],
   );
+  // "Inspect agent": opens the per-agent inspector shell (Overview / Tools /
+  // Channels) for one agent. Mirrors openAgentIssues but targets the plain
+  // ControlPanelRouter key `agent-inspector` (NOT a teams-prefixed panel — the
+  // inspector re-mounts the existing control surfaces, not a Teams view) and
+  // records the agent id in ?agent (which AgentInspectorPanel reads).
+  const openAgentInspector = useCallback(
+    (agentId: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("panel", "agent-inspector");
+      params.set("agent", agentId);
+      params.set("view", "control");
+      router.replace(`/chat?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [fileViewerOpen, setFileViewerOpen] = useState(false);
@@ -125,6 +140,7 @@ function ChatPageInner() {
           activePanel={activePanel}
           onPanelChange={setActivePanel}
           openAgentIssues={openAgentIssues}
+          openAgentInspector={openAgentInspector}
           unifiedNav={unifiedNav}
           fileViewerOpen={fileViewerOpen}
           activeFilePath={activeFilePath}

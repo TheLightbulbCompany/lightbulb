@@ -7,7 +7,7 @@ import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Grid2X2, HelpCircle, ListTodo } from "lucide-react";
+import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Grid2X2, HelpCircle, ListTodo, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -42,6 +42,7 @@ interface ChatLayoutProps {
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
   openAgentIssues?: (agentId: string) => void;
+  openAgentInspector?: (agentId: string) => void;
   unifiedNav?: boolean;
   fileViewerOpen?: boolean;
   activeFilePath?: string | null;
@@ -62,6 +63,7 @@ export function ChatLayout({
   activePanel,
   onPanelChange,
   openAgentIssues,
+  openAgentInspector,
   unifiedNav,
   fileViewerOpen,
   activeFilePath,
@@ -423,6 +425,21 @@ export function ChatLayout({
                             onClick={(e) => { e.stopPropagation(); openAgentIssues?.(agent.id); }}
                           >
                             <ListTodo size={13} />
+                          </button>
+                        ) : null}
+                        {/* "Inspect agent": open the per-agent inspector shell
+                            (Overview / Tools / Channels). Only wired when the
+                            unified nav is on — off-flag the agent-inspector
+                            panel wouldn't route. */}
+                        {unifiedNav ? (
+                          <button
+                            type="button"
+                            className="agent-row-action"
+                            aria-label={`Inspect ${agentDisplayName(agent)}`}
+                            title={`Inspect ${agentDisplayName(agent)}`}
+                            onClick={(e) => { e.stopPropagation(); openAgentInspector?.(agent.id); }}
+                          >
+                            <SlidersHorizontal size={13} />
                           </button>
                         ) : null}
                         <button

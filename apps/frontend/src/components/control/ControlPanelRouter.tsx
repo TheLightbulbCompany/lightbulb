@@ -11,6 +11,7 @@ import { IntegrationsPanel } from "./panels/IntegrationsPanel";
 import { ChannelsStatusPanel } from "./panels/ChannelsStatusPanel";
 import { DreamsPanel } from "./panels/DreamsPanel";
 import { SkillProposalsPanel } from "./panels/SkillProposalsPanel";
+import { AgentInspectorPanel } from "./panels/AgentInspectorPanel";
 
 
 interface ControlPanelRouterProps {
@@ -29,6 +30,7 @@ const PANELS: Record<string, React.ComponentType> = {
   integrations: IntegrationsPanel,
   dreams: DreamsPanel,
   "skill-proposals": SkillProposalsPanel,
+  "agent-inspector": AgentInspectorPanel,
 };
 
 export function ControlPanelRouter({ panel, onPanelChange }: ControlPanelRouterProps) {

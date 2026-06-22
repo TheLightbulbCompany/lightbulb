@@ -168,7 +168,7 @@ export function IssuesPanel() {
               onClick={clearAgentFilter}
               aria-label="Clear agent filter"
               title="Clear agent filter"
-              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--edge)] focus-visible:outline-none"
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
               style={{ color: "var(--mute)" }}
             >
               <X className="h-3 w-3" />

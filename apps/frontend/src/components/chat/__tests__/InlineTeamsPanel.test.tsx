@@ -26,8 +26,16 @@ vi.mock("@/components/teams/command-palette/CommandPaletteProvider", () => ({
   CommandPaletteProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("@/components/teams/TeamsPanelRouter", () => ({
-  TeamsPanelRouter: ({ panel }: { panel: string }) => (
-    <div data-testid="teams-panel">{panel}</div>
+  TeamsPanelRouter: ({
+    panel,
+    detailId,
+  }: {
+    panel: string;
+    detailId?: string | null;
+  }) => (
+    <div data-testid="teams-panel" data-detail-id={detailId ?? ""}>
+      {panel}
+    </div>
   ),
 }));
 
@@ -58,5 +66,13 @@ describe("InlineTeamsPanel", () => {
     render(<InlineTeamsPanel panel="teams-dashboard" />);
     expect(screen.getByTestId("subscribe-overlay")).toBeInTheDocument();
     expect(screen.queryByTestId("teams-panel")).toBeNull();
+  });
+  it("threads detailId through to TeamsPanelRouter", () => {
+    render(
+      <InlineTeamsPanel panel="teams-issue-detail" detailId="iss_42" />,
+    );
+    const panel = screen.getByTestId("teams-panel");
+    expect(panel).toHaveTextContent("issue-detail");
+    expect(panel).toHaveAttribute("data-detail-id", "iss_42");
   });
 });

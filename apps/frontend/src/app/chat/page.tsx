@@ -10,7 +10,11 @@ import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/Marke
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
 import { useUnifiedNav } from "@/hooks/useUnifiedNav";
-import { InlineTeamsPanel, isTeamsPanelKey } from "@/components/chat/InlineTeamsPanel";
+import {
+  InlineTeamsPanel,
+  isTeamsPanelKey,
+  TEAMS_PANEL_PREFIX,
+} from "@/components/chat/InlineTeamsPanel";
 
 export default function ChatPage() {
   // useSearchParams() forces dynamic rendering; wrap in Suspense so the
@@ -31,6 +35,7 @@ function ChatPageInner() {
   // links and clicks share the same code path.
   const panelParam = searchParams.get("panel");
   const viewParam = searchParams.get("view");
+  const detailId = searchParams.get("detailId");
   const activeView: "chat" | "control" =
     viewParam === "control" || (viewParam !== "chat" && panelParam) ? "control" : "chat";
   const activePanel: string = panelParam || "overview";
@@ -48,6 +53,18 @@ function ChatPageInner() {
     (next: string) => {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", next);
+      params.set("view", "control");
+      router.replace(`/chat?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+  // Opens a Teams detail view inline: mirrors setActivePanel but also records
+  // the row id in ?detailId so InlineTeamsPanel can resolve the detail panel.
+  const openDetail = useCallback(
+    (panelKey: string, id: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("panel", `${TEAMS_PANEL_PREFIX}${panelKey}`);
+      params.set("detailId", id);
       params.set("view", "control");
       router.replace(`/chat?${params.toString()}`, { scroll: false });
     },
@@ -103,7 +120,11 @@ function ChatPageInner() {
           {activeView === "control" && (
             <div className="flex flex-col h-full min-h-0">
               {unifiedNav && isTeamsPanelKey(activePanel) ? (
-                <InlineTeamsPanel panel={activePanel} />
+                <InlineTeamsPanel
+                  panel={activePanel}
+                  detailId={detailId}
+                  openDetail={openDetail}
+                />
               ) : (
                 <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
               )}

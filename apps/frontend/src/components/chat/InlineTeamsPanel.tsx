@@ -9,6 +9,7 @@ import {
 import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
 import { CommandPaletteProvider } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
+import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 
 // Control-panel keys for the inline Teams panels are namespaced `teams-*`
 // so they never collide with the existing Control panel keys.
@@ -21,7 +22,15 @@ export function isTeamsPanelKey(panel: string): boolean {
 // Renders a Teams panel inside the /chat shell by reusing the exact same
 // TeamsPanelRouter + providers that /teams uses (TeamsLayout). GatewayProvider
 // is already present in /chat (page.tsx), which both providers depend on.
-export function InlineTeamsPanel({ panel }: { panel: string }): React.ReactElement {
+export function InlineTeamsPanel({
+  panel,
+  detailId,
+  openDetail,
+}: {
+  panel: string;
+  detailId?: string | null;
+  openDetail?: (panelKey: string, id: string) => void;
+}): React.ReactElement {
   const teamsPanel = panel.slice(TEAMS_PANEL_PREFIX.length);
   // Mirror the workspace-status gate /teams applies in TeamsLayout: surface the
   // provisioning / subscribe / error states with the same overlays instead of
@@ -31,13 +40,18 @@ export function InlineTeamsPanel({ panel }: { panel: string }): React.ReactEleme
   if (status.kind === "provisioning") return <ProvisioningOverlay />;
   if (status.kind === "subscribe_required") return <SubscribeOverlay />;
   if (status.kind === "error") return <ErrorOverlay error={status.error} />;
+  // The nav provider lets a list panel's "Open →" row open its detail view
+  // in-shell (via openDetail) instead of leaving for /teams. openDetail is a
+  // no-op fallback when the shell didn't supply one.
   return (
-    <TeamsEventsProvider>
-      <CommandPaletteProvider>
-        <div className="editorial-page h-full overflow-auto">
-          <TeamsPanelRouter panel={teamsPanel} />
-        </div>
-      </CommandPaletteProvider>
-    </TeamsEventsProvider>
+    <InlineTeamsNavProvider value={{ openDetail: openDetail ?? (() => {}) }}>
+      <TeamsEventsProvider>
+        <CommandPaletteProvider>
+          <div className="editorial-page h-full overflow-auto">
+            <TeamsPanelRouter panel={teamsPanel} detailId={detailId} />
+          </div>
+        </CommandPaletteProvider>
+      </TeamsEventsProvider>
+    </InlineTeamsNavProvider>
   );
 }

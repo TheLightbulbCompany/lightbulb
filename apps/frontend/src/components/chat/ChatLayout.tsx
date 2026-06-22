@@ -24,6 +24,7 @@ import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
+import { CompanyNav } from "@/components/chat/CompanyNav";
 import { FileViewer } from "@/components/chat/FileViewer";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
@@ -40,6 +41,7 @@ interface ChatLayoutProps {
   onViewChange: (view: "chat" | "control") => void;
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
+  unifiedNav?: boolean;
   fileViewerOpen?: boolean;
   activeFilePath?: string | null;
   onOpenFile?: (path: string) => void;
@@ -58,6 +60,7 @@ export function ChatLayout({
   onViewChange,
   activePanel,
   onPanelChange,
+  unifiedNav,
   fileViewerOpen,
   activeFilePath,
   onOpenFile,
@@ -430,13 +433,27 @@ export function ChatLayout({
                 })}
               </div>
 
+              {unifiedNav ? (
+                <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
+              ) : null}
+
               {/* Marketplace block — Browse + Publish buttons that open the
                   MarketplaceDrawer. The drawer (mounted on the chat page) owns
                   the install + auto-select flow now. */}
               <GallerySection />
             </>
           ) : (
-            <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
+            <>
+              {/* Keep the Company nav visible while an inline Teams panel is
+                  open: selecting one flips the view to "control", so without
+                  this the only Company nav (in the chat branch) would unmount
+                  and the user would lose Dashboard/Activity + the active
+                  highlight until switching back to Chat. */}
+              {unifiedNav ? (
+                <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
+              ) : null}
+              <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
+            </>
           )}
 
           {/* Footer */}

@@ -462,8 +462,9 @@ async def test_pair_with_extra_update_fields_threads_into_update_rpc():
 def _mock_live_pairing_deps(monkeypatch):
     """Patch the live-pairing function's self-constructed deps.
 
-    Returns (paired_store, admin) so tests can assert what landed in the
-    container's paired.json and whether the authToken rebind ran.
+    Returns (paired_store, admin, staged) so tests can assert what landed in the
+    container's paired.json, whether the authToken rebind ran, and what
+    per-agent identity file was staged.
     """
     paired_store: dict = {}
 
@@ -487,14 +488,51 @@ def _mock_live_pairing_deps(monkeypatch):
         "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
         AsyncMock(return_value="cookie"),
     )
-    return paired_store, admin
+
+    # Per-agent identity staging deps (step 3 of ensure_operator_device_paired).
+    # ensure_paperclip_api_key + resolve_company_id_for_owner + the staging
+    # helper are patched so the test never touches Secrets Manager / boto3 / EFS.
+    monkeypatch.setattr(
+        "core.services.paperclip_api_key.ensure_paperclip_api_key",
+        AsyncMock(return_value="agent-key"),
+    )
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
+        AsyncMock(return_value="co_x"),
+    )
+    monkeypatch.setattr(
+        "core.repositories.paperclip_repo.PaperclipRepo",
+        lambda **kwargs: MagicMock(),
+    )
+
+    staged: dict = {}
+
+    async def _fake_stage(*, owner_id, agent_id, token, company_id, api_url, workspace):
+        staged.update(
+            owner_id=owner_id,
+            agent_id=agent_id,
+            token=token,
+            company_id=company_id,
+            api_url=api_url,
+        )
+
+    monkeypatch.setattr(
+        "core.services.friday_identity.stage_paperclip_identity_for_agent",
+        _fake_stage,
+    )
+    monkeypatch.setattr(
+        "core.config.settings.PAPERCLIP_INTERNAL_URL",
+        "http://paperclip.internal",
+        raising=False,
+    )
+    return paired_store, admin, staged
 
 
 @pytest.mark.asyncio
 async def test_ensure_operator_device_paired_merges_and_binds(monkeypatch):
     """Happy path: the new agent's device lands in paired.json AND its
     authToken is rebound to the container gateway token."""
-    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    paired, admin, staged = _mock_live_pairing_deps(monkeypatch)
     ident = generate_operator_device()
     agent = _gw_agent("agent_live", pem=private_key_pem(ident), auth_token="service-jwt")
 
@@ -513,6 +551,59 @@ async def test_ensure_operator_device_paired_merges_and_binds(monkeypatch):
     assert body["adapterConfig"]["authToken"] == "GW_TOKEN"
     assert body["adapterConfig"]["claimedApiKeyPath"] == _claimed_path("agent_live")
     assert body["replaceAdapterConfig"] is True
+    # 3. The agent's per-agent Paperclip identity file is minted + staged so the
+    #    claimedApiKeyPath above resolves to a real credentials file. Live-create
+    #    flows never run write_user_configs, so this seam is the only one that
+    #    stages it for them.
+    assert staged == {
+        "owner_id": "user_1",
+        "agent_id": "agent_live",
+        "token": "agent-key",
+        "company_id": "co_x",
+        "api_url": "http://paperclip.internal",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ensure_operator_device_paired_stages_identity_even_when_token_already_bound(monkeypatch):
+    """The identity staging (step 3) runs unconditionally, even when authToken +
+    claimedApiKeyPath are already current and the patch_agent round-trip is
+    skipped. Otherwise a re-paired agent whose adapterConfig is already correct
+    would never get its credentials file written."""
+    paired, admin, staged = _mock_live_pairing_deps(monkeypatch)
+    ident = generate_operator_device()
+    agent = _gw_agent(
+        "agent_live",
+        pem=private_key_pem(ident),
+        auth_token="GW_TOKEN",
+        claimed_api_key_path=_claimed_path("agent_live"),
+    )
+
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
+
+    # No adapterConfig rebind needed, but the identity file is still staged.
+    admin.patch_agent.assert_not_awaited()
+    assert staged["agent_id"] == "agent_live"
+    assert staged["token"] == "agent-key"
+
+
+@pytest.mark.asyncio
+async def test_ensure_operator_device_paired_staging_failure_is_swallowed(monkeypatch):
+    """A failure minting the per-agent key (returns None) must not raise — the
+    device is still paired; the next reprovision re-stages."""
+    paired, admin, staged = _mock_live_pairing_deps(monkeypatch)
+    monkeypatch.setattr(
+        "core.services.paperclip_api_key.ensure_paperclip_api_key",
+        AsyncMock(side_effect=httpx.HTTPError("boom")),
+    )
+    ident = generate_operator_device()
+    agent = _gw_agent("agent_live", pem=private_key_pem(ident), auth_token="service-jwt")
+
+    # Must not raise even though the key mint blew up.
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
+    # Device still merged + authToken rebound despite the staging failure.
+    assert ident.device_id in paired
+    assert staged == {}
 
 
 @pytest.mark.asyncio
@@ -520,7 +611,7 @@ async def test_ensure_operator_device_paired_is_idempotent(monkeypatch):
     """A device already present with the same pubkey is left untouched (its
     metadata/tokens preserved) and no duplicate write occurs when authToken AND
     claimedApiKeyPath are already current."""
-    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    paired, admin, _ = _mock_live_pairing_deps(monkeypatch)
     ident = generate_operator_device()
     agent = _gw_agent(
         "agent_live",
@@ -541,29 +632,32 @@ async def test_ensure_operator_device_paired_is_idempotent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ensure_operator_device_paired_skips_non_gateway_adapter(monkeypatch):
-    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    paired, admin, staged = _mock_live_pairing_deps(monkeypatch)
     ident = generate_operator_device()
     agent = _gw_agent("a", pem=private_key_pem(ident), adapter_type="some_other")
 
     await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW")
     assert paired == {}
     admin.patch_agent.assert_not_awaited()
+    # Non-gateway agents short-circuit before staging.
+    assert staged == {}
 
 
 @pytest.mark.asyncio
 async def test_ensure_operator_device_paired_skips_without_pem(monkeypatch):
-    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    paired, admin, staged = _mock_live_pairing_deps(monkeypatch)
     agent = _gw_agent("a", pem=None)  # no devicePrivateKeyPem
 
     await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW")
     assert paired == {}
     admin.patch_agent.assert_not_awaited()
+    assert staged == {}
 
 
 @pytest.mark.asyncio
 async def test_ensure_operator_device_paired_token_bind_failure_is_swallowed(monkeypatch):
     """A failing authToken patch must not raise — the device is still paired."""
-    paired, admin = _mock_live_pairing_deps(monkeypatch)
+    paired, admin, _ = _mock_live_pairing_deps(monkeypatch)
     admin.patch_agent = AsyncMock(side_effect=httpx.HTTPError("boom"))
     ident = generate_operator_device()
     agent = _gw_agent("a", pem=private_key_pem(ident), auth_token="service-jwt")

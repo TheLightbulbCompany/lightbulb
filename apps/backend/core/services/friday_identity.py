@@ -733,6 +733,73 @@ async def pre_stage_friday_identity(
     )
 
 
+async def stage_paperclip_identity_for_agent(
+    *,
+    owner_id: str,
+    agent_id: str,
+    token: str,
+    company_id: str | None,
+    api_url: str | None,
+    workspace: Workspace,
+) -> None:
+    """Stage ONE agent's per-agent Paperclip identity file on EFS.
+
+    Single-agent counterpart to ``pre_stage_paperclip_identities`` — used by the
+    post-create pairing path (``ensure_operator_device_paired``) for agents
+    created against an already-running container. That flow never runs
+    ``write_user_configs``, so without this the new agent's
+    ``paperclip-claimed-api-key.json`` is never written and its first Paperclip
+    wake points at a missing credentials file.
+
+    Writes ``workspaces/{agent_id}/paperclip-claimed-api-key.json`` with the
+    agent's OWN credentials, write-if-missing (idempotent — an agent's evolved
+    file isn't clobbered). A missing ``token``/``company_id``/``api_url`` (key
+    mint failed or Paperclip unreachable) skips staging; the next reprovision
+    self-heals. Best-effort: failures log + emit metrics, never raise.
+    """
+    if not (token and company_id and api_url):
+        put_metric("paperclip_identity.seed.skipped_no_context")
+        logger.info(
+            "paperclip_identity.skipped: missing token/company_id/api_url for owner=%s agent=%s — deferring",
+            owner_id,
+            agent_id,
+        )
+        return
+
+    # Lock the file shape — it's Isol8-defined and read by the seed prompt
+    # via `jq -r .token` / .agentId / .companyId / .apiUrl.
+    content = json.dumps(
+        {
+            "token": token,
+            "agentId": agent_id,
+            "companyId": company_id,
+            "apiUrl": api_url,
+        }
+    )
+    rel_path = f"workspaces/{agent_id}/paperclip-claimed-api-key.json"
+    try:
+        wrote = workspace.write_file_if_missing(owner_id, rel_path, content)
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("paperclip_identity.seed.error")
+        logger.error(
+            "paperclip_identity: write failed for owner=%s agent=%s: %s",
+            owner_id,
+            agent_id,
+            exc,
+        )
+        return
+    if wrote:
+        put_metric("paperclip_identity.seed.success")
+    else:
+        put_metric("paperclip_identity.seed.skipped_existing")
+    logger.info(
+        "paperclip_identity: owner=%s agent=%s wrote=%s",
+        owner_id,
+        agent_id,
+        wrote,
+    )
+
+
 async def pre_stage_paperclip_identities(
     *,
     owner_id: str,

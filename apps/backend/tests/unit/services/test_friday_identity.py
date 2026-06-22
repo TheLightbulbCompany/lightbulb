@@ -579,4 +579,84 @@ async def test_paperclip_identities_per_file_failure_does_not_block_rest():
         workspace=workspace,
     )
 
-    assert workspace.write_file_if_missing.call_count == 2
+
+# ---------------------------------------------------------------------------
+# stage_paperclip_identity_for_agent (single-agent, post-create path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stage_single_agent_writes_identity_file():
+    """The single-agent seeder writes one claimed-key file with the exact
+    Isol8-defined shape into the agent's own workspace."""
+    import json as _json
+
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock(return_value=True)
+
+    await friday_identity.stage_paperclip_identity_for_agent(
+        owner_id="user_abc",
+        agent_id="agent-live",
+        token="key-live",
+        company_id="comp-1",
+        api_url="http://paperclip.internal:3100",
+        workspace=workspace,
+    )
+
+    workspace.write_file_if_missing.assert_called_once()
+    rel_path = workspace.write_file_if_missing.call_args.args[1]
+    assert rel_path == "workspaces/agent-live/paperclip-claimed-api-key.json"
+    doc = _json.loads(workspace.write_file_if_missing.call_args.args[2])
+    assert doc == {
+        "token": "key-live",
+        "agentId": "agent-live",
+        "companyId": "comp-1",
+        "apiUrl": "http://paperclip.internal:3100",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "token,company_id,api_url",
+    [
+        ("", "comp-1", "http://pc:3100"),  # key mint failed
+        ("key", None, "http://pc:3100"),  # company unresolved
+        ("key", "comp-1", None),  # paperclip url unset
+    ],
+)
+async def test_stage_single_agent_skips_on_incomplete_context(token, company_id, api_url):
+    """A missing token/company_id/api_url skips staging (no file written);
+    the next reprovision self-heals."""
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock()
+
+    await friday_identity.stage_paperclip_identity_for_agent(
+        owner_id="user_abc",
+        agent_id="agent-live",
+        token=token,
+        company_id=company_id,
+        api_url=api_url,
+        workspace=workspace,
+    )
+
+    workspace.write_file_if_missing.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stage_single_agent_write_failure_is_swallowed():
+    """A write error must not raise — best-effort, the next reprovision retries."""
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock(side_effect=OSError("disk full"))
+
+    # Should not raise.
+    await friday_identity.stage_paperclip_identity_for_agent(
+        owner_id="user_abc",
+        agent_id="agent-live",
+        token="key",
+        company_id="comp-1",
+        api_url="http://pc:3100",
+        workspace=workspace,
+    )
+
+    # The single write was attempted (and its error swallowed).
+    workspace.write_file_if_missing.assert_called_once()

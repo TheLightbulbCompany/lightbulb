@@ -500,6 +500,12 @@ class EcsManager:
         # Rebuild the openclaw container-def with a fresh environment list
         # that includes the freshly-set OPENCLAW_HOOK_TOKEN.
         existing_env = next(c for c in td["containerDefinitions"] if c["name"] == "openclaw")["environment"]
+        # Drop any container-wide PAPERCLIP_* env carried by task-defs registered
+        # before per-agent Paperclip identity. That shared env let every agent's
+        # curl resolve the seeded Friday identity; identity is now per-agent
+        # (each agent reads its own claimed-key file), so the legacy shared env
+        # must not survive a refresh and re-seed Friday's credentials fleet-wide.
+        existing_env = [e for e in existing_env if not e.get("name", "").startswith("PAPERCLIP_")]
         new_env = _build_per_user_environment(
             hook_token=container.get("hook_token") or "",
             existing=existing_env,

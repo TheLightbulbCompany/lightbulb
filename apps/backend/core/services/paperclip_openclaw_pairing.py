@@ -325,11 +325,14 @@ async def ensure_operator_device_paired(
         device_identity_from_pem,
     )
     from core.repositories import container_repo as _container_repo
+    from core.repositories.paperclip_repo import PaperclipRepo
     from core.services.desktop_pair import EfsWorkspaceAdapter
+    from core.services.friday_identity import stage_paperclip_identity_for_agent
     from core.services.paperclip_adapter_config import (
         OPENCLAW_GATEWAY_TYPE,
         claimed_api_key_path,
     )
+    from core.services.paperclip_api_key import ensure_paperclip_api_key
 
     if paperclip_agent.get("adapterType") != OPENCLAW_GATEWAY_TYPE:
         return
@@ -411,6 +414,40 @@ async def ensure_operator_device_paired(
                 agent_id,
                 e,
             )
+
+    # 3. Mint + stage this agent's per-agent Paperclip identity file
+    #    (paperclip-claimed-api-key.json) into its own workspace. The only other
+    #    place this happens is write_user_configs at provision, which live-create
+    #    flows (/chat, /teams, marketplace hire) never run — so without this the
+    #    new agent's claimedApiKeyPath above points at a missing file and its
+    #    first Paperclip wake can't authenticate until a full reprovision. Mirror
+    #    the same Secrets-Manager key minting + company resolution, then write the
+    #    file write-if-missing (idempotent). Best-effort: any failure here must
+    #    not break the user-visible agent create — the next reprovision re-stages.
+    try:
+        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+            repo = PaperclipRepo(table_name="paperclip-companies")
+            admin = PaperclipAdminClient(http_client=http)
+            token = await ensure_paperclip_api_key(
+                owner_id=owner_id,
+                paperclip_agent_id=agent_id,
+                admin_client=admin,
+            )
+            company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+            await stage_paperclip_identity_for_agent(
+                owner_id=owner_id,
+                agent_id=agent_id,
+                token=token or "",
+                company_id=company_id,
+                api_url=settings.PAPERCLIP_INTERNAL_URL or None,
+                workspace=get_workspace(),
+            )
+    except Exception as e:  # noqa: BLE001 — staging must not break the agent create
+        logger.warning(
+            "ensure_operator_device_paired: paperclip identity staging failed for agent=%s: %s",
+            agent_id,
+            e,
+        )
 
 
 async def pair_with_openclaw(

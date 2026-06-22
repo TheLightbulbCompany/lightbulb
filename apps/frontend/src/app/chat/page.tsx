@@ -54,6 +54,11 @@ function ChatPageInner() {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", next);
       params.set("view", "control");
+      // Plain panel nav shows an UNFILTERED view: drop any stale agent
+      // filter (from "See her work") and detail id (from an Open → row) so
+      // switching panels never carries another panel's filter/detail state.
+      params.delete("agent");
+      params.delete("detailId");
       router.replace(`/chat?${params.toString()}`, { scroll: false });
     },
     [router, searchParams],
@@ -65,6 +70,19 @@ function ChatPageInner() {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", `${TEAMS_PANEL_PREFIX}${panelKey}`);
       params.set("detailId", id);
+      params.set("view", "control");
+      router.replace(`/chat?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+  // "See her work →": opens the inline Issues panel filtered to one agent.
+  // Mirrors openDetail but records the agent id in ?agent (which IssuesPanel
+  // reads + filters on) instead of a detail row id.
+  const openAgentIssues = useCallback(
+    (agentId: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("panel", `${TEAMS_PANEL_PREFIX}issues`);
+      params.set("agent", agentId);
       params.set("view", "control");
       router.replace(`/chat?${params.toString()}`, { scroll: false });
     },
@@ -106,6 +124,7 @@ function ChatPageInner() {
           onViewChange={setActiveView}
           activePanel={activePanel}
           onPanelChange={setActivePanel}
+          openAgentIssues={openAgentIssues}
           unifiedNav={unifiedNav}
           fileViewerOpen={fileViewerOpen}
           activeFilePath={activeFilePath}

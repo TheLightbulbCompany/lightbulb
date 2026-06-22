@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { ListChecks } from "lucide-react";
+import { ListChecks, X } from "lucide-react";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   EditorialButton,
   PanelDataTable,
@@ -25,6 +26,13 @@ export function IssuesPanel() {
   // Inside the /chat shell a nav provider is present → open the detail view
   // in-shell. Standalone under /teams there's no provider → fall back to <a>.
   const nav = useInlineTeamsNav();
+  // `?agent=<id>` is set by the /chat roster's "See her work →" deep link.
+  // The /issues BFF takes no server agent filter, so we filter client-side on
+  // `assigneeAgentId` (the inbox does the same). Standalone /teams never sets
+  // this param → no filter.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const agentFilter = searchParams.get("agent");
   const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
     "/issues",
   );
@@ -41,12 +49,28 @@ export function IssuesPanel() {
   const issues = data?.issues;
   const filtered = useMemo(() => {
     const list = issues ?? [];
-    return search
-      ? list.filter((i) =>
-          i.title.toLowerCase().includes(search.toLowerCase()),
-        )
-      : list;
-  }, [issues, search]);
+    return list.filter(
+      (i) =>
+        (!agentFilter || i.assigneeAgentId === agentFilter) &&
+        (!search || i.title.toLowerCase().includes(search.toLowerCase())),
+    );
+  }, [issues, search, agentFilter]);
+
+  // Resolve the filtered agent's display name for the chip; fall back to a
+  // generic label when the roster hasn't loaded (or the id isn't in it).
+  const agentFilterName = useMemo(() => {
+    if (!agentFilter) return null;
+    const match = agentsData?.agents?.find((a) => a.id === agentFilter);
+    return match?.name ?? "one agent";
+  }, [agentFilter, agentsData]);
+
+  // Dismiss chip: strip ONLY the `agent` param, preserving panel/view/etc.
+  const clearAgentFilter = () => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("agent");
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : "?", { scroll: false });
+  };
 
   if (error)
     return (
@@ -128,6 +152,30 @@ export function IssuesPanel() {
         searchPlaceholder="Find issue..."
         searchAriaLabel="Search issues"
       />
+      {agentFilter ? (
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full py-0.5 pl-3 pr-1.5 text-xs"
+            style={{
+              border: "1px solid var(--edge)",
+              background: "var(--cream-deeper)",
+              color: "var(--ink-soft)",
+            }}
+          >
+            Filtered to {agentFilterName}
+            <button
+              type="button"
+              onClick={clearAgentFilter}
+              aria-label="Clear agent filter"
+              title="Clear agent filter"
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+              style={{ color: "var(--mute)" }}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        </div>
+      ) : null}
       {isLoading ? (
         <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
           Loading…

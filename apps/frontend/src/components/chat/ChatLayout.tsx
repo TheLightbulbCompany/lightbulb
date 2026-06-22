@@ -7,7 +7,7 @@ import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Grid2X2, HelpCircle } from "lucide-react";
+import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Grid2X2, HelpCircle, ListTodo } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -41,6 +41,7 @@ interface ChatLayoutProps {
   onViewChange: (view: "chat" | "control") => void;
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
+  openAgentIssues?: (agentId: string) => void;
   unifiedNav?: boolean;
   fileViewerOpen?: boolean;
   activeFilePath?: string | null;
@@ -60,6 +61,7 @@ export function ChatLayout({
   onViewChange,
   activePanel,
   onPanelChange,
+  openAgentIssues,
   unifiedNav,
   fileViewerOpen,
   activeFilePath,
@@ -408,6 +410,21 @@ export function ChatLayout({
                         })()}
                       </div>
                       <div className="agent-row-actions">
+                        {/* "See her work →": deep-link into the inline Issues
+                            panel filtered to this agent. Only wired when the
+                            unified nav is on — off-flag the teams-issues panel
+                            wouldn't route. */}
+                        {unifiedNav ? (
+                          <button
+                            type="button"
+                            className="agent-row-action"
+                            aria-label={`See ${agentDisplayName(agent)}'s work`}
+                            title={`See ${agentDisplayName(agent)}'s work`}
+                            onClick={(e) => { e.stopPropagation(); openAgentIssues?.(agent.id); }}
+                          >
+                            <ListTodo size={13} />
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className="agent-row-action"

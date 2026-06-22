@@ -124,8 +124,14 @@ export function AgentInspectorPanel() {
           <>
             <AgentOverviewTab agentId={agentId} agent={agent} />
             {orgAgent ? (
-              <section className="mt-6 border-t border-[#e0dbd0] pt-6">
-                <h3 className="text-[10px] uppercase tracking-wider text-[#8a8578]/60 mb-3">
+              <section
+                className="mt-6 border-t border-[#e0dbd0] pt-6"
+                aria-labelledby="inspector-org-heading"
+              >
+                <h3
+                  id="inspector-org-heading"
+                  className="text-[10px] uppercase tracking-wider text-[#8a8578] mb-3"
+                >
                   Organization
                 </h3>
                 <AgentOrgControls agent={orgAgent} agents={rosterAgents} />

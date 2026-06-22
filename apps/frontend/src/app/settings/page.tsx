@@ -15,12 +15,21 @@ import { HandlePicker } from "@/components/marketplace/HandlePicker";
 import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/Logo";
+import { UsagePanel } from "@/components/control/panels/UsagePanel";
+import { ADMIN_ONLY_PANELS, useIsControlAdmin } from "@/components/control/ControlSidebar";
 
 // =============================================================================
 // Types & Navigation
 // =============================================================================
 
-type Panel = "profile" | "billing" | "channels" | "webhooks" | "desktop" | "marketplace";
+type Panel =
+  | "profile"
+  | "billing"
+  | "usage"
+  | "channels"
+  | "webhooks"
+  | "desktop"
+  | "marketplace";
 
 // A nav item is either an in-page tab (sets activePanel) or an outbound
 // link to a sibling settings route (`href`). Connections lives on its own
@@ -49,6 +58,8 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
     label: "BILLING & USAGE",
     items: [
       { id: "billing", name: "Billing", icon: "billing", panel: "billing" },
+      // Admin-gated: hidden from non-admin org members via ADMIN_ONLY_PANELS.
+      { id: "usage", name: "Usage", icon: "usage", panel: "usage" },
     ],
   },
   {
@@ -137,6 +148,14 @@ function NavIcon({ icon }: { icon: string }) {
           <path d="M9 8V2" />
           <path d="M15 8V2" />
           <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+        </svg>
+      );
+    case "usage":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <line x1="18" y1="20" x2="18" y2="10" />
+          <line x1="12" y1="20" x2="12" y2="4" />
+          <line x1="6" y1="20" x2="6" y2="14" />
         </svg>
       );
     default:
@@ -374,6 +393,7 @@ function MarketplaceProfileEditor() {
 const PANELS: Record<Panel, () => React.ReactElement> = {
   profile: ProfilePanel,
   billing: BillingPanel,
+  usage: UsagePanel,
   channels: ChannelsPanel,
   webhooks: WebhooksPanel,
   desktop: DesktopFileAccess,
@@ -396,27 +416,34 @@ export default function SettingsPage() {
 }
 
 function SettingsPageInner() {
-  // ?panel=billing|profile|channels preselects the tab. Used by deep
-  // links from the chat banners (TrialBanner "Manage" CTA, etc.) so they
-  // land on the right pane.
+  // Personal owners are admins; org members are admins only with org:admin.
+  // Reused (not re-derived) from ControlSidebar so the Settings gate matches
+  // the Control surface exactly.
+  const isAdmin = useIsControlAdmin();
+
+  // ?panel=<key> preselects the tab. Used by deep links from the chat banners
+  // (TrialBanner "Manage" CTA, etc.) so they land on the right pane. Validated
+  // against the live PANELS registry — any registered panel is deep-linkable —
+  // and admin-only panels fall back to profile for non-admins so a stray
+  // ?panel=usage never mounts an admin RPC for a member.
   const searchParams = useSearchParams();
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
-    initialPanelParam === "billing" ||
-    initialPanelParam === "channels" ||
-    initialPanelParam === "webhooks" ||
-    initialPanelParam === "desktop" ||
-    initialPanelParam === "marketplace"
-      ? initialPanelParam
+    initialPanelParam !== null &&
+    initialPanelParam in PANELS &&
+    (isAdmin || !ADMIN_ONLY_PANELS.has(initialPanelParam))
+      ? (initialPanelParam as Panel)
       : "profile";
   const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 
   // Arrow-key roving focus operates only over the in-page tabs. Outbound
   // links (e.g. Connections) are excluded so they don't try to set a panel
-  // that doesn't exist.
+  // that doesn't exist, and admin-only tabs hidden from non-admins are excluded
+  // so roving focus never lands on an unrendered row.
   const tabNavItems = NAV_SECTIONS.flatMap((s) => s.items).filter(
-    (n): n is NavItem & { panel: Panel } => n.panel !== undefined,
+    (n): n is NavItem & { panel: Panel } =>
+      n.panel !== undefined && (isAdmin || !ADMIN_ONLY_PANELS.has(n.panel)),
   );
 
   function handleNavKeyDown(
@@ -476,7 +503,14 @@ function SettingsPageInner() {
             <div key={section.label}>
               <div className="settings-nav-section-label">{section.label}</div>
               <ul className="settings-nav-items" role="tablist">
-                {section.items.map((item) =>
+                {section.items
+                  .filter(
+                    (item) =>
+                      isAdmin ||
+                      item.panel === undefined ||
+                      !ADMIN_ONLY_PANELS.has(item.panel),
+                  )
+                  .map((item) =>
                   item.href ? (
                     // Outbound link to a sibling settings route — rendered
                     // as a plain link, not a tab, so it navigates away.

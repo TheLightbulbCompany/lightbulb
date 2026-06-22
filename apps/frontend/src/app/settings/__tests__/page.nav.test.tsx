@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import React from "react";
 
@@ -28,9 +28,13 @@ vi.mock("@/components/control/panels/ChannelsStatusPanel", () => ({
   ChannelsStatusPanel: () => <div data-testid="channels-status-panel" />,
 }));
 
-// Personal owner (no org membership) → treated as admin, so admin-gated nav
-// rows (Usage) render. `useOrganization` returning `{ membership: null }`
-// mirrors the personal-owner branch of `useIsControlAdmin`.
+// Mutable membership holder so individual tests can flip admin ↔ non-admin.
+// `null` = personal owner = admin (the `useIsControlAdmin` personal branch);
+// `{ role: "org:member" }` = a non-admin org member (Usage must hide).
+const clerk = vi.hoisted(() => ({
+  membership: null as { role: string } | null,
+}));
+
 vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({
     user: {
@@ -41,7 +45,7 @@ vi.mock("@clerk/nextjs", () => ({
     },
   }),
   useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true }),
-  useOrganization: () => ({ membership: null, organization: null }),
+  useOrganization: () => ({ membership: clerk.membership, organization: null }),
   UserButton: () => <div data-testid="user-button" />,
 }));
 
@@ -58,6 +62,10 @@ vi.mock("@/hooks/useBilling", () => ({
 import SettingsPage from "../page";
 
 describe("Settings nav — 6 intent-ordered groups", () => {
+  beforeEach(() => {
+    clerk.membership = null; // default: personal owner = admin
+  });
+
   it("renders the six group headers in order", () => {
     render(<SettingsPage />);
     const labels = screen
@@ -86,5 +94,20 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(nav).getByText("Webhooks")).toBeInTheDocument(); // WIRING
     expect(within(nav).getByText("Desktop")).toBeInTheDocument(); // WIRING
     expect(within(nav).getByText("Marketplace")).toBeInTheDocument(); // SELLER
+  });
+
+  // --- Inc 3: Usage (admin-gated, BILLING & USAGE) ---
+  it("shows the admin-gated Usage row for an admin owner", () => {
+    clerk.membership = null; // personal owner = admin
+    render(<SettingsPage />);
+    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(nav).getByText("Usage")).toBeInTheDocument();
+  });
+
+  it("hides the Usage row from a non-admin org member", () => {
+    clerk.membership = { role: "org:member" };
+    render(<SettingsPage />);
+    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(nav).queryByText("Usage")).not.toBeInTheDocument();
   });
 });

@@ -319,6 +319,21 @@ RUN set -eux; \
     rm -rf /opt/stage-acpx; \
     chown -R root:root /app/dist/extensions/acpx
 
+# ---- Layer 14: bundled Paperclip skill ----
+# The `paperclip` skill is the agent's operating manual for the Paperclip
+# control plane — checking assignments, updating issues, posting comments,
+# approvals, and (critically) managing ROUTINES, the single governed home for
+# recurring agent work now that the in-container `cron` tool is denied.
+# OpenClaw auto-discovers bundled skills at /app/skills/<name>/SKILL.md (see
+# the fork's src/skills/loading), so we COPY the vendored skill there. COPY
+# lands it root-owned, matching /app and the externalized-plugin bakes above.
+# Vendored from the Paperclip skills-catalog, kept in lockstep with the baked
+# @paperclipai/mcp-server (2026.529.0). The skill drives Paperclip's REST API
+# directly; its auth env (PAPERCLIP_API_KEY / API_URL / COMPANY_ID / AGENT_ID)
+# is injected into the per-user ECS task environment at provision time
+# (ecs_manager), which the agent's exec subprocess inherits.
+COPY skills/paperclip /app/skills/paperclip
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node

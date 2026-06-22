@@ -501,6 +501,15 @@ class EcsManager:
             hook_token=container.get("hook_token") or "",
             existing=existing_env,
         )
+        # Keep the Paperclip auth env current across the refresh too — every
+        # re-register path must carry PAPERCLIP_* so the bundled `paperclip`
+        # skill's curl calls (and the agent's exec shell) stay authenticated.
+        # Strip any stale entries, then append the freshly-resolved ones
+        # (best-effort; [] on failure).
+        paperclip_env = await self._paperclip_runtime_env(owner_id)
+        if paperclip_env:
+            _pc_names = {e["name"] for e in paperclip_env}
+            new_env = [e for e in new_env if e.get("name") not in _pc_names] + paperclip_env
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env
@@ -917,6 +926,15 @@ class EcsManager:
             # base would otherwise revert the container to the shared
             # all-models task role (same self-heal class as hook_token above).
             owner_task_role_arn = container.get("bedrock_role_arn")
+            # Re-thread the Paperclip auth env. This is the image-update path —
+            # rolling the bundled `paperclip` skill onto existing containers via
+            # a tag bump comes through here — and it re-registers from the CDK
+            # base, which carries no per-user env. Without this the container
+            # would get /app/skills/paperclip but the agent shell would lack
+            # PAPERCLIP_*, so the skill's curl-based routine calls couldn't
+            # authenticate. Best-effort ([] on failure); the builder merges it
+            # onto the base env (and layers OPENCLAW_HOOK_TOKEN on top).
+            paperclip_env = await self._paperclip_runtime_env(user_id)
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -925,6 +943,7 @@ class EcsManager:
                 new_memory=new_memory,
                 hook_token=hook_token,
                 task_role_arn=owner_task_role_arn,
+                environment_for_task=paperclip_env,
             )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
@@ -1578,6 +1597,17 @@ class EcsManager:
             if settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
                 environment_for_task.extend(_build_bedrock_acp_harness_env(bedrock_aip_arns))
 
+        # Paperclip runtime auth on the per-user task env so the bundled
+        # `paperclip` skill's REST calls authenticate AND the agent's exec
+        # subprocess inherits them (OpenClaw spreads the process env into exec
+        # commands). This mirrors the Paperclip MCP server's env block (written
+        # by write_openclaw_config into openclaw.json) but lands it on the task
+        # env so the skill's shell — not just the MCP server process — is
+        # authenticated. Resolved here, before EITHER provision path registers
+        # the task def. Best-effort: returns [] on any failure so provisioning
+        # never blocks on a Paperclip hiccup; the next reprovision self-heals.
+        environment_for_task.extend(await self._paperclip_runtime_env(user_id))
+
         service_name = self._service_name(user_id)
 
         # Check current state (`existing` was read above, before the mint).
@@ -2040,6 +2070,71 @@ class EcsManager:
                         task_arn = task.get("taskArn") or task_arns[0]
                         return task_arn, detail.get("value")
         return None, None
+
+    async def _paperclip_runtime_env(self, owner_id: str) -> list[dict]:
+        """Resolve Friday's Paperclip auth as ECS ``environment`` entries.
+
+        Returns ``[{"name": "PAPERCLIP_API_URL", "value": ...}, ...]`` for the
+        four vars the bundled ``paperclip`` skill reads — ``PAPERCLIP_API_URL``,
+        ``PAPERCLIP_API_KEY``, ``PAPERCLIP_COMPANY_ID``, ``PAPERCLIP_AGENT_ID`` —
+        or ``[]`` when Paperclip is unreachable or no CEO agent exists yet.
+
+        These are the same values ``write_openclaw_config`` writes into the
+        Paperclip MCP server's env block, but placed on the ECS task env so the
+        agent's *exec shell* (the skill issues raw ``curl`` calls, including for
+        routines, which the MCP has no dedicated tool for) is authenticated —
+        not just the MCP server process. It is Friday's long-lived per-agent
+        key, container-wide (the same identity the MCP already uses).
+
+        Best-effort + idempotent: any failure returns ``[]`` so provisioning
+        never blocks on Paperclip; a later reprovision adds it.
+        """
+        import httpx
+
+        from core.repositories.paperclip_repo import PaperclipRepo
+        from core.services.paperclip_admin_client import PaperclipAdminClient
+        from core.services.paperclip_openclaw_pairing import (
+            fetch_paperclip_agents_for_owner,
+            resolve_company_id_for_owner,
+        )
+
+        api_url = settings.PAPERCLIP_INTERNAL_URL or None
+        if not api_url:
+            return []
+        http = None
+        try:
+            http = httpx.AsyncClient(base_url=api_url, timeout=15.0)
+            repo = PaperclipRepo(table_name="paperclip-companies")
+            admin_client = PaperclipAdminClient(http_client=http)
+            agents = await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
+            friday = next((a for a in agents if a.get("role") == "ceo"), None)
+            if not (friday and friday.get("id")):
+                return []
+            from core.services.paperclip_api_key import ensure_paperclip_api_key
+
+            api_key = await ensure_paperclip_api_key(
+                owner_id=owner_id,
+                paperclip_agent_id=friday["id"],
+                admin_client=admin_client,
+            )
+            company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+            if not (api_key and company_id):
+                return []
+            return [
+                {"name": "PAPERCLIP_API_URL", "value": api_url},
+                {"name": "PAPERCLIP_API_KEY", "value": api_key},
+                {"name": "PAPERCLIP_COMPANY_ID", "value": company_id},
+                {"name": "PAPERCLIP_AGENT_ID", "value": friday["id"]},
+            ]
+        except Exception:  # noqa: BLE001 — best-effort; provision must not fail on a Paperclip hiccup.
+            logger.exception(
+                "paperclip runtime env resolution failed for %s; provisioning without it",
+                owner_id,
+            )
+            return []
+        finally:
+            if http is not None:
+                await http.aclose()
 
     async def write_user_configs(
         self,

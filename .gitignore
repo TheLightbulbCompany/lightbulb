@@ -67,4 +67,6 @@ apps/desktop/src-tauri/.sidecar-tmp/
 
 # Read-only upstream reference clones (mirror the ~/Desktop/openclaw pattern;
 # see CLAUDE.md). Cloned locally for greppable reference, never committed.
-paperclip/
+# Root-anchored so it only ignores the top-level clone — vendored copies of
+# Paperclip assets under apps/ (e.g. the baked `paperclip` skill) stay tracked.
+/paperclip/

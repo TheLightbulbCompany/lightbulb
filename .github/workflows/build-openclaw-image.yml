@@ -5,6 +5,11 @@ on:
       - main
     paths:
       - "apps/infra/openclaw/Dockerfile"
+      # The Dockerfile bakes apps/infra/openclaw/skills/** into the image, so a
+      # change to the bundled skill (e.g. SKILL.md, a reference, or a helper
+      # script) must rebuild + republish — otherwise promoted tags keep shipping
+      # stale skill content.
+      - "apps/infra/openclaw/skills/**"
       - "openclaw-version.json"
   workflow_dispatch: {}
 

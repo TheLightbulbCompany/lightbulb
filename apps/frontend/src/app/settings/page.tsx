@@ -34,16 +34,43 @@ type NavItem = {
   href?: string;
 };
 
+// Six intent-ordered groups (design.md §5). This increment re-buckets the
+// EXISTING panels only and stands up the (currently empty) MODEL & PROVIDERS /
+// ENGINE ROOM headers; the Control panels that fill them are registered in the
+// following increments via the per-panel insertion checklist.
 const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
   {
-    label: "Account",
+    label: "ACCOUNT",
     items: [
       { id: "profile", name: "Profile", icon: "profile", panel: "profile" },
+    ],
+  },
+  {
+    label: "BILLING & USAGE",
+    items: [
       { id: "billing", name: "Billing", icon: "billing", panel: "billing" },
+    ],
+  },
+  {
+    label: "MODEL & PROVIDERS",
+    items: [],
+  },
+  {
+    label: "WIRING",
+    items: [
       { id: "channels", name: "Channels", icon: "channels", panel: "channels" },
       { id: "connections", name: "Connections", icon: "connections", href: "/settings/connections" },
       { id: "webhooks", name: "Webhooks", icon: "webhooks", panel: "webhooks" },
       { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
+    ],
+  },
+  {
+    label: "ENGINE ROOM",
+    items: [],
+  },
+  {
+    label: "SELLER",
+    items: [
       { id: "marketplace", name: "Marketplace", icon: "marketplace", panel: "marketplace" },
     ],
   },

@@ -39,4 +39,10 @@ describe("CompanyNav", () => {
     const btn = screen.getByText("Routines").closest("button");
     expect(btn?.className).toMatch(/forest/);
   });
+  it("is a shrinkable scroll region so the expanded nav can't clip the sidebar", () => {
+    render(<CompanyNav />);
+    const nav = screen.getByRole("navigation", { name: "Company" });
+    expect(nav.className).toMatch(/min-h-0/);
+    expect(nav.className).toMatch(/overflow-y-auto/);
+  });
 });

@@ -443,7 +443,17 @@ export function ChatLayout({
               <GallerySection />
             </>
           ) : (
-            <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
+            <>
+              {/* Keep the Company nav visible while an inline Teams panel is
+                  open: selecting one flips the view to "control", so without
+                  this the only Company nav (in the chat branch) would unmount
+                  and the user would lose Dashboard/Activity + the active
+                  highlight until switching back to Chat. */}
+              {unifiedNav ? (
+                <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
+              ) : null}
+              <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
+            </>
           )}
 
           {/* Footer */}

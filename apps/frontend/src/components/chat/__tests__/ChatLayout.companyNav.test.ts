@@ -17,4 +17,11 @@ describe("ChatLayout — Company nav", () => {
   it("keeps the Teams pill fallback intact", () => {
     expect(source).toMatch(/className="teams-pill"/);
   });
+  it("renders CompanyNav in BOTH the chat and control sidebar branches so it stays visible for inline Teams panels", () => {
+    // Selecting a Company item flips the view to "control"; CompanyNav must
+    // also render in the control branch, or it would unmount on click and the
+    // user would lose the Dashboard/Activity nav + active highlight.
+    const renderSites = source.match(/<CompanyNav\b/g) ?? [];
+    expect(renderSites.length).toBeGreaterThanOrEqual(2);
+  });
 });

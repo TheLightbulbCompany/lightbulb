@@ -985,6 +985,74 @@ async def _intercept_agents_create(
     return True
 
 
+# Non-fatal retry budget for the inner Paperclip mirror PATCH. The
+# mirror is best-effort (the reconciler
+# ``scripts.reconcile_paperclip_profile_meta`` is the durable backstop),
+# so this only smooths over transient blips — it never changes the
+# best-effort contract.
+_PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
+
+
+async def _mirror_paperclip_meta_with_retry(
+    *,
+    admin: "PaperclipAdminClient",
+    cookie: str,
+    company_id: str,
+    owner_id: str,
+    agent_id: str,
+    role: str,
+    title: str | None,
+    capabilities: str | None,
+    icon: str | None,
+) -> None:
+    """Confirm the agent belongs to ``company_id`` then PATCH its
+    Paperclip profile-meta, with a small non-fatal retry on transient
+    failures.
+
+    Retries only on transient errors — a ``PaperclipApiError`` whose
+    ``retryable`` flag is set (5xx / 429) or any ``httpx.HTTPError``
+    (transport blip). Permanent 4xx state errors (e.g. a 422 bad role)
+    are NOT retried — they re-raise immediately. After the attempt
+    budget is exhausted the last error re-raises so the caller's outer
+    ``except`` logs it once; this helper NEVER swallows on its own, so
+    the caller keeps full control of save-success/failure semantics.
+
+    The cross-company scope check (the PATCH hits the unscoped
+    ``/api/agents/{id}`` with the bootstrap admin cookie) runs once,
+    before any retry — a foreign-tenant agent id is skipped, not
+    retried.
+    """
+    target = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
+    if target.get("companyId") != company_id:
+        logger.warning(
+            "[%s] paperclip meta mirror skipped: agent=%s not in company=%s",
+            owner_id,
+            agent_id,
+            company_id,
+        )
+        return
+
+    for attempt in range(_PAPERCLIP_MIRROR_MAX_ATTEMPTS):
+        try:
+            await admin.update_agent(
+                session_cookie=cookie,
+                agent_id=agent_id,
+                role=role,
+                title=title,
+                capabilities=capabilities,
+                icon=icon,
+            )
+            return
+        except (PaperclipApiError, httpx.HTTPError) as e:
+            retryable = isinstance(e, httpx.HTTPError) or getattr(e, "retryable", False)
+            is_last = attempt == _PAPERCLIP_MIRROR_MAX_ATTEMPTS - 1
+            if not retryable or is_last:
+                # Permanent error, or out of attempts — surface it so the
+                # caller's outer best-effort ``except`` logs it once.
+                raise
+            await asyncio.sleep(0.2 * 2**attempt)
+
+
 async def _intercept_agents_update(
     *,
     owner_id: str,
@@ -1035,29 +1103,26 @@ async def _intercept_agents_update(
                     pc_block.get("capabilities") if isinstance(pc_block.get("capabilities"), str) else None
                 )
                 pc_icon = pc_block.get("icon") if isinstance(pc_block.get("icon"), str) else None
-                # The PATCH below hits the unscoped /api/agents/{id} with
+                # The mirror PATCH hits the unscoped /api/agents/{id} with
                 # the bootstrap admin cookie, which can reach any
-                # company's agent. agent_id is client-supplied, so confirm
-                # the target belongs to THIS owner's company before
-                # mutating it — otherwise a caller could pass another
-                # tenant's agent id and have us write to their row.
-                target = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
-                if target.get("companyId") != company_id:
-                    logger.warning(
-                        "[%s] paperclip meta mirror skipped: agent=%s not in company=%s",
-                        owner_id,
-                        agent_id,
-                        company_id,
-                    )
-                else:
-                    await admin.update_agent(
-                        session_cookie=cookie,
-                        agent_id=agent_id,
-                        role=meta.role,
-                        title=pc_title,
-                        capabilities=pc_capabilities,
-                        icon=pc_icon,
-                    )
+                # company's agent. agent_id is client-supplied, so the
+                # helper confirms the target belongs to THIS owner's
+                # company before mutating it — otherwise a caller could
+                # pass another tenant's agent id and have us write to
+                # their row. The helper retries transient failures but
+                # NEVER swallows — it re-raises so this block's best-effort
+                # except is the single place the mirror error is logged.
+                await _mirror_paperclip_meta_with_retry(
+                    admin=admin,
+                    cookie=cookie,
+                    company_id=company_id,
+                    owner_id=owner_id,
+                    agent_id=agent_id,
+                    role=meta.role,
+                    title=pc_title,
+                    capabilities=pc_capabilities,
+                    icon=pc_icon,
+                )
     except (PaperclipApiError, httpx.HTTPError, RuntimeError) as e:
         logger.warning(
             "[%s] paperclip update_agent mirror failed agent=%s err=%s",

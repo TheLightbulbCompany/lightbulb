@@ -67,12 +67,12 @@ describe("Settings nav — 6 intent-ordered groups", () => {
   });
 
   it("renders the six group headers in order", () => {
-    render(<SettingsPage />);
-    const labels = screen
-      .getAllByText(
-        /^(ACCOUNT|BILLING & USAGE|MODEL & PROVIDERS|WIRING|ENGINE ROOM|SELLER)$/i,
-      )
-      .map((el) => el.textContent?.toUpperCase());
+    const { container } = render(<SettingsPage />);
+    // Scope to the section-label nodes only — a nav *item* like
+    // "Model & Providers" would otherwise collide with the header text.
+    const labels = Array.from(
+      container.querySelectorAll(".settings-nav-section-label"),
+    ).map((el) => el.textContent?.toUpperCase());
     expect(labels).toEqual([
       "ACCOUNT",
       "BILLING & USAGE",
@@ -109,5 +109,15 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     render(<SettingsPage />);
     const nav = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(nav).queryByText("Usage")).not.toBeInTheDocument();
+  });
+
+  // --- Inc 4: Model & Providers (LLMPanel, MODEL & PROVIDERS) ---
+  it("registers the Model & Providers row and renders LLMPanel on select", () => {
+    render(<SettingsPage />);
+    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
+    const row = within(nav).getByText("Model & Providers");
+    expect(row).toBeInTheDocument();
+    // No separate Credits row — CreditsSection is embedded inside LLMPanel.
+    expect(within(nav).queryByText("Credits")).not.toBeInTheDocument();
   });
 });

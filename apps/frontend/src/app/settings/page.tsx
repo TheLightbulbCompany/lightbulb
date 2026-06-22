@@ -16,6 +16,7 @@ import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/Logo";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
+import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { ADMIN_ONLY_PANELS, useIsControlAdmin } from "@/components/control/ControlSidebar";
 
 // =============================================================================
@@ -26,6 +27,7 @@ type Panel =
   | "profile"
   | "billing"
   | "usage"
+  | "providers"
   | "channels"
   | "webhooks"
   | "desktop"
@@ -64,7 +66,11 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
   },
   {
     label: "MODEL & PROVIDERS",
-    items: [],
+    items: [
+      // LLMPanel verbatim — it already embeds CreditsSection + ModelRoutingCard,
+      // so there is NO separate Credits row.
+      { id: "providers", name: "Model & Providers", icon: "providers", panel: "providers" },
+    ],
   },
   {
     label: "WIRING",
@@ -156,6 +162,12 @@ function NavIcon({ icon }: { icon: string }) {
           <line x1="18" y1="20" x2="18" y2="10" />
           <line x1="12" y1="20" x2="12" y2="4" />
           <line x1="6" y1="20" x2="6" y2="14" />
+        </svg>
+      );
+    case "providers":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
         </svg>
       );
     default:
@@ -394,6 +406,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   profile: ProfilePanel,
   billing: BillingPanel,
   usage: UsagePanel,
+  providers: LLMPanel,
   channels: ChannelsPanel,
   webhooks: WebhooksPanel,
   desktop: DesktopFileAccess,

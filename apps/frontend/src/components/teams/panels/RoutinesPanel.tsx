@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Repeat } from "lucide-react";
 import {
   EditorialButton,
@@ -22,7 +22,7 @@ interface Routine {
   enabled: boolean;
 }
 
-export function RoutinesPanel() {
+export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   const { read, post, patch, del } = useTeamsApi();
   // In-shell (provider present) → open the detail view inline; standalone
   // under /teams (no provider) → fall back to <a>.
@@ -34,12 +34,19 @@ export function RoutinesPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
-  const routines = data?.routines ?? [];
-  const filtered = search
-    ? routines.filter((r) =>
-        r.name.toLowerCase().includes(search.toLowerCase()),
-      )
-    : routines;
+  const routines = data?.routines;
+  // `agentId` (when set by the per-agent inspector) is an INTRINSIC scope: the
+  // panel is mounted under a single agent, so we filter to its routines with no
+  // dismissible chip. Standalone under /teams the prop is absent → unchanged.
+  // The free-text `search` filter applies on top in both modes.
+  const filtered = useMemo(() => {
+    const list = routines ?? [];
+    return list.filter(
+      (r) =>
+        (!agentId || r.agent_id === agentId) &&
+        (!search || r.name.toLowerCase().includes(search.toLowerCase())),
+    );
+  }, [routines, agentId, search]);
 
   async function toggle(id: string, enabled: boolean) {
     setBusy(id);

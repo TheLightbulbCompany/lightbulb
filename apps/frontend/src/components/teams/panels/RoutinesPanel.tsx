@@ -10,6 +10,7 @@ import {
   PanelToolbar,
   type PanelDataColumn,
 } from "@/components/teams/shell";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Routine {
@@ -23,6 +24,9 @@ interface Routine {
 
 export function RoutinesPanel() {
   const { read, post, patch, del } = useTeamsApi();
+  // In-shell (provider present) → open the detail view inline; standalone
+  // under /teams (no provider) → fall back to <a>.
+  const nav = useInlineTeamsNav();
   const { data, isLoading, error, mutate } = read<{ routines: Routine[] }>(
     "/routines",
   );
@@ -136,14 +140,23 @@ export function RoutinesPanel() {
       key: "open",
       header: "",
       align: "right",
-      cell: (r) => (
-        <a
-          href={`/teams/routines/${r.id}`}
-          className="text-sm text-[var(--forest)] hover:underline"
-        >
-          Open →
-        </a>
-      ),
+      cell: (r) =>
+        nav ? (
+          <button
+            type="button"
+            onClick={() => nav.openDetail("routine-detail", r.id)}
+            className="text-sm text-[var(--forest)] hover:underline"
+          >
+            Open →
+          </button>
+        ) : (
+          <a
+            href={`/teams/routines/${r.id}`}
+            className="text-sm text-[var(--forest)] hover:underline"
+          >
+            Open →
+          </a>
+        ),
     },
   ];
 

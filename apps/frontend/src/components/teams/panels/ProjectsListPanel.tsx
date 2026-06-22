@@ -11,6 +11,7 @@ import {
   PanelToolbar,
   type PanelDataColumn,
 } from "@/components/teams/shell";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 interface Project {
@@ -22,6 +23,9 @@ interface Project {
 
 export function ProjectsListPanel() {
   const { read } = useTeamsApi();
+  // In-shell (provider present) → open the detail view inline; standalone
+  // under /teams (no provider) → fall back to <a>.
+  const nav = useInlineTeamsNav();
   const { data, isLoading, error, mutate } = read<{ projects: Project[] }>(
     "/projects",
   );
@@ -70,15 +74,25 @@ export function ProjectsListPanel() {
       key: "open",
       header: "",
       align: "right",
-      cell: (p) => (
-        <a
-          href={`/teams/projects/${p.id}`}
-          className="text-sm hover:underline"
-          style={{ color: "var(--forest)" }}
-        >
-          Open →
-        </a>
-      ),
+      cell: (p) =>
+        nav ? (
+          <button
+            type="button"
+            onClick={() => nav.openDetail("project-detail", p.id)}
+            className="text-sm hover:underline"
+            style={{ color: "var(--forest)" }}
+          >
+            Open →
+          </button>
+        ) : (
+          <a
+            href={`/teams/projects/${p.id}`}
+            className="text-sm hover:underline"
+            style={{ color: "var(--forest)" }}
+          >
+            Open →
+          </a>
+        ),
     },
   ];
 

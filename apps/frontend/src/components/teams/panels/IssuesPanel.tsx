@@ -12,6 +12,7 @@ import {
 } from "@/components/teams/shell";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { IssueStatusMenu } from "@/components/teams/issues/IssueStatusMenu";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   CompanyAgent,
@@ -21,6 +22,9 @@ import type {
 
 export function IssuesPanel() {
   const { read } = useTeamsApi();
+  // Inside the /chat shell a nav provider is present → open the detail view
+  // in-shell. Standalone under /teams there's no provider → fall back to <a>.
+  const nav = useInlineTeamsNav();
   const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
     "/issues",
   );
@@ -87,14 +91,23 @@ export function IssuesPanel() {
       key: "open",
       header: "",
       align: "right",
-      cell: (i) => (
-        <a
-          href={`/teams/issues/${i.id}`}
-          className="text-sm text-[var(--forest)] hover:underline"
-        >
-          Open →
-        </a>
-      ),
+      cell: (i) =>
+        nav ? (
+          <button
+            type="button"
+            onClick={() => nav.openDetail("issue-detail", i.id)}
+            className="text-sm text-[var(--forest)] hover:underline"
+          >
+            Open →
+          </button>
+        ) : (
+          <a
+            href={`/teams/issues/${i.id}`}
+            className="text-sm text-[var(--forest)] hover:underline"
+          >
+            Open →
+          </a>
+        ),
     },
   ];
 

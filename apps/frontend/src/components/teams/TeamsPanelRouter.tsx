@@ -46,12 +46,31 @@ const PANELS: Record<string, React.ComponentType> = {
   ),
 };
 
+// Detail panels take their id as a prop (not propless like the list panels in
+// PANELS), so they get their own dynamic imports + a dedicated branch that
+// passes the id through from `detailId`.
+const IssueDetailPanel = dynamic(() =>
+  import("./panels/IssueDetailPanel").then((m) => m.IssueDetailPanel),
+);
+const RoutineDetailPanel = dynamic(() =>
+  import("./panels/RoutineDetailPanel").then((m) => m.RoutineDetailPanel),
+);
+const ProjectDetailPanel = dynamic(() =>
+  import("./panels/ProjectDetailPanel").then((m) => m.ProjectDetailPanel),
+);
+
 // Panels removed from the nav but still reachable by old URLs/bookmarks.
 const RETIRED_REDIRECTS: Record<string, string> = {
   approvals: "/teams/inbox", // folded into the inbox "Needs attention" band
 };
 
-export function TeamsPanelRouter({ panel }: { panel: string }) {
+export function TeamsPanelRouter({
+  panel,
+  detailId,
+}: {
+  panel: string;
+  detailId?: string | null;
+}) {
   const router = useRouter();
   const redirectTo = RETIRED_REDIRECTS[panel];
 
@@ -60,6 +79,17 @@ export function TeamsPanelRouter({ panel }: { panel: string }) {
   }, [redirectTo, router]);
 
   if (redirectTo) return null;
+
+  // Detail branch — must precede the list map. A detail key without a
+  // detailId falls through to "Unknown panel" below (no id to render).
+  if (detailId) {
+    if (panel === "issue-detail")
+      return <IssueDetailPanel issueId={detailId} />;
+    if (panel === "routine-detail")
+      return <RoutineDetailPanel routineId={detailId} />;
+    if (panel === "project-detail")
+      return <ProjectDetailPanel projectId={detailId} />;
+  }
 
   const Cmp = PANELS[panel];
   if (!Cmp) return <div className="p-8">Unknown panel: {panel}</div>;

@@ -95,3 +95,41 @@ async def test_best_effort_empty_on_resolution_exception():
         assert await mgr._paperclip_runtime_env("org_x") == []
     # Even on failure the client is closed (finally).
     http.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resize_threads_paperclip_env_into_taskdef():
+    """resize_user_container (the image-update path the skill tag-bump rolls
+    existing containers through) threads the Paperclip env into the new task
+    def, so the agent shell keeps PAPERCLIP_* after an image update."""
+    from core.containers import ecs_manager
+
+    mgr = ecs_manager.EcsManager()
+    pc_env = [
+        {"name": "PAPERCLIP_API_KEY", "value": "pcp_key"},
+        {"name": "PAPERCLIP_API_URL", "value": "http://pc.local:3100"},
+    ]
+    fake_ecs = MagicMock()
+    fake_ecs.register_task_definition.return_value = {
+        "taskDefinition": {"taskDefinitionArn": "arn:aws:ecs:us-east-1:877352799272:task-definition/x:6"}
+    }
+    fake_ecs.update_service.return_value = {}
+    fake_ecs.describe_services.return_value = {"services": [{"desiredCount": 0}]}
+    builder = MagicMock(return_value={"family": "fam", "containerDefinitions": []})
+    container = {
+        "owner_id": "u_1",
+        "access_point_id": "fsap-1",
+        "hook_token": "tok",
+        "service_name": "svc",
+    }
+    with (
+        patch("core.repositories.container_repo.get_by_owner_id", new=AsyncMock(return_value=container)),
+        patch("core.repositories.container_repo.update_fields", new=AsyncMock()),
+        patch.object(mgr, "_ecs", fake_ecs),
+        patch.object(mgr, "_paperclip_runtime_env", new=AsyncMock(return_value=pc_env)),
+        patch.object(mgr, "_build_register_kwargs_from_base", new=builder),
+    ):
+        await mgr.resize_user_container("u_1", new_image="img:new")
+
+    # The image-update path passed the resolved Paperclip env to the builder.
+    assert builder.call_args.kwargs["environment_for_task"] == pc_env

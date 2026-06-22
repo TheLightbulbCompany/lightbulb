@@ -501,6 +501,15 @@ class EcsManager:
             hook_token=container.get("hook_token") or "",
             existing=existing_env,
         )
+        # Keep the Paperclip auth env current across the refresh too — every
+        # re-register path must carry PAPERCLIP_* so the bundled `paperclip`
+        # skill's curl calls (and the agent's exec shell) stay authenticated.
+        # Strip any stale entries, then append the freshly-resolved ones
+        # (best-effort; [] on failure).
+        paperclip_env = await self._paperclip_runtime_env(owner_id)
+        if paperclip_env:
+            _pc_names = {e["name"] for e in paperclip_env}
+            new_env = [e for e in new_env if e.get("name") not in _pc_names] + paperclip_env
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env
@@ -917,6 +926,15 @@ class EcsManager:
             # base would otherwise revert the container to the shared
             # all-models task role (same self-heal class as hook_token above).
             owner_task_role_arn = container.get("bedrock_role_arn")
+            # Re-thread the Paperclip auth env. This is the image-update path —
+            # rolling the bundled `paperclip` skill onto existing containers via
+            # a tag bump comes through here — and it re-registers from the CDK
+            # base, which carries no per-user env. Without this the container
+            # would get /app/skills/paperclip but the agent shell would lack
+            # PAPERCLIP_*, so the skill's curl-based routine calls couldn't
+            # authenticate. Best-effort ([] on failure); the builder merges it
+            # onto the base env (and layers OPENCLAW_HOOK_TOKEN on top).
+            paperclip_env = await self._paperclip_runtime_env(user_id)
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -925,6 +943,7 @@ class EcsManager:
                 new_memory=new_memory,
                 hook_token=hook_token,
                 task_role_arn=owner_task_role_arn,
+                environment_for_task=paperclip_env,
             )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)

@@ -773,9 +773,6 @@ def build_openclaw_config_dict(
     paperclip_agents: list[dict] | None = None,
     hook_token: str | None = None,
     owner_type: str = "personal",
-    paperclip_api_key: str | None = None,
-    paperclip_company_id: str | None = None,
-    paperclip_api_url: str | None = None,
     integration_mcp_servers: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
@@ -1223,55 +1220,19 @@ def build_openclaw_config_dict(
         },
     }
 
-    # Wire the Paperclip MCP server when we have the per-agent API key in
-    # hand. The MCP runs inside the user container via npx and lets Friday
-    # call Paperclip's REST API (paperclipCreateIssue, paperclipListAgents,
-    # paperclipGetHeartbeatContext, …) without us proxying through the
-    # backend with a global admin cookie. Auth attributes per-agent —
-    # actions show as Friday in Paperclip's audit log.
-    #
-    # The Routers/integrations.py read path keys on config["mcp"]["servers"]
-    # — same shape consumed by the MCP Servers control-panel surface.
-    #
-    # If the key isn't available (Paperclip outage during provision, key
-    # not yet minted, etc.), we simply omit the block. The next reprovision
-    # self-heals via ensure_paperclip_api_key.
-    if paperclip_api_key and paperclip_company_id and paperclip_api_url and paperclip_agents:
-        friday = next(
-            (a for a in paperclip_agents if a.get("role") == "ceo"),
-            None,
-        )
-        if friday and friday.get("id"):
-            config["mcp"] = {
-                "servers": {
-                    "paperclip": {
-                        # Kept on `npx` so it resolves on ANY deployed image. The
-                        # binary is now baked as a global bin (Dockerfile Layer 8),
-                        # but switching this to the bare `paperclip-mcp-server`
-                        # command (instant spawn, off the npx connect storm) must
-                        # wait until the baked image tag is selected in
-                        # openclaw-version.json and rolled out — otherwise a
-                        # provision against an older image writes a command its
-                        # OpenClaw can't resolve and the MCP loses all tools.
-                        "command": "npx",
-                        "args": ["-y", "@paperclipai/mcp-server"],
-                        "env": {
-                            "PAPERCLIP_API_URL": paperclip_api_url,
-                            "PAPERCLIP_API_KEY": paperclip_api_key,
-                            "PAPERCLIP_COMPANY_ID": paperclip_company_id,
-                            "PAPERCLIP_AGENT_ID": friday["id"],
-                        },
-                    },
-                },
-            }
+    # Paperclip is no longer wired as an MCP server. The MCP env is
+    # container-wide + shared-frozen, so every agent that called it acted as
+    # Friday — wrong attribution. Each agent now authenticates to Paperclip
+    # with its OWN key via the bundled `paperclip` skill (curl), loading its
+    # identity from a per-agent file in its workspace
+    # (``friday_identity.pre_stage_paperclip_identities`` +
+    # ``paperclip_adapter_config.claimed_api_key_path``). See the seed prompt
+    # in ``friday_identity._AGENTS_TEMPLATE``.
 
     # Merge the owner's connected integration MCP servers (Stripe, …) into the
-    # same servers map. A reprovision does a full overwrite of openclaw.json, so
+    # mcp.servers map. A reprovision does a full overwrite of openclaw.json, so
     # unless these are re-injected here the connection is dropped. Each value is
-    # a full {command, args, env} block; integration keys win for their own key
-    # while the paperclip block (and any servers map shape it created) is
-    # preserved. setdefault handles the paperclip-absent case where no mcp block
-    # was emitted above.
+    # a full {command, args, env} block.
     if integration_mcp_servers:
         servers = config.setdefault("mcp", {}).setdefault("servers", {})
         servers.update(integration_mcp_servers)
@@ -1351,9 +1312,6 @@ async def write_openclaw_config(
     paperclip_agents: list[dict] | None = None,
     hook_token: str | None = None,
     owner_type: str = "personal",
-    paperclip_api_key: str | None = None,
-    paperclip_company_id: str | None = None,
-    paperclip_api_url: str | None = None,
     integration_mcp_servers: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
@@ -1408,9 +1366,6 @@ async def write_openclaw_config(
         paperclip_agents=paperclip_agents,
         hook_token=hook_token,
         owner_type=owner_type,
-        paperclip_api_key=paperclip_api_key,
-        paperclip_company_id=paperclip_company_id,
-        paperclip_api_url=paperclip_api_url,
         integration_mcp_servers=integration_mcp_servers,
         aip_arns=aip_arns,
         channel_accounts=channel_accounts,

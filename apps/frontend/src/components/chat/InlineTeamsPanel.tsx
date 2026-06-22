@@ -1,5 +1,11 @@
 "use client";
 
+import { useTeamsWorkspaceStatus } from "@/hooks/useTeamsApi";
+import {
+  ProvisioningOverlay,
+  SubscribeOverlay,
+  ErrorOverlay,
+} from "@/components/teams/TeamsLayout";
 import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
 import { CommandPaletteProvider } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
@@ -17,6 +23,14 @@ export function isTeamsPanelKey(panel: string): boolean {
 // is already present in /chat (page.tsx), which both providers depend on.
 export function InlineTeamsPanel({ panel }: { panel: string }): React.ReactElement {
   const teamsPanel = panel.slice(TEAMS_PANEL_PREFIX.length);
+  // Mirror the workspace-status gate /teams applies in TeamsLayout: surface the
+  // provisioning / subscribe / error states with the same overlays instead of
+  // letting the panels fall through to generic loading/error. (loading and
+  // ready both render the panel — identical to /teams.)
+  const status = useTeamsWorkspaceStatus();
+  if (status.kind === "provisioning") return <ProvisioningOverlay />;
+  if (status.kind === "subscribe_required") return <SubscribeOverlay />;
+  if (status.kind === "error") return <ErrorOverlay error={status.error} />;
   return (
     <TeamsEventsProvider>
       <CommandPaletteProvider>

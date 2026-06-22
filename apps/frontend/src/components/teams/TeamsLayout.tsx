@@ -36,7 +36,7 @@ function OverlayShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function ProvisioningOverlay() {
+export function ProvisioningOverlay() {
   return (
     <OverlayShell>
       <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--ink)]">
@@ -49,7 +49,7 @@ function ProvisioningOverlay() {
   );
 }
 
-function SubscribeOverlay() {
+export function SubscribeOverlay() {
   return (
     <OverlayShell>
       <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--ink)]">
@@ -63,7 +63,7 @@ function SubscribeOverlay() {
   );
 }
 
-function ErrorOverlay({ error }: { error: Error }) {
+export function ErrorOverlay({ error }: { error: Error }) {
   return (
     <OverlayShell>
       <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--ink)]">

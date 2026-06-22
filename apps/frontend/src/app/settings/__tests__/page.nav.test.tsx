@@ -120,4 +120,19 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     // No separate Credits row — CreditsSection is embedded inside LLMPanel.
     expect(within(nav).queryByText("Credits")).not.toBeInTheDocument();
   });
+
+  // --- Inc 5: MCP servers (WIRING) + ENGINE ROOM trio ---
+  it("registers the MCP servers row in WIRING", () => {
+    render(<SettingsPage />);
+    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(nav).getByText("MCP servers")).toBeInTheDocument();
+  });
+
+  it("registers the ENGINE ROOM panels (Skills, Skill Proposals, Dreams)", () => {
+    render(<SettingsPage />);
+    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(nav).getByText("Skills")).toBeInTheDocument();
+    expect(within(nav).getByText("Skill Proposals")).toBeInTheDocument();
+    expect(within(nav).getByText("Dreams / Memory")).toBeInTheDocument();
+  });
 });

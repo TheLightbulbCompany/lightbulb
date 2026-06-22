@@ -17,6 +17,10 @@ import { cn } from "@/lib/utils";
 import { Logo } from "@/components/Logo";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
+import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
+import { SkillsTab } from "@/components/control/panels/SkillsTab";
+import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
+import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
 import { ADMIN_ONLY_PANELS, useIsControlAdmin } from "@/components/control/ControlSidebar";
 
 // =============================================================================
@@ -29,8 +33,12 @@ type Panel =
   | "usage"
   | "providers"
   | "channels"
+  | "mcp"
   | "webhooks"
   | "desktop"
+  | "skills"
+  | "skill-proposals"
+  | "dreams"
   | "marketplace";
 
 // A nav item is either an in-page tab (sets activePanel) or an outbound
@@ -77,13 +85,20 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
     items: [
       { id: "channels", name: "Channels", icon: "channels", panel: "channels" },
       { id: "connections", name: "Connections", icon: "connections", href: "/settings/connections" },
+      // MCP servers (owner-level mcp.servers) — the IntegrationsPanel tab; the
+      // OAuth-return *route* above (Connections) is the dedup counterpart (§5).
+      { id: "mcp", name: "MCP servers", icon: "mcp", panel: "mcp" },
       { id: "webhooks", name: "Webhooks", icon: "webhooks", panel: "webhooks" },
       { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
     ],
   },
   {
     label: "ENGINE ROOM",
-    items: [],
+    items: [
+      { id: "skills", name: "Skills", icon: "skills", panel: "skills" },
+      { id: "skill-proposals", name: "Skill Proposals", icon: "skill-proposals", panel: "skill-proposals" },
+      { id: "dreams", name: "Dreams / Memory", icon: "dreams", panel: "dreams" },
+    ],
   },
   {
     label: "SELLER",
@@ -168,6 +183,35 @@ function NavIcon({ icon }: { icon: string }) {
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        </svg>
+      );
+    case "mcp":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7" />
+          <rect x="14" y="3" width="7" height="7" />
+          <rect x="14" y="14" width="7" height="7" />
+          <rect x="3" y="14" width="7" height="7" />
+        </svg>
+      );
+    case "skills":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+        </svg>
+      );
+    case "skill-proposals":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+          <path d="m9 15 2 2 4-4" />
+        </svg>
+      );
+    case "dreams":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z" />
         </svg>
       );
     default:
@@ -408,8 +452,14 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   usage: UsagePanel,
   providers: LLMPanel,
   channels: ChannelsPanel,
+  mcp: IntegrationsPanel,
   webhooks: WebhooksPanel,
   desktop: DesktopFileAccess,
+  // SkillsTab takes an optional `agentId`; mounting it prop-less yields the
+  // owner-level (global) skills surface — the engine-room home.
+  skills: () => <SkillsTab />,
+  "skill-proposals": SkillProposalsPanel,
+  dreams: DreamsPanel,
   marketplace: MarketplacePanel,
 };
 

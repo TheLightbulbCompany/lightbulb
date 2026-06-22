@@ -60,9 +60,11 @@ vi.mock("next/navigation", () => ({
 
 import { InboxPage } from "@/components/teams/inbox/InboxPage";
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
+import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
 import { useReadInboxItems } from "@/components/teams/inbox/hooks/useReadInboxItems";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
+import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import type { Issue } from "@/components/teams/shared/types";
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -111,9 +113,22 @@ beforeEach(() => {
     update: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
   } as unknown as ReturnType<typeof useIssueMutations>);
+  vi.mocked(useInboxKeyboardNav).mockReset();
   mockRouterPush.mockReset();
   mockRouterReplace.mockReset();
 });
+
+/**
+ * Pulls the `onOpen` callback InboxPage hands to useInboxKeyboardNav. The hook
+ * is mocked so the callback never fires from a real keystroke; invoking it
+ * directly is the unit-level way to exercise the "open the selected row" path
+ * (Enter / Arrow-Open) without simulating the whole keyboard pipeline.
+ */
+function captureOnOpen(): (item: { id: string }) => void {
+  const call = vi.mocked(useInboxKeyboardNav).mock.calls.at(-1);
+  if (!call) throw new Error("useInboxKeyboardNav was not called");
+  return call[0].onOpen as (item: { id: string }) => void;
+}
 
 describe("InboxPage", () => {
   test("renders skeleton while initially loading with no sections", () => {
@@ -293,6 +308,53 @@ describe("InboxPage", () => {
     await waitFor(() => {
       expect(mockRouterPush).toHaveBeenCalledWith("/teams/issues/iss_new_42");
     });
+  });
+
+  test("keyboard-open routes through router.push when standalone (no nav shell)", () => {
+    render(<InboxPage {...baseProps} />);
+    const onOpen = captureOnOpen();
+    onOpen({ id: "iss_kbd" });
+    expect(mockRouterPush).toHaveBeenCalledWith("/teams/issues/iss_kbd");
+  });
+
+  test("keyboard-open opens the detail in-shell when a nav provider is present", () => {
+    const openDetail = vi.fn();
+    render(
+      <InlineTeamsNavProvider value={{ openDetail }}>
+        <InboxPage {...baseProps} />
+      </InlineTeamsNavProvider>,
+    );
+    const onOpen = captureOnOpen();
+    onOpen({ id: "iss_kbd" });
+    expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_kbd");
+    expect(mockRouterPush).not.toHaveBeenCalled();
+  });
+
+  test("creating a new issue opens the detail in-shell when a nav provider is present", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValue({ id: "iss_new_99", title: "Hi" } as Issue);
+    vi.mocked(useIssueMutations).mockReturnValue({
+      create,
+      update: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useIssueMutations>);
+    const openDetail = vi.fn();
+
+    render(
+      <InlineTeamsNavProvider value={{ openDetail }}>
+        <InboxPage {...baseProps} />
+      </InlineTeamsNavProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
+    const titleInput = await screen.findByLabelText(/title/i);
+    fireEvent.change(titleInput, { target: { value: "Hi" } });
+    fireEvent.click(screen.getByRole("button", { name: /^create issue$/i }));
+
+    await waitFor(() => {
+      expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_new_99");
+    });
+    expect(mockRouterPush).not.toHaveBeenCalled();
   });
 
   test("board view sources from all issues so cancelled issues render", async () => {

@@ -1,7 +1,7 @@
 // Ported from upstream Paperclip's IssueRow.tsx
 // (paperclip/ui/src/components/IssueRow.tsx) (MIT, (c) 2025 Paperclip AI).
 
-import type { ReactNode } from "react";
+import { useCallback, type MouseEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { Eye, X } from "lucide-react";
 import type { Issue } from "@/components/teams/shared/types";
@@ -10,6 +10,7 @@ import {
   rememberIssueDetailLocationState,
   withIssueDetailHeaderSeed,
 } from "@/components/teams/shared/lib/issueDetailBreadcrumb";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { cn } from "@/lib/utils";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { productivityReviewTriggerLabel } from "@/components/teams/shared/components/ProductivityReviewBadge";
@@ -70,6 +71,33 @@ export function IssueRow({
   // human-readable identifier (e.g. ENG-42). So link by id; the identifier is
   // display-only (see `identifier` below).
   const issuePathId = issue.id;
+  // Inside the /chat shell a nav provider is present → intercept the row's
+  // own <Link> click and open the detail view in-shell. Standalone under
+  // /teams there's no provider (hook returns null) → the <Link href> drives
+  // navigation untouched, keeping middle-click / keyboard / direct-link intact.
+  const nav = useInlineTeamsNav();
+  const handleOpen = useCallback(
+    (event: MouseEvent<HTMLAnchorElement>) => {
+      if (!nav) return;
+      // Only plain left-clicks route in-shell. Preserve native <Link>
+      // behavior for modified / non-primary clicks (Cmd/Ctrl → new tab,
+      // Shift → new window, middle-click) and any click another handler has
+      // already handled — otherwise we'd swallow "open in new tab".
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      event.preventDefault();
+      nav.openDetail("issue-detail", issuePathId);
+    },
+    [nav, issuePathId],
+  );
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
@@ -124,6 +152,7 @@ export function IssueRow({
       onClickCapture={() =>
         rememberIssueDetailLocationState(issuePathId, detailState)
       }
+      onClick={handleOpen}
       className={cn(
         "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",

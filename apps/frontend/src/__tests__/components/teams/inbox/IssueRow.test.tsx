@@ -6,6 +6,7 @@ import { test, expect, vi } from "vitest";
 
 import { render, fireEvent } from "@testing-library/react";
 import { IssueRow } from "@/components/teams/inbox/IssueRow";
+import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import type { Issue } from "@/components/teams/shared/types";
 
 const issue: Issue = {
@@ -60,4 +61,79 @@ test("archive button fires onArchive without following the link", () => {
   );
   fireEvent.click(getByRole("button", { name: /dismiss from inbox/i }));
   expect(onArchive).toHaveBeenCalledTimes(1);
+});
+
+test("inside the inline nav shell, clicking the row opens the detail in-shell", () => {
+  // Under /chat an InlineTeamsNavProvider is mounted: the row must intercept
+  // its own <Link> click, preventDefault, and route the issue's internal id
+  // through openDetail("issue-detail", id) instead of navigating to /teams.
+  const openDetail = vi.fn();
+  const { container } = render(
+    <InlineTeamsNavProvider value={{ openDetail }}>
+      <IssueRow issue={issue} />
+    </InlineTeamsNavProvider>,
+  );
+  const link = container.querySelector(
+    "a[data-inbox-issue-link]",
+  ) as HTMLAnchorElement;
+  expect(link).not.toBeNull();
+  // The <Link href> stays present (middle-click / keyboard / standalone all
+  // still resolve to the native detail route).
+  expect(link.getAttribute("href")).toBe("/teams/issues/iss_1");
+
+  const clickEvent = new MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+  });
+  link.dispatchEvent(clickEvent);
+
+  expect(openDetail).toHaveBeenCalledTimes(1);
+  expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_1");
+  // Interception must cancel the native navigation.
+  expect(clickEvent.defaultPrevented).toBe(true);
+});
+
+test("inside the shell, a modified click keeps native link behavior (new tab)", () => {
+  // Cmd/Ctrl-click → new tab, Shift → new window, middle-click must NOT be
+  // intercepted, or "open in new tab" on the /teams/issues/<id> href would be
+  // swallowed and replace the inline panel instead.
+  const openDetail = vi.fn();
+  const { container } = render(
+    <InlineTeamsNavProvider value={{ openDetail }}>
+      <IssueRow issue={issue} />
+    </InlineTeamsNavProvider>,
+  );
+  const link = container.querySelector(
+    "a[data-inbox-issue-link]",
+  ) as HTMLAnchorElement;
+
+  const cmdClick = new MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    metaKey: true,
+  });
+  link.dispatchEvent(cmdClick);
+
+  expect(openDetail).not.toHaveBeenCalled();
+  expect(cmdClick.defaultPrevented).toBe(false);
+});
+
+test("without a nav provider the row click is not intercepted", () => {
+  // Standalone /teams: no provider → no openDetail, no preventDefault, the
+  // <Link href> drives navigation exactly as before.
+  const { container } = render(<IssueRow issue={issue} />);
+  const link = container.querySelector(
+    "a[data-inbox-issue-link]",
+  ) as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe("/teams/issues/iss_1");
+
+  const clickEvent = new MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+  });
+  link.dispatchEvent(clickEvent);
+
+  // The handler is a no-op without a provider: it never calls preventDefault,
+  // so the native <Link> navigation proceeds untouched.
+  expect(clickEvent.defaultPrevented).toBe(false);
 });

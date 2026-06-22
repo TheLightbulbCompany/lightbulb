@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import type { Issue } from "@/components/teams/shared/types";
@@ -39,6 +40,7 @@ function issueHref(issue: Issue): string {
 }
 
 function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
+  const nav = useInlineTeamsNav();
   const agentName = (id: string | null | undefined): string | null => {
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
@@ -56,7 +58,27 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
       // suppresses navigation when a drag just happened.
       draggable={false}
       onClick={(e) => {
-        if (isDragging) e.preventDefault();
+        // A drag just happened — suppress navigation.
+        if (isDragging) {
+          e.preventDefault();
+          return;
+        }
+        // Inside the /chat shell, route a plain left-click to the inline
+        // detail view; keep native <Link> behavior for modified / non-primary
+        // clicks (new tab/window) and for standalone /teams (no nav provider).
+        if (!nav) return;
+        if (
+          e.defaultPrevented ||
+          e.button !== 0 ||
+          e.metaKey ||
+          e.ctrlKey ||
+          e.shiftKey ||
+          e.altKey
+        ) {
+          return;
+        }
+        e.preventDefault();
+        nav.openDetail("issue-detail", issue.id);
       }}
     >
       <div className="flex items-start gap-1.5 mb-1.5">

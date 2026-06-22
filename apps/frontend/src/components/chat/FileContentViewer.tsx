@@ -4,6 +4,8 @@ import * as React from "react";
 import { Loader2, Save } from "lucide-react";
 import type { FileInfo } from "@/hooks/useWorkspaceFiles";
 import { notifyApiError } from "@/lib/notify";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { LobsterGraphView } from "@/components/chat/LobsterGraphView";
 
 interface FileContentViewerProps {
   file: FileInfo | null;
@@ -115,8 +117,9 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
     );
   }
 
-  // Editable text file
-  return (
+  // Editable text file. The header + textarea are shared by the plain
+  // editor and the Code tab of the .lobster viewer.
+  const editor = (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-3 py-1.5 bg-[#f3efe6] border-b border-[#e0dbd0] flex-shrink-0">
         <span className="text-xs text-[#8a8578]">{file.name}</span>
@@ -132,7 +135,6 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
           </button>
         </div>
       </div>
-
       <textarea
         ref={textareaRef}
         value={editContent}
@@ -141,5 +143,57 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
         spellCheck={false}
       />
     </div>
+  );
+
+  // .lobster files get a Graph (default) | Code tab pair. Graph renders the
+  // current editor content so it reflects unsaved edits when you switch back.
+  if (file.name.endsWith(".lobster")) {
+    return <LobsterTabbedViewer editor={editor} content={editContent} />;
+  }
+
+  return editor;
+}
+
+function LobsterTabbedViewer({
+  editor,
+  content,
+}: {
+  editor: React.ReactNode;
+  content: string;
+}) {
+  const [tab, setTab] = React.useState<"graph" | "code">("graph");
+  return (
+    <Tabs value={tab} onValueChange={(v) => setTab(v as "graph" | "code")} className="flex flex-col h-full">
+      {/* The line variant drops shadcn's default pill so the tabs read as part
+          of the viewer's header band; active state is a flat green underline. */}
+      <TabsList
+        variant="line"
+        className="flex-shrink-0 w-full justify-start gap-1 bg-[#f3efe6] border-b border-[#e0dbd0] px-2 py-1"
+      >
+        {/* Radix activates a trigger on pointer-down, not on a bare click;
+            the explicit onClick keeps switching reliable under both real
+            input and synthetic click events. */}
+        <TabsTrigger
+          value="graph"
+          onClick={() => setTab("graph")}
+          className="flex-none text-xs text-[#8a8578] data-[state=active]:text-[#06402B] data-[state=active]:after:bg-[#06402B]"
+        >
+          Graph
+        </TabsTrigger>
+        <TabsTrigger
+          value="code"
+          onClick={() => setTab("code")}
+          className="flex-none text-xs text-[#8a8578] data-[state=active]:text-[#06402B] data-[state=active]:after:bg-[#06402B]"
+        >
+          Code
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="graph" className="flex-1 min-h-0 m-0">
+        <LobsterGraphView content={content} onViewCode={() => setTab("code")} />
+      </TabsContent>
+      <TabsContent value="code" className="flex-1 min-h-0 m-0">
+        {editor}
+      </TabsContent>
+    </Tabs>
   );
 }

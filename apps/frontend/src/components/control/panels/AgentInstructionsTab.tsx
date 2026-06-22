@@ -58,17 +58,14 @@ export function AgentInstructionsTab({ agentId }: AgentInstructionsTabProps) {
     <div className="flex flex-col h-full py-4">
       <div
         className="flex items-center gap-1 mb-3"
-        role="tablist"
-        aria-label="Identity files"
+        role="group"
+        aria-label="Identity file"
       >
         {IDENTITY_FILES.map((name) => (
           <button
             key={name}
             type="button"
-            role="tab"
-            id={`instructions-file-${name}`}
-            aria-selected={selectedFile === name}
-            aria-controls="instructions-file-panel"
+            aria-pressed={selectedFile === name}
             className={cn(
               "px-3 py-1.5 rounded-md text-xs font-medium font-mono transition-colors",
               selectedFile === name
@@ -86,12 +83,7 @@ export function AgentInstructionsTab({ agentId }: AgentInstructionsTabProps) {
         Changes apply on the agent&apos;s next session.
       </p>
 
-      <div
-        className="flex-1 min-h-0 border border-[#e0dbd0] rounded-md overflow-hidden"
-        role="tabpanel"
-        id="instructions-file-panel"
-        aria-labelledby={`instructions-file-${selectedFile}`}
-      >
+      <div className="flex-1 min-h-0 border border-[#e0dbd0] rounded-md overflow-hidden">
         <FileContentViewer
           file={file}
           isLoading={isLoading}

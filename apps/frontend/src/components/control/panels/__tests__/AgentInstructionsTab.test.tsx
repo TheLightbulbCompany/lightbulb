@@ -68,9 +68,9 @@ describe("AgentInstructionsTab", () => {
 
   it("renders the three identity-file options", () => {
     render(<AgentInstructionsTab agentId="agent_42" />);
-    expect(screen.getByRole("tab", { name: "IDENTITY.md" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "SOUL.md" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "USER.md" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "IDENTITY.md" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SOUL.md" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "USER.md" })).toBeInTheDocument();
   });
 
   it("defaults to reading IDENTITY.md", () => {
@@ -82,14 +82,14 @@ describe("AgentInstructionsTab", () => {
 
   it("reads SOUL.md when its option is selected", () => {
     render(<AgentInstructionsTab agentId="agent_42" />);
-    fireEvent.click(screen.getByRole("tab", { name: "SOUL.md" }));
+    fireEvent.click(screen.getByRole("button", { name: "SOUL.md" }));
     expect(lastReadPath).toBe("SOUL.md");
     expect(screen.getByTestId("viewer-path")).toHaveTextContent("SOUL.md");
   });
 
   it("saves via saveWorkspaceFile(agentId, path, content, 'config')", async () => {
     render(<AgentInstructionsTab agentId="agent_42" />);
-    fireEvent.click(screen.getByRole("tab", { name: "SOUL.md" }));
+    fireEvent.click(screen.getByRole("button", { name: "SOUL.md" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(saveWorkspaceFile).toHaveBeenCalledWith(
       "agent_42",
@@ -106,19 +106,19 @@ describe("AgentInstructionsTab", () => {
     ).toBeInTheDocument();
   });
 
-  it("marks the active identity-file option with aria-selected", () => {
+  it("marks the active identity-file option with aria-pressed", () => {
     render(<AgentInstructionsTab agentId="agent_42" />);
-    expect(screen.getByRole("tab", { name: "IDENTITY.md" })).toHaveAttribute(
-      "aria-selected",
+    expect(screen.getByRole("button", { name: "IDENTITY.md" })).toHaveAttribute(
+      "aria-pressed",
       "true",
     );
-    fireEvent.click(screen.getByRole("tab", { name: "USER.md" }));
-    expect(screen.getByRole("tab", { name: "USER.md" })).toHaveAttribute(
-      "aria-selected",
+    fireEvent.click(screen.getByRole("button", { name: "USER.md" }));
+    expect(screen.getByRole("button", { name: "USER.md" })).toHaveAttribute(
+      "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("tab", { name: "IDENTITY.md" })).toHaveAttribute(
-      "aria-selected",
+    expect(screen.getByRole("button", { name: "IDENTITY.md" })).toHaveAttribute(
+      "aria-pressed",
       "false",
     );
   });

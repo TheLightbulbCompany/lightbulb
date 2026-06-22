@@ -17,6 +17,9 @@ vi.mock("../panels/IntegrationsPanel", () => ({ IntegrationsPanel: () => <div />
 vi.mock("../panels/ChannelsStatusPanel", () => ({ ChannelsStatusPanel: () => <div /> }));
 vi.mock("../panels/DreamsPanel", () => ({ DreamsPanel: () => <div>DreamsPanel</div> }));
 vi.mock("../panels/SkillProposalsPanel", () => ({ SkillProposalsPanel: () => <div>SkillProposalsPanel</div> }));
+vi.mock("../panels/AgentInspectorPanel", () => ({
+  AgentInspectorPanel: () => <div data-testid="agent-inspector-panel" />,
+}));
 
 describe("ControlPanelRouter credits redirect", () => {
   it("renders Model & Credits when the legacy ?panel=credits key arrives", () => {
@@ -50,5 +53,10 @@ describe("ControlPanelRouter credits redirect", () => {
   it("redirect path tolerates a missing onPanelChange callback", () => {
     render(<ControlPanelRouter panel="credits" />);
     expect(screen.getByTestId("llm-panel")).toBeInTheDocument();
+  });
+
+  it("routes the agent-inspector key to AgentInspectorPanel", () => {
+    render(<ControlPanelRouter panel="agent-inspector" onPanelChange={vi.fn()} />);
+    expect(screen.getByTestId("agent-inspector-panel")).toBeInTheDocument();
   });
 });

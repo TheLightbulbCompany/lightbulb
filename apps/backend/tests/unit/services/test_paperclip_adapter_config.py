@@ -7,6 +7,7 @@ from core.services.paperclip_adapter_config import (
     AdapterConfigError,
     OPENCLAW_GATEWAY_TYPE,
     PAPERCLIP_OPERATOR_CLIENT_ID,
+    claimed_api_key_path,
 )
 
 
@@ -147,3 +148,32 @@ def test_reuses_existing_device_key_on_update():
         device_private_key_pem=existing,
     )
     assert updated["devicePrivateKeyPem"] == existing
+
+
+def test_claimed_api_key_path_is_per_agent_plural_workspace():
+    # PLURAL workspaces/{agentId}/ — the agent's own cwd; the singular
+    # ~/.openclaw/workspace is container-global and collides across agents.
+    assert claimed_api_key_path("agent-123") == "~/.openclaw/workspaces/agent-123/paperclip-claimed-api-key.json"
+    # Distinct per agent.
+    assert claimed_api_key_path("a") != claimed_api_key_path("b")
+
+
+def test_synthesize_omits_claimed_path_when_no_agent_id():
+    """Create-time callers don't know the agent id yet; the per-agent path is
+    applied post-create. With no agent_id the wire shape is unchanged."""
+    cfg = synthesize_openclaw_adapter(
+        gateway_url="wss://ws.isol8.co",
+        service_token="t",
+        user_id="u",
+    )
+    assert "claimedApiKeyPath" not in cfg
+
+
+def test_synthesize_sets_per_agent_claimed_path_when_agent_id_given():
+    cfg = synthesize_openclaw_adapter(
+        gateway_url="wss://ws.isol8.co",
+        service_token="t",
+        user_id="u",
+        agent_id="agent-xyz",
+    )
+    assert cfg["claimedApiKeyPath"] == "~/.openclaw/workspaces/agent-xyz/paperclip-claimed-api-key.json"

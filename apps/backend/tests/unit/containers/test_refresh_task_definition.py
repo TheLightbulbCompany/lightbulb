@@ -70,64 +70,6 @@ async def test_refresh_registers_new_taskdef_with_hook_token_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_threads_paperclip_env(monkeypatch):
-    """A task-def refresh re-applies the Paperclip auth env (PAPERCLIP_*) so the
-    bundled `paperclip` skill stays authenticated across re-registrations, while
-    keeping OPENCLAW_HOOK_TOKEN."""
-    from core.containers import ecs_manager
-
-    manager = ecs_manager.EcsManager()
-    pc_env = [
-        {"name": "PAPERCLIP_API_URL", "value": "http://pc.local:3100"},
-        {"name": "PAPERCLIP_API_KEY", "value": "pcp_key"},
-        {"name": "PAPERCLIP_COMPANY_ID", "value": "comp_1"},
-        {"name": "PAPERCLIP_AGENT_ID", "value": "fri"},
-    ]
-    fake_ecs = MagicMock()
-    fake_ecs.register_task_definition.return_value = {
-        "taskDefinition": {
-            "taskDefinitionArn": ("arn:aws:ecs:us-east-1:877352799272:task-definition/isol8-dev-openclaw-u-1:6")
-        }
-    }
-    fake_ecs.update_service.return_value = {}
-    fake_ecs.describe_task_definition.return_value = {
-        "taskDefinition": {
-            # A stale PAPERCLIP_API_KEY on the live revision must be replaced.
-            "containerDefinitions": [
-                {"name": "openclaw", "environment": [{"name": "PAPERCLIP_API_KEY", "value": "stale"}], "secrets": []}
-            ],
-            "family": "isol8-dev-openclaw-u-1",
-            "networkMode": "awsvpc",
-            "requiresCompatibilities": ["FARGATE"],
-            "cpu": "512",
-            "memory": "1024",
-            "volumes": [],
-        }
-    }
-    container = {
-        "owner_id": "u_1",
-        "service_name": "svc",
-        "hook_token": "tok",
-        "task_definition_arn": ("arn:aws:ecs:us-east-1:877352799272:task-definition/isol8-dev-openclaw-u-1:5"),
-    }
-    with (
-        patch("core.repositories.container_repo.get_by_owner_id", new=AsyncMock(return_value=container)),
-        patch("core.repositories.container_repo.update_fields", new=AsyncMock()),
-        patch.object(manager, "_ecs", fake_ecs),
-        patch.object(manager, "_paperclip_runtime_env", new=AsyncMock(return_value=pc_env)),
-    ):
-        await manager.refresh_task_definition("u_1")
-
-    cd = fake_ecs.register_task_definition.call_args.kwargs["containerDefinitions"][0]
-    env = {e["name"]: e["value"] for e in cd["environment"]}
-    assert env["PAPERCLIP_API_KEY"] == "pcp_key"  # stale value replaced
-    assert env["PAPERCLIP_AGENT_ID"] == "fri"
-    assert env["OPENCLAW_HOOK_TOKEN"] == "tok"
-    # No duplicate PAPERCLIP_API_KEY entries.
-    assert sum(1 for e in cd["environment"] if e["name"] == "PAPERCLIP_API_KEY") == 1
-
-
-@pytest.mark.asyncio
 async def test_refresh_returns_none_when_no_container_row(monkeypatch):
     from core.containers import ecs_manager
 

@@ -66,8 +66,11 @@ def _user_owned_mcp_servers(existing_servers: dict, integration_provider_keys: s
     otherwise drop anything added through the manual MCP panel — those servers
     live only in the on-disk file, not in a DDB store the generator reads back.
     Preserve every existing server whose key is neither a registry integration
-    key (re-injected from the credential system) nor the seeded ``paperclip``
-    block — i.e. the ones the user added themselves.
+    key (re-injected from the credential system) nor the legacy ``paperclip``
+    block — i.e. the ones the user added themselves. The ``paperclip`` MCP
+    server is no longer seeded (each agent authenticates with its own per-agent
+    key via the bundled skill), so excluding it here PURGES any stale on-disk
+    copy on the next reprovision instead of carrying it forward.
     """
     reserved = integration_provider_keys | {"paperclip"}
     return {name: block for name, block in existing_servers.items() if name not in reserved and isinstance(block, dict)}
@@ -501,15 +504,6 @@ class EcsManager:
             hook_token=container.get("hook_token") or "",
             existing=existing_env,
         )
-        # Keep the Paperclip auth env current across the refresh too — every
-        # re-register path must carry PAPERCLIP_* so the bundled `paperclip`
-        # skill's curl calls (and the agent's exec shell) stay authenticated.
-        # Strip any stale entries, then append the freshly-resolved ones
-        # (best-effort; [] on failure).
-        paperclip_env = await self._paperclip_runtime_env(owner_id)
-        if paperclip_env:
-            _pc_names = {e["name"] for e in paperclip_env}
-            new_env = [e for e in new_env if e.get("name") not in _pc_names] + paperclip_env
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env
@@ -926,15 +920,6 @@ class EcsManager:
             # base would otherwise revert the container to the shared
             # all-models task role (same self-heal class as hook_token above).
             owner_task_role_arn = container.get("bedrock_role_arn")
-            # Re-thread the Paperclip auth env. This is the image-update path —
-            # rolling the bundled `paperclip` skill onto existing containers via
-            # a tag bump comes through here — and it re-registers from the CDK
-            # base, which carries no per-user env. Without this the container
-            # would get /app/skills/paperclip but the agent shell would lack
-            # PAPERCLIP_*, so the skill's curl-based routine calls couldn't
-            # authenticate. Best-effort ([] on failure); the builder merges it
-            # onto the base env (and layers OPENCLAW_HOOK_TOKEN on top).
-            paperclip_env = await self._paperclip_runtime_env(user_id)
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -943,7 +928,6 @@ class EcsManager:
                 new_memory=new_memory,
                 hook_token=hook_token,
                 task_role_arn=owner_task_role_arn,
-                environment_for_task=paperclip_env,
             )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
@@ -1597,16 +1581,11 @@ class EcsManager:
             if settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
                 environment_for_task.extend(_build_bedrock_acp_harness_env(bedrock_aip_arns))
 
-        # Paperclip runtime auth on the per-user task env so the bundled
-        # `paperclip` skill's REST calls authenticate AND the agent's exec
-        # subprocess inherits them (OpenClaw spreads the process env into exec
-        # commands). This mirrors the Paperclip MCP server's env block (written
-        # by write_openclaw_config into openclaw.json) but lands it on the task
-        # env so the skill's shell — not just the MCP server process — is
-        # authenticated. Resolved here, before EITHER provision path registers
-        # the task def. Best-effort: returns [] on any failure so provisioning
-        # never blocks on a Paperclip hiccup; the next reprovision self-heals.
-        environment_for_task.extend(await self._paperclip_runtime_env(user_id))
+        # Paperclip auth is no longer a container-wide task env. Each agent
+        # authenticates as ITSELF via its own per-agent identity file
+        # (paperclip-claimed-api-key.json staged by
+        # friday_identity.pre_stage_paperclip_identities), so there is nothing
+        # to inject here.
 
         service_name = self._service_name(user_id)
 
@@ -2071,71 +2050,6 @@ class EcsManager:
                         return task_arn, detail.get("value")
         return None, None
 
-    async def _paperclip_runtime_env(self, owner_id: str) -> list[dict]:
-        """Resolve Friday's Paperclip auth as ECS ``environment`` entries.
-
-        Returns ``[{"name": "PAPERCLIP_API_URL", "value": ...}, ...]`` for the
-        four vars the bundled ``paperclip`` skill reads — ``PAPERCLIP_API_URL``,
-        ``PAPERCLIP_API_KEY``, ``PAPERCLIP_COMPANY_ID``, ``PAPERCLIP_AGENT_ID`` —
-        or ``[]`` when Paperclip is unreachable or no CEO agent exists yet.
-
-        These are the same values ``write_openclaw_config`` writes into the
-        Paperclip MCP server's env block, but placed on the ECS task env so the
-        agent's *exec shell* (the skill issues raw ``curl`` calls, including for
-        routines, which the MCP has no dedicated tool for) is authenticated —
-        not just the MCP server process. It is Friday's long-lived per-agent
-        key, container-wide (the same identity the MCP already uses).
-
-        Best-effort + idempotent: any failure returns ``[]`` so provisioning
-        never blocks on Paperclip; a later reprovision adds it.
-        """
-        import httpx
-
-        from core.repositories.paperclip_repo import PaperclipRepo
-        from core.services.paperclip_admin_client import PaperclipAdminClient
-        from core.services.paperclip_openclaw_pairing import (
-            fetch_paperclip_agents_for_owner,
-            resolve_company_id_for_owner,
-        )
-
-        api_url = settings.PAPERCLIP_INTERNAL_URL or None
-        if not api_url:
-            return []
-        http = None
-        try:
-            http = httpx.AsyncClient(base_url=api_url, timeout=15.0)
-            repo = PaperclipRepo(table_name="paperclip-companies")
-            admin_client = PaperclipAdminClient(http_client=http)
-            agents = await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
-            friday = next((a for a in agents if a.get("role") == "ceo"), None)
-            if not (friday and friday.get("id")):
-                return []
-            from core.services.paperclip_api_key import ensure_paperclip_api_key
-
-            api_key = await ensure_paperclip_api_key(
-                owner_id=owner_id,
-                paperclip_agent_id=friday["id"],
-                admin_client=admin_client,
-            )
-            company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
-            if not (api_key and company_id):
-                return []
-            return [
-                {"name": "PAPERCLIP_API_URL", "value": api_url},
-                {"name": "PAPERCLIP_API_KEY", "value": api_key},
-                {"name": "PAPERCLIP_COMPANY_ID", "value": company_id},
-                {"name": "PAPERCLIP_AGENT_ID", "value": friday["id"]},
-            ]
-        except Exception:  # noqa: BLE001 — best-effort; provision must not fail on a Paperclip hiccup.
-            logger.exception(
-                "paperclip runtime env resolution failed for %s; provisioning without it",
-                owner_id,
-            )
-            return []
-        finally:
-            if http is not None:
-                await http.aclose()
-
     async def write_user_configs(
         self,
         user_id: str,
@@ -2219,7 +2133,11 @@ class EcsManager:
             base_url=settings.PAPERCLIP_INTERNAL_URL,
             timeout=15.0,
         )
-        paperclip_api_key: str | None = None
+        # {paperclip_agent_id: plaintext key} for EVERY agent in the owner's
+        # company — each agent authenticates to Paperclip as ITSELF (not as
+        # Friday) via its own per-agent identity file. Empty when Paperclip is
+        # unreachable; the next reprovision self-heals.
+        paperclip_agent_keys: dict[str, str] = {}
         paperclip_company_id: str | None = None
         try:
             repo = PaperclipRepo(table_name="paperclip-companies")
@@ -2229,19 +2147,15 @@ class EcsManager:
                 repo=repo,
                 admin_client=admin_client,
             )
-            # Mint (or read) Friday's Paperclip API key so the MCP server
-            # inside her container can call Paperclip's REST API as her
-            # rather than as the global admin service account.
-            # Self-healing: if the key isn't in Secrets Manager yet,
-            # ensure_paperclip_api_key mints + stores it. If Paperclip is
-            # unreachable this run, returns None and write_openclaw_config
-            # simply omits the mcp.servers block — the next reprovision picks
-            # it up.
-            friday = next(
-                (a for a in paperclip_agents if a.get("role") == "ceo"),
-                None,
-            )
-            if friday and friday.get("id"):
+            # Mint (or read) a per-agent Paperclip API key for EACH agent so
+            # actions in Paperclip's audit log attribute to the acting agent,
+            # not to Friday or the global admin service account. Self-healing:
+            # ensure_paperclip_api_key reads the stored key or mints + stores
+            # one. Best-effort PER AGENT — one agent's mint failure (returns
+            # None) is logged + skipped so the rest still get keys; if Paperclip
+            # is unreachable the whole map is empty and the next reprovision
+            # picks it up.
+            if paperclip_agents:
                 from core.services.paperclip_api_key import (
                     ensure_paperclip_api_key,
                 )
@@ -2249,15 +2163,27 @@ class EcsManager:
                     resolve_company_id_for_owner,
                 )
 
-                paperclip_api_key = await ensure_paperclip_api_key(
-                    owner_id=owner_id,
-                    paperclip_agent_id=friday["id"],
-                    admin_client=admin_client,
-                )
                 paperclip_company_id = await resolve_company_id_for_owner(
                     owner_id=owner_id,
                     repo=repo,
                 )
+                for agent in paperclip_agents:
+                    agent_id = agent.get("id")
+                    if not agent_id:
+                        continue
+                    key = await ensure_paperclip_api_key(
+                        owner_id=owner_id,
+                        paperclip_agent_id=agent_id,
+                        admin_client=admin_client,
+                    )
+                    if key:
+                        paperclip_agent_keys[agent_id] = key
+                    else:
+                        logger.warning(
+                            "write_user_configs: paperclip key mint skipped for owner=%s agent=%s",
+                            owner_id,
+                            agent_id,
+                        )
         finally:
             await http.aclose()
 
@@ -2299,9 +2225,6 @@ class EcsManager:
             paperclip_agents=paperclip_agents,
             hook_token=hook_token,
             owner_type=owner_type,
-            paperclip_api_key=paperclip_api_key,
-            paperclip_company_id=paperclip_company_id,
-            paperclip_api_url=settings.PAPERCLIP_INTERNAL_URL or None,
             integration_mcp_servers=integration_mcp_servers,
             aip_arns=aip_arns,
             channel_accounts=channel_accounts,
@@ -2311,7 +2234,10 @@ class EcsManager:
         # present before the container boots. Best-effort — failure here
         # MUST NOT block provision; Friday boots with upstream defaults if
         # this fails.
-        from core.services.friday_identity import pre_stage_friday_identity
+        from core.services.friday_identity import (
+            pre_stage_friday_identity,
+            pre_stage_paperclip_identities,
+        )
 
         try:
             await pre_stage_friday_identity(
@@ -2323,6 +2249,28 @@ class EcsManager:
             put_metric("friday_identity.seed.error")
             logger.warning(
                 "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
+                owner_id,
+                exc,
+            )
+
+        # Stage each agent's per-agent Paperclip identity file
+        # (paperclip-claimed-api-key.json) into its own workspace so it can
+        # authenticate to Paperclip AS ITSELF via the bundled `paperclip` skill.
+        # Best-effort — failure here MUST NOT block provision; the next
+        # reprovision re-stages (write-if-missing is idempotent).
+        try:
+            await pre_stage_paperclip_identities(
+                owner_id=owner_id,
+                paperclip_agents=paperclip_agents,
+                agent_keys=paperclip_agent_keys,
+                company_id=paperclip_company_id,
+                api_url=settings.PAPERCLIP_INTERNAL_URL or None,
+                workspace=get_workspace(),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort.
+            put_metric("paperclip_identity.seed.error")
+            logger.warning(
+                "write_user_configs: pre_stage_paperclip_identities failed for owner=%s: %s",
                 owner_id,
                 exc,
             )

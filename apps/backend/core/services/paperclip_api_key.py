@@ -1,17 +1,19 @@
 """Per-agent Paperclip API key minting + storage.
 
-Friday's container needs to call back into Paperclip via the
-``@paperclipai/mcp-server`` MCP wrapper running inside OpenClaw. That MCP
-authenticates with ``PAPERCLIP_API_KEY`` set in its env block.
+Each agent in a container calls back into Paperclip with its OWN key. The
+key is staged into the agent's workspace identity file
+(``paperclip-claimed-api-key.json``, written by
+``friday_identity.pre_stage_paperclip_identities``); the agent loads it and
+authenticates the bundled ``paperclip`` skill's ``curl`` calls as ITSELF.
 
 Two design points worth knowing:
 
 1. **Per-agent attribution.** Paperclip mints long-lived API keys scoped
    to a single agent via ``POST /api/agents/{agentId}/keys`` (see
-   ``paperclip_admin_client.create_agent_api_key``). Using Friday's own
-   key means every Paperclip action she takes is attributed to her in
-   Paperclip's audit log — not to ``admin+paperclip@isol8.co`` the way
-   the existing admin-API call sites are.
+   ``paperclip_admin_client.create_agent_api_key``). Using each agent's own
+   key means every Paperclip action it takes is attributed to it in
+   Paperclip's audit log — not to Friday and not to
+   ``admin+paperclip@isol8.co`` the way the admin-API call sites are.
 
 2. **Self-healing.** This helper is idempotent: if the key already exists
    in Secrets Manager, we return it; otherwise we mint via Paperclip and
@@ -64,10 +66,10 @@ async def ensure_paperclip_api_key(
     """Return the plaintext Paperclip API key for ``paperclip_agent_id``,
     minting + storing it on first request.
 
-    Returns None on any failure — the caller (``write_openclaw_config``)
-    treats absent keys as "skip the MCP server block this provision; try
-    again next time." Failures are logged + metric'd, never raised: a
-    Paperclip outage must not block container provision.
+    Returns None on any failure — the caller (``write_user_configs``)
+    treats absent keys as "skip staging this agent's identity file this
+    provision; try again next time." Failures are logged + metric'd, never
+    raised: a Paperclip outage must not block container provision.
     """
     existing = await _read_existing(owner_id=owner_id, paperclip_agent_id=paperclip_agent_id)
     if existing is not None:
@@ -122,7 +124,8 @@ async def _mint_and_store(
     Manager.
 
     Returns the plaintext on success, None on any failure. Failures are
-    swallowed — provision continues without an MCP-server block this run.
+    swallowed — provision continues without staging this agent's identity
+    file this run; the next reprovision re-mints.
     """
     try:
         cookie = await get_admin_session_cookie(admin_client._http)

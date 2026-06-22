@@ -15,7 +15,15 @@ from core.services.paperclip_openclaw_pairing import (
 )
 
 
-def _gw_agent(agent_id, *, pem=None, auth_token="svc", adapter_type="openclaw_gateway", name="Friday"):
+def _gw_agent(
+    agent_id,
+    *,
+    pem=None,
+    auth_token="svc",
+    adapter_type="openclaw_gateway",
+    name="Friday",
+    claimed_api_key_path=None,
+):
     cfg = {
         "url": "wss://ws.isol8.co?token=svc&clientId=paperclip-operator",
         "authToken": auth_token,
@@ -24,7 +32,13 @@ def _gw_agent(agent_id, *, pem=None, auth_token="svc", adapter_type="openclaw_ga
     }
     if pem is not None:
         cfg["devicePrivateKeyPem"] = pem
+    if claimed_api_key_path is not None:
+        cfg["claimedApiKeyPath"] = claimed_api_key_path
     return {"id": agent_id, "name": name, "adapterType": adapter_type, "adapterConfig": cfg}
+
+
+def _claimed_path(agent_id):
+    return f"~/.openclaw/workspaces/{agent_id}/paperclip-claimed-api-key.json"
 
 
 def _mock_admin_and_repo(agents, monkeypatch):
@@ -65,6 +79,8 @@ async def test_register_builds_entry_and_binds_auth_token(monkeypatch):
     assert body["replaceAdapterConfig"] is True
     assert body["adapterConfig"]["authToken"] == "GW_TOKEN"
     assert body["adapterConfig"]["url"] == agent["adapterConfig"]["url"]
+    # claimedApiKeyPath points at THIS agent's own per-agent workspace file.
+    assert body["adapterConfig"]["claimedApiKeyPath"] == _claimed_path("agent_1")
     # The paired entry seeds into build_device_paired_json alongside node+operator.
     paired = build_device_paired_json(
         "node_id", "node_pub", operator_entry={"deviceId": "op"}, extra_operator_entries=entries
@@ -89,14 +105,32 @@ async def test_register_skips_agents_without_minted_key_or_wrong_type(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_register_is_idempotent_when_token_already_bound(monkeypatch):
-    agent = _gw_agent("a1", pem=private_key_pem(generate_operator_device()), auth_token="GW")
+async def test_register_is_idempotent_when_token_and_path_already_bound(monkeypatch):
+    agent = _gw_agent(
+        "a1",
+        pem=private_key_pem(generate_operator_device()),
+        auth_token="GW",
+        claimed_api_key_path=_claimed_path("a1"),
+    )
     admin, repo = _mock_admin_and_repo([agent], monkeypatch)
     entries = await register_paperclip_agent_devices(
         owner_id="user_1", gateway_token="GW", repo=repo, admin_client=admin
     )
     assert len(entries) == 1  # still produces the paired entry
     admin.patch_agent.assert_not_called()  # but no rewrite round-trip
+
+
+@pytest.mark.asyncio
+async def test_register_patches_when_claimed_path_stale_even_if_token_current(monkeypatch):
+    """authToken already bound but claimedApiKeyPath missing → still patch so
+    the per-agent path lands (otherwise the agent keeps the colliding default)."""
+    agent = _gw_agent("a1", pem=private_key_pem(generate_operator_device()), auth_token="GW")
+    admin, repo = _mock_admin_and_repo([agent], monkeypatch)
+    await register_paperclip_agent_devices(owner_id="user_1", gateway_token="GW", repo=repo, admin_client=admin)
+    admin.patch_agent.assert_awaited_once()
+    body = admin.patch_agent.await_args.kwargs["body"]
+    assert body["adapterConfig"]["claimedApiKeyPath"] == _claimed_path("a1")
+    assert body["adapterConfig"]["authToken"] == "GW"
 
 
 @pytest.mark.asyncio
@@ -472,20 +506,28 @@ async def test_ensure_operator_device_paired_merges_and_binds(monkeypatch):
     assert entry["publicKey"] == ident.public_key_b64
     assert entry["role"] == "operator"
     assert entry["tokens"]["operator"]["token"] == "GW_TOKEN"
-    # 2. authToken rebound to the gateway token (signature is over auth.token).
+    # 2. authToken rebound to the gateway token (signature is over auth.token)
+    #    AND claimedApiKeyPath set to this agent's own per-agent file.
     admin.patch_agent.assert_awaited_once()
     body = admin.patch_agent.await_args.kwargs["body"]
     assert body["adapterConfig"]["authToken"] == "GW_TOKEN"
+    assert body["adapterConfig"]["claimedApiKeyPath"] == _claimed_path("agent_live")
     assert body["replaceAdapterConfig"] is True
 
 
 @pytest.mark.asyncio
 async def test_ensure_operator_device_paired_is_idempotent(monkeypatch):
     """A device already present with the same pubkey is left untouched (its
-    metadata/tokens preserved) and no duplicate write occurs."""
+    metadata/tokens preserved) and no duplicate write occurs when authToken AND
+    claimedApiKeyPath are already current."""
     paired, admin = _mock_live_pairing_deps(monkeypatch)
     ident = generate_operator_device()
-    agent = _gw_agent("agent_live", pem=private_key_pem(ident), auth_token="GW_TOKEN")
+    agent = _gw_agent(
+        "agent_live",
+        pem=private_key_pem(ident),
+        auth_token="GW_TOKEN",
+        claimed_api_key_path=_claimed_path("agent_live"),
+    )
     sentinel = {"publicKey": ident.public_key_b64, "role": "operator", "_marker": "keep"}
     paired[ident.device_id] = sentinel
 
@@ -493,7 +535,7 @@ async def test_ensure_operator_device_paired_is_idempotent(monkeypatch):
 
     # Existing entry preserved (not clobbered with a fresh entry).
     assert paired[ident.device_id] is sentinel
-    # authToken already == gateway token → no rebind round-trip.
+    # authToken + claimedApiKeyPath already current → no rebind round-trip.
     admin.patch_agent.assert_not_awaited()
 
 

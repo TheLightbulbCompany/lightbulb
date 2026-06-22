@@ -216,7 +216,10 @@ async def register_paperclip_agent_devices(
         build_paired_operator_entry,
         device_identity_from_pem,
     )
-    from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE
+    from core.services.paperclip_adapter_config import (
+        OPENCLAW_GATEWAY_TYPE,
+        claimed_api_key_path,
+    )
 
     agents = await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
     if not agents:
@@ -260,21 +263,28 @@ async def register_paperclip_agent_devices(
             )
         )
 
-        # Bind the agent's connect token to the container gateway token.
-        # Idempotent: skip the round-trip if already bound.
-        if cfg.get("authToken") != gateway_token:
+        # Bind the agent's connect token to the container gateway token AND
+        # point claimedApiKeyPath at the agent's own per-agent identity file
+        # (the singular default collides across agents). Idempotent: skip the
+        # round-trip when both are already current.
+        desired_claimed_path = claimed_api_key_path(agent["id"])
+        if cfg.get("authToken") != gateway_token or cfg.get("claimedApiKeyPath") != desired_claimed_path:
             try:
                 await admin_client.patch_agent(
                     session_cookie=cookie,
                     agent_id=agent["id"],
                     body={
-                        "adapterConfig": {**cfg, "authToken": gateway_token},
+                        "adapterConfig": {
+                            **cfg,
+                            "authToken": gateway_token,
+                            "claimedApiKeyPath": desired_claimed_path,
+                        },
                         "replaceAdapterConfig": True,
                     },
                 )
             except (PaperclipApiError, httpx.HTTPError) as e:
                 logger.warning(
-                    "register_paperclip_agent_devices: authToken bind failed for agent=%s: %s",
+                    "register_paperclip_agent_devices: adapterConfig bind failed for agent=%s: %s",
                     agent["id"],
                     e,
                 )
@@ -316,7 +326,10 @@ async def ensure_operator_device_paired(
     )
     from core.repositories import container_repo as _container_repo
     from core.services.desktop_pair import EfsWorkspaceAdapter
-    from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE
+    from core.services.paperclip_adapter_config import (
+        OPENCLAW_GATEWAY_TYPE,
+        claimed_api_key_path,
+    )
 
     if paperclip_agent.get("adapterType") != OPENCLAW_GATEWAY_TYPE:
         return
@@ -370,9 +383,12 @@ async def ensure_operator_device_paired(
         )
 
     # 2. Bind the agent's connect token to the container gateway token so the
-    #    device's signed auth.token authenticates against the token-mode gateway.
-    #    Idempotent: skip the round-trip if already bound.
-    if cfg.get("authToken") != gateway_token:
+    #    device's signed auth.token authenticates against the token-mode gateway,
+    #    AND point claimedApiKeyPath at the agent's own per-agent identity file
+    #    (the singular default collides across agents). Idempotent: skip the
+    #    round-trip when both are already current.
+    desired_claimed_path = claimed_api_key_path(agent_id)
+    if cfg.get("authToken") != gateway_token or cfg.get("claimedApiKeyPath") != desired_claimed_path:
         try:
             async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
                 admin = PaperclipAdminClient(http_client=http)
@@ -381,13 +397,17 @@ async def ensure_operator_device_paired(
                     session_cookie=cookie,
                     agent_id=agent_id,
                     body={
-                        "adapterConfig": {**cfg, "authToken": gateway_token},
+                        "adapterConfig": {
+                            **cfg,
+                            "authToken": gateway_token,
+                            "claimedApiKeyPath": desired_claimed_path,
+                        },
                         "replaceAdapterConfig": True,
                     },
                 )
         except (PaperclipApiError, httpx.HTTPError, RuntimeError) as e:
             logger.warning(
-                "ensure_operator_device_paired: authToken bind failed for agent=%s: %s",
+                "ensure_operator_device_paired: adapterConfig bind failed for agent=%s: %s",
                 agent_id,
                 e,
             )

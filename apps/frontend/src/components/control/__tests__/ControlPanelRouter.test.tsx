@@ -11,7 +11,6 @@ vi.mock("../panels/OverviewPanel", () => ({
 }));
 vi.mock("../panels/SessionsPanel", () => ({ SessionsPanel: () => <div /> }));
 vi.mock("../panels/UsagePanel", () => ({ UsagePanel: () => <div /> }));
-vi.mock("../panels/CronPanel", () => ({ CronPanel: () => <div /> }));
 vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => <div /> }));
 vi.mock("../panels/SkillsTab", () => ({ SkillsTab: () => <div data-testid="skills-store" /> }));
 vi.mock("../panels/IntegrationsPanel", () => ({ IntegrationsPanel: () => <div /> }));

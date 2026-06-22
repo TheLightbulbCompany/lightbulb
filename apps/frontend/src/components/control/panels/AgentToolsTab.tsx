@@ -14,7 +14,7 @@ const PROFILE_POLICIES: Record<string, string[]> = {
     "read", "write", "edit", "apply_patch", "exec", "process",
     "memory_search", "memory_get", "sessions_list", "sessions_history",
     "sessions_send", "sessions_spawn", "subagents", "session_status",
-    "cron", "image",
+    "image",
   ],
   messaging: ["sessions_list", "sessions_history", "sessions_send", "session_status", "message"],
   full: [],
@@ -56,9 +56,6 @@ const FALLBACK_SECTIONS: { id: string; label: string; tools: { id: string; label
   ]},
   { id: "messaging", label: "Messaging", tools: [
     { id: "message", label: "message", description: "Send messages to channels" },
-  ]},
-  { id: "automation", label: "Automation", tools: [
-    { id: "cron", label: "cron", description: "Schedule recurring tasks" },
   ]},
   { id: "nodes", label: "Nodes", tools: [
     { id: "nodes_list", label: "nodes_list", description: "List compute nodes" },

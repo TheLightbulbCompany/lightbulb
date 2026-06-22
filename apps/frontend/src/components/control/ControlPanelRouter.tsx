@@ -4,7 +4,6 @@ import { useEffect } from "react";
 import { OverviewPanel } from "./panels/OverviewPanel";
 import { SessionsPanel } from "./panels/SessionsPanel";
 import { UsagePanel } from "./panels/UsagePanel";
-import { CronPanel } from "./panels/CronPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { SkillsTab } from "./panels/SkillsTab";
 import { LLMPanel } from "./panels/LLMPanel";
@@ -24,7 +23,6 @@ const PANELS: Record<string, React.ComponentType> = {
   sessions: SessionsPanel,
   channels: ChannelsStatusPanel,
   usage: UsagePanel,
-  cron: CronPanel,
   agents: AgentsPanel,
   skills: SkillsTab,
   llm: LLMPanel,

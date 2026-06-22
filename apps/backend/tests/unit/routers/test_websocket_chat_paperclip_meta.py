@@ -12,6 +12,7 @@ import pytest  # noqa: E402
 from routers.websocket_chat import (  # noqa: E402
     _intercept_agents_create,
     _intercept_agents_update,
+    _mirror_paperclip_meta_with_retry,
 )
 
 
@@ -409,6 +410,186 @@ async def test_intercept_update_persists_paperclip_meta_to_openclaw_json():
     assert kwargs["agent_id"] == "agent-uuid"
     assert kwargs["meta"]["role"] == "engineer"
     assert kwargs["meta"]["title"] == "Senior"
+
+
+@pytest.mark.asyncio
+async def test_mirror_retry_succeeds_after_transient_5xx(monkeypatch):
+    """A retryable PaperclipApiError (5xx) on update_agent is retried;
+    the next attempt succeeds. No raise, update applied."""
+    import asyncio as _asyncio
+
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(d):
+        sleeps.append(d)
+
+    monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
+
+    mock_admin = MagicMock()
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co"})
+    calls = {"n": 0}
+
+    async def _update(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PaperclipApiError("502", status_code=502, body=None)
+        return {"id": "a"}
+
+    mock_admin.update_agent = AsyncMock(side_effect=_update)
+
+    await _mirror_paperclip_meta_with_retry(
+        admin=mock_admin,
+        cookie="c",
+        company_id="co",
+        owner_id="owner",
+        agent_id="a",
+        role="engineer",
+        title="t",
+        capabilities=None,
+        icon=None,
+    )
+
+    assert mock_admin.update_agent.await_count == 2
+    # Backed off once between the two attempts: 0.2 * 2**0 == 0.2
+    assert sleeps == [pytest.approx(0.2)]
+
+
+@pytest.mark.asyncio
+async def test_mirror_retry_does_not_retry_non_retryable_4xx(monkeypatch):
+    """A non-retryable PaperclipApiError (422) is NOT retried — it
+    re-raises immediately so the outer swallow logs it once."""
+    import asyncio as _asyncio
+
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(_asyncio, "sleep", AsyncMock(side_effect=lambda d: sleeps.append(d)))
+
+    mock_admin = MagicMock()
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co"})
+    mock_admin.update_agent = AsyncMock(side_effect=PaperclipApiError("422", status_code=422, body=None))
+
+    with pytest.raises(PaperclipApiError):
+        await _mirror_paperclip_meta_with_retry(
+            admin=mock_admin,
+            cookie="c",
+            company_id="co",
+            owner_id="owner",
+            agent_id="a",
+            role="bogus",
+            title=None,
+            capabilities=None,
+            icon=None,
+        )
+
+    # Only one attempt; never backed off.
+    assert mock_admin.update_agent.await_count == 1
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_mirror_retry_exhausts_then_raises(monkeypatch):
+    """All attempts fail on a retryable error → re-raise after the loop
+    (the outer except swallows it; here we assert the helper itself
+    surfaces the error so the caller's log fires)."""
+    import asyncio as _asyncio
+
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
+
+    mock_admin = MagicMock()
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co"})
+    mock_admin.update_agent = AsyncMock(side_effect=PaperclipApiError("503", status_code=503, body=None))
+
+    with pytest.raises(PaperclipApiError):
+        await _mirror_paperclip_meta_with_retry(
+            admin=mock_admin,
+            cookie="c",
+            company_id="co",
+            owner_id="owner",
+            agent_id="a",
+            role="engineer",
+            title=None,
+            capabilities=None,
+            icon=None,
+        )
+
+    # 3 attempts total (initial + 2 retries).
+    assert mock_admin.update_agent.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_mirror_retry_skips_cross_company_without_update(monkeypatch):
+    """Scope check still runs inside the helper: a foreign-company
+    agent is never PATCHed and never retried."""
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
+
+    mock_admin = MagicMock()
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "other-co"})
+    mock_admin.update_agent = AsyncMock()
+
+    await _mirror_paperclip_meta_with_retry(
+        admin=mock_admin,
+        cookie="c",
+        company_id="co",
+        owner_id="owner",
+        agent_id="foreign",
+        role="engineer",
+        title=None,
+        capabilities=None,
+        icon=None,
+    )
+
+    mock_admin.update_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_intercept_update_retries_then_succeeds_end_to_end(monkeypatch):
+    """End-to-end through _intercept_agents_update: a transient 5xx on
+    the first PATCH is retried and the second succeeds. The interceptor
+    still returns False and still strips params."""
+    import asyncio as _asyncio
+
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
+
+    mock_admin = MagicMock()
+    mock_admin.get_agent = AsyncMock(return_value={"companyId": "co"})
+    calls = {"n": 0}
+
+    async def _update(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PaperclipApiError("500", status_code=500, body=None)
+        return {"id": "a"}
+
+    mock_admin.update_agent = AsyncMock(side_effect=_update)
+    mock_repo = MagicMock()
+    mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+    rpc_params = {
+        "agentId": "a",
+        "params": {"paperclip": {"role": "engineer", "title": "Senior"}},
+    }
+
+    with (
+        patch("routers.websocket_chat.PaperclipAdminClient", return_value=mock_admin),
+        patch("routers.websocket_chat.PaperclipRepo", return_value=mock_repo),
+        patch(
+            "routers.websocket_chat.get_admin_session_cookie",
+            new=AsyncMock(return_value="c"),
+        ),
+    ):
+        consumed = await _intercept_agents_update(owner_id="owner", params=rpc_params)
+
+    assert consumed is False
+    assert mock_admin.update_agent.await_count == 2
+    assert "params" not in rpc_params
 
 
 @pytest.mark.asyncio

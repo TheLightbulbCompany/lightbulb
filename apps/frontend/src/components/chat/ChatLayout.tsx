@@ -363,7 +363,12 @@ export function ChatLayout({
             </button>
           </div>
 
-          {activeView === "chat" ? (
+          {/* Unified nav: ONE sidebar body regardless of view — the chat-branch
+              body (roster + CompanyNav + SystemNav) already covers everything,
+              and SystemNav makes the separate ControlSidebar redundant, so the
+              control-branch sidebar is rendered only on the flag-off path.
+              Flag-off (`false || …`) is byte-identical to the prior condition. */}
+          {unifiedNav || activeView === "chat" ? (
             <>
               {/* New Agent Button */}
               <button className="new-agent-btn new-agent-btn--primary" onClick={handleCreateAgent}>

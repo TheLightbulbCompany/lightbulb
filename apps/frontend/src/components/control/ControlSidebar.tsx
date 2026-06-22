@@ -22,10 +22,9 @@ interface ControlSidebarProps {
   onPanelChange?: (panel: string) => void;
 }
 
-// Exported so the unified-nav System section (components/chat/SystemNav) can
-// reuse the same global control-panel list, labels, icons, and admin gating
-// rather than hand-duplicating them. Plain keys route through
-// ControlPanelRouter identically whether emitted here or from SystemNav.
+// The global control-panel list, labels, icons, and admin gating. Plain keys
+// route through ControlPanelRouter. Exported alongside ADMIN_ONLY_PANELS /
+// useIsControlAdmin for any other surface that needs the same panel set.
 export const NAV_ITEMS = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "agents", label: "Agents", icon: Bot },
@@ -43,8 +42,7 @@ export const NAV_ITEMS = [
 export const ADMIN_ONLY_PANELS = new Set(["usage"]);
 
 // Personal owners (no org membership) are treated as admins; org members are
-// admins only with the org:admin role. Shared with SystemNav so both nav
-// surfaces gate ADMIN_ONLY_PANELS identically.
+// admins only with the org:admin role. Gates ADMIN_ONLY_PANELS.
 export function useIsControlAdmin(): boolean {
   const { membership } = useOrganization();
   return !membership || membership.role === "org:admin";

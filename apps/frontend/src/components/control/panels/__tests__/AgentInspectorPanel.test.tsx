@@ -20,6 +20,11 @@ vi.mock("../AgentChannelsSection", () => ({
     <div data-testid="channels-tab">channels:{agentId}</div>
   ),
 }));
+vi.mock("../AgentInstructionsTab", () => ({
+  AgentInstructionsTab: ({ agentId }: { agentId: string }) => (
+    <div data-testid="instructions-tab">instructions:{agentId}</div>
+  ),
+}));
 
 // ?agent drives which agent the inspector inspects.
 let agentParam: string | null = "agent_42";
@@ -81,11 +86,32 @@ describe("AgentInspectorPanel", () => {
     rosterError = undefined;
   });
 
-  it("renders the three tab labels", () => {
+  it("renders the four tab labels", () => {
     render(<AgentInspectorPanel />);
     expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Instructions" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Tools" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Channels" })).toBeInTheDocument();
+  });
+
+  it("orders the Instructions tab right after Overview", () => {
+    render(<AgentInspectorPanel />);
+    const labels = screen.getAllByRole("tab").map((t) => t.textContent);
+    expect(labels).toEqual([
+      "Overview",
+      "Instructions",
+      "Tools",
+      "Channels",
+    ]);
+  });
+
+  it("mounts the Instructions tab with the ?agent id when selected", () => {
+    render(<AgentInspectorPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(screen.getByTestId("instructions-tab")).toHaveTextContent(
+      "instructions:agent_42",
+    );
+    expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
   });
 
   it("mounts the Overview tab by default with the ?agent id", () => {

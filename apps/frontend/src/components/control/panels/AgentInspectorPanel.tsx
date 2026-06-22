@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Bot, Wrench, MessageSquare } from "lucide-react";
+import { Bot, ScrollText, Wrench, MessageSquare } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
+import { AgentInstructionsTab } from "./AgentInstructionsTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
@@ -14,13 +15,14 @@ import { cn } from "@/lib/utils";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { AgentEntry, AgentsListResponse } from "./agents-types";
 
-type InspectorTab = "overview" | "tools" | "channels";
+type InspectorTab = "overview" | "instructions" | "tools" | "channels";
 
 // Module-level tab metadata (no inline component literals). The `channels`
 // entry is filtered out at render time when the owner has no active
 // subscription — same gate AgentsPanel applies.
 const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
   { id: "overview", icon: Bot, label: "Overview" },
+  { id: "instructions", icon: ScrollText, label: "Instructions" },
   { id: "tools", icon: Wrench, label: "Tools" },
   { id: "channels", icon: MessageSquare, label: "Channels" },
 ];
@@ -138,6 +140,9 @@ export function AgentInspectorPanel() {
               </section>
             ) : null}
           </>
+        ) : null}
+        {activeTab === "instructions" ? (
+          <AgentInstructionsTab agentId={agentId} />
         ) : null}
         {activeTab === "tools" ? <AgentToolsTab agentId={agentId} /> : null}
         {activeTab === "channels" && channelsEnabled ? (

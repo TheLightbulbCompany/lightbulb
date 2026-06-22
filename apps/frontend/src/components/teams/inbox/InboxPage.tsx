@@ -18,6 +18,7 @@ import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton"
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { PanelEmptyState, PanelMasthead } from "@/components/teams/shell";
 
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
@@ -107,6 +108,20 @@ export function InboxPage({
 }: InboxPageProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  // Inside the /chat shell a nav provider is present → open the issue detail
+  // in-shell. Standalone under /teams there's no provider (hook returns null)
+  // → fall back to the native /teams/issues/{id} route via router.push.
+  const inlineNav = useInlineTeamsNav();
+  const openIssue = useCallback(
+    (issueId: string) => {
+      if (inlineNav) {
+        inlineNav.openDetail("issue-detail", issueId);
+        return;
+      }
+      router.push(`/teams/issues/${issueId}`);
+    },
+    [inlineNav, router],
+  );
 
   // 1. URL-synced tab. The URL wins on first render, falling back to
   //    localStorage so a fresh `/teams/inbox` link still honors the user's
@@ -236,7 +251,7 @@ export function InboxPage({
       setSelectedIssueId(item?.id ?? null);
     },
     onOpen: (item) => {
-      router.push(`/teams/issues/${item.id}`);
+      openIssue(item.id);
     },
     onArchive: (item) => {
       void archiveStack.archive(item.id);
@@ -374,7 +389,7 @@ export function InboxPage({
         projects={projects}
         onCreated={(issueId) => {
           setNewIssueOpen(false);
-          router.push(`/teams/issues/${issueId}`);
+          openIssue(issueId);
         }}
       />
     </div>

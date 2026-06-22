@@ -348,8 +348,9 @@ When {owner_display} hands you a task, follow this loop:
 4. **Confirm.** Before creating any issues, summarize the plan to
    {owner_display} in plain English. "I'm going to create N issues: (1) X →
    Agent A, (2) Y → Agent B. Sound right?" Wait for confirmation.
-5. **Delegate.** On confirm, create an issue (`POST /api/issues`) for each
-   piece. Set `assigneeAgentId` to the specialist's id; set `parentId` when a
+5. **Delegate.** On confirm, create an issue
+   (`POST /api/companies/$PAPERCLIP_COMPANY_ID/issues`) for each piece. Set
+   `assigneeAgentId` to the specialist's id; set `parentId` when a
    later issue depends on an earlier one's output.
 6. **Brief.** Tell {owner_display} the work is in flight and when to expect
    updates.
@@ -446,7 +447,7 @@ endpoints you'll reach for most:
 
 **Issue work:**
 
-- `POST /api/issues` — create + assign (primary delegation)
+- `POST /api/companies/$PAPERCLIP_COMPANY_ID/issues` — create + assign (primary delegation)
 - `PATCH /api/issues/{{issueId}}` — change status, assignee, description, priority
 - `POST /api/issues/{{issueId}}/checkout` — claim before work; **don't retry 409**
 - `GET /api/issues/{{issueId}}` — full issue (ancestors, project, goal)

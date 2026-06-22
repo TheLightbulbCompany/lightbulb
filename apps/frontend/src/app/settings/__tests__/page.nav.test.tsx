@@ -2,10 +2,29 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import React from "react";
 
+// The Settings consolidation (6-group nav + 7 relocated config panels) is
+// dev/flag-on ONLY. Flag-OFF, /settings must render exactly the legacy nav (the
+// single "Account" group) and only the legacy panels — byte-identical to
+// today's app, with config staying in the Control tab until the flag flips.
+//
+// These tests mock useUnifiedNav (mutable `unified`) and a mutable searchParams
+// (for the ?panel= deep-link guard) and assert both flag states.
+
+let unified = false;
+vi.mock("@/hooks/useUnifiedNav", () => ({
+  useUnifiedNav: (): boolean => unified,
+}));
+
+// Mutable ?panel= param so deep-link-guard tests can drive the initial panel.
+const nav = vi.hoisted(() => ({ panel: null as string | null }));
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(nav.panel ? { panel: nav.panel } : {}),
+}));
+
 // The Settings page composes several gateway-bound Control panels (registered
-// in Increments 3–6). Stub them all to inert markers so this nav-structure
-// test never opens a WebSocket or fires an RPC — we only assert the grouped
-// navigation renders, not panel internals.
+// in Increments 3–6, reachable only under the flag). Stub them all to inert
+// markers so this nav-structure test never opens a WebSocket or fires an RPC —
+// we only assert the navigation renders, not panel internals.
 vi.mock("@/components/control/panels/UsagePanel", () => ({
   UsagePanel: () => <div data-testid="usage-panel" />,
 }));
@@ -61,9 +80,32 @@ vi.mock("@/hooks/useBilling", () => ({
 
 import SettingsPage from "../page";
 
-describe("Settings nav — 6 intent-ordered groups", () => {
+// The 7 config panels relocated under the flag — must be UNREACHABLE flag-OFF.
+const UNIFIED_ONLY_PANEL_KEYS = [
+  "usage",
+  "providers",
+  "mcp",
+  "skills",
+  "skill-proposals",
+  "dreams",
+  "channel-status",
+] as const;
+
+const UNIFIED_ONLY_NAV_LABELS = [
+  "Usage",
+  "Model & Providers",
+  "MCP servers",
+  "Skills",
+  "Skill Proposals",
+  "Dreams / Memory",
+  "Channel Status",
+];
+
+describe("Settings nav — flag-ON: 6 intent-ordered groups", () => {
   beforeEach(() => {
+    unified = true;
     clerk.membership = null; // default: personal owner = admin
+    nav.panel = null;
   });
 
   it("renders the six group headers in order", () => {
@@ -85,68 +127,132 @@ describe("Settings nav — 6 intent-ordered groups", () => {
 
   it("buckets the existing panels into their new groups", () => {
     render(<SettingsPage />);
-    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     // Existing panels, re-bucketed (Inc 2):
-    expect(within(nav).getByText("Profile")).toBeInTheDocument(); // ACCOUNT
-    expect(within(nav).getByText("Billing")).toBeInTheDocument(); // BILLING & USAGE
-    expect(within(nav).getByText("Channels")).toBeInTheDocument(); // WIRING
-    expect(within(nav).getByText("Connections")).toBeInTheDocument(); // WIRING (href)
-    expect(within(nav).getByText("Webhooks")).toBeInTheDocument(); // WIRING
-    expect(within(nav).getByText("Desktop")).toBeInTheDocument(); // WIRING
-    expect(within(nav).getByText("Marketplace")).toBeInTheDocument(); // SELLER
+    expect(within(navEl).getByText("Profile")).toBeInTheDocument(); // ACCOUNT
+    expect(within(navEl).getByText("Billing")).toBeInTheDocument(); // BILLING & USAGE
+    expect(within(navEl).getByText("Channels")).toBeInTheDocument(); // WIRING
+    expect(within(navEl).getByText("Connections")).toBeInTheDocument(); // WIRING (href)
+    expect(within(navEl).getByText("Webhooks")).toBeInTheDocument(); // WIRING
+    expect(within(navEl).getByText("Desktop")).toBeInTheDocument(); // WIRING
+    expect(within(navEl).getByText("Marketplace")).toBeInTheDocument(); // SELLER
   });
 
   // --- Inc 3: Usage (admin-gated, BILLING & USAGE) ---
   it("shows the admin-gated Usage row for an admin owner", () => {
     clerk.membership = null; // personal owner = admin
     render(<SettingsPage />);
-    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(nav).getByText("Usage")).toBeInTheDocument();
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(navEl).getByText("Usage")).toBeInTheDocument();
   });
 
   it("hides the Usage row from a non-admin org member", () => {
     clerk.membership = { role: "org:member" };
     render(<SettingsPage />);
-    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(nav).queryByText("Usage")).not.toBeInTheDocument();
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(navEl).queryByText("Usage")).not.toBeInTheDocument();
   });
 
   // --- Inc 4: Model & Providers (LLMPanel, MODEL & PROVIDERS) ---
   it("registers the Model & Providers row and renders LLMPanel on select", () => {
     render(<SettingsPage />);
-    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
-    const row = within(nav).getByText("Model & Providers");
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    const row = within(navEl).getByText("Model & Providers");
     expect(row).toBeInTheDocument();
     // No separate Credits row — CreditsSection is embedded inside LLMPanel.
-    expect(within(nav).queryByText("Credits")).not.toBeInTheDocument();
+    expect(within(navEl).queryByText("Credits")).not.toBeInTheDocument();
   });
 
   // --- Inc 5: MCP servers (WIRING) + ENGINE ROOM trio ---
   it("registers the MCP servers row in WIRING", () => {
     render(<SettingsPage />);
-    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(nav).getByText("MCP servers")).toBeInTheDocument();
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(navEl).getByText("MCP servers")).toBeInTheDocument();
   });
 
   it("registers the ENGINE ROOM panels (Skills, Skill Proposals, Dreams)", () => {
     render(<SettingsPage />);
-    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(nav).getByText("Skills")).toBeInTheDocument();
-    expect(within(nav).getByText("Skill Proposals")).toBeInTheDocument();
-    expect(within(nav).getByText("Dreams / Memory")).toBeInTheDocument();
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(navEl).getByText("Skills")).toBeInTheDocument();
+    expect(within(navEl).getByText("Skill Proposals")).toBeInTheDocument();
+    expect(within(navEl).getByText("Dreams / Memory")).toBeInTheDocument();
   });
 
   // --- Inc 6: Channel Status (ENGINE ROOM) — DISTINCT key from WIRING Channels ---
   it("registers Channel Status in ENGINE ROOM under a key distinct from Channels", () => {
     render(<SettingsPage />);
-    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     // Both rows coexist: the WIRING org-bots tab (`channels`) and the
     // read-only ENGINE ROOM status panel (`channel-status`).
-    expect(within(nav).getByText("Channels")).toBeInTheDocument();
-    const statusRow = within(nav).getByText("Channel Status");
+    expect(within(navEl).getByText("Channels")).toBeInTheDocument();
+    const statusRow = within(navEl).getByText("Channel Status");
     expect(statusRow).toBeInTheDocument();
     // No key collision: the status row carries the channel-status nav id.
     const statusLi = statusRow.closest("li");
     expect(statusLi?.id).toBe("settings-nav-channel-status");
   });
+
+  // --- Deep link: a new-panel ?panel= key resolves under the flag ---
+  it("honors a ?panel=channel-status deep link under the flag", () => {
+    nav.panel = "channel-status";
+    render(<SettingsPage />);
+    // The channel-status panel mounts (its stub marker is present).
+    expect(screen.getByTestId("channels-status-panel")).toBeInTheDocument();
+  });
+});
+
+describe("Settings nav — flag-OFF: legacy nav (byte-identical to today)", () => {
+  beforeEach(() => {
+    unified = false;
+    clerk.membership = null;
+    nav.panel = null;
+  });
+
+  it("renders the single legacy ACCOUNT group (no 6-group headers)", () => {
+    const { container } = render(<SettingsPage />);
+    const labels = Array.from(
+      container.querySelectorAll(".settings-nav-section-label"),
+    ).map((el) => el.textContent?.toUpperCase());
+    expect(labels).toEqual(["ACCOUNT"]);
+  });
+
+  it("renders the original legacy nav items only", () => {
+    render(<SettingsPage />);
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    // Legacy "Account" group: Profile, Billing, Channels, Connections (href),
+    // Webhooks, Desktop, Marketplace.
+    expect(within(navEl).getByText("Profile")).toBeInTheDocument();
+    expect(within(navEl).getByText("Billing")).toBeInTheDocument();
+    expect(within(navEl).getByText("Channels")).toBeInTheDocument();
+    expect(within(navEl).getByText("Connections")).toBeInTheDocument();
+    expect(within(navEl).getByText("Webhooks")).toBeInTheDocument();
+    expect(within(navEl).getByText("Desktop")).toBeInTheDocument();
+    expect(within(navEl).getByText("Marketplace")).toBeInTheDocument();
+  });
+
+  it("renders NONE of the 7 relocated config rows in the nav", () => {
+    render(<SettingsPage />);
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    for (const label of UNIFIED_ONLY_NAV_LABELS) {
+      expect(within(navEl).queryByText(label)).not.toBeInTheDocument();
+    }
+  });
+
+  it.each(UNIFIED_ONLY_PANEL_KEYS)(
+    "falls a ?panel=%s deep link back to the default profile panel (no relocated panel mounts)",
+    (key) => {
+      nav.panel = key;
+      render(<SettingsPage />);
+      // None of the relocated panel stubs may mount flag-OFF.
+      expect(screen.queryByTestId("usage-panel")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("llm-panel")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("integrations-panel")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("skills-tab")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("skill-proposals-panel")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("dreams-panel")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("channels-status-panel")).not.toBeInTheDocument();
+      // It falls back to the profile panel.
+      expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "panel-profile");
+    },
+  );
 });

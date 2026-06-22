@@ -23,6 +23,7 @@ import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsP
 import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
 import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
 import { ADMIN_ONLY_PANELS, useIsControlAdmin } from "@/components/control/ControlSidebar";
+import { useUnifiedNav } from "@/hooks/useUnifiedNav";
 
 // =============================================================================
 // Types & Navigation
@@ -55,11 +56,31 @@ type NavItem = {
   href?: string;
 };
 
+// Legacy nav — the single "Account" group that ships today. Rendered when the
+// unified-nav flag is OFF so /settings stays byte-identical to the current app:
+// config panels stay in the Control tab, NOT relocated here, until the flag
+// flips. Keep this in lockstep with origin/main's NAV_SECTIONS.
+const LEGACY_NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
+  {
+    label: "Account",
+    items: [
+      { id: "profile", name: "Profile", icon: "profile", panel: "profile" },
+      { id: "billing", name: "Billing", icon: "billing", panel: "billing" },
+      { id: "channels", name: "Channels", icon: "channels", panel: "channels" },
+      { id: "connections", name: "Connections", icon: "connections", href: "/settings/connections" },
+      { id: "webhooks", name: "Webhooks", icon: "webhooks", panel: "webhooks" },
+      { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
+      { id: "marketplace", name: "Marketplace", icon: "marketplace", panel: "marketplace" },
+    ],
+  },
+];
+
 // Six intent-ordered groups (design.md §5). This increment re-buckets the
 // EXISTING panels only and stands up the (currently empty) MODEL & PROVIDERS /
 // ENGINE ROOM headers; the Control panels that fill them are registered in the
-// following increments via the per-panel insertion checklist.
-const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
+// following increments via the per-panel insertion checklist. Rendered ONLY
+// when the unified-nav flag is ON.
+const UNIFIED_NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
   {
     label: "ACCOUNT",
     items: [
@@ -479,6 +500,21 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   marketplace: MarketplacePanel,
 };
 
+// The config panels relocated under the unified nav. They live in the PANELS
+// registry (so the deep-link/render machinery stays uniform), but are reachable
+// ONLY when the flag is ON — flag-OFF they stay in the Control tab. A flag-OFF
+// `?panel=<one of these>` falls back to the default `profile` panel so config
+// never double-mounts (Control tab + Settings), per spec §2/§5.
+const UNIFIED_ONLY_PANELS = new Set<Panel>([
+  "usage",
+  "providers",
+  "mcp",
+  "skills",
+  "skill-proposals",
+  "dreams",
+  "channel-status",
+]);
+
 // =============================================================================
 // Settings Page
 // =============================================================================
@@ -495,6 +531,13 @@ export default function SettingsPage() {
 }
 
 function SettingsPageInner() {
+  // The Settings consolidation (6-group nav + relocated config panels) is
+  // dev/flag-on ONLY. Flag-OFF renders the legacy single-group nav and only the
+  // legacy panels — byte-identical to today's app, config staying in the
+  // Control tab.
+  const unifiedNav = useUnifiedNav();
+  const navSections = unifiedNav ? UNIFIED_NAV_SECTIONS : LEGACY_NAV_SECTIONS;
+
   // Personal owners are admins; org members are admins only with org:admin.
   // Reused (not re-derived) from ControlSidebar so the Settings gate matches
   // the Control surface exactly.
@@ -504,12 +547,15 @@ function SettingsPageInner() {
   // (TrialBanner "Manage" CTA, etc.) so they land on the right pane. Validated
   // against the live PANELS registry — any registered panel is deep-linkable —
   // and admin-only panels fall back to profile for non-admins so a stray
-  // ?panel=usage never mounts an admin RPC for a member.
+  // ?panel=usage never mounts an admin RPC for a member. The relocated config
+  // panels are reachable ONLY under the flag: flag-OFF a `?panel=<relocated>`
+  // falls back to `profile` so config never double-mounts (Control + Settings).
   const searchParams = useSearchParams();
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
     initialPanelParam !== null &&
     initialPanelParam in PANELS &&
+    (unifiedNav || !UNIFIED_ONLY_PANELS.has(initialPanelParam as Panel)) &&
     (isAdmin || !ADMIN_ONLY_PANELS.has(initialPanelParam))
       ? (initialPanelParam as Panel)
       : "profile";
@@ -520,7 +566,7 @@ function SettingsPageInner() {
   // links (e.g. Connections) are excluded so they don't try to set a panel
   // that doesn't exist, and admin-only tabs hidden from non-admins are excluded
   // so roving focus never lands on an unrendered row.
-  const tabNavItems = NAV_SECTIONS.flatMap((s) => s.items).filter(
+  const tabNavItems = navSections.flatMap((s) => s.items).filter(
     (n): n is NavItem & { panel: Panel } =>
       n.panel !== undefined && (isAdmin || !ADMIN_ONLY_PANELS.has(n.panel)),
   );
@@ -578,7 +624,7 @@ function SettingsPageInner() {
       <div className="settings-page-wrap" style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings navigation">
-          {NAV_SECTIONS.map((section) => (
+          {navSections.map((section) => (
             <div key={section.label}>
               <div className="settings-nav-section-label">{section.label}</div>
               <ul className="settings-nav-items" role="tablist">

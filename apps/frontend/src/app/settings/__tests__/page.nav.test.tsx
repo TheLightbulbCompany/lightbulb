@@ -135,4 +135,18 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(nav).getByText("Skill Proposals")).toBeInTheDocument();
     expect(within(nav).getByText("Dreams / Memory")).toBeInTheDocument();
   });
+
+  // --- Inc 6: Channel Status (ENGINE ROOM) — DISTINCT key from WIRING Channels ---
+  it("registers Channel Status in ENGINE ROOM under a key distinct from Channels", () => {
+    render(<SettingsPage />);
+    const nav = screen.getByRole("navigation", { name: /settings navigation/i });
+    // Both rows coexist: the WIRING org-bots tab (`channels`) and the
+    // read-only ENGINE ROOM status panel (`channel-status`).
+    expect(within(nav).getByText("Channels")).toBeInTheDocument();
+    const statusRow = within(nav).getByText("Channel Status");
+    expect(statusRow).toBeInTheDocument();
+    // No key collision: the status row carries the channel-status nav id.
+    const statusLi = statusRow.closest("li");
+    expect(statusLi?.id).toBe("settings-nav-channel-status");
+  });
 });

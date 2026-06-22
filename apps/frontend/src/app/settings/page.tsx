@@ -21,6 +21,7 @@ import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
 import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
+import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
 import { ADMIN_ONLY_PANELS, useIsControlAdmin } from "@/components/control/ControlSidebar";
 
 // =============================================================================
@@ -39,6 +40,7 @@ type Panel =
   | "skills"
   | "skill-proposals"
   | "dreams"
+  | "channel-status"
   | "marketplace";
 
 // A nav item is either an in-page tab (sets activePanel) or an outbound
@@ -98,6 +100,9 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
       { id: "skills", name: "Skills", icon: "skills", panel: "skills" },
       { id: "skill-proposals", name: "Skill Proposals", icon: "skill-proposals", panel: "skill-proposals" },
       { id: "dreams", name: "Dreams / Memory", icon: "dreams", panel: "dreams" },
+      // Read-only channel health. `channel-status` is DISTINCT from the WIRING
+      // `channels` org-bots tab — they are two surfaces, no key collision.
+      { id: "channel-status", name: "Channel Status", icon: "channel-status", panel: "channel-status" },
     ],
   },
   {
@@ -212,6 +217,16 @@ function NavIcon({ icon }: { icon: string }) {
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z" />
+        </svg>
+      );
+    case "channel-status":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="2" />
+          <path d="M4.93 19.07a10 10 0 0 1 0-14.14" />
+          <path d="M7.76 16.24a6 6 0 0 1 0-8.49" />
+          <path d="M16.24 7.76a6 6 0 0 1 0 8.49" />
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
         </svg>
       );
     default:
@@ -460,6 +475,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   skills: () => <SkillsTab />,
   "skill-proposals": SkillProposalsPanel,
   dreams: DreamsPanel,
+  "channel-status": ChannelsStatusPanel,
   marketplace: MarketplacePanel,
 };
 

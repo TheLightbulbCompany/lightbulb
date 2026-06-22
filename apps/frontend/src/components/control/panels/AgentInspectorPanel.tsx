@@ -68,11 +68,19 @@ export function AgentInspectorPanel() {
         <h2 className="text-sm font-semibold truncate">{displayName}</h2>
       </div>
 
-      <div className="flex items-center gap-1 border-b border-[#e0dbd0] px-4 py-2">
+      <div
+        className="flex items-center gap-1 border-b border-[#e0dbd0] px-4 py-2"
+        role="tablist"
+        aria-label="Agent inspector sections"
+      >
         {visibleTabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
+            role="tab"
+            id={`inspector-tab-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            aria-controls="inspector-tabpanel"
             className={cn(
               "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
               activeTab === tab.id
@@ -87,7 +95,12 @@ export function AgentInspectorPanel() {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4">
+      <div
+        className="flex-1 overflow-y-auto px-4"
+        role="tabpanel"
+        id="inspector-tabpanel"
+        aria-labelledby={`inspector-tab-${activeTab}`}
+      >
         {activeTab === "overview" ? (
           <AgentOverviewTab agentId={agentId} agent={agent} />
         ) : null}

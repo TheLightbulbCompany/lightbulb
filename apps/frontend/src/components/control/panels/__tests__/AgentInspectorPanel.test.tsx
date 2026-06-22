@@ -54,9 +54,9 @@ describe("AgentInspectorPanel", () => {
 
   it("renders the three tab labels", () => {
     render(<AgentInspectorPanel />);
-    expect(screen.getByRole("button", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Tools" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Channels" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Tools" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Channels" })).toBeInTheDocument();
   });
 
   it("mounts the Overview tab by default with the ?agent id", () => {
@@ -67,13 +67,30 @@ describe("AgentInspectorPanel", () => {
 
   it("switches the mounted tab when a tab is clicked", () => {
     render(<AgentInspectorPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
     expect(screen.getByTestId("tools-tab")).toHaveTextContent("tools:agent_42");
     expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Channels" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Channels" }));
     expect(screen.getByTestId("channels-tab")).toHaveTextContent("channels:agent_42");
     expect(screen.queryByTestId("tools-tab")).not.toBeInTheDocument();
+  });
+
+  it("marks the active tab with aria-selected for screen readers", () => {
+    render(<AgentInspectorPanel />);
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("tab", { name: "Tools" })).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    expect(screen.getByRole("tab", { name: "Tools" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   it("renders the agent name in the header", () => {
@@ -84,8 +101,8 @@ describe("AgentInspectorPanel", () => {
   it("hides the Channels tab for non-subscribed owners", () => {
     subscribed = false;
     render(<AgentInspectorPanel />);
-    expect(screen.queryByRole("button", { name: "Channels" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Channels" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
   });
 
   it("shows a calm empty state when no ?agent is present", () => {
@@ -93,6 +110,6 @@ describe("AgentInspectorPanel", () => {
     render(<AgentInspectorPanel />);
     expect(screen.getByText(/select an agent/i)).toBeInTheDocument();
     expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Overview" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Overview" })).not.toBeInTheDocument();
   });
 });

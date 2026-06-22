@@ -2,11 +2,12 @@
 
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Bot, ScrollText, Wrench, MessageSquare } from "lucide-react";
+import { Bot, ScrollText, Wrench, MessageSquare, CalendarClock } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
+import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
 import { useBilling } from "@/hooks/useBilling";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
@@ -15,7 +16,12 @@ import { cn } from "@/lib/utils";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { AgentEntry, AgentsListResponse } from "./agents-types";
 
-type InspectorTab = "overview" | "instructions" | "tools" | "channels";
+type InspectorTab =
+  | "overview"
+  | "instructions"
+  | "tools"
+  | "channels"
+  | "schedule";
 
 // Module-level tab metadata (no inline component literals). The `channels`
 // entry is filtered out at render time when the owner has no active
@@ -25,6 +31,7 @@ const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
   { id: "instructions", icon: ScrollText, label: "Instructions" },
   { id: "tools", icon: Wrench, label: "Tools" },
   { id: "channels", icon: MessageSquare, label: "Channels" },
+  { id: "schedule", icon: CalendarClock, label: "Schedule" },
 ];
 
 /**
@@ -147,6 +154,14 @@ export function AgentInspectorPanel() {
         {activeTab === "tools" ? <AgentToolsTab agentId={agentId} /> : null}
         {activeTab === "channels" && channelsEnabled ? (
           <AgentChannelsSection agentId={agentId} />
+        ) : null}
+        {activeTab === "schedule" ? (
+          // RoutinesPanel uses only useTeamsApi (Clerk-backed, provider-free)
+          // and useInlineTeamsNav (null-safe without a provider), so it mounts
+          // bare here — no TeamsEventsProvider/CommandPaletteProvider needed.
+          // The agentId prop scopes the list to this agent's routines (no chip);
+          // the panel's own error/empty states cover an unavailable Teams side.
+          <RoutinesPanel agentId={agentId} />
         ) : null}
       </div>
     </div>

@@ -41,6 +41,25 @@ describe("RoutinesPanel", () => {
     mockPost.mockReset();
     mockPatch.mockReset();
     mockDel.mockReset();
+    // Restore the default single-row read for the base suite (the filter
+    // suite below swaps in a multi-agent set per test).
+    mockRead.mockImplementation(() => ({
+      data: {
+        routines: [
+          {
+            id: "rt1",
+            name: "Daily standup",
+            cron: "0 9 * * *",
+            agent_id: "a1",
+            prompt: "do thing",
+            enabled: true,
+          },
+        ],
+      },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    }));
   });
 
   it("renders routine rows", () => {
@@ -99,5 +118,70 @@ describe("RoutinesPanel", () => {
     for (const k of Object.keys(body as Record<string, unknown>)) {
       expect(allowed.has(k)).toBe(true);
     }
+  });
+});
+
+describe("RoutinesPanel agentId filter (inspector intrinsic scope)", () => {
+  // A mixed-agent set: two for `a1`, one for `a2`. The inspector passes its
+  // inspected agent's id; only that agent's routines should render. Unlike the
+  // standalone `/teams` panel, the filter is intrinsic — NO dismissible chip.
+  beforeEach(() => {
+    mockPost.mockReset();
+    mockPatch.mockReset();
+    mockDel.mockReset();
+    mockRead.mockImplementation(() => ({
+      data: {
+        routines: [
+          {
+            id: "rt1",
+            name: "Daily standup",
+            cron: "0 9 * * *",
+            agent_id: "a1",
+            prompt: "do thing",
+            enabled: true,
+          },
+          {
+            id: "rt2",
+            name: "Weekly review",
+            cron: "0 10 * * 1",
+            agent_id: "a1",
+            prompt: "review",
+            enabled: true,
+          },
+          {
+            id: "rt3",
+            name: "Nightly backup",
+            cron: "0 2 * * *",
+            agent_id: "a2",
+            prompt: "backup",
+            enabled: true,
+          },
+        ],
+      },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    }));
+  });
+
+  it("renders only the given agent's routines when agentId is set", () => {
+    render(<RoutinesPanel agentId="a1" />);
+    expect(screen.getByText("Daily standup")).toBeInTheDocument();
+    expect(screen.getByText("Weekly review")).toBeInTheDocument();
+    expect(screen.queryByText("Nightly backup")).not.toBeInTheDocument();
+  });
+
+  it("renders all routines when agentId is absent (standalone unchanged)", () => {
+    render(<RoutinesPanel />);
+    expect(screen.getByText("Daily standup")).toBeInTheDocument();
+    expect(screen.getByText("Weekly review")).toBeInTheDocument();
+    expect(screen.getByText("Nightly backup")).toBeInTheDocument();
+  });
+
+  it("does NOT render a dismissible filter chip when agentId is set", () => {
+    render(<RoutinesPanel agentId="a1" />);
+    expect(
+      screen.queryByLabelText(/clear agent filter/i),
+    ).not.toBeInTheDocument();
   });
 });

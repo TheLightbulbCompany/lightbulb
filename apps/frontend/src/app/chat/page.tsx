@@ -9,6 +9,8 @@ import { GatewayProvider } from "@/hooks/useGateway";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
+import { useUnifiedNav } from "@/hooks/useUnifiedNav";
+import { InlineTeamsPanel, isTeamsPanelKey } from "@/components/chat/InlineTeamsPanel";
 
 export default function ChatPage() {
   // useSearchParams() forces dynamic rendering; wrap in Suspense so the
@@ -32,6 +34,7 @@ function ChatPageInner() {
   const activeView: "chat" | "control" =
     viewParam === "control" || (viewParam !== "chat" && panelParam) ? "control" : "chat";
   const activePanel: string = panelParam || "overview";
+  const unifiedNav = useUnifiedNav();
 
   const setActiveView = useCallback(
     (next: "chat" | "control") => {
@@ -86,6 +89,7 @@ function ChatPageInner() {
           onViewChange={setActiveView}
           activePanel={activePanel}
           onPanelChange={setActivePanel}
+          unifiedNav={unifiedNav}
           fileViewerOpen={fileViewerOpen}
           activeFilePath={activeFilePath}
           onOpenFile={handleOpenFile}
@@ -98,7 +102,11 @@ function ChatPageInner() {
           </div>
           {activeView === "control" && (
             <div className="flex flex-col h-full min-h-0">
-              <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
+              {unifiedNav && isTeamsPanelKey(activePanel) ? (
+                <InlineTeamsPanel panel={activePanel} />
+              ) : (
+                <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
+              )}
             </div>
           )}
         </ChatLayout>

@@ -58,6 +58,9 @@ const RoutineDetailPanel = dynamic(() =>
 const ProjectDetailPanel = dynamic(() =>
   import("./panels/ProjectDetailPanel").then((m) => m.ProjectDetailPanel),
 );
+const GoalDetailPanel = dynamic(() =>
+  import("./panels/GoalDetailPanel").then((m) => m.GoalDetailPanel),
+);
 
 // Panels removed from the nav but still reachable by old URLs/bookmarks.
 const RETIRED_REDIRECTS: Record<string, string> = {
@@ -89,6 +92,8 @@ export function TeamsPanelRouter({
       return <RoutineDetailPanel routineId={detailId} />;
     if (panel === "project-detail")
       return <ProjectDetailPanel projectId={detailId} />;
+    if (panel === "goal-detail")
+      return <GoalDetailPanel goalId={detailId} />;
   }
 
   const Cmp = PANELS[panel];

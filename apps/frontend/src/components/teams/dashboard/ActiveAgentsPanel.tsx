@@ -6,16 +6,18 @@
 // reskin onto OUR cream/forest theme (tokens --cream/--ink/--mute/--forest/
 // --edge, the `editorial-card` class, `font-editorial-serif` heading).
 //
+// LIVE TRANSCRIPT (v1): active run cards now show a polled tail of the run's
+//   raw log — the "Working… / Executing command / …" activity. Backed by the
+//   `useRunLog` hook → BFF `GET /teams/heartbeat-runs/{id}/log` → upstream
+//   `GET /api/heartbeat-runs/{id}/log`. POLLED (15s), last-N-lines only; NOT
+//   the upstream RunChatSurface/WebSocket streaming machinery. Gated to
+//   active runs so finished cards don't poll, and degrades to the "Working…"
+//   placeholder on error/empty.
+//
 // DELIBERATE SCOPE CUTS vs upstream:
-//   * No streaming transcript. Upstream embeds RunChatSurface fed by a
-//     raw-log-byte polling hook (useLiveRunTranscripts → `/heartbeat-runs/
-//     {id}/log`). Our `/inbox/live-runs` + `/runs/{id}` surface carries no
-//     in-progress transcript (verified: the upstream run row exposes only
-//     metadata + stdout/stderr EXCERPTS, and `/api/runs/{id}` is not even a
-//     real upstream route). So cards render agent + live status + linked
-//     task + link, plus the `nextAction` metadata line when present.
-//     Streaming-transcript is a deliberate follow-up — do NOT port the
-//     raw-log machinery to add it.
+//   * No realtime (WebSocket) overlay or incremental byte-offset walking —
+//     each poll re-reads a bounded tail. Streaming is a deliberate follow-up.
+//   * No adapter/transcript-builder — we surface the plain `chunk` text.
 //   * No recovery chip (upstream's IssueRecoveryAction surface) — out of
 //     scope for v1.
 
@@ -29,6 +31,7 @@ import {
   isRunActive,
   type LiveRun,
 } from "@/components/teams/dashboard/hooks/useLiveRuns";
+import { useRunLog } from "@/components/teams/dashboard/hooks/useRunLog";
 
 // Cap how many cards render in the dashboard strip so the "Agents" section
 // stays a glanceable header band, not an unbounded grid. Upstream used 4.
@@ -42,6 +45,73 @@ function liveStatusLabel(run: LiveRun): string {
   const started = run.startedAt ?? run.createdAt;
   if (started) return `Started ${timeAgo(started)}`;
   return "Idle";
+}
+
+/* ---------- live activity area ---------- */
+
+/**
+ * The card's activity area. For ACTIVE runs it polls the run log
+ * (`useRunLog`, gated on `active` so finished cards never poll) and renders a
+ * compact, scrollable, monospace transcript tail — the live "Working… /
+ * Executing command / …" activity. It degrades gracefully:
+ *
+ *   live transcript lines → monospace transcript well
+ *   else `nextAction` hint → quiet single-line hint
+ *   else active           → "Working…" placeholder
+ *   else                  → "No activity captured."
+ *
+ * `useRunLog` is always called (rules of hooks); only the fetch is gated, so
+ * an inactive card contributes zero BFF traffic and still renders its
+ * placeholder.
+ */
+function RunActivity({
+  runId,
+  active,
+  activityLine,
+}: {
+  runId: string;
+  active: boolean;
+  activityLine: string | null;
+}) {
+  const { lines } = useRunLog(runId, active);
+
+  if (lines.length > 0) {
+    return (
+      <div
+        className="max-h-28 overflow-y-auto rounded-lg px-2.5 py-2 font-mono text-[10px] leading-relaxed"
+        style={{
+          background: "var(--cream-deepest)",
+          color: "var(--ink-soft)",
+          borderTop: "1px solid var(--edge)",
+        }}
+        aria-label="Live agent activity"
+      >
+        {lines.map((line, i) => (
+          <div key={i} className="whitespace-pre-wrap break-words">
+            {line}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // No transcript yet (loading/empty/inactive) — fall back to the quiet
+  // placeholder line so the card body keeps a consistent height.
+  return (
+    <div
+      className={cn(
+        "rounded-lg px-2.5 py-2 text-xs",
+        !activityLine && "italic",
+      )}
+      style={{
+        background: "var(--cream-deepest)",
+        color: "var(--mute)",
+        borderTop: "1px solid var(--edge)",
+      }}
+    >
+      {activityLine ?? (active ? "Working…" : "No activity captured.")}
+    </div>
+  );
 }
 
 /* ---------- run card ---------- */
@@ -139,22 +209,10 @@ function AgentRunCard({
         </Link>
       )}
 
-      {/* Compact "activity" area. No streaming transcript (see file header);
-          we surface the run's nextAction hint when present, otherwise a
-          quiet placeholder so the card body keeps a consistent height. */}
-      <div
-        className={cn(
-          "rounded-lg px-2.5 py-2 text-xs",
-          !activityLine && "italic",
-        )}
-        style={{
-          background: "var(--cream-deepest)",
-          color: "var(--mute)",
-          borderTop: "1px solid var(--edge)",
-        }}
-      >
-        {activityLine ?? (active ? "Working…" : "No activity captured.")}
-      </div>
+      {/* Compact activity area — live transcript tail for active runs,
+          graceful nextAction / "Working…" / "No activity captured."
+          fallback otherwise. See RunActivity. */}
+      <RunActivity runId={run.id} active={active} activityLine={activityLine} />
     </div>
   );
 }

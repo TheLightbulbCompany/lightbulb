@@ -63,3 +63,73 @@ def test_get_run_detail(client, monkeypatch):
         run_id="run_1",
         session_cookie="cookie",
     )
+
+
+def test_get_run_log_defaults(client, monkeypatch):
+    """`GET /teams/heartbeat-runs/{id}/log` proxies the upstream log slice
+    with the default 64 KiB tail when no params are supplied."""
+    admin = MagicMock()
+    admin.get_run_log = AsyncMock(
+        return_value={
+            "runId": "run_1",
+            "store": "local_file",
+            "logRef": "ref",
+            "content": '{"ts":"t","stream":"stdout","chunk":"Executing command"}\n',
+            "nextOffset": 53,
+        }
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/heartbeat-runs/run_1/log",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["content"].startswith("{")
+    assert body["nextOffset"] == 53
+    admin.get_run_log.assert_awaited_once_with(
+        run_id="run_1",
+        session_cookie="cookie",
+        offset=0,
+        limit_bytes=65_536,
+    )
+
+
+def test_get_run_log_passes_offset_and_limit(client, monkeypatch):
+    """The route forwards `offset` and the `limitBytes` alias verbatim."""
+    admin = MagicMock()
+    admin.get_run_log = AsyncMock(return_value={"runId": "run_1", "content": ""})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/heartbeat-runs/run_1/log?offset=128&limitBytes=4096",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.get_run_log.assert_awaited_once_with(
+        run_id="run_1",
+        session_cookie="cookie",
+        offset=128,
+        limit_bytes=4096,
+    )
+
+
+def test_get_run_log_rejects_oversized_limit(client, monkeypatch):
+    """`limitBytes` above the route ceiling is rejected by validation."""
+    admin = MagicMock()
+    admin.get_run_log = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/heartbeat-runs/run_1/log?limitBytes=9999999",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.get_run_log.assert_not_awaited()

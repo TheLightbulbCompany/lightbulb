@@ -9,7 +9,6 @@ import {
   FolderKanban,
   Network,
   Boxes,
-  DollarSign,
   History,
   UsersRound,
 } from "lucide-react";
@@ -47,7 +46,6 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
     items: [
       { panel: `${TEAMS_PANEL_PREFIX}org-chart`, label: "Org chart", Icon: Network },
       { panel: `${TEAMS_PANEL_PREFIX}skills`, label: "Skills", Icon: Boxes },
-      { panel: `${TEAMS_PANEL_PREFIX}costs`, label: "Costs", Icon: DollarSign },
       { panel: `${TEAMS_PANEL_PREFIX}activity`, label: "Activity", Icon: History },
       { panel: `${TEAMS_PANEL_PREFIX}members`, label: "Members", Icon: UsersRound },
     ],

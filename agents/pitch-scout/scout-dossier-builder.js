@@ -167,7 +167,8 @@ async function main() {
   );
 
   process.stdout.write(JSON.stringify(dossier));
-  process.exit(dossier.complete ? 0 : 1);
+  // exit 0 always: an incomplete dossier is a branch, not a run error — complete/missing_required in JSON carries it.
+  process.exit(0);
 }
 
 function readStdin() {

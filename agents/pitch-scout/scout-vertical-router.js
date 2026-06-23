@@ -257,7 +257,8 @@ async function main() {
   result.timestamp = new Date().toISOString();
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(result.error ? 1 : 0);
+  // exit 0 always: an unroutable-vertical result is a branch, not a run error — error flag in JSON carries it.
+  process.exit(0);
 }
 
 function readStdin() {

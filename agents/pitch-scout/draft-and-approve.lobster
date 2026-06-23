@@ -1,192 +1,269 @@
 name: draft-and-approve
-# Requirements 18, 19, 20, 21, 22, 23, 25, 27, 44, 48
-# Triggered after enrichment for qualified prospects.
-# LLM calls: 1 (draft generation via llm-task, thinking: medium)
+# First-touch outreach: run the deterministic compliance hard-stops for a qualified
+# prospect, then hand the genuine model-judgment work (draft generation, content scan,
+# approval gate, send) to the agent loop as a queued intent — keeping a human rep in the
+# loop on every first touch. Loads the post-enrichment research brief + voice model +
+# connected-platform config, deduces hard blocks, and records the outcome durably.
+#
+# Contract notes (see the lobster-authoring skill):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs under `command:`.
+#  - Durable state via state.get/set on the per-owner EFS mount (LOBSTER_STATE_DIR).
+#    The brief store + platform config are single-key maps keyed by domain; the
+#    notification queue + audit log are single-key index arrays (state.* has no
+#    prefix-list), appended in a node step then re-written.
+#  - The first-touch DRAFT is genuine model judgment (the original llm-task call,
+#    thinking:"medium") — it cannot run in the embedded pipeline (openclaw.invoke -> 401).
+#    So the deterministic compliance gate runs here, and a `draft_and_approve` intent is
+#    queued on `pitch/notifications` carrying everything the agent loop needs to: draft
+#    the email, run pitch-content-scanner.js on the draft, present it for rep APPROVAL
+#    (#pitch-approvals), and send via the connected outbound platform under the rep's name.
+#  - Slack/outbound APIs are unreachable from an embedded pipeline (401 / need the live
+#    draft + API keys), so the approval gate + send live in the agent loop, NOT here.
+#  - Attio is the ONLY CRM, reached gateway-free via the baked `mcporter` CLI; its output
+#    is YAML-ish TEXT, so a node step parses stdout (never JSON.parse). The actual CRM
+#    activity log is written post-send by the agent loop (it needs the sent draft).
+#  - Scripts always exit 0 and carry status in JSON; steps branch via `condition:`.
 
 args:
   prospect_domain:
     required: true
 
 steps:
-  # Step 1: Load research brief
-  - id: load-brief
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "briefs/active/{{prospect_domain}}"
-      }'
+  # ---------------------------------------------------------------------------
+  # 1. Load the post-enrichment research brief. prospect-enrich.lobster persists briefs
+  #    into a single-key map `pitch/briefs` keyed by domain (state.* can't slash-namespace),
+  #    each entry being {brief, icp_score, qualified, enrichment_confidence, tier, ...}.
+  # ---------------------------------------------------------------------------
+  - id: briefs-load
+    pipeline: state.get pitch/briefs
 
-  # Step 2: Load voice model
-  - id: load-voice
+  # ---------------------------------------------------------------------------
+  # 2. Load the voice model from Google Drive (gog, real CLI, gateway-free). Best-effort:
+  #    if it isn't present the agent loop drafts from the brief alone. Exits 0 always.
+  # ---------------------------------------------------------------------------
+  - id: voice-load
     command: >
-      openclaw.invoke --tool gog --action drive-read --args-json '{
-        "file": "pitch-voice-model.json"
-      }'
+      gog drive read --file pitch-voice-model.json --json 2>/dev/null || echo '{}'
 
-  # Step 3: Compliance check before drafting (Req 4, 6, 7, 41)
+  # ---------------------------------------------------------------------------
+  # 3. Load the connected outbound + CRM platform config (single-key maps in durable
+  #    state). The agent loop reads platform names to pick the send path / CRM activity
+  #    write; "no platform connected" is surfaced to the rep as a click-to-connect prompt.
+  # ---------------------------------------------------------------------------
+  - id: outbound-load
+    pipeline: state.get pitch/connected-outbound
+
+  - id: crm-load
+    pipeline: state.get pitch/connected-crm
+
+  # ---------------------------------------------------------------------------
+  # 4. Pull this prospect's brief entry out of the map and shape the compliance input.
+  #    pitch-compliance-check.js reads a single stdin object {prospect, config} and runs
+  #    six independent hard-stop checks (verification score, GDPR/TCPA consent, 5-touch
+  #    max, opt-out, explicit decline, current customer). The prospect fields come off the
+  #    brief; the config carries the verification + opt-out-window thresholds. It exits 0
+  #    always (carrying pass/blocks in JSON) once the .js fix below lands.
+  # ---------------------------------------------------------------------------
+  - id: compliance-input
+    command: >
+      node -e 'const store=JSON.parse(process.env.BRIEFS||"null")||{};
+        const domain=(process.env.LOBSTER_ARG_PROSPECT_DOMAIN||"").toLowerCase();
+        const entry=store[domain]||{}; const b=entry.brief||{};
+        const sig=b.trigger_signal||{};
+        const prospect={
+          domain,
+          title:b.prospect_role||b.title||"",
+          email:b.prospect_email||"",
+          verification_score:(typeof b.verification_score==="number")?b.verification_score:
+            (typeof b.enrichment_confidence==="number")?b.enrichment_confidence:
+            (typeof entry.enrichment_confidence==="number")?entry.enrichment_confidence:undefined,
+          jurisdiction:b.jurisdiction||"",
+          gdpr_consent:b.gdpr_consent||null,
+          tcpa_opt_in:b.tcpa_opt_in||null,
+          touch_channel:"email",
+          touch_count:(typeof b.touch_count==="number")?b.touch_count:0,
+          opted_out:!!b.opted_out, opt_out_date:b.opt_out_date||null,
+          explicitly_declined:!!b.explicitly_declined,
+          is_current_customer:!!b.is_current_customer,
+          customer_outreach_authorized:!!b.customer_outreach_authorized};
+        const config={min_verification_score:0.7, opt_out_window_days:30};
+        process.stdout.write(JSON.stringify({prospect, config, has_brief:!!store[domain],
+          icp_score:entry.icp_score!=null?entry.icp_score:null,
+          enrichment_confidence:entry.enrichment_confidence!=null?entry.enrichment_confidence:null,
+          signal_context:sig.context||sig.summary||""}));'
+    env:
+      BRIEFS: $briefs-load.stdout
+
+  # 4b. Surface has_brief / score explicitly so downstream steps can gate on a real count
+  #     (never gate on .length). 1 when a brief exists for this domain, else 0.
+  - id: brief-gate
+    command: >
+      node -e 'const c=JSON.parse(require("fs").readFileSync(0,"utf8"))||{};
+        process.stdout.write(JSON.stringify({has_brief:c.has_brief?1:0,
+          icp_score:c.icp_score, enrichment_confidence:c.enrichment_confidence,
+          signal_context:c.signal_context||""}));'
+    stdin: $compliance-input.stdout
+
+  # ---------------------------------------------------------------------------
+  # 5. Compliance hard-stop check (Req 4, 6, 7, 26, 30, 41). Deterministic, zero LLM.
+  #    Runs UNCONDITIONALLY so the always-run audit step never references a skipped
+  #    producer (a skipped-step ref is unsafe — see reference.lobster). For a
+  #    missing-brief domain the prospect is mostly-empty, which the script handles
+  #    cleanly; the no-brief branch below is what actually short-circuits the draft.
+  #    Exits 0 always (post-fix) and carries {pass, blocks, requires_approval,
+  #    approval_needed, is_csuite} in JSON.
+  # ---------------------------------------------------------------------------
   - id: compliance-check
-    command: >
-      exec --json --shell 'node scripts/pitch-compliance-check.js'
-    stdin: $load-brief.stdout
+    command: node pitch-compliance-check.js
+    stdin: $compliance-input.stdout
 
-  # Step 4: Generate draft — ONE LLM CALL (Req 18, 19, 20, 21)
-  - id: generate-draft
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Write a first-touch outreach email for this prospect. REQUIREMENTS: 1) Open with the SPECIFIC signal that triggered this prospect — not a generic opener. Reference the actual event, post, or data point. 2) Map the value proposition to THIS prospects specific situation from the research brief — not a category-level pain statement. 3) Match the voice model provided. 4) Adapt format to the channel specified. This is a DRAFT for human review, not a finished product.",
-        "thinking": "medium",
-        "input": {
-          "brief": $load-brief.json,
-          "voice_model": $load-voice.json,
-          "channel": "email"
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "subject": {"type": "string"},
-            "body": {"type": "string"},
-            "channel": {"type": "string"},
-            "signal_reference": {"type": "string"},
-            "prospect_domain": {"type": "string"}
-          },
-          "required": ["subject", "body", "channel", "signal_reference", "prospect_domain"]
-        }
-      }'
-    condition: $compliance-check.json.pass
+  # ---------------------------------------------------------------------------
+  # 6. PASS PATH — queue a `draft_and_approve` intent for the agent loop. The draft
+  #    generation (thinking:"medium"), the pitch-content-scanner.js pass, the rep
+  #    approval gate (#pitch-approvals), and the send via the connected outbound platform
+  #    are all genuine model-judgment / live-credential / human-in-the-loop work that the
+  #    embedded pipeline cannot do — so they are handed off here. C-suite first touches
+  #    (is_csuite) and competitor/pricing/commitment flags route to mandatory rep approval
+  #    per AGENTS.md autonomy boundaries; the intent carries that signal.
+  #    Load-before-use on the notifications array, append, re-write.
+  # ---------------------------------------------------------------------------
+  - id: draft-notify-load
+    condition: $brief-gate.json.has_brief > 0 && $compliance-check.json.pass
+    pipeline: state.get pitch/notifications
 
-  # Step 5: Content scan — competitor, pricing, commitment, signal grounding (Req 19, 25)
-  - id: content-scan
+  - id: draft-notify-next
+    condition: $brief-gate.json.has_brief > 0 && $compliance-check.json.pass
     command: >
-      exec --json --shell 'node scripts/pitch-content-scanner.js'
-    stdin: $generate-draft.stdout
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const store=JSON.parse(process.env.BRIEFS||"null")||{};
+        const domain=(process.env.LOBSTER_ARG_PROSPECT_DOMAIN||"").toLowerCase();
+        const entry=store[domain]||{}; const b=entry.brief||{};
+        const comp=JSON.parse(process.env.COMP||"{}");
+        const voice=JSON.parse(process.env.VOICE||"{}");
+        const outbound=JSON.parse(process.env.OUTBOUND||"null")||{};
+        const crm=JSON.parse(process.env.CRMCFG||"null")||{};
+        const sig=b.trigger_signal||{};
+        n.push({kind:"draft_and_approve", deliver_to:"#pitch-approvals",
+          urgent: comp.is_csuite===true || (entry.icp_score!=null && entry.icp_score>=90),
+          domain,
+          channel:"email",
+          brief:b,
+          icp_score:entry.icp_score!=null?entry.icp_score:null,
+          enrichment_confidence:entry.enrichment_confidence!=null?entry.enrichment_confidence:null,
+          signal_context:sig.context||sig.summary||"",
+          voice_model_present: voice && Object.keys(voice).length>0,
+          is_csuite: comp.is_csuite===true,
+          requires_approval: comp.is_csuite===true,
+          compliance_approval_needed: comp.requires_approval===true,
+          compliance_approval_reasons:(comp.approval_needed||[]).map(a=>a.reason),
+          outbound_platform: outbound.platform||null,
+          crm_platform: crm.platform||null,
+          requires:["draft_first_touch","content_scan","rep_approval","send_via_outbound","crm_activity_log","audit_send"],
+          note:"DRAFT for rep review — first touch is never sent autonomously. Run pitch-content-scanner.js on the draft (with competitor_names + signal_terms config); reject_and_regenerate on missing signal grounding or non-response language; route_to_approval on competitor/pricing/commitment/timeline flags. Send under the rep name only after approval.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $draft-notify-load.stdout
+      BRIEFS: $briefs-load.stdout
+      COMP: $compliance-check.stdout
+      VOICE: $voice-load.stdout
+      OUTBOUND: $outbound-load.stdout
+      CRMCFG: $crm-load.stdout
 
-  # Step 6: Present for approval — APPROVAL GATE (Req 23, 27, 48)
-  - id: present-for-approval
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#pitch-approvals",
-        "text": "📋 DRAFT FOR REVIEW — edit or approve to send under your name.\n\n**Signal:** $load-brief.json.brief.trigger_signal.context\n**ICP Score:** $load-brief.json.icp_score\n**Confidence:** $load-brief.json.enrichment_confidence\n\n**Subject:** $generate-draft.json.subject\n**Body:** $generate-draft.json.body\n\n**Research Brief:** [View full brief]\n\n⚠️ Content flags: $content-scan.json.flags"
-      }'
-    approval: required
-    condition: $content-scan.json.action != "regenerate"
+  - id: draft-notify-save
+    condition: $brief-gate.json.has_brief > 0 && $compliance-check.json.pass
+    pipeline: state.set pitch/notifications
+    stdin: $draft-notify-next.stdout
 
-  # Step 7: Send if approved via connected outbound platform (Req 5)
-  # Click-to-connect: Instantly, SmartLead, Mailshake, Lemlist
-  - id: load-outbound-config
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pitch-config/connected-outbound"}'
-    condition: $present-for-approval.approved
+  # ---------------------------------------------------------------------------
+  # 7. BLOCK PATH — compliance hard-stopped this prospect (opt-out, decline, 5-touch max,
+  #    current customer, missing consent/verification). Queue a `compliance_block` intent
+  #    so the rep can see why no draft was produced. No outreach, no draft. Slack 401 ->
+  #    state queue. Load-before-use, append, re-write.
+  # ---------------------------------------------------------------------------
+  - id: block-notify-load
+    condition: "$brief-gate.json.has_brief > 0 && !$compliance-check.json.pass"
+    pipeline: state.get pitch/notifications
 
-  - id: no-outbound-notice
+  - id: block-notify-next
+    condition: "$brief-gate.json.has_brief > 0 && !$compliance-check.json.pass"
     command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#pitch-approvals",
-        "text": "To send outreach, connect your email platform in settings. Supported: Instantly, SmartLead, Mailshake, Lemlist."
-      }'
-    condition: $present-for-approval.approved && $load-outbound-config.json.platform == null
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const comp=JSON.parse(process.env.COMP||"{}");
+        const domain=process.env.LOBSTER_ARG_PROSPECT_DOMAIN;
+        const blocks=(comp.blocks||[]).map(b=>({check:b.check, reason:b.reason, details:b.details}));
+        n.push({kind:"compliance_block", deliver_to:"#pitch-approvals", urgent:false,
+          domain, blocks,
+          summary:"First touch to "+domain+" blocked by compliance: "
+            +blocks.map(b=>b.reason).join(", ")+". No draft produced.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $block-notify-load.stdout
+      COMP: $compliance-check.stdout
 
-  - id: send-instantly
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.instantly.ai/api/v1/lead/send" \
-        -H "Content-Type: application/json" \
-        -d "{\"api_key\":\"$INSTANTLY_API_KEY\",\"email\":\"$load-brief.json.brief.prospect_email\",\"subject\":\"$generate-draft.json.subject\",\"body\":\"$generate-draft.json.body\",\"campaign_id\":\"seq_{{prospect_domain}}\"}"'
-    condition: $present-for-approval.approved && $load-outbound-config.json.platform == "instantly"
+  - id: block-notify-save
+    condition: "$brief-gate.json.has_brief > 0 && !$compliance-check.json.pass"
+    pipeline: state.set pitch/notifications
+    stdin: $block-notify-next.stdout
 
-  - id: send-smartlead
-    command: >
-      exec --json --shell 'curl -s -X POST "https://server.smartlead.ai/api/v1/leads/send" \
-        -H "Authorization: Bearer $SMARTLEAD_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"email\":\"$load-brief.json.brief.prospect_email\",\"subject\":\"$generate-draft.json.subject\",\"body\":\"$generate-draft.json.body\",\"campaign_id\":\"seq_{{prospect_domain}}\"}"'
-    condition: $present-for-approval.approved && $load-outbound-config.json.platform == "smartlead"
+  # ---------------------------------------------------------------------------
+  # 8. MISSING-BRIEF PATH — no post-enrichment brief exists for this domain. Run
+  #    prospect-enrich.lobster first. Queue a notice for the rep. Load-before-use.
+  # ---------------------------------------------------------------------------
+  - id: nobrief-load
+    condition: $brief-gate.json.has_brief == 0
+    pipeline: state.get pitch/notifications
 
-  - id: send-mailshake
+  - id: nobrief-next
+    condition: $brief-gate.json.has_brief == 0
     command: >
-      exec --json --shell 'curl -s -X POST "https://api.mailshake.com/2017-04-01/leads/send" \
-        -H "Authorization: Basic $MAILSHAKE_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"emailAddress\":\"$load-brief.json.brief.prospect_email\",\"subject\":\"$generate-draft.json.subject\",\"body\":\"$generate-draft.json.body\",\"campaignID\":\"seq_{{prospect_domain}}\"}"'
-    condition: $present-for-approval.approved && $load-outbound-config.json.platform == "mailshake"
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const domain=process.env.LOBSTER_ARG_PROSPECT_DOMAIN;
+        n.push({kind:"no_brief", deliver_to:"#pitch-approvals", urgent:false, domain,
+          summary:"No research brief found for "+domain+". Run prospect-enrich first.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $nobrief-load.stdout
 
-  - id: send-lemlist
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.lemlist.com/api/leads" \
-        -H "Authorization: Bearer $LEMLIST_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"email\":\"$load-brief.json.brief.prospect_email\",\"subject\":\"$generate-draft.json.subject\",\"body\":\"$generate-draft.json.body\",\"campaignId\":\"seq_{{prospect_domain}}\"}"'
-    condition: $present-for-approval.approved && $load-outbound-config.json.platform == "lemlist"
+  - id: nobrief-save
+    condition: $brief-gate.json.has_brief == 0
+    pipeline: state.set pitch/notifications
+    stdin: $nobrief-next.stdout
 
-  # Step 8: Initialize sequence state in fast-io
-  - id: init-sequence
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "sequences/active/{{prospect_domain}}",
-        "data": {
-          "prospect_domain": "{{prospect_domain}}",
-          "sequence_id": "seq_{{prospect_domain}}",
-          "touch_count": 1,
-          "last_touch_date": "{{timestamp}}",
-          "channel": "email",
-          "prospect": $load-brief.json.brief,
-          "paused": false,
-          "approved_by": "rep",
-          "first_touch_date": "{{timestamp}}"
-        }
-      }'
-    condition: $present-for-approval.approved
+  # ---------------------------------------------------------------------------
+  # 9. Audit log (Req 38) — append a deterministic record to the single-key audit array.
+  #    Always runs (drafted, blocked, or no-brief). Load-before-use, append, cap, write.
+  #    The post-send draft/CRM-activity record is written separately by the agent loop.
+  # ---------------------------------------------------------------------------
+  - id: audit-load
+    pipeline: state.get pitch/audit-log
 
-  # Step 9: CRM sync — log the send (Req 17)
-  # Click-to-connect: HubSpot, Salesforce, Attio, Pipedrive
-  - id: load-crm-config
+  - id: audit-next
     command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pitch-config/connected-crm"}'
-    condition: $present-for-approval.approved
+      node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
+        const gate=JSON.parse(process.env.GATE||"{}");
+        const comp=JSON.parse(process.env.COMP||"null");
+        const has=gate.has_brief>0;
+        const outcome=!has?"no_brief":(comp&&comp.pass?"queued_for_draft":"compliance_blocked");
+        log.push({action:"first_touch_draft",
+          domain:process.env.LOBSTER_ARG_PROSPECT_DOMAIN,
+          outcome,
+          icp_score:gate.icp_score!=null?gate.icp_score:null,
+          enrichment_confidence:gate.enrichment_confidence!=null?gate.enrichment_confidence:null,
+          compliance_pass: comp?!!comp.pass:null,
+          compliance_blocks:(comp&&comp.blocks||[]).map(b=>b.reason),
+          is_csuite: comp?comp.is_csuite===true:null,
+          approved:false, authorized_by:"rep_pending",
+          timestamp:new Date().toISOString()});
+        if (log.length>500) log.splice(0,log.length-500);
+        process.stdout.write(JSON.stringify(log));'
+    env:
+      AUDIT: $audit-load.stdout
+      GATE: $brief-gate.stdout
+      COMP: $compliance-check.stdout
 
-  - id: crm-sync-hubspot
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.hubapi.com/crm/v3/objects/engagements" \
-        -H "Authorization: Bearer $HUBSPOT_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"properties\":{\"hs_engagement_type\":\"EMAIL\",\"hs_email_subject\":\"$generate-draft.json.subject\",\"hs_timestamp\":\"{{timestamp}}\"},\"associations\":[{\"to\":{\"id\":\"{{prospect_domain}}\"},\"types\":[{\"associationCategory\":\"HUBSPOT_DEFINED\",\"associationTypeId\":198}]}]}"'
-    condition: $present-for-approval.approved && $load-crm-config.json.platform == "hubspot"
-
-  - id: crm-sync-salesforce
-    command: >
-      exec --json --shell 'curl -s -X POST "$SALESFORCE_INSTANCE_URL/services/data/v59.0/sobjects/Task" \
-        -H "Authorization: Bearer $SALESFORCE_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"Subject\":\"$generate-draft.json.subject\",\"ActivityDate\":\"{{timestamp}}\",\"Type\":\"Email\",\"WhoId\":\"{{prospect_domain}}\"}"'
-    condition: $present-for-approval.approved && $load-crm-config.json.platform == "salesforce"
-
-  - id: crm-sync-attio
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.attio.com/v2/objects/companies/records/{{prospect_domain}}/entries" \
-        -H "Authorization: Bearer $ATTIO_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"type\":\"email_sent\",\"subject\":\"$generate-draft.json.subject\",\"date\":\"{{timestamp}}\"}"'
-    condition: $present-for-approval.approved && $load-crm-config.json.platform == "attio"
-
-  - id: crm-sync-pipedrive
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.pipedrive.com/v1/activities?api_token=$PIPEDRIVE_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"subject\":\"$generate-draft.json.subject\",\"type\":\"email\",\"done\":1,\"due_date\":\"{{timestamp}}\"}"'
-    condition: $present-for-approval.approved && $load-crm-config.json.platform == "pipedrive"
-
-  # Step 10: Audit log (Req 38)
-  - id: audit-log
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/first-touch/{{prospect_domain}}",
-        "data": {
-          "action": "first_touch",
-          "domain": "{{prospect_domain}}",
-          "approved": true,
-          "approved_by": "rep",
-          "draft": $generate-draft.json,
-          "icp_score": $load-brief.json.icp_score,
-          "signal": "$load-brief.json.brief.trigger_signal",
-          "content_flags": $content-scan.json.flags,
-          "compliance_check": $compliance-check.json,
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+  - id: audit-save
+    pipeline: state.set pitch/audit-log
+    stdin: $audit-next.stdout

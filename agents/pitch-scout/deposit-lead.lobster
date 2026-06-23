@@ -53,9 +53,10 @@ steps:
     pipeline: state.get scout/lead-queue
 
   # 4. Pitch's active sequences (single-key index array) — in-flight dedup.
+  #    Reads Pitch's producer key (Scout + Pitch share one per-owner state store).
   - id: sequences
     condition: $gate.json.pass
-    pipeline: state.get scout/pitch-sequences
+    pipeline: state.get pitch/sequences
 
   # 5. Assemble the dedup input ({lead, crm_records, scout_queue, pitch_sequences}).
   - id: dedup-input

@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Repeat } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { ArrowUpDown, Check, Repeat } from "lucide-react";
 import {
   EditorialButton,
   PanelDataTable,
@@ -10,17 +10,156 @@ import {
   PanelToolbar,
   type PanelDataColumn,
 } from "@/components/teams/shell";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { cn } from "@/lib/utils";
+import type { CompanyAgent } from "@/components/teams/shared/types";
+
+// The /routines BFF is a pure passthrough of upstream Paperclip's
+// `RoutineListItem` (paperclip/packages/shared/src/types/routine.ts:214), so a
+// row carries `title` / `assigneeAgentId` / `triggers[]` / `lastTriggeredAt`,
+// NOT the flat `name` / `cron` / `agent_id` an earlier scaffold assumed. We
+// read the upstream fields first and fall back to the legacy flat names so any
+// transitional row (or a test fixture using the old shape) still renders.
+interface RoutineTriggerLite {
+  id: string;
+  kind: string;
+  enabled?: boolean;
+  cronExpression?: string | null;
+  timezone?: string | null;
+  nextRunAt?: string | null;
+}
 
 interface Routine {
   id: string;
-  name: string;
-  cron: string;
-  agent_id: string;
+  // Upstream → display title; legacy flat fallback kept for transitional rows.
+  title?: string | null;
+  name?: string | null;
+  // Upstream assignee id; legacy flat fallback.
+  assigneeAgentId?: string | null;
+  agent_id?: string | null;
+  // Upstream status ("active" | "paused" | "draft" | "archived"). The legacy
+  // shape carried a bare `enabled` boolean instead.
+  status?: string | null;
+  enabled?: boolean;
+  triggers?: RoutineTriggerLite[];
+  // Legacy flat cron (no triggers[] array). Upstream rows carry cron on each
+  // trigger; this is read only as a fallback.
+  cron?: string | null;
+  lastTriggeredAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   prompt?: string;
-  enabled: boolean;
 }
+
+/* ── field accessors (tolerant of upstream + legacy shapes) ──────────────── */
+
+function routineName(r: Routine): string {
+  return r.title ?? r.name ?? "Untitled routine";
+}
+
+function routineAgentId(r: Routine): string | null {
+  return r.assigneeAgentId ?? r.agent_id ?? null;
+}
+
+// A routine is enabled when its upstream status is "active" (paused/draft/
+// archived are not), or — for a legacy flat row — when the bare `enabled`
+// boolean is true.
+function routineEnabled(r: Routine): boolean {
+  if (r.status != null) return r.status === "active";
+  return r.enabled === true;
+}
+
+// Display cron: prefer the first enabled trigger's expression, fall back to any
+// trigger's, then the legacy flat `cron`. Returns null when a routine has no
+// schedule trigger (e.g. event-only routines).
+function routineCron(r: Routine): string | null {
+  const triggers = r.triggers ?? [];
+  const enabledCron = triggers.find(
+    (t) => t.enabled !== false && t.cronExpression,
+  )?.cronExpression;
+  if (enabledCron) return enabledCron;
+  const anyCron = triggers.find((t) => t.cronExpression)?.cronExpression;
+  if (anyCron) return anyCron;
+  return r.cron ?? null;
+}
+
+// Earliest upcoming `nextRunAt` across the routine's enabled triggers, as an
+// epoch-ms value for sorting. Routines with no upcoming run sort last.
+function routineNextRunTs(r: Routine): number {
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const t of r.triggers ?? []) {
+    if (t.enabled === false || !t.nextRunAt) continue;
+    const ts = new Date(t.nextRunAt).getTime();
+    if (!Number.isNaN(ts) && ts < earliest) earliest = ts;
+  }
+  return earliest;
+}
+
+// A trigger's `nextRunAt` is a FUTURE timestamp, so render it future-relative
+// ("in 8h"); an overdue/imminent one falls through to a coarse "soon". Mirrors
+// RoutineDetailPanel.nextRunLabel without pulling in the past-only timeAgo.
+function nextRunLabel(r: Routine): string | null {
+  const ts = routineNextRunTs(r);
+  if (!Number.isFinite(ts)) return null;
+  const diffSec = Math.round((ts - Date.now()) / 1000);
+  if (diffSec < 60) return "soon";
+  if (diffSec < 3600) return `in ${Math.floor(diffSec / 60)}m`;
+  if (diffSec < 86400) return `in ${Math.floor(diffSec / 3600)}h`;
+  return `in ${Math.floor(diffSec / 86400)}d`;
+}
+
+/* ── sort ────────────────────────────────────────────────────────────────── */
+
+type RoutineSortField = "name" | "nextRun" | "agent" | "enabled";
+type RoutineSortDir = "asc" | "desc";
+
+const SORT_OPTIONS: ReadonlyArray<readonly [RoutineSortField, string]> = [
+  ["name", "Name"],
+  ["nextRun", "Next run"],
+  ["agent", "Agent"],
+  ["enabled", "Enabled"],
+];
+
+function sortRoutines(
+  routines: Routine[],
+  field: RoutineSortField,
+  dir: RoutineSortDir,
+  agentName: (id: string | null) => string,
+): Routine[] {
+  const mul = dir === "asc" ? 1 : -1;
+  return [...routines].sort((a, b) => {
+    let result = 0;
+    switch (field) {
+      case "name":
+        result = routineName(a).localeCompare(routineName(b));
+        break;
+      case "nextRun":
+        result = routineNextRunTs(a) - routineNextRunTs(b);
+        break;
+      case "agent":
+        result = agentName(routineAgentId(a)).localeCompare(
+          agentName(routineAgentId(b)),
+        );
+        break;
+      case "enabled":
+        // Enabled before disabled when ascending.
+        result = Number(routineEnabled(b)) - Number(routineEnabled(a));
+        break;
+    }
+    // Stable tiebreak on name so equal keys keep a deterministic order.
+    if (result === 0) result = routineName(a).localeCompare(routineName(b));
+    return mul * result;
+  });
+}
+
+/* ── component ───────────────────────────────────────────────────────────── */
 
 export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   const { read, post, patch, del } = useTeamsApi();
@@ -30,29 +169,52 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   const { data, isLoading, error, mutate } = read<{ routines: Routine[] }>(
     "/routines",
   );
+  // Resolve assignee ids → display names (the same id→name idiom the issues
+  // panels use). The roster is best-effort: a missing read just falls back to
+  // the raw id, so a slow /agents fetch never blanks the list.
+  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
+  const agents = agentsData?.agents ?? [];
+
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // Standalone-only agent filter (hidden when the intrinsic `agentId` prop
+  // scopes the panel — see filtering note below).
+  const [agentPick, setAgentPick] = useState<string | null>(null);
+  const [sortField, setSortField] = useState<RoutineSortField>("name");
+  const [sortDir, setSortDir] = useState<RoutineSortDir>("asc");
+
+  const agentName = useCallback(
+    (id: string | null): string => {
+      if (!id) return "Unassigned";
+      return agents.find((a) => a.id === id)?.name ?? id;
+    },
+    [agents],
+  );
 
   const routines = data?.routines;
   // `agentId` (when set by the per-agent inspector) is an INTRINSIC scope: the
   // panel is mounted under a single agent, so we filter to its routines with no
-  // dismissible chip. Standalone under /teams the prop is absent → unchanged.
-  // The free-text `search` filter applies on top in both modes.
+  // dismissible chip. Standalone under /teams the prop is absent → the toolbar
+  // agent picker (`agentPick`) drives an OPTIONAL, user-dismissible filter.
+  // The free-text `search` filter applies on top in all modes.
   const filtered = useMemo(() => {
     const list = routines ?? [];
-    return list.filter(
+    const q = search.trim().toLowerCase();
+    const scoped = agentId ?? agentPick;
+    const matched = list.filter(
       (r) =>
-        (!agentId || r.agent_id === agentId) &&
-        (!search || r.name.toLowerCase().includes(search.toLowerCase())),
+        (!scoped || routineAgentId(r) === scoped) &&
+        (!q || routineName(r).toLowerCase().includes(q)),
     );
-  }, [routines, agentId, search]);
+    return sortRoutines(matched, sortField, sortDir, agentName);
+  }, [routines, agentId, agentPick, search, sortField, sortDir, agentName]);
 
-  async function toggle(id: string, enabled: boolean) {
-    setBusy(id);
+  async function toggle(r: Routine, next: boolean) {
+    setBusy(r.id);
     try {
       // PatchRoutineBody whitelists `enabled` (Task 3).
-      await patch(`/routines/${id}`, { enabled });
+      await patch(`/routines/${r.id}`, { enabled: next });
       mutate();
     } finally {
       setBusy(null);
@@ -94,29 +256,41 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
     {
       key: "name",
       header: "Name",
-      cell: (r) => (
-        <div>
-          <div className="font-medium text-[var(--ink)]">{r.name}</div>
-          <div className="text-xs text-[var(--mute)]">
-            <span className="font-mono">{r.cron}</span> · agent {r.agent_id}
+      cell: (r) => {
+        const cron = routineCron(r);
+        const next = nextRunLabel(r);
+        return (
+          <div>
+            <div className="font-medium text-[var(--ink)]">
+              {routineName(r)}
+            </div>
+            <div className="text-xs text-[var(--mute)]">
+              {cron ? <span className="font-mono">{cron}</span> : "No schedule"}
+              {" · "}
+              {agentName(routineAgentId(r))}
+              {next ? ` · next ${next}` : ""}
+            </div>
           </div>
-        </div>
-      ),
+        );
+      },
     },
     {
       key: "enabled",
       header: "Enabled",
-      cell: (r) => (
-        <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
-          <input
-            type="checkbox"
-            checked={r.enabled}
-            disabled={busy === r.id}
-            onChange={(e) => toggle(r.id, e.target.checked)}
-          />
-          <span>{r.enabled ? "Enabled" : "Disabled"}</span>
-        </label>
-      ),
+      cell: (r) => {
+        const enabled = routineEnabled(r);
+        return (
+          <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={busy === r.id}
+              onChange={(e) => toggle(r, e.target.checked)}
+            />
+            <span>{enabled ? "Enabled" : "Disabled"}</span>
+          </label>
+        );
+      },
     },
     {
       key: "actions",
@@ -128,7 +302,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
             variant="ghost"
             size="sm"
             disabled={busy === r.id}
-            aria-label={`Run ${r.name} now`}
+            aria-label={`Run ${routineName(r)} now`}
             onClick={() => runNow(r)}
           >
             Run now
@@ -173,10 +347,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
         overline="Routines"
         title="Routines"
         actions={
-          <EditorialButton
-            variant="primary"
-            onClick={() => setCreating(true)}
-          >
+          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
             New routine
           </EditorialButton>
         }
@@ -186,7 +357,50 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
         onSearchChange={setSearch}
         searchPlaceholder="Find routine..."
         searchAriaLabel="Search routines"
+        filters={
+          <>
+            {/* Agent filter — standalone-only. The inspector mount already
+                scopes to one agent via the intrinsic `agentId` prop, so the
+                picker would be redundant there. */}
+            {!agentId && (
+              <AssigneePicker
+                agents={agents}
+                selectedAgentId={agentPick}
+                onChange={setAgentPick}
+                variant="inline"
+                className="border border-[var(--edge)]"
+              />
+            )}
+            <SortMenu
+              field={sortField}
+              dir={sortDir}
+              onSelect={(f) => {
+                if (f === sortField) {
+                  setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                } else {
+                  setSortField(f);
+                  setSortDir("asc");
+                }
+              }}
+            />
+          </>
+        }
       />
+      {/*
+        Cross-routine "Recent runs" view — DEFERRED.
+
+        Upstream's Routines page (paperclip/ui/src/pages/Routines.tsx) has a
+        list-level "Recent Runs" tab, but it is NOT a routine-runs aggregation:
+        it reads `GET /issues?originKind=routine_execution` and renders the
+        result through the shared IssuesList. Our /issues BFF whitelists its
+        query params (issues.py:31-37) and does NOT forward `originKind`, and
+        there is no global routine-runs endpoint — `list_routine_runs` is
+        strictly per-routine (`GET /routines/{id}/runs`). Porting the tab
+        would require a NEW BFF param/endpoint that the slim Teams surface
+        doesn't expose today. The per-routine Run history in RoutineDetailPanel
+        already covers the "what ran, when, did it fail" need, so we defer the
+        cross-routine view rather than invent backend surface for it.
+      */}
       {isLoading ? (
         <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
           Loading…
@@ -196,8 +410,8 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           icon={Repeat}
           headline="No routines yet."
           supporting={
-            search
-              ? "No routines match your search."
+            search || agentPick
+              ? "No routines match your filters."
               : "Create a routine to define a recurring workflow that fires on a schedule or trigger."
           }
         />
@@ -211,6 +425,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
 
       {creating && (
         <CreateRoutineDialog
+          agents={agents}
           onClose={() => setCreating(false)}
           onCreated={() => {
             setCreating(false);
@@ -222,23 +437,79 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   );
 }
 
+/* ── sort menu (Tasks-list idiom) ────────────────────────────────────────── */
+
+function SortMenu({
+  field,
+  dir,
+  onSelect,
+}: {
+  field: RoutineSortField;
+  dir: RoutineSortDir;
+  onSelect: (field: RoutineSortField) => void;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title="Sort"
+          aria-label="Sort routines"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] text-[var(--mute)] transition-colors hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
+        >
+          <ArrowUpDown className="h-3.5 w-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-44 p-1">
+        {SORT_OPTIONS.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onSelect(value)}
+            className={cn(
+              "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition-colors",
+              value === field
+                ? "bg-[var(--cream-deeper)] text-[var(--ink)]"
+                : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
+            )}
+          >
+            <span>{label}</span>
+            {value === field ? (
+              <span className="text-xs text-[var(--mute)]">
+                {dir === "asc" ? "↑" : "↓"}
+              </span>
+            ) : (
+              <Check className="h-3.5 w-3.5 opacity-0" aria-hidden="true" />
+            )}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/* ── create dialog ───────────────────────────────────────────────────────── */
+
 function CreateRoutineDialog({
+  agents,
   onClose,
   onCreated,
 }: {
+  agents: CompanyAgent[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
   const [name, setName] = useState("");
   const [cron, setCron] = useState("0 9 * * *");
-  const [agentId, setAgentId] = useState("");
+  const [agentId, setAgentId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function submit() {
+    if (!agentId) return;
     setSubmitting(true);
     setErr(null);
     try {
@@ -260,7 +531,9 @@ function CreateRoutineDialog({
   return (
     <div className="fixed inset-0 bg-[rgba(26,26,26,0.35)] flex items-center justify-center">
       <div className="editorial-card p-6 w-[28rem]">
-        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">New routine</h2>
+        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">
+          New routine
+        </h2>
         <label className="block mb-3">
           <span className="text-sm text-[var(--ink-soft)]">Name</span>
           <input
@@ -277,14 +550,20 @@ function CreateRoutineDialog({
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
           />
         </label>
-        <label className="block mb-3">
-          <span className="text-sm text-[var(--ink-soft)]">Agent ID</span>
-          <input
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
-          />
-        </label>
+        {/* Agent picker replaces the old raw "Agent ID" text input — the same
+            editorial AssigneePicker the issues surface uses. */}
+        <div className="block mb-3">
+          <span className="text-sm text-[var(--ink-soft)]">Agent</span>
+          <div className="mt-1">
+            <AssigneePicker
+              agents={agents}
+              selectedAgentId={agentId}
+              onChange={setAgentId}
+              variant="inline"
+              className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+            />
+          </div>
+        </div>
         <label className="block mb-3">
           <span className="text-sm text-[var(--ink-soft)]">Prompt</span>
           <textarea
@@ -308,11 +587,7 @@ function CreateRoutineDialog({
           </div>
         )}
         <div className="flex justify-end gap-2">
-          <EditorialButton
-            variant="secondary"
-            size="sm"
-            onClick={onClose}
-          >
+          <EditorialButton variant="secondary" size="sm" onClick={onClose}>
             Cancel
           </EditorialButton>
           <EditorialButton

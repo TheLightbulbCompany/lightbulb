@@ -46,8 +46,10 @@ def admin(monkeypatch):
         "run_routine",
         "list_routine_runs",
         "list_goals",
+        "get_goal",
         "create_goal",
         "patch_goal",
+        "delete_goal",
         "list_projects",
         "get_project",
         "create_project",
@@ -160,6 +162,72 @@ def test_list_goals(client, admin):
         company_id="co_abc",
         session_cookie="cookie",
     )
+
+
+def test_get_goal(client, admin):
+    """GET /teams/goals/{id} proxies upstream GET /api/goals/{id}."""
+    admin.get_goal.return_value = {
+        "id": "g_1",
+        "title": "Ship v1",
+        "status": "active",
+        "level": "company",
+    }
+    r = client.get(
+        "/api/v1/teams/goals/g_1",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json()["id"] == "g_1"
+    admin.get_goal.assert_awaited_once_with(
+        goal_id="g_1",
+        session_cookie="cookie",
+    )
+
+
+def test_get_goal_does_not_collide_with_list(client, admin):
+    """The static ``/goals`` list route and the param ``/goals/{id}`` detail
+    route are distinct — fetching by id must hit get_goal, not list_goals."""
+    client.get("/api/v1/teams/goals/g_42", headers={"Authorization": "Bearer x"})
+    admin.get_goal.assert_awaited_once_with(
+        goal_id="g_42",
+        session_cookie="cookie",
+    )
+    admin.list_goals.assert_not_awaited()
+
+
+def test_delete_goal(client, admin):
+    """DELETE /teams/goals/{id} proxies upstream DELETE /api/goals/{id}."""
+    r = client.delete(
+        "/api/v1/teams/goals/g_1",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.delete_goal.assert_awaited_once_with(
+        goal_id="g_1",
+        session_cookie="cookie",
+    )
+
+
+def test_patch_goal_forwards_level(client, admin):
+    """PatchGoalBody accepts ``level`` (the goal-detail Level picker)."""
+    r = client.patch(
+        "/api/v1/teams/goals/g_1",
+        json={"level": "team", "status": "active"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = admin.patch_goal.await_args.kwargs["body"]
+    assert body == {"level": "team", "status": "active"}
+
+
+def test_patch_goal_rejects_extra(client):
+    """``PatchGoalBody`` is extra="forbid" — unknown keys must 422."""
+    r = client.patch(
+        "/api/v1/teams/goals/g_1",
+        json={"title": "x", "evil": 1},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
 
 
 @pytest.mark.parametrize(

@@ -130,6 +130,20 @@ async def list_goals(ctx: TeamsContext = Depends(_ctx)):
     return envelope_list(upstream, "goals")
 
 
+@router.get("/goals/{goal_id}")
+async def get_goal(goal_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Fetch a single goal by id (the goal detail page).
+
+    Maps to upstream ``GET /api/goals/{id}`` which returns the full Goal row.
+    Upstream scopes access by the goal's ``companyId`` (``assertCompanyAccess``),
+    so a goal from another company yields a 403/404 — never cross-tenant data.
+    """
+    return await _agents._admin().get_goal(
+        goal_id=goal_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
 @router.post("/goals")
 async def create_goal(
     body: CreateGoalBody,
@@ -153,6 +167,20 @@ async def patch_goal(
     return await _agents._admin().patch_goal(
         goal_id=goal_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.delete("/goals/{goal_id}")
+async def delete_goal(goal_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Delete a goal.
+
+    Maps to upstream ``DELETE /api/goals/{id}``. The admin client's
+    ``_delete`` helper treats a 404 as already-gone (idempotent), so a
+    double-delete from a stale UI is a no-op rather than an error.
+    """
+    return await _agents._admin().delete_goal(
+        goal_id=goal_id,
         session_cookie=ctx.session_cookie,
     )
 

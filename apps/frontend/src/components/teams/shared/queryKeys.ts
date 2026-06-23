@@ -44,6 +44,10 @@ export const teamsQueryKeys = {
     detail: (id: string) => `/issues/${id}`,
     comments: (id: string) => `/issues/${id}/comments`,
   },
+  goals: {
+    list: () => `/goals`,
+    detail: (id: string) => `/goals/${id}`,
+  },
   approvals: { detail: (id: string) => `/approvals/${id}` },
   runs: { detail: (id: string) => `/runs/${id}` },
   members: () => `/members`,

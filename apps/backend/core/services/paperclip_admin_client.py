@@ -1465,6 +1465,24 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def get_goal(
+        self,
+        *,
+        session_cookie: str,
+        goal_id: str,
+    ) -> dict:
+        """Fetch a single goal by id (the goal detail page).
+
+        Maps to ``GET /api/goals/{goalId}``. Upstream returns the full Goal
+        row (id, companyId, title, description, level, status, parentId,
+        ownerAgentId, createdAt, updatedAt) and 404s when the goal is gone or
+        belongs to another company.
+        """
+        return await self._get(
+            f"/api/goals/{goal_id}",
+            session_cookie=session_cookie,
+        )
+
     async def create_goal(
         self,
         *,
@@ -1496,6 +1514,22 @@ class PaperclipAdminClient:
         return await self._patch(
             f"/api/goals/{goal_id}",
             json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def delete_goal(
+        self,
+        *,
+        session_cookie: str,
+        goal_id: str,
+    ) -> dict:
+        """Delete a goal.
+
+        Maps to ``DELETE /api/goals/{goalId}``. ``_delete`` treats 404 as
+        already-gone, so a double-delete from a stale UI is a no-op.
+        """
+        return await self._delete(
+            f"/api/goals/{goal_id}",
             session_cookie=session_cookie,
         )
 

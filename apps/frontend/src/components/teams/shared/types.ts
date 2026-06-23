@@ -361,3 +361,59 @@ export interface DashboardResponse {
   dashboard: DashboardSummary;
   sidebar_badges?: Record<string, number>;
 }
+
+// ─── Goals ──────────────────────────────────────────────────────────────────
+//
+// Ported from upstream Paperclip's Goal shape (paperclip/packages/shared/
+// src/types/goal.ts + constants.ts) (MIT, © 2025 Paperclip AI). The BFF
+// proxies upstream verbatim, so the wire shape is upstream camelCase.
+
+/** Upstream GOAL_STATUSES. */
+export type GoalStatus = "planned" | "active" | "achieved" | "cancelled";
+
+/** Upstream GOAL_LEVELS. */
+export type GoalLevel = "company" | "team" | "agent" | "task";
+
+export const GOAL_STATUSES: readonly GoalStatus[] = [
+  "planned",
+  "active",
+  "achieved",
+  "cancelled",
+];
+
+export const GOAL_LEVELS: readonly GoalLevel[] = [
+  "company",
+  "team",
+  "agent",
+  "task",
+];
+
+/** Full goal row from GET /goals/{id} (upstream Goal). */
+export interface Goal {
+  id: string;
+  companyId?: string | null;
+  title: string;
+  description?: string | null;
+  level: GoalLevel;
+  status: GoalStatus;
+  parentId?: string | null;
+  ownerAgentId?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+/** Body for POST /goals (BFF whitelist: title, description?, parent_id?). */
+export interface GoalCreateInput {
+  title: string;
+  description?: string;
+  parent_id?: string;
+}
+
+/** Body for PATCH /goals/{id} (BFF whitelist: title?, description?, parent_id?, status?, level?). */
+export interface GoalUpdateInput {
+  title?: string;
+  description?: string | null;
+  parent_id?: string | null;
+  status?: GoalStatus;
+  level?: GoalLevel;
+}

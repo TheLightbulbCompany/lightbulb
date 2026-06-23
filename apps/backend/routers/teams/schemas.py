@@ -119,6 +119,9 @@ class PatchGoalBody(_Strict):
     description: Optional[str] = Field(default=None, max_length=20000)
     parent_id: Optional[str] = None
     status: Optional[str] = None
+    # Upstream's updateGoalSchema accepts ``level`` (the goal-detail Properties
+    # panel exposes a Level picker); mirror it so the picker patches cleanly.
+    level: Optional[str] = None
 
 
 class CreateProjectBody(_Strict):

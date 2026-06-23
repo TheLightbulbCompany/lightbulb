@@ -1,25 +1,49 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { Target } from "lucide-react";
+import { MoreHorizontal, Target, Trash2 } from "lucide-react";
 import {
   EditorialButton,
   EditorialDialog,
   PanelEmptyState,
   PanelMasthead,
 } from "@/components/teams/shell";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader as DialogHeaderUi,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useGoalMutations } from "@/components/teams/goals/hooks/useGoalMutations";
 
 interface Goal {
   id: string;
   title: string;
   description?: string;
   parent_id?: string | null;
+  // Upstream rows are camelCase (parentId); the BFF proxies upstream verbatim.
+  parentId?: string | null;
   status?: string;
 }
 
 interface GoalNode extends Goal {
   children: GoalNode[];
+}
+
+function parentOf(g: Goal): string | null | undefined {
+  return g.parentId ?? g.parent_id;
 }
 
 function buildTree(goals: Goal[]): GoalNode[] {
@@ -30,8 +54,9 @@ function buildTree(goals: Goal[]): GoalNode[] {
   const roots: GoalNode[] = [];
   goals.forEach((g) => {
     const node = byId[g.id];
-    if (g.parent_id && byId[g.parent_id]) {
-      byId[g.parent_id].children.push(node);
+    const parent = parentOf(g);
+    if (parent && byId[parent]) {
+      byId[parent].children.push(node);
     } else {
       roots.push(node);
     }
@@ -48,11 +73,15 @@ function goalStatusColor(status?: string): string {
 function GoalRow({
   node,
   depth,
+  onOpen,
   onEdit,
+  onDelete,
 }: {
   node: GoalNode;
   depth: number;
+  onOpen: (id: string) => void;
   onEdit: (goal: Goal) => void;
+  onDelete: (goal: Goal) => void;
 }) {
   return (
     <>
@@ -60,7 +89,11 @@ function GoalRow({
         className="p-3 border-b border-[var(--edge)] last:border-b-0 flex items-start gap-2"
         style={{ paddingLeft: `${depth * 1.5 + 0.75}rem` }}
       >
-        <div className="flex-1 min-w-0">
+        <button
+          type="button"
+          onClick={() => onOpen(node.id)}
+          className="flex-1 min-w-0 text-left rounded px-1 -mx-1 transition-colors hover:bg-[var(--cream-deeper)]"
+        >
           <div className="flex items-center gap-2">
             <span className="font-medium text-[var(--ink)]">{node.title}</span>
             {node.status && (
@@ -75,13 +108,42 @@ function GoalRow({
           {node.description && (
             <div className="text-xs text-[var(--mute)] mt-0.5">{node.description}</div>
           )}
-        </div>
-        <EditorialButton variant="secondary" size="sm" onClick={() => onEdit(node)}>
-          Edit
-        </EditorialButton>
+        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deeper)]"
+              style={{ color: "var(--mute)" }}
+              aria-label="Goal actions"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => onEdit(node)}>Edit goal</DropdownMenuItem>
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={(e) => {
+                e.preventDefault();
+                onDelete(node);
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete goal
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </li>
       {node.children.map((c) => (
-        <GoalRow key={c.id} node={c} depth={depth + 1} onEdit={onEdit} />
+        <GoalRow
+          key={c.id}
+          node={c}
+          depth={depth + 1}
+          onOpen={onOpen}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
       ))}
     </>
   );
@@ -90,10 +152,36 @@ function GoalRow({
 export function GoalsPanel() {
   const { read } = useTeamsApi();
   const { data, isLoading, error, mutate } = read<{ goals: Goal[] }>("/goals");
+  const nav = useInlineTeamsNav();
+  const goalMutations = useGoalMutations();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Goal | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Goal | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const tree = useMemo(() => buildTree(data?.goals ?? []), [data]);
+
+  // Inline (under /chat) opens the detail in-shell; standalone (/teams) does a
+  // hard navigation to the dedicated detail route. Mirrors RoutinesPanel.
+  const openGoal = (id: string) => {
+    if (nav) {
+      nav.openDetail("goal-detail", id);
+    } else if (typeof window !== "undefined") {
+      window.location.href = `/teams/goals/${id}`;
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await goalMutations.remove(deleteTarget.id);
+      setDeleteTarget(null);
+      mutate();
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   if (error)
     return (
@@ -128,7 +216,14 @@ export function GoalsPanel() {
       ) : (
         <ul className="editorial-card overflow-hidden">
           {tree.map((root) => (
-            <GoalRow key={root.id} node={root} depth={0} onEdit={setEditing} />
+            <GoalRow
+              key={root.id}
+              node={root}
+              depth={0}
+              onOpen={openGoal}
+              onEdit={setEditing}
+              onDelete={setDeleteTarget}
+            />
           ))}
         </ul>
       )}
@@ -153,6 +248,36 @@ export function GoalsPanel() {
           }}
         />
       )}
+
+      <Dialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeaderUi>
+            <DialogTitle>Delete goal?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes {deleteTarget?.title}. This action cannot
+              be undone.
+            </DialogDescription>
+          </DialogHeaderUi>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={deleting}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => void confirmDelete()}
+            >
+              {deleting ? "Deleting…" : "Delete goal"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -29,7 +29,6 @@ import {
 import { cn } from "@/lib/utils";
 import { EditorialButton, PanelToolbar } from "@/components/teams/shell";
 import { IssueFiltersPopover } from "@/components/teams/inbox/IssueFiltersPopover";
-import { ViewModeToggle } from "@/components/teams/inbox/ViewModeToggle";
 import type { InboxTab } from "@/components/teams/shared/queryKeys";
 import type { IssueFilterState } from "@/components/teams/shared/lib/issueFilters";
 import type {
@@ -60,9 +59,6 @@ export interface InboxToolbarProps {
 
   /** Fired when the user clicks the primary "New issue" button. */
   onNewIssue: () => void;
-
-  viewMode: "list" | "board";
-  onViewModeChange: (mode: "list" | "board") => void;
 }
 
 const TABS: { value: InboxTab; label: string }[] = [
@@ -102,8 +98,6 @@ export function InboxToolbar(props: InboxToolbarProps) {
     unreadCount,
     onMarkAllRead,
     onNewIssue,
-    viewMode,
-    onViewModeChange,
   } = props;
 
   const activeFilterCount = useMemo(() => countActiveFilters(filterState), [filterState]);
@@ -162,12 +156,12 @@ export function InboxToolbar(props: InboxToolbarProps) {
     />
   );
 
-  // Actions slot — view-mode toggle + primary "+ New issue" + secondary
-  // "Mark all as read" wrapped in the AlertDialog confirmation flow.
+  // Actions slot — primary "+ New issue" + secondary "Mark all as read"
+  // wrapped in the AlertDialog confirmation flow. The Inbox is list-only
+  // (the kanban board lives on the Tasks page), so there is no view-mode
+  // toggle here.
   const actionsSlot = (
     <>
-      <ViewModeToggle value={viewMode} onChange={onViewModeChange} />
-
       <EditorialButton
         type="button"
         variant="primary"

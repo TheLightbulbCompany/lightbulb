@@ -357,32 +357,4 @@ describe("InboxPage", () => {
     expect(mockRouterPush).not.toHaveBeenCalled();
   });
 
-  test("board view sources from all issues so cancelled issues render", async () => {
-    // `cancelled` is excluded from the mine/recent/unread tab fetches, so a
-    // cancelled issue lives only in the all-issues set. The board must still
-    // show it — otherwise its Cancelled column can never hold a card and a
-    // drag-to-cancel silently vanishes.
-    vi.mocked(useInboxData).mockReturnValue({
-      mineIssues: [makeIssue({ id: "iss_mine", title: "My todo" })],
-      touchedIssues: [],
-      allIssues: [
-        makeIssue({ id: "iss_mine", title: "My todo" }),
-        makeIssue({
-          id: "iss_cancelled",
-          title: "Scrapped idea",
-          status: "cancelled",
-        }),
-      ],
-      isLoading: false,
-      isError: false,
-      error: null,
-    });
-
-    render(<InboxPage {...baseProps} />);
-    // The cancelled issue is absent from the (mine-tab) list view…
-    expect(screen.queryByText("Scrapped idea")).not.toBeInTheDocument();
-    // …but switching to the board surfaces it from the all-issues set.
-    fireEvent.click(screen.getByRole("button", { name: /board/i }));
-    expect(await screen.findByText("Scrapped idea")).toBeInTheDocument();
-  });
 });

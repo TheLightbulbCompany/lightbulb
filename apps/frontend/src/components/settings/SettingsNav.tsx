@@ -56,7 +56,7 @@ export function SettingsNav(props: SettingsNavProps) {
   return (
     <nav className="settings-nav" aria-label="Settings navigation">
       {sections.map((section) => (
-        <div key={section.label}>
+        <div key={section.label} className="settings-nav-section">
           <div className="settings-nav-section-label">{section.label}</div>
           <ul className="settings-nav-items" role={props.mode === "tabs" ? "tablist" : undefined}>
             {section.items

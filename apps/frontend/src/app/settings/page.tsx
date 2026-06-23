@@ -296,7 +296,10 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   usage: UsagePanel,
   providers: LLMPanel,
   channels: ChannelsPanel,
-  mcp: IntegrationsPanel,
+  // Settings variant: renders inside the shared `.settings-panel` frame so MCP
+  // servers reads as the same surface as the other Settings panels (the Control
+  // tab keeps the default full-bleed variant via ControlPanelRouter).
+  mcp: () => <IntegrationsPanel variant="settings" />,
   webhooks: WebhooksPanel,
   desktop: DesktopFileAccess,
   // SkillsTab takes an optional `agentId`; mounting it prop-less yields the

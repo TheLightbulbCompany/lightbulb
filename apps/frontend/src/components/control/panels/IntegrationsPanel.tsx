@@ -23,8 +23,22 @@ import { cn } from "@/lib/utils";
  * back in Settings with the row already flipped to connected, and this
  * tab picks up the same cached status the next time it mounts.
  */
-export function IntegrationsPanel() {
+interface IntegrationsPanelProps {
+  /**
+   * Where this panel is mounted. The Control dashboard ("control", default)
+   * keeps the panel's own full-bleed `#faf7f2` frame + `p-6` padding + the
+   * Lora "Integrations" heading. Mounted under /settings ("settings") it
+   * renders inside the shared `.settings-panel` frame with the standard
+   * `.settings-page-title` / `.settings-page-desc`, so MCP servers reads as
+   * the same surface as the other Settings panels (.settings-main already
+   * supplies the page padding — no extra bg/padding here).
+   */
+  variant?: "control" | "settings";
+}
+
+export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProps) {
   const { membership } = useOrganization();
+  const isSettings = variant === "settings";
 
   // A personal owner has no org membership and is implicitly the admin of
   // their own resources; only non-admin members of a real org are gated.
@@ -42,6 +56,63 @@ export function IntegrationsPanel() {
   const googleConnected = connections.some(
     (c) => c.provider === "google" && c.status === "connected",
   );
+
+  // Settings mount: the shared `.settings-panel` frame. .settings-main already
+  // provides the page padding, so no extra bg / min-height / p-6 here, and the
+  // heading uses the .settings-page-title/.settings-page-desc idiom the other
+  // Settings panels use — so MCP servers doesn't read as a different page.
+  if (isSettings) {
+    return (
+      <div className="settings-panel" id="panel-mcp" role="tabpanel">
+        <h1 className="settings-page-title">MCP servers</h1>
+        <p className="settings-page-desc">
+          Connect third-party tools so your agents can act on your behalf. API-key
+          integrations take a token you paste; OAuth integrations send you to the
+          provider to sign in.
+        </p>
+
+        {!canManage && (
+          <div className="settings-alert settings-alert-error" role="status">
+            Only organization admins can manage integrations.
+          </div>
+        )}
+
+        <div className="space-y-5">
+          <ConnectionsList canManage={canManage} />
+
+          {googleConnected && <GoogleAccountsSection canManage={canManage} />}
+
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+              Add your own MCP servers
+            </h3>
+            <div className="rounded-md border border-[#e0dbd0] bg-white">
+              <McpServersTab />
+            </div>
+          </div>
+
+          <div className="rounded-md border border-[#e0dbd0] bg-white">
+            <button
+              type="button"
+              aria-expanded={advancedOpen}
+              onClick={() => setAdvancedOpen((v) => !v)}
+              className="flex w-full items-center justify-between p-4 text-left"
+            >
+              <span className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+                Advanced — plugins
+              </span>
+              <ChevronDown className={cn("h-4 w-4 text-[#8a8578] transition-transform", !advancedOpen && "-rotate-90")} />
+            </button>
+            {advancedOpen && (
+              <div className="border-t border-[#e0dbd0]">
+                <PluginsTab />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-[#faf7f2] min-h-full">

@@ -104,7 +104,9 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(blockers.length === 0 ? 0 : 1);
+  // Exit 0 even with blockers — the pass/blockers decision is in stdout JSON and
+  // the workflow gates on it; a nonzero exit would abort the run under on_error:stop.
+  process.exit(0);
 }
 
 function readStdin() {

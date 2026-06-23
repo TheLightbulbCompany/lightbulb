@@ -1,7 +1,26 @@
 name: intake-resolve
-# Requirements 7-19, 26-28, 33-36, 44, 48: Core ticket handling pipeline.
-# Triggered per incoming customer message via webhook.
-# LLM calls: 2-3 per ticket (classification if ambiguous, confidence check, response generation)
+# Core ticket-handling pipeline. Triggered per incoming customer message.
+#
+# Rebuilt for the embedded OpenClaw runner (gateway-free, deterministic). See the
+# lobster-authoring skill. Key mechanics copied from the validated reference
+# (pitch-scout/deposit-lead.lobster):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs under `command:`.
+#  - Durable state via native state.get/set on the per-agent EFS mount
+#    (LOBSTER_STATE_DIR). fast-io is FICTIONAL. Conversation/sentiment trails and the
+#    escalation/notification/CSAT queues are single-key index arrays, edited in a node
+#    step then re-written.
+#  - Helpdesk customer lookup is real `curl` (Zendesk/Intercom) keyed off read-only
+#    consumer config the user set (vera-config/connected-helpdesk).
+#  - LLM judgment (ambiguous classify, KB-grounded confidence, response generation) and
+#    Slack delivery CANNOT run in an embedded pipeline (401). The pipeline stays
+#    deterministic and writes those as intents onto vera/notifications for the agent
+#    loop to handle.
+#  - Scripts always exit 0 and carry status in JSON; steps branch via `condition:`.
+#  - Refund (money movement) sits behind a real step-level `approval: required` gate.
+#
+# DROPPED fictional integrations (work routed to the vera/notifications queue or a
+# connect-X notice): local-rag-qdrant (RAG/KB), llm-task, message/slack send,
+# lobster --action run, taskr, telcall-twilio, agent-browser, capability-evolver.
 
 args:
   customer_message:
@@ -14,349 +33,291 @@ args:
     default: ""
 
 steps:
-  # Step 1: Activation gate — is escalation path healthy?
-  - id: health-check
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "vera-state/escalation-health"
-      }'
-
-  # Step 2: Classify the message deterministically (Req 9)
+  # 1. Deterministic classification (Req 9, 27, 50). ~70% resolved here with zero LLM;
+  #    ambiguous → needs_llm flag, deferred to the agent loop (no llm-task in-pipeline).
   - id: classify
-    command: >
-      exec --json --shell 'node scripts/vera-intake-classifier.js'
-    stdin: '{"message": "{{customer_message}}"}'
+    command: node vera-intake-classifier.js
+    stdin: '{"message": "${customer_message}"}'
 
-  # Step 3: LLM classification for ambiguous messages only
-  - id: llm-classify
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Classify this customer support message into exactly one category: routine_resolution, needs_clarification, needs_human, or urgent_escalation. Consider tone, complexity, and whether this requires human judgment.",
-        "thinking": "off",
-        "input": {"message": "{{customer_message}}"},
-        "schema": {
-          "type": "object",
-          "properties": {
-            "category": {"type": "string", "enum": ["routine_resolution", "needs_clarification", "needs_human", "urgent_escalation"]},
-            "subcategory": {"type": "string"},
-            "reasoning": {"type": "string"}
-          },
-          "required": ["category"]
-        }
-      }'
-    condition: $classify.json.needs_llm
+  # 2. Load this conversation's sentiment trail (single-key array; null on first turn).
+  - id: sentiment-history
+    pipeline: state.get vera/conversations/${conversation_id}/sentiment-history
 
-  # Step 4: Sentiment detection (Req 11, 33)
+  # 3. Deterministic sentiment detection (Req 11, 33-35). Runs every message.
   - id: sentiment
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "vera-conversations/{{conversation_id}}/sentiment-history"}'
-      | exec --json --shell 'node scripts/vera-sentiment-detector.js'
+    command: node vera-sentiment-detector.js
+    stdin: '{"message": "${customer_message}", "sentiment_history": $sentiment-history.json}'
 
-  # Step 5: IMMEDIATE ESCALATION if needed (Req 26, 27, 35)
-  # If classified as needs_human or urgent_escalation, skip resolution entirely
-  - id: check-immediate-escalation
+  # 4. Immediate-escalation decision (Req 26, 27, 35). needs_human / urgent_escalation /
+  #    distress sentiment → skip autonomous resolution entirely. If the deterministic
+  #    classifier punted (needs_llm), we do NOT auto-resolve — we conservatively defer to
+  #    the agent loop (no in-pipeline LLM), which is the safe default for support.
+  - id: triage
     command: >
-      exec --json --shell 'node -e "
-        const classify = JSON.parse(process.env.CLASSIFY || \"{}\");
-        const llm = JSON.parse(process.env.LLM_CLASSIFY || \"{}\");
-        const sentiment = JSON.parse(process.env.SENTIMENT || \"{}\");
-        const category = classify.classified ? classify.category : (llm.category || \"routine_resolution\");
-        const needsEscalation = category === \"needs_human\" || category === \"urgent_escalation\" || sentiment.action === \"priority_escalate\";
-        process.stdout.write(JSON.stringify({needs_escalation: needsEscalation, category, trigger: needsEscalation ? (category === \"urgent_escalation\" ? \"distress\" : \"request\") : null}));
-      "'
+      node -e 'const c=JSON.parse(process.env.CLASSIFY||"{}");
+        const s=JSON.parse(process.env.SENTIMENT||"{}");
+        const category=c.classified?c.category:"needs_llm";
+        const escalate = category==="needs_human" || category==="urgent_escalation" || s.action==="priority_escalate";
+        const trigger = escalate ? (category==="urgent_escalation"?"distress":(s.action==="priority_escalate"?"sentiment":"request")) : null;
+        const deferLlm = category==="needs_llm";
+        process.stdout.write(JSON.stringify({
+          needs_escalation: escalate,
+          escalation_count: escalate?1:0,
+          category, subcategory: c.subcategory||null,
+          trigger, defer_llm: deferLlm,
+          compliance_flag: !!c.compliance_flag}));'
+    env:
+      CLASSIFY: $classify.stdout
+      SENTIMENT: $sentiment.stdout
 
-  # Step 5.5: Load helpdesk configuration (click-to-connect)
-  - id: load-helpdesk-config
+  # 5. Append this turn to the sentiment trail (persist regardless of branch).
+  - id: sentiment-trail-next
     command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "vera-config/connected-helpdesk"
-      }'
-    condition: $check-immediate-escalation.json.needs_escalation == false
+      node -e 'const h=JSON.parse(process.env.HIST||"null")||[];
+        const s=JSON.parse(process.env.SENTIMENT||"{}");
+        h.push({sentiment:s.sentiment, score:s.score, action:s.action, at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(h.slice(-50)));'
+    env:
+      HIST: $sentiment-history.stdout
+      SENTIMENT: $sentiment.stdout
 
-  # Step 6: Pull customer context — never ask them to repeat (Req 10)
-  # Parallel conditional branches per connected helpdesk provider.
+  - id: sentiment-trail
+    pipeline: state.set vera/conversations/${conversation_id}/sentiment-history
+    stdin: $sentiment-trail-next.stdout
+
+  # ---- AUTONOMOUS-RESOLUTION BRANCH (only when NOT escalating) ----
+
+  # 6. Read the helpdesk the user connected (read-only consumer config). null = standalone.
+  - id: helpdesk-config
+    condition: $triage.json.needs_escalation == false
+    pipeline: state.get vera-config/connected-helpdesk
+
+  # 7. Customer-context lookup — never make them repeat (Req 10). One real curl per
+  #    connected provider; standalone reads a single-key customer index from state.
   - id: load-customer-zendesk
+    condition: $helpdesk-config.json.platform == "zendesk" && $triage.json.needs_escalation == false
     command: >
-      exec --json --shell 'curl -s -u "$ZENDESK_EMAIL/token:$ZENDESK_API_TOKEN" "https://$ZENDESK_SUBDOMAIN.zendesk.com/api/v2/search.json?query=type:user+email:{{customer_email}}"'
-    condition: $load-helpdesk-config.json.platform == "zendesk" && $check-immediate-escalation.json.needs_escalation == false
+      curl -s -u "$ZENDESK_EMAIL/token:$ZENDESK_API_TOKEN"
+      "https://$ZENDESK_SUBDOMAIN.zendesk.com/api/v2/search.json?query=type:user+email:${customer_email}"
+    on_error: continue
 
   - id: load-customer-intercom
+    condition: $helpdesk-config.json.platform == "intercom" && $triage.json.needs_escalation == false
     command: >
-      exec --json --shell 'curl -s -H "Authorization: Bearer $INTERCOM_ACCESS_TOKEN" -H "Accept: application/json" "https://api.intercom.io/contacts?email={{customer_email}}"'
-    condition: $load-helpdesk-config.json.platform == "intercom" && $check-immediate-escalation.json.needs_escalation == false
+      curl -s -H "Authorization: Bearer $INTERCOM_ACCESS_TOKEN" -H "Accept: application/json"
+      "https://api.intercom.io/contacts?email=${customer_email}"
+    on_error: continue
 
-  # Standalone mode: no helpdesk connected — customer data from fast-io
   - id: load-customer-standalone
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "vera-customers/{{customer_email}}"
-      }'
-    condition: $load-helpdesk-config.json.platform == null && $check-immediate-escalation.json.needs_escalation == false
+    condition: $helpdesk-config.json.platform == null && $triage.json.needs_escalation == false
+    pipeline: state.get vera/customers/${customer_email}
 
-  # Normalize customer data from whichever provider responded
+  # 8. Normalize whichever provider responded into a single customer object.
   - id: load-customer
+    condition: $triage.json.needs_escalation == false
     command: >
-      exec --json --shell 'node -e "
-        const input = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        const zd = input.zendesk; const ic = input.intercom; const sa = input.standalone;
-        let c = {};
-        if (zd && zd.results) {
-          const u = (zd.results || [])[0] || {};
-          c = { name: u.name || null, email: u.email || null, account_id: String(u.id || \"\"), tickets: u.tickets || [], orders: u.orders || [], latest_order_id: u.latest_order_id || null, phone: u.phone || null };
-        } else if (ic && ic.data) {
-          const u = (ic.data || [])[0] || {};
-          c = { name: u.name || null, email: u.email || null, account_id: u.id || null, tickets: [], orders: [], latest_order_id: null, phone: u.phone || null };
-        } else {
-          c = sa || {};
-        }
-        process.stdout.write(JSON.stringify(c));
-      "'
-    stdin: '{"zendesk": $load-customer-zendesk.json, "intercom": $load-customer-intercom.json, "standalone": $load-customer-standalone.json}'
-    condition: $check-immediate-escalation.json.needs_escalation == false
+      node -e 'const zd=JSON.parse(process.env.ZD||"null");
+        const ic=JSON.parse(process.env.IC||"null");
+        const sa=JSON.parse(process.env.SA||"null");
+        let c={};
+        if (zd && zd.results) { const u=(zd.results||[])[0]||{};
+          c={name:u.name||null,email:u.email||null,account_id:String(u.id||""),phone:u.phone||null,latest_order_id:u.latest_order_id||null,source:"zendesk"}; }
+        else if (ic && ic.data) { const u=(ic.data||[])[0]||{};
+          c={name:u.name||null,email:u.email||null,account_id:u.id||null,phone:u.phone||null,latest_order_id:null,source:"intercom"}; }
+        else { c=sa||{}; c.source=c.source||"standalone"; }
+        process.stdout.write(JSON.stringify(c));'
+    env:
+      ZD: $load-customer-zendesk.stdout
+      IC: $load-customer-intercom.stdout
+      SA: $load-customer-standalone.stdout
 
-  # Step 7: Load conversation history if continuing conversation
-  - id: load-conversation
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "vera-conversations/{{conversation_id}}"
-      }'
-    condition: $check-immediate-escalation.json.needs_escalation == false
+  # 9. Conversation history (exchange count, resolved flag) — single key per conversation.
+  - id: conversation
+    condition: $triage.json.needs_escalation == false
+    pipeline: state.get vera/conversations/${conversation_id}
 
-  # Step 8: Check exchange count — max 2 before offering escalation (Req 28)
+  # 10. Exchange-count check (Req 28): >=2 unresolved exchanges → offer a human.
   - id: exchange-check
+    condition: $triage.json.needs_escalation == false
     command: >
-      exec --json --shell 'node -e "
-        const conv = JSON.parse(process.env.CONV || \"{}\");
-        const exchanges = (conv.exchanges || 0) + 1;
-        const offerEscalation = exchanges >= 2 && !conv.resolved;
-        process.stdout.write(JSON.stringify({exchanges, offer_escalation: offerEscalation}));
-      "'
+      node -e 'const conv=JSON.parse(process.env.CONV||"null")||{};
+        const exchanges=(conv.exchanges||0)+1;
+        const offer = exchanges>=2 && !conv.resolved;
+        process.stdout.write(JSON.stringify({exchanges, offer_escalation:offer, already_resolved:!!conv.resolved}));'
+    env:
+      CONV: $conversation.stdout
 
-  # Step 9: RAG retrieval from knowledge base (Req 13)
-  - id: rag-retrieve
-    command: >
-      openclaw.invoke --tool local-rag-qdrant --action query --args-json '{
-        "query": "{{customer_message}}",
-        "collection": "vera-knowledge-base",
-        "limit": 5
-      }'
-    condition: $check-immediate-escalation.json.needs_escalation == false
+  # 11. Read the authorized-action scope the user configured (Req 17, 18, 49).
+  - id: scope-config
+    condition: $triage.json.needs_escalation == false
+    pipeline: state.get vera-config/authorized-actions
 
-  # Step 10: Confidence check (Req 14, 15)
-  - id: confidence-check
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Check whether the retrieved knowledge base content directly and unambiguously answers this customer question. Check for: 1) Is the answer directly supported by current documentation? 2) Does any conflicting information exist across the retrieved chunks? 3) Does the topic fall within verified coverage? Return confidence score 0-100.",
-        "thinking": "off",
-        "input": {
-          "question": "{{customer_message}}",
-          "retrieved_chunks": $rag-retrieve.json,
-          "customer_context": $load-customer.json
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "confident": {"type": "boolean"},
-            "score": {"type": "number"},
-            "conflicts_detected": {"type": "boolean"},
-            "conflict_details": {"type": ["string", "null"]},
-            "stale_articles": {"type": "array", "items": {"type": "string"}},
-            "reasoning": {"type": "string"}
-          },
-          "required": ["confident", "score"]
-        }
-      }'
-    condition: $check-immediate-escalation.json.needs_escalation == false
-
-  # Step 11: Check confidence threshold (Req 15)
-  - id: threshold-check
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "vera-config/confidence-threshold"}'
-      | exec --json --shell 'node -e "
-        const threshold = JSON.parse(process.env.THRESHOLD || \"{}\").value || 0.85;
-        const confidence = JSON.parse(process.env.CONFIDENCE || \"{}\");
-        const pass = confidence.score >= (threshold * 100);
-        process.stdout.write(JSON.stringify({pass, score: confidence.score, threshold: threshold * 100, escalation_trigger: pass ? null : \"confidence\"}));
-      "'
-    condition: $check-immediate-escalation.json.needs_escalation == false
-
-  # Step 12: Check if action is within authorized scope (Req 17, 18, 49)
+  # 12. Resolve which (if any) autonomous action this ticket maps to, in-scope.
   - id: scope-check
+    condition: $triage.json.needs_escalation == false
     command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "vera-config/authorized-actions"}'
-      | exec --json --shell 'node -e "
-        const scope = JSON.parse(process.env.SCOPE || \"{}\");
-        const classify = JSON.parse(process.env.CLASSIFY || \"{}\");
-        const subcategory = classify.subcategory;
-        let withinScope = true;
-        let action = null;
-        if (subcategory === \"refund\") {
-          action = \"refund\";
-          // Amount check happens during action execution with actual order data
-          withinScope = scope.refunds_enabled !== false;
-        } else if (subcategory === \"returns\") {
-          action = \"return\";
-          withinScope = scope.returns_enabled !== false;
-        }
-        process.stdout.write(JSON.stringify({within_scope: withinScope, action, subcategory}));
-      "'
-    condition: $threshold-check.json.pass
+      node -e 'const scope=JSON.parse(process.env.SCOPE||"null")||{};
+        const sub=process.env.SUBCATEGORY||"";
+        let action=null, within=true;
+        if (sub==="refund") { action="refund"; within=scope.refunds_enabled!==false; }
+        else if (sub==="returns") { action="return"; within=scope.returns_enabled!==false; }
+        process.stdout.write(JSON.stringify({action, within_scope:within, subcategory:sub,
+          max_refund_amount: (scope.max_refund_amount!==undefined?scope.max_refund_amount:null)}));'
+    env:
+      SCOPE: $scope-config.stdout
+      SUBCATEGORY: $triage.json.subcategory
 
-  # Step 13: Generate response (Req 16, 34, 38)
-  - id: generate-response
+  # 13. RAG + response generation CANNOT run here (KB vector store + LLM are gateway-only,
+  #     401). Enqueue a single "resolve" intent for the agent loop: it does the RAG query,
+  #     runs the <85%-confidence escalate-vs-answer judgment, generates the reply, and
+  #     delivers it on the customer's channel. This is the deterministic handoff boundary.
+  - id: resolve-queue-load
+    condition: $triage.json.needs_escalation == false
+    pipeline: state.get vera/notifications
+
+  - id: resolve-queue-next
+    condition: $triage.json.needs_escalation == false
     command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Generate a customer support response. RULES: 1) Answer directly from the retrieved KB content — do not redirect to documentation links. 2) If sentiment is frustrated or angry, open with explicit acknowledgment before the resolution. 3) Respond in the same language as the customer message. 4) If this is exchange 2+ without resolution, include an explicit offer to connect with a human agent. 5) Include what was done, what to expect next. 6) End with a single CSAT question if this resolves the issue: Did we resolve your issue today?",
-        "thinking": "low",
-        "input": {
-          "customer_message": "{{customer_message}}",
-          "customer_name": "$load-customer.json.name",
-          "kb_content": $rag-retrieve.json,
-          "sentiment": $sentiment.json,
-          "exchange_count": $exchange-check.json.exchanges,
-          "offer_escalation": $exchange-check.json.offer_escalation,
-          "conversation_history": $load-conversation.json,
-          "action_type": "$scope-check.json.action"
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "response": {"type": "string"},
-            "action_taken": {"type": ["string", "null"]},
-            "resolves_issue": {"type": "boolean"},
-            "kb_source": {"type": "string"},
-            "includes_csat": {"type": "boolean"},
-            "includes_escalation_offer": {"type": "boolean"}
-          },
-          "required": ["response", "resolves_issue"]
-        }
-      }'
-    condition: $threshold-check.json.pass && $check-immediate-escalation.json.needs_escalation == false
+      node -e 'const q=JSON.parse(process.env.QUEUE||"null")||[];
+        const cust=JSON.parse(process.env.CUST||"{}");
+        const exch=JSON.parse(process.env.EXCH||"{}");
+        const sc=JSON.parse(process.env.SCOPE||"{}");
+        q.push({kind:"resolve_ticket",
+          conversation_id:process.env.LOBSTER_ARG_CONVERSATION_ID||"",
+          channel:process.env.LOBSTER_ARG_CHANNEL||"chat",
+          customer_email:process.env.LOBSTER_ARG_CUSTOMER_EMAIL||"",
+          customer_message:process.env.LOBSTER_ARG_CUSTOMER_MESSAGE||"",
+          customer:cust,
+          subcategory:process.env.SUBCATEGORY||null,
+          action:sc.action||null,
+          action_within_scope: sc.within_scope!==false,
+          offer_escalation: !!exch.offer_escalation,
+          exchanges: exch.exchanges||1,
+          defer_llm: process.env.DEFER_LLM==="true",
+          requires:["rag_query","confidence_check","response_generation","channel_delivery"],
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(q));'
+    env:
+      QUEUE: $resolve-queue-load.stdout
+      CUST: $load-customer.stdout
+      EXCH: $exchange-check.stdout
+      SCOPE: $scope-check.stdout
+      SUBCATEGORY: $triage.json.subcategory
+      DEFER_LLM: $triage.json.defer_llm
+    stdin: ""
 
-  # Step 14: Execute action if needed (Req 17 — refund via Stripe)
+  - id: resolve-queue
+    condition: $triage.json.needs_escalation == false
+    pipeline: state.set vera/notifications
+    stdin: $resolve-queue-next.stdout
+
+  # 14. Refund is real money movement. Gate it behind an explicit human approval BEFORE the
+  #     Stripe side effect (no fictional await-approval tool). Only reached for in-scope
+  #     refund actions on a non-escalated ticket.
+  - id: refund-approval
+    condition: $scope-check.json.action == "refund" && $scope-check.json.within_scope == true
+    approval:
+      required: true
+      prompt: "Approve Stripe refund for ${customer_email} (conversation ${conversation_id})?"
+
   - id: execute-refund
+    condition: $scope-check.json.action == "refund" && $scope-check.json.within_scope == true && $refund-approval.approved
     command: >
-      exec --json --shell 'curl -s -X POST "https://api.stripe.com/v1/refunds" -u "$STRIPE_API_KEY:" -d "charge=$ORDER_CHARGE_ID" -d "amount=$REFUND_AMOUNT"'
-    condition: $scope-check.json.action == "refund"
+      curl -s -X POST "https://api.stripe.com/v1/refunds" -u "$STRIPE_API_KEY:"
+      -d "charge=$ORDER_CHARGE_ID" -d "amount=$REFUND_AMOUNT"
+    on_error: continue
 
-  # Step 15: Execute return action if needed (Req 18)
-  # Return logged to taskr — actual label creation handled by the agent loop
-  # via the user's fulfillment system (direct API integration).
-  - id: execute-return
+  # 15. Persist conversation state (exchange count, last touch). resolved stays whatever it
+  #     was — only the agent loop's customer-confirmed close flips it true (Req: never close
+  #     a ticket the customer hasn't confirmed).
+  - id: conversation-next
+    condition: $triage.json.needs_escalation == false
     command: >
-      openclaw.invoke --tool taskr --action create --args-json '{
-        "key": "vera-returns/{{conversation_id}}",
-        "data": {
-          "order_id": "$load-customer.json.latest_order_id",
-          "customer_email": "{{customer_email}}",
-          "return_type": "$scope-check.json.subcategory",
-          "status": "pending_fulfillment",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
-    condition: $scope-check.json.action == "return"
+      node -e 'const conv=JSON.parse(process.env.CONV||"null")||{};
+        const exch=JSON.parse(process.env.EXCH||"{}");
+        conv.exchanges=exch.exchanges||((conv.exchanges||0)+1);
+        conv.resolved=!!conv.resolved;
+        conv.last_response_at=new Date().toISOString();
+        conv.channel=process.env.LOBSTER_ARG_CHANNEL||conv.channel||"chat";
+        process.stdout.write(JSON.stringify(conv));'
+    env:
+      CONV: $conversation.stdout
+      EXCH: $exchange-check.stdout
+    stdin: ""
 
-  # Step 16: Send response to customer
-  - id: send-response
-    command: >
-      openclaw.invoke --tool message --action send --args-json '{
-        "channel": "{{channel}}",
-        "to": "{{customer_email}}",
-        "text": "$generate-response.json.response"
-      }'
-    condition: $generate-response.json.response
+  - id: conversation-save
+    condition: $triage.json.needs_escalation == false
+    pipeline: state.set vera/conversations/${conversation_id}
+    stdin: $conversation-next.stdout
 
-  # Step 17: Update ticket state (Req 44)
-  - id: update-state
-    command: >
-      openclaw.invoke --tool taskr --action update --args-json '{
-        "key": "vera-tickets/{{conversation_id}}",
-        "data": {
-          "status": "$generate-response.json.resolves_issue ? \"pending_confirmation\" : \"open\"",
-          "exchanges": $exchange-check.json.exchanges,
-          "last_response": "{{timestamp}}",
-          "pending_since": "$generate-response.json.resolves_issue ? \"{{timestamp}}\" : null",
-          "resolution_method": "autonomous"
-        }
-      }'
+  # ---- ESCALATION BRANCH (needs_human / urgent / distress / ambiguous-defer) ----
+  # In-pipeline escalation = enqueue a full-context escalation intent for the agent loop.
+  # We CANNOT call lobster --action run (fictional) or post to Slack (401), so the agent
+  # loop picks this up and runs the escalation handoff + #vera-escalations delivery.
 
-  # Step 18: Update conversation history
-  - id: update-conversation
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "vera-conversations/{{conversation_id}}",
-        "data": {
-          "exchanges": $exchange-check.json.exchanges,
-          "resolved": $generate-response.json.resolves_issue,
-          "sentiment_history": [$sentiment.json]
-        }
-      }'
+  - id: escalation-queue-load
+    condition: $triage.json.needs_escalation
+    pipeline: state.get vera/notifications
 
-  # Step 19: Log KB gaps if confidence was low (Req 22)
-  - id: log-kb-gap
+  - id: escalation-queue-next
+    condition: $triage.json.needs_escalation
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "vera-kb-gaps/{{date}}/{{conversation_id}}",
-        "data": {
-          "question": "{{customer_message}}",
-          "confidence_score": $confidence-check.json.score,
-          "topic": "$confidence-check.json.reasoning",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
-    condition: $threshold-check.json.pass == false
+      node -e 'const q=JSON.parse(process.env.QUEUE||"null")||[];
+        const cust=JSON.parse(process.env.CUST||"null");
+        const tri=JSON.parse(process.env.TRIAGE||"{}");
+        q.push({kind:"escalate_ticket",
+          urgent: tri.trigger==="distress" || tri.compliance_flag===true,
+          conversation_id:process.env.LOBSTER_ARG_CONVERSATION_ID||"",
+          channel:process.env.LOBSTER_ARG_CHANNEL||"chat",
+          customer_email:process.env.LOBSTER_ARG_CUSTOMER_EMAIL||"",
+          customer_message:process.env.LOBSTER_ARG_CUSTOMER_MESSAGE||"",
+          customer: cust,
+          category: tri.category,
+          escalation_trigger: tri.trigger,
+          compliance_flag: tri.compliance_flag===true,
+          defer_llm: tri.defer_llm===true,
+          requires:["context_handoff","slack_escalation_delivery"],
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(q));'
+    env:
+      QUEUE: $escalation-queue-load.stdout
+      CUST: $load-customer.stdout
+      TRIAGE: $triage.stdout
+    stdin: ""
 
-  # Step 20: Log KB conflicts (Req 23)
-  - id: log-kb-conflict
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "vera-kb-conflicts/{{date}}/{{conversation_id}}",
-        "data": {
-          "question": "{{customer_message}}",
-          "conflict_details": "$confidence-check.json.conflict_details",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
-    condition: $confidence-check.json.conflicts_detected
+  - id: escalation-queue
+    condition: $triage.json.needs_escalation
+    pipeline: state.set vera/notifications
+    stdin: $escalation-queue-next.stdout
 
-  # Step 21: Log stale articles (Req 25)
-  - id: log-stale
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "vera-kb-stale/{{date}}",
-        "data": {"articles": $confidence-check.json.stale_articles}
-      }'
-    condition: $confidence-check.json.stale_articles.length > 0
+  # ---- AUDIT (always; Req 48) ----
+  # Append a deterministic audit record to a single-key audit index array. (fast-io
+  # audit/{ts}/... keys are fictional and have no prefix-list; one index array is the
+  # durable, enumerable equivalent.)
+  - id: audit-load
+    pipeline: state.get vera/audit-log
 
-  # Step 22: Route to escalation pipeline if needed
-  - id: route-escalation
+  - id: audit-next
     command: >
-      openclaw.invoke --tool lobster --action run --args-json '{
-        "pipeline": "pipelines/escalation.lobster",
-        "argsJson": "{\"conversation_id\": \"{{conversation_id}}\", \"customer_email\": \"{{customer_email}}\", \"escalation_trigger\": \"$check-immediate-escalation.json.trigger || $threshold-check.json.escalation_trigger\", \"customer_message\": \"{{customer_message}}\"}"
-      }'
-    condition: $check-immediate-escalation.json.needs_escalation || $threshold-check.json.pass == false
+      node -e 'const log=JSON.parse(process.env.LOG||"null")||[];
+        const tri=JSON.parse(process.env.TRIAGE||"{}");
+        const s=JSON.parse(process.env.SENTIMENT||"{}");
+        log.push({action:"ticket_handled",
+          conversation_id:process.env.LOBSTER_ARG_CONVERSATION_ID||"",
+          customer_email:process.env.LOBSTER_ARG_CUSTOMER_EMAIL||"",
+          channel:process.env.LOBSTER_ARG_CHANNEL||"chat",
+          classification:tri.category, subcategory:tri.subcategory,
+          sentiment:s.sentiment, sentiment_action:s.action,
+          escalated:tri.needs_escalation===true, escalation_trigger:tri.trigger,
+          compliance_flag:tri.compliance_flag===true,
+          authorized_by:"autonomous", at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(log.slice(-1000)));'
+    env:
+      LOG: $audit-load.stdout
+      TRIAGE: $triage.stdout
+      SENTIMENT: $sentiment.stdout
+    stdin: ""
 
-  # Step 23: Audit log (Req 48)
-  - id: audit-log
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/ticket/{{conversation_id}}",
-        "data": {
-          "action": "ticket_handled",
-          "conversation_id": "{{conversation_id}}",
-          "customer_email": "{{customer_email}}",
-          "channel": "{{channel}}",
-          "classification": "$classify.json.category || $llm-classify.json.category",
-          "sentiment": "$sentiment.json.sentiment",
-          "confidence_score": "$confidence-check.json.score",
-          "kb_source": "$generate-response.json.kb_source",
-          "action_taken": "$generate-response.json.action_taken",
-          "resolved": "$generate-response.json.resolves_issue",
-          "escalated": "$check-immediate-escalation.json.needs_escalation || $threshold-check.json.pass == false",
-          "escalation_trigger": "$check-immediate-escalation.json.trigger || $threshold-check.json.escalation_trigger",
-          "response_time_ms": "{{response_time}}",
-          "authorized_by": "autonomous",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+  - id: audit
+    pipeline: state.set vera/audit-log
+    stdin: $audit-next.stdout

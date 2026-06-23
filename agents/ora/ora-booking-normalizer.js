@@ -80,7 +80,9 @@ async function main() {
   }
   const result = pick(input);
   process.stdout.write(JSON.stringify(result));
-  process.exit(result.ok ? 0 : 1);
+  // "No provider returned an event_id" is a normal branch, not a crash — the
+  // decision is carried in ok; exit 0 so the workflow gates downstream on .json.ok.
+  process.exit(0);
 }
 
 function readStdin() {

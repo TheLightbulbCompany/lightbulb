@@ -91,7 +91,9 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(allPassed ? 0 : 1);
+  // A failed gate is a branch signal (result.pass=false), not a script error — exit 0 so the
+  // workflow can read the JSON and branch via condition: instead of aborting the whole run.
+  process.exit(0);
 }
 
 function readStdin() {

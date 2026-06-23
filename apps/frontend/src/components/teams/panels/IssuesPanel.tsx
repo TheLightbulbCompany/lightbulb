@@ -1,44 +1,44 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { ListChecks, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { X } from "lucide-react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
   EditorialButton,
-  PanelDataTable,
-  PanelEmptyState,
   PanelMasthead,
   PanelToolbar,
-  type PanelDataColumn,
 } from "@/components/teams/shell";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
-import { IssueStatusMenu } from "@/components/teams/issues/IssueStatusMenu";
-import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
+import { TasksList } from "@/components/teams/issues/TasksList";
+import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   CompanyAgent,
   Issue,
   IssueProject,
+  IssueUpdateInput,
 } from "@/components/teams/shared/types";
 
+// Route stays /teams/issues; the surface is relabelled "Tasks" everywhere the
+// user reads it. Internally Paperclip still calls these rows "issues" — the BFF
+// and detail routes are unchanged.
 export function IssuesPanel() {
   const { read } = useTeamsApi();
-  // Inside the /chat shell a nav provider is present → open the detail view
-  // in-shell. Standalone under /teams there's no provider → fall back to <a>.
-  const nav = useInlineTeamsNav();
+  const { update } = useIssueMutations();
   // `?agent=<id>` is set by the /chat roster's "See her work →" deep link.
-  // The /issues BFF takes no server agent filter, so we filter client-side on
-  // `assigneeAgentId` (the inbox does the same). Standalone /teams never sets
-  // this param → no filter.
+  // The /issues BFF takes no server agent filter for this surface, so we
+  // filter client-side on `assigneeAgentId` (the inbox does the same).
+  // Standalone /teams never sets this param → no filter.
   const searchParams = useSearchParams();
   const router = useRouter();
   const agentFilter = searchParams.get("agent");
+
   const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
     "/issues",
   );
   // NewIssueDialog renders Project + Assignee pickers only when these arrays
-  // are non-empty (its defaults are []). Without these reads, users creating
-  // issues from this panel can't set projectId / assigneeAgentId.
+  // are non-empty (its defaults are []). TasksList also resolves assignee /
+  // status-circle names from the roster, and feeds agents to the board.
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsData } = read<{ projects: IssueProject[] }>(
     "/projects",
@@ -49,10 +49,13 @@ export function IssuesPanel() {
   const issues = data?.issues;
   const filtered = useMemo(() => {
     const list = issues ?? [];
+    const q = search.trim().toLowerCase();
     return list.filter(
       (i) =>
         (!agentFilter || i.assigneeAgentId === agentFilter) &&
-        (!search || i.title.toLowerCase().includes(search.toLowerCase())),
+        (!q ||
+          i.title.toLowerCase().includes(q) ||
+          (i.identifier ?? "").toLowerCase().includes(q)),
     );
   }, [issues, search, agentFilter]);
 
@@ -72,6 +75,13 @@ export function IssuesPanel() {
     router.replace(qs ? `?${qs}` : "?", { scroll: false });
   };
 
+  // TasksList's inline status circle + board drag both patch the issue; route
+  // them through the same mutation hook the rest of the issues surface uses,
+  // then revalidate this panel's /issues read so the change shows immediately.
+  const handleUpdateIssue = (id: string, dataPatch: Record<string, unknown>) => {
+    void update(id, dataPatch as IssueUpdateInput).then(() => mutate());
+  };
+
   if (error)
     return (
       <div className="editorial-page p-8 text-[var(--danger)]">
@@ -79,78 +89,22 @@ export function IssuesPanel() {
       </div>
     );
 
-  const columns: PanelDataColumn<Issue>[] = [
-    {
-      key: "title",
-      header: "Title",
-      cell: (i) => (
-        <div className="font-medium text-[var(--ink)]">{i.title}</div>
-      ),
-    },
-    {
-      key: "status",
-      header: "Status",
-      cell: (i) => (
-        <span className="text-sm text-[var(--ink-soft)]">
-          {i.status ?? "open"}
-        </span>
-      ),
-    },
-    {
-      key: "priority",
-      header: "Priority",
-      cell: (i) => (
-        <span className="text-sm text-[var(--ink-soft)]">
-          {i.priority ?? "—"}
-        </span>
-      ),
-    },
-    {
-      key: "actions",
-      header: "",
-      align: "right",
-      cell: (i) => <IssueStatusMenu issue={i} onChanged={mutate} />,
-    },
-    {
-      key: "open",
-      header: "",
-      align: "right",
-      cell: (i) =>
-        nav ? (
-          <button
-            type="button"
-            onClick={() => nav.openDetail("issue-detail", i.id)}
-            className="text-sm text-[var(--forest)] hover:underline"
-          >
-            Open →
-          </button>
-        ) : (
-          <a
-            href={`/teams/issues/${i.id}`}
-            className="text-sm text-[var(--forest)] hover:underline"
-          >
-            Open →
-          </a>
-        ),
-    },
-  ];
-
   return (
     <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
       <PanelMasthead
         overline="Work"
-        title="Issues"
+        title="Tasks"
         actions={
           <EditorialButton variant="primary" onClick={() => setCreating(true)}>
-            New issue
+            New task
           </EditorialButton>
         }
       />
       <PanelToolbar
         searchValue={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Find issue..."
-        searchAriaLabel="Search issues"
+        searchPlaceholder="Search tasks..."
+        searchAriaLabel="Search tasks"
       />
       {agentFilter ? (
         <div className="flex items-center gap-2">
@@ -176,28 +130,14 @@ export function IssuesPanel() {
           </span>
         </div>
       ) : null}
-      {isLoading ? (
-        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
-          Loading…
-        </div>
-      ) : filtered.length === 0 ? (
-        <PanelEmptyState
-          icon={ListChecks}
-          headline="No issues yet."
-          supporting={
-            search
-              ? "No issues match your search."
-              : "Create an issue to track a piece of work — assign it to an agent and follow it through to done."
-          }
-          action={{ label: "New issue", onClick: () => setCreating(true) }}
-        />
-      ) : (
-        <PanelDataTable<Issue>
-          rows={filtered}
-          columns={columns}
-          rowKey={(i) => i.id}
-        />
-      )}
+
+      <TasksList
+        issues={filtered}
+        agents={agentsData?.agents ?? []}
+        isLoading={isLoading}
+        onUpdateIssue={handleUpdateIssue}
+        onNewTask={() => setCreating(true)}
+      />
 
       <NewIssueDialog
         open={creating}

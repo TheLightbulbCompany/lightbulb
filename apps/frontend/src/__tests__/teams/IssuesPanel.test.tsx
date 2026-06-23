@@ -1,12 +1,11 @@
-// Test for IssuesPanel.
+// Test for IssuesPanel (the Tasks surface).
 //
-// After PR 4 of the /teams panel port, the inline `CreateIssueDialog` was
-// deleted in favour of the standalone `NewIssueDialog` (which uses
-// `useIssueMutations.create()` and has its own behaviour tests at
-// src/__tests__/components/teams/issues/NewIssueDialog.test.tsx). This file
-// guards the integration: clicking "New issue" mounts NewIssueDialog with
-// open=true. The actual POST /issues body shape is asserted in the
-// NewIssueDialog and useIssueMutations tests.
+// After the Tasks rebuild, the panel renders `TasksList` (list/board tree)
+// instead of the old 3-column PanelDataTable. This file guards the
+// integration: the masthead reads "Tasks", the empty state copy is "No tasks
+// yet", and clicking "New task" mounts NewIssueDialog with open=true. The
+// actual POST /issues body shape is asserted in the NewIssueDialog and
+// useIssueMutations tests.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { Issue } from "@/components/teams/shared/types";
@@ -62,30 +61,32 @@ beforeEach(() => {
 });
 
 describe("IssuesPanel", () => {
-  it("renders the editorial empty state when there are no issues", () => {
+  it("renders the editorial empty state when there are no tasks", () => {
     render(<IssuesPanel />);
     expect(
-      screen.getByRole("heading", { level: 1, name: /issues/i }),
+      screen.getByRole("heading", { level: 1, name: /tasks/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/no issues yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no tasks yet/i)).toBeInTheDocument();
   });
 
-  it("clicking 'New issue' opens NewIssueDialog (open=true)", () => {
+  it("clicking 'New task' opens NewIssueDialog (open=true)", () => {
     render(<IssuesPanel />);
     expect(screen.queryByTestId("new-issue-dialog-stub")).not.toBeInTheDocument();
-    // Two New issue CTAs render when the list is empty (masthead + empty
+    // Two New task CTAs render when the list is empty (masthead + empty
     // state). Click the first.
-    const buttons = screen.getAllByRole("button", { name: /new issue/i });
+    const buttons = screen.getAllByRole("button", { name: /new task/i });
     fireEvent.click(buttons[0]);
     expect(screen.getByTestId("new-issue-dialog-stub")).toBeInTheDocument();
   });
 
-  it("renders an issue-actions menu trigger in each row", () => {
+  it("renders a task row with a clickable status circle", () => {
     seededIssues = [
       { id: "i1", title: "Fix the thing", status: "todo" } as Issue,
     ];
     render(<IssuesPanel />);
     expect(screen.getByText("Fix the thing")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /issue actions/i })).toBeInTheDocument();
+    // The status circle is the inline easy-action — it carries the status
+    // label as its accessible name so it can be opened to change status.
+    expect(screen.getByLabelText(/todo/i)).toBeInTheDocument();
   });
 });

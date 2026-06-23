@@ -62,13 +62,12 @@ export function CompanyNav({
   onPanelChange?: (panel: string) => void;
 }): React.ReactElement {
   return (
-    // `min-h-0 overflow-y-auto`: as a flex child of the fixed-height
-    // `.cream-sidebar` (which clips overflow), the expanded nav must be able to
-    // shrink below its content and scroll, or its lower items + the
-    // Marketplace/footer below it would be clipped and unreachable on short
-    // viewports.
+    // No own scroll region: this nav lives inside the shared `.sidebar-scroll`
+    // wrapper, which owns the single scroll for roster + CompanyNav + Gallery.
+    // Giving it `overflow-y-auto` here would re-introduce the nested scroll that
+    // collapsed the roster's height.
     <nav
-      className="company-nav px-2 py-1 min-h-0 overflow-y-auto"
+      className="company-nav px-2 py-1"
       aria-label="Company"
     >
       {COMPANY_SECTIONS.map((section, i) => (

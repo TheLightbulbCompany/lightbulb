@@ -384,7 +384,13 @@ export function ChatLayout({
                 New chat
               </button>
 
-              {/* Agent List */}
+              {/* Agent List. Rendered once via `rosterEl`; flag-ON wraps it
+                  (with CompanyNav + Gallery) in a single `.sidebar-scroll`
+                  region so the roster keeps its natural height instead of
+                  collapsing under CompanyNav's own scroll. Flag-OFF keeps the
+                  flat structure — `.agent-list` stays its own scroll region. */}
+              {(() => {
+              const rosterEl = (
               <div className="agent-list">
                 <div className="agent-section-label">
                   <span>My Agents</span>
@@ -480,15 +486,23 @@ export function ChatLayout({
                   );
                 })}
               </div>
-
-              {unifiedNav ? (
-                <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
-              ) : null}
-
-              {/* Marketplace block — Browse + Publish buttons that open the
-                  MarketplaceDrawer. The drawer (mounted on the chat page) owns
-                  the install + auto-select flow now. */}
-              <GallerySection />
+              );
+              // Marketplace block (GallerySection) — Browse + Publish buttons
+              // that open the MarketplaceDrawer. The drawer (mounted on the
+              // chat page) owns the install + auto-select flow now.
+              return unifiedNav ? (
+                <div className="sidebar-scroll">
+                  {rosterEl}
+                  <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
+                  <GallerySection />
+                </div>
+              ) : (
+                <>
+                  {rosterEl}
+                  <GallerySection />
+                </>
+              );
+              })()}
             </>
           ) : (
             <>

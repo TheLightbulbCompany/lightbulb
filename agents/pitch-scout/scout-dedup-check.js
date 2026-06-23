@@ -91,7 +91,8 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(hardBlock ? 1 : 0);
+  // Always exit 0 — hard_block is a branch carried in the JSON, not a run-aborting error.
+  process.exit(0);
 }
 
 function matchesIdentifiers(record, identifiers) {

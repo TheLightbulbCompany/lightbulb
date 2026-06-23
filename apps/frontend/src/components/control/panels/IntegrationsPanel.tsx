@@ -66,22 +66,18 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
       <div className="settings-panel" id="panel-mcp" role="tabpanel">
         <h1 className="settings-page-title">MCP servers</h1>
         <p className="settings-page-desc">
-          Connect third-party tools so your agents can act on your behalf. API-key
-          integrations take a token you paste; OAuth integrations send you to the
-          provider to sign in.
+          Register Model Context Protocol servers your agents can call — paste a
+          server config below, or open Advanced for plugins. To connect third-party
+          apps like Stripe, Google, or Notion, use Connections.
         </p>
 
         {!canManage && (
           <div className="settings-alert settings-alert-error" role="status">
-            Only organization admins can manage integrations.
+            Only organization admins can manage MCP servers.
           </div>
         )}
 
         <div className="space-y-5">
-          <ConnectionsList canManage={canManage} />
-
-          {googleConnected && <GoogleAccountsSection canManage={canManage} />}
-
           <div className="space-y-2">
             <h3 className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
               Add your own MCP servers

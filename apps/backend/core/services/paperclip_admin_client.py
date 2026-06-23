@@ -941,6 +941,29 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def get_run_log(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+        offset: int = 0,
+        limit_bytes: int = 65_536,
+    ) -> dict:
+        """Read a slice of a heartbeat run's raw log.
+
+        Maps to ``GET /api/heartbeat-runs/{runId}/log``. Upstream returns
+        ``{runId, store, logRef, content, nextOffset?}`` where ``content`` is
+        the NDJSON-ish log slice from ``offset`` for up to ``limitBytes``
+        bytes (upstream clamps to 1 MiB). The Dashboard live-run cards poll
+        this for the in-progress agent transcript, reading a small tail by
+        default (``limit_bytes`` ~ 64 KiB) so the card stays glanceable.
+        """
+        return await self._get(
+            f"/api/heartbeat-runs/{run_id}/log",
+            session_cookie=session_cookie,
+            params={"offset": str(offset), "limitBytes": str(limit_bytes)},
+        )
+
     # ------------------------------------------------------------------
     # Approvals
     # ------------------------------------------------------------------

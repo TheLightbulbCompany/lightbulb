@@ -22,7 +22,9 @@ import {
   SuccessRateChart,
 } from "@/components/teams/dashboard/ActivityCharts";
 import { ActivityRow } from "@/components/teams/dashboard/ActivityRow";
+import { ActiveAgentsPanel } from "@/components/teams/dashboard/ActiveAgentsPanel";
 import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
+import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { PanelMasthead } from "@/components/teams/shell";
 import type {
   DashboardResponse,
@@ -96,6 +98,10 @@ export function DashboardPanel() {
   const dashboardQuery = read<DashboardResponse>("/dashboard");
   const issuesQuery = read<unknown>("/issues");
   const { events, isLoading: activityLoading } = useActivityFeed(10);
+  // Live-agent-runs feed for the "Agents" panel. Hook is called
+  // unconditionally (rules of hooks) — the panel renders below, after the
+  // loading/error early-returns. SWR self-refreshes the feed on an interval.
+  const { runs: liveRuns } = useLiveRuns();
 
   if (dashboardQuery.isLoading && !dashboardQuery.data) {
     return (
@@ -123,6 +129,11 @@ export function DashboardPanel() {
   const issues = normalizeIssues(issuesQuery.data);
   const priorityRows = toPriorityRows(issues);
   const statusRows = toStatusRows(issues);
+  // Issue lookup for the Agents panel's linked-task chips. Reuses the
+  // dashboard's existing `/issues` read so the run cards resolve task
+  // titles without fanning out a per-issue fetch (missing entries degrade
+  // to an id-slug chip inside ActiveAgentsPanel).
+  const issuesById = new Map(issues.map((i) => [i.id, i]));
 
   const agentsCount = Object.values(dashboard.agents).reduce(
     (s, v) => s + (v ?? 0),
@@ -140,6 +151,10 @@ export function DashboardPanel() {
         title="Dashboard"
         meta="Last 14 days"
       />
+
+      {/* Live agent runs — sits prominently below the masthead so active
+          work is the first thing the dashboard surfaces. */}
+      <ActiveAgentsPanel runs={liveRuns} issuesById={issuesById} />
 
       {/* Metric tiles — single continuous strip with internal hairlines */}
       <section

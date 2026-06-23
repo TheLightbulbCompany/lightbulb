@@ -9,6 +9,13 @@ import { useOrganization, UserButton } from "@clerk/nextjs";
 import { Logo } from "@/components/Logo";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { useConnections } from "@/hooks/useConnections";
+import { SettingsNav } from "@/components/settings/SettingsNav";
+import {
+  LEGACY_NAV_SECTIONS,
+  UNIFIED_NAV_SECTIONS,
+} from "@/components/settings/settings-nav-config";
+import { useIsControlAdmin } from "@/components/control/ControlSidebar";
+import { useUnifiedNav } from "@/hooks/useUnifiedNav";
 
 /**
  * /settings/connections — manage third-party integrations.
@@ -53,6 +60,13 @@ function ConnectionsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { membership } = useOrganization();
+
+  // Same flag + admin gate as /settings so the shared nav renders the matching
+  // group set: flag-OFF shows the legacy single "Account" group, flag-ON shows
+  // the 6 intent-ordered groups. Connections is highlighted via activeHref.
+  const unifiedNav = useUnifiedNav();
+  const navSections = unifiedNav ? UNIFIED_NAV_SECTIONS : LEGACY_NAV_SECTIONS;
+  const isAdmin = useIsControlAdmin();
 
   // A personal owner has no org membership and is implicitly the admin of
   // their own resources; only restrict non-admin members of a real org.
@@ -117,23 +131,12 @@ function ConnectionsPageInner() {
         style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}
       >
         <div className="settings-layout">
-          <nav className="settings-nav" aria-label="Settings navigation">
-            <div>
-              <div className="settings-nav-section-label">Account</div>
-              <ul className="settings-nav-items">
-                <li className="settings-nav-item">
-                  <Link href="/settings" style={{ color: "inherit", textDecoration: "none", display: "flex", alignItems: "center", gap: 10, width: "100%" }}>
-                    <ConnectionsBackIcon />
-                    Settings
-                  </Link>
-                </li>
-                <li className="settings-nav-item active" aria-current="page">
-                  <PlugIcon />
-                  Connections
-                </li>
-              </ul>
-            </div>
-          </nav>
+          <SettingsNav
+            mode="links"
+            sections={navSections}
+            isAdmin={isAdmin}
+            activeHref="/settings/connections"
+          />
 
           <main className="settings-main">
             <div className="settings-panel" role="tabpanel">
@@ -165,25 +168,5 @@ function ConnectionsPageInner() {
         </div>
       </div>
     </>
-  );
-}
-
-function PlugIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 22v-5" />
-      <path d="M9 8V2" />
-      <path d="M15 8V2" />
-      <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
-    </svg>
-  );
-}
-
-function ConnectionsBackIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-    </svg>
   );
 }

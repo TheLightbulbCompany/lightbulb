@@ -6,17 +6,17 @@ const source = readFileSync(resolve(__dirname, "../ChatLayout.tsx"), "utf8");
 
 // Phase D: the unified nav collapses the two sidebars (chat vs control) into
 // one. Implemented by widening the sidebar-body branch condition so the
-// chat-branch body (roster + CompanyNav + SystemNav) renders whenever
-// unifiedNav is on — not only in chat view — and the separate control-branch
-// sidebar (with ControlSidebar) is reached only on the flag-off path.
+// chat-branch body (roster + CompanyNav) renders whenever unifiedNav is on —
+// not only in chat view — and the separate control-branch sidebar (with
+// ControlSidebar) is reached only on the flag-off path.
 describe("ChatLayout — unified single sidebar (Phase D)", () => {
   it("renders the unified sidebar body whenever unifiedNav is on, not just chat view", () => {
     expect(source).toMatch(/unifiedNav\s*\|\|\s*activeView === "chat"\s*\?/);
   });
 
   it("keeps ControlSidebar (flag-off control branch only — redundant under unifiedNav)", () => {
-    // SystemNav covers the global panels under unifiedNav, so ControlSidebar is
-    // redundant in the unified path. It stays imported + rendered for the
+    // Under unifiedNav the chat-branch body covers the sidebar, so ControlSidebar
+    // is redundant in the unified path. It stays imported + rendered for the
     // flag-off control view (the ternary's else arm).
     expect(source).toMatch(/<ControlSidebar\b/);
   });

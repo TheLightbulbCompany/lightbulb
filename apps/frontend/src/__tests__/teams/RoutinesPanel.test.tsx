@@ -1,29 +1,26 @@
-// Test for RoutinesPanel — confirms create body matches CreateRoutineBody and
-// the per-row enable toggle posts a PATCH with only {enabled}.
+// Tests for RoutinesPanel — covers the upstream RoutineListItem shape
+// (title / assigneeAgentId / triggers[]), agent-name resolution, the standalone
+// agent filter + sort controls, the per-row enable toggle (PATCH {enabled}),
+// and the create dialog (whitelisted body, agent chosen via the picker).
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const mockPost = vi.fn();
 const mockPatch = vi.fn();
 const mockDel = vi.fn();
 const mockMutate = vi.fn();
-const mockRead = vi.fn(() => ({
-  data: {
-    routines: [
-      {
-        id: "rt1",
-        name: "Daily standup",
-        cron: "0 9 * * *",
-        agent_id: "a1",
-        prompt: "do thing",
-        enabled: true,
-      },
-    ],
-  },
-  isLoading: false,
-  error: null,
-  mutate: mockMutate,
-}));
+
+// Per-path read mock: the panel reads BOTH `/routines` and `/agents`. Tests
+// override `routinesData` / `agentsData` per suite; the mock discriminates on
+// the path prefix so a single `read` impl serves both calls.
+let routinesData: { routines: unknown[] };
+let agentsData: { agents: unknown[] };
+
+const mockRead = vi.fn((path: string) => {
+  const data = path.startsWith("/agents") ? agentsData : routinesData;
+  return { data, isLoading: false, error: null, mutate: mockMutate };
+});
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
@@ -36,36 +33,63 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 
+// An upstream-shaped routine row (RoutineListItem subset).
+function routine(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "rt1",
+    title: "Daily standup",
+    assigneeAgentId: "a1",
+    status: "active",
+    triggers: [{ id: "tr1", kind: "schedule", enabled: true, cronExpression: "0 9 * * *" }],
+    ...overrides,
+  };
+}
+
+const AGENTS = [
+  { id: "a1", name: "Friday" },
+  { id: "a2", name: "Atlas" },
+];
+
 describe("RoutinesPanel", () => {
   beforeEach(() => {
     mockPost.mockReset();
     mockPatch.mockReset();
     mockDel.mockReset();
-    // Restore the default single-row read for the base suite (the filter
-    // suite below swaps in a multi-agent set per test).
-    mockRead.mockImplementation(() => ({
-      data: {
-        routines: [
-          {
-            id: "rt1",
-            name: "Daily standup",
-            cron: "0 9 * * *",
-            agent_id: "a1",
-            prompt: "do thing",
-            enabled: true,
-          },
-        ],
-      },
-      isLoading: false,
-      error: null,
-      mutate: mockMutate,
-    }));
+    mockRead.mockClear();
+    routinesData = { routines: [routine()] };
+    agentsData = { agents: AGENTS };
   });
 
-  it("renders routine rows", () => {
+  it("renders the routine title and cron from the upstream shape", () => {
     render(<RoutinesPanel />);
     expect(screen.getByText("Daily standup")).toBeInTheDocument();
     expect(screen.getByText(/0 9 \* \* \*/)).toBeInTheDocument();
+  });
+
+  it("resolves the assignee id to the agent display name", () => {
+    render(<RoutinesPanel />);
+    // "Friday" (resolved name) shows in the row subtitle; the raw id "a1" does not.
+    expect(screen.getByText(/Friday/)).toBeInTheDocument();
+    expect(screen.queryByText(/agent a1/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the legacy flat shape (name / cron / agent_id / enabled)", () => {
+    routinesData = {
+      routines: [
+        {
+          id: "rt9",
+          name: "Legacy routine",
+          cron: "0 8 * * *",
+          agent_id: "a2",
+          enabled: true,
+        },
+      ],
+    };
+    render(<RoutinesPanel />);
+    expect(screen.getByText("Legacy routine")).toBeInTheDocument();
+    expect(screen.getByText(/0 8 \* \* \*/)).toBeInTheDocument();
+    // Legacy agent_id resolves through the same roster map.
+    expect(screen.getByText(/Atlas/)).toBeInTheDocument();
   });
 
   it("renders an Open link to the routine detail page", () => {
@@ -90,78 +114,99 @@ describe("RoutinesPanel", () => {
     expect(Object.keys(body as Record<string, unknown>)).toEqual(["enabled"]);
   });
 
-  it("create form posts whitelisted fields only", async () => {
+  it("create form posts whitelisted fields only, agent chosen via picker", async () => {
+    const user = userEvent.setup();
     mockPost.mockResolvedValue({ id: "rt2" });
     render(<RoutinesPanel />);
 
-    fireEvent.click(screen.getByText("New routine"));
+    // "New routine" is both the masthead button and the dialog heading; click
+    // the button (role) to open, then locate the dialog by its heading.
+    await user.click(screen.getByRole("button", { name: "New routine" }));
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Weekly review" },
     });
     fireEvent.change(screen.getByLabelText("Cron"), {
       target: { value: "0 10 * * 1" },
     });
-    fireEvent.change(screen.getByLabelText("Agent ID"), {
-      target: { value: "a1" },
-    });
+    // Pick an agent through the AssigneePicker (no more raw "Agent ID" input).
+    // The picker is a Radix Popover → needs the full userEvent pointer sequence,
+    // and its options portal to document.body. Both the toolbar filter and the
+    // dialog field render an "Unassigned" picker, so scope to the dialog (the
+    // element wrapping the "New routine" heading) before clicking.
+    const dialog = screen
+      .getByRole("heading", { name: "New routine" })
+      .closest(".editorial-card") as HTMLElement;
+    await user.click(within(dialog).getByRole("button", { name: /unassigned/i }));
+    await user.click(await screen.findByText("Friday"));
     fireEvent.change(screen.getByLabelText("Prompt"), {
       target: { value: "review last week" },
     });
-    fireEvent.click(screen.getByText("Create"));
+    await user.click(screen.getByText("Create"));
 
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledTimes(1);
     });
     const [path, body] = mockPost.mock.calls[0];
     expect(path).toBe("/routines");
+    const typed = body as Record<string, unknown>;
     const allowed = new Set(["name", "cron", "agent_id", "prompt", "enabled"]);
-    for (const k of Object.keys(body as Record<string, unknown>)) {
+    for (const k of Object.keys(typed)) {
       expect(allowed.has(k)).toBe(true);
     }
+    expect(typed.agent_id).toBe("a1");
+  });
+});
+
+describe("RoutinesPanel sort", () => {
+  beforeEach(() => {
+    mockRead.mockClear();
+    agentsData = { agents: AGENTS };
+    routinesData = {
+      routines: [
+        routine({ id: "rt-b", title: "Beta", assigneeAgentId: "a1" }),
+        routine({ id: "rt-a", title: "Alpha", assigneeAgentId: "a2" }),
+      ],
+    };
+  });
+
+  it("sorts by name ascending by default", () => {
+    render(<RoutinesPanel />);
+    const cells = screen.getAllByText(/Alpha|Beta/);
+    // Alpha before Beta (default name-asc).
+    expect(cells[0]).toHaveTextContent("Alpha");
+    expect(cells[1]).toHaveTextContent("Beta");
+  });
+
+  it("flips direction when the active sort field is re-selected", async () => {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    // The sort menu is a Radix Popover → needs userEvent + portalled options.
+    await user.click(screen.getByRole("button", { name: /sort routines/i }));
+    // Re-select the already-active "Name" → flips to descending. The active
+    // option's accessible name carries the direction arrow ("Name↑"), so match
+    // on the prefix rather than an exact string.
+    await user.click(await screen.findByRole("button", { name: /^Name/ }));
+    const cells = screen.getAllByText(/Alpha|Beta/);
+    expect(cells[0]).toHaveTextContent("Beta");
+    expect(cells[1]).toHaveTextContent("Alpha");
   });
 });
 
 describe("RoutinesPanel agentId filter (inspector intrinsic scope)", () => {
   // A mixed-agent set: two for `a1`, one for `a2`. The inspector passes its
   // inspected agent's id; only that agent's routines should render. Unlike the
-  // standalone `/teams` panel, the filter is intrinsic — NO dismissible chip.
+  // standalone `/teams` panel, the filter is intrinsic — NO dismissible chip /
+  // toolbar picker.
   beforeEach(() => {
-    mockPost.mockReset();
-    mockPatch.mockReset();
-    mockDel.mockReset();
-    mockRead.mockImplementation(() => ({
-      data: {
-        routines: [
-          {
-            id: "rt1",
-            name: "Daily standup",
-            cron: "0 9 * * *",
-            agent_id: "a1",
-            prompt: "do thing",
-            enabled: true,
-          },
-          {
-            id: "rt2",
-            name: "Weekly review",
-            cron: "0 10 * * 1",
-            agent_id: "a1",
-            prompt: "review",
-            enabled: true,
-          },
-          {
-            id: "rt3",
-            name: "Nightly backup",
-            cron: "0 2 * * *",
-            agent_id: "a2",
-            prompt: "backup",
-            enabled: true,
-          },
-        ],
-      },
-      isLoading: false,
-      error: null,
-      mutate: mockMutate,
-    }));
+    mockRead.mockClear();
+    agentsData = { agents: AGENTS };
+    routinesData = {
+      routines: [
+        routine({ id: "rt1", title: "Daily standup", assigneeAgentId: "a1" }),
+        routine({ id: "rt2", title: "Weekly review", assigneeAgentId: "a1" }),
+        routine({ id: "rt3", title: "Nightly backup", assigneeAgentId: "a2" }),
+      ],
+    };
   });
 
   it("renders only the given agent's routines when agentId is set", () => {
@@ -178,10 +223,12 @@ describe("RoutinesPanel agentId filter (inspector intrinsic scope)", () => {
     expect(screen.getByText("Nightly backup")).toBeInTheDocument();
   });
 
-  it("does NOT render a dismissible filter chip when agentId is set", () => {
+  it("does NOT render the toolbar agent picker when agentId is set", () => {
     render(<RoutinesPanel agentId="a1" />);
+    // The standalone-only AssigneePicker trigger ("Unassigned") is absent in
+    // intrinsic-scope mode.
     expect(
-      screen.queryByLabelText(/clear agent filter/i),
+      screen.queryByRole("button", { name: /unassigned/i }),
     ).not.toBeInTheDocument();
   });
 });

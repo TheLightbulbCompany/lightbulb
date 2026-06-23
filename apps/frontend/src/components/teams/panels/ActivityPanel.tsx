@@ -1,80 +1,118 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useTeamsApi } from "@/hooks/useTeamsApi";
+// apps/frontend/src/components/teams/panels/ActivityPanel.tsx
+//
+// The full "Activity" page. Ported from upstream Paperclip's Activity page
+// (paperclip/ui/src/pages/Activity.tsx) (MIT, (c) 2025 Paperclip AI).
+//
+// Shares ONE correct data path + renderer with the Dashboard's "Recent
+// activity" feed: `useActivityFeed` (normalizes the BFF's bare-array
+// `/teams/activity` response and exposes the correct ActivityEvent shape —
+// `action`/`actorType`/`entityType`/…) and `ActivityRow` (avatars, verb
+// formatting, entity links). The type-filter facets on `entityType`, matching
+// upstream's Activity page (`data.filter((e) => e.entityType === filter)`).
+//
+// Deferred (not yet ported): upstream's agentMap / userProfileMap /
+// entityNameMap / entityTitleMap enrichment (resolves agent + entity display
+// names from sibling reads) and the ActivityCharts. ActivityRow degrades to the
+// raw entity id without those maps. Charts live on the Dashboard already.
 
-interface ActivityEvent {
-  id: string;
-  type: string;
-  actor?: string;
-  target?: string;
-  createdAt?: string;
-  description?: string;
-}
+import { useMemo, useState } from "react";
+import { PanelMasthead } from "@/components/teams/shell";
+import { ActivityRow } from "@/components/teams/dashboard/ActivityRow";
+import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
+
+// Matches upstream's ACTIVITY_PAGE_LIMIT (paperclip/ui/src/pages/Activity.tsx).
+// `useActivityFeed` reads the full BFF response and slices to this cap, so the
+// Activity page surfaces far more history than the Dashboard's 10-row preview.
+const ACTIVITY_PAGE_LIMIT = 200;
 
 export function ActivityPanel() {
-  const { read } = useTeamsApi();
-  const { data, isLoading, error } = read<{ events: ActivityEvent[] }>("/activity");
-  const [typeFilter, setTypeFilter] = useState("all");
+  const { events, isLoading, isError } = useActivityFeed(ACTIVITY_PAGE_LIMIT);
+  const [filter, setFilter] = useState("all");
 
-  const events = useMemo(() => data?.events ?? [], [data]);
-  const types = useMemo(
-    () => Array.from(new Set(events.map((e) => e.type).filter(Boolean))).sort(),
+  // Facet on entityType (upstream's Activity-page filter). Drop null/empty
+  // entity types so the dropdown only offers real facets.
+  const entityTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(events.map((e) => e.entityType).filter((t): t is string => !!t)),
+      ).sort(),
     [events],
   );
-  const filtered = typeFilter === "all" ? events : events.filter((e) => e.type === typeFilter);
 
-  if (isLoading)
-    return (
-      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
-        Loading…
-      </div>
-    );
-  if (error)
-    return (
-      <div className="editorial-page p-8 text-[var(--danger)]">
-        Error: {String(error)}
-      </div>
-    );
+  const filtered = useMemo(
+    () => (filter === "all" ? events : events.filter((e) => e.entityType === filter)),
+    [events, filter],
+  );
 
   return (
-    <div className="editorial-page p-8 max-w-4xl">
-      <div className="flex items-center justify-between mb-6 gap-4">
-        <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Activity</h1>
-        {types.length > 0 && (
-          <select
-            aria-label="Filter by type"
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="border border-[var(--edge)] bg-[var(--cream)] rounded px-2 py-1 text-sm text-[var(--ink)]"
-          >
-            <option value="all">All types</option>
-            {types.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
-        )}
-      </div>
-      <ul className="editorial-card divide-y divide-[var(--edge)] overflow-hidden">
-        {filtered.map((e) => (
-          <li key={e.id} className="p-4 flex justify-between items-start gap-4">
-            <div>
-              <div className="text-xs uppercase tracking-wide text-[var(--mute)]">{e.type}</div>
-              <div className="text-sm text-[var(--ink)] mt-0.5">
-                {e.description ?? `${e.actor ?? "?"} → ${e.target ?? "?"}`}
-              </div>
+    <div className="editorial-page p-4 sm:p-6 lg:p-8 flex flex-col gap-6 max-w-4xl mx-auto w-full">
+      <PanelMasthead
+        overline="Operations"
+        title="Activity"
+        actions={
+          entityTypes.length > 0 ? (
+            <select
+              aria-label="Filter by type"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className="h-8 rounded border border-[var(--edge)] bg-[var(--cream)] px-2 text-xs text-[var(--ink)]"
+            >
+              <option value="all">All types</option>
+              {entityTypes.map((type) => (
+                <option key={type} value={type}>
+                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                </option>
+              ))}
+            </select>
+          ) : undefined
+        }
+      />
+
+      <section aria-label="Activity feed" className="min-w-0">
+        <div
+          className="editorial-card overflow-hidden"
+          style={{ borderColor: "var(--edge)" }}
+        >
+          {isLoading && events.length === 0 ? (
+            <div
+              className="px-4 py-3 font-editorial-serif text-base italic"
+              style={{ color: "var(--mute)" }}
+            >
+              Loading activity…
             </div>
-            {e.createdAt && (
-              <div className="text-xs text-[var(--mute)] whitespace-nowrap font-mono">{e.createdAt}</div>
-            )}
-          </li>
-        ))}
-        {filtered.length === 0 && (
-          <li className="p-4 font-editorial-serif text-xl italic text-[var(--mute)]">
-            {events.length === 0 ? "No activity yet." : "No activity of this type."}
-          </li>
-        )}
-      </ul>
+          ) : isError && events.length === 0 ? (
+            <div
+              role="alert"
+              className="px-4 py-3 font-editorial-serif text-base italic"
+              style={{ color: "var(--warn)" }}
+            >
+              Failed to load activity.
+            </div>
+          ) : filtered.length === 0 ? (
+            <div
+              className="px-4 py-3 font-editorial-serif text-base italic"
+              style={{ color: "var(--mute)" }}
+            >
+              {events.length === 0 ? "No activity yet." : "No activity of this type."}
+            </div>
+          ) : (
+            <div>
+              {filtered.map((evt, i) => (
+                <div
+                  key={evt.id}
+                  style={
+                    i === 0 ? undefined : { borderTop: "1px solid var(--edge)" }
+                  }
+                >
+                  <ActivityRow event={evt} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }

@@ -51,5 +51,12 @@ export const teamsQueryKeys = {
   approvals: { detail: (id: string) => `/approvals/${id}` },
   runs: { detail: (id: string) => `/runs/${id}` },
   members: () => `/members`,
+  // `projects()` returns the company project list. Kept callable for the
+  // existing GoalDetail consumer (do NOT convert to a namespace object — it
+  // would break `teamsQueryKeys.projects()` call sites).
   projects: () => `/projects`,
+  // Project-detail surface. `detail` is the full project row; `issues` is the
+  // project-scoped issues list (PR #1006 added the BFF `?project=` filter).
+  projectDetail: (id: string) => `/projects/${id}`,
+  issuesByProject: (projectId: string) => `/issues?project=${projectId}`,
 } as const;

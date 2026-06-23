@@ -38,6 +38,11 @@ export interface NewIssueDialogProps {
   parentId?: string;
   /** Display label for the parent (e.g. "ISO-12 Title"). */
   parentLabel?: string;
+  /**
+   * Pre-selects (and seeds the reset baseline for) the Project picker — used
+   * by the Project-detail Issues tab so a new task lands in that project.
+   */
+  defaultProjectId?: string;
 }
 
 export function NewIssueDialog({
@@ -48,12 +53,13 @@ export function NewIssueDialog({
   onCreated,
   parentId,
   parentLabel,
+  defaultProjectId,
 }: NewIssueDialogProps) {
   const { create, createChild } = useIssueMutations();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<IssuePriority>("medium");
-  const [projectId, setProjectId] = useState<string>("");
+  const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
   const [assigneeAgentId, setAssigneeAgentId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,7 +68,7 @@ export function NewIssueDialog({
     setTitle("");
     setDescription("");
     setPriority("medium");
-    setProjectId("");
+    setProjectId(defaultProjectId ?? "");
     setAssigneeAgentId("");
     setError(null);
   };

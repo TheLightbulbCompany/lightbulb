@@ -417,3 +417,40 @@ export interface GoalUpdateInput {
   status?: GoalStatus;
   level?: GoalLevel;
 }
+
+// ─── Projects ─────────────────────────────────────────────────────────────────
+//
+// Ported from upstream Paperclip's Project shape. The Teams BFF proxies the
+// upstream project row verbatim (GET /teams/projects/{id} → admin get_project →
+// GET /api/projects/{id}), so the wire shape is upstream camelCase. The slim
+// `IssueProject` above (id/name/color) is the denormalized form embedded on
+// issues; this is the full detail row the Project-detail page consumes.
+
+/** Full project row from GET /teams/projects/{id} (upstream Project). */
+export interface Project {
+  id: string;
+  companyId?: string | null;
+  name: string;
+  description?: string | null;
+  /** Monthly budget in cents (upstream `budgetMonthlyCents`). */
+  budgetMonthlyCents?: number | null;
+  status?: string | null;
+  color?: string | null;
+  icon?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+/**
+ * Body for PATCH /teams/projects/{id}.
+ *
+ * The BFF's `PatchProjectBody` whitelists snake_case attribute names
+ * (`name`, `description`, `budget_monthly_cents`) and re-emits camelCase to
+ * Paperclip via its alias generator — so this snake_case shape IS the wire
+ * shape the hook sends (mirrors `GoalUpdateInput`).
+ */
+export interface ProjectUpdateInput {
+  name?: string;
+  description?: string | null;
+  budget_monthly_cents?: number;
+}

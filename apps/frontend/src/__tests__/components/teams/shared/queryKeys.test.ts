@@ -38,4 +38,9 @@ describe("teamsQueryKeys", () => {
     expect(teamsQueryKeys.members()).toBe("/members");
     expect(teamsQueryKeys.projects()).toBe("/projects");
   });
+
+  test("projectDetail + issuesByProject build the Project-detail keys", () => {
+    expect(teamsQueryKeys.projectDetail("p_1")).toBe("/projects/p_1");
+    expect(teamsQueryKeys.issuesByProject("p_1")).toBe("/issues?project=p_1");
+  });
 });

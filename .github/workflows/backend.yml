@@ -20,7 +20,7 @@ permissions:
 jobs:
   test:
     name: Lint & Test
-    runs-on: [self-hosted, isol8-wsl]
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code

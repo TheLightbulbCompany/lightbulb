@@ -7,7 +7,9 @@ boundary. No adapter synthesis here — issues are pure user data.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, Query
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
@@ -16,19 +18,60 @@ from .schemas import AddIssueCommentBody, CreateIssueBody, PatchIssueBody
 router = APIRouter()
 _ctx = _agents._ctx
 
+# Paperclip ``projects.id`` is a Postgres ``uuid`` column, so a malformed
+# ``project`` filter makes upstream throw a uuid-cast error → 500 (whose
+# body leaks the internal company path). Validate the shape here so a bad
+# value is a local 422 before any upstream call — mirrors ``inbox.py``.
+_UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
 
 @router.get("/issues")
-async def list_issues(ctx: TeamsContext = Depends(_ctx)):
+async def list_issues(
+    ctx: TeamsContext = Depends(_ctx),
+    q: Optional[str] = Query(default=None, max_length=200),
+    status: Optional[str] = Query(default=None, max_length=120),
+    project: Optional[str] = Query(default=None, pattern=_UUID_RE),
+    assignee: Optional[str] = Query(default=None, max_length=80),
+    sort_field: Optional[str] = Query(default=None, alias="sortField", pattern=r"^(updated)$"),
+    sort_dir: Optional[str] = Query(default=None, alias="sortDir", pattern=r"^(asc|desc)$"),
+    limit: Optional[int] = Query(default=None, ge=1, le=500),
+):
     """List issues in the caller's company.
 
     Upstream ``GET /api/companies/{co}/issues`` returns a bare JSON
-    array. The frontend ``IssuesPanel`` reads ``data?.issues`` (envelope
+    array. The frontend Tasks panel reads ``data?.issues`` (envelope
     shape) so without this wrap the list silently renders empty.
+
+    Optional query params are forwarded to upstream's already-capable
+    issues-list route so the Tasks surface can drive server-side
+    search (``q``), status filtering, per-status board columns
+    (``status``), assignee/project filters, and sort. Mirrors the
+    pass-through style of the sibling ``inbox.py`` listing.
     """
-    rows = await _agents._admin().list_issues(
-        company_id=ctx.company_id,
-        session_cookie=ctx.session_cookie,
-    )
+    upstream_params: dict[str, str] = {}
+    if q is not None:
+        upstream_params["q"] = q
+    if status is not None:
+        upstream_params["status"] = status
+    if project is not None:
+        upstream_params["projectId"] = project
+    if assignee is not None:
+        upstream_params["assigneeAgentId"] = assignee
+    if sort_field is not None:
+        upstream_params["sortField"] = sort_field
+    if sort_dir is not None:
+        upstream_params["sortDir"] = sort_dir
+    if limit is not None:
+        upstream_params["limit"] = str(limit)
+
+    kwargs: dict[str, Any] = {
+        "company_id": ctx.company_id,
+        "session_cookie": ctx.session_cookie,
+    }
+    if upstream_params:
+        kwargs["params"] = upstream_params
+
+    rows = await _agents._admin().list_issues(**kwargs)
     return envelope_list(rows, "issues")
 
 

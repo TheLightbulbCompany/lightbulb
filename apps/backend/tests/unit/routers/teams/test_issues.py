@@ -52,6 +52,56 @@ def test_list_issues_proxies_with_session(client, monkeypatch):
     )
 
 
+def test_list_issues_forwards_query_params(client, monkeypatch):
+    """The Tasks surface drives server-side search/sort/status filtering by
+    passing query params; the BFF forwards them to upstream's issues-list
+    route (camelCased), and omits ``params`` entirely when none are set."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues",
+        params={
+            "q": "deploy",
+            "status": "todo,in_progress",
+            "sortField": "updated",
+            "sortDir": "desc",
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.list_issues.assert_awaited_once_with(
+        company_id="co_abc",
+        session_cookie="cookie",
+        params={
+            "q": "deploy",
+            "status": "todo,in_progress",
+            "sortField": "updated",
+            "sortDir": "desc",
+        },
+    )
+
+
+def test_list_issues_rejects_bad_sort_dir(client, monkeypatch):
+    """A malformed ``sortDir`` 422s at the boundary before any upstream call."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues",
+        params={"sortDir": "sideways"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.list_issues.assert_not_awaited()
+
+
 def test_list_issues_wraps_bare_array_response(client, monkeypatch):
     """Upstream's ``GET /api/companies/:co/issues`` returns a bare JSON
     array, but the frontend ``IssuesPanel`` reads ``data?.issues``.

@@ -6,14 +6,16 @@ import {
 } from "@/components/chat/InlineTeamsNav";
 import { IssuesPanel } from "../IssuesPanel";
 
-// useTeamsApi.read returns a single issue so the row (and its "Open →"
-// affordance) renders; the other reads (agents/projects) return empty.
+// useTeamsApi.read returns a single task so the row renders; the other reads
+// (agents/projects) return empty. After the Tasks rebuild, a row is itself the
+// open affordance — a plain left-click routes to the in-shell detail view when
+// a nav provider is present, and falls back to a native <a> otherwise.
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: (path: string) => {
       if (path === "/issues")
         return {
-          data: { issues: [{ id: "iss_1", title: "Fix the thing" }] },
+          data: { issues: [{ id: "iss_1", title: "Fix the thing", status: "todo" }] },
           isLoading: false,
           error: null,
           mutate: vi.fn(),
@@ -23,9 +25,15 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   }),
 }));
 
-// IssueStatusMenu pulls in mutation hooks; stub it out — unrelated to the swap.
-vi.mock("@/components/teams/issues/IssueStatusMenu", () => ({
-  IssueStatusMenu: () => null,
+// The panel calls useIssueMutations().update for inline status-circle / board
+// patches; stub it out — unrelated to the open affordance.
+vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
+  useIssueMutations: () => ({
+    update: vi.fn().mockResolvedValue(undefined),
+    create: vi.fn(),
+    createChild: vi.fn(),
+    addComment: vi.fn(),
+  }),
 }));
 vi.mock("@/components/teams/issues/NewIssueDialog", () => ({
   NewIssueDialog: () => null,
@@ -36,7 +44,7 @@ beforeEach(() => {
 });
 
 describe("IssuesPanel Open affordance", () => {
-  it("renders a button that calls openDetail with the issue id when a nav provider is present", () => {
+  it("row click calls openDetail with the issue id when a nav provider is present", () => {
     const openDetail = vi.fn();
     const value: InlineTeamsNavValue = { openDetail };
     render(
@@ -44,16 +52,14 @@ describe("IssuesPanel Open affordance", () => {
         <IssuesPanel />
       </InlineTeamsNavProvider>,
     );
-    const open = screen.getByText("Open →");
-    expect(open.tagName).toBe("BUTTON");
-    fireEvent.click(open);
+    fireEvent.click(screen.getByText("Fix the thing"));
     expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_1");
   });
 
-  it("renders an anchor to /teams/issues/<id> when there is no nav provider", () => {
+  it("renders the row as an anchor to /teams/issues/<id> when there is no nav provider", () => {
     render(<IssuesPanel />);
-    const open = screen.getByText("Open →");
-    expect(open.tagName).toBe("A");
-    expect(open).toHaveAttribute("href", "/teams/issues/iss_1");
+    const row = screen.getByText("Fix the thing").closest("a");
+    expect(row).not.toBeNull();
+    expect(row).toHaveAttribute("href", "/teams/issues/iss_1");
   });
 });

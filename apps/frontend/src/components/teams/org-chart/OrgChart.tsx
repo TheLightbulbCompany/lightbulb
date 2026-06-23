@@ -4,10 +4,17 @@
 
 // Ported from upstream Paperclip's OrgChart render
 // (paperclip/ui/src/pages/OrgChart.tsx) (MIT, (c) 2025 Paperclip AI).
-// Renders positioned AgentCards + SVG edges. No pan/zoom for v1.
+//
+// Renders positioned AgentCards + SVG edges inside a pan/zoom viewport:
+// drag to pan, wheel/buttons to zoom (clamped), and a fit-to-screen reset.
+// Both the SVG edge layer and the card layer share the same
+// `translate(pan) scale(zoom)` transform so edges stay glued to cards. The
+// pan/zoom state machine lives in `useOrgPanZoom`.
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { Maximize2, Minus, Plus } from "lucide-react";
 import { AgentCard } from "./AgentCard";
+import { useOrgPanZoom } from "./useOrgPanZoom";
 import {
   CARD_W,
   CARD_H,
@@ -25,6 +32,26 @@ export interface OrgChartProps {
 export function OrgChart({ agents, className }: OrgChartProps) {
   const layout = useMemo(() => layoutTree(agents), [agents]);
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const bounds = useMemo(
+    () => ({ width: layout.width, height: layout.height }),
+    [layout.width, layout.height],
+  );
+  const { pan, zoom, dragging, onMouseDown, onMouseMove, onMouseUp, onWheel, zoomIn, zoomOut, fitToScreen } =
+    useOrgPanZoom(containerRef, bounds);
+
+  // Fit the chart to the viewport the first time it has real bounds. Keyed on
+  // the layout dimensions so a freshly-loaded (or restructured) chart recenters
+  // once rather than fighting the user's manual pan on every re-render.
+  const fittedKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (layout.width <= 0 || layout.height <= 0) return;
+    const key = `${layout.width}x${layout.height}`;
+    if (fittedKey.current === key) return;
+    fittedKey.current = key;
+    fitToScreen();
+  }, [layout.width, layout.height, fitToScreen]);
+
   if (agents.length === 0) {
     return (
       <div className={className}>
@@ -40,21 +67,64 @@ export function OrgChart({ agents, className }: OrgChartProps) {
 
   const cards = flattenTree(layout.roots);
   const edges = flattenEdges(layout.roots);
+  const transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
 
   return (
     <div className={className}>
-      <div className="overflow-auto">
-        <div
-          className="relative"
-          style={{ width: layout.width, height: layout.height, minWidth: "100%" }}
-          data-testid="org-chart-canvas"
-        >
-          <svg
-            className="absolute inset-0 pointer-events-none"
-            width={layout.width}
-            height={layout.height}
-            aria-hidden="true"
+      <div
+        ref={containerRef}
+        data-testid="org-chart-viewport"
+        className="editorial-card relative h-[calc(100dvh-16rem)] min-h-[420px] w-full overflow-hidden"
+        style={{
+          cursor: dragging ? "grabbing" : "grab",
+          touchAction: "none",
+          overscrollBehavior: "contain",
+        }}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseUp}
+        onWheel={onWheel}
+      >
+        {/* Zoom controls — editorial icon-button cluster, top-right. */}
+        <div className="absolute right-3 top-3 z-10 flex flex-col gap-1.5">
+          <button
+            type="button"
+            className="editorial-btn editorial-btn--secondary editorial-btn--icon"
+            onClick={zoomIn}
+            title="Zoom in"
+            aria-label="Zoom in"
           >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="editorial-btn editorial-btn--secondary editorial-btn--icon"
+            onClick={zoomOut}
+            title="Zoom out"
+            aria-label="Zoom out"
+          >
+            <Minus className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="editorial-btn editorial-btn--secondary editorial-btn--icon"
+            onClick={fitToScreen}
+            title="Fit to screen"
+            aria-label="Fit chart to screen"
+          >
+            <Maximize2 className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        {/* SVG edge layer — shares the viewport transform via the inner <g>. */}
+        <svg
+          className="absolute inset-0 pointer-events-none"
+          width="100%"
+          height="100%"
+          aria-hidden="true"
+        >
+          <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
             {edges.map(({ from, to }) => {
               const fromX = from.x + CARD_W / 2;
               const fromY = from.y + CARD_H;
@@ -72,8 +142,15 @@ export function OrgChart({ agents, className }: OrgChartProps) {
                 />
               );
             })}
-          </svg>
+          </g>
+        </svg>
 
+        {/* Card layer — same transform, origin top-left so it tracks the SVG. */}
+        <div
+          className="absolute inset-0"
+          data-testid="org-chart-canvas"
+          style={{ transform, transformOrigin: "0 0" }}
+        >
           {cards.map((c) => (
             <AgentCard
               key={c.id}
@@ -83,6 +160,12 @@ export function OrgChart({ agents, className }: OrgChartProps) {
               status={c.status}
               x={c.x}
               y={c.y}
+              title={c.title}
+              capabilities={c.capabilities}
+              iconUrl={c.iconUrl}
+              lastHeartbeatAt={c.lastHeartbeatAt}
+              pauseReason={c.pauseReason}
+              errorReason={c.errorReason}
             />
           ))}
         </div>

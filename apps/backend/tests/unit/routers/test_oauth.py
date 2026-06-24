@@ -503,6 +503,29 @@ class TestPollOrgClaim:
         mock_claim.assert_awaited_once_with("org_test_456", connector_user_id="user_test_123")
 
     @pytest.mark.asyncio
+    async def test_poll_completion_pushes_fresh_credential_to_container(self, async_client, override_auth):
+        """On a completed device-code flow the fresh token must be pushed into
+        the running container (reconnect heal) — staged under the container
+        owner, token read under the connector — so a same-provider reconnect
+        actually reaches the live container instead of stranding the token in
+        DDB while the container keeps a spent token."""
+        override_auth(ORG_OWNER_ADMIN)
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="org_test_456")),
+            ),
+            patch("core.repositories.billing_repo.claim_oauth_connector", new=AsyncMock()),
+            patch(
+                "routers.oauth.push_oauth_credential_to_container",
+                new=AsyncMock(return_value=True),
+            ) as mock_push,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        mock_push.assert_awaited_once_with(owner_id="org_test_456", connector_id="user_test_123")
+
+    @pytest.mark.asyncio
     async def test_poll_org_start_then_personal_poll_still_claims_org(self, async_client, override_auth):
         """Context switch the OTHER way: the session was started + owner-gated in
         ORG context (bound to the org), but the caller polls in PERSONAL context.

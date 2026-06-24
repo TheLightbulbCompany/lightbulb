@@ -24,7 +24,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
 from core.containers.workspace import delete_auth_profile_store
 from core.repositories import billing_repo
-from core.services.container_auth import revoke_provider_auth_in_container
+from core.services.container_auth import (
+    push_oauth_credential_to_container,
+    revoke_provider_auth_in_container,
+)
 from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
@@ -171,6 +174,14 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
             await billing_repo.claim_oauth_connector(result.bound_owner_id, connector_user_id=ctx.user_id)
         except Exception:
             logger.exception("Failed to claim oauth connector for owner %s", result.bound_owner_id)
+    # Push the freshly minted token into the running container. A same-provider
+    # reconnect never reprovisions and never hits _hot_swap_provider, so without
+    # this the container keeps its old (often spent) token while DDB holds the
+    # fresh one. Staged under the container OWNER (bound_owner_id), token read
+    # under the CONNECTOR (the polling caller). Best-effort: a no-op if the owner
+    # has no container yet (first connect during onboarding) — provisioning
+    # stages it then.
+    await push_oauth_credential_to_container(owner_id=result.bound_owner_id, connector_id=ctx.user_id)
     return {"status": "completed", "account_id": result.account_id}
 
 

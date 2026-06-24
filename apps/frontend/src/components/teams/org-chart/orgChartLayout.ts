@@ -1,15 +1,30 @@
 // Ported from upstream Paperclip's OrgChart layout algorithm
 // (paperclip/ui/src/pages/OrgChart.tsx) (MIT, (c) 2025 Paperclip AI).
-// Pure subtreeWidth-based tree positioning. Drops pan/zoom/touch gestures.
+// Pure subtreeWidth-based tree positioning. Pan/zoom lives in
+// `useOrgPanZoom` (the viewport transform); the layout stays gesture-free
+// so it remains a pure function of the agent list.
 
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
-// Layout constants — match upstream values.
+// Layout constants — match upstream geometry. `CARD_H` is taller than
+// upstream's 100 because our editorial card carries the enriched body
+// (title, capabilities, last-active) rather than a single role line.
 export const CARD_W = 200;
-export const CARD_H = 100;
+export const CARD_H = 132;
 export const GAP_X = 32;
 export const GAP_Y = 80;
 export const PADDING = 60;
+
+// Zoom bounds + helper, shared by the layout module and the pan/zoom hook
+// so the viewport and any tests agree on the clamp. Mirrors upstream's
+// MIN_ZOOM/MAX_ZOOM (paperclip/ui/src/pages/OrgChart.tsx).
+export const MIN_ZOOM = 0.2;
+export const MAX_ZOOM = 2;
+
+/** Clamp a zoom factor into the [MIN_ZOOM, MAX_ZOOM] range. */
+export function clampZoom(value: number): number {
+  return Math.min(Math.max(value, MIN_ZOOM), MAX_ZOOM);
+}
 
 export interface OrgChartAgent extends CompanyAgent {
   /** ID of the agent this one reports to (null = root). */
@@ -18,6 +33,15 @@ export interface OrgChartAgent extends CompanyAgent {
   status?: string | null;
   /** Display role e.g. "ceo" | "engineer" — optional, falls back to "Agent". */
   role?: string | null;
+  // ── Enrichment fields the BFF proxies from the upstream Agent record.
+  // `title`, `capabilities`, `iconUrl` are already declared on CompanyAgent;
+  // these three are extra wire fields the org chart consumes. ──
+  /** ISO timestamp of the agent's last heartbeat. */
+  lastHeartbeatAt?: string | null;
+  /** Reason the agent is paused (only meaningful when status is "paused"). */
+  pauseReason?: string | null;
+  /** Failure detail (only meaningful when status is "error"). */
+  errorReason?: string | null;
 }
 
 export interface LayoutNode {
@@ -28,6 +52,22 @@ export interface LayoutNode {
   x: number;
   y: number;
   children: LayoutNode[];
+  // ── Enrichment carried through to AgentCard ──
+  // All optional: the chart degrades to name+role+status when a field is
+  // absent on the wire. Sourced from the upstream Paperclip Agent record
+  // the BFF proxies on `GET /teams/agents`.
+  /** Short one-liner shown under the name (upstream `Agent.title`). */
+  title?: string | null;
+  /** Longer freeform description (upstream `Agent.capabilities`). */
+  capabilities?: string | null;
+  /** Avatar URL, when the BFF surfaces one (upstream `Agent.iconUrl`). */
+  iconUrl?: string | null;
+  /** ISO timestamp of the agent's last heartbeat (upstream `Agent.lastHeartbeatAt`). */
+  lastHeartbeatAt?: string | null;
+  /** Why the agent is paused, when status is "paused" (upstream `Agent.pauseReason`). */
+  pauseReason?: string | null;
+  /** Failure detail, when status is "error" (upstream `Agent.errorReason`). */
+  errorReason?: string | null;
 }
 
 /**
@@ -110,6 +150,12 @@ export function layoutTree(agents: OrgChartAgent[]): {
       x: 0,
       y: 0,
       children,
+      title: a.title ?? null,
+      capabilities: a.capabilities ?? null,
+      iconUrl: a.iconUrl ?? null,
+      lastHeartbeatAt: a.lastHeartbeatAt ?? null,
+      pauseReason: a.pauseReason ?? null,
+      errorReason: a.errorReason ?? null,
     };
   }
 

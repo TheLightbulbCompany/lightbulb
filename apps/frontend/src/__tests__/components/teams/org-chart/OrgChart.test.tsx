@@ -51,15 +51,27 @@ describe("OrgChart", () => {
     expect(edges).toHaveLength(0);
   });
 
-  test("canvas has explicit width/height from layoutTree", () => {
+  test("renders a pan/zoom viewport wrapping the canvas", () => {
     const agents: OrgChartAgent[] = [
       { id: "ag_1", name: "Test", role: "ceo", reportsTo: null, status: "idle" } as OrgChartAgent,
     ];
     const { getByTestId } = render(<OrgChart agents={agents} />);
+    // The viewport hosts the pan/zoom transform; the canvas carries it.
+    expect(getByTestId("org-chart-viewport")).toBeInTheDocument();
     const canvas = getByTestId("org-chart-canvas");
-    // CARD_W=200 + 2*PADDING=120 → width 320; CARD_H=100 + 2*PADDING=120 → height 220
-    expect(canvas.getAttribute("style")).toContain("width: 320px");
-    expect(canvas.getAttribute("style")).toContain("height: 220px");
+    // In jsdom the container reports 0 size, so fit-to-screen is a no-op and
+    // the canvas transform stays at the 1x identity (no pan, no scale).
+    expect(canvas.getAttribute("style")).toContain("translate(0px, 0px) scale(1)");
+  });
+
+  test("exposes zoom controls", () => {
+    const agents: OrgChartAgent[] = [
+      { id: "ag_1", name: "Test", role: "ceo", reportsTo: null, status: "idle" } as OrgChartAgent,
+    ];
+    render(<OrgChart agents={agents} />);
+    expect(screen.getByLabelText(/zoom in/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/zoom out/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/fit chart to screen/i)).toBeInTheDocument();
   });
 
   test("cards are positioned via inline style", () => {
@@ -68,7 +80,8 @@ describe("OrgChart", () => {
     ];
     const { container } = render(<OrgChart agents={agents} />);
     const card = container.querySelector("[data-agent-card-id='root']") as HTMLElement;
-    // PADDING=60, single root: x = 60, y = 60
+    // PADDING=60, single root: x = 60, y = 60. (The pan/zoom transform lives
+    // on the canvas layer, not the card, so the card keeps its layout coords.)
     expect(card.getAttribute("style")).toContain("left: 60px");
     expect(card.getAttribute("style")).toContain("top: 60px");
   });

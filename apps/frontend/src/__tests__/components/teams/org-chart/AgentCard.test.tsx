@@ -55,4 +55,73 @@ describe("AgentCard", () => {
     const { container } = render(<AgentCard {...baseProps} />);
     expect(container.querySelector('[data-agent-card-id="ag_1"]')).toBeInTheDocument();
   });
+
+  test("data-org-card marker present so the viewport skips drag on card click", () => {
+    const { container } = render(<AgentCard {...baseProps} />);
+    expect(container.querySelector("[data-org-card]")).toBeInTheDocument();
+  });
+
+  // ── Enrichment ──
+
+  test("renders title in place of role when present", () => {
+    render(<AgentCard {...baseProps} title="Chief Executive" />);
+    expect(screen.getByText("Chief Executive")).toBeInTheDocument();
+    // role is not shown as the subtitle once a title is supplied
+    expect(screen.queryByText("ceo")).not.toBeInTheDocument();
+  });
+
+  test("falls back to role as subtitle when title is empty/whitespace", () => {
+    render(<AgentCard {...baseProps} title="   " />);
+    expect(screen.getByText("ceo")).toBeInTheDocument();
+  });
+
+  test("renders capabilities text", () => {
+    render(<AgentCard {...baseProps} capabilities="Writes and ships backend code" />);
+    expect(screen.getByText("Writes and ships backend code")).toBeInTheDocument();
+  });
+
+  test("omits capabilities block when absent", () => {
+    render(<AgentCard {...baseProps} capabilities={null} />);
+    // Only the subtitle ('ceo') should be present; no extra body line.
+    expect(screen.queryByText(/writes and ships/i)).not.toBeInTheDocument();
+  });
+
+  test("renders avatar image when iconUrl is given", () => {
+    const { container } = render(
+      <AgentCard {...baseProps} iconUrl="https://example.com/a.png" />,
+    );
+    const img = container.querySelector("img");
+    expect(img).toHaveAttribute("src", "https://example.com/a.png");
+  });
+
+  test("renders the status label in the footer (capitalized)", () => {
+    render(<AgentCard {...baseProps} status="running" />);
+    // status footer + dot title both carry the humanized label
+    expect(screen.getAllByText("Running").length).toBeGreaterThan(0);
+  });
+
+  test("appends the error reason to the status when errored", () => {
+    render(
+      <AgentCard {...baseProps} status="error" errorReason="adapter timeout" />,
+    );
+    expect(screen.getAllByText(/Error · adapter timeout/).length).toBeGreaterThan(0);
+  });
+
+  test("appends the pause reason to the status when paused", () => {
+    render(
+      <AgentCard {...baseProps} status="paused" pauseReason="budget exhausted" />,
+    );
+    expect(screen.getAllByText(/Paused · budget exhausted/).length).toBeGreaterThan(0);
+  });
+
+  test("renders a relative last-active line from lastHeartbeatAt", () => {
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    render(<AgentCard {...baseProps} lastHeartbeatAt={tenMinAgo} />);
+    expect(screen.getByText("10m ago")).toBeInTheDocument();
+  });
+
+  test("omits the last-active line when lastHeartbeatAt is absent", () => {
+    render(<AgentCard {...baseProps} lastHeartbeatAt={null} />);
+    expect(screen.queryByText(/ago/i)).not.toBeInTheDocument();
+  });
 });

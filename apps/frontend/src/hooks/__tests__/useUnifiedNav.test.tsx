@@ -64,21 +64,22 @@ describe("useUnifiedNav", () => {
     params.delete("unifiedNav");
   });
 
-  it("defaults to false", () => {
+  it("defaults to true (unified nav is the default)", () => {
+    expect(renderHook(() => useUnifiedNav()).result.current).toBe(true);
+  });
+  it("reads false from an explicit opt-out in localStorage", () => {
+    window.localStorage.setItem(UNIFIED_NAV_KEY, "0");
     expect(renderHook(() => useUnifiedNav()).result.current).toBe(false);
   });
-  it("reads true from existing localStorage", () => {
-    window.localStorage.setItem(UNIFIED_NAV_KEY, "1");
-    expect(renderHook(() => useUnifiedNav()).result.current).toBe(true);
-  });
-  it("?unifiedNav=1 enables + persists", () => {
-    params.set("unifiedNav", "1");
-    expect(renderHook(() => useUnifiedNav()).result.current).toBe(true);
-    expect(window.localStorage.getItem(UNIFIED_NAV_KEY)).toBe("1");
-  });
-  it("?unifiedNav=0 disables", () => {
-    window.localStorage.setItem(UNIFIED_NAV_KEY, "1");
+  it("?unifiedNav=0 opts out + persists the opt-out", () => {
     params.set("unifiedNav", "0");
     expect(renderHook(() => useUnifiedNav()).result.current).toBe(false);
+    expect(window.localStorage.getItem(UNIFIED_NAV_KEY)).toBe("0");
+  });
+  it("?unifiedNav=1 opts back in + clears the opt-out", () => {
+    window.localStorage.setItem(UNIFIED_NAV_KEY, "0");
+    params.set("unifiedNav", "1");
+    expect(renderHook(() => useUnifiedNav()).result.current).toBe(true);
+    expect(window.localStorage.getItem(UNIFIED_NAV_KEY)).toBeNull();
   });
 });

@@ -25,16 +25,17 @@ function subscribe(onChange: () => void): () => void {
   };
 }
 
-// Returns whether the unified nav is enabled in this browser. `?unifiedNav=1`
-// sets it (sticky), `?unifiedNav=0` clears it. `getServerSnapshot` is `false`,
-// so the server render and the hydrating client render agree — no hydration
-// mismatch — then `useSyncExternalStore` switches to the live localStorage
-// value post-hydration.
+// Returns whether the unified nav is enabled in this browser. It's the default
+// ON; `?unifiedNav=0` opts out (sticky), `?unifiedNav=1` opts back in.
+// `getServerSnapshot` is `true` to match the default, so the server render and
+// the hydrating client render agree — no hydration mismatch — then
+// `useSyncExternalStore` switches to the live localStorage value
+// post-hydration (which only flips OFF for an explicitly opted-out browser).
 export function useUnifiedNav(): boolean {
   const searchParams = useSearchParams();
   const param = searchParams.get("unifiedNav");
 
-  const stored = useSyncExternalStore(subscribe, readUnifiedNav, () => false);
+  const stored = useSyncExternalStore(subscribe, readUnifiedNav, () => true);
 
   // Persist the URL opt-in/out for future param-less visits. Writing to
   // localStorage is a genuine external-system sync (what effects are for) and

@@ -290,8 +290,8 @@ export function InboxPage({
           role="alert"
           className="mt-4 rounded-md border px-4 py-3 text-sm"
           style={{
-            borderColor: "rgba(179, 36, 36, 0.25)",
-            background: "rgba(179, 36, 36, 0.06)",
+            borderColor: "color-mix(in srgb, var(--danger) 25%, transparent)",
+            background: "color-mix(in srgb, var(--danger) 6%, transparent)",
             color: "var(--danger)",
           }}
         >

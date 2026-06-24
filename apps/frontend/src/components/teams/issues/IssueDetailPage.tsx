@@ -28,16 +28,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader as DialogHeaderUi,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import type {
   CompanyAgent,
   IssueProject,
@@ -219,32 +210,43 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         />
       </aside>
 
-      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeaderUi>
-            <DialogTitle>Delete issue?</DialogTitle>
-            <DialogDescription>
-              This permanently deletes {issue.identifier ? `${issue.identifier}: ` : ""}
-              {issue.title}. This action cannot be undone.
-            </DialogDescription>
-          </DialogHeaderUi>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button type="button" variant="outline" disabled={deleting}>
-                Cancel
-              </Button>
-            </DialogClose>
-            <Button
-              type="button"
+      <EditorialDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete issue?"
+        description={
+          <>
+            This permanently deletes{" "}
+            {issue.identifier ? `${issue.identifier}: ` : ""}
+            {issue.title}. This action cannot be undone.
+          </>
+        }
+        footer={
+          <>
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              onClick={() => setDeleteOpen(false)}
+              disabled={deleting}
+            >
+              Cancel
+            </EditorialButton>
+            <EditorialButton
               variant="destructive"
+              size="sm"
               disabled={deleting}
               onClick={() => void confirmDelete()}
             >
               {deleting ? "Deleting…" : "Delete issue"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </EditorialButton>
+          </>
+        }
+      >
+        <p className="text-sm" style={{ color: "var(--ink-soft)" }}>
+          {issue.identifier ? `${issue.identifier}: ` : ""}
+          {issue.title}
+        </p>
+      </EditorialDialog>
     </div>
   );
 }

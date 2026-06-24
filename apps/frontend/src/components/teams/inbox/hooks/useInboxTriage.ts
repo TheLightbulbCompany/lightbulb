@@ -9,6 +9,7 @@ export interface UseInboxTriageResult {
   failedRuns: HeartbeatRun[];
   count: number;
   isLoading: boolean;
+  isError: boolean;
 }
 
 type ApprovalsResponse = { approvals?: Approval[] } | Approval[] | undefined;
@@ -56,5 +57,8 @@ export function useInboxTriage(acknowledgedRunIds: Set<string>): UseInboxTriageR
     failedRuns,
     count: approvals.length + failedRuns.length,
     isLoading: approvalsRes.isLoading || runsRes.isLoading,
+    // Either source failing leaves the band unable to vouch for "inbox zero",
+    // so surface the failure rather than silently hiding the band.
+    isError: Boolean(approvalsRes.error) || Boolean(runsRes.error),
   };
 }

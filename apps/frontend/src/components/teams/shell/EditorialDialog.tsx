@@ -15,7 +15,9 @@ export interface EditorialDialogProps {
   onOpenChange: (open: boolean) => void;
   title: ReactNode;
   description?: ReactNode;
-  children: ReactNode;
+  /** Optional body. Confirm-only dialogs can carry their message in
+   * `description` and omit a body entirely. */
+  children?: ReactNode;
   footer?: ReactNode;
   className?: string;
 }
@@ -51,7 +53,7 @@ export function EditorialDialog({
             </DialogDescription>
           )}
         </DialogHeader>
-        <div className="space-y-3 py-2">{children}</div>
+        {children != null && <div className="space-y-3 py-2">{children}</div>}
         {footer && (
           <div className="flex items-center justify-end gap-2 border-t border-[var(--edge)] pt-3">
             {footer}

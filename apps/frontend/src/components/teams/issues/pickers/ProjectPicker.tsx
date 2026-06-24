@@ -72,7 +72,7 @@ export function ProjectPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1"
+          className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
         <ul className="max-h-48 overflow-y-auto" role="listbox">

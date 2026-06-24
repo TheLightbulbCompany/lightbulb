@@ -163,7 +163,7 @@ export function IssueFiltersPopover({
             {activeFilterCount > 0 ? (
               <button
                 type="button"
-                className="text-xs text-muted-foreground hover:text-foreground"
+                className="text-xs text-[var(--mute)] hover:text-[var(--ink)]"
                 onClick={() => onChange(defaultIssueFilterState)}
               >
                 Clear
@@ -172,7 +172,7 @@ export function IssueFiltersPopover({
           </div>
 
           <div className="space-y-1.5">
-            <span className="text-xs text-muted-foreground">Quick filters</span>
+            <span className="text-xs text-[var(--mute)]">Quick filters</span>
             <div className="flex flex-wrap gap-1.5">
               {issueQuickFilterPresets.map((preset) => {
                 const isActive = issueFilterArraysEqual(state.statuses, preset.statuses);
@@ -182,8 +182,8 @@ export function IssueFiltersPopover({
                     type="button"
                     className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                       isActive
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+                        ? "border-[var(--forest)] bg-[var(--forest)] text-[var(--cream)]"
+                        : "border-[var(--edge)] text-[var(--mute)] hover:border-[var(--mute)] hover:text-[var(--ink)]"
                     }`}
                     onClick={() => onChange({ statuses: isActive ? [] : [...preset.statuses] })}
                   >
@@ -194,17 +194,17 @@ export function IssueFiltersPopover({
             </div>
           </div>
 
-          <div className="border-t border-border" />
+          <div className="border-t border-[var(--edge)]" />
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Status</span>
+                <span className="text-xs text-[var(--mute)]">Status</span>
                 <div className="space-y-0.5">
                   {issueStatusOrder.map((status) => (
                     <label
                       key={status}
-                      className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50"
+                      className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]"
                     >
                       <Checkbox
                         checked={state.statuses.includes(status)}
@@ -220,12 +220,12 @@ export function IssueFiltersPopover({
               </div>
 
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Priority</span>
+                <span className="text-xs text-[var(--mute)]">Priority</span>
                 <div className="space-y-0.5">
                   {issuePriorityOrder.map((priority) => (
                     <label
                       key={priority}
-                      className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50"
+                      className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]"
                     >
                       <Checkbox
                         checked={state.priorities.includes(priority)}
@@ -243,9 +243,9 @@ export function IssueFiltersPopover({
 
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Assignee</span>
+                <span className="text-xs text-[var(--mute)]">Assignee</span>
                 <div className="max-h-32 space-y-0.5 overflow-y-auto">
-                  <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]">
                     <Checkbox
                       checked={state.assignees.includes("__unassigned")}
                       onCheckedChange={() =>
@@ -257,21 +257,21 @@ export function IssueFiltersPopover({
                     <span className="text-sm">No assignee</span>
                   </label>
                   {currentUserId ? (
-                    <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                    <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]">
                       <Checkbox
                         checked={state.assignees.includes("__me")}
                         onCheckedChange={() =>
                           onChange({ assignees: toggleIssueFilterValue(state.assignees, "__me") })
                         }
                       />
-                      <User className="h-3.5 w-3.5 text-muted-foreground" />
+                      <User className="h-3.5 w-3.5 text-[var(--mute)]" />
                       <span className="text-sm">Me</span>
                     </label>
                   ) : null}
                   {(agents ?? []).map((agent) => (
                     <label
                       key={agent.id}
-                      className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50"
+                      className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]"
                     >
                       <Checkbox
                         checked={state.assignees.includes(agent.id)}
@@ -289,7 +289,7 @@ export function IssueFiltersPopover({
 
               {creatorOptions.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Creator</span>
+                  <span className="text-xs text-[var(--mute)]">Creator</span>
                   {selectedCreatorOptions.length > 0 ? (
                     <div className="flex flex-wrap gap-1">
                       {selectedCreatorOptions.map((creator) => (
@@ -302,7 +302,7 @@ export function IssueFiltersPopover({
                           <span>{creator.label}</span>
                           <button
                             type="button"
-                            className="rounded-full p-0.5 hover:bg-accent"
+                            className="rounded-full p-0.5 hover:bg-[var(--cream-deeper)]"
                             onClick={() =>
                               onChange({
                                 creators: state.creators.filter((value) => value !== creator.id),
@@ -317,7 +317,7 @@ export function IssueFiltersPopover({
                     </div>
                   ) : null}
                   <div className="relative">
-                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--mute)]" />
                     <Input
                       value={creatorSearch}
                       onChange={(event) => setCreatorSearch(event.target.value)}
@@ -335,8 +335,8 @@ export function IssueFiltersPopover({
                             type="button"
                             className={`flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-sm ${
                               selected
-                                ? "bg-accent text-foreground"
-                                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                                ? "bg-[var(--forest-tint)] text-[var(--ink)]"
+                                : "text-[var(--mute)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
                             }`}
                             onClick={() =>
                               onChange({
@@ -355,7 +355,7 @@ export function IssueFiltersPopover({
                         );
                       })
                     ) : (
-                      <div className="px-2 py-1 text-xs text-muted-foreground">
+                      <div className="px-2 py-1 text-xs text-[var(--mute)]">
                         No creators match.
                       </div>
                     )}
@@ -365,12 +365,12 @@ export function IssueFiltersPopover({
 
               {projects && projects.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Project</span>
+                  <span className="text-xs text-[var(--mute)]">Project</span>
                   <div className="max-h-32 space-y-0.5 overflow-y-auto">
                     {projects.map((project) => (
                       <label
                         key={project.id}
-                        className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50"
+                        className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]"
                       >
                         <Checkbox
                           checked={state.projects.includes(project.id)}
@@ -391,12 +391,12 @@ export function IssueFiltersPopover({
             <div className="min-w-0 space-y-3">
               {labels && labels.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Labels</span>
+                  <span className="text-xs text-[var(--mute)]">Labels</span>
                   <div className="max-h-32 space-y-0.5 overflow-y-auto">
                     {labels.map((label) => (
                       <label
                         key={label.id}
-                        className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50"
+                        className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]"
                       >
                         <Checkbox
                           checked={state.labels.includes(label.id)}
@@ -417,12 +417,12 @@ export function IssueFiltersPopover({
 
               {workspaces && workspaces.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Workspace</span>
+                  <span className="text-xs text-[var(--mute)]">Workspace</span>
                   <div className="max-h-32 space-y-0.5 overflow-y-auto">
                     {workspaces.map((workspace) => (
                       <label
                         key={workspace.id}
-                        className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50"
+                        className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]"
                       >
                         <Checkbox
                           checked={state.workspaces.includes(workspace.id)}
@@ -432,7 +432,7 @@ export function IssueFiltersPopover({
                             })
                           }
                         />
-                        <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
+                        <HardDrive className="h-3.5 w-3.5 text-[var(--mute)]" />
                         <span className="text-sm">{workspace.name}</span>
                       </label>
                     ))}
@@ -441,8 +441,8 @@ export function IssueFiltersPopover({
               ) : null}
 
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Visibility</span>
-                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                <span className="text-xs text-[var(--mute)]">Visibility</span>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]">
                   <Checkbox
                     checked={state.liveOnly}
                     onCheckedChange={(checked) => onChange({ liveOnly: checked === true })}
@@ -450,7 +450,7 @@ export function IssueFiltersPopover({
                   <span className="text-sm">Live runs only</span>
                 </label>
                 {enableRoutineVisibilityFilter ? (
-                  <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-[var(--cream-deeper)]">
                     <Checkbox
                       checked={state.hideRoutineExecutions}
                       onCheckedChange={(checked) =>

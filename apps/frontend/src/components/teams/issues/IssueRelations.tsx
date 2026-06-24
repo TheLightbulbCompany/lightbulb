@@ -18,16 +18,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
@@ -95,33 +86,33 @@ function RemovableRelationChip({
           <span className="inline-flex min-w-0 items-center gap-1">{content}</span>
         )}
       </span>
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Remove blocker?</DialogTitle>
-            <DialogDescription>
-              Remove {confirmLabel} as a blocker for this issue.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button type="button" variant="outline">
-                Cancel
-              </Button>
-            </DialogClose>
-            <Button
-              type="button"
+      <EditorialDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Remove blocker?"
+        description={`Remove ${confirmLabel} as a blocker for this issue.`}
+        footer={
+          <>
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              onClick={() => setConfirmOpen(false)}
+            >
+              Cancel
+            </EditorialButton>
+            <EditorialButton
               variant="destructive"
+              size="sm"
               onClick={() => {
                 onRemove(issue.id);
                 setConfirmOpen(false);
               }}
             >
               Remove blocker
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </EditorialButton>
+          </>
+        }
+      />
     </>
   );
 }
@@ -255,7 +246,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search issues..."
-                  className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1"
+                  className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
                   style={{ borderBottom: "1px solid var(--edge)" }}
                   aria-label="Search issues to add as blockers"
                 />

@@ -69,7 +69,7 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
     );
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button className="inline-flex items-center gap-1.5 cursor-pointer text-[var(--ink)] hover:bg-[var(--cream-deeper)] rounded px-1 -mx-1 py-0.5 transition-colors">
       {icon}
       <span className="text-sm">{config.label}</span>
     </button>
@@ -89,7 +89,10 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
               key={p}
               variant="ghost"
               size="sm"
-              className={cn("w-full justify-start gap-2 text-xs", p === priority && "bg-accent")}
+              className={cn(
+                "w-full justify-start gap-2 text-xs text-[var(--ink)] hover:bg-[var(--cream-deeper)]",
+                p === priority && "bg-[var(--forest-tint)]",
+              )}
               onClick={() => {
                 onChange(p);
                 setOpen(false);

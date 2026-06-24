@@ -557,6 +557,15 @@ export const PROJECT_STATUSES: readonly ProjectStatus[] = [
   "cancelled",
 ];
 
+/** A goal link embedded on the project row. Upstream's project service
+ * enriches every project with `{ id, title }` refs for its linked goals
+ * (`attachGoals` in server/src/services/projects.ts), so the detail payload
+ * carries titles — the Goals row renders chips without a second goals fetch. */
+export interface ProjectGoalRef {
+  id: string;
+  title: string;
+}
+
 /** Full project row from GET /teams/projects/{id} (upstream Project).
  *
  * NOTE: no `budgetMonthlyCents` — upstream Paperclip has no budget field on
@@ -572,6 +581,12 @@ export interface Project {
   icon?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  /** Ids of linked company goals. Upstream enriches the row via the
+   * `project_goals` join table; PATCH `{ goal_ids }` replaces the whole set. */
+  goalIds?: string[];
+  /** Linked goals as `{ id, title }` refs — the title source for the Goals
+   * chips (avoids resolving ids against a separate goals list for display). */
+  goals?: ProjectGoalRef[];
 }
 
 /**

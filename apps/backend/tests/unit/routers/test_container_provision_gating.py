@@ -191,9 +191,9 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
             },
         ),
         patch(
-            "core.services.oauth_service.get_decrypted_tokens",
+            "core.services.oauth_service.has_active_oauth",
             new_callable=AsyncMock,
-            return_value={"access_token": "x"},
+            return_value=True,
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
     ):
@@ -237,9 +237,9 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
             },
         ),
         patch(
-            "core.services.oauth_service.get_decrypted_tokens",
+            "core.services.oauth_service.has_active_oauth",
             new_callable=AsyncMock,
-            return_value={"access_token": "x"},
+            return_value=True,
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
     ):

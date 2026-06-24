@@ -161,11 +161,15 @@ export interface IssueUpdateInput {
    * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
    * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */
   hiddenAt?: string | null;
-  /** Execution policy carrying the monitor schedule. Sending
-   * ``{ monitor: {...} }`` schedules a re-check; an explicit ``null`` clears
-   * the policy (our tasks carry no reviewer/approver policy, so replacing it
-   * is safe). The BFF camelCase-aliases the outer key to ``executionPolicy``
-   * and forwards the nested dict verbatim. ``undefined`` leaves it unchanged. */
+  /** Execution policy carrying the monitor schedule AND the reviewer/approver
+   * stages. The wire PATCH has REPLACE semantics — Paperclip overwrites the
+   * whole executionPolicy with what is sent — so monitor and stages would clobber
+   * each other if patched in isolation. Callers MUST therefore build the full
+   * desired policy (preserving the sub-fields they are not editing) via the
+   * read-modify-write helper in ``issue-execution-policy.ts`` before sending it.
+   * An explicit ``null`` clears the policy entirely. The BFF camelCase-aliases
+   * the outer key to ``executionPolicy`` and forwards the nested dict verbatim.
+   * ``undefined`` leaves it unchanged. */
   executionPolicy?: IssueExecutionPolicy | null;
 }
 
@@ -193,10 +197,54 @@ export interface IssueMonitorPolicy {
   serviceName?: string | null;
   scheduledBy?: string | null;
   kind?: string | null;
+  // Upstream-managed fields the rail editor never sets but must round-trip
+  // unchanged: a reschedule from the rail merges the three editable fields onto
+  // the existing monitor (see executionPolicy.patchExecutionPolicy) so these
+  // are preserved rather than reset to their schema defaults.
+  externalRef?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  recoveryPolicy?: string | null;
+}
+
+/** A single participant in a reviewer/approver stage. Mirrors upstream
+ * Paperclip's issueExecutionStageParticipantSchema
+ * (packages/shared/src/validators/issue.ts). A participant is EITHER an agent
+ * (``type: "agent"`` + ``agentId``) OR a human user (``type: "user"`` +
+ * ``userId``) — never both. Upstream's zod superRefine rejects a participant
+ * that sets the wrong id for its kind, so the builder always emits ``null`` for
+ * the unused field. ``id`` is the stable per-participant uuid upstream assigns;
+ * it round-trips so re-selecting an existing participant keeps its identity. */
+export interface IssueExecutionStageParticipant {
+  type: "agent" | "user";
+  agentId?: string | null;
+  userId?: string | null;
+  id?: string;
+}
+
+/** A reviewer or approver stage on an issue's executionPolicy. Mirrors
+ * upstream's issueExecutionStageSchema. ``type`` is the upstream
+ * ISSUE_EXECUTION_STAGE_TYPES enum (``"review"`` | ``"approval"``).
+ * ``approvalsNeeded`` is a literal ``1`` upstream (the only value the schema
+ * accepts today); it is carried so the emitted stage matches upstream exactly.
+ * An empty-participant stage is never emitted — the builder drops a stage with
+ * no participants rather than sending an empty one. */
+export interface IssueExecutionStage {
+  id?: string;
+  type: "review" | "approval";
+  approvalsNeeded?: 1;
+  participants: IssueExecutionStageParticipant[];
 }
 
 export interface IssueExecutionPolicy {
+  /** Upstream ISSUE_EXECUTION_POLICY_MODES ("normal" | "auto"). Preserved
+   * round-trip; the rail does not edit it, so the builder keeps whatever the
+   * issue already carried (defaulting to "normal"). */
+  mode?: "normal" | "auto";
   monitor?: IssueMonitorPolicy | null;
+  /** Reviewer + approver stages. Each ``type`` appears at most once. Absent or
+   * empty means no review/approval gate. */
+  stages?: IssueExecutionStage[];
 }
 
 export interface Issue {
@@ -228,8 +276,10 @@ export interface Issue {
    * Surfaced flat by upstream alongside a richer relatedWork; only the flat
    * identifier list is rendered as read-only "Related Tasks" chips. */
   referencedIssueIdentifiers?: string[] | null;
-  /** Execution policy carrying the monitor schedule (the Monitor rail row).
-   * ``null``/absent means no monitor is scheduled. */
+  /** Execution policy carrying the monitor schedule (the Monitor rail row) and
+   * the reviewer/approver stages (the Reviewers/Approvers rail rows). The BFF's
+   * get_issue passthrough returns upstream's executionPolicy shape verbatim.
+   * ``null``/absent means no monitor and no review/approval gate. */
   executionPolicy?: IssueExecutionPolicy | null;
 }
 
@@ -290,6 +340,37 @@ export interface IssueRun {
   createdAt?: string | null;
 }
 
+/**
+ * A value a run-now caller can supply for a routine variable. Mirrors
+ * upstream `routineVariableValueSchema`
+ * (paperclip/packages/shared/src/validators/routine.ts) — a string, finite
+ * number, or boolean.
+ */
+export type RoutineVariableValue = string | number | boolean;
+
+/** The variable types a routine can declare (upstream ROUTINE_VARIABLE_TYPES). */
+export type RoutineVariableType =
+  | "text"
+  | "textarea"
+  | "number"
+  | "boolean"
+  | "select";
+
+/**
+ * One variable a routine DEFINES (upstream `RoutineVariable`). The run-now
+ * editor reads these to build its inputs: `select` renders a dropdown over
+ * `options`, `required` drives validation. The Run button collects one
+ * {@link RoutineVariableValue} per name into the run body's `variables` map.
+ */
+export interface RoutineVariable {
+  name: string;
+  label?: string | null;
+  type?: RoutineVariableType;
+  defaultValue?: RoutineVariableValue | null;
+  required?: boolean;
+  options?: string[];
+}
+
 /** Assignee summary on a routine (upstream RoutineAgentSummary subset). */
 export interface RoutineAgentSummary {
   id: string;
@@ -318,6 +399,9 @@ export interface RoutineDetail {
   assigneeAgentId?: string | null;
   assignee?: RoutineAgentSummary | null;
   triggers?: RoutineTriggerSummary[];
+  // Variable definitions the routine declares. A run-now caller must collect a
+  // value per variable; empty/absent means the routine takes no input.
+  variables?: RoutineVariable[];
   // Upstream Routine carries createdAt/updatedAt verbatim through the BFF;
   // surfaced in the detail page's Properties aside.
   createdAt?: string | null;
@@ -523,6 +607,15 @@ export const PROJECT_STATUSES: readonly ProjectStatus[] = [
   "cancelled",
 ];
 
+/** A goal link embedded on the project row. Upstream's project service
+ * enriches every project with `{ id, title }` refs for its linked goals
+ * (`attachGoals` in server/src/services/projects.ts), so the detail payload
+ * carries titles — the Goals row renders chips without a second goals fetch. */
+export interface ProjectGoalRef {
+  id: string;
+  title: string;
+}
+
 /** Full project row from GET /teams/projects/{id} (upstream Project).
  *
  * NOTE: no `budgetMonthlyCents` — upstream Paperclip has no budget field on
@@ -538,6 +631,12 @@ export interface Project {
   icon?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  /** Ids of linked company goals. Upstream enriches the row via the
+   * `project_goals` join table; PATCH `{ goal_ids }` replaces the whole set. */
+  goalIds?: string[];
+  /** Linked goals as `{ id, title }` refs — the title source for the Goals
+   * chips (avoids resolving ids against a separate goals list for display). */
+  goals?: ProjectGoalRef[];
 }
 
 /**

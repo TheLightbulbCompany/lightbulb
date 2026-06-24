@@ -22,6 +22,7 @@ import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
 import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
+import { patchExecutionPolicy } from "./executionPolicy";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import {
   DropdownMenu,
@@ -370,16 +371,39 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             void mutations.update(issueId, { parentId });
           }}
           onMonitorChange={(monitor) => {
-            // Setting the monitor replaces executionPolicy with the schedule.
-            // Our tasks carry no reviewer/approver policy, so a full replace is
-            // safe (matches upstream's executionPolicy.monitor write).
+            // executionPolicy bundles monitor + reviewer/approver stages under
+            // REPLACE-on-the-wire semantics, so editing the monitor must rebuild
+            // the WHOLE policy from the issue's current one — preserving any
+            // stages — rather than sending a bare { monitor }. patchExecutionPolicy
+            // is the single read-modify-write that guarantees this.
             void mutations.update(issueId, {
-              executionPolicy: { monitor },
+              executionPolicy: patchExecutionPolicy(issue.executionPolicy, {
+                monitor,
+              }),
             });
           }}
           onMonitorClear={() => {
-            // A null executionPolicy clears the monitor schedule entirely.
-            void mutations.update(issueId, { executionPolicy: null });
+            // Clearing the monitor preserves any reviewer/approver stages; the
+            // helper returns null only when nothing else remains.
+            void mutations.update(issueId, {
+              executionPolicy: patchExecutionPolicy(issue.executionPolicy, {
+                monitor: null,
+              }),
+            });
+          }}
+          onReviewersChange={(reviewers) => {
+            void mutations.update(issueId, {
+              executionPolicy: patchExecutionPolicy(issue.executionPolicy, {
+                reviewers,
+              }),
+            });
+          }}
+          onApproversChange={(approvers) => {
+            void mutations.update(issueId, {
+              executionPolicy: patchExecutionPolicy(issue.executionPolicy, {
+                approvers,
+              }),
+            });
           }}
           onCheckNow={(id) => mutations.monitorCheckNow(id)}
         />

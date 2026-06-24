@@ -79,8 +79,10 @@ describe("IssuesPanel agent filter (?agent)", () => {
   it("renders a dismissible filter chip resolving the agent name when ?agent is set", () => {
     searchParamsRef.current = new URLSearchParams("agent=agent_friday");
     render(<IssuesPanel />);
-    // Chip text resolves the roster name rather than the raw id.
-    expect(screen.getByText(/Friday/)).toBeInTheDocument();
+    // Chip text resolves the roster name rather than the raw id. Scope the
+    // match to the chip's "Filtered to …" copy — a plain /Friday/ now also
+    // matches the per-row assignee chip (rows surface the assignee name).
+    expect(screen.getByText(/Filtered to Friday/)).toBeInTheDocument();
   });
 
   it("does not render the filter chip when ?agent is absent", () => {

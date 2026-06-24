@@ -90,6 +90,13 @@ vi.mock("@/components/teams/inbox/hooks/useInboxTriage", () => ({
 vi.mock("@/components/teams/inbox/hooks/useApprovalMutations", () => ({
   useApprovalMutations: () => ({ approve: vi.fn(), reject: vi.fn() }),
 }));
+// FailedRunRow's Retry pulls in useAgentWake; stub it so the band test stays
+// network-free (typed so tsc accepts wakeAgent's signature).
+vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({
+  useAgentWake: () => ({
+    wakeAgent: vi.fn<(agentId: string, opts?: { reason?: string }) => Promise<void>>(),
+  }),
+}));
 
 import { NeedsAttentionBand } from "@/components/teams/inbox/NeedsAttentionBand";
 

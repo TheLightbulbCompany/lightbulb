@@ -2,24 +2,39 @@
 
 // Ported from upstream Paperclip's pages/IssueDetail.tsx sidebar block
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
-// Assignee + project rows are interactive pickers; status + priority remain
-// read-only here (they live in the IssueHeader's pickers).
+// The rail is the single editing surface for every task field — status,
+// priority, assignee, and project rows are all interactive pickers — so each
+// value has exactly one place it can be changed (the header stays a clean
+// title-only masthead).
 
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import Link from "next/link";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { EditorialButton } from "@/components/teams/shell";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import type {
   Issue,
+  IssueStatus,
+  IssuePriority,
+  IssueMonitorPolicy,
   CompanyAgent,
   CompanyMember,
   IssueProject,
 } from "@/components/teams/shared/types";
 import { AssigneePicker } from "./pickers/AssigneePicker";
 import { ProjectPicker } from "./pickers/ProjectPicker";
+import { LabelPicker } from "./pickers/LabelPicker";
+import { ParentPicker } from "./pickers/ParentPicker";
 import { IssueRelations } from "./IssueRelations";
 
 export interface IssuePropertiesProps {
@@ -27,10 +42,34 @@ export interface IssuePropertiesProps {
   agents?: CompanyAgent[];
   members?: CompanyMember[];
   projects?: IssueProject[];
+  onStatusChange: (status: IssueStatus) => void;
+  onPriorityChange: (priority: IssuePriority) => void;
+  /** Assign an agent (or ``null`` to unassign). Clears any human assignee. */
   onAssigneeChange: (agentId: string | null) => void;
+  /** Assign a human member by Clerk user id (or ``null`` to unassign). Clears
+   * any agent assignee. Optional — without it the Assignee row stays
+   * agent-only. */
+  onAssigneeUserChange?: (userId: string | null) => void;
   onProjectChange: (projectId: string | null) => void;
   /** Receives the FULL desired blocker-id set (replace semantics). */
   onBlockedByChange: (ids: string[]) => void;
+  /** Receives the FULL desired label-id set (replace semantics). Optional —
+   * without it the Labels row stays read-only chips. */
+  onLabelsChange?: (labelIds: string[]) => void;
+  /** Reparent to an issue id or ``null`` to clear. Optional — without it the
+   * Parent row stays a read-only link. */
+  onParentChange?: (parentId: string | null) => void;
+  /** Schedule (or reschedule) a monitor re-check. Receives the editor's
+   * subset of the monitor policy; the host maps it onto executionPolicy.
+   * Optional — without it the Monitor row stays read-only. */
+  onMonitorChange?: (
+    monitor: Pick<IssueMonitorPolicy, "nextCheckAt" | "notes" | "serviceName">,
+  ) => void;
+  /** Clear the scheduled monitor (sends executionPolicy: null). */
+  onMonitorClear?: () => void;
+  /** Trigger an immediate monitor re-check. Returns the underlying promise so
+   * the row can show a transient checking/done state and tolerate errors. */
+  onCheckNow?: (issueId: string) => Promise<void>;
   className?: string;
 }
 
@@ -59,13 +98,331 @@ function PropertyRow({
 
 const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
 
+// Shared chip styling for the Labels and Related-Tasks rows so the read-only
+// pills read identically across the rail.
+const CHIP_STYLE = {
+  background: "var(--cream-deeper)",
+  color: "var(--ink-soft)",
+  border: "1px solid var(--edge)",
+} as const;
+
+function EmptyDash() {
+  return (
+    <span data-empty="true" style={EMPTY_DASH_STYLE}>
+      —
+    </span>
+  );
+}
+
+// The children endpoint returns either the `{ issues }` envelope (used by
+// SubIssuesSection) or, on some BFF paths, a bare array — accept both so the
+// count stays correct regardless of which shape the proxy forwards.
+type ChildrenResponse = { issues: Issue[] } | Issue[];
+
+function childrenCount(data: ChildrenResponse | undefined): number {
+  if (!data) return 0;
+  if (Array.isArray(data)) return data.length;
+  return data.issues?.length ?? 0;
+}
+
+/** Read-only Parent link (used only when no onParentChange is wired). Fetches
+ * the parent's identifier/title so the link reads like a task reference
+ * (mirrors IssueParentBreadcrumb). */
+function ParentLink({ parentId }: { parentId: string }) {
+  const { read } = useTeamsApi();
+  const { data: parent } = read<Issue>(`/issues/${parentId}`);
+  const label = parent
+    ? (parent.identifier ?? parent.id.slice(0, 8))
+    : parentId.slice(0, 8);
+  const title = parent?.title?.trim() ?? "";
+  return (
+    <Link
+      href={`/teams/issues/${parentId}`}
+      className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
+      style={{ color: "var(--forest)" }}
+    >
+      <span className="font-mono text-xs shrink-0">{label}</span>
+      {title && <span className="truncate">{title}</span>}
+    </Link>
+  );
+}
+
+/** Read-only Sub-tasks count row. Always fetches children (cheap, and the
+ * detail body fetches the same list, so SWR dedupes the request). */
+function SubTasksRow({ issueId }: { issueId: string }) {
+  const { read } = useTeamsApi();
+  const { data } = read<ChildrenResponse>(`/issues/${issueId}/children`);
+  const count = childrenCount(data);
+  return (
+    <PropertyRow label="Sub-tasks">
+      {count > 0 ? (
+        <span style={{ color: "var(--ink-soft)" }}>
+          {count} {count === 1 ? "sub-task" : "sub-tasks"}
+        </span>
+      ) : (
+        <EmptyDash />
+      )}
+    </PropertyRow>
+  );
+}
+
+// Convert an ISO instant to the value a <input type="datetime-local"> expects
+// (local "YYYY-MM-DDTHH:mm", no timezone suffix). Returns "" for an unparseable
+// or absent value so the input renders empty rather than "Invalid Date".
+function isoToLocalInput(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  // Shift by the local offset so toISOString's slice reflects local wall time.
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+/** Monitor rail row: schedule an agent re-check at a time, optionally naming an
+ * external service, plus an immediate "Check now". When a monitor is set the
+ * row reads "Re-check {time}" with the service/notes and Check-now/Clear
+ * actions; when unset it shows a muted "Not scheduled" with a Schedule
+ * affordance that opens a themed popover editor. Read-only (no editor, no
+ * actions) when the host wires none of the monitor handlers. */
+function MonitorRow({
+  issueId,
+  monitor,
+  onMonitorChange,
+  onMonitorClear,
+  onCheckNow,
+}: {
+  issueId: string;
+  monitor: IssueMonitorPolicy | null;
+  onMonitorChange?: (
+    monitor: Pick<IssueMonitorPolicy, "nextCheckAt" | "notes" | "serviceName">,
+  ) => void;
+  onMonitorClear?: () => void;
+  onCheckNow?: (issueId: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  // Editor draft fields. Seeded from the current monitor when (re)opening.
+  const [whenLocal, setWhenLocal] = useState("");
+  const [notes, setNotes] = useState("");
+  const [serviceName, setServiceName] = useState("");
+  // Transient "Check now" feedback: idle → checking → done (auto-clears).
+  const [checkState, setCheckState] = useState<"idle" | "checking" | "done">(
+    "idle",
+  );
+
+  const openEditor = () => {
+    setWhenLocal(isoToLocalInput(monitor?.nextCheckAt));
+    setNotes(monitor?.notes ?? "");
+    setServiceName(monitor?.serviceName ?? "");
+    setOpen(true);
+  };
+
+  const schedule = () => {
+    if (!whenLocal || !onMonitorChange) return;
+    // datetime-local has no timezone; new Date() interprets it as local time,
+    // and toISOString normalizes it to the ISO-8601 instant upstream wants.
+    const iso = new Date(whenLocal).toISOString();
+    onMonitorChange({
+      nextCheckAt: iso,
+      notes: notes.trim() || null,
+      serviceName: serviceName.trim() || null,
+    });
+    setOpen(false);
+  };
+
+  const checkNow = async () => {
+    if (!onCheckNow || checkState === "checking") return;
+    setCheckState("checking");
+    try {
+      await onCheckNow(issueId);
+      setCheckState("done");
+      // Reset the label after a beat so the button reads "Check now" again.
+      window.setTimeout(() => setCheckState("idle"), 2000);
+    } catch {
+      // Tolerate failures — drop back to idle so the user can retry.
+      setCheckState("idle");
+    }
+  };
+
+  const editor = (
+    <PopoverContent
+      align="start"
+      className="w-72 p-2"
+      style={{
+        background: "var(--cream)",
+        border: "1px solid var(--edge)",
+        color: "var(--ink)",
+      }}
+    >
+      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+        Re-check at
+        <input
+          type="datetime-local"
+          value={whenLocal}
+          onChange={(e) => setWhenLocal(e.target.value)}
+          aria-label="Re-check at"
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+        />
+      </label>
+      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+        External service
+        <input
+          type="text"
+          value={serviceName}
+          onChange={(e) => setServiceName(e.target.value)}
+          placeholder="e.g. GitHub Actions"
+          aria-label="External service"
+          maxLength={120}
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+        />
+      </label>
+      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+        Notes
+        <input
+          type="text"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="What to look for"
+          aria-label="Monitor notes"
+          maxLength={500}
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+        />
+      </label>
+      <div className="flex justify-end gap-2 pt-1">
+        <EditorialButton
+          variant="secondary"
+          size="sm"
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </EditorialButton>
+        <EditorialButton
+          variant="primary"
+          size="sm"
+          disabled={!whenLocal}
+          onClick={schedule}
+        >
+          Schedule
+        </EditorialButton>
+      </div>
+    </PopoverContent>
+  );
+
+  if (monitor) {
+    return (
+      <PropertyRow label="Monitor">
+        <div className="flex flex-col gap-1">
+          <span style={{ color: "var(--ink-soft)" }}>
+            Re-check{" "}
+            <time dateTime={monitor.nextCheckAt}>
+              {timeAgo(monitor.nextCheckAt)}
+            </time>
+          </span>
+          {monitor.serviceName && (
+            <span className="text-xs" style={{ color: "var(--mute)" }}>
+              {monitor.serviceName}
+            </span>
+          )}
+          {monitor.notes && (
+            <span className="text-xs" style={{ color: "var(--mute)" }}>
+              {monitor.notes}
+            </span>
+          )}
+          <span className="flex items-center gap-3 pt-0.5">
+            {onCheckNow && (
+              <button
+                type="button"
+                onClick={() => void checkNow()}
+                disabled={checkState === "checking"}
+                className="text-xs hover:underline disabled:opacity-60"
+                style={{ color: "var(--forest)" }}
+              >
+                {checkState === "checking"
+                  ? "Checking…"
+                  : checkState === "done"
+                    ? "Checked"
+                    : "Check now"}
+              </button>
+            )}
+            {onMonitorChange && (
+              <Popover
+                open={open}
+                onOpenChange={(next) => (next ? openEditor() : setOpen(false))}
+              >
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="text-xs hover:underline"
+                    style={{ color: "var(--mute)" }}
+                  >
+                    Edit
+                  </button>
+                </PopoverTrigger>
+                {editor}
+              </Popover>
+            )}
+            {onMonitorClear && (
+              <button
+                type="button"
+                onClick={onMonitorClear}
+                className="text-xs hover:underline"
+                style={{ color: "var(--mute)" }}
+              >
+                Clear
+              </button>
+            )}
+          </span>
+        </div>
+      </PropertyRow>
+    );
+  }
+
+  return (
+    <PropertyRow label="Monitor">
+      <span className="inline-flex items-baseline gap-2">
+        <span data-empty="true" style={{ color: "var(--mute)" }}>
+          Not scheduled
+        </span>
+        {onMonitorChange && (
+          <Popover
+            open={open}
+            onOpenChange={(next) => (next ? openEditor() : setOpen(false))}
+          >
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="text-xs hover:underline"
+                style={{ color: "var(--mute)" }}
+              >
+                Schedule
+              </button>
+            </PopoverTrigger>
+            {editor}
+          </Popover>
+        )}
+      </span>
+    </PropertyRow>
+  );
+}
+
 export function IssueProperties({
   issue,
   agents = [],
+  members = [],
   projects = [],
+  onStatusChange,
+  onPriorityChange,
   onAssigneeChange,
+  onAssigneeUserChange,
   onProjectChange,
   onBlockedByChange,
+  onLabelsChange,
+  onParentChange,
+  onMonitorChange,
+  onMonitorClear,
+  onCheckNow,
   className,
 }: IssuePropertiesProps) {
   // Merge denormalized issue.project into the projects list so the trigger
@@ -80,25 +437,53 @@ export function IssueProperties({
   const projectId = issue.project?.id ?? null;
 
   const labels = issue.labels ?? [];
+  const relatedIdentifiers = issue.referencedIssueIdentifiers ?? [];
 
   return (
     <dl className={cn("flex flex-col", className)}>
       <PropertyRow label="Status">
-        <span className="inline-flex items-center gap-2">
-          <StatusIcon status={issue.status} />
-          <span className="capitalize">{issue.status.replace(/_/g, " ")}</span>
-        </span>
+        <StatusIcon
+          status={issue.status}
+          blockerAttention={
+            typeof issue.blockerAttention === "object"
+              ? issue.blockerAttention
+              : null
+          }
+          onChange={(s) => onStatusChange(s as IssueStatus)}
+          showLabel
+        />
       </PropertyRow>
       <PropertyRow label="Priority">
         {issue.priority ? (
-          <span className="inline-flex items-center gap-2">
-            <PriorityIcon priority={issue.priority} />
-            <span className="capitalize">{issue.priority}</span>
+          <PriorityIcon
+            priority={issue.priority}
+            onChange={(p) => onPriorityChange(p)}
+            showLabel
+          />
+        ) : (
+          <EmptyDash />
+        )}
+      </PropertyRow>
+      {/* Labels sits directly after Priority to match upstream's rail order
+          (Status, Priority, Labels, Assignee, Project, …). Editable when the
+          host wires onLabelsChange; falls back to read-only chips otherwise. */}
+      <PropertyRow label="Labels">
+        {onLabelsChange ? (
+          <LabelPicker selected={labels} onChange={onLabelsChange} />
+        ) : labels.length > 0 ? (
+          <span className="flex flex-wrap gap-1">
+            {labels.map((l) => (
+              <span
+                key={l.id}
+                className="rounded px-1.5 py-0.5 text-xs"
+                style={CHIP_STYLE}
+              >
+                {l.name}
+              </span>
+            ))}
           </span>
         ) : (
-          <span data-empty="true" style={EMPTY_DASH_STYLE}>
-            —
-          </span>
+          <EmptyDash />
         )}
       </PropertyRow>
       <PropertyRow label="Assignee">
@@ -106,6 +491,9 @@ export function IssueProperties({
           agents={agents}
           selectedAgentId={issue.assigneeAgentId ?? null}
           onChange={onAssigneeChange}
+          members={members}
+          selectedUserId={issue.assigneeUserId ?? null}
+          onUserChange={onAssigneeUserChange}
         />
       </PropertyRow>
       <PropertyRow label="Project">
@@ -115,39 +503,52 @@ export function IssueProperties({
           onChange={onProjectChange}
         />
       </PropertyRow>
+      <PropertyRow label="Parent">
+        {onParentChange ? (
+          <ParentPicker
+            issueId={issue.id}
+            parentId={issue.parentId ?? null}
+            onChange={onParentChange}
+          />
+        ) : issue.parentId ? (
+          <ParentLink parentId={issue.parentId} />
+        ) : (
+          <EmptyDash />
+        )}
+      </PropertyRow>
       <IssueRelations issue={issue} onBlockedByChange={onBlockedByChange} />
-      <PropertyRow label="Labels">
-        {labels.length > 0 ? (
+      <SubTasksRow issueId={issue.id} />
+      <PropertyRow label="Related Tasks">
+        {relatedIdentifiers.length > 0 ? (
           <span className="flex flex-wrap gap-1">
-            {labels.map((l) => (
+            {relatedIdentifiers.map((identifier) => (
               <span
-                key={l.id}
-                className="rounded px-1.5 py-0.5 text-xs"
-                style={{
-                  background: "var(--cream-deeper)",
-                  color: "var(--ink-soft)",
-                  border: "1px solid var(--edge)",
-                }}
+                key={identifier}
+                className="rounded px-1.5 py-0.5 text-xs font-mono"
+                style={CHIP_STYLE}
               >
-                {l.name}
+                {identifier}
               </span>
             ))}
           </span>
         ) : (
-          <span data-empty="true" style={EMPTY_DASH_STYLE}>
-            —
-          </span>
+          <EmptyDash />
         )}
       </PropertyRow>
+      <MonitorRow
+        issueId={issue.id}
+        monitor={issue.executionPolicy?.monitor ?? null}
+        onMonitorChange={onMonitorChange}
+        onMonitorClear={onMonitorClear}
+        onCheckNow={onCheckNow}
+      />
       <PropertyRow label="Created">
         {issue.createdAt ? (
           <time dateTime={issue.createdAt} style={{ color: "var(--mute)" }}>
             {timeAgo(issue.createdAt)}
           </time>
         ) : (
-          <span data-empty="true" style={EMPTY_DASH_STYLE}>
-            —
-          </span>
+          <EmptyDash />
         )}
       </PropertyRow>
       <PropertyRow label="Updated">
@@ -156,9 +557,7 @@ export function IssueProperties({
             {timeAgo(issue.updatedAt)}
           </time>
         ) : (
-          <span data-empty="true" style={EMPTY_DASH_STYLE}>
-            —
-          </span>
+          <EmptyDash />
         )}
       </PropertyRow>
     </dl>

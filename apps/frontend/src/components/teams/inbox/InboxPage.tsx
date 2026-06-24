@@ -32,9 +32,11 @@ import {
   type InboxKeyboardNavEntry,
 } from "@/components/teams/shared/lib/inbox";
 import {
+  applyIssueFilters,
   defaultIssueFilterState,
   type IssueFilterState,
 } from "@/components/teams/shared/lib/issueFilters";
+import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import {
   loadLastInboxTab,
   saveLastInboxTab,
@@ -139,6 +141,18 @@ export function InboxPage({
     useInboxData();
   const archiveStack = useInboxArchiveStack();
   const readItems = useReadInboxItems(companyId);
+  // Live-run ids power the filters popover's "Live runs only" facet (and any
+  // future row indicator). Same derivation IssuesPanel/ProjectDetail use.
+  const { runs: liveRuns } = useLiveRuns();
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of liveRuns) {
+      if (run.issueId && (run.status === "queued" || run.status === "running")) {
+        ids.add(run.issueId);
+      }
+    }
+    return ids;
+  }, [liveRuns]);
 
   // 5. Compute the active issue list per tab.
   const activeIssues = useMemo<Issue[]>(() => {
@@ -150,14 +164,19 @@ export function InboxPage({
     return allIssues;
   }, [tab, mineIssues, touchedIssues, allIssues]);
 
-  // 6. Client-side search filtering (BFF returns the unfiltered list per tab).
-  const filteredIssues = useMemo(
-    () =>
-      activeIssues.filter((issue) =>
-        matchesInboxIssueSearch(issue, searchQuery),
-      ),
-    [activeIssues, searchQuery],
-  );
+  // 6. Client-side filtering (BFF returns the unfiltered list per tab):
+  //    structured facets (the popover) THEN free-text search. The facet pass
+  //    uses the shared `applyIssueFilters` predicate so the Inbox and the
+  //    Tasks surface never drift apart.
+  const filteredIssues = useMemo(() => {
+    const facetFiltered = applyIssueFilters(activeIssues, filterState, {
+      currentUserId,
+      liveIssueIds,
+    });
+    return facetFiltered.filter((issue) =>
+      matchesInboxIssueSearch(issue, searchQuery),
+    );
+  }, [activeIssues, filterState, currentUserId, liveIssueIds, searchQuery]);
 
   // 7. Build the today/earlier (or search) sections.
   const sections = useMemo(

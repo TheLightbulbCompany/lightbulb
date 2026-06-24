@@ -34,6 +34,11 @@ export const ISSUE_STATUSES: readonly IssueStatus[] = [
 
 export type IssuePriority = "critical" | "high" | "medium" | "low";
 
+// How a task executes once an agent picks it up. Mirrors upstream Paperclip's
+// createIssueSchema work-mode enum: ``standard`` runs autonomously, ``ask``
+// pauses for input, ``planning`` plans before acting.
+export type IssueWorkMode = "standard" | "ask" | "planning";
+
 export interface IssueLabel {
   id: string;
   name: string;
@@ -104,13 +109,13 @@ export interface IssueComment {
   authorKind?: "user" | "agent" | null;
 }
 
-/** Body for POST /teams/issues. Slim shape for v1 NewIssueDialog.
+/** Body for POST /teams/issues. Composer shape for NewIssueDialog.
  *
- * NOTE: `status` is intentionally absent. The Teams BFF `CreateIssueBody`
- * schema (apps/backend/routers/teams/schemas.py) sets ``extra="forbid"`` and
- * does NOT whitelist ``status`` — POSTs that include it 422. Issue starting
- * status is owned by upstream Paperclip's create handler. Use ``IssueUpdateInput``
- * via PATCH if you need to change status post-creation.
+ * The Teams BFF `CreateIssueBody` schema (apps/backend/routers/teams/schemas.py)
+ * whitelists ``status`` and ``workMode`` (camelCase aliases) and forwards both
+ * to upstream Paperclip's createIssueSchema, so the composer can preset the
+ * starting status + execution mode without a follow-up PATCH. Both are
+ * optional: omit them and the server defaults to backlog/standard.
  */
 export interface IssueCreateInput {
   title: string;
@@ -118,6 +123,8 @@ export interface IssueCreateInput {
   priority?: IssuePriority;
   projectId?: string;
   assigneeAgentId?: string;
+  status?: IssueStatus;
+  workMode?: IssueWorkMode;
 }
 
 /** Body for PATCH /teams/issues/{id}. */
@@ -137,6 +144,29 @@ export interface IssueUpdateInput {
    * BFF aliases this to ``blockedByIssueIds`` on the wire. ``undefined``
    * leaves the relations unchanged. */
   blockedByIssueIds?: string[];
+  /** Reparent (a parent issue id) or ``null`` to clear the parent. The BFF
+   * camelCase-aliases this to ``parentId``. ``undefined`` leaves the parent
+   * unchanged. */
+  parentId?: string | null;
+  /** Assign a human company member by Clerk user id, or ``null`` to clear it.
+   * Mutually exclusive with ``assigneeAgentId`` — the picker sends the other
+   * as ``null`` so only one assignee kind is ever set. ``undefined`` leaves
+   * the user-assignee unchanged. */
+  assigneeUserId?: string | null;
+  /** Full desired set of label ids (replace semantics — the whole array is
+   * sent, matching the multi-select rail control). The BFF camelCase-aliases
+   * this to ``labelIds``. ``undefined`` leaves the labels unchanged. */
+  labelIds?: string[];
+  /** An ISO timestamp hides the task (it drops out of the Tasks list);
+   * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
+   * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */
+  hiddenAt?: string | null;
+  /** Execution policy carrying the monitor schedule. Sending
+   * ``{ monitor: {...} }`` schedules a re-check; an explicit ``null`` clears
+   * the policy (our tasks carry no reviewer/approver policy, so replacing it
+   * is safe). The BFF camelCase-aliases the outer key to ``executionPolicy``
+   * and forwards the nested dict verbatim. ``undefined`` leaves it unchanged. */
+  executionPolicy?: IssueExecutionPolicy | null;
 }
 
 /** A slim issue summary used by the "Blocked by" / "Blocking" relation rows.
@@ -150,6 +180,23 @@ export interface IssueRelationIssueSummary {
   identifier?: string | null;
   title: string;
   status: IssueStatus;
+}
+
+/** The monitor schedule that rides on an issue's executionPolicy. Mirrors
+ * upstream Paperclip's executionPolicy.monitor — an agent re-checks the task at
+ * ``nextCheckAt``, optionally naming an external service it is watching. Only
+ * the fields the rail renders/edits are modeled; upstream's scheduledBy/kind
+ * are carried for round-trip fidelity but not surfaced. */
+export interface IssueMonitorPolicy {
+  nextCheckAt: string;
+  notes?: string | null;
+  serviceName?: string | null;
+  scheduledBy?: string | null;
+  kind?: string | null;
+}
+
+export interface IssueExecutionPolicy {
+  monitor?: IssueMonitorPolicy | null;
 }
 
 export interface Issue {
@@ -177,6 +224,13 @@ export interface Issue {
   productivityReview?: IssueProductivityReview | null;
   unread?: boolean | null;
   archivedAt?: string | null;
+  /** Identifiers of issues this one references (e.g. ["ISO-5","ISO-7"]).
+   * Surfaced flat by upstream alongside a richer relatedWork; only the flat
+   * identifier list is rendered as read-only "Related Tasks" chips. */
+  referencedIssueIdentifiers?: string[] | null;
+  /** Execution policy carrying the monitor schedule (the Monitor rail row).
+   * ``null``/absent means no monitor is scheduled. */
+  executionPolicy?: IssueExecutionPolicy | null;
 }
 
 export interface Approval {
@@ -423,11 +477,17 @@ export interface Goal {
   updatedAt?: string | null;
 }
 
-/** Body for POST /goals (BFF whitelist: title, description?, parent_id?). */
+/** Body for POST /goals (BFF whitelist: title, description?, parent_id?,
+ * level?, status?). `level`/`status` let the create form preset the upstream
+ * createGoalSchema defaults (level="task", status="planned") so a goal can be
+ * filed at the right rung without a follow-up PATCH. Both single-word so the
+ * BFF's snake_case/camelCase alias generator forwards them either way. */
 export interface GoalCreateInput {
   title: string;
   description?: string;
   parent_id?: string;
+  level?: GoalLevel;
+  status?: GoalStatus;
 }
 
 /** Body for PATCH /goals/{id} (BFF whitelist: title?, description?, parent_id?, status?, level?). */
@@ -446,6 +506,22 @@ export interface GoalUpdateInput {
 // GET /api/projects/{id}), so the wire shape is upstream camelCase. The slim
 // `IssueProject` above (id/name/color) is the denormalized form embedded on
 // issues; this is the full detail row the Project-detail page consumes.
+
+/** Upstream PROJECT_STATUSES (updateProjectSchema). */
+export type ProjectStatus =
+  | "backlog"
+  | "planned"
+  | "in_progress"
+  | "completed"
+  | "cancelled";
+
+export const PROJECT_STATUSES: readonly ProjectStatus[] = [
+  "backlog",
+  "planned",
+  "in_progress",
+  "completed",
+  "cancelled",
+];
 
 /** Full project row from GET /teams/projects/{id} (upstream Project).
  *
@@ -475,4 +551,11 @@ export interface Project {
 export interface ProjectUpdateInput {
   name?: string;
   description?: string | null;
+  /** Upstream PROJECT_STATUSES — sets the project lifecycle stage. */
+  status?: ProjectStatus;
+  /** Full desired set of linked company-goal ids (replace semantics — the
+   * whole array is sent, matching upstream updateProjectSchema). The BFF
+   * accepts `goal_ids` (snake_case) and aliases it to `goalIds` on the wire.
+   * `undefined` leaves the links unchanged. */
+  goal_ids?: string[];
 }

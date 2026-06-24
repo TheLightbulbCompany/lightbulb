@@ -214,6 +214,102 @@ describe("DashboardPanel", () => {
     ).toBeInTheDocument();
   });
 
+  test("renders Recent Tasks sorted by updatedAt desc, newest first", () => {
+    mockApi(
+      makeRead({
+        "/dashboard": {
+          data: {
+            dashboard: {
+              agents: {},
+              tasks: {},
+              runActivity: [],
+              costs: {
+                monthSpendCents: 0,
+                monthBudgetCents: 0,
+                monthUtilizationPercent: 0,
+              },
+              pendingApprovals: 0,
+              budgets: { pendingApprovals: 0 },
+            },
+          },
+        },
+        // Intentionally out of order — the panel must sort by updatedAt desc.
+        "/issues": {
+          data: [
+            {
+              id: "i_old",
+              identifier: "ISO-1",
+              title: "Oldest task",
+              status: "todo",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+            {
+              id: "i_new",
+              identifier: "ISO-3",
+              title: "Newest task",
+              status: "in_progress",
+              updatedAt: "2026-03-01T00:00:00Z",
+            },
+            {
+              id: "i_mid",
+              identifier: "ISO-2",
+              title: "Middle task",
+              status: "done",
+              updatedAt: "2026-02-01T00:00:00Z",
+            },
+          ],
+        },
+      }),
+    );
+    render(<DashboardPanel />);
+
+    const section = screen.getByRole("region", { name: /recent tasks/i });
+    expect(section).toBeInTheDocument();
+    expect(screen.getByText("Recent Tasks")).toBeInTheDocument();
+
+    // All three titles present, and ordered newest → oldest in the DOM.
+    const titles = ["Newest task", "Middle task", "Oldest task"].map(
+      (t) => screen.getByText(t),
+    );
+    titles.forEach((el) => expect(el).toBeInTheDocument());
+    const positions = titles.map((el) =>
+      // compareDocumentPosition: bit 4 = el2 follows el1.
+      titles[0].compareDocumentPosition(el),
+    );
+    // Middle + Oldest follow Newest in document order.
+    expect(positions[1] & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(positions[2] & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Identifier chip is rendered for each row.
+    expect(screen.getByText("ISO-3")).toBeInTheDocument();
+  });
+
+  test("renders the Recent Tasks empty state when no issues", () => {
+    mockApi(
+      makeRead({
+        "/dashboard": {
+          data: {
+            dashboard: {
+              agents: {},
+              tasks: {},
+              runActivity: [],
+              costs: {
+                monthSpendCents: 0,
+                monthBudgetCents: 0,
+                monthUtilizationPercent: 0,
+              },
+              pendingApprovals: 0,
+              budgets: { pendingApprovals: 0 },
+            },
+          },
+        },
+        "/issues": { data: [] },
+      }),
+    );
+    render(<DashboardPanel />);
+    expect(screen.getByText(/no recent tasks/i)).toBeInTheDocument();
+  });
+
   test("normalizes /issues envelope { items: [...] }", () => {
     mockApi(
       makeRead({

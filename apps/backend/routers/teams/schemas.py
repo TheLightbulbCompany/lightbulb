@@ -56,12 +56,29 @@ class PatchAgentBody(_Strict):
     budget_monthly_cents: Optional[int] = Field(default=None, ge=0)
 
 
+class WakeAgentBody(_Strict):
+    # Mirrors upstream ``wakeAgentSchema``: every field is optional and
+    # defaults server-side, so a bare wake is valid. The failed-run Retry
+    # sends source="on_demand", reason="retry". ``source`` is constrained to
+    # the upstream enum so the BFF rejects junk before it reaches Paperclip.
+    source: Optional[str] = Field(default=None, pattern=r"^(timer|assignment|on_demand|automation)$")
+    reason: Optional[str] = Field(default=None, max_length=2000)
+
+
 class CreateIssueBody(_Strict):
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)
     project_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
+    # Compose-time status preset + execution work mode — both forward to
+    # upstream's createIssueSchema. Without these the composer can only file
+    # into the default backlog/standard and must round-trip a PATCH.
+    status: Optional[str] = Field(
+        default=None,
+        pattern=r"^(backlog|todo|in_progress|in_review|done|blocked|cancelled)$",
+    )
+    work_mode: Optional[str] = Field(default=None, pattern=r"^(standard|ask|planning)$")
 
 
 class PatchIssueBody(_Strict):
@@ -77,6 +94,27 @@ class PatchIssueBody(_Strict):
     # ``_Strict`` alias_generator emits this as ``blockedByIssueIds`` on the
     # wire (Paperclip's PATCH /api/issues/:id reads camelCase).
     blocked_by_issue_ids: Optional[list[str]] = None
+    # Soft-hide: upstream PATCH /api/issues/:id accepts ``hiddenAt`` (ISO
+    # string) and excludes hiddenAt-set rows from the issues list. An ISO
+    # timestamp hides the task; an explicit null restores it.
+    hidden_at: Optional[str] = Field(default=None, max_length=40)
+    # Execution work mode (standard / ask / planning) — upstream
+    # updateIssueSchema accepts it; lets the detail surface change how a task
+    # runs without recreating it.
+    work_mode: Optional[str] = Field(default=None, pattern=r"^(standard|ask|planning)$")
+    # Reparent / clear parent, human-user assignee (mutually exclusive with
+    # assigneeAgentId — enforced in the picker UI), and the full desired
+    # label-id set (replace semantics). All accepted by upstream
+    # updateIssueSchema.
+    parent_id: Optional[str] = None
+    assignee_user_id: Optional[str] = None
+    label_ids: Optional[list[str]] = None
+    # Execution policy passthrough — carries the monitor schedule
+    # {monitor: {nextCheckAt, notes, serviceName, ...}}. Forwarded verbatim;
+    # upstream updateIssueSchema validates the nested shape. (Inner keys must
+    # already be camelCase — the alias generator only renames model fields,
+    # not nested dict contents.)
+    execution_policy: Optional[dict] = None
 
 
 class AddIssueCommentBody(_Strict):
@@ -150,6 +188,11 @@ class CreateGoalBody(_Strict):
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)
     parent_id: Optional[str] = None
+    # Level + status on create — upstream createGoalSchema accepts both
+    # (defaults level="task", status="planned"). Without these every goal
+    # lands at the default level/status with no way to set them at creation.
+    level: Optional[str] = Field(default=None, pattern=r"^(company|team|agent|task)$")
+    status: Optional[str] = Field(default=None, pattern=r"^(planned|active|achieved|cancelled)$")
 
 
 class PatchGoalBody(_Strict):
@@ -177,6 +220,10 @@ class PatchProjectBody(_Strict):
     # rather than left as a no-op that misleads the UI.
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=20000)
+    # Status + goal links — both accepted by upstream updateProjectSchema.
+    # (Still no budget field — see the note above.)
+    status: Optional[str] = Field(default=None, pattern=r"^(backlog|planned|in_progress|completed|cancelled)$")
+    goal_ids: Optional[list[str]] = None
 
 
 class ApproveApprovalBody(_Strict):

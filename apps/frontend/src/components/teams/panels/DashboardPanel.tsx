@@ -26,6 +26,10 @@ import { ActiveAgentsPanel } from "@/components/teams/dashboard/ActiveAgentsPane
 import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { PanelMasthead } from "@/components/teams/shell";
+import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
+import { Identity } from "@/components/teams/shared/components/Identity";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import type {
   CompanyAgent,
   DashboardResponse,
@@ -92,6 +96,84 @@ function toStatusRows(issues: Issue[]): { status: string; createdAt: Date }[] {
   return out;
 }
 
+/** Most-recently-touched timestamp for ordering (updatedAt, falling back to
+ * createdAt). Returns 0 for rows with neither so they sort last. */
+function recencyOf(issue: Issue): number {
+  const ts = issue.updatedAt ?? issue.createdAt;
+  return ts ? new Date(ts).getTime() : 0;
+}
+
+const RECENT_TASKS_LIMIT = 6;
+
+/* ---------- recent tasks ---------- */
+
+/** Compact "Recent Tasks" list — the dashboard already fetches the issues
+ * feed for the charts; reuse it to surface the most-recently-updated tasks as
+ * a quick jump-back-in list. Rows mirror the TasksList row (status circle +
+ * identifier + title + assignee + relative updated time) and open the task in
+ * the /chat shell when the InlineTeamsNav provider is present, falling back to
+ * an <a href> under standalone /teams. */
+function RecentTaskRow({
+  issue,
+  assigneeName,
+}: {
+  issue: Issue;
+  assigneeName: string | null;
+}) {
+  const nav = useInlineTeamsNav();
+  const identifier = issue.identifier ?? issue.id.slice(0, 8);
+  const updatedTs = issue.updatedAt ?? issue.createdAt;
+
+  const handleClick = (e: React.MouseEvent) => {
+    if (!nav) return;
+    if (
+      e.defaultPrevented ||
+      e.button !== 0 ||
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey
+    ) {
+      return;
+    }
+    e.preventDefault();
+    nav.openDetail("issue-detail", issue.id);
+  };
+
+  return (
+    <Link
+      href={`/teams/issues/${issue.id}`}
+      onClick={handleClick}
+      className="group flex items-center gap-2 border-b border-[var(--edge)] px-4 py-2.5 text-sm no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deeper)]"
+      style={{ color: "var(--ink)" }}
+    >
+      <span className="inline-flex shrink-0 items-center" aria-hidden="true">
+        <StatusIcon status={issue.status} />
+      </span>
+      <span className="shrink-0 font-mono text-xs text-[var(--mute)]">
+        {identifier}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{issue.title}</span>
+      {issue.assigneeAgentId ? (
+        <Identity
+          name={assigneeName ?? issue.assigneeAgentId.slice(0, 8)}
+          size="xs"
+          className="shrink-0"
+        />
+      ) : null}
+      {updatedTs ? (
+        <time
+          dateTime={updatedTs}
+          className="shrink-0 text-[11px] tabular-nums"
+          style={{ color: "var(--mute)" }}
+        >
+          {timeAgo(updatedTs)}
+        </time>
+      ) : null}
+    </Link>
+  );
+}
+
 /* ---------- panel ---------- */
 
 export function DashboardPanel() {
@@ -139,10 +221,17 @@ export function DashboardPanel() {
   // titles without fanning out a per-issue fetch (missing entries degrade
   // to an id-slug chip inside ActiveAgentsPanel).
   const issuesById = new Map(issues.map((i) => [i.id, i]));
-  // agentId → name map for the activity feed's actor/entity resolution.
+  // agentId → name map for the activity feed's actor/entity resolution +
+  // the Recent Tasks assignee labels.
   const agentNames = new Map(
     (agentsQuery.data?.agents ?? []).map((a) => [a.id, a.name] as const),
   );
+
+  // Recent Tasks — the most-recently-updated issues, newest first. Reuses the
+  // already-fetched /issues feed (non-mutating copy before sort).
+  const recentTasks = [...issues]
+    .sort((a, b) => recencyOf(b) - recencyOf(a))
+    .slice(0, RECENT_TASKS_LIMIT);
 
   const agentsCount = Object.values(dashboard.agents).reduce(
     (s, v) => s + (v ?? 0),
@@ -244,6 +333,55 @@ export function DashboardPanel() {
         <ChartCard title="Success Rate" subtitle="Last 14 days">
           <SuccessRateChart activity={dashboard.runActivity} />
         </ChartCard>
+      </section>
+
+      {/* Recent tasks — the most-recently-updated issues, a quick way back
+          into in-flight work. */}
+      <section aria-label="Recent tasks" className="min-w-0">
+        <div className="flex items-baseline justify-between mb-3">
+          <h2
+            className="font-editorial-serif text-2xl"
+            style={{ color: "var(--ink)" }}
+          >
+            Recent Tasks
+          </h2>
+          {recentTasks.length > 0 && (
+            <Link
+              href="/teams/issues"
+              className="text-[11px] transition-colors hover:underline"
+              style={{ color: "var(--forest)" }}
+            >
+              View all →
+            </Link>
+          )}
+        </div>
+        <div
+          className="editorial-card overflow-hidden"
+          style={{ borderColor: "var(--edge)" }}
+        >
+          {recentTasks.length === 0 ? (
+            <div
+              className="px-4 py-3 font-editorial-serif text-base italic"
+              style={{ color: "var(--mute)" }}
+            >
+              No recent tasks.
+            </div>
+          ) : (
+            <div>
+              {recentTasks.map((issue) => (
+                <RecentTaskRow
+                  key={issue.id}
+                  issue={issue}
+                  assigneeName={
+                    issue.assigneeAgentId
+                      ? agentNames.get(issue.assigneeAgentId) ?? null
+                      : null
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Recent activity */}

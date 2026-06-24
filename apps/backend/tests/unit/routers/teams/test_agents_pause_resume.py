@@ -39,6 +39,28 @@ async def test_resume_agent_route_calls_admin_resume():
 
 
 @pytest.mark.asyncio
+async def test_wake_agent_route_calls_admin_wakeup_with_camel_body():
+    """The failed-run Retry route forwards a camelCase, none-dropped body to
+    the admin wake_agent (source/reason), threading the session cookie."""
+    from routers.teams.schemas import WakeAgentBody
+
+    fake_admin = MagicMock()
+    fake_admin.wake_agent = AsyncMock(return_value={"ok": True})
+    with patch("routers.teams.agents._admin", return_value=fake_admin):
+        out = await agents_mod.wake_agent(
+            "a1",
+            body=WakeAgentBody(source="on_demand", reason="retry"),
+            ctx=_ctx(),
+        )
+    fake_admin.wake_agent.assert_awaited_once_with(
+        agent_id="a1",
+        body={"source": "on_demand", "reason": "retry"},
+        session_cookie="cookie1",
+    )
+    assert out["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_pause_resume_redact_adapter_fields():
     """Paperclip echoes the agent record on pause/resume, which can include
     adapterConfig/adapterType (the OpenClaw service token). The routes MUST

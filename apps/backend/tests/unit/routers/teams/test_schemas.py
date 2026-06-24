@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from routers.teams.schemas import CreateAgentBody, PatchAgentBody
+from routers.teams.schemas import CreateAgentBody, PatchAgentBody, WakeAgentBody
 
 
 def test_create_agent_accepts_minimal_payload():
@@ -68,3 +68,124 @@ def test_strict_base_still_rejects_unknown_fields():
 
     with pytest.raises(ValidationError):
         PatchIssueBody.model_validate({"adapterType": "evil"})
+
+
+def test_patch_issue_accepts_hidden_at_for_hide_and_restore():
+    """Hide/restore: hiddenAt must reach the wire. An ISO string hides the
+    task (upstream drops hiddenAt-set rows from the list); an explicit null
+    restores it. exclude_unset keeps the explicit null so a restore PATCH is
+    not silently dropped."""
+    from routers.teams.schemas import PatchIssueBody
+
+    hidden = PatchIssueBody(hidden_at="2026-06-24T00:00:00Z")
+    assert hidden.model_dump(exclude_unset=True, by_alias=True) == {"hiddenAt": "2026-06-24T00:00:00Z"}
+
+    restored = PatchIssueBody.model_validate({"hiddenAt": None})
+    assert restored.model_dump(exclude_unset=True, by_alias=True) == {"hiddenAt": None}
+
+
+def test_wake_agent_emits_camel_case_and_drops_unset():
+    """The failed-run Retry wakes the agent on demand. by_alias emits the
+    camelCase wire shape; exclude_none drops the unset reason."""
+    body = WakeAgentBody(source="on_demand", reason="retry")
+    assert body.model_dump(exclude_none=True, by_alias=True) == {
+        "source": "on_demand",
+        "reason": "retry",
+    }
+    bare = WakeAgentBody()
+    assert bare.model_dump(exclude_none=True, by_alias=True) == {}
+
+
+def test_wake_agent_rejects_unknown_source_and_extra_fields():
+    with pytest.raises(ValidationError):
+        WakeAgentBody(source="turbo")
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        WakeAgentBody(adapterType="evil")
+
+
+def test_create_issue_accepts_work_mode_and_status():
+    """The composer can file a task straight into a status and pick an
+    execution work mode — both forward camelCase to upstream's
+    createIssueSchema (workMode default 'standard', status default 'backlog')."""
+    from routers.teams.schemas import CreateIssueBody
+
+    body = CreateIssueBody(title="ship it", status="todo", work_mode="planning")
+    assert body.model_dump(exclude_none=True, by_alias=True) == {
+        "title": "ship it",
+        "status": "todo",
+        "workMode": "planning",
+    }
+
+
+def test_create_issue_rejects_unknown_work_mode_and_status():
+    from routers.teams.schemas import CreateIssueBody
+
+    with pytest.raises(ValidationError):
+        CreateIssueBody(title="x", work_mode="turbo")
+    with pytest.raises(ValidationError):
+        CreateIssueBody(title="x", status="frozen")
+
+
+def test_patch_issue_accepts_work_mode():
+    from routers.teams.schemas import PatchIssueBody
+
+    body = PatchIssueBody(work_mode="ask")
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {"workMode": "ask"}
+
+
+def test_patch_issue_accepts_parent_user_assignee_and_labels():
+    from routers.teams.schemas import PatchIssueBody
+
+    body = PatchIssueBody(parent_id="par_1", assignee_user_id="usr_1", label_ids=["lbl_1", "lbl_2"])
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {
+        "parentId": "par_1",
+        "assigneeUserId": "usr_1",
+        "labelIds": ["lbl_1", "lbl_2"],
+    }
+
+
+def test_patch_issue_forwards_execution_policy_monitor():
+    """The monitor schedule rides on executionPolicy. The alias generator only
+    renames model fields, so the nested monitor dict's already-camelCase keys
+    (nextCheckAt) pass through verbatim — upstream updateIssueSchema validates
+    the inner shape."""
+    from routers.teams.schemas import PatchIssueBody
+
+    body = PatchIssueBody(execution_policy={"monitor": {"nextCheckAt": "2026-07-01T09:00:00Z"}})
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {
+        "executionPolicy": {"monitor": {"nextCheckAt": "2026-07-01T09:00:00Z"}}
+    }
+
+
+def test_patch_issue_forwards_null_execution_policy_to_clear_monitor():
+    """An explicit null executionPolicy clears the monitor. exclude_unset keeps
+    the explicit null so the clear PATCH is not silently dropped."""
+    from routers.teams.schemas import PatchIssueBody
+
+    body = PatchIssueBody.model_validate({"executionPolicy": None})
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {"executionPolicy": None}
+
+
+def test_create_goal_accepts_level_and_status():
+    from routers.teams.schemas import CreateGoalBody
+
+    body = CreateGoalBody(title="grow revenue", level="team", status="active")
+    assert body.model_dump(exclude_none=True, by_alias=True) == {
+        "title": "grow revenue",
+        "level": "team",
+        "status": "active",
+    }
+    with pytest.raises(ValidationError):
+        CreateGoalBody(title="x", level="galactic")
+
+
+def test_patch_project_accepts_status_and_goal_ids():
+    from routers.teams.schemas import PatchProjectBody
+
+    body = PatchProjectBody(status="in_progress", goal_ids=["goal_1"])
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {
+        "status": "in_progress",
+        "goalIds": ["goal_1"],
+    }
+    with pytest.raises(ValidationError):
+        PatchProjectBody(status="frozen")

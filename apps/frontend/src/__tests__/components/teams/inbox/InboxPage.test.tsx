@@ -273,19 +273,19 @@ describe("InboxPage", () => {
     expect(markManyRead).toHaveBeenCalledWith(["iss_1"]);
   });
 
-  test("clicking 'New issue' opens NewIssueDialog", async () => {
+  test("clicking 'New task' opens NewIssueDialog", async () => {
     render(<InboxPage {...baseProps} />);
     // Dialog title isn't in the document until opened.
     expect(
-      screen.queryByRole("dialog", { name: /new issue/i }),
+      screen.queryByRole("dialog", { name: /new task/i }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /new task/i }));
     expect(
-      await screen.findByRole("dialog", { name: /new issue/i }),
+      await screen.findByRole("dialog", { name: /new task/i }),
     ).toBeInTheDocument();
   });
 
-  test("creating a new issue navigates to /teams/issues/<id>", async () => {
+  test("creating a new task navigates to /teams/issues/<id>", async () => {
     const create = vi
       .fn()
       .mockResolvedValue({ id: "iss_new_42", title: "Hello" } as Issue);
@@ -296,11 +296,11 @@ describe("InboxPage", () => {
     } as unknown as ReturnType<typeof useIssueMutations>);
 
     render(<InboxPage {...baseProps} />);
-    fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /new task/i }));
     // Fill the title — the dialog blocks submission on empty title.
     const titleInput = await screen.findByLabelText(/title/i);
     fireEvent.change(titleInput, { target: { value: "Hello" } });
-    fireEvent.click(screen.getByRole("button", { name: /^create issue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^create task$/i }));
 
     await waitFor(() => {
       expect(create).toHaveBeenCalled();
@@ -330,7 +330,7 @@ describe("InboxPage", () => {
     expect(mockRouterPush).not.toHaveBeenCalled();
   });
 
-  test("creating a new issue opens the detail in-shell when a nav provider is present", async () => {
+  test("creating a new task opens the detail in-shell when a nav provider is present", async () => {
     const create = vi
       .fn()
       .mockResolvedValue({ id: "iss_new_99", title: "Hi" } as Issue);
@@ -346,10 +346,10 @@ describe("InboxPage", () => {
         <InboxPage {...baseProps} />
       </InlineTeamsNavProvider>,
     );
-    fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /new task/i }));
     const titleInput = await screen.findByLabelText(/title/i);
     fireEvent.change(titleInput, { target: { value: "Hi" } });
-    fireEvent.click(screen.getByRole("button", { name: /^create issue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^create task$/i }));
 
     await waitFor(() => {
       expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_new_99");

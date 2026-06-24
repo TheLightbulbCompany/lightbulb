@@ -10,16 +10,91 @@
 
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
-import type { Project } from "@/components/teams/shared/types";
+import {
+  PROJECT_STATUSES,
+  type Project,
+  type ProjectStatus,
+} from "@/components/teams/shared/types";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
 
 export interface ProjectPropertiesProps {
   project: Project;
   /** Count of issues scoped to this project (the Issues tab total). */
   issueCount: number;
+  /** Persist a new lifecycle status (PATCH `{ status }`). Mirrors the
+   * GoalProperties status/level inline pickers. */
+  onStatusChange: (status: ProjectStatus) => void;
   className?: string;
+}
+
+function statusLabel(status: string): string {
+  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Inline status picker — a Popover of PROJECT_STATUSES, mirroring
+ * GoalProperties' LevelPicker so the project-detail aside edits status in
+ * place rather than routing through a separate dialog. */
+function StatusPicker({
+  status,
+  onChange,
+}: {
+  status: ProjectStatus;
+  onChange: (status: ProjectStatus) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="cursor-pointer hover:opacity-80 transition-opacity"
+          style={{ color: "var(--ink)" }}
+        >
+          {statusLabel(status)}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-44 p-1"
+        align="start"
+        style={{
+          background: "var(--cream)",
+          border: "1px solid var(--edge)",
+          color: "var(--ink)",
+        }}
+      >
+        {PROJECT_STATUSES.map((s) => (
+          <Button
+            key={s}
+            variant="ghost"
+            size="sm"
+            className={cn(
+              "w-full justify-start text-xs",
+              s === status && "bg-[var(--cream-deeper)]",
+            )}
+            onClick={() => {
+              onChange(s);
+              setOpen(false);
+            }}
+          >
+            {statusLabel(s)}
+          </Button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** Upstream defaults a project to "backlog" when status is absent; reflect
+ * that in the picker so the row is always editable (not just when the row
+ * happens to carry a status). */
+function asProjectStatus(status: string | null | undefined): ProjectStatus {
+  return (PROJECT_STATUSES as readonly string[]).includes(status ?? "")
+    ? (status as ProjectStatus)
+    : "backlog";
 }
 
 function PropertyRow({
@@ -50,15 +125,17 @@ const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
 export function ProjectProperties({
   project,
   issueCount,
+  onStatusChange,
   className,
 }: ProjectPropertiesProps) {
   return (
     <dl className={cn("flex flex-col", className)}>
-      {project.status && (
-        <PropertyRow label="Status">
-          <span className="capitalize">{project.status.replace(/_/g, " ")}</span>
-        </PropertyRow>
-      )}
+      <PropertyRow label="Status">
+        <StatusPicker
+          status={asProjectStatus(project.status)}
+          onChange={onStatusChange}
+        />
+      </PropertyRow>
       <PropertyRow label="Issues">
         <span className="tabular-nums" style={{ color: "var(--ink)" }}>
           {issueCount}

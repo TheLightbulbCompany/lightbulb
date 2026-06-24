@@ -48,33 +48,6 @@ def _normalize_activity_events(payload) -> tuple[list, str | None]:
     return [], None
 
 
-async def _build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:
-    """Map Paperclip principalId → Clerk user_id for the caller's org.
-
-    Mirrors ``members.list_members``: for a personal context the caller
-    is the only member (seed their own pairing); for an org, build the
-    map from the ``paperclip-companies`` ``by-org-id`` GSI rows. GSI
-    failures degrade to an empty map (enrichment is skipped, feed still
-    ships).
-    """
-    principal_to_clerk: dict[str, str] = {}
-    if ctx.org_id is None:
-        if ctx.paperclip_user_id:
-            principal_to_clerk[ctx.paperclip_user_id] = ctx.user_id
-        return principal_to_clerk
-    try:
-        org_rows = await _agents._repo().list_by_org_id(ctx.org_id)
-    except Exception:
-        logger.exception("activity.list: list_by_org_id failed for org=%s", ctx.org_id)
-        return principal_to_clerk
-    for row in org_rows:
-        paperclip_uid = row.get("paperclip_user_id")
-        clerk_uid = row.get("user_id")
-        if paperclip_uid and clerk_uid:
-            principal_to_clerk[paperclip_uid] = clerk_uid
-    return principal_to_clerk
-
-
 async def _enrich_actor_names(ctx: TeamsContext, events: list) -> None:
     """Stamp ``actorEmail`` / ``actorName`` onto user-actor events in place.
 
@@ -95,7 +68,7 @@ async def _enrich_actor_names(ctx: TeamsContext, events: list) -> None:
     if not actor_ids:
         return
 
-    principal_to_clerk = await _build_principal_to_clerk(ctx)
+    principal_to_clerk = await _agents.build_principal_to_clerk(ctx)
 
     # Resolve each unique actor's email once (principalId → Clerk id → email).
     email_by_actor: dict[str, str] = {}

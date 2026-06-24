@@ -8,9 +8,10 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { MoreHorizontal, Trash2 } from "lucide-react";
+import { Copy, EyeOff, MoreHorizontal, Trash2 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 import { IssueHeader } from "./IssueHeader";
 import { IssueComments } from "./IssueComments";
 import { IssueProperties } from "./IssueProperties";
@@ -31,11 +32,125 @@ import {
 import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import type {
   CompanyAgent,
+  CompanyMember,
   IssueProject,
 } from "@/components/teams/shared/types";
 
 export interface IssueDetailPageProps {
   issueId: string;
+}
+
+/** Inline-editable description, mirroring IssueHeader's title-edit pattern so
+ * both editing surfaces feel the same. Empty descriptions show a muted
+ * "Add a description…" affordance so the field is discoverable. Saving goes
+ * through the same PATCH the rest of the detail page uses. */
+function IssueDescription({
+  description,
+  onSave,
+}: {
+  description: string;
+  onSave: (description: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(description);
+  const [saving, setSaving] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Re-sync when the description changes externally (mutation resolves and the
+  // parent re-renders) — only while not actively editing, so a stale prop
+  // never clobbers an in-progress edit.
+  useEffect(() => {
+    if (!editing) setDraft(description);
+  }, [description, editing]);
+
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      textareaRef.current.focus();
+      // Place the caret at the end rather than selecting the whole body.
+      const len = textareaRef.current.value.length;
+      textareaRef.current.setSelectionRange(len, len);
+    }
+  }, [editing]);
+
+  const save = async () => {
+    const trimmed = draft.trim();
+    if (trimmed === description.trim()) {
+      setDraft(description);
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(trimmed);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setDraft(description);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <Textarea
+        ref={textareaRef}
+        rows={4}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            void save();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        disabled={saving}
+        placeholder="Add a description…"
+        aria-label="Issue description"
+        style={{
+          background: "var(--cream-deeper)",
+          border: "1px solid var(--edge)",
+          color: "var(--ink)",
+        }}
+      />
+    );
+  }
+
+  if (description) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="w-full text-left text-sm whitespace-pre-wrap pl-3"
+        style={{
+          borderLeft: "2px solid var(--edge)",
+          color: "var(--ink-soft)",
+        }}
+      >
+        {description}
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      className="w-full text-left text-sm italic pl-3"
+      style={{
+        borderLeft: "2px solid var(--edge)",
+        color: "var(--mute)",
+      }}
+    >
+      Add a description…
+    </button>
+  );
 }
 
 export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
@@ -45,8 +160,12 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
+  // Company members power the human-user side of the assignee picker. Mirrors
+  // how agents/projects are read; the BFF enriches each row with Clerk identity.
+  const { data: membersResp } = read<{ members: CompanyMember[] }>("/members");
   const agents = agentsResp?.agents ?? [];
   const projects = projectsResp?.projects ?? [];
+  const members = membersResp?.members ?? [];
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -61,6 +180,21 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
     } finally {
       setDeleting(false);
     }
+  };
+
+  const copyAsMarkdown = () => {
+    if (!issue) return;
+    const heading = issue.identifier ?? issue.id;
+    const markdown = `# ${heading}: ${issue.title}\n\n${issue.description ?? ""}`;
+    void navigator.clipboard.writeText(markdown);
+  };
+
+  const handleHide = async () => {
+    // Hiding is reversible (it just stamps hiddenAt), so it skips the confirm
+    // dialog that guards the destructive delete. The hidden task drops out of
+    // the Tasks list, so leave the detail route for the inbox afterwards.
+    await mutations.update(issueId, { hiddenAt: new Date().toISOString() });
+    router.push("/teams");
   };
 
   if (isLoading && !issue) {
@@ -119,18 +253,8 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           <div className="min-w-0 flex-1">
             <IssueHeader
               issue={issue}
-              agents={agents}
               onTitleSave={async (title) => {
                 await mutations.update(issueId, { title });
-              }}
-              onStatusChange={async (status) => {
-                await mutations.update(issueId, { status });
-              }}
-              onPriorityChange={async (priority) => {
-                await mutations.update(issueId, { priority });
-              }}
-              onAssigneeChange={async (assigneeAgentId) => {
-                await mutations.update(issueId, { assigneeAgentId });
               }}
             />
           </div>
@@ -147,6 +271,24 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  copyAsMarkdown();
+                }}
+              >
+                <Copy className="h-4 w-4" />
+                Copy as markdown
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  void handleHide();
+                }}
+              >
+                <EyeOff className="h-4 w-4" />
+                Hide task
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 variant="destructive"
                 onSelect={(e) => {
                   e.preventDefault();
@@ -159,17 +301,12 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        {issue.description && (
-          <div
-            className="text-sm whitespace-pre-wrap pl-3"
-            style={{
-              borderLeft: "2px solid var(--edge)",
-              color: "var(--ink-soft)",
-            }}
-          >
-            {issue.description}
-          </div>
-        )}
+        <IssueDescription
+          description={issue.description ?? ""}
+          onSave={async (description) => {
+            await mutations.update(issueId, { description });
+          }}
+        />
         <SubIssuesSection
           issueId={issueId}
           agents={agents}
@@ -197,9 +334,28 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         <IssueProperties
           issue={issue}
           agents={agents}
+          members={members}
           projects={projects}
+          onStatusChange={async (status) => {
+            await mutations.update(issueId, { status });
+          }}
+          onPriorityChange={async (priority) => {
+            await mutations.update(issueId, { priority });
+          }}
           onAssigneeChange={(assigneeAgentId) => {
-            void mutations.update(issueId, { assigneeAgentId });
+            // Agent and human assignees are mutually exclusive — picking an
+            // agent clears any human assignee in the same PATCH.
+            void mutations.update(issueId, {
+              assigneeAgentId,
+              assigneeUserId: null,
+            });
+          }}
+          onAssigneeUserChange={(assigneeUserId) => {
+            // Picking a human clears any agent assignee in the same PATCH.
+            void mutations.update(issueId, {
+              assigneeUserId,
+              assigneeAgentId: null,
+            });
           }}
           onProjectChange={(projectId) => {
             void mutations.update(issueId, { projectId });
@@ -207,6 +363,25 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           onBlockedByChange={(blockedByIssueIds) => {
             void mutations.update(issueId, { blockedByIssueIds });
           }}
+          onLabelsChange={(labelIds) => {
+            void mutations.update(issueId, { labelIds });
+          }}
+          onParentChange={(parentId) => {
+            void mutations.update(issueId, { parentId });
+          }}
+          onMonitorChange={(monitor) => {
+            // Setting the monitor replaces executionPolicy with the schedule.
+            // Our tasks carry no reviewer/approver policy, so a full replace is
+            // safe (matches upstream's executionPolicy.monitor write).
+            void mutations.update(issueId, {
+              executionPolicy: { monitor },
+            });
+          }}
+          onMonitorClear={() => {
+            // A null executionPolicy clears the monitor schedule entirely.
+            void mutations.update(issueId, { executionPolicy: null });
+          }}
+          onCheckNow={(id) => mutations.monitorCheckNow(id)}
         />
       </aside>
 

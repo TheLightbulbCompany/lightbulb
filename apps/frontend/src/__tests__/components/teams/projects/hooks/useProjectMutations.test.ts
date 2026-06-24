@@ -55,6 +55,30 @@ describe("useProjectMutations", () => {
     });
   });
 
+  test("update patches a lifecycle status ({ status })", async () => {
+    mockPatch.mockResolvedValue({ id: "p_1", status: "in_progress" });
+    const { result } = renderHook(() => useProjectMutations());
+    await act(async () => {
+      await result.current.update("p_1", { status: "in_progress" });
+    });
+    expect(mockPatch).toHaveBeenCalledWith("/projects/p_1", {
+      status: "in_progress",
+    });
+    // detail key + list key revalidated.
+    expect(mockMutate).toHaveBeenCalledTimes(2);
+  });
+
+  test("update forwards goal_ids (replace-semantics link set)", async () => {
+    mockPatch.mockResolvedValue({ id: "p_1" });
+    const { result } = renderHook(() => useProjectMutations());
+    await act(async () => {
+      await result.current.update("p_1", { goal_ids: ["g_1", "g_2"] });
+    });
+    expect(mockPatch).toHaveBeenCalledWith("/projects/p_1", {
+      goal_ids: ["g_1", "g_2"],
+    });
+  });
+
   test("update error rejects + does NOT invalidate cache", async () => {
     mockPatch.mockRejectedValue(new Error("server boom"));
     const { result } = renderHook(() => useProjectMutations());

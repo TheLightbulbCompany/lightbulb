@@ -1,5 +1,7 @@
 import { describe, test, expect } from "vitest";
 import {
+  applyIssueFilters,
+  countActiveIssueFilters,
   defaultIssueFilterState,
   issueFilterArraysEqual,
   issueFilterLabel,
@@ -9,6 +11,11 @@ import {
   toggleIssueFilterValue,
   type IssueFilterState,
 } from "@/components/teams/shared/lib/issueFilters";
+import type { Issue } from "@/components/teams/shared/types";
+
+function makeIssue(partial: Partial<Issue> & Pick<Issue, "id">): Issue {
+  return { title: partial.id, status: "todo", ...partial };
+}
 
 describe("defaultIssueFilterState", () => {
   test("is fully empty / inactive", () => {
@@ -67,5 +74,88 @@ describe("ordering + presets exported", () => {
     const all = issueQuickFilterPresets.find((p) => p.label === "All");
     expect(all).toBeDefined();
     expect(all?.statuses).toEqual([]);
+  });
+});
+
+describe("countActiveIssueFilters", () => {
+  test("default state has no active facets", () => {
+    expect(countActiveIssueFilters(defaultIssueFilterState)).toBe(0);
+  });
+
+  test("counts distinct facets, not the sum of selected values", () => {
+    const state: IssueFilterState = {
+      ...defaultIssueFilterState,
+      statuses: ["todo", "done"],
+      priorities: ["high"],
+      liveOnly: true,
+    };
+    // 2 statuses + 1 priority + liveOnly → 3 facets (NOT 4 values).
+    expect(countActiveIssueFilters(state)).toBe(3);
+  });
+});
+
+describe("applyIssueFilters", () => {
+  const issues: Issue[] = [
+    makeIssue({ id: "a", status: "todo", priority: "high", assigneeAgentId: "ag1" }),
+    makeIssue({ id: "b", status: "done", priority: "low" }),
+    makeIssue({
+      id: "c",
+      status: "todo",
+      labels: [{ id: "l1", name: "bug" }],
+      project: { id: "p1", name: "Core" },
+    }),
+  ];
+
+  test("returns all issues when the state is empty", () => {
+    expect(applyIssueFilters(issues, defaultIssueFilterState)).toHaveLength(3);
+  });
+
+  test("filters by status", () => {
+    const result = applyIssueFilters(issues, {
+      ...defaultIssueFilterState,
+      statuses: ["done"],
+    });
+    expect(result.map((i) => i.id)).toEqual(["b"]);
+  });
+
+  test("filters by priority", () => {
+    const result = applyIssueFilters(issues, {
+      ...defaultIssueFilterState,
+      priorities: ["high"],
+    });
+    expect(result.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  test("filters by label id (nested objects, not flat ids)", () => {
+    const result = applyIssueFilters(issues, {
+      ...defaultIssueFilterState,
+      labels: ["l1"],
+    });
+    expect(result.map((i) => i.id)).toEqual(["c"]);
+  });
+
+  test("filters by project id", () => {
+    const result = applyIssueFilters(issues, {
+      ...defaultIssueFilterState,
+      projects: ["p1"],
+    });
+    expect(result.map((i) => i.id)).toEqual(["c"]);
+  });
+
+  test("__unassigned matches issues with no assignee", () => {
+    const result = applyIssueFilters(issues, {
+      ...defaultIssueFilterState,
+      assignees: ["__unassigned"],
+    });
+    expect(result.map((i) => i.id).sort()).toEqual(["b", "c"]);
+  });
+
+  test("liveOnly keeps only issues in the supplied live-id set", () => {
+    const result = applyIssueFilters(
+      issues,
+      { ...defaultIssueFilterState, liveOnly: true },
+      { liveIssueIds: new Set(["a"]) },
+    );
+    expect(result.map((i) => i.id)).toEqual(["a"]);
   });
 });

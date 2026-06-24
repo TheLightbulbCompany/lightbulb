@@ -764,6 +764,27 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def wake_agent(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+        body: Optional[dict] = None,
+    ) -> dict:
+        """Wake an agent to (re)attempt work.
+
+        Maps to ``POST /api/agents/{agentId}/wakeup`` (upstream
+        ``wakeAgentSchema``). The body's ``source``/``triggerDetail``/``reason``
+        all default upstream, so an empty wake is valid; the failed-run Retry
+        passes ``{"source": "on_demand", "reason": "retry"}`` to re-run the
+        agent on demand.
+        """
+        return await self._post(
+            f"/api/agents/{agent_id}/wakeup",
+            json=body or {"source": "on_demand"},
+            session_cookie=session_cookie,
+        )
+
     async def update_agent(
         self,
         *,
@@ -1241,6 +1262,25 @@ class PaperclipAdminClient:
         """
         return await self._delete(
             f"/api/issues/{issue_id}/inbox-archive",
+            session_cookie=session_cookie,
+        )
+
+    async def monitor_check_now(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Trigger an immediate monitor re-check on an issue.
+
+        Maps to ``POST /api/issues/{id}/monitor/check-now``. The monitor
+        schedule itself lives on the issue's ``executionPolicy.monitor`` and
+        is set via the issue PATCH; this endpoint re-runs the check now
+        rather than waiting for ``nextCheckAt``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/monitor/check-now",
+            json={},
             session_cookie=session_cookie,
         )
 

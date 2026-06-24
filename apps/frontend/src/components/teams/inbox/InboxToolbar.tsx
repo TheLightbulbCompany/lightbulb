@@ -7,7 +7,7 @@
 //
 // The search/filters/actions cluster composes the editorial atom library —
 // `PanelToolbar` for the search-row scaffold, `EditorialButton` for the
-// primary "New issue" CTA + secondary "Mark all as read" trigger. Tabs
+// primary "New task" CTA + secondary "Mark all as read" trigger. Tabs
 // retain their bespoke pill styling (does not match `PanelTabs`'s underline
 // look) and stay as raw <button role="tab"> elements.
 
@@ -57,7 +57,7 @@ export interface InboxToolbarProps {
   unreadCount: number;
   onMarkAllRead: () => void;
 
-  /** Fired when the user clicks the primary "New issue" button. */
+  /** Fired when the user clicks the primary "New task" button. */
   onNewIssue: () => void;
 }
 
@@ -156,7 +156,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
     />
   );
 
-  // Actions slot — primary "+ New issue" + secondary "Mark all as read"
+  // Actions slot — primary "+ New task" + secondary "Mark all as read"
   // wrapped in the AlertDialog confirmation flow. The Inbox is list-only
   // (the kanban board lives on the Tasks page), so there is no view-mode
   // toggle here.
@@ -170,7 +170,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
         className="shrink-0"
       >
         <Plus className="h-3 w-3" />
-        <span>New issue</span>
+        <span>New task</span>
       </EditorialButton>
 
       <AlertDialog>

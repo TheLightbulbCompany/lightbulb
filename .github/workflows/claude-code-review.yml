@@ -36,10 +36,10 @@ jobs:
             You are reviewing pull request #${{ github.event.pull_request.number }}
             of ${{ github.repository }} as a rigorous senior reviewer.
 
-            Read the full diff (run `gh pr diff ${{ github.event.pull_request.number }}`)
-            and open the changed files for surrounding context. Then WRITE your
-            review as your response — it is posted automatically as the PR comment.
-            Do NOT use any tool to post a comment yourself.
+            Review the changes in this pull request — the diff is provided to you;
+            open the changed files for surrounding context as needed. Then WRITE
+            your review as your response — it is posted automatically as the PR
+            comment. Do NOT use any tool to post a comment yourself.
 
             Review for, in priority order:
             - Correctness: data-shape mismatches (a component reading fields the
@@ -67,10 +67,10 @@ jobs:
           # reviewed cleanly yet left zero comments on the PR.
           track_progress: true
           use_sticky_comment: true
-          # The agent has NO Bash by default; grant READ-only gh so it can fetch
-          # the diff. Posting is handled by track_progress above, NOT by gh — the
-          # old prompt told the agent to `gh api` a review, which it could not run.
-          claude_args: '--allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          # Do NOT set `claude_args: --allowedTools ...` here: that REPLACES the
+          # action's default tool set, which would drop the built-in
+          # comment-posting tool that track_progress relies on — and the agent
+          # gets the diff from track_progress mode, so it needs no extra tools.
 
       # Fail-loud guard: the action reports `success` even when the agent
       # crashes on turn 1 (is_error=true, $0 spent, nothing reviewed) — a green
@@ -89,14 +89,14 @@ jobs:
             echo "::error::Claude review step outcome was '${REVIEW_OUTCOME}', not success."
             exit 1
           fi
-          # The action does not always set execution_file (e.g. it aborts the
-          # review of an untrusted PR head whose diff contains secret-handling /
-          # injection-like content, and on some clean runs the output is hidden
-          # for security). Treat a missing file as a WARNING, not a red check —
-          # failing here false-reds legitimate PRs. The hard signal below is the
-          # one the action emits reliably when the agent crashes on turn 1.
+          # The action does not always set execution_file: on a PR that edits
+          # this workflow it skips entirely (it requires the file to match the
+          # default branch — "works once you merge"), and on some clean runs the
+          # output is hidden for security. Treat a missing file as a WARNING, not
+          # a red check — failing here would false-red those PRs. The hard signal
+          # below is the one the action emits reliably when the agent crashes.
           if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "${EXECUTION_FILE}" ]; then
-            echo "::warning::Claude review produced no execution output file — could not confirm a completed review (the action may have aborted on untrusted-head content, or hidden output). If reviews seem dead, check the run duration (a real review takes minutes) and the CLAUDE_CODE_OAUTH_TOKEN secret."
+            echo "::warning::Claude review produced no execution output file — could not confirm a completed review (the action skips PRs that edit this workflow until merged, and hides output on some runs). If reviews seem dead on normal PRs, check the run duration (a real review takes minutes) and the CLAUDE_CODE_OAUTH_TOKEN secret."
             exit 0
           fi
           # Whitespace-strip so the key match is tolerant of pretty-printing.

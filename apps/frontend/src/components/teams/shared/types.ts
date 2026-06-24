@@ -181,6 +181,10 @@ export interface Issue {
   productivityReview?: IssueProductivityReview | null;
   unread?: boolean | null;
   archivedAt?: string | null;
+  /** Identifiers of issues this one references (e.g. ["ISO-5","ISO-7"]).
+   * Surfaced flat by upstream alongside a richer relatedWork; only the flat
+   * identifier list is rendered as read-only "Related Tasks" chips. */
+  referencedIssueIdentifiers?: string[] | null;
 }
 
 export interface Approval {

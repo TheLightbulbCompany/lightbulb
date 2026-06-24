@@ -125,6 +125,28 @@ def test_patch_issue_accepts_parent_user_assignee_and_labels():
     }
 
 
+def test_patch_issue_forwards_execution_policy_monitor():
+    """The monitor schedule rides on executionPolicy. The alias generator only
+    renames model fields, so the nested monitor dict's already-camelCase keys
+    (nextCheckAt) pass through verbatim — upstream updateIssueSchema validates
+    the inner shape."""
+    from routers.teams.schemas import PatchIssueBody
+
+    body = PatchIssueBody(execution_policy={"monitor": {"nextCheckAt": "2026-07-01T09:00:00Z"}})
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {
+        "executionPolicy": {"monitor": {"nextCheckAt": "2026-07-01T09:00:00Z"}}
+    }
+
+
+def test_patch_issue_forwards_null_execution_policy_to_clear_monitor():
+    """An explicit null executionPolicy clears the monitor. exclude_unset keeps
+    the explicit null so the clear PATCH is not silently dropped."""
+    from routers.teams.schemas import PatchIssueBody
+
+    body = PatchIssueBody.model_validate({"executionPolicy": None})
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {"executionPolicy": None}
+
+
 def test_create_goal_accepts_level_and_status():
     from routers.teams.schemas import CreateGoalBody
 

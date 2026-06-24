@@ -1244,6 +1244,25 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def monitor_check_now(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Trigger an immediate monitor re-check on an issue.
+
+        Maps to ``POST /api/issues/{id}/monitor/check-now``. The monitor
+        schedule itself lives on the issue's ``executionPolicy.monitor`` and
+        is set via the issue PATCH; this endpoint re-runs the check now
+        rather than waiting for ``nextCheckAt``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/monitor/check-now",
+            json={},
+            session_cookie=session_cookie,
+        )
+
     async def mark_issue_read(
         self,
         *,

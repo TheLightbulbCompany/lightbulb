@@ -235,6 +235,25 @@ def test_unarchive_issue(client, monkeypatch):
     )
 
 
+def test_monitor_check_now(client, monkeypatch):
+    """`POST /teams/issues/{id}/monitor/check-now` re-runs the monitor now."""
+    admin = MagicMock()
+    admin.monitor_check_now = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/monitor/check-now",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.monitor_check_now.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
 def test_mark_issue_read(client, monkeypatch):
     admin = MagicMock()
     admin.mark_issue_read = AsyncMock(return_value={"ok": True})

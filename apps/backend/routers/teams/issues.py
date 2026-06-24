@@ -183,6 +183,16 @@ async def unarchive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     )
 
 
+@router.post("/issues/{issue_id}/monitor/check-now")
+async def monitor_check_now(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Trigger an immediate monitor re-check. Maps to upstream
+    POST /api/issues/{id}/monitor/check-now."""
+    return await _agents._admin().monitor_check_now(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
 @router.post("/issues/{issue_id}/mark-read")
 async def mark_issue_read(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Mark an issue as read for the signed-in user.

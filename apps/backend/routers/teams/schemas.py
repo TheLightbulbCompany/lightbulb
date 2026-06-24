@@ -100,6 +100,12 @@ class PatchIssueBody(_Strict):
     parent_id: Optional[str] = None
     assignee_user_id: Optional[str] = None
     label_ids: Optional[list[str]] = None
+    # Execution policy passthrough — carries the monitor schedule
+    # {monitor: {nextCheckAt, notes, serviceName, ...}}. Forwarded verbatim;
+    # upstream updateIssueSchema validates the nested shape. (Inner keys must
+    # already be camelCase — the alias generator only renames model fields,
+    # not nested dict contents.)
+    execution_policy: Optional[dict] = None
 
 
 class AddIssueCommentBody(_Strict):

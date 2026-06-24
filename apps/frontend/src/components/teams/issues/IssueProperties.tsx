@@ -35,6 +35,8 @@ import { AssigneePicker } from "./pickers/AssigneePicker";
 import { ProjectPicker } from "./pickers/ProjectPicker";
 import { LabelPicker } from "./pickers/LabelPicker";
 import { ParentPicker } from "./pickers/ParentPicker";
+import { StageParticipantPicker } from "./pickers/StageParticipantPicker";
+import { stageParticipantValues } from "./executionPolicy";
 import { IssueRelations } from "./IssueRelations";
 
 export interface IssuePropertiesProps {
@@ -67,6 +69,15 @@ export interface IssuePropertiesProps {
   ) => void;
   /** Clear the scheduled monitor (sends executionPolicy: null). */
   onMonitorClear?: () => void;
+  /** Set the FULL desired reviewer participant set (replace semantics —
+   * `agent:<id>` / `user:<id>` values). The host rebuilds the review stage in
+   * executionPolicy, preserving monitor + approvers. Optional — without it the
+   * Reviewers row stays read-only chips. */
+  onReviewersChange?: (values: string[]) => void;
+  /** Set the FULL desired approver participant set (replace semantics). The
+   * host rebuilds the approval stage, preserving monitor + reviewers. Optional —
+   * without it the Approvers row stays read-only chips. */
+  onApproversChange?: (values: string[]) => void;
   /** Trigger an immediate monitor re-check. Returns the underlying promise so
    * the row can show a transient checking/done state and tolerate errors. */
   onCheckNow?: (issueId: string) => Promise<void>;
@@ -407,6 +418,69 @@ function MonitorRow({
   );
 }
 
+/** Reviewers / Approvers rail row. Editable when the host wires the change
+ * handler — a multi-select over agents + members whose selection drives the
+ * matching executionPolicy stage. Falls back to read-only chips (or an em dash)
+ * when no handler is wired. The participant labels resolve from agents/members;
+ * an unresolved id reads as a truncated fallback so a not-yet-loaded roster
+ * never blanks the row. */
+function StageRow({
+  label,
+  noun,
+  values,
+  agents,
+  members,
+  onChange,
+}: {
+  label: string;
+  noun: string;
+  values: string[];
+  agents: CompanyAgent[];
+  members: CompanyMember[];
+  onChange?: (values: string[]) => void;
+}) {
+  const valueLabel = (value: string): string => {
+    if (value.startsWith("agent:")) {
+      const id = value.slice("agent:".length);
+      return agents.find((a) => a.id === id)?.name ?? id.slice(0, 8);
+    }
+    if (value.startsWith("user:")) {
+      const id = value.slice("user:".length);
+      const member = members.find((m) => m.userId === id);
+      return member?.name ?? member?.email ?? "Unknown member";
+    }
+    return value;
+  };
+
+  return (
+    <PropertyRow label={label}>
+      {onChange ? (
+        <StageParticipantPicker
+          selected={values}
+          agents={agents}
+          members={members}
+          onChange={onChange}
+          noun={noun}
+        />
+      ) : values.length > 0 ? (
+        <span className="flex flex-wrap gap-1">
+          {values.map((value) => (
+            <span
+              key={value}
+              className="rounded px-1.5 py-0.5 text-xs"
+              style={CHIP_STYLE}
+            >
+              {valueLabel(value)}
+            </span>
+          ))}
+        </span>
+      ) : (
+        <EmptyDash />
+      )}
+    </PropertyRow>
+  );
+}
+
 export function IssueProperties({
   issue,
   agents = [],
@@ -422,6 +496,8 @@ export function IssueProperties({
   onParentChange,
   onMonitorChange,
   onMonitorClear,
+  onReviewersChange,
+  onApproversChange,
   onCheckNow,
   className,
 }: IssuePropertiesProps) {
@@ -535,6 +611,26 @@ export function IssueProperties({
           <EmptyDash />
         )}
       </PropertyRow>
+      {/* Reviewers + Approvers sit beside Monitor: all three are facets of the
+          same executionPolicy, so grouping them keeps the gate controls
+          together. Each drives one stage type; the host's merge helper keeps
+          them (and Monitor) from clobbering one another. */}
+      <StageRow
+        label="Reviewers"
+        noun="reviewer"
+        values={stageParticipantValues(issue.executionPolicy, "review")}
+        agents={agents}
+        members={members}
+        onChange={onReviewersChange}
+      />
+      <StageRow
+        label="Approvers"
+        noun="approver"
+        values={stageParticipantValues(issue.executionPolicy, "approval")}
+        agents={agents}
+        members={members}
+        onChange={onApproversChange}
+      />
       <MonitorRow
         issueId={issue.id}
         monitor={issue.executionPolicy?.monitor ?? null}

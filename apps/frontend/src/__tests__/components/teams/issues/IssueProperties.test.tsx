@@ -388,4 +388,88 @@ describe("IssueProperties", () => {
     await user.click(screen.getByRole("button", { name: /Check now/i }));
     expect(onCheckNow).toHaveBeenCalledWith("iss_1");
   });
+
+  // ── Reviewers / Approvers rows ─────────────────────────────────────────────
+  // Each row is a multi-select over agents + members whose selection drives the
+  // matching executionPolicy stage. The row hands the host the FULL desired
+  // participant-value set (`agent:<id>` / `user:<id>`, replace semantics); the
+  // host rebuilds the stage. These tests assert the row surfaces the right
+  // values and fires onReviewersChange / onApproversChange with the full set.
+
+  const reviewAgents: CompanyAgent[] = [
+    { id: "ag_rev", name: "Reviewer Bot" },
+  ];
+
+  test("Reviewers row renders an 'Add reviewer' affordance when editable", () => {
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        agents={reviewAgents}
+        {...requiredHandlers()}
+        onReviewersChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Reviewers")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Add reviewer/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("selecting a reviewer fires onReviewersChange with the agent value", async () => {
+    const user = userEvent.setup();
+    const onReviewersChange = vi.fn<(values: string[]) => void>();
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        agents={reviewAgents}
+        {...requiredHandlers()}
+        onReviewersChange={onReviewersChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Add reviewer/i }));
+    await user.click(await screen.findByText("Reviewer Bot"));
+    expect(onReviewersChange).toHaveBeenCalledWith(["agent:ag_rev"]);
+  });
+
+  test("selecting an approver fires onApproversChange with the agent value", async () => {
+    const user = userEvent.setup();
+    const onApproversChange = vi.fn<(values: string[]) => void>();
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        agents={reviewAgents}
+        {...requiredHandlers()}
+        onApproversChange={onApproversChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Add approver/i }));
+    await user.click(await screen.findByText("Reviewer Bot"));
+    expect(onApproversChange).toHaveBeenCalledWith(["agent:ag_rev"]);
+  });
+
+  test("Reviewers row resolves an existing stage participant into a chip", () => {
+    const issue: Issue = {
+      ...baseIssue,
+      executionPolicy: {
+        stages: [
+          {
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: "ag_rev", userId: null }],
+          },
+        ],
+      },
+    };
+    render(
+      <IssueProperties
+        issue={issue}
+        agents={reviewAgents}
+        {...requiredHandlers()}
+        onReviewersChange={vi.fn()}
+      />,
+    );
+    // The applied reviewer renders as a named chip (resolved off the agents
+    // prop), proving stageParticipantValues reads the review stage correctly.
+    expect(screen.getByText("Reviewer Bot")).toBeInTheDocument();
+  });
 });

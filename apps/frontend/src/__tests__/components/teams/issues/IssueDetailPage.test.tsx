@@ -1,6 +1,11 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type {
+  Issue,
+  IssueExecutionPolicy,
+  CompanyAgent,
+} from "@/components/teams/shared/types";
 
 // Mock all hooks before importing the component under test.
 vi.mock("@/components/teams/issues/hooks/useIssueDetail", () => ({
@@ -226,6 +231,133 @@ describe("IssueDetailPage", () => {
       assigneeAgentId: "ag_1",
       assigneeUserId: null,
     });
+  });
+
+  // ── executionPolicy merge semantics ────────────────────────────────────────
+  // The Monitor, Reviewers, and Approvers rows all write the issue's
+  // executionPolicy, which has REPLACE semantics on the wire. The detail page
+  // routes every edit through patchExecutionPolicy, which read-modify-writes the
+  // current policy so editing one sub-field never wipes the others. These are
+  // the load-bearing correctness tests for that invariant.
+
+  // Wire /agents (so the reviewer picker has a roster) + /projects; everything
+  // else returns empty. Returns the spied mock so a test can override per-call.
+  function wireAgentsRead(agents: CompanyAgent[]) {
+    const readMock = vi.fn((path: string) => {
+      switch (path) {
+        case "/agents":
+          return { data: { agents }, isLoading: false, error: null };
+        case "/projects":
+          return { data: { projects: [] }, isLoading: false, error: null };
+        case "/members":
+          return { data: { members: [] }, isLoading: false, error: null };
+        default:
+          return { data: { issues: [] }, isLoading: false, error: null, mutate: vi.fn() };
+      }
+    });
+    vi.mocked(useTeamsApi).mockReturnValue({
+      read: readMock,
+      post: vi.fn(),
+      patch: vi.fn(),
+      del: vi.fn(),
+    } as unknown as ReturnType<typeof useTeamsApi>);
+  }
+
+  test("editing the monitor preserves existing reviewer/approver stages", async () => {
+    const user = userEvent.setup();
+    wireAgentsRead([{ id: "ag_rev", name: "Reviewer Bot" }]);
+    mockUpdate.mockResolvedValue({});
+
+    // An issue that already has a review stage AND a scheduled monitor.
+    const policy: IssueExecutionPolicy = {
+      mode: "normal",
+      monitor: { nextCheckAt: "2026-06-01T00:00:00.000Z", notes: null, serviceName: null },
+      stages: [
+        {
+          id: "stg_rev",
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: "p1", type: "agent", agentId: "ag_rev", userId: null }],
+        },
+      ],
+    };
+    const issue: Issue = {
+      id: "iss_1",
+      title: "Gated task",
+      status: "todo",
+      executionPolicy: policy,
+    };
+    vi.mocked(useIssueDetail).mockReturnValue({
+      issue,
+      comments: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+
+    render(<IssueDetailPage issueId="iss_1" />);
+
+    // Re-schedule the monitor via the rail's Edit → Schedule flow.
+    await user.click(screen.getByRole("button", { name: /^Edit$/i }));
+    await user.clear(screen.getByLabelText("Re-check at"));
+    await user.type(screen.getByLabelText("Re-check at"), "2026-08-01T09:00");
+    const editor = screen.getByRole("dialog");
+    await user.click(within(editor).getByRole("button", { name: /^Schedule$/i }));
+
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    const sent = mockUpdate.mock.calls[0][1] as { executionPolicy: IssueExecutionPolicy };
+    // The monitor changed…
+    expect(sent.executionPolicy.monitor?.nextCheckAt).not.toBe(
+      "2026-06-01T00:00:00.000Z",
+    );
+    // …but the review stage SURVIVED the edit (the core regression guard).
+    const reviewStage = sent.executionPolicy.stages?.find((s) => s.type === "review");
+    expect(reviewStage).toBeDefined();
+    expect(reviewStage?.participants).toEqual([
+      expect.objectContaining({ type: "agent", agentId: "ag_rev" }),
+    ]);
+  });
+
+  test("editing reviewers preserves an existing monitor", async () => {
+    const user = userEvent.setup();
+    wireAgentsRead([{ id: "ag_rev", name: "Reviewer Bot" }]);
+    mockUpdate.mockResolvedValue({});
+
+    // An issue with only a scheduled monitor and no stages yet.
+    const monitor = {
+      nextCheckAt: "2026-06-01T00:00:00.000Z",
+      notes: "keep watching",
+      serviceName: "CI",
+    };
+    const issue: Issue = {
+      id: "iss_1",
+      title: "Monitored task",
+      status: "todo",
+      executionPolicy: { mode: "normal", monitor, stages: [] },
+    };
+    vi.mocked(useIssueDetail).mockReturnValue({
+      issue,
+      comments: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+
+    render(<IssueDetailPage issueId="iss_1" />);
+
+    // Add a reviewer via the rail's Reviewers row.
+    await user.click(screen.getByRole("button", { name: /Add reviewer/i }));
+    await user.click(await screen.findByText("Reviewer Bot"));
+
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    const sent = mockUpdate.mock.calls[0][1] as { executionPolicy: IssueExecutionPolicy };
+    // The review stage was created…
+    const reviewStage = sent.executionPolicy.stages?.find((s) => s.type === "review");
+    expect(reviewStage?.participants).toEqual([
+      expect.objectContaining({ type: "agent", agentId: "ag_rev" }),
+    ]);
+    // …and the monitor SURVIVED (the inverse regression guard).
+    expect(sent.executionPolicy.monitor).toEqual(monitor);
   });
 
   test("Delete issue action confirms then removes + navigates back to /teams", async () => {

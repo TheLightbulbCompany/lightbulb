@@ -3,25 +3,15 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      # write (was read) so the review can actually post inline comments +
+      # a summary. The previous config could not post even if it had run.
+      pull-requests: write
       issues: read
       id-token: write
 
@@ -29,19 +19,56 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # full history (was depth 1) so the PR's merge-base resolves for the diff
+          fetch-depth: 0
 
       - name: Run Claude Code Review
-        id: claude-review
+        id: claude_review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # Post the review's summary report as a PR comment (not just inline
-          # comments) so a clean review is visibly confirmed rather than silent.
-          display_report: true
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          # Direct review prompt instead of the `/code-review` plugin: the plugin
+          # crashed on turn 1 with "Internal error: directory mismatch for
+          # tsconfig.json" on every PR (monorepo with many tsconfig.json files),
+          # spent $0, reviewed nothing, and the step still reported success —
+          # a green check that never looked at a line of the diff.
+          prompt: |
+            You are reviewing pull request #${{ github.event.pull_request.number }}
+            of ${{ github.repository }} as a rigorous senior reviewer.
 
+            Steps:
+            1. Run `gh pr diff ${{ github.event.pull_request.number }}` to read the
+               full diff, and open the changed files for surrounding context.
+            2. Post your findings as a GitHub PR review with inline comments
+               anchored to specific lines (via `gh api`), plus ONE short summary
+               comment. If there are genuinely no issues, post a one-line summary
+               saying the review is clean — never stay silent.
+
+            Review for, in priority order:
+            - Correctness: data-shape mismatches (a component reading fields the
+              BFF/API or TS types do not actually provide, so it renders
+              `undefined`), unguarded array access, missing null/error handling,
+              and broken request/response contracts (e.g. a request body whose
+              keys the server's schema silently strips).
+            - Theme discipline: this app uses a cream/forest editorial theme on
+              CSS variables (`--cream --ink --ink-soft --mute --edge --forest
+              --danger --warn`). Flag raw hex / `rgba()` literals, shadcn semantic
+              classes (`text-muted-foreground`, `bg-accent`, `bg-primary`,
+              `border-border`), and ESPECIALLY raw shadcn `Dialog`/`DialogContent`
+              used without theme overrides — its default is `bg-black`/white text,
+              i.e. a black modal on a cream surface.
+            - Missing states: data surfaces lacking loading / empty / error states.
+            - Security and obvious performance problems.
+
+            Be concrete: every finding cites `file:line` and the specific fix.
+            Do not approve silently — your summary must state what you reviewed.
+          # Posts the review's summary as a PR comment so a clean review is
+          # visibly confirmed, not a silent green check.
+          display_report: true
+
+      # Temporary: print the action's outputs so the fail-loud guard can be
+      # wired to the exact output key (the old setup proved a crash can report
+      # success, so a green check must require an actual completed review).
+      - name: Surface review outputs (for fail-loud wiring)
+        if: always()
+        run: 'echo "claude_review outputs: ${{ toJSON(steps.claude_review.outputs) }}"'

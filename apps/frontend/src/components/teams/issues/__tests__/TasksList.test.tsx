@@ -12,6 +12,12 @@ function issue(partial: Partial<Issue> & Pick<Issue, "id" | "title" | "status">)
   return { identifier: partial.id.toUpperCase(), priority: null, ...partial };
 }
 
+// Roster passed to TasksList so it can resolve assignee agent ids to names.
+const AGENTS: { id: string; name: string }[] = [
+  { id: "agent-friday", name: "Friday" },
+  { id: "agent-atlas", name: "Atlas" },
+];
+
 const onUpdateIssue = vi.fn();
 const onNewTask = vi.fn();
 
@@ -102,5 +108,88 @@ describe("TasksList", () => {
     const inProg = container.querySelector('[data-kanban-column="in_progress"]');
     expect(inProg).not.toBeNull();
     expect(within(inProg as HTMLElement).getByText("Board task")).toBeInTheDocument();
+  });
+
+  it("renders an assignee chip, priority icon, and label chips on a row", () => {
+    const issues = [
+      issue({
+        id: "iso-5",
+        title: "Rich row",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: "agent-friday",
+        labels: [
+          { id: "l1", name: "backend" },
+          { id: "l2", name: "urgent" },
+          { id: "l3", name: "overflow" },
+        ],
+      }),
+    ];
+    render(
+      <TasksList
+        issues={issues}
+        agents={AGENTS}
+        onUpdateIssue={onUpdateIssue}
+        onNewTask={onNewTask}
+      />,
+    );
+    // Assignee resolves to the roster name (not the raw id).
+    expect(screen.getByText("Friday")).toBeInTheDocument();
+    // Labels show the first two chips + a "+1" overflow marker for the third
+    // (the priority icon is glyph-only, so the chips carry the assertion).
+    expect(screen.getByText("backend")).toBeInTheDocument();
+    expect(screen.getByText("urgent")).toBeInTheDocument();
+    expect(screen.getByText("+1")).toBeInTheDocument();
+    expect(screen.queryByText("overflow")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unassigned")).not.toBeInTheDocument();
+  });
+
+  it("renders Unassigned when a row has no assignee", () => {
+    const issues = [issue({ id: "iso-6", title: "Orphan", status: "todo" })];
+    render(
+      <TasksList
+        issues={issues}
+        agents={AGENTS}
+        onUpdateIssue={onUpdateIssue}
+        onNewTask={onNewTask}
+      />,
+    );
+    expect(screen.getByText("Unassigned")).toBeInTheDocument();
+  });
+
+  it("lights the board live indicator for tasks in liveIssueIds", () => {
+    const issues = [
+      issue({ id: "iso-40", title: "Running task", status: "in_progress" }),
+    ];
+    const { container } = render(
+      <TasksList
+        issues={issues}
+        agents={AGENTS}
+        liveIssueIds={new Set(["iso-40"])}
+        onUpdateIssue={onUpdateIssue}
+        onNewTask={onNewTask}
+      />,
+    );
+    // List row lights its live dot.
+    expect(screen.getByTestId("task-row-live-dot")).toBeInTheDocument();
+    // And the board card lights its live dot once switched to board view.
+    fireEvent.click(screen.getByRole("button", { name: /board view/i }));
+    expect(
+      container.querySelector('[data-testid="kanban-card-live-dot"]'),
+    ).not.toBeNull();
+  });
+
+  it("does not light the live indicator for tasks absent from liveIssueIds", () => {
+    const issues = [issue({ id: "iso-41", title: "Idle task", status: "todo" })];
+    render(
+      <TasksList
+        issues={issues}
+        agents={AGENTS}
+        liveIssueIds={new Set(["some-other-id"])}
+        onUpdateIssue={onUpdateIssue}
+        onNewTask={onNewTask}
+      />,
+    );
+    expect(screen.queryByTestId("task-row-live-dot")).not.toBeInTheDocument();
   });
 });

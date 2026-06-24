@@ -22,7 +22,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import { PanelTabs } from "@/components/teams/shell";
@@ -32,6 +32,7 @@ import { ProjectDescription } from "./ProjectDescription";
 import { TasksList } from "@/components/teams/issues/TasksList";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
+import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useProjectDetail } from "./hooks/useProjectDetail";
 import { useProjectMutations } from "./hooks/useProjectMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -58,8 +59,22 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   const { mutate } = useSWRConfig();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
+  // Live-agent-runs feed → ids of this project's tasks with an active run,
+  // lighting the board "Live" badge + list-row live dot (same derivation as
+  // the dashboard / IssuesPanel).
+  const { runs: liveRuns } = useLiveRuns();
   const agents = agentsResp?.agents ?? [];
   const projects = projectsResp?.projects ?? [];
+
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of liveRuns) {
+      if (run.issueId && (run.status === "queued" || run.status === "running")) {
+        ids.add(run.issueId);
+      }
+    }
+    return ids;
+  }, [liveRuns]);
 
   const [tab, setTab] = useState<ProjectTab>("overview");
   const [creating, setCreating] = useState(false);
@@ -178,6 +193,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
         <TasksList
           issues={issues}
           agents={agents}
+          liveIssueIds={liveIssueIds}
           isLoading={issuesLoading}
           onUpdateIssue={handleUpdateIssue}
           onNewTask={() => setCreating(true)}

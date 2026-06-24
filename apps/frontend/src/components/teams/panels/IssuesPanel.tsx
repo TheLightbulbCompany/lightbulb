@@ -11,6 +11,7 @@ import {
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { TasksList } from "@/components/teams/issues/TasksList";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
+import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   CompanyAgent,
@@ -43,8 +44,22 @@ export function IssuesPanel() {
   const { data: projectsData } = read<{ projects: IssueProject[] }>(
     "/projects",
   );
+  // Live-agent-runs feed → the set of task ids with an active run, which lights
+  // the board "Live" badge + the list-row live dot. Derived the same way the
+  // dashboard does (useLiveRuns → isRunActive); SWR self-refreshes the feed.
+  const { runs: liveRuns } = useLiveRuns();
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
+
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of liveRuns) {
+      if (run.issueId && (run.status === "queued" || run.status === "running")) {
+        ids.add(run.issueId);
+      }
+    }
+    return ids;
+  }, [liveRuns]);
 
   const issues = data?.issues;
   const filtered = useMemo(() => {
@@ -134,6 +149,7 @@ export function IssuesPanel() {
       <TasksList
         issues={filtered}
         agents={agentsData?.agents ?? []}
+        liveIssueIds={liveIssueIds}
         isLoading={isLoading}
         onUpdateIssue={handleUpdateIssue}
         onNewTask={() => setCreating(true)}

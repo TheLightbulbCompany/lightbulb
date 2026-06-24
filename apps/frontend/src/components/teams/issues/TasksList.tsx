@@ -49,6 +49,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
+import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
+import { Identity } from "@/components/teams/shared/components/Identity";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { PanelEmptyState } from "@/components/teams/shell";
 import {
@@ -59,6 +61,14 @@ import type {
   IssueBlockerAttention,
   Issue,
 } from "@/components/teams/shared/types";
+
+// Shared chip styling for label pills, lifted from IssueProperties' Labels
+// row so the trailing label chips read identically to the detail rail.
+const LABEL_CHIP_STYLE = {
+  background: "var(--cream-deeper)",
+  color: "var(--ink-soft)",
+  border: "1px solid var(--edge)",
+} as const;
 
 export type TasksViewMode = "list" | "board";
 export type TasksSortField = "status" | "title" | "updated" | "created";
@@ -394,6 +404,9 @@ interface TaskRowProps {
   hasChildren: boolean;
   expanded: boolean;
   descendantCount: number;
+  isLive: boolean;
+  /** Resolves the assignee agent's display name (null = unassigned/unknown). */
+  assigneeName: string | null;
   onToggleExpand: () => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
@@ -404,11 +417,14 @@ function TaskRow({
   hasChildren,
   expanded,
   descendantCount,
+  isLive,
+  assigneeName,
   onToggleExpand,
   onUpdateIssue,
 }: TaskRowProps) {
   const nav = useInlineTeamsNav();
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
+  const labels = issue.labels ?? [];
   const updatedLabel = (() => {
     const ts = issue.lastActivityAt ?? issue.updatedAt ?? issue.createdAt;
     return ts ? `Updated ${timeAgo(ts)}` : "Updated recently";
@@ -488,6 +504,26 @@ function TaskRow({
         {identifier}
       </span>
 
+      {/* Live indicator — a pulsing forest dot while an agent run is active on
+          this task. Mirrors the board (KanbanCard) so list/board read alike. */}
+      {isLive ? (
+        <span
+          data-testid="task-row-live-dot"
+          className="relative flex h-2 w-2 shrink-0"
+          aria-label="Agent running"
+          title="Agent running"
+        >
+          <span
+            className="absolute inline-flex h-full w-full animate-pulse rounded-full opacity-75"
+            style={{ background: "var(--forest)" }}
+          />
+          <span
+            className="relative inline-flex h-2 w-2 rounded-full"
+            style={{ background: "var(--forest)" }}
+          />
+        </span>
+      ) : null}
+
       {/* Title (+ collapsed sub-task count) */}
       <span className="min-w-0 flex-1 truncate">
         {issue.title}
@@ -497,6 +533,50 @@ function TaskRow({
           </span>
         ) : null}
       </span>
+
+      {/* Trailing metadata — compact, calm: labels (≤2 + overflow), priority,
+          assignee chip. Hidden on narrow widths so the row stays squint-legible
+          (the timestamp + status circle are the load-bearing signals). */}
+      {labels.length > 0 ? (
+        <span className="hidden shrink-0 items-center gap-1 md:flex">
+          {labels.slice(0, 2).map((label) => (
+            <span
+              key={label.id}
+              className="max-w-[8rem] truncate rounded px-1.5 py-0.5 text-[11px]"
+              style={LABEL_CHIP_STYLE}
+            >
+              {label.name}
+            </span>
+          ))}
+          {labels.length > 2 ? (
+            <span className="text-[11px] text-[var(--mute)]">
+              +{labels.length - 2}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
+
+      {issue.priority ? (
+        <span className="hidden shrink-0 sm:inline-flex">
+          <PriorityIcon priority={issue.priority} />
+        </span>
+      ) : null}
+
+      {/* Assignee chip — initials avatar + name when assigned to an agent,
+          a muted "Unassigned" otherwise. */}
+      {issue.assigneeAgentId ? (
+        <span className="hidden min-w-0 max-w-[9rem] shrink-0 lg:inline-flex">
+          <Identity
+            name={assigneeName ?? issue.assigneeAgentId.slice(0, 8)}
+            size="sm"
+            className="min-w-0"
+          />
+        </span>
+      ) : (
+        <span className="hidden shrink-0 text-xs text-[var(--mute)] lg:inline">
+          Unassigned
+        </span>
+      )}
 
       {/* Relative activity timestamp */}
       <span className="shrink-0 text-xs text-[var(--mute)]">{updatedLabel}</span>
@@ -609,6 +689,8 @@ export function TasksList({
             descendantCount={
               hasChildren ? countDescendants(issue.id, childMap) : 0
             }
+            isLive={liveIssueIds?.has(issue.id) ?? false}
+            assigneeName={agentName(issue.assigneeAgentId)}
             onToggleExpand={() => toggleParent(issue.id)}
             onUpdateIssue={onUpdateIssue}
           />,
@@ -620,7 +702,14 @@ export function TasksList({
       for (const root of roots) walk(root, 0);
       return rows;
     },
-    [treeActive, collapsedParents, toggleParent, onUpdateIssue],
+    [
+      treeActive,
+      collapsedParents,
+      toggleParent,
+      onUpdateIssue,
+      liveIssueIds,
+      agentName,
+    ],
   );
 
   return (

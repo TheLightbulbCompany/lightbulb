@@ -161,11 +161,15 @@ export interface IssueUpdateInput {
    * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
    * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */
   hiddenAt?: string | null;
-  /** Execution policy carrying the monitor schedule. Sending
-   * ``{ monitor: {...} }`` schedules a re-check; an explicit ``null`` clears
-   * the policy (our tasks carry no reviewer/approver policy, so replacing it
-   * is safe). The BFF camelCase-aliases the outer key to ``executionPolicy``
-   * and forwards the nested dict verbatim. ``undefined`` leaves it unchanged. */
+  /** Execution policy carrying the monitor schedule AND the reviewer/approver
+   * stages. The wire PATCH has REPLACE semantics — Paperclip overwrites the
+   * whole executionPolicy with what is sent — so monitor and stages would clobber
+   * each other if patched in isolation. Callers MUST therefore build the full
+   * desired policy (preserving the sub-fields they are not editing) via the
+   * read-modify-write helper in ``issue-execution-policy.ts`` before sending it.
+   * An explicit ``null`` clears the policy entirely. The BFF camelCase-aliases
+   * the outer key to ``executionPolicy`` and forwards the nested dict verbatim.
+   * ``undefined`` leaves it unchanged. */
   executionPolicy?: IssueExecutionPolicy | null;
 }
 
@@ -195,8 +199,44 @@ export interface IssueMonitorPolicy {
   kind?: string | null;
 }
 
+/** A single participant in a reviewer/approver stage. Mirrors upstream
+ * Paperclip's issueExecutionStageParticipantSchema
+ * (packages/shared/src/validators/issue.ts). A participant is EITHER an agent
+ * (``type: "agent"`` + ``agentId``) OR a human user (``type: "user"`` +
+ * ``userId``) — never both. Upstream's zod superRefine rejects a participant
+ * that sets the wrong id for its kind, so the builder always emits ``null`` for
+ * the unused field. ``id`` is the stable per-participant uuid upstream assigns;
+ * it round-trips so re-selecting an existing participant keeps its identity. */
+export interface IssueExecutionStageParticipant {
+  type: "agent" | "user";
+  agentId?: string | null;
+  userId?: string | null;
+  id?: string;
+}
+
+/** A reviewer or approver stage on an issue's executionPolicy. Mirrors
+ * upstream's issueExecutionStageSchema. ``type`` is the upstream
+ * ISSUE_EXECUTION_STAGE_TYPES enum (``"review"`` | ``"approval"``).
+ * ``approvalsNeeded`` is a literal ``1`` upstream (the only value the schema
+ * accepts today); it is carried so the emitted stage matches upstream exactly.
+ * An empty-participant stage is never emitted — the builder drops a stage with
+ * no participants rather than sending an empty one. */
+export interface IssueExecutionStage {
+  id?: string;
+  type: "review" | "approval";
+  approvalsNeeded?: 1;
+  participants: IssueExecutionStageParticipant[];
+}
+
 export interface IssueExecutionPolicy {
+  /** Upstream ISSUE_EXECUTION_POLICY_MODES ("normal" | "auto"). Preserved
+   * round-trip; the rail does not edit it, so the builder keeps whatever the
+   * issue already carried (defaulting to "normal"). */
+  mode?: "normal" | "auto";
   monitor?: IssueMonitorPolicy | null;
+  /** Reviewer + approver stages. Each ``type`` appears at most once. Absent or
+   * empty means no review/approval gate. */
+  stages?: IssueExecutionStage[];
 }
 
 export interface Issue {
@@ -228,8 +268,10 @@ export interface Issue {
    * Surfaced flat by upstream alongside a richer relatedWork; only the flat
    * identifier list is rendered as read-only "Related Tasks" chips. */
   referencedIssueIdentifiers?: string[] | null;
-  /** Execution policy carrying the monitor schedule (the Monitor rail row).
-   * ``null``/absent means no monitor is scheduled. */
+  /** Execution policy carrying the monitor schedule (the Monitor rail row) and
+   * the reviewer/approver stages (the Reviewers/Approvers rail rows). The BFF's
+   * get_issue passthrough returns upstream's executionPolicy shape verbatim.
+   * ``null``/absent means no monitor and no review/approval gate. */
   executionPolicy?: IssueExecutionPolicy | null;
 }
 

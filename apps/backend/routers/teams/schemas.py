@@ -77,6 +77,10 @@ class PatchIssueBody(_Strict):
     # ``_Strict`` alias_generator emits this as ``blockedByIssueIds`` on the
     # wire (Paperclip's PATCH /api/issues/:id reads camelCase).
     blocked_by_issue_ids: Optional[list[str]] = None
+    # Soft-hide: upstream PATCH /api/issues/:id accepts ``hiddenAt`` (ISO
+    # string) and excludes hiddenAt-set rows from the issues list. An ISO
+    # timestamp hides the task; an explicit null restores it.
+    hidden_at: Optional[str] = Field(default=None, max_length=40)
 
 
 class AddIssueCommentBody(_Strict):

@@ -68,3 +68,17 @@ def test_strict_base_still_rejects_unknown_fields():
 
     with pytest.raises(ValidationError):
         PatchIssueBody.model_validate({"adapterType": "evil"})
+
+
+def test_patch_issue_accepts_hidden_at_for_hide_and_restore():
+    """Hide/restore: hiddenAt must reach the wire. An ISO string hides the
+    task (upstream drops hiddenAt-set rows from the list); an explicit null
+    restores it. exclude_unset keeps the explicit null so a restore PATCH is
+    not silently dropped."""
+    from routers.teams.schemas import PatchIssueBody
+
+    hidden = PatchIssueBody(hidden_at="2026-06-24T00:00:00Z")
+    assert hidden.model_dump(exclude_unset=True, by_alias=True) == {"hiddenAt": "2026-06-24T00:00:00Z"}
+
+    restored = PatchIssueBody.model_validate({"hiddenAt": None})
+    assert restored.model_dump(exclude_unset=True, by_alias=True) == {"hiddenAt": None}

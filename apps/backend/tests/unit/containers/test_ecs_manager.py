@@ -2658,3 +2658,25 @@ async def test_wait_for_service_drained_times_out_returns_false(manager, mock_ec
     mock_ecs_client.describe_services.return_value = {"services": [{"runningCount": 1, "pendingCount": 0}]}
     with patch("core.containers.ecs_manager.asyncio.sleep", new=AsyncMock()):
         assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is False
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_oauth_does_not_clear_default_agent_row(manager):
+    """Ops re-stage (provision/reprovision) must STAGE the seed but never
+    force-reimport: clearing the live container token resurrects a stale
+    DDB seed (the refresh_token_reused incident, 2026-06-23)."""
+    with (
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
+        ),
+        patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()) as stage,
+        patch(
+            "core.containers.workspace.clear_default_agent_auth_profile_row",
+            new=AsyncMock(),
+        ) as clear,
+    ):
+        await manager._pre_stage_oauth_for_user("user_test_123")
+
+    stage.assert_awaited_once()
+    clear.assert_not_called()

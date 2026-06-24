@@ -10,7 +10,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { MoreHorizontal, Trash2 } from "lucide-react";
+import { EyeOff, MoreHorizontal, Trash2 } from "lucide-react";
 import { IssueHeader } from "./IssueHeader";
 import { IssueComments } from "./IssueComments";
 import { IssueProperties } from "./IssueProperties";
@@ -61,6 +61,14 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
     } finally {
       setDeleting(false);
     }
+  };
+
+  const handleHide = async () => {
+    // Hiding is reversible (it just stamps hiddenAt), so it skips the confirm
+    // dialog that guards the destructive delete. The hidden task drops out of
+    // the Tasks list, so leave the detail route for the inbox afterwards.
+    await mutations.update(issueId, { hiddenAt: new Date().toISOString() });
+    router.push("/teams");
   };
 
   if (isLoading && !issue) {
@@ -146,6 +154,15 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  void handleHide();
+                }}
+              >
+                <EyeOff className="h-4 w-4" />
+                Hide task
+              </DropdownMenuItem>
               <DropdownMenuItem
                 variant="destructive"
                 onSelect={(e) => {

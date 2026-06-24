@@ -137,6 +137,10 @@ export interface IssueUpdateInput {
    * BFF aliases this to ``blockedByIssueIds`` on the wire. ``undefined``
    * leaves the relations unchanged. */
   blockedByIssueIds?: string[];
+  /** An ISO timestamp hides the task (it drops out of the Tasks list);
+   * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
+   * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */
+  hiddenAt?: string | null;
 }
 
 /** A slim issue summary used by the "Blocked by" / "Blocking" relation rows.

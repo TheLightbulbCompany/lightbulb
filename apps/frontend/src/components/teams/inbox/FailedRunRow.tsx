@@ -1,10 +1,17 @@
 // apps/frontend/src/components/teams/inbox/FailedRunRow.tsx
 "use client";
 
+import { useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
+import { useAgentWake } from "@/components/teams/inbox/hooks/useAgentWake";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { HeartbeatRun } from "@/components/teams/shared/types";
+
+/** Transient state of the Retry action. ``error`` keeps the button live so a
+ *  failed wake can be re-attempted; ``done`` is a brief acknowledgement before
+ *  the operator dismisses the (still-acked-separately) row. */
+type RetryPhase = "idle" | "retrying" | "done" | "error";
 
 export function FailedRunRow({
   run,
@@ -19,9 +26,28 @@ export function FailedRunRow({
    *  badge so a flapping heartbeat doesn't flood the band with N copies. */
   count?: number;
 }) {
+  const { wakeAgent } = useAgentWake();
+  const [retry, setRetry] = useState<RetryPhase>("idle");
+
   // Title prefers the failure reason (matches the grouping key); fall back
   // to the generic phrase when upstream sent no reason.
   const title = `${agentName} — ${run.failureReason || "heartbeat run failed"}`;
+
+  // Retry wakes the SAME agent that produced the failed run; without an agent
+  // id we have nothing to wake, so the control is hidden (same condition as
+  // the View link). A wake failure must not crash the row — fall back to an
+  // error phase that lets the operator try again.
+  async function onRetry() {
+    if (!run.agentId || retry === "retrying") return;
+    setRetry("retrying");
+    try {
+      await wakeAgent(run.agentId, { reason: "retry" });
+      setRetry("done");
+    } catch {
+      setRetry("error");
+    }
+  }
+
   return (
     <li className="flex items-center gap-2 px-3 py-2">
       <AlertTriangle className="h-4 w-4 flex-shrink-0" style={{ color: "var(--danger)" }} />
@@ -43,7 +69,7 @@ export function FailedRunRow({
         </span>
       </div>
       {run.startedAt && <span className="text-xs text-[var(--mute)]">{timeAgo(run.startedAt)}</span>}
-      <div className="flex gap-2">
+      <div className="flex items-center gap-2">
         {run.agentId && (
           <a
             href={`/teams/agents/${run.agentId}/runs/${run.id}`}
@@ -52,6 +78,22 @@ export function FailedRunRow({
           >
             View
           </a>
+        )}
+        {run.agentId && (
+          <EditorialButton
+            variant="secondary"
+            size="sm"
+            onClick={onRetry}
+            disabled={retry === "retrying"}
+          >
+            {retry === "retrying"
+              ? "Retrying…"
+              : retry === "done"
+                ? "Retried"
+                : retry === "error"
+                  ? "Retry failed"
+                  : "Retry"}
+          </EditorialButton>
         )}
         <EditorialButton variant="secondary" size="sm" onClick={onDismiss}>
           Dismiss

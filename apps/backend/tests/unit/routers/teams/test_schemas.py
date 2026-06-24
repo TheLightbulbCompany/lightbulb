@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from routers.teams.schemas import CreateAgentBody, PatchAgentBody
+from routers.teams.schemas import CreateAgentBody, PatchAgentBody, WakeAgentBody
 
 
 def test_create_agent_accepts_minimal_payload():
@@ -82,6 +82,25 @@ def test_patch_issue_accepts_hidden_at_for_hide_and_restore():
 
     restored = PatchIssueBody.model_validate({"hiddenAt": None})
     assert restored.model_dump(exclude_unset=True, by_alias=True) == {"hiddenAt": None}
+
+
+def test_wake_agent_emits_camel_case_and_drops_unset():
+    """The failed-run Retry wakes the agent on demand. by_alias emits the
+    camelCase wire shape; exclude_none drops the unset reason."""
+    body = WakeAgentBody(source="on_demand", reason="retry")
+    assert body.model_dump(exclude_none=True, by_alias=True) == {
+        "source": "on_demand",
+        "reason": "retry",
+    }
+    bare = WakeAgentBody()
+    assert bare.model_dump(exclude_none=True, by_alias=True) == {}
+
+
+def test_wake_agent_rejects_unknown_source_and_extra_fields():
+    with pytest.raises(ValidationError):
+        WakeAgentBody(source="turbo")
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        WakeAgentBody(adapterType="evil")
 
 
 def test_create_issue_accepts_work_mode_and_status():

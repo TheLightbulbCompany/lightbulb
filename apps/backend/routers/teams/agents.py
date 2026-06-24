@@ -45,7 +45,7 @@ from core.services.user_provision import ensure_user_ready
 
 from . import deps as deps_mod
 from .deps import TeamsContext, envelope_list
-from .schemas import CreateAgentBody, PatchAgentBody
+from .schemas import CreateAgentBody, PatchAgentBody, WakeAgentBody
 
 logger = logging.getLogger(__name__)
 
@@ -723,6 +723,27 @@ async def resume_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     return _redact_agent(
         await _admin().resume_agent(
             agent_id=agent_id,
+            session_cookie=ctx.session_cookie,
+        )
+    )
+
+
+@router.post("/agents/{agent_id}/wakeup")
+async def wake_agent(
+    agent_id: str,
+    body: WakeAgentBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Wake an agent to (re)attempt work — drives the failed-run Retry action.
+
+    Maps to upstream ``POST /api/agents/{id}/wakeup``. The wakeup response is
+    a run/ack envelope (no agent record), but redact defensively so a future
+    upstream change that echoes adapterConfig can never leak the service token.
+    """
+    return _redact_agent(
+        await _admin().wake_agent(
+            agent_id=agent_id,
+            body=body.model_dump(exclude_none=True, by_alias=True),
             session_cookie=ctx.session_cookie,
         )
     )

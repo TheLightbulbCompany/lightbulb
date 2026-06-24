@@ -56,6 +56,15 @@ class PatchAgentBody(_Strict):
     budget_monthly_cents: Optional[int] = Field(default=None, ge=0)
 
 
+class WakeAgentBody(_Strict):
+    # Mirrors upstream ``wakeAgentSchema``: every field is optional and
+    # defaults server-side, so a bare wake is valid. The failed-run Retry
+    # sends source="on_demand", reason="retry". ``source`` is constrained to
+    # the upstream enum so the BFF rejects junk before it reaches Paperclip.
+    source: Optional[str] = Field(default=None, pattern=r"^(timer|assignment|on_demand|automation)$")
+    reason: Optional[str] = Field(default=None, max_length=2000)
+
+
 class CreateIssueBody(_Strict):
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)

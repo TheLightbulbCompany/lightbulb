@@ -79,6 +79,28 @@ async def test_unarchive_issue(admin_client_with_fake_http):
 
 
 @pytest.mark.asyncio
+async def test_wake_agent_posts_body(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.wake_agent(
+        agent_id="ag_9",
+        session_cookie="c=1",
+        body={"source": "on_demand", "reason": "retry"},
+    )
+    http.post.assert_awaited_once()
+    call = http.post.call_args
+    assert call.args[0] == "/api/agents/ag_9/wakeup"
+    assert call.kwargs.get("json") == {"source": "on_demand", "reason": "retry"}
+
+
+@pytest.mark.asyncio
+async def test_wake_agent_defaults_to_on_demand_when_body_omitted(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.wake_agent(agent_id="ag_9", session_cookie="c=1")
+    http.post.assert_awaited_once()
+    assert http.post.call_args.kwargs.get("json") == {"source": "on_demand"}
+
+
+@pytest.mark.asyncio
 async def test_mark_issue_read(admin_client_with_fake_http):
     client, http = admin_client_with_fake_http
     await client.mark_issue_read(issue_id="iss_7", session_cookie="c=1")

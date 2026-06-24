@@ -421,6 +421,10 @@ steps:
     stdin: $deliver-notify-next.stdout
 
   # ---- 17. Archive the deterministic deliverable to durable state (index array).
+  # Persist the FULL research content (claims, source_appendix, gaps) so an archived
+  # entry is retrievable in full — not just summary counts. The summary stats stay
+  # alongside the content for cheap index scans. Entry count is capped to keep the
+  # single-key index array bounded.
   - id: archive-load
     condition: $claims-count.json.count > 0
     pipeline: state.get lens/research-index
@@ -431,16 +435,20 @@ steps:
       node -e 'let idx=JSON.parse(process.env.IDX||"null");if(!Array.isArray(idx))idx=[];
         const f=JSON.parse(process.env.FMT||"null")||{};
         const corr=JSON.parse(process.env.CORR||"null")||{};
+        const claims=corr.claims||[];
         idx.push({question:process.env.LOBSTER_ARG_RESEARCH_QUESTION||"",
           vertical:process.env.LOBSTER_ARG_VERTICAL||"",
           stakes:process.env.LOBSTER_ARG_STAKES||"standard",
+          claims:claims,
           confidence_summary:f.confidence_summary||null,
+          source_appendix:f.source_appendix||null,
+          gaps:f.gap_section||null,
           verification_rate:(f.confidence_summary&&f.confidence_summary.verification_rate)||0,
-          claim_count:(corr.claims||[]).length,
+          claim_count:claims.length,
           gap_count:(f.gap_section&&f.gap_section.count)||0,
           source_count:(f.source_appendix&&f.source_appendix.total)||0,
           archived_at:new Date().toISOString()});
-        if(idx.length>500)idx=idx.slice(idx.length-500);
+        if(idx.length>200)idx=idx.slice(idx.length-200);
         process.stdout.write(JSON.stringify(idx));'
     env:
       IDX: $archive-load.stdout

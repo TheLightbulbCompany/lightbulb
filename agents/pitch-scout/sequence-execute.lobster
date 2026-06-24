@@ -257,7 +257,9 @@ steps:
   #    The agent reads pitch/pending-drafts, generates one batch of follow-ups
   #    (llm-task, thinking: low — NEW angle per touch, no non-response references),
   #    runs them through pitch-content-scanner.js, then sends via the connected
-  #    outbound platform and advances each sequence's touch_count + last_touch_date.
+  #    outbound platform. The SEQUENCE STATE (touch_count / last_touch_date / 5-touch
+  #    auto-pause) is NOT left to the agent — it is advanced deterministically in-pipeline
+  #    below (sequences-state-* steps), keeping the 5-touch cap a pipeline guarantee.
   # ------------------------------------------------------------------
   #    All three steps share the has_due_touches gate so they reference only steps that
   #    ran under that same gate; pushing zero cleared touches is a harmless no-op.
@@ -274,7 +276,9 @@ steps:
         for (const t of (f.cleared||[])) {
           q.push({kind:"followup_draft", domain:t.domain, touch_number:t.touch_number,
             channel:t.channel, sequence_id:t.sequence_id, prospect:t.prospect||{},
-            outbound_platform:plat, needs_llm_draft:true, needs_content_scan:true, queued_at:now});
+            outbound_platform:plat, needs_llm_draft:true, needs_content_scan:true,
+            requires:["draft_followup","content_scan","send_via_outbound","crm_activity_log","audit_send"],
+            queued_at:now});
         }
         process.stdout.write(JSON.stringify(q));'
     env:
@@ -286,6 +290,46 @@ steps:
     condition: $check-due.json.has_due_touches
     pipeline: state.set pitch/pending-drafts
     stdin: $pending-next.stdout
+
+  # ------------------------------------------------------------------
+  # 9b. Deterministic SEQUENCE-STATE advance (restores the original update-sequences
+  #     write). For every compliant autonomous touch just enqueued, advance the matched
+  #     sequence in pitch/sequences: touch_count := touch_number, last_touch_date := now,
+  #     paused := touch_number >= 5 (the 5-touch auto-pause). This is the in-pipeline,
+  #     load-before-use index-array edit (state.get -> node match-and-merge -> state.set),
+  #     NOT deferred to the agent loop — so the scheduler's 5-touch cap + min-gap timing
+  #     are honoured on the very next run regardless of when the agent drafts/sends.
+  #     Match by sequence_id when present, else by prospect_domain. Same has_due_touches
+  #     gate so compliance-filter is always a resolved producer.
+  # ------------------------------------------------------------------
+  - id: sequences-state-load
+    condition: $check-due.json.has_due_touches
+    pipeline: state.get pitch/sequences
+
+  - id: sequences-state-next
+    condition: $check-due.json.has_due_touches
+    command: >
+      node -e 'const seqs=JSON.parse(process.env.SEQS||"null")||[];
+        const f=JSON.parse(process.env.FILTER||"{}");
+        const now=new Date().toISOString();
+        for (const t of (f.cleared||[])) {
+          const tn=t.touch_number;
+          const s=seqs.find(x => (t.sequence_id && x.sequence_id===t.sequence_id)
+            || (x.prospect_domain===t.domain));
+          if (!s) continue;
+          s.touch_count=tn;
+          s.last_touch_date=now;
+          s.paused=tn>=5;
+        }
+        process.stdout.write(JSON.stringify(seqs));'
+    env:
+      SEQS: $sequences-state-load.stdout
+      FILTER: $compliance-filter.stdout
+
+  - id: sequences-state-save
+    condition: $check-due.json.has_due_touches
+    pipeline: state.set pitch/sequences
+    stdin: $sequences-state-next.stdout
 
   # ------------------------------------------------------------------
   # 10. Notifications queue (Slack is unreachable here): C-suite approvals,

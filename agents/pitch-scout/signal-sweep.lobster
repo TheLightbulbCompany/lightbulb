@@ -12,10 +12,15 @@ name: signal-sweep
 #    baked `mcporter` CLI; output is YAML-ish TEXT, so a node step regex-parses stdout
 #    (never JSON.parse).
 #  - Perplexity is a direct deterministic API (curl + node normalize); not an llm-task.
+#    The social-intelligence scan (LinkedIn/Reddit/Twitter) was a fictional tool with no
+#    real source; it is substituted with a windowed Perplexity curl over those domains.
+#  - Apollo intent data is a key-gated direct curl inside a node step (try/catch, always
+#    exit 0, gated on APOLLO_API_KEY present, carries a connected flag) — matching the
+#    sibling signal-monitor's Apollo pattern. A missing key is a no-op empty result.
 #  - The one model-judgment step (signal-strength scoring) CANNOT run here (llm-task = 401).
 #    The deterministic scorer defaults strength to 50; signals needing strength judgment are
 #    flagged needs_agent_loop and handed to the agent via the notification intent. NO
-#    openclaw.invoke, slack, fast-io, social-intelligence, apollo, hubspot, salesforce.
+#    openclaw.invoke, slack, fast-io, hubspot, salesforce.
 #  - Scripts/inline node always exit 0 and carry status in JSON; steps branch via condition.
 
 steps:
@@ -92,7 +97,37 @@ steps:
       QUERYIN: $perplexity-query.stdout
 
   # ---------------------------------------------------------------------------
-  # 6. CRM re-engagement (Req 9): closed-lost Attio companies with recent activity.
+  # 6. Social-intelligence substitute — the original openclaw.invoke social-intelligence
+  #    tool (LinkedIn/Reddit/Twitter scan) was fictional. Replace it with a windowed
+  #    Perplexity curl over those domains, matching the other Perplexity lanes (gated on
+  #    key + keywords; citations -> signals). ICP keywords come from the loaded ICP config.
+  # ---------------------------------------------------------------------------
+  - id: social-signals
+    condition: $activation-check.json.pass
+    command: >
+      node -e 'const {execSync}=require("child_process");
+        const icp=JSON.parse(process.env.ICP||"null")||{};
+        const kw=[].concat(icp.industries||[],icp.tech_stack_signals||[]).filter(Boolean).join(" OR ");
+        const key=process.env.PERPLEXITY_API_KEY||"";
+        let out={signals:[],source:"social",content:"",available:!!key};
+        if (key && kw) { try {
+          const body=JSON.stringify({model:"sonar",messages:[{role:"user",
+            content:"site:linkedin.com OR site:reddit.com OR site:x.com "+kw
+              +" funding OR hiring OR expansion OR pain OR switching. Recent posts; return company name, signal, and source URL."}]});
+          const raw=execSync("curl -sS https://api.perplexity.ai/chat/completions "
+            +"-H \"Authorization: Bearer \"$PERPLEXITY_API_KEY "
+            +"-H \"Content-Type: application/json\" --data-binary @-",
+            {input:body, encoding:"utf8", timeout:60000, env:process.env});
+          const d=JSON.parse(raw); const c=(((d.choices||[])[0]||{}).message||{}).content||"";
+          out.content=c;
+          out.signals=(d.citations||[]).map(u=>({url:u,content:c}));
+        } catch(e){ out.signals=[]; out.content=""; } }
+        process.stdout.write(JSON.stringify(out));'
+    env:
+      ICP: $icp-load.stdout
+
+  # ---------------------------------------------------------------------------
+  # 7. CRM re-engagement (Req 9): closed-lost Attio companies with recent activity.
   #    mcporter -> YAML-ish text -> regex parse (never JSON.parse). Best-effort: if the
   #    CRM isn't connected or returns nothing, this is an empty array and the sweep
   #    continues on the other sources.
@@ -120,28 +155,65 @@ steps:
         process.stdout.write(JSON.stringify({signals, count:signals.length}));'
 
   # ---------------------------------------------------------------------------
-  # 7. Merge all signal sources into a single normalized array. Perplexity content is a
-  #    text blob (one signal of source_type "news"); CRM re-engagement contributes
-  #    structured rows. Each row is tagged source_type and given a timestamp so the
-  #    deterministic scorer can compute recency.
+  # 8. Apollo intent data (Req 9) — POST https://api.apollo.io/v1/intent_signals.
+  #    Key-gated direct curl inside a node step (try/catch, always exit 0, gated on
+  #    APOLLO_API_KEY present, carries a connected flag) — matching the sibling
+  #    signal-monitor's Apollo pattern. ICP keywords feed q_keywords; a missing key
+  #    or unconnected source is a no-op empty result, never a hard failure.
+  # ---------------------------------------------------------------------------
+  - id: apollo-intent
+    condition: $activation-check.json.pass
+    command: >
+      node -e 'const {execSync}=require("child_process");
+        const icp=JSON.parse(process.env.ICP||"null")||{};
+        const kw=[].concat(icp.industries||[],icp.tech_stack_signals||[]).filter(Boolean).join(" ");
+        const key=process.env.APOLLO_API_KEY||"";
+        let out={signals:[],source:"apollo_intent",connected:!!key};
+        if (key) { try {
+          const body=JSON.stringify({q_keywords:kw, per_page:20});
+          const raw=execSync("curl -sS https://api.apollo.io/v1/intent_signals "
+            +"-H \"Content-Type: application/json\" -H \"Cache-Control: no-cache\" "
+            +"-H \"X-Api-Key: "+key+"\" --data-binary @-",
+            {input:body, encoding:"utf8", timeout:45000});
+          const d=JSON.parse(raw); const rows=(d.intent_signals||d.organizations||d.accounts||[]);
+          out.signals=(Array.isArray(rows)?rows:[]).map(o=>({company:o.name||o.company||"",
+            domain:(o.primary_domain||o.domain||o.website_url||"").replace(/^https?:\/\//,"").replace(/\/.*$/,"").toLowerCase(),
+            topic:o.topic||o.intent_topic||"", intent_score:o.intent_score||o.score||null}));
+        } catch(e){ out.error=String(e.message||e); } }
+        process.stdout.write(JSON.stringify(out));'
+    env:
+      ICP: $icp-load.stdout
+
+  # ---------------------------------------------------------------------------
+  # 9. Merge all signal sources into a single normalized array. Perplexity + social
+  #    content are text blobs (source_type "news" / "social"); CRM re-engagement and
+  #    Apollo intent contribute structured rows. Each row is tagged source_type and
+  #    given a timestamp so the deterministic scorer can compute recency.
   # ---------------------------------------------------------------------------
   - id: merge-signals
     condition: $activation-check.json.pass
     command: >
       node -e 'const px=JSON.parse(process.env.PX||"null")||{};
+        const social=JSON.parse(process.env.SOCIAL||"null")||{};
         const crm=(JSON.parse(process.env.CRM||"null")||{}).signals||[];
+        const apollo=(JSON.parse(process.env.APOLLO||"null")||{}).signals||[];
         const now=new Date().toISOString();
         const merged=[];
         if (px.content) merged.push({company:"", signal_type:"news", source_type:"news",
           content:px.content, citations:px.citations||[], timestamp:now});
+        if (social.content) merged.push({company:"", signal_type:"social", source_type:"social",
+          content:social.content, citations:(social.signals||[]).map(s=>s.url).filter(Boolean), timestamp:now});
         for (const s of crm) merged.push({...s, source_type:"crm_reengagement"});
+        for (const s of apollo) merged.push({...s, signal_type:"intent_data", source_type:"intent_data", timestamp:now});
         process.stdout.write(JSON.stringify({signals:merged, count:merged.length}));'
     env:
       PX: $perplexity-signals.stdout
+      SOCIAL: $social-signals.stdout
       CRM: $crm-reengagement.stdout
+      APOLLO: $apollo-intent.stdout
 
   # ---------------------------------------------------------------------------
-  # 8. Deterministic composite scoring (Req 10) — ICP fit, recency, relationship.
+  # 10. Deterministic composite scoring (Req 10) — ICP fit, recency, relationship.
   #    pitch-signal-scorer.js needs {signals, icp_criteria, threshold}. Strength is the
   #    one LLM dimension; the scorer defaults it to 50 and flags needs_agent_loop where
   #    judgment is required. Assemble the scorer input (signals + icp from state).
@@ -162,7 +234,7 @@ steps:
     stdin: $scorer-input.stdout
 
   # ---------------------------------------------------------------------------
-  # 9. Threshold filter. The scorer already emits `qualified` (composite >= threshold)
+  # 11. Threshold filter. The scorer already emits `qualified` (composite >= threshold)
   #    and an explicit qualified_count. Re-emit a clean payload with an explicit count to
   #    gate the persist/notify steps on (never gate on .length).
   # ---------------------------------------------------------------------------
@@ -178,7 +250,7 @@ steps:
     stdin: $deterministic-score.stdout
 
   # ---------------------------------------------------------------------------
-  # 10. Persist the qualified-signal snapshot to durable state (Req 38). Single key,
+  # 12. Persist the qualified-signal snapshot to durable state (Req 38). Single key,
   #     overwritten each sweep (the agent reads pitch/signals-latest to work the queue).
   # ---------------------------------------------------------------------------
   - id: persist-signals
@@ -187,7 +259,7 @@ steps:
     stdin: $final-filter.stdout
 
   # ---------------------------------------------------------------------------
-  # 11. Queue a notification intent for the agent loop (Slack is unreachable here, 401).
+  # 13. Queue a notification intent for the agent loop (Slack is unreachable here, 401).
   #     The intent carries the qualified count + the signals that need model judgment so
   #     the agent can run the one llm-task strength pass and post to #pitch-signals.
   # ---------------------------------------------------------------------------
@@ -220,7 +292,7 @@ steps:
     stdin: $notify-next.stdout
 
   # ---------------------------------------------------------------------------
-  # 12. Audit snapshot (Req 38) — durable, deterministic, no openclaw.invoke. The agent
+  # 14. Audit snapshot (Req 38) — durable, deterministic, no openclaw.invoke. The agent
   #     can read pitch/signal-sweep-latest to answer "what did the last sweep find".
   # ---------------------------------------------------------------------------
   - id: audit-build
@@ -234,7 +306,7 @@ steps:
           signals_scanned:merged.count||0,
           signals_qualified:f.count||0,
           needs_agent_loop_count:f.needs_agent_loop_count||0,
-          sources:["perplexity","attio_crm_reengagement"],
+          sources:["perplexity","social","attio_crm_reengagement","apollo_intent"],
           authorized_by:"autonomous",
           timestamp:new Date().toISOString()}));'
     env:

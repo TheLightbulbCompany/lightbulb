@@ -121,10 +121,10 @@ steps:
     pipeline: state.get pulse-config/platform-tones
 
   # ---------------------------------------------------------------------------
-  # 3. Research pull (Req 8, 9). Perplexity sonar via REAL curl. Three structured
-  #    searches: competitor content, community questions, search trends/data. The
-  #    query is passed through env (LOBSTER_ARG_TOPIC) into the node body builder,
-  #    never interpolated into the shell command line.
+  # 3. Research pull (Req 8, 9). Perplexity sonar via REAL curl. Four structured
+  #    searches: competitor content, community questions, search trends/data, and
+  #    industry analysis. The query is passed through env (LOBSTER_ARG_TOPIC) into
+  #    the node body builder, never interpolated into the shell command line.
   # ---------------------------------------------------------------------------
   - id: research-competitors
     condition: $gate.json.proceed > 0
@@ -175,6 +175,22 @@ steps:
         process.stdout.write(JSON.stringify({lane:"search", content, citations,
           total:citations.length, top_urls:citations.slice(0,10), ok:!!content}));'
 
+  - id: research-industry
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const t=process.env.LOBSTER_ARG_TOPIC||"";
+        const body=JSON.stringify({model:"sonar",messages:[{role:"user",
+          content:t+" industry analysis report"}]});
+        const {execSync}=require("child_process");
+        let out="";
+        try { out=execSync("curl -sS https://api.perplexity.ai/chat/completions -H \"Authorization: Bearer $PERPLEXITY_API_KEY\" -H \"Content-Type: application/json\" -d @-",
+          {input:body,encoding:"utf8",timeout:60000}); } catch(e){ out=""; }
+        let r={}; try { r=JSON.parse(out)||{}; } catch(e){ r={}; }
+        const content=(r.choices&&r.choices[0]&&r.choices[0].message&&r.choices[0].message.content)||"";
+        const citations=r.citations||[];
+        process.stdout.write(JSON.stringify({lane:"industry", content, citations,
+          total:citations.length, top_urls:citations.slice(0,10), ok:!!content}));'
+
   # Internal prior-art lookup. The original used fast-io list with a prefix filter
   # (fictional). We read the agent's own published-content INDEX array and match by
   # topic deterministically — no prefix-list needed.
@@ -203,10 +219,10 @@ steps:
     condition: $gate.json.proceed > 0
     command: >-
       node -e 'const j=k=>{try{return JSON.parse(process.env[k]||"{}")||{};}catch(e){return {};}};
-        const comp=j("COMP"), comm=j("COMM"), srch=j("SRCH");
+        const comp=j("COMP"), comm=j("COMM"), srch=j("SRCH"), ind=j("IND");
         const internal=(j("INT").matches)||[];
-        const lanes={competitors:comp, community:comm, search:srch};
-        const allUrls=[...new Set([].concat(comp.top_urls||[],comm.top_urls||[],srch.top_urls||[]))];
+        const lanes={competitors:comp, community:comm, search:srch, industry:ind};
+        const allUrls=[...new Set([].concat(comp.top_urls||[],comm.top_urls||[],srch.top_urls||[],ind.top_urls||[]))];
         const brief={
           topic:process.env.LOBSTER_ARG_TOPIC||"",
           content_type:process.env.LOBSTER_ARG_CONTENT_TYPE||"blog_post",
@@ -215,7 +231,7 @@ steps:
           internal_prior_art:internal,
           all_citation_urls:allUrls,
           citation_count:allUrls.length,
-          lanes_ok:[comp.ok,comm.ok,srch.ok].filter(Boolean).length,
+          lanes_ok:[comp.ok,comm.ok,srch.ok,ind.ok].filter(Boolean).length,
           compiled_at:new Date().toISOString()
         };
         process.stdout.write(JSON.stringify({brief, count:brief.lanes_ok}));'
@@ -223,6 +239,7 @@ steps:
       COMP: "$research-competitors.stdout"
       COMM: "$research-community.stdout"
       SRCH: "$research-search.stdout"
+      IND: "$research-industry.stdout"
       INT: "$research-internal-match.stdout"
 
   # ---------------------------------------------------------------------------

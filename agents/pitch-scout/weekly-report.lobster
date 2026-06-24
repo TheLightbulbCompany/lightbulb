@@ -10,8 +10,10 @@ name: weekly-report
 #  - Durable state via state.get/set on the per-owner EFS mount. The deposit history,
 #    signal weights, and report inbox are single-key arrays/objects (state.* has no
 #    prefix-list); a node step reads them, edits, and re-writes.
-#  - Deposit history = the Scout `scout/lead-queue` index array (each entry carries
-#    {domain, score, tier, dossier, queued_at}) — written by deposit-lead.lobster.
+#  - Deposit history = the durable Scout `scout/deposit-history` audit array (each entry
+#    carries {action, domain, score, tier, destination, dedup_result, urgency,
+#    dossier_complete, timestamp}) — appended by deposit-lead.lobster. This is the
+#    append-only log, not the live `scout/lead-queue` that Pitch drains.
 #  - Deal outcomes = Attio `deals`, reached gateway-free via the baked `mcporter` CLI;
 #    its output is YAML-ish TEXT, so a node step regex-parses stdout (never JSON.parse).
 #  - The capability-evolver weight tuning is genuine model judgment (per AGENTS.md it is
@@ -21,9 +23,10 @@ name: weekly-report
 #  - Scripts/inline node always exit 0 and carry status in JSON; steps branch via condition.
 
 steps:
-  # 1. Load the Scout deposit history (single-key index array). Written by deposit-lead.
+  # 1. Load the durable Scout deposit history (append-only audit array). Written by
+  #     deposit-lead. This is the reliable deposit log, not the live lead-queue Pitch drains.
   - id: deposits-load
-    pipeline: state.get scout/lead-queue
+    pipeline: state.get scout/deposit-history
 
   # 2. Load current capability-evolver-tuned signal weights (object, may be null on first run).
   - id: weights-load
@@ -57,7 +60,7 @@ steps:
       node -e 'const q=JSON.parse(process.env.DEPOSITS||"null")||[];
         const outs=(JSON.parse(process.env.OUTCOMES||"null")||{}).outcomes||[];
         const weekMs=7*24*60*60*1000; const cutoff=Date.now()-weekMs;
-        const deposits=q.filter(d=>{const t=Date.parse(d.queued_at||"");return isNaN(t)?true:t>=cutoff;});
+        const deposits=q.filter(d=>{const t=Date.parse(d.timestamp||"");return isNaN(t)?true:t>=cutoff;});
         const wonByDomain={};
         for (const o of outs) { if (o.stage==="closed_won"||o.stage==="won") wonByDomain[o.domain]=true; }
         const signalPerf={}; const scorePerf={priority:{total:0,converted:0},standard:{total:0,converted:0}};

@@ -212,3 +212,40 @@ steps:
     condition: $volume.json.deposited_count > 0
     pipeline: state.set scout/notifications
     stdin: $notify-next.stdout
+
+  # 15. Append-only deposit audit trail (single-key index array). Durable record of
+  #     every deposited lead — read by weekly-report.lobster for conversion analysis.
+  #     Mirrors the lead-queue enqueue pattern: state.get -> node appends -> state.set.
+  - id: history-load
+    condition: $volume.json.deposited_count > 0
+    pipeline: state.get scout/deposit-history
+
+  - id: history-next
+    condition: $volume.json.deposited_count > 0
+    command: >
+      node -e 'const h=JSON.parse(process.env.HISTORY||"null")||[];
+        const d=JSON.parse(process.env.DOSSIER||"{}"); const s=JSON.parse(process.env.SCORING||"{}");
+        const att=JSON.parse(process.env.ATTIO||"null")||{}; const dec=JSON.parse(process.env.DECIDE||"null")||{};
+        h.push({
+          action:"lead_deposit",
+          domain:process.env.LOBSTER_ARG_LEAD_DOMAIN,
+          score:s.score||0,
+          tier:s.tier,
+          destination: att.deposited ? "attio_and_pitch_queue" : "pitch_queue",
+          dedup_result: dec.action||"proceed",
+          urgency: !!d.urgency,
+          dossier_complete: !!d.complete,
+          timestamp:new Date().toISOString()
+        });
+        process.stdout.write(JSON.stringify(h));'
+    env:
+      HISTORY: $history-load.stdout
+      DOSSIER: $dossier
+      SCORING: $scoring
+      ATTIO: $deposit-attio.stdout
+      DECIDE: $decide.stdout
+
+  - id: history
+    condition: $volume.json.deposited_count > 0
+    pipeline: state.set scout/deposit-history
+    stdin: $history-next.stdout

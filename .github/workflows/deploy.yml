@@ -16,9 +16,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     needs: []
     env:
       STRIPE_FLAT_PRICE_ID_DEV: ${{ secrets.STRIPE_FLAT_PRICE_ID_DEV }}
@@ -46,9 +44,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -76,9 +72,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -106,9 +100,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -136,9 +128,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -166,9 +156,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -196,9 +184,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -226,9 +212,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -256,9 +240,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -286,9 +268,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -316,9 +296,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -346,9 +324,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -376,9 +352,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -406,9 +380,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -436,9 +408,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -466,9 +436,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -496,9 +464,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -526,9 +492,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -556,9 +520,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -586,9 +548,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -616,9 +576,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -646,9 +604,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -676,9 +632,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -706,9 +660,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -736,9 +688,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -766,9 +716,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -796,9 +744,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -826,9 +772,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -856,9 +800,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -886,9 +828,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -916,9 +856,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -946,9 +884,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
@@ -979,9 +915,7 @@ jobs:
       - Assets-FileAsset1
       - Assets-FileAsset2
       - Assets-FileAsset3
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1018,9 +952,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset4
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1059,9 +991,7 @@ jobs:
       - Assets-FileAsset5
       - Assets-FileAsset6
       - dev-isol8-dev-dns-Deploy
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1106,9 +1036,7 @@ jobs:
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-auth-Deploy
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1148,9 +1076,7 @@ jobs:
       - Assets-FileAsset13
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-auth-Deploy
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1189,9 +1115,7 @@ jobs:
       - Assets-FileAsset14
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-auth-Deploy
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1232,9 +1156,7 @@ jobs:
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-network-Deploy
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1278,9 +1200,7 @@ jobs:
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-api-Deploy
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1323,9 +1243,7 @@ jobs:
       - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-service-Deploy
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1368,9 +1286,7 @@ jobs:
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-observability-Deploy
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1403,9 +1319,7 @@ jobs:
     name: DeployVercelDev
     permissions:
       contents: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     needs:
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
@@ -1488,9 +1402,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1541,9 +1453,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1591,9 +1501,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1643,9 +1551,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1701,9 +1607,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1754,9 +1658,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1806,9 +1708,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1860,9 +1760,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1916,9 +1814,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -1972,9 +1868,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-isol8-dev-fis-Deploy
       - dev-DeployVercelDev
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -2192,9 +2086,7 @@ jobs:
     name: DeployVercelProd
     permissions:
       contents: write
-    runs-on:
-      - self-hosted
-      - isol8-wsl
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
     needs:
       - prod-isol8-prod-auth-Deploy
       - prod-isol8-prod-bedrock-meter-Deploy

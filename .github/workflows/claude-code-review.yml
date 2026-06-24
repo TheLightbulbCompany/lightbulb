@@ -65,10 +65,11 @@ jobs:
           # Posts the review's summary as a PR comment so a clean review is
           # visibly confirmed, not a silent green check.
           display_report: true
-          # Surface the full execution output so a startup failure (e.g. an
-          # expired CLAUDE_CODE_OAUTH_TOKEN or a usage cap) prints its real
-          # error instead of the suppressed one-line stub.
-          show_full_output: true
+          # NOTE: do NOT set `show_full_output: true` here — it suppresses the
+          # `execution_file` output the guard below reads, which made the guard
+          # false-fail a genuinely-clean review. The guard's is_error detection
+          # is the real signal; to debug a specific failure, add the flag
+          # temporarily and read the step log, then remove it.
 
       # Fail-loud guard: the action reports `success` even when the agent
       # crashes on turn 1 (is_error=true, $0 spent, nothing reviewed) — a green

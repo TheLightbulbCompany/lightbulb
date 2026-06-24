@@ -1,44 +1,36 @@
-// Runtime toggle for the unified-nav migration (Phase A). Opt in by
-// visiting `?unifiedNav=1` (persists in this browser via localStorage);
-// `?unifiedNav=0` opts out. TEMPORARY — delete when the migration ships.
+// Runtime toggle for the unified nav. The unified `/chat` shell is now the
+// DEFAULT everywhere — no `?unifiedNav=1` opt-in is needed. A trivial opt-OUT
+// escape hatch remains: `?unifiedNav=0` falls back to the legacy nav for this
+// browser (persisted in localStorage), and `?unifiedNav=1` clears the opt-out.
+// Keeping the opt-out makes this cleanly reversible while `/teams` and the
+// legacy nav are still around (both retired in a later, separate step).
 
 export const UNIFIED_NAV_KEY = "isol8:unified-nav";
 
-// The unified nav is a dev/preview-only escape hatch and must NOT be reachable
-// on the production apex. The gate keys off the backend host: only the literal
-// `//api.isol8.co` counts as prod. The `//` prefix is load-bearing — it
-// excludes `//api-dev.isol8.co` and `//api-staging.isol8.co` (the `-dev`/
-// `-staging` segment breaks the substring) and `//localhost`, so dev + Vercel
-// previews keep full access. Evaluated at call time (not module scope) so the
-// env is read live — important for tests stubbing NEXT_PUBLIC_API_URL.
-function isProd(): boolean {
-  return (process.env.NEXT_PUBLIC_API_URL ?? "").includes("//api.isol8.co");
-}
-
+// Whether the unified nav is enabled in this browser. Default ON: the only
+// stored value that disables it is the explicit opt-out marker `"0"`.
 export function readUnifiedNav(): boolean {
-  if (isProd()) return false;
-  if (typeof window === "undefined") return false;
+  if (typeof window === "undefined") return true;
   try {
-    return window.localStorage.getItem(UNIFIED_NAV_KEY) === "1";
+    return window.localStorage.getItem(UNIFIED_NAV_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
-// "1" enables, "0" disables, anything else is ignored. Returns the new
-// boolean when it acted, or null when the param was absent/invalid. On the prod
-// apex this is always a null no-op so the localStorage key is never written.
+// "0" persists the opt-out (legacy nav), "1" clears it (back to the default
+// unified nav), anything else is ignored. Returns the new boolean when it
+// acted, or null when the param was absent/invalid.
 export function applyUnifiedNavParam(param: string | null): boolean | null {
-  if (isProd()) return null;
   if (param !== "1" && param !== "0") return null;
   if (typeof window === "undefined") return null;
   try {
-    if (param === "1") {
-      window.localStorage.setItem(UNIFIED_NAV_KEY, "1");
-      return true;
+    if (param === "0") {
+      window.localStorage.setItem(UNIFIED_NAV_KEY, "0");
+      return false;
     }
     window.localStorage.removeItem(UNIFIED_NAV_KEY);
-    return false;
+    return true;
   } catch {
     return null;
   }
@@ -46,11 +38,9 @@ export function applyUnifiedNavParam(param: string | null): boolean | null {
 
 // Resolve the effective flag for a render: an explicit URL param overrides the
 // stored value SYNCHRONOUSLY, so `?unifiedNav=0` opts out on the very first
-// render (before the persistence effect runs) and `?unifiedNav=1` opts in; an
-// absent/invalid param falls back to the stored value. On the prod apex it
-// short-circuits to false before any param/stored consideration.
+// render (before the persistence effect runs) and `?unifiedNav=1` opts back in;
+// an absent/invalid param falls back to the stored value (which defaults ON).
 export function resolveUnifiedNav(param: string | null, stored: boolean): boolean {
-  if (isProd()) return false;
   if (param === "1") return true;
   if (param === "0") return false;
   return stored;

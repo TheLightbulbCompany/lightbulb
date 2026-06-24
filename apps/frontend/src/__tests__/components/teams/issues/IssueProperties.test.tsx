@@ -2,9 +2,10 @@ import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-// IssueProperties now renders <IssueRelations>, which reads `GET /teams/issues`
-// for blocker candidates. Mock the Teams API so the relation rows mount with an
-// empty candidate list and never hit the network.
+// IssueProperties renders <IssueRelations>, <LabelPicker>, and <ParentPicker>,
+// which read `GET /teams/issues`, `/issues/labels`, and `/issues/{id}`
+// respectively. A path-routing mock returns the right payload per fetched path
+// so each control mounts with the candidate list it needs.
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 
 import {
@@ -14,13 +15,37 @@ import {
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   Issue,
+  IssueLabel,
   CompanyAgent,
   IssueProject,
 } from "@/components/teams/shared/types";
 
+// Candidate issues for the parent/blocker pickers and labels for the label
+// picker. Returned by the path-routing read mock below.
+const CANDIDATE_ISSUES: Issue[] = [
+  { id: "iss_2", identifier: "ISO-2", title: "A candidate parent", status: "todo" },
+];
+const COMPANY_LABELS: IssueLabel[] = [
+  { id: "lbl_bug", name: "bug" },
+  { id: "lbl_urgent", name: "urgent" },
+];
+
+type ReadResult<T> = { data: T | undefined };
+
+function readFor<T>(path: string): ReadResult<T> {
+  if (path === "/issues") {
+    return { data: { issues: CANDIDATE_ISSUES } as unknown as T };
+  }
+  if (path === "/issues/labels") {
+    return { data: { labels: COMPANY_LABELS } as unknown as T };
+  }
+  // Parent/Sub-tasks/{id} reads etc. — undefined is fine for these tests.
+  return { data: undefined };
+}
+
 beforeEach(() => {
   vi.mocked(useTeamsApi).mockReturnValue({
-    read: vi.fn().mockReturnValue({ data: { issues: [] } }),
+    read: <T,>(path: string): ReadResult<T> => readFor<T>(path),
     post: vi.fn(),
     patch: vi.fn(),
     del: vi.fn(),
@@ -171,5 +196,74 @@ describe("IssueProperties", () => {
     // Trigger should label with the denormalized project name even when the
     // projects prop is empty (e.g. SWR not yet loaded).
     expect(screen.getByRole("button", { name: /Inbox v1/ })).toBeInTheDocument();
+  });
+
+  test("toggling a label option calls onLabelsChange with the full desired id set", async () => {
+    const user = userEvent.setup();
+    const onLabelsChange = vi.fn();
+    // One label already applied; toggling a second sends BOTH ids (replace).
+    const issue: Issue = { ...baseIssue, labels: [{ id: "lbl_bug", name: "bug" }] };
+    render(
+      <IssueProperties
+        issue={issue}
+        {...requiredHandlers()}
+        onLabelsChange={onLabelsChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Add label/i }));
+    await user.click(await screen.findByText("urgent"));
+    expect(onLabelsChange).toHaveBeenCalledWith(["lbl_bug", "lbl_urgent"]);
+  });
+
+  test("selecting a parent calls onParentChange with the issue id", async () => {
+    const user = userEvent.setup();
+    const onParentChange = vi.fn();
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        {...requiredHandlers()}
+        onParentChange={onParentChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Set parent/i }));
+    await user.click(await screen.findByText(/A candidate parent/));
+    expect(onParentChange).toHaveBeenCalledWith("iss_2");
+  });
+
+  test("clearing the parent calls onParentChange with null", async () => {
+    const user = userEvent.setup();
+    const onParentChange = vi.fn();
+    // An issue that already has a parent surfaces the "Change" trigger + the
+    // "Clear parent" option in the popover.
+    const issue: Issue = { ...baseIssue, parentId: "iss_99" };
+    render(
+      <IssueProperties
+        issue={issue}
+        {...requiredHandlers()}
+        onParentChange={onParentChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Change/i }));
+    await user.click(await screen.findByText("Clear parent"));
+    expect(onParentChange).toHaveBeenCalledWith(null);
+  });
+
+  test("assigning a human member calls onAssigneeUserChange with the user id", async () => {
+    const user = userEvent.setup();
+    const onAssigneeUserChange = vi.fn();
+    const members = [{ userId: "user_7", name: "Ada Lovelace", email: "ada@x.co" }];
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        members={members}
+        {...requiredHandlers()}
+        onAssigneeUserChange={onAssigneeUserChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Unassigned/i }));
+    // The popover lists agents + a People section; pick the human member.
+    const option = await screen.findByText("Ada Lovelace");
+    await user.click(option);
+    expect(onAssigneeUserChange).toHaveBeenCalledWith("user_7");
   });
 });

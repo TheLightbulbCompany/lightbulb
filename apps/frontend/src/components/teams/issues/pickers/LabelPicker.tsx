@@ -1,0 +1,156 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { Check, Plus, X } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { cn } from "@/lib/utils";
+import type { IssueLabel } from "@/components/teams/shared/types";
+
+// Shared chip style so the selected labels read identically to the rest of the
+// rail's pill rows (Related Tasks, blocker chips).
+const CHIP_STYLE = {
+  background: "var(--cream-deeper)",
+  color: "var(--ink-soft)",
+  border: "1px solid var(--edge)",
+} as const;
+
+export interface LabelPickerProps {
+  /** Currently-applied labels (the denormalized list off the issue). */
+  selected: IssueLabel[];
+  /** Receives the FULL desired label-id set (replace semantics — the whole
+   * array is sent, matching the BFF's ``labelIds`` PATCH contract). */
+  onChange: (labelIds: string[]) => void;
+  className?: string;
+}
+
+/** Editable Labels rail control: a themed multi-select popover over the
+ * company's label set. Toggling an option sends the full desired id set so the
+ * server replaces the issue's labels wholesale. Renders the applied labels as
+ * removable chips next to an "Add label" trigger. */
+export function LabelPicker({ selected, onChange, className }: LabelPickerProps) {
+  const { read } = useTeamsApi();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  // Company labels for the dropdown. There's no server-side label search on
+  // the Teams BFF, so we filter the full list client-side (mirrors how
+  // IssueRelations filters its candidate issues).
+  const { data } = read<{ labels: IssueLabel[] }>("/issues/labels");
+  const allLabels = data?.labels;
+
+  const selectedIds = useMemo(() => selected.map((l) => l.id), [selected]);
+
+  const candidates = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (allLabels ?? [])
+      .filter((label) => (q ? label.name.toLowerCase().includes(q) : true))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [allLabels, query]);
+
+  // Full-array replace, exactly like the blocker picker's toggle.
+  const toggle = (labelId: string) => {
+    const next = selectedIds.includes(labelId)
+      ? selectedIds.filter((id) => id !== labelId)
+      : [...selectedIds, labelId];
+    onChange(next);
+  };
+  const remove = (labelId: string) => {
+    onChange(selectedIds.filter((id) => id !== labelId));
+  };
+
+  return (
+    <span className={cn("flex flex-wrap items-center gap-1", className)}>
+      {selected.map((label) => (
+        <span
+          key={label.id}
+          className="group inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs"
+          style={CHIP_STYLE}
+        >
+          <span className="truncate">{label.name}</span>
+          <button
+            type="button"
+            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+            style={{ color: "var(--mute)" }}
+            aria-label={`Remove label ${label.name}`}
+            title={`Remove label ${label.name}`}
+            onClick={() => remove(label.id)}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+      ))}
+      <Popover
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setQuery("");
+        }}
+      >
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors hover:underline"
+            style={{ border: "1px solid var(--edge)", color: "var(--mute)" }}
+          >
+            <Plus className="h-3 w-3" />
+            Add label
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          className="w-64 p-1"
+          style={{
+            background: "var(--cream)",
+            border: "1px solid var(--edge)",
+            color: "var(--ink)",
+          }}
+        >
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search labels..."
+            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+            style={{ borderBottom: "1px solid var(--edge)" }}
+            aria-label="Search labels"
+          />
+          <ul className="max-h-48 overflow-y-auto" role="listbox" aria-multiselectable="true">
+            {candidates.map((label) => {
+              const isSelected = selectedIds.includes(label.id);
+              return (
+                <li key={label.id} role="option" aria-selected={isSelected}>
+                  <button
+                    type="button"
+                    onClick={() => toggle(label.id)}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deeper)]",
+                      isSelected && "bg-[var(--cream-deeper)]",
+                    )}
+                  >
+                    <span className="truncate">{label.name}</span>
+                    {isSelected && (
+                      <Check
+                        className="ml-auto h-3.5 w-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+            {candidates.length === 0 && (
+              <li className="px-2 py-2 text-xs" style={{ color: "var(--mute)" }}>
+                No matching labels.
+              </li>
+            )}
+          </ul>
+        </PopoverContent>
+      </Popover>
+    </span>
+  );
+}

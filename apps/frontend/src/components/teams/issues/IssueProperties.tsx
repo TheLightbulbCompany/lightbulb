@@ -26,6 +26,8 @@ import type {
 } from "@/components/teams/shared/types";
 import { AssigneePicker } from "./pickers/AssigneePicker";
 import { ProjectPicker } from "./pickers/ProjectPicker";
+import { LabelPicker } from "./pickers/LabelPicker";
+import { ParentPicker } from "./pickers/ParentPicker";
 import { IssueRelations } from "./IssueRelations";
 
 export interface IssuePropertiesProps {
@@ -35,10 +37,21 @@ export interface IssuePropertiesProps {
   projects?: IssueProject[];
   onStatusChange: (status: IssueStatus) => void;
   onPriorityChange: (priority: IssuePriority) => void;
+  /** Assign an agent (or ``null`` to unassign). Clears any human assignee. */
   onAssigneeChange: (agentId: string | null) => void;
+  /** Assign a human member by Clerk user id (or ``null`` to unassign). Clears
+   * any agent assignee. Optional — without it the Assignee row stays
+   * agent-only. */
+  onAssigneeUserChange?: (userId: string | null) => void;
   onProjectChange: (projectId: string | null) => void;
   /** Receives the FULL desired blocker-id set (replace semantics). */
   onBlockedByChange: (ids: string[]) => void;
+  /** Receives the FULL desired label-id set (replace semantics). Optional —
+   * without it the Labels row stays read-only chips. */
+  onLabelsChange?: (labelIds: string[]) => void;
+  /** Reparent to an issue id or ``null`` to clear. Optional — without it the
+   * Parent row stays a read-only link. */
+  onParentChange?: (parentId: string | null) => void;
   className?: string;
 }
 
@@ -94,9 +107,10 @@ function childrenCount(data: ChildrenResponse | undefined): number {
   return data.issues?.length ?? 0;
 }
 
-/** Read-only Parent row. Rendered only when the issue has a parent, so the
- * fetch never fires for top-level tasks (mirrors IssueParentBreadcrumb). */
-function ParentRow({ parentId }: { parentId: string }) {
+/** Read-only Parent link (used only when no onParentChange is wired). Fetches
+ * the parent's identifier/title so the link reads like a task reference
+ * (mirrors IssueParentBreadcrumb). */
+function ParentLink({ parentId }: { parentId: string }) {
   const { read } = useTeamsApi();
   const { data: parent } = read<Issue>(`/issues/${parentId}`);
   const label = parent
@@ -104,16 +118,14 @@ function ParentRow({ parentId }: { parentId: string }) {
     : parentId.slice(0, 8);
   const title = parent?.title?.trim() ?? "";
   return (
-    <PropertyRow label="Parent">
-      <Link
-        href={`/teams/issues/${parentId}`}
-        className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
-        style={{ color: "var(--forest)" }}
-      >
-        <span className="font-mono text-xs shrink-0">{label}</span>
-        {title && <span className="truncate">{title}</span>}
-      </Link>
-    </PropertyRow>
+    <Link
+      href={`/teams/issues/${parentId}`}
+      className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
+      style={{ color: "var(--forest)" }}
+    >
+      <span className="font-mono text-xs shrink-0">{label}</span>
+      {title && <span className="truncate">{title}</span>}
+    </Link>
   );
 }
 
@@ -139,12 +151,16 @@ function SubTasksRow({ issueId }: { issueId: string }) {
 export function IssueProperties({
   issue,
   agents = [],
+  members = [],
   projects = [],
   onStatusChange,
   onPriorityChange,
   onAssigneeChange,
+  onAssigneeUserChange,
   onProjectChange,
   onBlockedByChange,
+  onLabelsChange,
+  onParentChange,
   className,
 }: IssuePropertiesProps) {
   // Merge denormalized issue.project into the projects list so the trigger
@@ -187,9 +203,12 @@ export function IssueProperties({
         )}
       </PropertyRow>
       {/* Labels sits directly after Priority to match upstream's rail order
-          (Status, Priority, Labels, Assignee, Project, …). */}
+          (Status, Priority, Labels, Assignee, Project, …). Editable when the
+          host wires onLabelsChange; falls back to read-only chips otherwise. */}
       <PropertyRow label="Labels">
-        {labels.length > 0 ? (
+        {onLabelsChange ? (
+          <LabelPicker selected={labels} onChange={onLabelsChange} />
+        ) : labels.length > 0 ? (
           <span className="flex flex-wrap gap-1">
             {labels.map((l) => (
               <span
@@ -210,6 +229,9 @@ export function IssueProperties({
           agents={agents}
           selectedAgentId={issue.assigneeAgentId ?? null}
           onChange={onAssigneeChange}
+          members={members}
+          selectedUserId={issue.assigneeUserId ?? null}
+          onUserChange={onAssigneeUserChange}
         />
       </PropertyRow>
       <PropertyRow label="Project">
@@ -219,13 +241,19 @@ export function IssueProperties({
           onChange={onProjectChange}
         />
       </PropertyRow>
-      {issue.parentId ? (
-        <ParentRow parentId={issue.parentId} />
-      ) : (
-        <PropertyRow label="Parent">
+      <PropertyRow label="Parent">
+        {onParentChange ? (
+          <ParentPicker
+            issueId={issue.id}
+            parentId={issue.parentId ?? null}
+            onChange={onParentChange}
+          />
+        ) : issue.parentId ? (
+          <ParentLink parentId={issue.parentId} />
+        ) : (
           <EmptyDash />
-        </PropertyRow>
-      )}
+        )}
+      </PropertyRow>
       <IssueRelations issue={issue} onBlockedByChange={onBlockedByChange} />
       <SubTasksRow issueId={issue.id} />
       <PropertyRow label="Related Tasks">

@@ -144,6 +144,19 @@ export interface IssueUpdateInput {
    * BFF aliases this to ``blockedByIssueIds`` on the wire. ``undefined``
    * leaves the relations unchanged. */
   blockedByIssueIds?: string[];
+  /** Reparent (a parent issue id) or ``null`` to clear the parent. The BFF
+   * camelCase-aliases this to ``parentId``. ``undefined`` leaves the parent
+   * unchanged. */
+  parentId?: string | null;
+  /** Assign a human company member by Clerk user id, or ``null`` to clear it.
+   * Mutually exclusive with ``assigneeAgentId`` — the picker sends the other
+   * as ``null`` so only one assignee kind is ever set. ``undefined`` leaves
+   * the user-assignee unchanged. */
+  assigneeUserId?: string | null;
+  /** Full desired set of label ids (replace semantics — the whole array is
+   * sent, matching the multi-select rail control). The BFF camelCase-aliases
+   * this to ``labelIds``. ``undefined`` leaves the labels unchanged. */
+  labelIds?: string[];
   /** An ISO timestamp hides the task (it drops out of the Tasks list);
    * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
    * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */

@@ -279,6 +279,36 @@ async def _resolve_user_email(user_id: str) -> str:
     raise RuntimeError(f"clerk user {user_id} has no email address")
 
 
+async def build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:
+    """Map Paperclip principalId → Clerk user_id for the caller's org.
+
+    For a personal context the caller is the only member (seed their own
+    pairing); for an org, build the map from the ``paperclip-companies``
+    ``by-org-id`` GSI rows. GSI failures degrade to an empty map so the
+    caller can ship a best-effort response rather than 5xx.
+
+    Lives here (rather than in ``feed.py``) because both the activity feed's
+    actor enrichment and the ``/members`` roster need the same principal map;
+    keeping one copy stops the two from drifting on org/personal handling.
+    """
+    principal_to_clerk: dict[str, str] = {}
+    if ctx.org_id is None:
+        if ctx.paperclip_user_id:
+            principal_to_clerk[ctx.paperclip_user_id] = ctx.user_id
+        return principal_to_clerk
+    try:
+        org_rows = await _repo().list_by_org_id(ctx.org_id)
+    except Exception:
+        logger.exception("teams: list_by_org_id failed for org=%s", ctx.org_id)
+        return principal_to_clerk
+    for row in org_rows:
+        paperclip_uid = row.get("paperclip_user_id")
+        clerk_uid = row.get("user_id")
+        if paperclip_uid and clerk_uid:
+            principal_to_clerk[paperclip_uid] = clerk_uid
+    return principal_to_clerk
+
+
 async def get_user_session_cookie_for(user_id: str) -> str:
     """Mint a fresh per-user Better Auth session cookie (cold path only).
 
@@ -436,6 +466,83 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
     envelope = envelope_list(upstream, "agents")
     seeded_ids = await get_seeded_agent_ids(owner_id=_resolve_owner_id(ctx), repo=_repo())
     return {"agents": [_mark_seeded(_redact_agent(a), seeded_ids) for a in envelope["agents"]]}
+
+
+@router.get("/members")
+async def list_members(ctx: TeamsContext = Depends(_ctx)):
+    """List the caller's company members, enriched with Clerk identity.
+
+    Upstream's ``GET /api/companies/{co}/members`` rows carry only a
+    ``principalId`` (the Better Auth user id) — no email, name, or avatar.
+    The human-user assignee picker on the task detail rail needs those, so
+    we join each principal back to Clerk via the same principal→Clerk map
+    the activity feed uses, then resolve name/email/imageUrl from Clerk.
+
+    Returns the ``{members: [...]}`` envelope shape every Teams panel reads.
+    Each row matches the frontend ``CompanyMember`` type
+    (``userId``/``name``/``email``/``imageUrl``). Enrichment is best-effort:
+    a member whose Clerk lookup fails is dropped rather than shipped as a
+    raw principal id (the picker only wants resolvable humans).
+    """
+    upstream = await _admin().list_members(
+        company_id=ctx.company_id,
+        session_cookie=ctx.session_cookie,
+    )
+    rows = envelope_list(upstream, "members")["members"]
+    principal_to_clerk = await build_principal_to_clerk(ctx)
+
+    members: list[dict] = []
+    seen_clerk_ids: set[str] = set()
+    for row in rows:
+        clerk_user_id = principal_to_clerk.get(row.get("principalId"))
+        if not clerk_user_id or clerk_user_id in seen_clerk_ids:
+            continue
+        try:
+            member = await _resolve_member_identity(clerk_user_id)
+        except Exception:
+            logger.exception(
+                "teams.list_members: clerk lookup failed for clerk_user_id=%s",
+                clerk_user_id,
+            )
+            continue
+        if member is None:
+            continue
+        seen_clerk_ids.add(clerk_user_id)
+        members.append(member)
+    return {"members": members}
+
+
+async def _resolve_member_identity(user_id: str) -> dict | None:
+    """Build a ``CompanyMember`` row from a Clerk user.
+
+    Returns ``None`` when Clerk has no such user. Name falls back from the
+    full name → email → the raw id so the picker always has a label to show.
+    """
+    from core.services.clerk_admin import get_user
+
+    user = await get_user(user_id)
+    if not user:
+        return None
+    email = _primary_email(user)
+    name = " ".join(part for part in (user.get("first_name"), user.get("last_name")) if part).strip()
+    return {
+        "userId": user_id,
+        "name": name or email or user_id,
+        "email": email,
+        "imageUrl": user.get("image_url"),
+    }
+
+
+def _primary_email(user: dict) -> str | None:
+    """Pull the primary email off a Clerk user dict, else the first address."""
+    primary_id = user.get("primary_email_address_id")
+    addrs = user.get("email_addresses") or []
+    for entry in addrs:
+        if entry.get("id") == primary_id and entry.get("email_address"):
+            return entry["email_address"]
+    if addrs and addrs[0].get("email_address"):
+        return addrs[0]["email_address"]
+    return None
 
 
 @router.post("/agents")

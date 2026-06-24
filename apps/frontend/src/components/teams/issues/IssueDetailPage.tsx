@@ -32,6 +32,7 @@ import {
 import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import type {
   CompanyAgent,
+  CompanyMember,
   IssueProject,
 } from "@/components/teams/shared/types";
 
@@ -159,8 +160,12 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
+  // Company members power the human-user side of the assignee picker. Mirrors
+  // how agents/projects are read; the BFF enriches each row with Clerk identity.
+  const { data: membersResp } = read<{ members: CompanyMember[] }>("/members");
   const agents = agentsResp?.agents ?? [];
   const projects = projectsResp?.projects ?? [];
+  const members = membersResp?.members ?? [];
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -329,6 +334,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         <IssueProperties
           issue={issue}
           agents={agents}
+          members={members}
           projects={projects}
           onStatusChange={async (status) => {
             await mutations.update(issueId, { status });
@@ -337,13 +343,31 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             await mutations.update(issueId, { priority });
           }}
           onAssigneeChange={(assigneeAgentId) => {
-            void mutations.update(issueId, { assigneeAgentId });
+            // Agent and human assignees are mutually exclusive — picking an
+            // agent clears any human assignee in the same PATCH.
+            void mutations.update(issueId, {
+              assigneeAgentId,
+              assigneeUserId: null,
+            });
+          }}
+          onAssigneeUserChange={(assigneeUserId) => {
+            // Picking a human clears any agent assignee in the same PATCH.
+            void mutations.update(issueId, {
+              assigneeUserId,
+              assigneeAgentId: null,
+            });
           }}
           onProjectChange={(projectId) => {
             void mutations.update(issueId, { projectId });
           }}
           onBlockedByChange={(blockedByIssueIds) => {
             void mutations.update(issueId, { blockedByIssueIds });
+          }}
+          onLabelsChange={(labelIds) => {
+            void mutations.update(issueId, { labelIds });
+          }}
+          onParentChange={(parentId) => {
+            void mutations.update(issueId, { parentId });
           }}
         />
       </aside>

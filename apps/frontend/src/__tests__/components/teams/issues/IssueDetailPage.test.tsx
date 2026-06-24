@@ -219,7 +219,12 @@ describe("IssueDetailPage", () => {
     render(<IssueDetailPage issueId="iss_1" />);
     await user.click(screen.getAllByRole("button", { name: /Unassigned/i })[0]);
     await user.click(await screen.findByText("Friday"));
-    expect(mockUpdate).toHaveBeenCalledWith("iss_1", { assigneeAgentId: "ag_1" });
+    // Picking an agent clears any human assignee in the same PATCH (agent and
+    // human assignees are mutually exclusive).
+    expect(mockUpdate).toHaveBeenCalledWith("iss_1", {
+      assigneeAgentId: "ag_1",
+      assigneeUserId: null,
+    });
   });
 
   test("Delete issue action confirms then removes + navigates back to /teams", async () => {

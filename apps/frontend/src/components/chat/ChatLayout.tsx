@@ -375,7 +375,7 @@ export function ChatLayout({
           {/* New Agent Button */}
           <button className="new-agent-btn new-agent-btn--primary" onClick={handleCreateAgent}>
             <Plus size={14} />
-            New chat
+            New agent
           </button>
 
               {/* Agent List + CompanyNav + Gallery share a single
@@ -594,7 +594,12 @@ export function ChatLayout({
         <AgentCreateDialog
           key={createFormOpen ? "create-open" : "create-closed"}
           open={createFormOpen}
-          existingIds={agents.map((a) => a.id)}
+          // Names only — the dup check is a name-space concern. The UUID id
+          // is the identity (used for workspace/RPC targeting), never a name,
+          // so an unnamed agent contributes nothing to collide against.
+          existingNames={agents
+            .map((a) => a.identity?.name || a.name)
+            .filter((n): n is string => !!n)}
           onCancel={() => setCreateFormOpen(false)}
           onCreate={async (name) => {
             // OpenClaw's agents.create requires a non-empty `workspace` —

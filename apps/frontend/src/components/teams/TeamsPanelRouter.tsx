@@ -38,9 +38,6 @@ const PANELS: Record<string, React.ComponentType> = {
   skills: dynamic(() =>
     import("./panels/SkillsPanel").then((m) => m.SkillsPanel),
   ),
-  members: dynamic(() =>
-    import("./panels/MembersPanel").then((m) => m.MembersPanel),
-  ),
   settings: dynamic(() =>
     import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
   ),
@@ -65,6 +62,7 @@ const GoalDetailPanel = dynamic(() =>
 // Panels removed from the nav but still reachable by old URLs/bookmarks.
 const RETIRED_REDIRECTS: Record<string, string> = {
   approvals: "/teams/inbox", // folded into the inbox "Needs attention" band
+  members: "/chat?panel=teams-settings", // members management lives in Settings now
 };
 
 export function TeamsPanelRouter({

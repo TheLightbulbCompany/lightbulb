@@ -10,7 +10,6 @@ import {
   Network,
   Boxes,
   History,
-  UsersRound,
 } from "lucide-react";
 import { TEAMS_PANEL_PREFIX } from "./InlineTeamsPanel";
 
@@ -35,7 +34,7 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
   {
     label: "Work",
     items: [
-      { panel: `${TEAMS_PANEL_PREFIX}issues`, label: "Issues", Icon: ListTodo },
+      { panel: `${TEAMS_PANEL_PREFIX}issues`, label: "Tasks", Icon: ListTodo },
       { panel: `${TEAMS_PANEL_PREFIX}routines`, label: "Routines", Icon: Repeat },
       { panel: `${TEAMS_PANEL_PREFIX}goals`, label: "Goals", Icon: Target },
       { panel: `${TEAMS_PANEL_PREFIX}projects`, label: "Projects", Icon: FolderKanban },
@@ -47,7 +46,6 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
       { panel: `${TEAMS_PANEL_PREFIX}org-chart`, label: "Org chart", Icon: Network },
       { panel: `${TEAMS_PANEL_PREFIX}skills`, label: "Skills", Icon: Boxes },
       { panel: `${TEAMS_PANEL_PREFIX}activity`, label: "Activity", Icon: History },
-      { panel: `${TEAMS_PANEL_PREFIX}members`, label: "Members", Icon: UsersRound },
     ],
   },
 ];

@@ -10,12 +10,8 @@ import { Logo } from "@/components/Logo";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { useConnections } from "@/hooks/useConnections";
 import { SettingsNav } from "@/components/settings/SettingsNav";
-import {
-  LEGACY_NAV_SECTIONS,
-  UNIFIED_NAV_SECTIONS,
-} from "@/components/settings/settings-nav-config";
+import { SETTINGS_NAV_SECTIONS } from "@/components/settings/settings-nav-config";
 import { useIsControlAdmin } from "@/components/control/ControlSidebar";
-import { useUnifiedNav } from "@/hooks/useUnifiedNav";
 
 /**
  * /settings/connections — manage third-party integrations.
@@ -61,11 +57,9 @@ function ConnectionsPageInner() {
   const searchParams = useSearchParams();
   const { membership } = useOrganization();
 
-  // Same flag + admin gate as /settings so the shared nav renders the matching
-  // group set: flag-OFF shows the legacy single "Account" group, flag-ON shows
-  // the 6 intent-ordered groups. Connections is highlighted via activeHref.
-  const unifiedNav = useUnifiedNav();
-  const navSections = unifiedNav ? UNIFIED_NAV_SECTIONS : LEGACY_NAV_SECTIONS;
+  // Same shared nav as /settings (the 6 intent-ordered groups). Connections is
+  // highlighted via activeHref.
+  const navSections = SETTINGS_NAV_SECTIONS;
   const isAdmin = useIsControlAdmin();
 
   // A personal owner has no org membership and is implicitly the admin of

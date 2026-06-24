@@ -25,31 +25,10 @@ export type NavItem = {
 
 export type NavSection = { label: string; items: NavItem[] };
 
-// Legacy nav — the single "Account" group that ships today. Rendered when the
-// unified-nav flag is OFF so /settings stays byte-identical to the current app:
-// config panels stay in the Control tab, NOT relocated here, until the flag
-// flips. Keep this in lockstep with origin/main's NAV_SECTIONS.
-export const LEGACY_NAV_SECTIONS: NavSection[] = [
-  {
-    label: "Account",
-    items: [
-      { id: "profile", name: "Profile", icon: "profile", panel: "profile" },
-      { id: "billing", name: "Billing", icon: "billing", panel: "billing" },
-      { id: "channels", name: "Channels", icon: "channels", panel: "channels" },
-      { id: "connections", name: "Connections", icon: "connections", href: "/settings/connections" },
-      { id: "webhooks", name: "Webhooks", icon: "webhooks", panel: "webhooks" },
-      { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
-      { id: "marketplace", name: "Marketplace", icon: "marketplace", panel: "marketplace" },
-    ],
-  },
-];
-
-// Six intent-ordered groups (design.md §5). This increment re-buckets the
-// EXISTING panels only and stands up the (currently empty) MODEL & PROVIDERS /
-// ENGINE ROOM headers; the Control panels that fill them are registered in the
-// following increments via the per-panel insertion checklist. Rendered ONLY
-// when the unified-nav flag is ON.
-export const UNIFIED_NAV_SECTIONS: NavSection[] = [
+// Six intent-ordered groups (design.md §5). The relocated Control config panels
+// (Usage, Model & Providers, MCP servers, the ENGINE ROOM trio, Channel Status)
+// live here alongside the original Account-group panels.
+export const SETTINGS_NAV_SECTIONS: NavSection[] = [
   {
     label: "ACCOUNT",
     items: [

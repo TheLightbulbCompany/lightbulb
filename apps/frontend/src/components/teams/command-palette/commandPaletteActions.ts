@@ -1,10 +1,11 @@
 // Ported from upstream Paperclip's CommandPalette
 // (paperclip/ui/src/components/CommandPalette.tsx) (MIT, (c) 2025 Paperclip AI).
-// Static "Go to" entries that route between Teams panels in TeamsSidebar.
+// Static "Go to" entries that route between Teams panels. The `/teams/*` paths
+// redirect into the unified `/chat?panel=teams-*` shell via middleware.
 
 import {
   LayoutDashboard, Inbox, Bot, CircleDot, ClipboardCheck, Repeat, Target,
-  FolderOpen, History, DollarSign, Hexagon, Users, Settings, Network,
+  FolderOpen, History, DollarSign, Hexagon, Settings, Network,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -29,7 +30,6 @@ export const NAV_ACTIONS: CommandPaletteAction[] = [
   { id: "go-activity", label: "Activity", path: "/teams/activity", Icon: History, keywords: ["events", "log"] },
   { id: "go-costs", label: "Costs", path: "/teams/costs", Icon: DollarSign, keywords: ["billing", "spend"] },
   { id: "go-skills", label: "Skills", path: "/teams/skills", Icon: Hexagon, keywords: ["tools"] },
-  { id: "go-members", label: "Members", path: "/teams/members", Icon: Users, keywords: ["people", "team"] },
   { id: "go-settings", label: "Settings", path: "/teams/settings", Icon: Settings },
 ];
 

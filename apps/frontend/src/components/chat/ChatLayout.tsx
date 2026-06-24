@@ -7,7 +7,7 @@ import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Grid2X2, HelpCircle, ListTodo, SlidersHorizontal } from "lucide-react";
+import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, HelpCircle, ListTodo, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -23,7 +23,6 @@ import { useApi } from "@/lib/api";
 import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
-import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { CompanyNav } from "@/components/chat/CompanyNav";
 import { FileViewer } from "@/components/chat/FileViewer";
 import { Logo } from "@/components/Logo";
@@ -37,14 +36,11 @@ import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
-  activeView: "chat" | "control";
-  onViewChange: (view: "chat" | "control") => void;
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
   openAgentIssues?: (agentId: string) => void;
   openAgentInspector?: (agentId: string) => void;
   onClearPanel?: () => void;
-  unifiedNav?: boolean;
   fileViewerOpen?: boolean;
   activeFilePath?: string | null;
   onOpenFile?: (path: string) => void;
@@ -59,14 +55,11 @@ function dispatchSelectAgentEvent(agentId: string): void {
 
 export function ChatLayout({
   children,
-  activeView,
-  onViewChange,
   activePanel,
   onPanelChange,
   openAgentIssues,
   openAgentInspector,
   onClearPanel,
-  unifiedNav,
   fileViewerOpen,
   activeFilePath,
   onOpenFile,
@@ -116,9 +109,6 @@ export function ChatLayout({
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
-
-  // TODO: wire to real approvals count when /teams/approvals BFF lands
-  const approvalsCount = 0;
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
@@ -269,10 +259,10 @@ export function ChatLayout({
     capture("agent_selected", { agent_id: agentId });
     setUserSelectedId(agentId);
     dispatchSelectAgentEvent(agentId);
-    // Under the unified nav there's no tab-switcher: the view is derived from
-    // ?panel. Selecting an agent must drop ?panel so the content area falls
-    // back to chat (with the just-selected agent).
-    if (unifiedNav) onClearPanel?.();
+    // There's no tab-switcher: the view is derived from ?panel. Selecting an
+    // agent must drop ?panel so the content area falls back to chat (with the
+    // just-selected agent).
+    onClearPanel?.();
     setSidebarOpen(false);
   }
 
@@ -304,16 +294,6 @@ export function ChatLayout({
               <Logo size="sm" href={null} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <Link
-                href="/teams"
-                className="teams-pill"
-                aria-label="Teams"
-                title="Teams"
-              >
-                <Grid2X2 size={12} />
-                <span>Teams</span>
-                {approvalsCount > 0 && <b>{approvalsCount}</b>}
-              </Link>
               <Link href="/settings" className="sidebar-settings-link">
                 <Settings size={18} />
               </Link>
@@ -352,45 +332,20 @@ export function ChatLayout({
             </div>
           )}
 
-          {/* Tab Switcher — flag-off only. Under the unified nav the view is
-              derived from ?panel (selecting an agent shows chat; a Company/System
-              panel shows that panel), so the Chat|Control switcher is removed. */}
-          {!unifiedNav ? (
-            <div className="tab-switcher">
-              <button
-                className={`tab-btn${activeView === "chat" ? " active" : ""}`}
-                onClick={() => { onViewChange("chat"); setSidebarOpen(false); }}
-              >
-                Chat
-              </button>
-              <button
-                className={`tab-btn${activeView === "control" ? " active" : ""}`}
-                onClick={() => { capture("control_panel_opened"); onViewChange("control"); setSidebarOpen(false); }}
-              >
-                Control
-              </button>
-            </div>
-          ) : null}
+          {/* ONE sidebar body regardless of view: the roster + CompanyNav cover
+              both chat and control. The view is derived from ?panel (selecting
+              an agent shows chat; a Company/System panel shows that panel), so
+              there's no Chat|Control tab-switcher. */}
+          {/* New Agent Button */}
+          <button className="new-agent-btn new-agent-btn--primary" onClick={handleCreateAgent}>
+            <Plus size={14} />
+            New chat
+          </button>
 
-          {/* Unified nav: ONE sidebar body regardless of view — the chat-branch
-              body (roster + CompanyNav) already covers everything, so the
-              control-branch sidebar is rendered only on the flag-off path.
-              Flag-off (`false || …`) is byte-identical to the prior condition. */}
-          {unifiedNav || activeView === "chat" ? (
-            <>
-              {/* New Agent Button */}
-              <button className="new-agent-btn new-agent-btn--primary" onClick={handleCreateAgent}>
-                <Plus size={14} />
-                New chat
-              </button>
-
-              {/* Agent List. Rendered once via `rosterEl`; flag-ON wraps it
-                  (with CompanyNav + Gallery) in a single `.sidebar-scroll`
-                  region so the roster keeps its natural height instead of
-                  collapsing under CompanyNav's own scroll. Flag-OFF keeps the
-                  flat structure — `.agent-list` stays its own scroll region. */}
-              {(() => {
-              const rosterEl = (
+              {/* Agent List + CompanyNav + Gallery share a single
+                  `.sidebar-scroll` region so the roster keeps its natural
+                  height instead of collapsing under CompanyNav's own scroll. */}
+              <div className="sidebar-scroll">
               <div className="agent-list">
                 <div className="agent-section-label">
                   <span>My Agents</span>
@@ -433,35 +388,27 @@ export function ChatLayout({
                       </div>
                       <div className="agent-row-actions">
                         {/* "See her work →": deep-link into the inline Issues
-                            panel filtered to this agent. Only wired when the
-                            unified nav is on — off-flag the teams-issues panel
-                            wouldn't route. */}
-                        {unifiedNav ? (
-                          <button
-                            type="button"
-                            className="agent-row-action"
-                            aria-label={`See ${agentDisplayName(agent)}'s work`}
-                            title={`See ${agentDisplayName(agent)}'s work`}
-                            onClick={(e) => { e.stopPropagation(); openAgentIssues?.(agent.id); }}
-                          >
-                            <ListTodo size={13} />
-                          </button>
-                        ) : null}
+                            panel filtered to this agent. */}
+                        <button
+                          type="button"
+                          className="agent-row-action"
+                          aria-label={`See ${agentDisplayName(agent)}'s work`}
+                          title={`See ${agentDisplayName(agent)}'s work`}
+                          onClick={(e) => { e.stopPropagation(); openAgentIssues?.(agent.id); }}
+                        >
+                          <ListTodo size={13} />
+                        </button>
                         {/* "Inspect agent": open the per-agent inspector shell
-                            (Overview / Tools / Channels). Only wired when the
-                            unified nav is on — off-flag the agent-inspector
-                            panel wouldn't route. */}
-                        {unifiedNav ? (
-                          <button
-                            type="button"
-                            className="agent-row-action"
-                            aria-label={`Inspect ${agentDisplayName(agent)}`}
-                            title={`Inspect ${agentDisplayName(agent)}`}
-                            onClick={(e) => { e.stopPropagation(); openAgentInspector?.(agent.id); }}
-                          >
-                            <SlidersHorizontal size={13} />
-                          </button>
-                        ) : null}
+                            (Overview / Tools / Channels). */}
+                        <button
+                          type="button"
+                          className="agent-row-action"
+                          aria-label={`Inspect ${agentDisplayName(agent)}`}
+                          title={`Inspect ${agentDisplayName(agent)}`}
+                          onClick={(e) => { e.stopPropagation(); openAgentInspector?.(agent.id); }}
+                        >
+                          <SlidersHorizontal size={13} />
+                        </button>
                         <button
                           type="button"
                           className="agent-row-action"
@@ -486,37 +433,13 @@ export function ChatLayout({
                   );
                 })}
               </div>
-              );
-              // Marketplace block (GallerySection) — Browse + Publish buttons
-              // that open the MarketplaceDrawer. The drawer (mounted on the
-              // chat page) owns the install + auto-select flow now.
-              return unifiedNav ? (
-                <div className="sidebar-scroll">
-                  {rosterEl}
-                  <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
-                  <GallerySection />
-                </div>
-              ) : (
-                <>
-                  {rosterEl}
-                  <GallerySection />
-                </>
-              );
-              })()}
-            </>
-          ) : (
-            <>
-              {/* Keep the Company nav visible while an inline Teams panel is
-                  open: selecting one flips the view to "control", so without
-                  this the only Company nav (in the chat branch) would unmount
-                  and the user would lose Dashboard/Activity + the active
-                  highlight until switching back to Chat. */}
-              {unifiedNav ? (
-                <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
-              ) : null}
-              <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
-            </>
-          )}
+              {/* CompanyNav (Dashboard / Inbox / Work / Company) plus the
+                  marketplace block (GallerySection) — Browse + Publish buttons
+                  that open the MarketplaceDrawer. The drawer (mounted on the
+                  chat page) owns the install + auto-select flow now. */}
+              <CompanyNav activePanel={activePanel} onPanelChange={onPanelChange} />
+              <GallerySection />
+          </div>
 
           {/* Footer */}
           <div className="sidebar-footer">

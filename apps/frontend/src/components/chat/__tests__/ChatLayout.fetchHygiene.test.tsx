@@ -105,7 +105,7 @@ import { ChatLayout } from "../ChatLayout";
 
 function renderLayout() {
   return render(
-    <ChatLayout activeView="chat" onViewChange={() => {}}>
+    <ChatLayout>
       <div />
     </ChatLayout>,
   );

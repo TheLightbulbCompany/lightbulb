@@ -147,7 +147,7 @@ describe("ChatLayout — needsInvitationFlow", () => {
     };
     const { ChatLayout } = await import("../ChatLayout");
     render(
-      <ChatLayout activeView="chat" onViewChange={() => {}}>
+      <ChatLayout>
         <div />
       </ChatLayout>,
     );
@@ -164,7 +164,7 @@ describe("ChatLayout — needsInvitationFlow", () => {
     };
     const { ChatLayout } = await import("../ChatLayout");
     render(
-      <ChatLayout activeView="chat" onViewChange={() => {}}>
+      <ChatLayout>
         <div />
       </ChatLayout>,
     );

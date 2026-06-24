@@ -11,8 +11,8 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsWorkspaceStatus: () => mockWorkspaceStatus.current,
 }));
 
-// /teams' overlays — stub to identifiable nodes.
-vi.mock("@/components/teams/TeamsLayout", () => ({
+// Teams workspace-status overlays — stub to identifiable nodes.
+vi.mock("@/components/teams/TeamsStatusOverlays", () => ({
   ProvisioningOverlay: () => <div data-testid="provisioning-overlay" />,
   SubscribeOverlay: () => <div data-testid="subscribe-overlay" />,
   ErrorOverlay: () => <div data-testid="error-overlay" />,

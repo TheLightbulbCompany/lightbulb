@@ -51,10 +51,9 @@ describe("ChatLayout.tsx See-her-work roster action", () => {
     expect(layoutSource).toMatch(/openAgentIssues\?\s*:\s*\(agentId:\s*string\)\s*=>\s*void/);
   });
 
-  it("gates the See-her-work action on unifiedNav", () => {
-    // The button must only render when unifiedNav is truthy — off-flag the
-    // teams-issues panel wouldn't route.
-    expect(layoutSource).toMatch(/unifiedNav\s*\?[\s\S]*?openAgentIssues/);
+  it("renders the See-her-work action unconditionally (no flag gate)", () => {
+    expect(layoutSource).toMatch(/openAgentIssues/);
+    expect(layoutSource).not.toMatch(/unifiedNav/);
   });
 
   it("calls openAgentIssues with the agent id and stops row-click propagation", () => {

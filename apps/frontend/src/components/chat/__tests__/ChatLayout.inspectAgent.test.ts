@@ -44,10 +44,9 @@ describe("ChatLayout.tsx Inspect-agent roster action", () => {
     expect(layoutSource).toMatch(/openAgentInspector\?\s*:\s*\(agentId:\s*string\)\s*=>\s*void/);
   });
 
-  it("gates the Inspect action on unifiedNav", () => {
-    // The button must only render when unifiedNav is truthy — off-flag the
-    // agent-inspector panel wouldn't route.
-    expect(layoutSource).toMatch(/unifiedNav\s*\?[\s\S]*?openAgentInspector/);
+  it("renders the Inspect action unconditionally (no flag gate)", () => {
+    expect(layoutSource).toMatch(/openAgentInspector/);
+    expect(layoutSource).not.toMatch(/unifiedNav/);
   });
 
   it("calls openAgentInspector with the agent id and stops row-click propagation", () => {

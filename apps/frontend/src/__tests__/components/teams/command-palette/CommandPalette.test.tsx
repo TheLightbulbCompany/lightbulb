@@ -18,7 +18,7 @@ beforeEach(() => {
   vi.mocked(useFilteredCommandResults).mockReturnValue({ agents: [], issues: [], projects: [] });
 });
 
-test("renders 'Navigate' group with all 14 actions on open with empty query", () => {
+test("renders 'Navigate' group with all 13 actions on open with empty query", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   expect(screen.getByText("Navigate")).toBeInTheDocument();
   expect(screen.getByText("Inbox")).toBeInTheDocument();

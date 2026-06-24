@@ -25,13 +25,17 @@ from core.services import (
     seller_display,
     seller_profile,
 )
+from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.catalog_service import MissingCredentialsError, get_catalog_service, warn_rows
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
 )
 from core.services.paperclip_meta import derive_from_listing, read_from_agent_entry
-from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
+from core.services.paperclip_openclaw_pairing import (
+    ensure_operator_device_paired,
+    resolve_company_id_for_owner,
+)
 from schemas import marketplace as schemas
 
 
@@ -59,6 +63,68 @@ def _count_field(field) -> int:
     if isinstance(field, dict):
         return len(field.get("list", []) or [])
     return 0
+
+
+async def _recreate_routines_for_buyer(
+    *,
+    owner_id: str,
+    new_agent_id: str,
+    manifest_routines: list,
+) -> None:
+    """Recreate the listing's captured routines on the buyer's side, DORMANT.
+
+    Each manifest ``routines`` entry is ``{title, description, cron, timezone}``
+    captured at publish (see ``agent_export.capture_agent_routines``). We remap
+    the assignee to the buyer's freshly-minted ``new_agent_id`` and create each
+    via ``create_agent_routines`` — which always attaches an ``enabled: False``
+    schedule trigger. Nothing fires until the buyer flips it on.
+
+    Called INSIDE the deploy's rollback-wrapped ``try``: a failure here
+    propagates and triggers the existing ``delete_paperclip_for_marketplace``
+    rollback, keeping deploys all-or-nothing.
+
+    No-op when the listing carries no routines (legacy listings, or agents that
+    had none). Resolving the buyer's company is required — if it's missing the
+    buyer has no Paperclip company yet, which shouldn't happen post-mint, so we
+    let the (rollback-wrapped) failure surface rather than silently drop.
+    """
+    if not manifest_routines:
+        return
+    specs = [
+        {
+            "title": r["title"],
+            "description": r.get("description", ""),
+            "cron": r["cron"],
+        }
+        for r in manifest_routines
+        if isinstance(r, dict) and r.get("title") and r.get("cron")
+    ]
+    if not specs:
+        return
+
+    import httpx
+
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_admin_session import get_admin_session_cookie
+
+    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+    try:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+        if company_id is None:
+            raise RuntimeError(f"no paperclip company for owner {owner_id!r} — cannot recreate routines")
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+        await create_agent_routines(
+            admin=admin,
+            session_cookie=cookie,
+            company_id=company_id,
+            agent_id=new_agent_id,  # remap: assigneeAgentId → buyer's minted agent
+            routines=specs,
+        )
+    finally:
+        await http.aclose()
 
 
 def _has_valid_entitlement(*, buyer_id: str, listing_id: str) -> bool:
@@ -501,6 +567,16 @@ async def deploy_listing(
             paperclip_agent=paperclip_agent,
             gateway_token=container_token,
         )
+
+        # Recreate the listing's captured routines (schedules) on the buyer,
+        # remapped to the freshly-minted agent and DORMANT (enabled:false). A
+        # failure here propagates into the rollback below — keeping the deploy
+        # all-or-nothing — so it sits inside this same try.
+        await _recreate_routines_for_buyer(
+            owner_id=owner_id,
+            new_agent_id=new_agent_id,
+            manifest_routines=manifest.get("routines") or [],
+        )
     except Exception as exc:
         # Catalog or container-resolution failed after Paperclip create
         # succeeded — roll back the orphan Paperclip agent. Idempotent
@@ -839,6 +915,16 @@ async def upload_artifact_from_agent(
         # 4xx naming the leaking field paths (never the secret) so the seller can
         # fix it, rather than a generic 500.
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Capture the agent's Paperclip routines (schedules) into the manifest. The
+    # cron lives on the routine's schedule trigger, so this fetches each
+    # routine's detail and strips it to {title, description, cron, timezone}.
+    # Best-effort: a Paperclip-side failure logs and yields [] — it must never
+    # block the publish. The deploy side recreates these DORMANT on the buyer.
+    package.manifest["routines"] = await agent_export.capture_agent_routines(
+        owner_id=owner_id,
+        agent_id=payload.agent_id,
+    )
 
     try:
         result = await marketplace_service.replace_artifact(

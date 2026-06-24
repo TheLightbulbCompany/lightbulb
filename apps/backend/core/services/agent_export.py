@@ -725,6 +725,161 @@ async def _default_fetch_paperclip_agents(*, owner_id: str) -> list[dict]:
         await http.aclose()
 
 
+# ---------------------------------------------------------------------------
+# Routine capture (marketplace publish)
+# ---------------------------------------------------------------------------
+
+# Routine + trigger fields stripped at capture — instance/company/agent IDs and
+# revision pointers that are meaningless on the buyer's side. Mirrors
+# ``filter_cron_jobs_for_agent``'s ``_STRIPPED_CRON_KEYS`` posture: keep the
+# portable shape (title/description/cron/timezone), drop everything the deploy
+# side must regenerate or remap.
+_ROUTINE_PORTABLE_KEYS = ("title", "description")
+_TRIGGER_PORTABLE_KEYS = ("cronExpression", "timezone")
+
+
+def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
+    """Strip a Paperclip RoutineDetail down to its buyer-portable shape.
+
+    Returns ``{title, description, cron, timezone}`` (one entry per schedule
+    trigger; the routine's title/description are repeated per trigger so the
+    deploy side can recreate one routine+trigger per entry) — or ``None`` when
+    the routine has no schedule trigger to carry (webhook/api triggers don't
+    port; a routine with zero schedule triggers has no cron to recreate).
+
+    Company / agent / instance ids and revision fields are dropped — the buyer
+    side remaps ``assigneeAgentId`` to the freshly-minted agent and Paperclip
+    generates new routine/trigger ids.
+    """
+    if not isinstance(detail, dict):
+        return None
+    if detail.get("assigneeAgentId") != agent_id:
+        return None
+    title = detail.get("title")
+    if not isinstance(title, str) or not title:
+        return None
+    description = detail.get("description")
+    triggers = detail.get("triggers")
+    if not isinstance(triggers, list):
+        return None
+    out: list[dict] = []
+    for trig in triggers:
+        if not isinstance(trig, dict):
+            continue
+        if trig.get("kind") != "schedule":
+            continue
+        cron = trig.get("cronExpression")
+        if not isinstance(cron, str) or not cron:
+            continue
+        out.append(
+            {
+                "title": title,
+                "description": description if isinstance(description, str) else "",
+                "cron": cron,
+                "timezone": trig.get("timezone") if isinstance(trig.get("timezone"), str) else "UTC",
+            }
+        )
+    # The caller flattens; return the first as the representative shape only if
+    # there is exactly one — but routines can carry multiple schedule triggers,
+    # so we hand back the full list via a thin wrapper key.
+    if not out:
+        return None
+    return {"_entries": out}
+
+
+async def capture_agent_routines(
+    *,
+    owner_id: str,
+    agent_id: str,
+    fetch_routine_details: Callable[..., Awaitable[list[dict]]] | None = None,
+) -> list[dict]:
+    """Capture an agent's Paperclip routines into a buyer-portable list.
+
+    Each entry is ``{title, description, cron, timezone}`` with all
+    company/agent/instance ids and revision fields stripped (mirrors
+    ``filter_cron_jobs_for_agent``). The cron lives on the routine's schedule
+    *trigger*, so we read each routine's detail (which carries its triggers) to
+    pull it.
+
+    Best-effort: any failure (Paperclip down, no company, malformed shape) logs
+    and returns ``[]`` so routine capture never fails the export. The fetcher is
+    injected for tests; production callers omit it and the default wires the
+    admin client + repo the same way ``_default_fetch_paperclip_agents`` does.
+    """
+    fetch = fetch_routine_details or _default_fetch_routine_details
+    try:
+        details = await fetch(owner_id=owner_id, agent_id=agent_id)
+    except Exception as exc:  # noqa: BLE001 — capture must never break the export
+        logger.warning(
+            "agent_export: routine capture failed for owner=%s agent=%s: %s",
+            owner_id,
+            agent_id,
+            exc,
+        )
+        return []
+
+    captured: list[dict] = []
+    for detail in details:
+        portable = _portable_routine_from_detail(detail, agent_id)
+        if portable is None:
+            continue
+        captured.extend(portable["_entries"])
+    return captured
+
+
+async def _default_fetch_routine_details(*, owner_id: str, agent_id: str) -> list[dict]:
+    """Production-path fetch: list the owner's company routines, filter to the
+    agent, and pull each one's RoutineDetail (which carries its triggers).
+
+    Returns ``[]`` if anything fails (network, auth, no company) so the caller
+    degrades gracefully — same posture as ``_default_fetch_paperclip_agents``.
+    """
+    import httpx
+
+    from core.config import settings
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_admin_session import get_admin_session_cookie
+    from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
+
+    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+    try:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+        if company_id is None:
+            return []
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+        listed = await admin.list_routines(session_cookie=cookie, company_id=company_id)
+        if isinstance(listed, dict):
+            items = listed.get("routines") or listed.get("items") or []
+        elif isinstance(listed, list):
+            items = listed
+        else:
+            items = []
+        details: list[dict] = []
+        for r in items:
+            if not isinstance(r, dict) or r.get("assigneeAgentId") != agent_id:
+                continue
+            rid = r.get("id")
+            if not isinstance(rid, str):
+                continue
+            detail = await admin.get_routine(session_cookie=cookie, routine_id=rid)
+            if isinstance(detail, dict):
+                details.append(detail)
+        return details
+    except Exception as exc:  # noqa: BLE001 — graceful degrade per docstring
+        logger.warning(
+            "agent_export: default routine-detail fetch failed for owner=%s agent=%s: %s",
+            owner_id,
+            agent_id,
+            exc,
+        )
+        return []
+    finally:
+        await http.aclose()
+
+
 async def is_reserved_friday_agent(
     *,
     owner_id: str,

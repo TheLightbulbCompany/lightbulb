@@ -7,7 +7,7 @@ import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, HelpCircle, ListTodo, SlidersHorizontal } from "lucide-react";
+import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, HelpCircle, ListTodo, SlidersHorizontal, Pause, Play } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -33,6 +33,8 @@ import { fromInstalledAgent } from "@/lib/agentDesign";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { myListings } from "@/lib/marketplace/api";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -112,6 +114,40 @@ export function ChatLayout({
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
+
+  // Header agent-action cluster (next to the file-tree button): pause/resume +
+  // inspector/work deep links for the active agent, so the user can act on the
+  // agent they're chatting with without opening the full inspector.
+  //
+  // The gateway `agents.list` (above) carries no run state, so the paused flag
+  // comes from the Teams BFF roster (`/teams/agents`), keyed by the same agent
+  // UUID. `useAgentMutations.pause/resume` revalidate that same `/teams/agents`
+  // key, so toggling here reflects back into the icon without a manual refetch.
+  // `useTeamsApi` is bearer-only (no Teams provider context) so it's safe to
+  // call from the chat shell. Best-effort — a roster fetch failure just leaves
+  // the agent un-paused-looking; the toggle still works.
+  const { read: readTeams } = useTeamsApi();
+  const { data: teamsAgentsData } = readTeams<{ agents?: { id: string; status?: string | null }[] }>(
+    "/agents",
+  );
+  const { pause: pauseAgent, resume: resumeAgent } = useAgentMutations();
+  const currentTeamsAgent = teamsAgentsData?.agents?.find((a) => a.id === currentAgentId) ?? null;
+  const currentAgentPaused = currentTeamsAgent?.status === "paused";
+  const [agentActionBusy, setAgentActionBusy] = useState(false);
+
+  async function handleTogglePauseResume(): Promise<void> {
+    if (!currentAgentId || agentActionBusy) return;
+    setAgentActionBusy(true);
+    try {
+      if (currentAgentPaused) {
+        await resumeAgent(currentAgentId);
+      } else {
+        await pauseAgent(currentAgentId);
+      }
+    } finally {
+      setAgentActionBusy(false);
+    }
+  }
 
   const subscriptionStatus = account?.subscription_status ?? null;
   const userName = user?.fullName || user?.firstName || "User";
@@ -467,6 +503,43 @@ export function ChatLayout({
               >
                 <FolderOpen size={18} />
               </button>
+            )}
+            {/* Active-agent quick actions — inspector / work / pause-resume —
+                so the user can act on the agent they're chatting with without
+                opening the full inspector. Gated on an active agent (matches
+                the file-tree button's simple presence gate). Destructive /
+                structural actions (Delete, Reports-to) stay in the inspector. */}
+            {currentAgentId && (
+              <div className="flex items-center gap-1" aria-label="Agent actions">
+                <button
+                  type="button"
+                  onClick={() => openAgentInspector?.(currentAgentId)}
+                  className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+                  title="Open agent inspector"
+                  aria-label="Open agent inspector"
+                >
+                  <SlidersHorizontal size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAgentIssues?.(currentAgentId)}
+                  className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+                  title="See this agent's work"
+                  aria-label="See this agent's work"
+                >
+                  <ListTodo size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void handleTogglePauseResume(); }}
+                  disabled={agentActionBusy}
+                  className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)] disabled:opacity-50"
+                  title={currentAgentPaused ? "Resume agent" : "Pause agent"}
+                  aria-label={currentAgentPaused ? "Resume agent" : "Pause agent"}
+                >
+                  {currentAgentPaused ? <Play size={18} /> : <Pause size={18} />}
+                </button>
+              </div>
             )}
             <div style={{ flex: 1 }} />
             <button

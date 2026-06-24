@@ -93,6 +93,13 @@ class PatchIssueBody(_Strict):
     # updateIssueSchema accepts it; lets the detail surface change how a task
     # runs without recreating it.
     work_mode: Optional[str] = Field(default=None, pattern=r"^(standard|ask|planning)$")
+    # Reparent / clear parent, human-user assignee (mutually exclusive with
+    # assigneeAgentId — enforced in the picker UI), and the full desired
+    # label-id set (replace semantics). All accepted by upstream
+    # updateIssueSchema.
+    parent_id: Optional[str] = None
+    assignee_user_id: Optional[str] = None
+    label_ids: Optional[list[str]] = None
 
 
 class AddIssueCommentBody(_Strict):
@@ -166,6 +173,11 @@ class CreateGoalBody(_Strict):
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)
     parent_id: Optional[str] = None
+    # Level + status on create — upstream createGoalSchema accepts both
+    # (defaults level="task", status="planned"). Without these every goal
+    # lands at the default level/status with no way to set them at creation.
+    level: Optional[str] = Field(default=None, pattern=r"^(company|team|agent|task)$")
+    status: Optional[str] = Field(default=None, pattern=r"^(planned|active|achieved|cancelled)$")
 
 
 class PatchGoalBody(_Strict):
@@ -193,6 +205,10 @@ class PatchProjectBody(_Strict):
     # rather than left as a no-op that misleads the UI.
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=20000)
+    # Status + goal links — both accepted by upstream updateProjectSchema.
+    # (Still no budget field — see the note above.)
+    status: Optional[str] = Field(default=None, pattern=r"^(backlog|planned|in_progress|completed|cancelled)$")
+    goal_ids: Optional[list[str]] = None
 
 
 class ApproveApprovalBody(_Strict):

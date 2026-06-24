@@ -112,3 +112,39 @@ def test_patch_issue_accepts_work_mode():
 
     body = PatchIssueBody(work_mode="ask")
     assert body.model_dump(exclude_unset=True, by_alias=True) == {"workMode": "ask"}
+
+
+def test_patch_issue_accepts_parent_user_assignee_and_labels():
+    from routers.teams.schemas import PatchIssueBody
+
+    body = PatchIssueBody(parent_id="par_1", assignee_user_id="usr_1", label_ids=["lbl_1", "lbl_2"])
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {
+        "parentId": "par_1",
+        "assigneeUserId": "usr_1",
+        "labelIds": ["lbl_1", "lbl_2"],
+    }
+
+
+def test_create_goal_accepts_level_and_status():
+    from routers.teams.schemas import CreateGoalBody
+
+    body = CreateGoalBody(title="grow revenue", level="team", status="active")
+    assert body.model_dump(exclude_none=True, by_alias=True) == {
+        "title": "grow revenue",
+        "level": "team",
+        "status": "active",
+    }
+    with pytest.raises(ValidationError):
+        CreateGoalBody(title="x", level="galactic")
+
+
+def test_patch_project_accepts_status_and_goal_ids():
+    from routers.teams.schemas import PatchProjectBody
+
+    body = PatchProjectBody(status="in_progress", goal_ids=["goal_1"])
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {
+        "status": "in_progress",
+        "goalIds": ["goal_1"],
+    }
+    with pytest.raises(ValidationError):
+        PatchProjectBody(status="frozen")

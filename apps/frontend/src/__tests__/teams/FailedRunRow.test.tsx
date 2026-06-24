@@ -28,4 +28,25 @@ describe("FailedRunRow", () => {
     fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
     expect(onDismiss).toHaveBeenCalledOnce();
   });
+
+  it("shows no count badge when count is 1 (default)", () => {
+    render(<FailedRunRow run={RUN} agentName="Atlas" onDismiss={vi.fn()} />);
+    expect(screen.queryByText(/^×\d+$/)).toBeNull();
+  });
+
+  it("shows a ×N badge when count > 1", () => {
+    render(<FailedRunRow run={RUN} agentName="Atlas" onDismiss={vi.fn()} count={492} />);
+    expect(screen.getByText("×492")).toBeInTheDocument();
+  });
+
+  it("uses 'heartbeat run failed' as the title when there is no failure reason", () => {
+    render(
+      <FailedRunRow
+        run={{ id: "r3", agentId: "ag1", status: "failed" }}
+        agentName="Atlas"
+        onDismiss={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Atlas — heartbeat run failed")).toBeInTheDocument();
+  });
 });

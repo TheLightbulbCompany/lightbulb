@@ -171,9 +171,21 @@ export function patchExecutionPolicy(
   const approvalStage = buildStage(existingPolicy, "approval", approverValues);
   if (approvalStage) stages.push(approvalStage);
 
-  if (!monitor && stages.length === 0) return null;
+  // The rail edits only monitor + the two stages, but upstream's
+  // executionPolicy carries other top-level fields (commentRequired,
+  // reviewPreset, authorizationPolicy). Strip the three we manage and carry the
+  // rest forward unchanged so a rail edit never resets them to schema defaults.
+  const { monitor: _m, stages: _s, mode: _md, ...preserved } =
+    existingPolicy ?? {};
+  void _m;
+  void _s;
+  void _md;
+  const hasPreserved = Object.keys(preserved).length > 0;
+
+  if (!monitor && stages.length === 0 && !hasPreserved) return null;
 
   return {
+    ...preserved,
     mode,
     stages,
     ...(monitor ? { monitor } : {}),

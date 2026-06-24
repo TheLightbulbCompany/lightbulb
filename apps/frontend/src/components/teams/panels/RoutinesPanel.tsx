@@ -600,7 +600,13 @@ function RunRoutineDialog({
     if (!canRun) return;
     const collected: Record<string, RoutineVariableValue> = {};
     for (const v of vars) {
-      collected[v.name] = coerceVarValue(v, values[v.name] ?? "");
+      const raw = values[v.name] ?? "";
+      // Omit a blank optional variable rather than coercing "" → 0 (number) or
+      // "" (text). Required vars can't be blank here — canRun gates them.
+      if (v.required === false && v.type !== "boolean" && raw.trim() === "") {
+        continue;
+      }
+      collected[v.name] = coerceVarValue(v, raw);
     }
     setErr(null);
     try {

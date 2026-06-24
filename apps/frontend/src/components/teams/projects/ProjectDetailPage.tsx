@@ -41,6 +41,7 @@ import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import { useSWRConfig } from "swr";
 import type {
   CompanyAgent,
+  Goal,
   IssueProject,
   IssueUpdateInput,
 } from "@/components/teams/shared/types";
@@ -60,6 +61,9 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   const { mutate } = useSWRConfig();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
+  // Company goals back the Goals row's "add" picker (id + title). Read
+  // unconditionally per useTeamsApi's rules-of-hooks contract.
+  const { data: goalsResp } = read<{ goals: Goal[] }>("/goals");
   // Live-agent-runs feed → ids of this project's tasks with an active run,
   // lighting the board "Live" badge + list-row live dot (same derivation as
   // the dashboard / IssuesPanel).
@@ -67,6 +71,11 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   const { user } = useUser();
   const agents = agentsResp?.agents ?? [];
   const projects = projectsResp?.projects ?? [];
+  // Goal type carries `title`; ProjectProperties wants `{ id, title }` refs.
+  const goalOptions = useMemo(
+    () => (goalsResp?.goals ?? []).map((g) => ({ id: g.id, title: g.title })),
+    [goalsResp],
+  );
 
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
@@ -189,8 +198,15 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
             <ProjectProperties
               project={project}
               issueCount={issues.length}
+              goals={goalOptions}
               onStatusChange={async (status) => {
                 await mutations.update(projectId, { status });
+              }}
+              onGoalsChange={async (goalIds) => {
+                // Replace-semantics: send the whole desired set. The BFF
+                // whitelists `goal_ids` (snake_case) and aliases it to
+                // `goalIds` on the wire to upstream's updateProjectSchema.
+                await mutations.update(projectId, { goal_ids: goalIds });
               }}
             />
           </aside>

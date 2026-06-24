@@ -43,7 +43,7 @@ describe("GoalsPanel", () => {
     expect(screen.getByText("Sub goal")).toBeInTheDocument();
   });
 
-  it("create form posts only whitelisted fields", async () => {
+  it("create form posts whitelisted fields incl. default level + status", async () => {
     read.mockReturnValue({
       data: {
         goals: [
@@ -65,13 +65,52 @@ describe("GoalsPanel", () => {
     fireEvent.click(screen.getByText("Create"));
 
     await waitFor(() => {
-      expect(post).toHaveBeenCalledWith("/goals", { title: "New goal" });
+      // Defaults match upstream createGoalSchema (level="task", status="planned").
+      expect(post).toHaveBeenCalledWith("/goals", {
+        title: "New goal",
+        level: "task",
+        status: "planned",
+      });
     });
     const [, body] = post.mock.calls[0];
-    const allowed = new Set(["title", "description", "parent_id"]);
+    const allowed = new Set(["title", "description", "parent_id", "level", "status"]);
     for (const k of Object.keys(body as Record<string, unknown>)) {
       expect(allowed.has(k)).toBe(true);
     }
+  });
+
+  it("create form forwards chosen level + status in the post body", async () => {
+    // Non-empty goals so the panel renders the list (a single "New goal"
+    // masthead button) rather than the empty-state (which also renders a
+    // "New goal" action, making the open-trigger lookup ambiguous).
+    read.mockReturnValue({
+      data: { goals: [{ id: "g1", title: "Existing", parent_id: null }] },
+      isLoading: false,
+      error: null,
+      mutate: vi.fn(),
+    });
+    post.mockResolvedValue({ id: "g9" });
+    render(<GoalsPanel />);
+
+    fireEvent.click(screen.getByText("New goal"));
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "Company OKR" },
+    });
+    fireEvent.change(screen.getByLabelText("Level"), {
+      target: { value: "company" },
+    });
+    fireEvent.change(screen.getByLabelText("Status"), {
+      target: { value: "active" },
+    });
+    fireEvent.click(screen.getByText("Create"));
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/goals", {
+        title: "Company OKR",
+        level: "company",
+        status: "active",
+      });
+    });
   });
 
   it("shows a status chip for each goal", () => {

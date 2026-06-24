@@ -477,11 +477,17 @@ export interface Goal {
   updatedAt?: string | null;
 }
 
-/** Body for POST /goals (BFF whitelist: title, description?, parent_id?). */
+/** Body for POST /goals (BFF whitelist: title, description?, parent_id?,
+ * level?, status?). `level`/`status` let the create form preset the upstream
+ * createGoalSchema defaults (level="task", status="planned") so a goal can be
+ * filed at the right rung without a follow-up PATCH. Both single-word so the
+ * BFF's snake_case/camelCase alias generator forwards them either way. */
 export interface GoalCreateInput {
   title: string;
   description?: string;
   parent_id?: string;
+  level?: GoalLevel;
+  status?: GoalStatus;
 }
 
 /** Body for PATCH /goals/{id} (BFF whitelist: title?, description?, parent_id?, status?, level?). */
@@ -500,6 +506,22 @@ export interface GoalUpdateInput {
 // GET /api/projects/{id}), so the wire shape is upstream camelCase. The slim
 // `IssueProject` above (id/name/color) is the denormalized form embedded on
 // issues; this is the full detail row the Project-detail page consumes.
+
+/** Upstream PROJECT_STATUSES (updateProjectSchema). */
+export type ProjectStatus =
+  | "backlog"
+  | "planned"
+  | "in_progress"
+  | "completed"
+  | "cancelled";
+
+export const PROJECT_STATUSES: readonly ProjectStatus[] = [
+  "backlog",
+  "planned",
+  "in_progress",
+  "completed",
+  "cancelled",
+];
 
 /** Full project row from GET /teams/projects/{id} (upstream Project).
  *
@@ -529,4 +551,11 @@ export interface Project {
 export interface ProjectUpdateInput {
   name?: string;
   description?: string | null;
+  /** Upstream PROJECT_STATUSES — sets the project lifecycle stage. */
+  status?: ProjectStatus;
+  /** Full desired set of linked company-goal ids (replace semantics — the
+   * whole array is sent, matching upstream updateProjectSchema). The BFF
+   * accepts `goal_ids` (snake_case) and aliases it to `goalIds` on the wire.
+   * `undefined` leaves the links unchanged. */
+  goal_ids?: string[];
 }

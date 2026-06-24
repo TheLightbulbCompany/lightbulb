@@ -186,7 +186,13 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
             />
           </main>
           <aside className="lg:sticky lg:top-4 lg:self-start">
-            <ProjectProperties project={project} issueCount={issues.length} />
+            <ProjectProperties
+              project={project}
+              issueCount={issues.length}
+              onStatusChange={async (status) => {
+                await mutations.update(projectId, { status });
+              }}
+            />
           </aside>
         </div>
       )}

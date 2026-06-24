@@ -29,7 +29,12 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
 import { useGoalMutations } from "@/components/teams/goals/hooks/useGoalMutations";
 import { GoalPicker } from "@/components/teams/goals/GoalPicker";
-import { GOAL_STATUSES } from "@/components/teams/shared/types";
+import {
+  GOAL_LEVELS,
+  GOAL_STATUSES,
+  type GoalLevel,
+  type GoalStatus,
+} from "@/components/teams/shared/types";
 
 interface Goal {
   id: string;
@@ -303,6 +308,10 @@ function CreateGoalDialog({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [parentId, setParentId] = useState<string | null>(null);
+  // Defaults mirror upstream createGoalSchema (level="task", status="planned")
+  // so the server default and the form's initial state agree.
+  const [level, setLevel] = useState<GoalLevel>("task");
+  const [status, setStatus] = useState<GoalStatus>("planned");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -310,8 +319,8 @@ function CreateGoalDialog({
     setSubmitting(true);
     setErr(null);
     try {
-      // CreateGoalBody fields (Task 3): title, description?, parent_id?
-      const body: Record<string, unknown> = { title };
+      // CreateGoalBody fields: title, description?, parent_id?, level?, status?
+      const body: Record<string, unknown> = { title, level, status };
       if (description) body.description = description;
       if (parentId) body.parent_id = parentId;
       await post("/goals", body);
@@ -359,6 +368,36 @@ function CreateGoalDialog({
               className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
             />
           </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="text-sm text-[var(--ink-soft)]">Level</span>
+            <select
+              value={level}
+              onChange={(e) => setLevel(e.target.value as GoalLevel)}
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)] capitalize"
+            >
+              {GOAL_LEVELS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-sm text-[var(--ink-soft)]">Status</span>
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value as GoalStatus)}
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)] capitalize"
+            >
+              {GOAL_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
         {err && (
           <div

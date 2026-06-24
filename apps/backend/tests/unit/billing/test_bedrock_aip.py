@@ -465,6 +465,60 @@ class TestEnsureRole:
         assert row["bedrock_role_arn"]["S"] == role_arn
 
     @pytest.mark.asyncio
+    async def test_new_role_trust_policy_carries_sourcearn_sourceaccount(self, aip_tables, monkeypatch):
+        """A freshly minted per-owner role's trust policy must condition the
+        ecs-tasks assumption on aws:SourceAccount + aws:SourceArn so a confused
+        deputy in another account/service cannot assume it (the per-owner role
+        previously trusted ecs-tasks.amazonaws.com unconditionally)."""
+        import core.billing.bedrock_aip as mod
+
+        arns = _aip_arns()
+        fake = MagicMock()
+        fake.get_role.side_effect = _no_such_entity()
+        fake.create_role.return_value = {
+            "Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}
+        }
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
+        monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1", raising=False)
+
+        await mod.ensure_owner_bedrock_role("org_abc", arns)
+
+        trust = json.loads(fake.create_role.call_args.kwargs["AssumeRolePolicyDocument"])
+        stmt = trust["Statement"][0]
+        assert stmt["Principal"] == {"Service": "ecs-tasks.amazonaws.com"}
+        assert stmt["Condition"]["StringEquals"]["aws:SourceAccount"] == "877352799272"
+        assert stmt["Condition"]["ArnLike"]["aws:SourceArn"] == "arn:aws:ecs:us-east-1:877352799272:task/*"
+
+    @pytest.mark.asyncio
+    async def test_existing_role_backfills_conditioned_trust_policy(self, aip_tables, monkeypatch):
+        """An already-minted role (created before the trust hardening) converges
+        on the conditioned trust policy via update_assume_role_policy. Account is
+        parsed from the existing role ARN, so the backfill needs no STS call."""
+        import core.billing.bedrock_aip as mod
+
+        arns = _aip_arns()
+        fake = MagicMock()
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
+        )
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1", raising=False)
+
+        await mod.ensure_owner_bedrock_role("org_abc", arns)
+
+        fake.update_assume_role_policy.assert_called_once()
+        trust = json.loads(fake.update_assume_role_policy.call_args.kwargs["PolicyDocument"])
+        stmt = trust["Statement"][0]
+        assert stmt["Condition"]["StringEquals"]["aws:SourceAccount"] == "877352799272"
+        assert stmt["Condition"]["ArnLike"]["aws:SourceArn"] == "arn:aws:ecs:us-east-1:877352799272:task/*"
+
+    @pytest.mark.asyncio
     async def test_idempotent_existing_role_repts_policy_no_create(self, aip_tables, monkeypatch):
         import core.billing.bedrock_aip as mod
 

@@ -299,6 +299,9 @@ export class ServiceStack extends cdk.Stack {
             "iam:DetachRolePolicy",
             "iam:TagRole",
             "iam:GetRole",
+            // Lets ensure_owner_bedrock_role converge a previously-minted role's
+            // trust policy onto the SourceAccount/SourceArn-conditioned form.
+            "iam:UpdateAssumeRolePolicy",
           ],
           resources: [
             `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,

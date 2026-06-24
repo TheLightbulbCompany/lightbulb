@@ -101,11 +101,28 @@ describe("RoutinesPanel", () => {
     );
   });
 
+  it("renders an Active/Paused switch reflecting the routine status", () => {
+    render(<RoutinesPanel />);
+    // The row is status:"active" → switch is ON, label reads "Active".
+    const sw = screen.getByRole("switch");
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("Active")).toBeInTheDocument();
+  });
+
+  it("paused routine shows the switch OFF with a 'Paused' label", () => {
+    routinesData = { routines: [routine({ status: "paused" })] };
+    render(<RoutinesPanel />);
+    const sw = screen.getByRole("switch");
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+  });
+
   it("toggle PATCHes {status: 'paused'} when disabling (no `enabled` field)", async () => {
     mockPatch.mockResolvedValue({});
     render(<RoutinesPanel />);
 
-    fireEvent.click(screen.getByRole("checkbox"));
+    // The active routine's switch flips it to paused.
+    fireEvent.click(screen.getByRole("switch"));
 
     await waitFor(() => {
       expect(mockPatch).toHaveBeenCalledTimes(1);
@@ -114,6 +131,19 @@ describe("RoutinesPanel", () => {
     expect(mockPatch).toHaveBeenCalledWith("/routines/rt1", { status: "paused" });
     const [, body] = mockPatch.mock.calls[0];
     expect(Object.keys(body as Record<string, unknown>)).toEqual(["status"]);
+  });
+
+  it("toggle PATCHes {status: 'active'} when enabling a paused routine", async () => {
+    mockPatch.mockResolvedValue({});
+    routinesData = { routines: [routine({ status: "paused" })] };
+    render(<RoutinesPanel />);
+
+    fireEvent.click(screen.getByRole("switch"));
+
+    await waitFor(() => {
+      expect(mockPatch).toHaveBeenCalledTimes(1);
+    });
+    expect(mockPatch).toHaveBeenCalledWith("/routines/rt1", { status: "active" });
   });
 
   it("create flow: POST /routines (title/assignee/description) then POST the schedule trigger", async () => {

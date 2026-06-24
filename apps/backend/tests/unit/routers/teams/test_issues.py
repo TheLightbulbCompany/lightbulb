@@ -102,6 +102,46 @@ def test_list_issues_rejects_bad_sort_dir(client, monkeypatch):
     admin.list_issues.assert_not_awaited()
 
 
+def test_list_issues_rejects_malformed_assignee(client, monkeypatch):
+    """A non-uuid ``assignee`` would make upstream throw a uuid-cast 500 that
+    leaks the company path, so it 422s locally first (mirrors ``project``)."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues",
+        params={"assignee": "not-a-uuid"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.list_issues.assert_not_awaited()
+
+
+def test_list_issues_accepts_null_assignee_sentinel(client, monkeypatch):
+    """``assignee="null"`` is the upstream unassigned-filter sentinel and is
+    forwarded as ``assigneeAgentId=null``."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues",
+        params={"assignee": "null"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.list_issues.assert_awaited_once_with(
+        company_id="co_abc",
+        session_cookie="cookie",
+        params={"assigneeAgentId": "null"},
+    )
+
+
 def test_list_issues_wraps_bare_array_response(client, monkeypatch):
     """Upstream's ``GET /api/companies/:co/issues`` returns a bare JSON
     array, but the frontend ``IssuesPanel`` reads ``data?.issues``.

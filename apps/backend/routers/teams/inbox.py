@@ -166,8 +166,14 @@ async def list_inbox_runs(ctx: TeamsContext = Depends(_ctx)):
 
 @router.get("/inbox/live-runs")
 async def list_inbox_live_runs(ctx: TeamsContext = Depends(_ctx)):
-    """List currently-running heartbeat runs for the 'Live' badge."""
+    """List currently-running heartbeat runs for the 'Live' badge.
+
+    Forwards ``minCount=4`` so a short live-run set is padded with recent
+    runs, mirroring upstream's ``MIN_DASHBOARD_RUNS`` — otherwise the
+    dashboard Active-Agents strip under-populates.
+    """
     return await _agents._admin().list_company_live_runs(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
+        min_count=4,
     )

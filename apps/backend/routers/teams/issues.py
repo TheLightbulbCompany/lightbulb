@@ -31,7 +31,10 @@ async def list_issues(
     q: Optional[str] = Query(default=None, max_length=200),
     status: Optional[str] = Query(default=None, max_length=120),
     project: Optional[str] = Query(default=None, pattern=_UUID_RE),
-    assignee: Optional[str] = Query(default=None, max_length=80),
+    # Same uuid-cast guard as ``project`` — upstream casts ``assigneeAgentId``
+    # to a Postgres ``uuid``, so a malformed value 500s and leaks the company
+    # path. ``"null"`` is the sentinel upstream accepts to filter unassigned.
+    assignee: Optional[str] = Query(default=None, pattern=r"^([0-9a-fA-F-]{36}|null)$"),
     sort_field: Optional[str] = Query(default=None, alias="sortField", pattern=r"^(updated)$"),
     sort_dir: Optional[str] = Query(default=None, alias="sortDir", pattern=r"^(asc|desc)$"),
     limit: Optional[int] = Query(default=None, ge=1, le=500),

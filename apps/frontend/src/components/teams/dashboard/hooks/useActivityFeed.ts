@@ -35,13 +35,26 @@ function normalizeEvents(data: ActivityResponse | undefined): ActivityEvent[] {
   return [];
 }
 
-export function useActivityFeed(limit = 10): {
+// How many events to fetch from the server. The BFF forwards this to
+// upstream (bounded to its MAX_ACTIVITY_LIMIT of 500); without it the feed
+// silently caps at upstream's default of 100. 200 matches the Activity
+// panel's full-list need while staying well under the ceiling.
+const ACTIVITY_FETCH_LIMIT = 200;
+
+export function useActivityFeed(
+  limit = 10,
+  fetchLimit = ACTIVITY_FETCH_LIMIT,
+): {
   events: ActivityEvent[];
   isLoading: boolean;
   isError: boolean;
 } {
   const { read } = useTeamsApi();
-  const { data, isLoading, error } = read<ActivityResponse>("/activity");
+  const { data, isLoading, error } = read<ActivityResponse>(
+    `/activity?limit=${fetchLimit}`,
+  );
+  // `limit` slices the *displayed* set; the server fetch already pulled up to
+  // `fetchLimit` rows.
   const events = normalizeEvents(data).slice(0, limit);
   return { events, isLoading, isError: !!error };
 }

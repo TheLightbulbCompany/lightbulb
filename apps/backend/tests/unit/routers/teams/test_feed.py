@@ -47,10 +47,51 @@ def test_list_activity(client, monkeypatch):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 200
+    # No client limit → forwarded as None (admin client omits the param).
     admin.list_activity.assert_awaited_once_with(
         company_id="co_abc",
         session_cookie="cookie",
+        limit=None,
     )
+
+
+def test_list_activity_forwards_limit(client, monkeypatch):
+    """The Activity feed passes ?limit=200; the BFF forwards it so upstream
+    returns more than its default 100."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(return_value={"events": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/activity",
+        params={"limit": 200},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.list_activity.assert_awaited_once_with(
+        company_id="co_abc",
+        session_cookie="cookie",
+        limit=200,
+    )
+
+
+def test_list_activity_rejects_over_max_limit(client, monkeypatch):
+    """``limit`` is bounded to upstream's MAX_ACTIVITY_LIMIT (500)."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(return_value={"events": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/activity",
+        params={"limit": 999},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.list_activity.assert_not_awaited()
 
 
 def test_get_costs(client, monkeypatch):

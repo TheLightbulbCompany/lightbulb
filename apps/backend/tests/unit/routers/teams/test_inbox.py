@@ -345,9 +345,12 @@ def test_list_inbox_live_runs(client, monkeypatch):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 200
+    # Forwards minCount=4 (upstream's MIN_DASHBOARD_RUNS) so the Active-Agents
+    # strip is padded with recent runs rather than under-populated.
     admin.list_company_live_runs.assert_awaited_once_with(
         company_id="co_abc",
         session_cookie="cookie",
+        min_count=4,
     )
 
 

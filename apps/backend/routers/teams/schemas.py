@@ -156,10 +156,12 @@ class PatchGoalBody(_Strict):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)
     parent_id: Optional[str] = None
-    status: Optional[str] = None
-    # Upstream's updateGoalSchema accepts ``level`` (the goal-detail Properties
-    # panel exposes a Level picker); mirror it so the picker patches cleanly.
-    level: Optional[str] = None
+    # Upstream GOAL_STATUSES / GOAL_LEVELS — constrain to the enums so an
+    # invalid value is rejected at the BFF boundary (422) instead of being
+    # forwarded for upstream to reject opaquely. ``updateGoalSchema`` exposes
+    # ``level`` via the goal-detail Properties Level picker.
+    status: Optional[str] = Field(default=None, pattern=r"^(planned|active|achieved|cancelled)$")
+    level: Optional[str] = Field(default=None, pattern=r"^(company|team|agent|task)$")
 
 
 class CreateProjectBody(_Strict):

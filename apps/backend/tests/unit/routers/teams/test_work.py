@@ -264,6 +264,26 @@ def test_patch_goal_rejects_extra(client):
     assert r.status_code == 422
 
 
+def test_patch_goal_rejects_invalid_status(client):
+    """``PatchGoalBody.status`` is constrained to GOAL_STATUSES."""
+    r = client.patch(
+        "/api/v1/teams/goals/g_1",
+        json={"status": "in_progress"},  # not a GOAL_STATUS
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_patch_goal_rejects_invalid_level(client):
+    """``PatchGoalBody.level`` is constrained to GOAL_LEVELS."""
+    r = client.patch(
+        "/api/v1/teams/goals/g_1",
+        json={"level": "department"},  # not a GOAL_LEVEL
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
 @pytest.mark.parametrize(
     "path,upstream_method,key",
     [

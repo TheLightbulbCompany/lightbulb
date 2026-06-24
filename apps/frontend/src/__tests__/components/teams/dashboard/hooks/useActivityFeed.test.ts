@@ -99,10 +99,19 @@ describe("useActivityFeed", () => {
     expect(result.current.events).toEqual([]);
   });
 
-  test("calls read with the /activity path", () => {
+  test("calls read with the /activity path + a fetch limit of 200", () => {
     const read = makeRead({});
     mockUseTeamsApi.mockReturnValue(baseApi(read));
     renderHook(() => useActivityFeed());
-    expect(read).toHaveBeenCalledWith("/activity");
+    // The fetch limit is forwarded so upstream returns up to 200 rows rather
+    // than silently capping at its default of 100.
+    expect(read).toHaveBeenCalledWith("/activity?limit=200");
+  });
+
+  test("forwards a custom fetchLimit on the read path", () => {
+    const read = makeRead({});
+    mockUseTeamsApi.mockReturnValue(baseApi(read));
+    renderHook(() => useActivityFeed(10, 50));
+    expect(read).toHaveBeenCalledWith("/activity?limit=50");
   });
 });

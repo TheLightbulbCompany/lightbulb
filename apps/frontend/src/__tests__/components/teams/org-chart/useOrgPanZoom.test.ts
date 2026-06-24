@@ -139,16 +139,22 @@ describe("useOrgPanZoom", () => {
     expect(result.current.zoom).toBe(MAX_ZOOM);
   });
 
-  test("wheel up zooms in toward the cursor", () => {
-    const { result } = setup();
-    act(() => {
-      result.current.onWheel({
-        deltaY: -1,
-        clientX: 400,
-        clientY: 300,
-        preventDefault() {},
-      } as unknown as React.WheelEvent);
+  test("wheel up zooms in toward the cursor (native non-passive listener)", () => {
+    const { el, result } = setup();
+    // The hook attaches a NON-passive native `wheel` listener on the viewport
+    // (so preventDefault() actually fires); dispatch a real cancelable event
+    // and assert both the zoom change and that the page-scroll was prevented.
+    const evt = new WheelEvent("wheel", {
+      deltaY: -1,
+      clientX: 400,
+      clientY: 300,
+      cancelable: true,
+      bubbles: true,
     });
+    act(() => {
+      el.dispatchEvent(evt);
+    });
+    expect(evt.defaultPrevented).toBe(true);
     expect(result.current.zoom).toBeCloseTo(1.2, 5);
   });
 

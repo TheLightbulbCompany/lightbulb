@@ -220,7 +220,15 @@ function CreateProjectDialog({
           />
         </label>
         {err && (
-          <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div
+            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            style={{
+              border:
+                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+              background:
+                "color-mix(in srgb, var(--danger) 6%, transparent)",
+            }}
+          >
             {err}
           </div>
         )}

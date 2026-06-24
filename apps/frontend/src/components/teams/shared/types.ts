@@ -248,6 +248,10 @@ export interface RoutineDetail {
   assigneeAgentId?: string | null;
   assignee?: RoutineAgentSummary | null;
   triggers?: RoutineTriggerSummary[];
+  // Upstream Routine carries createdAt/updatedAt verbatim through the BFF;
+  // surfaced in the detail page's Properties aside.
+  createdAt?: string | null;
+  updatedAt?: string | null;
 }
 
 /** A routine run (upstream RoutineRunSummary subset). `status`/`source` are free strings. */

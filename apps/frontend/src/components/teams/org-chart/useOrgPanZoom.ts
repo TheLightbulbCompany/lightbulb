@@ -15,7 +15,7 @@
 // the mouse + button + wheel paths that surface needs. The transform math
 // is identical to upstream so a later touch port can reuse it.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { MIN_ZOOM, MAX_ZOOM, clampZoom } from "./orgChartLayout";
 
@@ -42,8 +42,6 @@ export interface OrgPanZoom {
   onMouseDown: (e: React.MouseEvent) => void;
   onMouseMove: (e: React.MouseEvent) => void;
   onMouseUp: () => void;
-  /** Wheel handler — zooms toward the cursor. */
-  onWheel: (e: React.WheelEvent) => void;
   /** Zoom in/out by a fixed step, anchored on the viewport center. */
   zoomIn: () => void;
   zoomOut: () => void;
@@ -151,18 +149,30 @@ export function useOrgPanZoom(
     [zoom],
   );
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
-      const container = containerRef.current;
-      if (!container) return;
-      e.preventDefault();
-      const rect = container.getBoundingClientRect();
-      const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      const factor = e.deltaY < 0 ? ZOOM_STEP_IN : ZOOM_STEP_OUT;
-      zoomToward(zoom * factor, anchor);
-    },
-    [containerRef, zoom, zoomToward],
-  );
+  // Wheel-to-zoom must call preventDefault(), but React's synthetic onWheel is
+  // bound through a (Chrome-default) PASSIVE root listener — calling
+  // preventDefault() there warns and no-ops, letting the page scroll under the
+  // zoom. Attach a NON-passive native `wheel` listener on the viewport instead.
+  // Kept in a ref so the effect can stay mounted across renders without
+  // re-subscribing on every zoom change.
+  const wheelHandlerRef = useRef<(e: WheelEvent) => void>(() => {});
+  wheelHandlerRef.current = (e: WheelEvent) => {
+    const container = containerRef.current;
+    if (!container) return;
+    e.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const factor = e.deltaY < 0 ? ZOOM_STEP_IN : ZOOM_STEP_OUT;
+    zoomToward(zoom * factor, anchor);
+  };
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const listener = (e: WheelEvent) => wheelHandlerRef.current(e);
+    container.addEventListener("wheel", listener, { passive: false });
+    return () => container.removeEventListener("wheel", listener);
+  }, [containerRef]);
 
   const zoomByStep = useCallback(
     (factor: number) => {
@@ -196,7 +206,6 @@ export function useOrgPanZoom(
     onMouseDown,
     onMouseMove,
     onMouseUp,
-    onWheel,
     zoomIn,
     zoomOut,
     fitToScreen,

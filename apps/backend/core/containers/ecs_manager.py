@@ -1468,19 +1468,21 @@ class EcsManager:
                 "caller should complete OAuth before provisioning",
                 user_id,
             )
-        from core.containers.workspace import (
-            clear_default_agent_auth_profile_row,
-            pre_stage_auth_profile_store,
-        )
+        from core.containers.workspace import pre_stage_auth_profile_store
 
+        # Stage the container-global oauth.json seed. We do NOT clear the
+        # default agent's auth row here: the container's per-agent SQLite auth
+        # store is the source of truth for the LIVE (rotating) token, and this
+        # DDB-sourced seed is a stale snapshot the instant the container's first
+        # refresh rotates it. The container's store-row-absent import gate
+        # already consumes this seed ONLY for a container with no credential yet
+        # (fresh provision) and ignores it on a populated store — so re-staging
+        # on a reprovision/recover/config-rewrite never clobbers a live token.
+        # Force-reimport (clear_default_agent_auth_profile_row) happens ONLY on a
+        # genuine fresh-token event: reconnect (routers/oauth.py /poll) and
+        # provider switch (_hot_swap_provider). See
+        # docs/superpowers/specs/2026-06-24-oauth-reprovision-stale-token-design.md.
         await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens)
-        # Reprovision PRESERVES the EFS per-agent SQLite store, and 6.6 imports
-        # oauth.json ONLY into an absent store row — so on a re-provision over an
-        # existing store (or one left empty by authLogout) the freshly staged
-        # credential would never load. Delete the default agent's row so the boot
-        # import re-fires. No-op on a first provision (no row yet). See
-        # project_openclaw_oauth_auth_model.
-        await clear_default_agent_auth_profile_row(user_id=user_id)
 
     async def provision_user_container(
         self,

@@ -88,3 +88,41 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.warning("revoke_provider_auth: models.authLogout failed for %s: %s", owner_id, exc)
         return False
+
+
+async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str) -> bool:
+    """Stage the connector's CURRENT ChatGPT token onto ``owner_id``'s container
+    and force the running container to re-import it (clear the default agent's
+    auth row so the store-row-absent import gate re-fires).
+
+    Call ONLY on a genuine credential-change event — reconnect
+    (``routers/oauth.py`` ``/poll``) or provider switch — where the token is
+    freshly minted/unspent. NEVER call from reprovision / config-rewrite: those
+    must not overwrite the container's live, rotated token (see
+    ``ecs_manager._pre_stage_oauth_for_user``).
+
+    Best-effort: returns ``True`` if a credential was staged, ``False`` if there
+    are no active tokens or the owner has no container/workspace yet. NEVER
+    raises.
+    """
+    from core.containers.workspace import (
+        clear_default_agent_auth_profile_row,
+        pre_stage_auth_profile_store,
+    )
+    from core.services import oauth_service
+
+    try:
+        tokens = await oauth_service.get_decrypted_tokens(user_id=connector_id, bound_to=owner_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("push_oauth_credential: token read failed for owner=%s: %s", owner_id, exc)
+        return False
+    if not tokens:
+        return False
+    try:
+        await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=tokens)
+        await clear_default_agent_auth_profile_row(user_id=owner_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort (no workspace/container yet)
+        logger.warning("push_oauth_credential: stage/clear failed for owner=%s: %s", owner_id, exc)
+        return False
+    logger.info("push_oauth_credential: staged fresh ChatGPT token", extra={"owner_id": owner_id})
+    return True

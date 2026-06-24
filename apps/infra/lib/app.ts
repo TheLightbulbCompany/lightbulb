@@ -255,6 +255,15 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
   // build jobs are forced to macos-15 by the JsonPatch.replace(".../runs-on",
   // "macos-15") calls below, so they keep building the .dmg on a Mac.
   runner: Runner.selfHosted(["self-hosted", "isol8-wsl"]),
+  // Serialize deploys: only one pipeline run may touch the CloudFormation
+  // stacks at a time. cancelInProgress:false queues an overlapping deploy
+  // rather than killing an in-flight CFN update (two concurrent deploys
+  // racing on the same stack produce "UPDATE_IN_PROGRESS ... can not be
+  // updated" failures).
+  concurrency: {
+    group: "isol8-deploy",
+    cancelInProgress: false,
+  },
 });
 
 // Desktop build steps for dev + prod. Held as variables so the post-synth

@@ -7,6 +7,9 @@ on:
     branches:
       - main
   workflow_dispatch: {}
+concurrency:
+  group: isol8-deploy
+  cancel-in-progress: false
 jobs:
   Build-Synth:
     name: Synthesize

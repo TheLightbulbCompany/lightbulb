@@ -65,7 +65,7 @@ function StatusPicker({
             size="sm"
             className={cn(
               "w-full justify-start text-xs",
-              s === status && "bg-accent",
+              s === status && "bg-[var(--cream-deeper)]",
             )}
             onClick={() => {
               onChange(s);

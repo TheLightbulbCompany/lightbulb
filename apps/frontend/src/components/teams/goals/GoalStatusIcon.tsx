@@ -77,7 +77,7 @@ export function GoalStatusIcon({
     );
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-[var(--cream-deeper)] rounded px-1 -mx-1 py-0.5 transition-colors">
       {circle}
       <span className="text-sm">{statusLabel(status)}</span>
     </button>
@@ -96,7 +96,7 @@ export function GoalStatusIcon({
             size="sm"
             className={cn(
               "w-full justify-start gap-2 text-xs",
-              s === status && "bg-accent",
+              s === status && "bg-[var(--cream-deeper)]",
             )}
             onClick={() => {
               onChange(s);

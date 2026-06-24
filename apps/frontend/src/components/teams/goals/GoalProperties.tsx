@@ -88,7 +88,7 @@ function LevelPicker({
             size="sm"
             className={cn(
               "w-full justify-start text-xs",
-              l === level && "bg-accent",
+              l === level && "bg-[var(--cream-deeper)]",
             )}
             onClick={() => {
               onChange(l);

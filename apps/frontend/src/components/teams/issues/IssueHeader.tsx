@@ -2,40 +2,23 @@
 
 // Ported from upstream Paperclip's pages/IssueDetail.tsx header section
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
-// v1: identifier + title (inline editable) + status + priority pickers.
-// Drops assignee picker, parent issue, watcher list, run actions, plugin slots.
+// A calm editorial masthead: muted mono identifier + prominent inline-editable
+// title, nothing else. Status/priority/assignee live solely in the right-rail
+// Properties panel so each field has a single editing surface (matching
+// upstream, where the header carries no pickers).
 
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
-import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { cn } from "@/lib/utils";
-import type {
-  Issue,
-  IssueStatus,
-  IssuePriority,
-  CompanyAgent,
-} from "@/components/teams/shared/types";
-import { AssigneePicker } from "./pickers/AssigneePicker";
+import type { Issue } from "@/components/teams/shared/types";
 
 export interface IssueHeaderProps {
   issue: Issue;
-  agents?: CompanyAgent[];
   onTitleSave: (title: string) => Promise<void>;
-  onStatusChange: (status: IssueStatus) => Promise<void>;
-  onPriorityChange: (priority: IssuePriority) => Promise<void>;
-  onAssigneeChange: (agentId: string | null) => Promise<void>;
 }
 
-export function IssueHeader({
-  issue,
-  agents = [],
-  onTitleSave,
-  onStatusChange,
-  onPriorityChange,
-  onAssigneeChange,
-}: IssueHeaderProps) {
+export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(issue.title);
   const [saving, setSaving] = useState(false);
@@ -75,13 +58,8 @@ export function IssueHeader({
     setEditing(false);
   };
 
-  // PriorityIcon requires a non-null IssuePriority; fall back to "medium" so
-  // the picker still renders for issues that have no priority set yet, letting
-  // the user assign one via the popover.
-  const renderedPriority: IssuePriority = issue.priority ?? "medium";
-
   return (
-    <div className="flex flex-wrap items-center gap-3">
+    <div className="flex items-baseline gap-3">
       {issue.identifier && (
         <span
           className="text-xs font-mono shrink-0"
@@ -132,30 +110,6 @@ export function IssueHeader({
           {issue.title}
         </button>
       )}
-
-      <StatusIcon
-        status={issue.status}
-        blockerAttention={
-          typeof issue.blockerAttention === "object"
-            ? issue.blockerAttention
-            : null
-        }
-        onChange={(s) => void onStatusChange(s as IssueStatus)}
-        showLabel
-      />
-
-      <PriorityIcon
-        priority={renderedPriority}
-        onChange={(p) => void onPriorityChange(p)}
-        showLabel
-      />
-
-      <AssigneePicker
-        agents={agents}
-        selectedAgentId={issue.assigneeAgentId ?? null}
-        onChange={(id) => void onAssigneeChange(id)}
-        variant="inline"
-      />
     </div>
   );
 }

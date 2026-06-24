@@ -2,8 +2,10 @@
 
 // Ported from upstream Paperclip's pages/IssueDetail.tsx sidebar block
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
-// Assignee + project rows are interactive pickers; status + priority remain
-// read-only here (they live in the IssueHeader's pickers).
+// The rail is the single editing surface for every task field — status,
+// priority, assignee, and project rows are all interactive pickers — so each
+// value has exactly one place it can be changed (the header stays a clean
+// title-only masthead).
 
 "use client";
 
@@ -14,6 +16,8 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
 import type {
   Issue,
+  IssueStatus,
+  IssuePriority,
   CompanyAgent,
   CompanyMember,
   IssueProject,
@@ -27,6 +31,8 @@ export interface IssuePropertiesProps {
   agents?: CompanyAgent[];
   members?: CompanyMember[];
   projects?: IssueProject[];
+  onStatusChange: (status: IssueStatus) => void;
+  onPriorityChange: (priority: IssuePriority) => void;
   onAssigneeChange: (agentId: string | null) => void;
   onProjectChange: (projectId: string | null) => void;
   /** Receives the FULL desired blocker-id set (replace semantics). */
@@ -63,6 +69,8 @@ export function IssueProperties({
   issue,
   agents = [],
   projects = [],
+  onStatusChange,
+  onPriorityChange,
   onAssigneeChange,
   onProjectChange,
   onBlockedByChange,
@@ -84,17 +92,24 @@ export function IssueProperties({
   return (
     <dl className={cn("flex flex-col", className)}>
       <PropertyRow label="Status">
-        <span className="inline-flex items-center gap-2">
-          <StatusIcon status={issue.status} />
-          <span className="capitalize">{issue.status.replace(/_/g, " ")}</span>
-        </span>
+        <StatusIcon
+          status={issue.status}
+          blockerAttention={
+            typeof issue.blockerAttention === "object"
+              ? issue.blockerAttention
+              : null
+          }
+          onChange={(s) => onStatusChange(s as IssueStatus)}
+          showLabel
+        />
       </PropertyRow>
       <PropertyRow label="Priority">
         {issue.priority ? (
-          <span className="inline-flex items-center gap-2">
-            <PriorityIcon priority={issue.priority} />
-            <span className="capitalize">{issue.priority}</span>
-          </span>
+          <PriorityIcon
+            priority={issue.priority}
+            onChange={(p) => onPriorityChange(p)}
+            showLabel
+          />
         ) : (
           <span data-empty="true" style={EMPTY_DASH_STYLE}>
             —

@@ -11,12 +11,11 @@ const baseIssue: Issue = {
   priority: "high",
 };
 
+// The header is a title-only masthead now: status/priority/assignee moved to
+// the right-rail Properties panel (single editing surface per field).
 const makeProps = () => ({
   issue: baseIssue,
   onTitleSave: vi.fn().mockResolvedValue(undefined),
-  onStatusChange: vi.fn().mockResolvedValue(undefined),
-  onPriorityChange: vi.fn().mockResolvedValue(undefined),
-  onAssigneeChange: vi.fn().mockResolvedValue(undefined),
 });
 
 beforeEach(() => {
@@ -24,13 +23,14 @@ beforeEach(() => {
 });
 
 describe("IssueHeader", () => {
-  test("renders identifier + title + status + priority icons", () => {
+  test("renders identifier + title only (no status/priority/assignee pickers)", () => {
     render(<IssueHeader {...makeProps()} />);
     expect(screen.getByText("PAP-1")).toBeInTheDocument();
     expect(screen.getByText("Fix the inbox")).toBeInTheDocument();
-    // StatusIcon (showLabel) renders a "Todo" label; PriorityIcon (showLabel) renders "High".
-    expect(screen.getByText("Todo")).toBeInTheDocument();
-    expect(screen.getByText("High")).toBeInTheDocument();
+    // Status/priority/assignee pickers were moved out of the header into the
+    // Properties rail, so their labels must NOT render here.
+    expect(screen.queryByText("Todo")).not.toBeInTheDocument();
+    expect(screen.queryByText("High")).not.toBeInTheDocument();
   });
 
   test("renders without identifier when not provided", () => {
@@ -39,13 +39,6 @@ describe("IssueHeader", () => {
     render(<IssueHeader {...props} issue={noIdIssue} />);
     expect(screen.queryByText("PAP-1")).not.toBeInTheDocument();
     expect(screen.getByText("Fix the inbox")).toBeInTheDocument();
-  });
-
-  test("renders Medium label fallback when issue has no priority", () => {
-    const props = makeProps();
-    const noPriorityIssue: Issue = { ...baseIssue, priority: null };
-    render(<IssueHeader {...props} issue={noPriorityIssue} />);
-    expect(screen.getByText("Medium")).toBeInTheDocument();
   });
 
   test("clicking title enters edit mode and focuses the input", () => {
@@ -135,26 +128,5 @@ describe("IssueHeader", () => {
       />,
     );
     expect(screen.getByText("Renamed externally")).toBeInTheDocument();
-  });
-
-  test("renders an inline AssigneePicker after status + priority", async () => {
-    const onAssigneeChange = vi.fn();
-    const agents = [{ id: "ag_1", name: "Friday" }];
-    render(
-      <IssueHeader
-        issue={{ ...baseIssue, assigneeAgentId: "ag_1" }}
-        agents={agents}
-        onTitleSave={vi.fn()}
-        onStatusChange={vi.fn()}
-        onPriorityChange={vi.fn()}
-        onAssigneeChange={onAssigneeChange}
-      />,
-    );
-    // The trigger should render with the current assignee's name. Headers may
-    // surface duplicate "Friday" labels (icon + visible label); a query for
-    // the element by role+name confirms the picker chip is present.
-    expect(
-      screen.getAllByRole("button", { name: /Friday/ }).length,
-    ).toBeGreaterThan(0);
   });
 });

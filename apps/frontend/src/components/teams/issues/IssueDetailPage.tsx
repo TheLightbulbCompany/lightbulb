@@ -127,18 +127,8 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           <div className="min-w-0 flex-1">
             <IssueHeader
               issue={issue}
-              agents={agents}
               onTitleSave={async (title) => {
                 await mutations.update(issueId, { title });
-              }}
-              onStatusChange={async (status) => {
-                await mutations.update(issueId, { status });
-              }}
-              onPriorityChange={async (priority) => {
-                await mutations.update(issueId, { priority });
-              }}
-              onAssigneeChange={async (assigneeAgentId) => {
-                await mutations.update(issueId, { assigneeAgentId });
               }}
             />
           </div>
@@ -215,6 +205,12 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           issue={issue}
           agents={agents}
           projects={projects}
+          onStatusChange={async (status) => {
+            await mutations.update(issueId, { status });
+          }}
+          onPriorityChange={async (priority) => {
+            await mutations.update(issueId, { priority });
+          }}
           onAssigneeChange={(assigneeAgentId) => {
             void mutations.update(issueId, { assigneeAgentId });
           }}

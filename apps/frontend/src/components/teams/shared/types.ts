@@ -182,8 +182,24 @@ export interface Issue {
 export interface Approval {
   id: string;
   issueId?: string | null;
+  /** Upstream never sends a top-level `title` on the list row — the label is
+   *  synthesized from `type` + `payload` (see `approvalLabel`). Kept optional
+   *  for forward-compat but should not be relied on. */
   title?: string | null;
-  status: "pending" | "approved" | "rejected";
+  /** Upstream approval `type` (e.g. "hire_agent", "request_board_approval");
+   *  drives the synthesized row label. */
+  type?: string | null;
+  /** Redacted payload subset upstream surfaces on the list row; the label
+   *  reads `title` / `name` / `summary` / `recommendedAction` from it. */
+  payload?: Record<string, unknown> | null;
+  /** Upstream APPROVAL_STATUSES. `revision_requested` is actionable (the agent
+   *  asked for changes) and must NOT be hidden from the triage band. */
+  status:
+    | "pending"
+    | "revision_requested"
+    | "approved"
+    | "rejected"
+    | "cancelled";
   createdAt?: string | null;
   decidedAt?: string | null;
 }

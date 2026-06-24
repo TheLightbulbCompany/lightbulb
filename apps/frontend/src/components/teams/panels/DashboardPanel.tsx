@@ -27,6 +27,7 @@ import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityF
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { PanelMasthead } from "@/components/teams/shell";
 import type {
+  CompanyAgent,
   DashboardResponse,
   DashboardSummary,
   Issue,
@@ -97,6 +98,10 @@ export function DashboardPanel() {
   const { read } = useTeamsApi();
   const dashboardQuery = read<DashboardResponse>("/dashboard");
   const issuesQuery = read<unknown>("/issues");
+  // Company roster so the activity feed can resolve agent actors + agent
+  // entity references to names (same /agents read InboxPanel/IssuesPanel use).
+  // Called unconditionally (rules of hooks) above the loading/error returns.
+  const agentsQuery = read<{ agents: CompanyAgent[] }>("/agents");
   const { events, isLoading: activityLoading } = useActivityFeed(10);
   // Live-agent-runs feed for the "Agents" panel. Hook is called
   // unconditionally (rules of hooks) — the panel renders below, after the
@@ -134,6 +139,10 @@ export function DashboardPanel() {
   // titles without fanning out a per-issue fetch (missing entries degrade
   // to an id-slug chip inside ActiveAgentsPanel).
   const issuesById = new Map(issues.map((i) => [i.id, i]));
+  // agentId → name map for the activity feed's actor/entity resolution.
+  const agentNames = new Map(
+    (agentsQuery.data?.agents ?? []).map((a) => [a.id, a.name] as const),
+  );
 
   const agentsCount = Object.values(dashboard.agents).reduce(
     (s, v) => s + (v ?? 0),
@@ -281,7 +290,7 @@ export function DashboardPanel() {
                   key={evt.id}
                   style={i === 0 ? undefined : { borderTop: "1px solid var(--edge)" }}
                 >
-                  <ActivityRow event={evt} />
+                  <ActivityRow event={evt} agentNames={agentNames} />
                 </div>
               ))}
             </div>

@@ -116,6 +116,62 @@ function nextRunLabel(r: Routine): string | null {
   return `in ${Math.floor(diffSec / 86400)}d`;
 }
 
+/* ── enabled toggle switch ───────────────────────────────────────────────── */
+
+// A clear ON/OFF switch in place of the old ambiguous checkbox-next-to-label
+// (a box sitting beside the word "Disabled" reads as both state AND action).
+// The KNOB position is the state: pushed right + forest = active, left +
+// muted = paused. The label states the CURRENT state ("Active" / "Paused").
+// In-theme (cream/forest editorial tokens); no shared Switch primitive exists,
+// so it's a styled role="switch" button.
+function RoutineToggle({
+  enabled,
+  disabled,
+  onToggle,
+  label,
+}: {
+  enabled: boolean;
+  disabled?: boolean;
+  onToggle: (next: boolean) => void;
+  label: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label={`${enabled ? "Pause" : "Activate"} ${label}`}
+        disabled={disabled}
+        onClick={() => onToggle(!enabled)}
+        className={cn(
+          "relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full border transition-colors",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--forest)] focus-visible:ring-offset-1",
+        )}
+        style={{
+          backgroundColor: enabled ? "var(--forest)" : "var(--cream-deeper)",
+          borderColor: enabled ? "var(--forest)" : "var(--edge)",
+        }}
+      >
+        <span
+          aria-hidden="true"
+          className={cn(
+            "inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform",
+            enabled ? "translate-x-[18px]" : "translate-x-0.5",
+          )}
+        />
+      </button>
+      <span
+        className="text-sm tabular-nums"
+        style={{ color: enabled ? "var(--ink)" : "var(--mute)" }}
+      >
+        {enabled ? "Active" : "Paused"}
+      </span>
+    </div>
+  );
+}
+
 /* ── sort ────────────────────────────────────────────────────────────────── */
 
 type RoutineSortField = "name" | "nextRun" | "agent" | "enabled";
@@ -280,21 +336,15 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
     },
     {
       key: "enabled",
-      header: "Enabled",
-      cell: (r) => {
-        const enabled = routineEnabled(r);
-        return (
-          <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
-            <input
-              type="checkbox"
-              checked={enabled}
-              disabled={busy === r.id}
-              onChange={(e) => toggle(r, e.target.checked)}
-            />
-            <span>{enabled ? "Enabled" : "Disabled"}</span>
-          </label>
-        );
-      },
+      header: "Status",
+      cell: (r) => (
+        <RoutineToggle
+          enabled={routineEnabled(r)}
+          disabled={busy === r.id}
+          onToggle={(next) => toggle(r, next)}
+          label={routineName(r)}
+        />
+      ),
     },
     {
       key: "actions",

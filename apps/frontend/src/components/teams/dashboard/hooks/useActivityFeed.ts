@@ -11,6 +11,12 @@ export interface ActivityEvent {
   action: string;
   actorType?: string | null;
   actorId?: string | null;
+  /** BFF-enriched (feed.py): the user actor's display name, resolved via the
+   *  principalId → Clerk → email join. Falls back to the email. Absent for
+   *  agent/system actors and when the join can't resolve the id. */
+  actorName?: string | null;
+  /** BFF-enriched (feed.py): the user actor's email. */
+  actorEmail?: string | null;
   agentId?: string | null;
   entityType?: string | null;
   entityId?: string | null;

@@ -580,6 +580,7 @@ function RunRoutineDialog({
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(vars.map((v) => [v.name, initialVarString(v)])),
   );
+  const [err, setErr] = useState<string | null>(null);
 
   function setVar(name: string, next: string) {
     setValues((prev) => ({ ...prev, [name]: next }));
@@ -601,7 +602,14 @@ function RunRoutineDialog({
     for (const v of vars) {
       collected[v.name] = coerceVarValue(v, values[v.name] ?? "");
     }
-    await onRun(collected);
+    setErr(null);
+    try {
+      await onRun(collected);
+    } catch (e) {
+      // Surface the failure in the dialog rather than leaving the user with a
+      // button that just flips back to "Run" — mirrors CreateRoutineDialog.
+      setErr(e instanceof Error ? e.message : String(e));
+    }
   }
 
   return (
@@ -627,6 +635,18 @@ function RunRoutineDialog({
       }
     >
       <div className="flex flex-col gap-3">
+        {err && (
+          <div
+            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            style={{
+              border:
+                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+              background: "color-mix(in srgb, var(--danger) 6%, transparent)",
+            }}
+          >
+            {err}
+          </div>
+        )}
         {vars.map((v) => {
           const required = v.required !== false;
           const label = `${variableLabel(v)}${required ? " *" : ""}`;

@@ -143,9 +143,18 @@ export function patchExecutionPolicy(
 ): IssueExecutionPolicy | null {
   const mode = existingPolicy?.mode ?? "normal";
 
-  // Carry forward whichever sub-fields this edit does not touch.
+  // Carry forward whichever sub-fields this edit does not touch. A monitor
+  // edit only carries the three rail-editable fields (nextCheckAt / notes /
+  // serviceName), so merge it onto the existing monitor rather than replacing
+  // it — otherwise upstream-managed fields (kind / externalRef / scheduledBy /
+  // timeoutAt / maxAttempts / recoveryPolicy) would be reset to their schema
+  // defaults on every reschedule.
   const monitor =
-    "monitor" in edit ? edit.monitor : existingPolicy?.monitor ?? null;
+    "monitor" in edit
+      ? edit.monitor === null
+        ? null
+        : { ...existingPolicy?.monitor, ...edit.monitor }
+      : existingPolicy?.monitor ?? null;
 
   const reviewerValues =
     "reviewers" in edit

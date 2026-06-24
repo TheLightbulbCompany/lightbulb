@@ -197,6 +197,14 @@ export interface IssueMonitorPolicy {
   serviceName?: string | null;
   scheduledBy?: string | null;
   kind?: string | null;
+  // Upstream-managed fields the rail editor never sets but must round-trip
+  // unchanged: a reschedule from the rail merges the three editable fields onto
+  // the existing monitor (see executionPolicy.patchExecutionPolicy) so these
+  // are preserved rather than reset to their schema defaults.
+  externalRef?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  recoveryPolicy?: string | null;
 }
 
 /** A single participant in a reviewer/approver stage. Mirrors upstream

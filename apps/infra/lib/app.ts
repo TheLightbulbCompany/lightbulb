@@ -220,6 +220,17 @@ const vercelEnv = {
   VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
 };
 
+// cdk-pipelines-github's `Runner` has a private constructor and its only
+// self-hosted factory force-prepends the `self-hosted` label, so there is no
+// supported way to express `runs-on: <expression>`. The pipeline reads only
+// `.runsOn`, so a minimal stand-in is behaviourally identical to a real Runner.
+// Isolated here so the one unavoidable assertion stays out of the pipeline
+// wiring, and so the deploy runner can be driven by a GitHub Actions variable
+// the same way the hand-authored workflows are.
+function expressionRunner(runsOn: string): Runner {
+  return { runsOn } as unknown as Runner;
+}
+
 // ---------------------------------------------------------------------------
 // CDK Pipeline (generates .github/workflows/deploy.yml)
 // ---------------------------------------------------------------------------
@@ -250,11 +261,15 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     gitHubActionRoleArn: "arn:aws:iam::877352799272:role/isol8-dev-github-actions",
   }),
   workflowPath: "../../.github/workflows/deploy.yml",
-  // Run all pipeline jobs on the self-hosted WSL runner — its Linux deploy
-  // minutes are free, vs drawing on the GitHub-hosted allowance. The 2 desktop
-  // build jobs are forced to macos-15 by the JsonPatch.replace(".../runs-on",
-  // "macos-15") calls below, so they keep building the .dmg on a Mac.
-  runner: Runner.selfHosted(["self-hosted", "isol8-wsl"]),
+  // Pipeline runner is driven by the `DEPLOY_RUNNER` repo Actions variable so
+  // hosted <-> self-hosted flips from the GitHub UI (or
+  // scripts/switch-ci-runner.sh) with no code change or re-synth — set it to
+  // `isol8-wsl` (self-hosted WSL; free Linux minutes) or `ubuntu-latest`
+  // (GitHub-hosted). See expressionRunner() for why this can't be a plain
+  // Runner. The 2 desktop build jobs are forced to macos-15 by the
+  // JsonPatch.replace(".../runs-on", "macos-15") calls below regardless, so
+  // they keep building the .dmg on a Mac.
+  runner: expressionRunner("${{ vars.DEPLOY_RUNNER }}"),
   // Serialize deploys: only one pipeline run may touch the CloudFormation
   // stacks at a time. cancelInProgress:false queues an overlapping deploy
   // rather than killing an in-flight CFN update (two concurrent deploys

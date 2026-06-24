@@ -21,7 +21,7 @@ permissions:
 jobs:
   build-and-push:
     name: Build and push extended OpenClaw image
-    runs-on: [self-hosted, isol8-wsl]
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 30
     steps:
       - name: Checkout

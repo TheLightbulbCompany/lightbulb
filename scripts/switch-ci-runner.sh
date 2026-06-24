@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Flip CI / deploy workflows between GitHub-hosted and the self-hosted WSL
+# runner by setting two repo Actions variables. Takes effect on the NEXT
+# workflow run — no PR, no re-synth, no redeploy.
+#
+#   CI_RUNNER     -> the hand-authored workflows (Backend CI, Frontend CI,
+#                    Claude reviews, e2e, image builds)
+#   DEPLOY_RUNNER -> the CDK deploy pipeline (.github/workflows/deploy.yml)
+#
+# Both reference the variable in `runs-on:`. `isol8-wsl` targets the
+# self-hosted WSL runner (its Linux minutes are free on this private repo);
+# `ubuntu-latest` targets GitHub-hosted runners.
+#
+# Usage:
+#   scripts/switch-ci-runner.sh hosted             # both -> ubuntu-latest
+#   scripts/switch-ci-runner.sh self-hosted        # both -> isol8-wsl
+#   scripts/switch-ci-runner.sh hosted ci          # only CI_RUNNER
+#   scripts/switch-ci-runner.sh self-hosted deploy # only DEPLOY_RUNNER
+#   scripts/switch-ci-runner.sh status
+set -euo pipefail
+REPO="${ISOL8_REPO:-Isol8AI/isol8}"
+
+label_for() {
+  case "$1" in
+    hosted) echo "ubuntu-latest" ;;
+    self-hosted) echo "isol8-wsl" ;;
+    *) echo "error: target must be 'hosted' or 'self-hosted'" >&2; exit 1 ;;
+  esac
+}
+
+case "${1:-}" in
+  status)
+    gh variable list --repo "$REPO" | grep -E '^(CI_RUNNER|DEPLOY_RUNNER)[[:space:]]' \
+      || echo "no runner variables set on $REPO"
+    ;;
+  hosted|self-hosted)
+    label="$(label_for "$1")"
+    scope="${2:-both}"
+    case "$scope" in
+      ci)     gh variable set CI_RUNNER     --repo "$REPO" --body "$label" ;;
+      deploy) gh variable set DEPLOY_RUNNER --repo "$REPO" --body "$label" ;;
+      both)
+        gh variable set CI_RUNNER     --repo "$REPO" --body "$label"
+        gh variable set DEPLOY_RUNNER --repo "$REPO" --body "$label" ;;
+      *) echo "error: scope must be 'ci', 'deploy', or omitted (both)" >&2; exit 1 ;;
+    esac
+    echo "set ${scope} runner(s) -> ${label} (${1}) on ${REPO}"
+    echo "note: applies on the next workflow run; in-flight runs are unaffected"
+    ;;
+  *)
+    echo "usage: $0 {hosted|self-hosted} [ci|deploy] | status" >&2
+    exit 1 ;;
+esac

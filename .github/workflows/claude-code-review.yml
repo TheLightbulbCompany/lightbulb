@@ -6,7 +6,7 @@ on:
 
 jobs:
   claude-review:
-    runs-on: [self-hosted, isol8-wsl]
+    runs-on: ${{ vars.CI_RUNNER }}
     permissions:
       contents: read
       # write (was read) so the review can actually post inline comments +

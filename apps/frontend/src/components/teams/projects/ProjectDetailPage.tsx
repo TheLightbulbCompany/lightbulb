@@ -2,19 +2,23 @@
 
 // Ported from upstream Paperclip's pages/ProjectDetail.tsx
 // (paperclip/ui/src/pages/ProjectDetail.tsx) (MIT, © 2025 Paperclip AI).
-// Three-tab Project-detail surface reskinned onto the editorial cream/forest
+// Two-tab Project-detail surface reskinned onto the editorial cream/forest
 // palette, modelled on the Issue/Goal detail siblings:
 //   - Overview: inline-editable name (ProjectHeader) + inline-editable
-//     description + a sticky read-only Properties aside (budget / issue count /
+//     description + a sticky read-only Properties aside (issue count /
 //     timestamps). Mirrors upstream's OverviewContent + the issue/goal layout.
 //   - Issues: the project's issues via the BFF `?project=` filter (PR #1006),
 //     rendered with the shared TasksList (rows navigate to the task-detail).
-//   - Budget: the editable monthly budget cap (ProjectBudgetCard).
+//
+// No Budget tab: upstream has no project-budget field on the project row
+// (budgets live behind a separate budget_policies API the slim BFF does not
+// proxy), so a budget editor here was a silent no-op — writes stripped, reads
+// always empty.
 //
 // Deferred vs upstream: icon/color tile, plugin-operations + workspaces +
-// configuration tabs, membership affordances, budget-utilization gauge, and
-// hard delete/archive (the slim BFF exposes no DELETE /projects route). Noted
-// as clean follow-ups — none block v1.
+// configuration tabs, membership affordances, and hard delete/archive (the
+// slim BFF exposes no DELETE /projects route). Noted as clean follow-ups —
+// none block v1.
 
 "use client";
 
@@ -24,7 +28,6 @@ import { ChevronRight } from "lucide-react";
 import { PanelTabs } from "@/components/teams/shell";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectProperties } from "./ProjectProperties";
-import { ProjectBudgetCard } from "./ProjectBudgetCard";
 import { ProjectDescription } from "./ProjectDescription";
 import { TasksList } from "@/components/teams/issues/TasksList";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
@@ -44,7 +47,7 @@ export interface ProjectDetailPageProps {
   projectId: string;
 }
 
-type ProjectTab = "overview" | "issues" | "budget";
+type ProjectTab = "overview" | "issues";
 
 export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   const { project, issues, isLoading, issuesLoading, isError, error } =
@@ -120,7 +123,6 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   const tabs = [
     { value: "overview", label: "Overview" },
     { value: "issues", label: "Issues", count: issues.length },
-    { value: "budget", label: "Budget" },
   ];
 
   return (
@@ -179,18 +181,6 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           isLoading={issuesLoading}
           onUpdateIssue={handleUpdateIssue}
           onNewTask={() => setCreating(true)}
-        />
-      )}
-
-      {tab === "budget" && (
-        <ProjectBudgetCard
-          budgetMonthlyCents={project.budgetMonthlyCents ?? 0}
-          isSaving={false}
-          onSave={(amountCents) => {
-            void mutations.update(projectId, {
-              budget_monthly_cents: amountCents,
-            });
-          }}
         />
       )}
 

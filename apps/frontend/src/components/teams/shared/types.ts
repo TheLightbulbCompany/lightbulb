@@ -430,14 +430,16 @@ export interface GoalUpdateInput {
 // `IssueProject` above (id/name/color) is the denormalized form embedded on
 // issues; this is the full detail row the Project-detail page consumes.
 
-/** Full project row from GET /teams/projects/{id} (upstream Project). */
+/** Full project row from GET /teams/projects/{id} (upstream Project).
+ *
+ * NOTE: no `budgetMonthlyCents` — upstream Paperclip has no budget field on
+ * the project row (project budgets live behind a separate `budget_policies`
+ * API the slim BFF does not proxy), so it would always be absent. */
 export interface Project {
   id: string;
   companyId?: string | null;
   name: string;
   description?: string | null;
-  /** Monthly budget in cents (upstream `budgetMonthlyCents`). */
-  budgetMonthlyCents?: number | null;
   status?: string | null;
   color?: string | null;
   icon?: string | null;
@@ -449,12 +451,11 @@ export interface Project {
  * Body for PATCH /teams/projects/{id}.
  *
  * The BFF's `PatchProjectBody` whitelists snake_case attribute names
- * (`name`, `description`, `budget_monthly_cents`) and re-emits camelCase to
- * Paperclip via its alias generator — so this snake_case shape IS the wire
- * shape the hook sends (mirrors `GoalUpdateInput`).
+ * (`name`, `description`) and re-emits camelCase to Paperclip via its alias
+ * generator — so this snake_case shape IS the wire shape the hook sends
+ * (mirrors `GoalUpdateInput`). No budget field (see `Project` above).
  */
 export interface ProjectUpdateInput {
   name?: string;
   description?: string | null;
-  budget_monthly_cents?: number;
 }

@@ -44,17 +44,6 @@ describe("useProjectMutations", () => {
     expect(mockMutate).toHaveBeenCalledWith("/teams/projects");
   });
 
-  test("update forwards snake_case budget_monthly_cents verbatim (the Budget tab)", async () => {
-    mockPatch.mockResolvedValue({ id: "p_1", name: "x", budgetMonthlyCents: 5000 });
-    const { result } = renderHook(() => useProjectMutations());
-    await act(async () => {
-      await result.current.update("p_1", { budget_monthly_cents: 5000 });
-    });
-    expect(mockPatch).toHaveBeenCalledWith("/projects/p_1", {
-      budget_monthly_cents: 5000,
-    });
-  });
-
   test("update forwards a null description (clearing the field)", async () => {
     mockPatch.mockResolvedValue({ id: "p_1", name: "x", description: null });
     const { result } = renderHook(() => useProjectMutations());

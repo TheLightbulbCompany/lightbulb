@@ -168,9 +168,13 @@ class CreateProjectBody(_Strict):
 
 
 class PatchProjectBody(_Strict):
+    # NOTE: no project-budget field. Upstream Paperclip has no
+    # ``budgetMonthlyCents`` on the project row — budgets live behind a
+    # separate ``budget_policies`` API the BFF does not proxy, so a
+    # ``budget_monthly_cents`` here would be silently stripped. Removed
+    # rather than left as a no-op that misleads the UI.
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=20000)
-    budget_monthly_cents: Optional[int] = Field(default=None, ge=0)
 
 
 class ApproveApprovalBody(_Strict):

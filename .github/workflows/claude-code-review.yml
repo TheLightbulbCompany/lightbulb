@@ -65,10 +65,39 @@ jobs:
           # Posts the review's summary as a PR comment so a clean review is
           # visibly confirmed, not a silent green check.
           display_report: true
+          # Surface the full execution output so a startup failure (e.g. an
+          # expired CLAUDE_CODE_OAUTH_TOKEN or a usage cap) prints its real
+          # error instead of the suppressed one-line stub.
+          show_full_output: true
 
-      # Temporary: print the action's outputs so the fail-loud guard can be
-      # wired to the exact output key (the old setup proved a crash can report
-      # success, so a green check must require an actual completed review).
-      - name: Surface review outputs (for fail-loud wiring)
+      # Fail-loud guard: the action reports `success` even when the agent
+      # crashes on turn 1 (is_error=true, $0 spent, nothing reviewed) — a green
+      # check that never read the diff. Read the execution output and fail the
+      # job when the review did not actually complete, so a broken reviewer is
+      # visibly red instead of silently passing.
+      - name: Verify the review actually ran
         if: always()
-        run: 'echo "claude_review outputs: ${{ toJSON(steps.claude_review.outputs) }}"'
+        env:
+          REVIEW_OUTCOME: ${{ steps.claude_review.outcome }}
+          EXECUTION_FILE: ${{ steps.claude_review.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          if [ "${REVIEW_OUTCOME}" != "success" ]; then
+            echo "::error::Claude review step outcome was '${REVIEW_OUTCOME}', not success."
+            exit 1
+          fi
+          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "${EXECUTION_FILE}" ]; then
+            echo "::error::Claude review produced no execution output — the review did not run."
+            exit 1
+          fi
+          # Whitespace-strip so the key match is tolerant of pretty-printing.
+          compact="$(tr -d ' \n\t\r' < "${EXECUTION_FILE}")"
+          if ! printf '%s' "$compact" | grep -q '"type":"result"'; then
+            echo "::error::No result message in the execution output — the review never completed a turn."
+            exit 1
+          fi
+          if printf '%s' "$compact" | grep -q '"is_error":true'; then
+            echo "::error::Claude review ended with is_error=true — it crashed before reviewing the diff. Most likely an expired CLAUDE_CODE_OAUTH_TOKEN secret or a Claude usage cap. Rotate the token (claude setup-token → gh secret set CLAUDE_CODE_OAUTH_TOKEN) and re-run. See the 'Run Claude Code Review' step log (show_full_output) for the exact error."
+            exit 1
+          fi
+          echo "Claude review completed without error."

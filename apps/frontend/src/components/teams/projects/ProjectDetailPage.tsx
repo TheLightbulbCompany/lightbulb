@@ -19,6 +19,8 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { ChevronRight } from "lucide-react";
 import { PanelTabs } from "@/components/teams/shell";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectProperties } from "./ProjectProperties";
@@ -126,6 +128,20 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
       className="flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full"
       style={{ background: "var(--cream)", color: "var(--ink)" }}
     >
+      <nav
+        className="flex items-center gap-1 text-xs"
+        style={{ color: "var(--mute)" }}
+        aria-label="Breadcrumb"
+      >
+        <Link href="/teams/projects" className="hover:underline">
+          Projects
+        </Link>
+        <ChevronRight className="h-3 w-3" />
+        <span className="truncate" style={{ color: "var(--ink-soft)" }}>
+          {project.name}
+        </span>
+      </nav>
+
       <PanelTabs
         tabs={tabs}
         value={tab}

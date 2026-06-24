@@ -102,6 +102,10 @@ export function ActivityRow({ event, className }: ActivityRowProps) {
       <p className="flex-1 min-w-0 truncate leading-relaxed" style={{ color: "var(--ink)" }}>
         <Identity name={actorName} size="xs" className="align-middle" />
         <span className="ml-1" style={{ color: "var(--mute)" }}>{verb}</span>
+        {/* DEFERRED: raw entity/actor IDs (UUIDs) are shown because the
+            agent/entity name maps aren't wired. Resolving these to display
+            names needs the /agents roster (+ per-entity title lookups)
+            threaded through the activity feed — a follow-up, not built here. */}
         {event.entityType && event.entityId && (
           <span className="font-medium ml-1" style={{ color: "var(--ink)" }}>
             <span style={{ color: "var(--mute)" }}>{event.entityType}:</span>

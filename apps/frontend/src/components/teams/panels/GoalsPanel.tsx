@@ -27,6 +27,8 @@ import { Button } from "@/components/ui/button";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useGoalMutations } from "@/components/teams/goals/hooks/useGoalMutations";
+import { GoalPicker } from "@/components/teams/goals/GoalPicker";
+import { GOAL_STATUSES } from "@/components/teams/shared/types";
 
 interface Goal {
   id: string;
@@ -230,6 +232,7 @@ export function GoalsPanel() {
 
       {creating && (
         <CreateGoalDialog
+          goals={data?.goals ?? []}
           onClose={() => setCreating(false)}
           onCreated={() => {
             setCreating(false);
@@ -283,16 +286,18 @@ export function GoalsPanel() {
 }
 
 function CreateGoalDialog({
+  goals,
   onClose,
   onCreated,
 }: {
+  goals: Goal[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [parentId, setParentId] = useState("");
+  const [parentId, setParentId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -336,16 +341,30 @@ function CreateGoalDialog({
             rows={3}
           />
         </label>
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Parent goal ID (optional)</span>
-          <input
-            value={parentId}
-            onChange={(e) => setParentId(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
-          />
-        </label>
+        {/* Parent goal picker replaces the old raw "Parent goal ID" text input
+            — resolves from the existing /goals list (mirrors the issues
+            AssigneePicker/ProjectPicker idiom). */}
+        <div className="block">
+          <span className="text-sm text-[var(--ink-soft)]">Parent goal</span>
+          <div className="mt-1">
+            <GoalPicker
+              goals={goals}
+              selectedGoalId={parentId}
+              onChange={setParentId}
+              className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+            />
+          </div>
+        </div>
         {err && (
-          <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div
+            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            style={{
+              border:
+                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+              background:
+                "color-mix(in srgb, var(--danger) 6%, transparent)",
+            }}
+          >
             {err}
           </div>
         )}
@@ -365,9 +384,6 @@ function CreateGoalDialog({
     </EditorialDialog>
   );
 }
-
-// upstream GOAL_STATUSES
-const GOAL_STATUSES = ["planned", "active", "achieved", "cancelled"];
 
 function EditGoalDialog({
   goal,
@@ -430,7 +446,15 @@ function EditGoalDialog({
           </select>
         </label>
         {err && (
-          <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div
+            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            style={{
+              border:
+                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+              background:
+                "color-mix(in srgb, var(--danger) 6%, transparent)",
+            }}
+          >
             {err}
           </div>
         )}

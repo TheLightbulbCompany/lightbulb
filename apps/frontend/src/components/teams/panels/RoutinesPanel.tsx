@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ArrowUpDown, Check, Repeat } from "lucide-react";
 import {
   EditorialButton,
+  EditorialDialog,
   PanelDataTable,
   PanelEmptyState,
   PanelMasthead,
@@ -529,12 +530,13 @@ function CreateRoutineDialog({
   }
 
   return (
-    <div className="fixed inset-0 bg-[rgba(26,26,26,0.35)] flex items-center justify-center">
-      <div className="editorial-card p-6 w-[28rem]">
-        <h2 className="font-editorial-serif text-2xl mb-4 text-[var(--ink)]">
-          New routine
-        </h2>
-        <label className="block mb-3">
+    <EditorialDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="New routine"
+    >
+      <div className="flex flex-col gap-3">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Name</span>
           <input
             value={name}
@@ -542,7 +544,7 @@ function CreateRoutineDialog({
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
-        <label className="block mb-3">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Cron</span>
           <input
             value={cron}
@@ -552,7 +554,7 @@ function CreateRoutineDialog({
         </label>
         {/* Agent picker replaces the old raw "Agent ID" text input — the same
             editorial AssigneePicker the issues surface uses. */}
-        <div className="block mb-3">
+        <div className="block">
           <span className="text-sm text-[var(--ink-soft)]">Agent</span>
           <div className="mt-1">
             <AssigneePicker
@@ -564,7 +566,7 @@ function CreateRoutineDialog({
             />
           </div>
         </div>
-        <label className="block mb-3">
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Prompt</span>
           <textarea
             value={prompt}
@@ -573,7 +575,7 @@ function CreateRoutineDialog({
             rows={3}
           />
         </label>
-        <label className="flex items-center gap-2 mb-4 text-sm text-[var(--ink-soft)]">
+        <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
           <input
             type="checkbox"
             checked={enabled}
@@ -582,11 +584,19 @@ function CreateRoutineDialog({
           <span>Enabled</span>
         </label>
         {err && (
-          <div className="text-[var(--danger)] text-sm mb-2 border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div
+            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            style={{
+              border:
+                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+              background:
+                "color-mix(in srgb, var(--danger) 6%, transparent)",
+            }}
+          >
             {err}
           </div>
         )}
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end gap-2 mt-2">
           <EditorialButton variant="secondary" size="sm" onClick={onClose}>
             Cancel
           </EditorialButton>
@@ -600,6 +610,6 @@ function CreateRoutineDialog({
           </EditorialButton>
         </div>
       </div>
-    </div>
+    </EditorialDialog>
   );
 }

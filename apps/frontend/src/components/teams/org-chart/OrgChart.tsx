@@ -37,7 +37,7 @@ export function OrgChart({ agents, className }: OrgChartProps) {
     () => ({ width: layout.width, height: layout.height }),
     [layout.width, layout.height],
   );
-  const { pan, zoom, dragging, onMouseDown, onMouseMove, onMouseUp, onWheel, zoomIn, zoomOut, fitToScreen } =
+  const { pan, zoom, dragging, onMouseDown, onMouseMove, onMouseUp, zoomIn, zoomOut, fitToScreen } =
     useOrgPanZoom(containerRef, bounds);
 
   // Fit the chart to the viewport the first time it has real bounds. Keyed on
@@ -74,6 +74,8 @@ export function OrgChart({ agents, className }: OrgChartProps) {
       <div
         ref={containerRef}
         data-testid="org-chart-viewport"
+        role="application"
+        aria-label="Org chart (drag to pan, scroll to zoom)"
         className="editorial-card relative h-[calc(100dvh-16rem)] min-h-[420px] w-full overflow-hidden"
         style={{
           cursor: dragging ? "grabbing" : "grab",
@@ -84,7 +86,6 @@ export function OrgChart({ agents, className }: OrgChartProps) {
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseUp}
-        onWheel={onWheel}
       >
         {/* Zoom controls — editorial icon-button cluster, top-right. */}
         <div className="absolute right-3 top-3 z-10 flex flex-col gap-1.5">

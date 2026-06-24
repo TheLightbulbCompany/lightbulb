@@ -132,10 +132,8 @@ describe("RoutinesPanel", () => {
     // The picker is a Radix Popover → needs the full userEvent pointer sequence,
     // and its options portal to document.body. Both the toolbar filter and the
     // dialog field render an "Unassigned" picker, so scope to the dialog (the
-    // element wrapping the "New routine" heading) before clicking.
-    const dialog = screen
-      .getByRole("heading", { name: "New routine" })
-      .closest(".editorial-card") as HTMLElement;
+    // Radix DialogContent rendered by EditorialDialog) before clicking.
+    const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /unassigned/i }));
     await user.click(await screen.findByText("Friday"));
     fireEvent.change(screen.getByLabelText("Prompt"), {

@@ -369,6 +369,19 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           onParentChange={(parentId) => {
             void mutations.update(issueId, { parentId });
           }}
+          onMonitorChange={(monitor) => {
+            // Setting the monitor replaces executionPolicy with the schedule.
+            // Our tasks carry no reviewer/approver policy, so a full replace is
+            // safe (matches upstream's executionPolicy.monitor write).
+            void mutations.update(issueId, {
+              executionPolicy: { monitor },
+            });
+          }}
+          onMonitorClear={() => {
+            // A null executionPolicy clears the monitor schedule entirely.
+            void mutations.update(issueId, { executionPolicy: null });
+          }}
+          onCheckNow={(id) => mutations.monitorCheckNow(id)}
         />
       </aside>
 

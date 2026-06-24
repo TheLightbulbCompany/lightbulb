@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // IssueProperties renders <IssueRelations>, <LabelPicker>, and <ParentPicker>,
@@ -76,6 +76,12 @@ function requiredHandlers(): Pick<
     onBlockedByChange: vi.fn(),
   };
 }
+
+const baseMonitor = {
+  nextCheckAt: "2026-07-01T09:00:00.000Z",
+  notes: "watch the deploy",
+  serviceName: "GitHub Actions",
+};
 
 describe("IssueProperties", () => {
   test("renders all 7 property rows", () => {
@@ -265,5 +271,121 @@ describe("IssueProperties", () => {
     const option = await screen.findByText("Ada Lovelace");
     await user.click(option);
     expect(onAssigneeUserChange).toHaveBeenCalledWith("user_7");
+  });
+
+  // ── Monitor row ──────────────────────────────────────────────────────────
+  // The detail page maps onMonitorChange → update(id,{executionPolicy:{monitor}}),
+  // onMonitorClear → update(id,{executionPolicy:null}), and onCheckNow →
+  // monitorCheckNow(id). The rail row owns the editor + actions; these tests
+  // assert the row fires those handlers with the right payloads.
+
+  test("Monitor row shows 'Not scheduled' when no monitor is set", () => {
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        {...requiredHandlers()}
+        onMonitorChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Monitor")).toBeInTheDocument();
+    expect(screen.getByText("Not scheduled")).toBeInTheDocument();
+  });
+
+  test("scheduling a monitor fires onMonitorChange with the time + external service", async () => {
+    const user = userEvent.setup();
+    const onMonitorChange = vi.fn();
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        {...requiredHandlers()}
+        onMonitorChange={onMonitorChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Schedule/i }));
+    // datetime-local takes a local "YYYY-MM-DDTHH:mm" value (no tz); the row
+    // normalizes it to an ISO instant. Assert the external-service field flows
+    // through verbatim and nextCheckAt is a non-empty ISO string (its exact
+    // value depends on the runner timezone, so it is asserted by shape).
+    await user.type(
+      screen.getByLabelText("Re-check at"),
+      "2026-07-01T09:00",
+    );
+    await user.type(
+      screen.getByLabelText("External service"),
+      "GitHub Actions",
+    );
+    // Both the trigger affordance and the editor submit read "Schedule"; scope
+    // the submit click to the open popover dialog to disambiguate.
+    const editor = screen.getByRole("dialog");
+    await user.click(within(editor).getByRole("button", { name: /^Schedule$/i }));
+    expect(onMonitorChange).toHaveBeenCalledTimes(1);
+    const arg = onMonitorChange.mock.calls[0][0] as {
+      nextCheckAt: string;
+      serviceName: string | null;
+    };
+    expect(arg.serviceName).toBe("GitHub Actions");
+    expect(typeof arg.nextCheckAt).toBe("string");
+    expect(arg.nextCheckAt).not.toBe("");
+    // Round-trips through Date → a valid ISO-8601 instant.
+    expect(Number.isNaN(new Date(arg.nextCheckAt).getTime())).toBe(false);
+  });
+
+  test("a scheduled monitor renders the re-check time + service and a Clear action", () => {
+    const onMonitorClear = vi.fn();
+    const issue: Issue = {
+      ...baseIssue,
+      executionPolicy: { monitor: baseMonitor },
+    };
+    render(
+      <IssueProperties
+        issue={issue}
+        {...requiredHandlers()}
+        onMonitorChange={vi.fn()}
+        onMonitorClear={onMonitorClear}
+      />,
+    );
+    expect(screen.getByText(/Re-check/i)).toBeInTheDocument();
+    expect(screen.getByText("GitHub Actions")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Clear$/i })).toBeInTheDocument();
+  });
+
+  test("clicking Clear fires onMonitorClear", async () => {
+    const user = userEvent.setup();
+    const onMonitorClear = vi.fn();
+    const issue: Issue = {
+      ...baseIssue,
+      executionPolicy: { monitor: baseMonitor },
+    };
+    render(
+      <IssueProperties
+        issue={issue}
+        {...requiredHandlers()}
+        onMonitorChange={vi.fn()}
+        onMonitorClear={onMonitorClear}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^Clear$/i }));
+    expect(onMonitorClear).toHaveBeenCalledTimes(1);
+  });
+
+  test("clicking 'Check now' invokes onCheckNow with the issue id", async () => {
+    const user = userEvent.setup();
+    const onCheckNow = vi.fn<(id: string) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
+    const issue: Issue = {
+      ...baseIssue,
+      executionPolicy: { monitor: baseMonitor },
+    };
+    render(
+      <IssueProperties
+        issue={issue}
+        {...requiredHandlers()}
+        onMonitorChange={vi.fn()}
+        onCheckNow={onCheckNow}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Check now/i }));
+    expect(onCheckNow).toHaveBeenCalledWith("iss_1");
   });
 });

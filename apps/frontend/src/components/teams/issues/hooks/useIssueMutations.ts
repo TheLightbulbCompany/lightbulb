@@ -23,6 +23,8 @@ export interface UseIssueMutationsResult {
   update: (issueId: string, input: IssueUpdateInput) => Promise<Issue>;
   remove: (issueId: string) => Promise<void>;
   addComment: (issueId: string, body: string) => Promise<IssueComment>;
+  /** Trigger an immediate monitor re-check (independent of nextCheckAt). */
+  monitorCheckNow: (issueId: string) => Promise<void>;
 }
 
 export function useIssueMutations(): UseIssueMutationsResult {
@@ -82,5 +84,14 @@ export function useIssueMutations(): UseIssueMutationsResult {
     [post, mutate],
   );
 
-  return { create, createChild, update, remove, addComment };
+  const monitorCheckNow = useCallback(
+    async (issueId: string): Promise<void> => {
+      // Upstream's check-now endpoint takes no body and returns {ok:true};
+      // it re-runs the monitor now rather than waiting for nextCheckAt.
+      await post(`/issues/${issueId}/monitor/check-now`, {});
+    },
+    [post],
+  );
+
+  return { create, createChild, update, remove, addComment, monitorCheckNow };
 }

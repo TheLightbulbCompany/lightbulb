@@ -20,6 +20,7 @@ beforeEach(() => {
     update: vi.fn(),
     addComment: vi.fn(),
     remove: vi.fn(),
+    monitorCheckNow: vi.fn(),
   });
   mockCreate.mockResolvedValue({ id: "iss_new" });
 });

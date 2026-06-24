@@ -161,6 +161,12 @@ export interface IssueUpdateInput {
    * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
    * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */
   hiddenAt?: string | null;
+  /** Execution policy carrying the monitor schedule. Sending
+   * ``{ monitor: {...} }`` schedules a re-check; an explicit ``null`` clears
+   * the policy (our tasks carry no reviewer/approver policy, so replacing it
+   * is safe). The BFF camelCase-aliases the outer key to ``executionPolicy``
+   * and forwards the nested dict verbatim. ``undefined`` leaves it unchanged. */
+  executionPolicy?: IssueExecutionPolicy | null;
 }
 
 /** A slim issue summary used by the "Blocked by" / "Blocking" relation rows.
@@ -174,6 +180,23 @@ export interface IssueRelationIssueSummary {
   identifier?: string | null;
   title: string;
   status: IssueStatus;
+}
+
+/** The monitor schedule that rides on an issue's executionPolicy. Mirrors
+ * upstream Paperclip's executionPolicy.monitor — an agent re-checks the task at
+ * ``nextCheckAt``, optionally naming an external service it is watching. Only
+ * the fields the rail renders/edits are modeled; upstream's scheduledBy/kind
+ * are carried for round-trip fidelity but not surfaced. */
+export interface IssueMonitorPolicy {
+  nextCheckAt: string;
+  notes?: string | null;
+  serviceName?: string | null;
+  scheduledBy?: string | null;
+  kind?: string | null;
+}
+
+export interface IssueExecutionPolicy {
+  monitor?: IssueMonitorPolicy | null;
 }
 
 export interface Issue {
@@ -205,6 +228,9 @@ export interface Issue {
    * Surfaced flat by upstream alongside a richer relatedWork; only the flat
    * identifier list is rendered as read-only "Related Tasks" chips. */
   referencedIssueIdentifiers?: string[] | null;
+  /** Execution policy carrying the monitor schedule (the Monitor rail row).
+   * ``null``/absent means no monitor is scheduled. */
+  executionPolicy?: IssueExecutionPolicy | null;
 }
 
 export interface Approval {

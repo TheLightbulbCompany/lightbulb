@@ -43,6 +43,7 @@ beforeEach(() => {
     update: mockUpdate,
     remove: mockRemove,
     addComment: mockAddComment,
+    monitorCheckNow: vi.fn(),
   });
   defaultRead.mockReturnValue({ data: { issues: [] }, isLoading: false, error: null, mutate: vi.fn() });
   vi.mocked(useTeamsApi).mockReturnValue({

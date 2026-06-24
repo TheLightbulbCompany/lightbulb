@@ -9,8 +9,14 @@
 
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { EditorialButton } from "@/components/teams/shell";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -20,6 +26,7 @@ import type {
   Issue,
   IssueStatus,
   IssuePriority,
+  IssueMonitorPolicy,
   CompanyAgent,
   CompanyMember,
   IssueProject,
@@ -52,6 +59,17 @@ export interface IssuePropertiesProps {
   /** Reparent to an issue id or ``null`` to clear. Optional — without it the
    * Parent row stays a read-only link. */
   onParentChange?: (parentId: string | null) => void;
+  /** Schedule (or reschedule) a monitor re-check. Receives the editor's
+   * subset of the monitor policy; the host maps it onto executionPolicy.
+   * Optional — without it the Monitor row stays read-only. */
+  onMonitorChange?: (
+    monitor: Pick<IssueMonitorPolicy, "nextCheckAt" | "notes" | "serviceName">,
+  ) => void;
+  /** Clear the scheduled monitor (sends executionPolicy: null). */
+  onMonitorClear?: () => void;
+  /** Trigger an immediate monitor re-check. Returns the underlying promise so
+   * the row can show a transient checking/done state and tolerate errors. */
+  onCheckNow?: (issueId: string) => Promise<void>;
   className?: string;
 }
 
@@ -148,6 +166,247 @@ function SubTasksRow({ issueId }: { issueId: string }) {
   );
 }
 
+// Convert an ISO instant to the value a <input type="datetime-local"> expects
+// (local "YYYY-MM-DDTHH:mm", no timezone suffix). Returns "" for an unparseable
+// or absent value so the input renders empty rather than "Invalid Date".
+function isoToLocalInput(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  // Shift by the local offset so toISOString's slice reflects local wall time.
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+/** Monitor rail row: schedule an agent re-check at a time, optionally naming an
+ * external service, plus an immediate "Check now". When a monitor is set the
+ * row reads "Re-check {time}" with the service/notes and Check-now/Clear
+ * actions; when unset it shows a muted "Not scheduled" with a Schedule
+ * affordance that opens a themed popover editor. Read-only (no editor, no
+ * actions) when the host wires none of the monitor handlers. */
+function MonitorRow({
+  issueId,
+  monitor,
+  onMonitorChange,
+  onMonitorClear,
+  onCheckNow,
+}: {
+  issueId: string;
+  monitor: IssueMonitorPolicy | null;
+  onMonitorChange?: (
+    monitor: Pick<IssueMonitorPolicy, "nextCheckAt" | "notes" | "serviceName">,
+  ) => void;
+  onMonitorClear?: () => void;
+  onCheckNow?: (issueId: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  // Editor draft fields. Seeded from the current monitor when (re)opening.
+  const [whenLocal, setWhenLocal] = useState("");
+  const [notes, setNotes] = useState("");
+  const [serviceName, setServiceName] = useState("");
+  // Transient "Check now" feedback: idle → checking → done (auto-clears).
+  const [checkState, setCheckState] = useState<"idle" | "checking" | "done">(
+    "idle",
+  );
+
+  const openEditor = () => {
+    setWhenLocal(isoToLocalInput(monitor?.nextCheckAt));
+    setNotes(monitor?.notes ?? "");
+    setServiceName(monitor?.serviceName ?? "");
+    setOpen(true);
+  };
+
+  const schedule = () => {
+    if (!whenLocal || !onMonitorChange) return;
+    // datetime-local has no timezone; new Date() interprets it as local time,
+    // and toISOString normalizes it to the ISO-8601 instant upstream wants.
+    const iso = new Date(whenLocal).toISOString();
+    onMonitorChange({
+      nextCheckAt: iso,
+      notes: notes.trim() || null,
+      serviceName: serviceName.trim() || null,
+    });
+    setOpen(false);
+  };
+
+  const checkNow = async () => {
+    if (!onCheckNow || checkState === "checking") return;
+    setCheckState("checking");
+    try {
+      await onCheckNow(issueId);
+      setCheckState("done");
+      // Reset the label after a beat so the button reads "Check now" again.
+      window.setTimeout(() => setCheckState("idle"), 2000);
+    } catch {
+      // Tolerate failures — drop back to idle so the user can retry.
+      setCheckState("idle");
+    }
+  };
+
+  const editor = (
+    <PopoverContent
+      align="start"
+      className="w-72 p-2"
+      style={{
+        background: "var(--cream)",
+        border: "1px solid var(--edge)",
+        color: "var(--ink)",
+      }}
+    >
+      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+        Re-check at
+        <input
+          type="datetime-local"
+          value={whenLocal}
+          onChange={(e) => setWhenLocal(e.target.value)}
+          aria-label="Re-check at"
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+        />
+      </label>
+      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+        External service
+        <input
+          type="text"
+          value={serviceName}
+          onChange={(e) => setServiceName(e.target.value)}
+          placeholder="e.g. GitHub Actions"
+          aria-label="External service"
+          maxLength={120}
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+        />
+      </label>
+      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+        Notes
+        <input
+          type="text"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="What to look for"
+          aria-label="Monitor notes"
+          maxLength={500}
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+        />
+      </label>
+      <div className="flex justify-end gap-2 pt-1">
+        <EditorialButton
+          variant="secondary"
+          size="sm"
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </EditorialButton>
+        <EditorialButton
+          variant="primary"
+          size="sm"
+          disabled={!whenLocal}
+          onClick={schedule}
+        >
+          Schedule
+        </EditorialButton>
+      </div>
+    </PopoverContent>
+  );
+
+  if (monitor) {
+    return (
+      <PropertyRow label="Monitor">
+        <div className="flex flex-col gap-1">
+          <span style={{ color: "var(--ink-soft)" }}>
+            Re-check{" "}
+            <time dateTime={monitor.nextCheckAt}>
+              {timeAgo(monitor.nextCheckAt)}
+            </time>
+          </span>
+          {monitor.serviceName && (
+            <span className="text-xs" style={{ color: "var(--mute)" }}>
+              {monitor.serviceName}
+            </span>
+          )}
+          {monitor.notes && (
+            <span className="text-xs" style={{ color: "var(--mute)" }}>
+              {monitor.notes}
+            </span>
+          )}
+          <span className="flex items-center gap-3 pt-0.5">
+            {onCheckNow && (
+              <button
+                type="button"
+                onClick={() => void checkNow()}
+                disabled={checkState === "checking"}
+                className="text-xs hover:underline disabled:opacity-60"
+                style={{ color: "var(--forest)" }}
+              >
+                {checkState === "checking"
+                  ? "Checking…"
+                  : checkState === "done"
+                    ? "Checked"
+                    : "Check now"}
+              </button>
+            )}
+            {onMonitorChange && (
+              <Popover
+                open={open}
+                onOpenChange={(next) => (next ? openEditor() : setOpen(false))}
+              >
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="text-xs hover:underline"
+                    style={{ color: "var(--mute)" }}
+                  >
+                    Edit
+                  </button>
+                </PopoverTrigger>
+                {editor}
+              </Popover>
+            )}
+            {onMonitorClear && (
+              <button
+                type="button"
+                onClick={onMonitorClear}
+                className="text-xs hover:underline"
+                style={{ color: "var(--mute)" }}
+              >
+                Clear
+              </button>
+            )}
+          </span>
+        </div>
+      </PropertyRow>
+    );
+  }
+
+  return (
+    <PropertyRow label="Monitor">
+      <span className="inline-flex items-baseline gap-2">
+        <span data-empty="true" style={{ color: "var(--mute)" }}>
+          Not scheduled
+        </span>
+        {onMonitorChange && (
+          <Popover
+            open={open}
+            onOpenChange={(next) => (next ? openEditor() : setOpen(false))}
+          >
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="text-xs hover:underline"
+                style={{ color: "var(--mute)" }}
+              >
+                Schedule
+              </button>
+            </PopoverTrigger>
+            {editor}
+          </Popover>
+        )}
+      </span>
+    </PropertyRow>
+  );
+}
+
 export function IssueProperties({
   issue,
   agents = [],
@@ -161,6 +420,9 @@ export function IssueProperties({
   onBlockedByChange,
   onLabelsChange,
   onParentChange,
+  onMonitorChange,
+  onMonitorClear,
+  onCheckNow,
   className,
 }: IssuePropertiesProps) {
   // Merge denormalized issue.project into the projects list so the trigger
@@ -273,6 +535,13 @@ export function IssueProperties({
           <EmptyDash />
         )}
       </PropertyRow>
+      <MonitorRow
+        issueId={issue.id}
+        monitor={issue.executionPolicy?.monitor ?? null}
+        onMonitorChange={onMonitorChange}
+        onMonitorClear={onMonitorClear}
+        onCheckNow={onCheckNow}
+      />
       <PropertyRow label="Created">
         {issue.createdAt ? (
           <time dateTime={issue.createdAt} style={{ color: "var(--mute)" }}>

@@ -153,8 +153,7 @@ async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
     """
     from core.services import oauth_service
 
-    tokens = await oauth_service.get_decrypted_tokens(user_id=token_owner, bound_to=owner_id)
-    return tokens is not None
+    return await oauth_service.has_active_oauth(user_id=token_owner, bound_to=owner_id)
 
 
 async def evaluate_provision_gate(

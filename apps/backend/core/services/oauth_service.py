@@ -412,6 +412,21 @@ async def get_decrypted_tokens(*, user_id: str, bound_to: str | None = None) -> 
     return json.loads(plain.decode())
 
 
+async def has_active_oauth(*, user_id: str, bound_to: str | None = None) -> bool:
+    """Whether an ACTIVE OAuth row exists for ``user_id`` bound to ``bound_to`` —
+    a connection-state check that does NOT decrypt the token blob.
+
+    Callers that need the actual tokens use ``get_decrypted_tokens``; the gate
+    only needs to know a connection exists, so it should not lean on the stored
+    secret (which is a stale bootstrap seed once the container owns the live,
+    rotating token). Keeps the connected-flag decoupled from the secret.
+    """
+    row = _table().get_item(Key={"user_id": user_id}).get("Item")
+    if not row or row.get("state") != "active":
+        return False
+    return _row_belongs_to(row, bound_to)
+
+
 async def get_decrypted_tokens_consistent(*, user_id: str, bound_to: str | None = None) -> dict | None:
     """Strongly-consistent variant of ``get_decrypted_tokens``.
 

@@ -612,3 +612,40 @@ async def test_request_device_code_legacy_unbound_active_org_start_raises_bound_
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
         with pytest.raises(OAuthBoundElsewhereError):
             await request_device_code(user_id="user_legacy", bound_owner_id="org_legacy")
+
+
+@pytest.mark.asyncio
+async def test_has_active_oauth_true_without_decrypting(oauth_table):
+    """Connection-state check returns True for an active, bound row WITHOUT
+    decrypting the blob — proven by storing undecryptable bytes."""
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    client.put_item(
+        TableName="test-oauth-tokens",
+        Item={
+            "user_id": {"S": "u_1"},
+            "state": {"S": "active"},
+            "bound_owner_id": {"S": "u_1"},
+            "encrypted_tokens": {"B": b"undecryptable-garbage"},
+        },
+    )
+    assert await oauth_service.has_active_oauth(user_id="u_1", bound_to="u_1") is True
+
+
+@pytest.mark.asyncio
+async def test_has_active_oauth_false_when_bound_elsewhere(oauth_table):
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    client.put_item(
+        TableName="test-oauth-tokens",
+        Item={"user_id": {"S": "u_1"}, "state": {"S": "active"}, "bound_owner_id": {"S": "org_other"}},
+    )
+    assert await oauth_service.has_active_oauth(user_id="u_1", bound_to="u_1") is False
+
+
+@pytest.mark.asyncio
+async def test_has_active_oauth_false_when_pending(oauth_table):
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    client.put_item(
+        TableName="test-oauth-tokens",
+        Item={"user_id": {"S": "u_1"}, "state": {"S": "pending"}},
+    )
+    assert await oauth_service.has_active_oauth(user_id="u_1", bound_to="u_1") is False

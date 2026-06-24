@@ -248,21 +248,21 @@ async def test_personal_gate_rejects_row_bound_to_other_workspace():
     personal container provisions on tokens that back the org container.
     """
 
-    async def tokens_for(*, user_id: str, bound_to: str | None = None):
+    async def active_for(*, user_id: str, bound_to: str | None = None):
         # Row exists for user_x but bound to org_other; only a bound_to that
-        # matches (or None) returns it. The gate passes bound_to=owner_id.
+        # matches (or None) reads as active. The gate passes bound_to=owner_id.
         if user_id != "user_x":
-            return None
+            return False
         bound_owner = "org_other"
         if bound_to is not None and bound_to != bound_owner:
-            return None
-        return {"access_token": "x"}
+            return False
+        return True
 
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch(
-            "core.services.oauth_service.get_decrypted_tokens",
-            new=AsyncMock(side_effect=tokens_for),
+            "core.services.oauth_service.has_active_oauth",
+            new=AsyncMock(side_effect=active_for),
         ),
     ):
         repo.get_by_owner_id = AsyncMock(
@@ -284,19 +284,19 @@ async def test_org_gate_passes_when_connector_row_bound_to_org():
     with bound_to=org_1 and finds it → passes. Pins that the org branch passes
     owner_id as bound_to and a correctly-bound row still satisfies the gate."""
 
-    async def tokens_for(*, user_id: str, bound_to: str | None = None):
+    async def active_for(*, user_id: str, bound_to: str | None = None):
         if user_id != "user_a":
-            return None
+            return False
         bound_owner = "org_1"
         if bound_to is not None and bound_to != bound_owner:
-            return None
-        return {"access_token": "x"}
+            return False
+        return True
 
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch(
-            "core.services.oauth_service.get_decrypted_tokens",
-            new=AsyncMock(side_effect=tokens_for),
+            "core.services.oauth_service.has_active_oauth",
+            new=AsyncMock(side_effect=active_for),
         ),
     ):
         repo.get_by_owner_id = AsyncMock(
@@ -327,14 +327,14 @@ async def test_org_gate_checks_connector_tokens_not_poller():
     # Tokens exist only for the connector (user_a); anyone else (the poller)
     # has none. Keying the mock on user_id pins that the gate reads the
     # connector, not the clerk_user_id passed in.
-    async def tokens_for(*, user_id: str, bound_to: str | None = None):
-        return {"access_token": "x"} if user_id == "user_a" else None
+    async def active_for(*, user_id: str, bound_to: str | None = None):
+        return user_id == "user_a"
 
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch(
-            "core.services.oauth_service.get_decrypted_tokens",
-            new=AsyncMock(side_effect=tokens_for),
+            "core.services.oauth_service.has_active_oauth",
+            new=AsyncMock(side_effect=active_for),
         ),
     ):
         repo.get_by_owner_id = AsyncMock(
@@ -361,14 +361,14 @@ async def test_org_gate_oauth_required_is_admin_only():
     the gate but not an actionable button.
     """
 
-    async def tokens_for(*, user_id: str, bound_to: str | None = None):
-        return None  # nobody has tokens
+    async def active_for(*, user_id: str, bound_to: str | None = None):
+        return False  # nobody has an active connection
 
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch(
-            "core.services.oauth_service.get_decrypted_tokens",
-            new=AsyncMock(side_effect=tokens_for),
+            "core.services.oauth_service.has_active_oauth",
+            new=AsyncMock(side_effect=active_for),
         ),
     ):
         repo.get_by_owner_id = AsyncMock(
@@ -398,14 +398,14 @@ async def test_personal_gate_oauth_required_is_not_admin_only():
     so the sign-in button must render for them.
     """
 
-    async def tokens_for(*, user_id: str, bound_to: str | None = None):
-        return None
+    async def active_for(*, user_id: str, bound_to: str | None = None):
+        return False
 
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch(
-            "core.services.oauth_service.get_decrypted_tokens",
-            new=AsyncMock(side_effect=tokens_for),
+            "core.services.oauth_service.has_active_oauth",
+            new=AsyncMock(side_effect=active_for),
         ),
     ):
         repo.get_by_owner_id = AsyncMock(
@@ -592,3 +592,19 @@ def test_is_subscription_active_table(account, expected):
 )
 def test_is_trial_blocked_table(account, expected):
     assert is_trial_blocked(account) is expected
+
+
+@pytest.mark.asyncio
+async def test_has_oauth_tokens_uses_state_check_not_decrypt():
+    """The connected-check must not decrypt the token blob — it only needs to
+    know an active, owner-bound row exists."""
+    from core.services import provision_gate
+
+    with (
+        patch("core.services.oauth_service.has_active_oauth", new=AsyncMock(return_value=True)) as active,
+        patch("core.services.oauth_service.get_decrypted_tokens", new=AsyncMock()) as decrypt,
+    ):
+        result = await provision_gate._has_oauth_tokens("user_c", "org_1")
+    assert result is True
+    active.assert_awaited_once_with(user_id="user_c", bound_to="org_1")
+    decrypt.assert_not_called()

@@ -149,34 +149,6 @@ export function saveReadInboxItems(companyId: string, ids: Set<string>): void {
 }
 
 /**
- * Read the per-company list/board view mode. Returns `"list"` when the key is
- * missing, the stored value isn't a known view mode, or storage access throws
- * (Safari Private mode, quota exceeded, etc.).
- */
-export function loadInboxViewMode(companyId: string): "list" | "board" {
-  if (typeof window === "undefined") return "list";
-  try {
-    const raw = localStorage.getItem(inboxStorageKey(companyId, "view-mode"));
-    return raw === "board" || raw === "list" ? raw : "list";
-  } catch {
-    return "list";
-  }
-}
-
-/** Persist the per-company list/board view mode. Swallows storage errors. */
-export function saveInboxViewMode(
-  companyId: string,
-  mode: "list" | "board",
-): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(inboxStorageKey(companyId, "view-mode"), mode);
-  } catch {
-    // Swallow — Safari Private mode / quota exceeded.
-  }
-}
-
-/**
  * Read the per-company set of acknowledged (dismissed-from-band) failed-run
  * IDs. Mirrors loadReadInboxItems. Empty Set on missing/malformed/throw.
  */

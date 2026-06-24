@@ -26,9 +26,13 @@ export function IssueRunsSection({
   agents: CompanyAgent[];
 }) {
   const { read } = useTeamsApi();
-  const { data } = read<{ runs: IssueRun[] }>(`/issues/${issueId}/runs`);
+  const { data, error, isLoading } = read<{ runs: IssueRun[] }>(
+    `/issues/${issueId}/runs`,
+  );
   const runs = [...(data?.runs ?? [])].sort((a, b) => runTime(b) - runTime(a)); // newest first
-  if (runs.length === 0) return null;
+  // Render nothing only when there's genuinely nothing to say — no runs, not
+  // loading, no error. A fetch failure or in-flight load gets an affordance.
+  if (runs.length === 0 && !error && !isLoading) return null;
 
   const agentName = (id?: string | null) =>
     agents.find((a) => a.id === id)?.name ?? (id ?? "Agent");
@@ -36,6 +40,16 @@ export function IssueRunsSection({
   return (
     <section className="flex flex-col gap-3 pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
       <h2 className="section-label"><b>Runs</b></h2>
+      {error && (
+        <p className="text-xs" style={{ color: "var(--danger)" }}>
+          Couldn&apos;t load runs.
+        </p>
+      )}
+      {isLoading && runs.length === 0 && !error && (
+        <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+          Loading runs…
+        </p>
+      )}
       <ul className="flex flex-col">
         {runs.map((r) => {
           const when = r.startedAt ?? r.createdAt;

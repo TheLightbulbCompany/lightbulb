@@ -49,7 +49,7 @@ const sections: ShortcutSection[] = [
 
 function KeyCap({ children }: { children: string }) {
   return (
-    <kbd className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-xs font-medium text-foreground shadow-[0_1px_0_1px_hsl(var(--border))]">
+    <kbd className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-[var(--edge)] bg-[var(--cream-deeper)] px-1.5 font-mono text-xs font-medium text-[var(--ink)] shadow-[0_1px_0_1px_var(--edge)]">
       {children}
     </kbd>
   );
@@ -58,10 +58,10 @@ function KeyCap({ children }: { children: string }) {
 export function KeyboardShortcutsCheatsheetContent() {
   return (
     <>
-      <div className="divide-y divide-border border-t border-border">
+      <div className="divide-y divide-[var(--edge)] border-t border-[var(--edge)]">
         {sections.map((section) => (
           <div key={section.title} className="px-5 py-3">
-            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--mute)]">
               {section.title}
             </h3>
             <div className="space-y-1.5">
@@ -70,11 +70,11 @@ export function KeyboardShortcutsCheatsheetContent() {
                   key={shortcut.label + shortcut.keys.join()}
                   className="flex items-center justify-between gap-4"
                 >
-                  <span className="text-sm text-foreground/90">{shortcut.label}</span>
+                  <span className="text-sm text-[var(--ink-soft)]">{shortcut.label}</span>
                   <div className="flex items-center gap-1">
                     {shortcut.keys.map((key, i) => (
                       <span key={key} className="flex items-center gap-1">
-                        {i > 0 && <span className="text-xs text-muted-foreground">then</span>}
+                        {i > 0 && <span className="text-xs text-[var(--mute)]">then</span>}
                         <KeyCap>{key}</KeyCap>
                       </span>
                     ))}
@@ -85,8 +85,8 @@ export function KeyboardShortcutsCheatsheetContent() {
           </div>
         ))}
       </div>
-      <div className="border-t border-border px-5 py-3">
-        <p className="text-xs text-muted-foreground">
+      <div className="border-t border-[var(--edge)] px-5 py-3">
+        <p className="text-xs text-[var(--mute)]">
           Press <KeyCap>Esc</KeyCap> to close &middot; Shortcuts are disabled in text fields
         </p>
       </div>

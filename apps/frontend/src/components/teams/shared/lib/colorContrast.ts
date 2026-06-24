@@ -5,12 +5,15 @@
  * Shared color-contrast utilities for pill / badge / chip components.
  *
  * Uses WCAG 2.1 relative-luminance contrast ratios so text is always
- * readable, even on semi-transparent backgrounds composited over dark or
- * light page backgrounds.
+ * readable, even on semi-transparent backgrounds composited over the
+ * editorial cream page background. The Teams surface is single-theme
+ * (cream/forest editorial) — there is no dark mode, so the page background
+ * is always cream and the text pair is the editorial ink/cream palette.
  */
 
-const DARK_BG = { r: 24, g: 24, b: 27 }; // zinc-900 (#18181b)
-const LIGHT_BG = { r: 255, g: 255, b: 255 }; // white
+// Editorial page background (--cream, #faf7f2) — the surface every pill
+// composites over.
+const PAGE_BG = { r: 250, g: 247, b: 242 };
 
 export function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const match = /^#?([0-9a-f]{3,6})$/i.exec(hex.trim());
@@ -51,11 +54,6 @@ function contrastRatio(l1: number, l2: number): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-function isDarkMode(): boolean {
-  if (typeof document === "undefined") return true;
-  return document.documentElement.classList.contains("dark");
-}
-
 /**
  * Composite a foreground RGB at the given alpha over a background RGB.
  */
@@ -71,40 +69,42 @@ function composite(
   };
 }
 
-const TEXT_LIGHT = "#f8fafc";
-const TEXT_DARK = "#111827";
+// Editorial text pair: --cream (#faf7f2) for dark backgrounds, --ink
+// (#1a1a1a) for light ones. Replaces the upstream slate/zinc pair so chips
+// read in the Teams editorial palette rather than cold grays.
+const TEXT_CREAM = "#faf7f2"; // --cream
+const TEXT_INK = "#1a1a1a"; // --ink
+
+// Luminance of the editorial text pair, precomputed for the contrast picks.
+const CREAM_LUM = relativeLuminance(250, 247, 242);
+const INK_LUM = relativeLuminance(26, 26, 26);
 
 /**
  * Pick a readable text color for a solid background.
- * Uses WCAG contrast ratios to choose between light and dark text.
+ * Uses WCAG contrast ratios to choose between the cream and ink text colors.
  */
 export function pickTextColorForSolidBg(hexColor: string): string {
   const rgb = hexToRgb(hexColor);
-  if (!rgb) return TEXT_LIGHT;
+  if (!rgb) return TEXT_CREAM;
   const bgLum = relativeLuminance(rgb.r, rgb.g, rgb.b);
-  const whiteLum = relativeLuminance(248, 250, 252);
-  const blackLum = relativeLuminance(17, 24, 39);
-  return contrastRatio(bgLum, whiteLum) >= contrastRatio(bgLum, blackLum)
-    ? TEXT_LIGHT
-    : TEXT_DARK;
+  return contrastRatio(bgLum, CREAM_LUM) >= contrastRatio(bgLum, INK_LUM)
+    ? TEXT_CREAM
+    : TEXT_INK;
 }
 
 /**
  * Pick a readable text color for a semi-transparent pill background.
  *
- * Composites `rgba(hexColor, alpha)` over the current page background
- * (dark or light mode) and then picks the text color with better
+ * Composites `rgba(hexColor, alpha)` over the editorial cream page
+ * background and then picks the editorial text color with the better
  * WCAG contrast ratio.
  */
 export function pickTextColorForPillBg(hexColor: string, alpha = 0.22): string {
   const fg = hexToRgb(hexColor);
-  if (!fg) return TEXT_LIGHT;
-  const pageBg = isDarkMode() ? DARK_BG : LIGHT_BG;
-  const effectiveBg = composite(fg, pageBg, alpha);
+  if (!fg) return TEXT_INK;
+  const effectiveBg = composite(fg, PAGE_BG, alpha);
   const bgLum = relativeLuminance(effectiveBg.r, effectiveBg.g, effectiveBg.b);
-  const whiteLum = relativeLuminance(248, 250, 252);
-  const blackLum = relativeLuminance(17, 24, 39);
-  return contrastRatio(bgLum, whiteLum) >= contrastRatio(bgLum, blackLum)
-    ? TEXT_LIGHT
-    : TEXT_DARK;
+  return contrastRatio(bgLum, CREAM_LUM) >= contrastRatio(bgLum, INK_LUM)
+    ? TEXT_CREAM
+    : TEXT_INK;
 }

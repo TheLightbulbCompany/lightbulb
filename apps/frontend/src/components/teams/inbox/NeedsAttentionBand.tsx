@@ -18,8 +18,50 @@ export function NeedsAttentionBand({
   agents: CompanyAgent[];
 }) {
   const { acknowledgedRunIds, ack } = useAcknowledgedRuns(companyId);
-  const { approvals, failedRuns, count } = useInboxTriage(acknowledgedRunIds);
+  const { approvals, failedRuns, count, isLoading, isError } =
+    useInboxTriage(acknowledgedRunIds);
   const [collapsed, setCollapsed] = useState<boolean>(() => loadBandCollapsed(companyId));
+
+  // A fetch failure means we can't vouch for "inbox zero", so show a notice
+  // rather than silently hiding the band.
+  if (isError) {
+    return (
+      <section
+        role="alert"
+        className="mb-4 rounded-md border px-3 py-2 text-sm"
+        style={{
+          borderColor: "color-mix(in srgb, var(--danger) 25%, transparent)",
+          background: "color-mix(in srgb, var(--danger) 6%, transparent)",
+          color: "var(--danger)",
+        }}
+      >
+        Couldn&apos;t load items that need attention. Try refreshing.
+      </section>
+    );
+  }
+
+  // First load with nothing cached yet — show a quiet skeleton so the band
+  // doesn't pop in after the rest of the inbox renders.
+  if (isLoading && count === 0) {
+    return (
+      <section
+        aria-busy="true"
+        className="mb-4 rounded-md border"
+        style={{ borderColor: "var(--edge)", background: "var(--cream)" }}
+      >
+        <div className="flex items-center gap-2 px-3 py-2">
+          <span
+            aria-hidden="true"
+            className="block h-3 w-3 animate-pulse rounded bg-[var(--cream-deeper)]"
+          />
+          <span
+            aria-hidden="true"
+            className="block h-3 w-32 animate-pulse rounded bg-[var(--cream-deeper)]"
+          />
+        </div>
+      </section>
+    );
+  }
 
   // Nothing to triage — render nothing so "inbox zero" stays clean.
   if (count === 0) return null;

@@ -123,14 +123,14 @@ export function IssueColumnPicker({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10"
+        className="w-[300px] rounded-xl border-[var(--edge)] p-1.5 shadow-md"
       >
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--mute)]">
               Desktop issue rows
             </div>
-            <div className="text-sm font-medium text-foreground">{title}</div>
+            <div className="text-sm font-medium text-[var(--ink)]">{title}</div>
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
@@ -145,10 +145,10 @@ export function IssueColumnPicker({
             className="items-start rounded-lg px-3 py-2.5 pl-8"
           >
             <span className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium text-foreground">
+              <span className="text-sm font-medium text-[var(--ink)]">
                 {issueColumnLabels[column]}
               </span>
-              <span className="text-xs leading-relaxed text-muted-foreground">
+              <span className="text-xs leading-relaxed text-[var(--mute)]">
                 {issueColumnDescriptions[column]}
               </span>
             </span>
@@ -160,7 +160,7 @@ export function IssueColumnPicker({
           className="rounded-lg px-3 py-2 text-sm"
         >
           Reset defaults
-          <span className="ml-auto text-xs text-muted-foreground">
+          <span className="ml-auto text-xs text-[var(--mute)]">
             status, id, updated
           </span>
         </DropdownMenuItem>
@@ -202,14 +202,14 @@ export function InboxIssueMetaLeading({
       ) : null}
       {checklistStepNumber !== null ? (
         <span
-          className="shrink-0 font-mono text-xs text-muted-foreground"
+          className="shrink-0 font-mono text-xs text-[var(--mute)]"
           aria-hidden="true"
         >
           {checklistStepNumber}.
         </span>
       ) : null}
       {showIdentifier ? (
-        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+        <span className="shrink-0 font-mono text-xs text-[var(--mute)]">
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
       ) : null}
@@ -295,7 +295,7 @@ export function InboxIssueTrailingColumns({
 
           if (issue.assigneeAgentId) {
             return (
-              <span key={column} className="min-w-0 text-xs text-foreground">
+              <span key={column} className="min-w-0 text-xs text-[var(--ink)]">
                 <Identity
                   name={assigneeName ?? issue.assigneeAgentId.slice(0, 8)}
                   size="sm"
@@ -307,7 +307,7 @@ export function InboxIssueTrailingColumns({
 
           if (issue.assigneeUserId) {
             return (
-              <span key={column} className="min-w-0 text-xs text-foreground">
+              <span key={column} className="min-w-0 text-xs text-[var(--ink)]">
                 <Identity
                   name={userLabel}
                   avatarUrl={assigneeUserAvatarUrl}
@@ -321,7 +321,7 @@ export function InboxIssueTrailingColumns({
           return (
             <span
               key={column}
-              className="min-w-0 truncate text-xs text-muted-foreground"
+              className="min-w-0 truncate text-xs text-[var(--mute)]"
             >
               Unassigned
             </span>
@@ -349,7 +349,7 @@ export function InboxIssueTrailingColumns({
           return (
             <span
               key={column}
-              className="min-w-0 truncate text-xs text-muted-foreground"
+              className="min-w-0 truncate text-xs text-[var(--mute)]"
             >
               No project
             </span>
@@ -380,7 +380,7 @@ export function InboxIssueTrailingColumns({
                   );
                 })}
                 {(issue.labels ?? []).length > 2 ? (
-                  <span className="shrink-0 text-[10px] font-medium text-muted-foreground">
+                  <span className="shrink-0 text-[10px] font-medium text-[var(--mute)]">
                     +{(issue.labels ?? []).length - 2}
                   </span>
                 ) : null}
@@ -399,13 +399,13 @@ export function InboxIssueTrailingColumns({
           return (
             <span
               key={column}
-              className="min-w-0 truncate text-xs text-muted-foreground"
+              className="min-w-0 truncate text-xs text-[var(--mute)]"
             >
               {workspaceId && onFilterWorkspace ? (
                 // TODO(deep-port): swap title= for shadcn Tooltip when @radix-ui/react-tooltip lands
                 <button
                   type="button"
-                  className="truncate rounded-sm text-left text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                  className="truncate rounded-sm text-left text-xs text-[var(--mute)] transition-colors hover:text-[var(--ink)] hover:underline"
                   title="Filter by workspace"
                   onClick={(event) => {
                     event.preventDefault();
@@ -430,7 +430,7 @@ export function InboxIssueTrailingColumns({
           return (
             <span
               key={column}
-              className="min-w-0 truncate text-xs text-muted-foreground"
+              className="min-w-0 truncate text-xs text-[var(--mute)]"
               title={parentTitle ?? undefined}
             >
               {parentIdentifier ? (
@@ -446,7 +446,7 @@ export function InboxIssueTrailingColumns({
           return (
             <span
               key={column}
-              className="min-w-0 truncate text-right text-[11px] font-medium text-muted-foreground"
+              className="min-w-0 truncate text-right text-[11px] font-medium text-[var(--mute)]"
             >
               {activityText}
             </span>

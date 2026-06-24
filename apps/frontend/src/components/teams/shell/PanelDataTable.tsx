@@ -32,6 +32,14 @@ export interface PanelDataTableProps<Row> {
   sortDir?: PanelDataSortDir;
   onSortChange?: (key: string, dir: PanelDataSortDir) => void;
   empty?: ReactNode;
+  /** When true (and there are no rows), render quiet skeleton rows in place
+   * of the table body. Takes precedence over `empty`. */
+  loading?: boolean;
+  /** When set (and there are no rows), render an error row spanning all
+   * columns. Takes precedence over `loading` and `empty`. */
+  error?: ReactNode;
+  /** Number of skeleton rows to render while `loading`. Defaults to 3. */
+  loadingRows?: number;
   className?: string;
 }
 
@@ -44,9 +52,66 @@ export function PanelDataTable<Row>({
   sortDir,
   onSortChange,
   empty,
+  loading = false,
+  error,
+  loadingRows = 3,
   className,
 }: PanelDataTableProps<Row>) {
-  if (rows.length === 0 && empty) {
+  const isEmpty = rows.length === 0;
+  // Error and loading affordances only stand in when there's nothing to show —
+  // a populated table keeps rendering its rows even while revalidating.
+  if (isEmpty && error != null) {
+    return (
+      <div
+        role="alert"
+        className="px-3 py-2 text-[13px]"
+        style={{ color: "var(--danger)" }}
+      >
+        {error}
+      </div>
+    );
+  }
+  if (isEmpty && loading) {
+    return (
+      <Table className={className} aria-busy="true">
+        <TableHeader>
+          <TableRow className="border-b border-[var(--edge)]">
+            {columns.map((col) => (
+              <TableHead
+                key={col.key}
+                style={col.width ? { width: col.width } : undefined}
+                className={cn(
+                  "text-[10px] font-semibold uppercase tracking-[0.12em]",
+                  col.align === "right" && "text-right",
+                  col.align === "center" && "text-center",
+                )}
+              >
+                <span className="text-[var(--mute)]">{col.header}</span>
+              </TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {Array.from({ length: loadingRows }).map((_, rowIndex) => (
+            <TableRow
+              key={`skeleton-${rowIndex}`}
+              className="border-b border-[var(--edge)]"
+            >
+              {columns.map((col) => (
+                <TableCell key={col.key} className="py-3">
+                  <span
+                    aria-hidden="true"
+                    className="block h-3 animate-pulse rounded bg-[var(--cream-deeper)]"
+                  />
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    );
+  }
+  if (isEmpty && empty) {
     return <div className="px-3 py-2">{empty}</div>;
   }
 
@@ -106,9 +171,22 @@ export function PanelDataTable<Row>({
           <TableRow
             key={rowKey(row)}
             onClick={onRowClick ? () => onRowClick(row) : undefined}
+            role={onRowClick ? "button" : undefined}
+            tabIndex={onRowClick ? 0 : undefined}
+            onKeyDown={
+              onRowClick
+                ? (event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onRowClick(row);
+                    }
+                  }
+                : undefined
+            }
             className={cn(
               "border-b border-[var(--edge)] transition-colors",
-              onRowClick && "cursor-pointer hover:bg-[var(--edge)]",
+              onRowClick &&
+                "cursor-pointer hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]",
             )}
           >
             {columns.map((col) => (

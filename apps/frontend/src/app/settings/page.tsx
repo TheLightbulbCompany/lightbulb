@@ -22,11 +22,9 @@ import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsP
 import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
 import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
 import { ADMIN_ONLY_PANELS, useIsControlAdmin } from "@/components/control/ControlSidebar";
-import { useUnifiedNav } from "@/hooks/useUnifiedNav";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
-  LEGACY_NAV_SECTIONS,
-  UNIFIED_NAV_SECTIONS,
+  SETTINGS_NAV_SECTIONS,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
 
@@ -311,21 +309,6 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   marketplace: MarketplacePanel,
 };
 
-// The config panels relocated under the unified nav. They live in the PANELS
-// registry (so the deep-link/render machinery stays uniform), but are reachable
-// ONLY when the flag is ON — flag-OFF they stay in the Control tab. A flag-OFF
-// `?panel=<one of these>` falls back to the default `profile` panel so config
-// never double-mounts (Control tab + Settings), per spec §2/§5.
-const UNIFIED_ONLY_PANELS = new Set<Panel>([
-  "usage",
-  "providers",
-  "mcp",
-  "skills",
-  "skill-proposals",
-  "dreams",
-  "channel-status",
-]);
-
 // =============================================================================
 // Settings Page
 // =============================================================================
@@ -342,12 +325,10 @@ export default function SettingsPage() {
 }
 
 function SettingsPageInner() {
-  // The Settings consolidation (6-group nav + relocated config panels) is
-  // dev/flag-on ONLY. Flag-OFF renders the legacy single-group nav and only the
-  // legacy panels — byte-identical to today's app, config staying in the
-  // Control tab.
-  const unifiedNav = useUnifiedNav();
-  const navSections = unifiedNav ? UNIFIED_NAV_SECTIONS : LEGACY_NAV_SECTIONS;
+  // The Settings consolidation: 6-group nav + the config panels relocated from
+  // the Control tab (Usage, Model & Providers, MCP servers, the ENGINE ROOM
+  // trio, Channel Status).
+  const navSections = SETTINGS_NAV_SECTIONS;
 
   // Personal owners are admins; org members are admins only with org:admin.
   // Reused (not re-derived) from ControlSidebar so the Settings gate matches
@@ -358,15 +339,12 @@ function SettingsPageInner() {
   // (TrialBanner "Manage" CTA, etc.) so they land on the right pane. Validated
   // against the live PANELS registry — any registered panel is deep-linkable —
   // and admin-only panels fall back to profile for non-admins so a stray
-  // ?panel=usage never mounts an admin RPC for a member. The relocated config
-  // panels are reachable ONLY under the flag: flag-OFF a `?panel=<relocated>`
-  // falls back to `profile` so config never double-mounts (Control + Settings).
+  // ?panel=usage never mounts an admin RPC for a member.
   const searchParams = useSearchParams();
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
     initialPanelParam !== null &&
     initialPanelParam in PANELS &&
-    (unifiedNav || !UNIFIED_ONLY_PANELS.has(initialPanelParam as Panel)) &&
     (isAdmin || !ADMIN_ONLY_PANELS.has(initialPanelParam))
       ? (initialPanelParam as Panel)
       : "profile";

@@ -9,7 +9,6 @@ import { GatewayProvider } from "@/hooks/useGateway";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
-import { useUnifiedNav } from "@/hooks/useUnifiedNav";
 import {
   InlineTeamsPanel,
   isTeamsPanelKey,
@@ -31,28 +30,19 @@ function ChatPageInner() {
   const router = useRouter();
   // Single source of truth for view + panel is the URL. ?panel=credits is a
   // legacy deep link — the panel router remaps it to the Model & Credits
-  // panel. The sidebar updates the URL via router.replace so in-app deep
-  // links and clicks share the same code path.
+  // panel. The view is derived purely from ?panel (a Company/System panel →
+  // control; no panel → chat); there's no tab-switcher.
   const panelParam = searchParams.get("panel");
-  const viewParam = searchParams.get("view");
   const detailId = searchParams.get("detailId");
-  const unifiedNav = useUnifiedNav();
-  // Under the unified nav there's no tab-switcher: the view is derived purely
-  // from ?panel (a Company/System panel → control; no panel → chat). Flag-off
-  // keeps the legacy ?view-aware derivation byte-for-byte (the else arm).
-  const activeView: "chat" | "control" = unifiedNav
-    ? (panelParam ? "control" : "chat")
-    : (viewParam === "control" || (viewParam !== "chat" && panelParam) ? "control" : "chat");
+  const activeView: "chat" | "control" = panelParam ? "control" : "chat";
   const activePanel: string = panelParam || "overview";
 
-  const setActiveView = useCallback(
-    (next: "chat" | "control") => {
-      const params = new URLSearchParams(searchParams.toString());
-      params.set("view", next);
-      router.replace(`/chat?${params.toString()}`, { scroll: false });
-    },
-    [router, searchParams],
-  );
+  // Navigational transitions use router.push so each in-shell move (panel
+  // switch, list→detail) pushes a history entry the browser Back button can
+  // step through — Back from a task detail returns to the list, not the
+  // landing page. Param-canonicalizing effects (e.g. stripping ?checkout)
+  // keep using router.replace; only user-initiated navigation grows the
+  // history stack.
   const setActivePanel = useCallback(
     (next: string) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -63,31 +53,31 @@ function ChatPageInner() {
       // switching panels never carries another panel's filter/detail state.
       params.delete("agent");
       params.delete("detailId");
-      router.replace(`/chat?${params.toString()}`, { scroll: false });
+      router.push(`/chat?${params.toString()}`, { scroll: false });
     },
     [router, searchParams],
   );
   // Drops ?panel (and the per-panel filter/detail state) so the view falls
-  // back to chat. Used when selecting an agent under the unified nav — there's
-  // no tab-switcher, so chat is shown by absence of ?panel. Flag-off still sets
-  // ?view=chat to keep the legacy ?view-aware derivation pointing at chat.
+  // back to chat. Used when selecting an agent — there's no tab-switcher, so
+  // chat is shown by absence of ?panel. This is canonicalization back to the
+  // bare chat URL, so it uses router.replace.
   const clearPanel = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("panel");
     params.delete("agent");
     params.delete("detailId");
-    if (!unifiedNav) params.set("view", "chat");
     router.replace(`/chat?${params.toString()}`, { scroll: false });
-  }, [router, searchParams, unifiedNav]);
+  }, [router, searchParams]);
   // Opens a Teams detail view inline: mirrors setActivePanel but also records
   // the row id in ?detailId so InlineTeamsPanel can resolve the detail panel.
+  // router.push so Back returns from the detail view to the list.
   const openDetail = useCallback(
     (panelKey: string, id: string) => {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", `${TEAMS_PANEL_PREFIX}${panelKey}`);
       params.set("detailId", id);
       params.set("view", "control");
-      router.replace(`/chat?${params.toString()}`, { scroll: false });
+      router.push(`/chat?${params.toString()}`, { scroll: false });
     },
     [router, searchParams],
   );
@@ -100,7 +90,7 @@ function ChatPageInner() {
       params.set("panel", `${TEAMS_PANEL_PREFIX}issues`);
       params.set("agent", agentId);
       params.set("view", "control");
-      router.replace(`/chat?${params.toString()}`, { scroll: false });
+      router.push(`/chat?${params.toString()}`, { scroll: false });
     },
     [router, searchParams],
   );
@@ -115,7 +105,7 @@ function ChatPageInner() {
       params.set("panel", "agent-inspector");
       params.set("agent", agentId);
       params.set("view", "control");
-      router.replace(`/chat?${params.toString()}`, { scroll: false });
+      router.push(`/chat?${params.toString()}`, { scroll: false });
     },
     [router, searchParams],
   );
@@ -151,14 +141,11 @@ function ChatPageInner() {
     <MarketplaceDrawerProvider>
       <GatewayProvider>
         <ChatLayout
-          activeView={activeView}
-          onViewChange={setActiveView}
           activePanel={activePanel}
           onPanelChange={setActivePanel}
           openAgentIssues={openAgentIssues}
           openAgentInspector={openAgentInspector}
           onClearPanel={clearPanel}
-          unifiedNav={unifiedNav}
           fileViewerOpen={fileViewerOpen}
           activeFilePath={activeFilePath}
           onOpenFile={handleOpenFile}
@@ -171,7 +158,7 @@ function ChatPageInner() {
           </div>
           {activeView === "control" && (
             <div className="flex flex-col h-full min-h-0">
-              {unifiedNav && isTeamsPanelKey(activePanel) ? (
+              {isTeamsPanelKey(activePanel) ? (
                 <InlineTeamsPanel
                   panel={activePanel}
                   detailId={detailId}

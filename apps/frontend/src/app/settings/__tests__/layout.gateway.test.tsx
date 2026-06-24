@@ -1,22 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 // Six Settings config panels are gateway-bound (Skills, Skill Proposals,
-// Dreams, Channel Status, MCP/IntegrationsPanel, the LLM health dot). They can
-// only mount once /settings/* is wrapped in the same GatewayProvider the chat
-// surface uses — but ONLY under the unified-nav flag. Flag-OFF, /settings stays
-// byte-identical to today's app: pure-REST, NO idle WS, so NO provider.
-//
-// The layout delegates the conditional wrap to SettingsGatewayGate (a client
-// component, because the flag is a client hook). This test asserts that
-// delegation: flag-OFF → no provider; flag-ON → children inside the provider.
-let unified = false;
-vi.mock("@/hooks/useUnifiedNav", () => ({
-  useUnifiedNav: (): boolean => unified,
-}));
+// Dreams, Channel Status, MCP/IntegrationsPanel, the LLM health dot). They mount
+// once /settings/* is wrapped in the same GatewayProvider the chat surface uses.
+// The server-component layout delegates that wrap to SettingsGatewayGate (a
+// client component). This test asserts the delegation.
 
-// Stub GatewayProvider so we don't open a real WebSocket; we only verify
-// presence/absence of the provider boundary around the layout's children.
+// Stub GatewayProvider so we don't open a real WebSocket; we only verify the
+// provider boundary wraps the layout's children.
 vi.mock("@/hooks/useGateway", () => ({
   GatewayProvider: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="gateway-provider">{children}</div>
@@ -25,24 +17,8 @@ vi.mock("@/hooks/useGateway", () => ({
 
 import SettingsLayout from "../layout";
 
-describe("SettingsLayout (flag-gated GatewayProvider)", () => {
-  beforeEach(() => {
-    unified = false;
-  });
-
-  it("flag-OFF: renders children WITHOUT a GatewayProvider (byte-identical, no WS)", () => {
-    unified = false;
-    render(
-      <SettingsLayout>
-        <span data-testid="settings-child">child content</span>
-      </SettingsLayout>,
-    );
-    expect(screen.getByTestId("settings-child")).toBeInTheDocument();
-    expect(screen.queryByTestId("gateway-provider")).not.toBeInTheDocument();
-  });
-
-  it("flag-ON: wraps children inside the GatewayProvider", () => {
-    unified = true;
+describe("SettingsLayout (GatewayProvider wrap)", () => {
+  it("wraps children inside the GatewayProvider", () => {
     render(
       <SettingsLayout>
         <span data-testid="settings-child">child content</span>

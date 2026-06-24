@@ -36,13 +36,10 @@ jobs:
             You are reviewing pull request #${{ github.event.pull_request.number }}
             of ${{ github.repository }} as a rigorous senior reviewer.
 
-            Steps:
-            1. Run `gh pr diff ${{ github.event.pull_request.number }}` to read the
-               full diff, and open the changed files for surrounding context.
-            2. Post your findings as a GitHub PR review with inline comments
-               anchored to specific lines (via `gh api`), plus ONE short summary
-               comment. If there are genuinely no issues, post a one-line summary
-               saying the review is clean — never stay silent.
+            Read the full diff (run `gh pr diff ${{ github.event.pull_request.number }}`)
+            and open the changed files for surrounding context. Then WRITE your
+            review as your response — it is posted automatically as the PR comment.
+            Do NOT use any tool to post a comment yourself.
 
             Review for, in priority order:
             - Correctness: data-shape mismatches (a component reading fields the
@@ -60,16 +57,20 @@ jobs:
             - Missing states: data surfaces lacking loading / empty / error states.
             - Security and obvious performance problems.
 
-            Be concrete: every finding cites `file:line` and the specific fix.
-            Do not approve silently — your summary must state what you reviewed.
-          # Posts the review's summary as a PR comment so a clean review is
-          # visibly confirmed, not a silent green check.
-          display_report: true
-          # NOTE: do NOT set `show_full_output: true` here — it suppresses the
-          # `execution_file` output the guard below reads, which made the guard
-          # false-fail a genuinely-clean review. The guard's is_error detection
-          # is the real signal; to debug a specific failure, add the flag
-          # temporarily and read the step log, then remove it.
+            Be concrete: every finding cites `file:line` and the specific fix. If
+            there are genuinely no issues, say so in one line — never stay silent.
+          # POST the review as the PR comment. The action only creates the comment
+          # (and wires CLAUDE_COMMENT_ID so posting works) when it is NOT in
+          # prompt-only "agent mode" — i.e. track_progress MUST be true. With the
+          # default track_progress:false + a prompt, the review runs but is never
+          # posted (claude-code-action issue #1108) — which is why earlier runs
+          # reviewed cleanly yet left zero comments on the PR.
+          track_progress: true
+          use_sticky_comment: true
+          # The agent has NO Bash by default; grant READ-only gh so it can fetch
+          # the diff. Posting is handled by track_progress above, NOT by gh — the
+          # old prompt told the agent to `gh api` a review, which it could not run.
+          claude_args: '--allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*)"'
 
       # Fail-loud guard: the action reports `success` even when the agent
       # crashes on turn 1 (is_error=true, $0 spent, nothing reviewed) — a green

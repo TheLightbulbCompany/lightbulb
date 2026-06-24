@@ -295,14 +295,15 @@ export interface CompanyMember {
 export interface CompanyAgent {
   id: string;
   name: string;
-  iconUrl?: string | null;
   /** Paperclip agent role e.g. "ceo" | "engineer" | "general". */
   role?: string | null;
   /** Short one-liner shown in the roster. */
   title?: string | null;
   /** Longer freeform description Friday reads when orchestrating. */
   capabilities?: string | null;
-  /** Paperclip icon-picker value (opaque AGENT_ICON_NAMES string). */
+  /** Paperclip icon-picker value (opaque AGENT_ICON_NAMES string) — NOT a URL.
+   *  There is no avatar-URL field on the agent wire shape; the org chart and
+   *  roster render a generic Bot glyph rather than an image. */
   icon?: string | null;
   /** Runtime status: "idle" | "running" | "error" | "paused" | "terminated". */
   status?: string | null;

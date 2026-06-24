@@ -44,13 +44,93 @@ describe("ActivityRow", () => {
     expect(screen.getByText("System")).toBeInTheDocument();
   });
 
-  test("falls back to actorId when actor identity is otherwise missing", () => {
+  test("passes a short actorId through unshortened when identity is otherwise missing", () => {
+    render(
+      <ActivityRow event={makeEvent({ actorType: null, actorId: "u_1234" })} />
+    );
+    // <= 12 chars passes through unshortened.
+    expect(screen.getByText("u_1234")).toBeInTheDocument();
+  });
+
+  test("prefers the BFF-enriched actorName over the raw actorId", () => {
     render(
       <ActivityRow
-        event={makeEvent({ actorType: null, actorId: "fallback-actor" })}
+        event={makeEvent({
+          actorType: "user",
+          actorId: "pcu_raw_principal_id",
+          actorName: "Ada Lovelace",
+        })}
       />
     );
-    expect(screen.getByText("fallback-actor")).toBeInTheDocument();
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(screen.queryByText("pcu_raw_principal_id")).toBeNull();
+  });
+
+  test("falls back to actorEmail when actorName is absent", () => {
+    render(
+      <ActivityRow
+        event={makeEvent({
+          actorType: "user",
+          actorId: "pcu_raw_principal_id",
+          actorEmail: "ada@example.com",
+        })}
+      />
+    );
+    expect(screen.getByText("ada@example.com")).toBeInTheDocument();
+  });
+
+  test("shortens a long raw user actorId when no name/email resolves", () => {
+    render(
+      <ActivityRow
+        event={makeEvent({
+          actorType: "user",
+          actorId: "abcdef0123456789ngid",
+        })}
+      />
+    );
+    // first 6 + … + last 4.
+    expect(screen.getByText("abcdef…ngid")).toBeInTheDocument();
+    expect(screen.queryByText("abcdef0123456789ngid")).toBeNull();
+  });
+
+  test("resolves an agent actor id to the roster name", () => {
+    render(
+      <ActivityRow
+        event={makeEvent({ actorType: "agent", actorId: "agent_friday_uuid" })}
+        agentNames={new Map([["agent_friday_uuid", "Friday"]])}
+      />
+    );
+    expect(screen.getByText("Friday")).toBeInTheDocument();
+  });
+
+  test("resolves an agent entity id to the roster name", () => {
+    render(
+      <ActivityRow
+        event={makeEvent({
+          action: "agent.updated",
+          actorType: "system",
+          actorId: null,
+          entityType: "agent",
+          entityId: "agent_atlas_uuid",
+        })}
+        agentNames={new Map([["agent_atlas_uuid", "Atlas"]])}
+      />
+    );
+    expect(screen.getByText("Atlas")).toBeInTheDocument();
+    expect(screen.queryByText("agent_atlas_uuid")).toBeNull();
+  });
+
+  test("shortens an unresolved long entity id instead of dumping the full UUID", () => {
+    render(
+      <ActivityRow
+        event={makeEvent({
+          entityType: "issue",
+          entityId: "0123456789abcdef-uuid",
+        })}
+      />
+    );
+    expect(screen.getByText("012345…uuid")).toBeInTheDocument();
+    expect(screen.queryByText("0123456789abcdef-uuid")).toBeNull();
   });
 
   test("wraps in a link to the entity when entityType+entityId are present", () => {

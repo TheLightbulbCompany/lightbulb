@@ -38,6 +38,10 @@ const VERBS: Record<string, string> = {
   "goal.deleted": "deleted",
 };
 
+/** Stable empty map so a missing ``agentNames`` prop doesn't allocate a new
+ *  Map on every render (which would churn the row's memoization downstream). */
+const EMPTY_AGENT_NAMES: ReadonlyMap<string, string> = new Map();
+
 function entityLink(entityType: string | null | undefined, entityId: string | null | undefined): string | null {
   if (!entityType || !entityId) return null;
   switch (entityType) {
@@ -74,23 +78,60 @@ function entityDotColor(entityType: string | null | undefined): string {
   }
 }
 
-function actorDisplayName(event: ActivityEvent): string {
+/** Shorten a raw UUID/id to a scannable slug (`a1b2…ef34`) so it's still
+ *  copyable-by-eye when no name resolves, without flooding the row with a
+ *  full 36-char id. Short ids (<= 12 chars) pass through unchanged. */
+function shortenId(id: string): string {
+  if (id.length <= 12) return id;
+  return `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
+/** Resolve the actor's display name.
+ *
+ * Preference order: BFF-enriched ``actorName`` / ``actorEmail`` (user actors),
+ * then the agent roster name (agent actors), then a shortened raw id. ``System``
+ * is special-cased. */
+function actorDisplayName(
+  event: ActivityEvent,
+  agentNames: ReadonlyMap<string, string>,
+): string {
   if (event.actorType === "system") return "System";
-  if (event.actorType === "agent") return event.actorId ?? "Agent";
-  if (event.actorType === "user") return event.actorId ?? "User";
-  return event.actorId ?? "Unknown";
+  if (event.actorName) return event.actorName;
+  if (event.actorEmail) return event.actorEmail;
+  if (event.actorType === "agent") {
+    const id = event.actorId;
+    if (id) return agentNames.get(id) ?? shortenId(id);
+    return "Agent";
+  }
+  if (event.actorId) return shortenId(event.actorId);
+  return event.actorType === "user" ? "User" : "Unknown";
+}
+
+/** Entity types that denote an agent (so the entity id resolves to a name). */
+function isAgentEntity(entityType: string | null | undefined): boolean {
+  return entityType === "agent";
 }
 
 export interface ActivityRowProps {
   event: ActivityEvent;
+  /** ``agentId → name`` roster map (from DashboardPanel's ``/agents`` read).
+   *  Used to resolve agent actors + agent entity references to names. */
+  agentNames?: ReadonlyMap<string, string>;
   className?: string;
 }
 
-export function ActivityRow({ event, className }: ActivityRowProps) {
+export function ActivityRow({ event, agentNames, className }: ActivityRowProps) {
+  const names = agentNames ?? EMPTY_AGENT_NAMES;
   const verb = VERBS[event.action] ?? event.action;
   const link = entityLink(event.entityType, event.entityId);
-  const actorName = actorDisplayName(event);
+  const actorName = actorDisplayName(event, names);
   const dotColor = entityDotColor(event.entityType);
+  // Resolve the entity reference: agent entities → roster name; everything
+  // else keeps its type label + a shortened id (no name source wired yet).
+  const entityName =
+    isAgentEntity(event.entityType) && event.entityId
+      ? names.get(event.entityId)
+      : undefined;
 
   const inner = (
     <div className="flex items-start gap-3">
@@ -102,14 +143,22 @@ export function ActivityRow({ event, className }: ActivityRowProps) {
       <p className="flex-1 min-w-0 truncate leading-relaxed" style={{ color: "var(--ink)" }}>
         <Identity name={actorName} size="xs" className="align-middle" />
         <span className="ml-1" style={{ color: "var(--mute)" }}>{verb}</span>
-        {/* DEFERRED: raw entity/actor IDs (UUIDs) are shown because the
-            agent/entity name maps aren't wired. Resolving these to display
-            names needs the /agents roster (+ per-entity title lookups)
-            threaded through the activity feed — a follow-up, not built here. */}
+        {/* Entity reference. Agent entities resolve to a roster name (passed
+            down from DashboardPanel's /agents read); other entity types have
+            no name source wired yet, so they keep the "{type}: {shortId}"
+            form rather than dumping a full raw UUID. */}
         {event.entityType && event.entityId && (
           <span className="font-medium ml-1" style={{ color: "var(--ink)" }}>
-            <span style={{ color: "var(--mute)" }}>{event.entityType}:</span>
-            <span className="font-mono text-[0.85em] tracking-tight">{event.entityId}</span>
+            {entityName ? (
+              entityName
+            ) : (
+              <>
+                <span style={{ color: "var(--mute)" }}>{event.entityType}:</span>
+                <span className="font-mono text-[0.85em] tracking-tight">
+                  {shortenId(event.entityId)}
+                </span>
+              </>
+            )}
           </span>
         )}
       </p>

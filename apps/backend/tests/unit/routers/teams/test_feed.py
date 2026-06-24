@@ -94,6 +94,252 @@ def test_list_activity_rejects_over_max_limit(client, monkeypatch):
     admin.list_activity.assert_not_awaited()
 
 
+def test_list_activity_enriches_user_actor_email_and_name(client, monkeypatch):
+    """User-actor events get ``actorEmail`` / ``actorName`` resolved via the
+    principalId → Clerk user_id → email join (the same join members.py uses).
+    Agent/system actors are untouched."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(
+        return_value={
+            "events": [
+                {"id": "e1", "actorType": "user", "actorId": "pcu_aaa", "action": "issue.created"},
+                {"id": "e2", "actorType": "agent", "actorId": "agent_x", "action": "agent.updated"},
+                {"id": "e3", "actorType": "system", "actorId": None, "action": "issue.deleted"},
+            ]
+        }
+    )
+    repo = MagicMock()
+    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+
+    resolve_calls: list[str] = []
+
+    async def fake_resolve(user_id: str) -> str:
+        resolve_calls.append(user_id)
+        return f"{user_id}@example.com"
+
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+    monkeypatch.setattr(agents_mod, "_resolve_user_email", fake_resolve)
+
+    r = client.get(
+        "/api/v1/teams/activity",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    events = r.json()["events"]
+    # User actor enriched.
+    assert events[0]["actorEmail"] == "clerk_aaa@example.com"
+    assert events[0]["actorName"] == "clerk_aaa@example.com"
+    # Agent + system actors untouched (no email/name fields).
+    assert "actorEmail" not in events[1]
+    assert "actorName" not in events[1]
+    assert "actorEmail" not in events[2]
+    # Resolved with the CLERK id, never the Paperclip principal.
+    assert resolve_calls == ["clerk_aaa"]
+    repo.list_by_org_id.assert_awaited_once_with("o1")
+
+
+def test_list_activity_resolves_each_unique_actor_once(client, monkeypatch):
+    """Two events from the same actor only trigger a single Clerk lookup
+    (the enrichment batches unique actor ids)."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(
+        return_value={
+            "events": [
+                {"id": "e1", "actorType": "user", "actorId": "pcu_aaa", "action": "issue.created"},
+                {"id": "e2", "actorType": "user", "actorId": "pcu_aaa", "action": "issue.updated"},
+            ]
+        }
+    )
+    repo = MagicMock()
+    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+
+    resolve_calls: list[str] = []
+
+    async def fake_resolve(user_id: str) -> str:
+        resolve_calls.append(user_id)
+        return f"{user_id}@example.com"
+
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+    monkeypatch.setattr(agents_mod, "_resolve_user_email", fake_resolve)
+
+    r = client.get("/api/v1/teams/activity", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    events = r.json()["events"]
+    assert events[0]["actorEmail"] == "clerk_aaa@example.com"
+    assert events[1]["actorEmail"] == "clerk_aaa@example.com"
+    assert resolve_calls == ["clerk_aaa"]
+
+
+def test_list_activity_leaves_id_when_actor_unmapped(client, monkeypatch):
+    """An actorId not in the org map (drift) ships untouched — no exception,
+    no email/name stamped."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(
+        return_value={
+            "events": [
+                {"id": "e1", "actorType": "user", "actorId": "pcu_orphan", "action": "issue.created"},
+            ]
+        }
+    )
+    repo = MagicMock()
+    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+
+    resolve_calls: list[str] = []
+
+    async def fake_resolve(user_id: str) -> str:
+        resolve_calls.append(user_id)
+        return f"{user_id}@example.com"
+
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+    monkeypatch.setattr(agents_mod, "_resolve_user_email", fake_resolve)
+
+    r = client.get("/api/v1/teams/activity", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    events = r.json()["events"]
+    assert "actorEmail" not in events[0]
+    assert "actorName" not in events[0]
+    assert events[0]["actorId"] == "pcu_orphan"
+    # Never called Clerk for the unmapped principal.
+    assert resolve_calls == []
+
+
+def test_list_activity_tolerates_clerk_failure(client, monkeypatch):
+    """A Clerk lookup failure leaves the raw id on the event and never
+    crashes the feed."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(
+        return_value={
+            "events": [
+                {"id": "e1", "actorType": "user", "actorId": "pcu_aaa", "action": "issue.created"},
+            ]
+        }
+    )
+    repo = MagicMock()
+    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+
+    async def fake_resolve(user_id: str) -> str:
+        raise RuntimeError("clerk down")
+
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+    monkeypatch.setattr(agents_mod, "_resolve_user_email", fake_resolve)
+
+    r = client.get("/api/v1/teams/activity", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    events = r.json()["events"]
+    assert "actorEmail" not in events[0]
+    assert events[0]["actorId"] == "pcu_aaa"
+
+
+def test_list_activity_no_user_actors_skips_org_lookup(client, monkeypatch):
+    """When no event has a user actor, the GSI/Clerk join is skipped
+    entirely (a feed of only agent/system events does no extra work)."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(
+        return_value={
+            "events": [
+                {"id": "e1", "actorType": "agent", "actorId": "agent_x", "action": "agent.updated"},
+            ]
+        }
+    )
+    repo = MagicMock()
+    repo.list_by_org_id = AsyncMock(return_value=[])
+
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+
+    r = client.get("/api/v1/teams/activity", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    repo.list_by_org_id.assert_not_called()
+
+
+def test_list_activity_enriches_bare_list_payload(client, monkeypatch):
+    """A bare-list activity payload (no envelope) is also enriched in place."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(
+        return_value=[
+            {"id": "e1", "actorType": "user", "actorId": "pcu_aaa", "action": "issue.created"},
+        ]
+    )
+    repo = MagicMock()
+    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+
+    async def fake_resolve(user_id: str) -> str:
+        return f"{user_id}@example.com"
+
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+    monkeypatch.setattr(agents_mod, "_resolve_user_email", fake_resolve)
+
+    r = client.get("/api/v1/teams/activity", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body, list)
+    assert body[0]["actorEmail"] == "clerk_aaa@example.com"
+
+
+def test_list_activity_personal_context_uses_self_pairing(client, monkeypatch):
+    """For a personal user (org_id None) the GSI is skipped and the caller's
+    own paperclip_user_id → user_id pairing is used to resolve their email."""
+    personal_ctx = TeamsContext(
+        user_id="clerk_solo",
+        org_id=None,
+        owner_id="clerk_solo",
+        company_id="co_solo",
+        paperclip_user_id="pcu_solo",
+        session_cookie="cookie",
+    )
+
+    from routers.teams import agents as agents_mod
+
+    async def fake_ctx():
+        return personal_ctx
+
+    app.dependency_overrides[agents_mod._ctx] = fake_ctx
+    try:
+        admin = MagicMock()
+        admin.list_activity = AsyncMock(
+            return_value={
+                "events": [
+                    {"id": "e1", "actorType": "user", "actorId": "pcu_solo", "action": "issue.created"},
+                ]
+            }
+        )
+        repo = MagicMock()
+        repo.list_by_org_id = AsyncMock(return_value=[])
+
+        async def fake_resolve(user_id: str) -> str:
+            return f"{user_id}@example.com"
+
+        monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+        monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+        monkeypatch.setattr(agents_mod, "_resolve_user_email", fake_resolve)
+
+        r = TestClient(app).get("/api/v1/teams/activity", headers={"Authorization": "Bearer x"})
+        assert r.status_code == 200
+        events = r.json()["events"]
+        assert events[0]["actorEmail"] == "clerk_solo@example.com"
+        # Personal context never queries the org GSI.
+        repo.list_by_org_id.assert_not_called()
+    finally:
+        app.dependency_overrides.pop(agents_mod._ctx, None)
+
+
 def test_get_costs(client, monkeypatch):
     admin = MagicMock()
     admin.get_costs = AsyncMock(return_value={"total": 0})

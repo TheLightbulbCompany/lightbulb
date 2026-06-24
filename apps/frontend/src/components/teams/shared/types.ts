@@ -34,6 +34,11 @@ export const ISSUE_STATUSES: readonly IssueStatus[] = [
 
 export type IssuePriority = "critical" | "high" | "medium" | "low";
 
+// How a task executes once an agent picks it up. Mirrors upstream Paperclip's
+// createIssueSchema work-mode enum: ``standard`` runs autonomously, ``ask``
+// pauses for input, ``planning`` plans before acting.
+export type IssueWorkMode = "standard" | "ask" | "planning";
+
 export interface IssueLabel {
   id: string;
   name: string;
@@ -104,13 +109,13 @@ export interface IssueComment {
   authorKind?: "user" | "agent" | null;
 }
 
-/** Body for POST /teams/issues. Slim shape for v1 NewIssueDialog.
+/** Body for POST /teams/issues. Composer shape for NewIssueDialog.
  *
- * NOTE: `status` is intentionally absent. The Teams BFF `CreateIssueBody`
- * schema (apps/backend/routers/teams/schemas.py) sets ``extra="forbid"`` and
- * does NOT whitelist ``status`` — POSTs that include it 422. Issue starting
- * status is owned by upstream Paperclip's create handler. Use ``IssueUpdateInput``
- * via PATCH if you need to change status post-creation.
+ * The Teams BFF `CreateIssueBody` schema (apps/backend/routers/teams/schemas.py)
+ * whitelists ``status`` and ``workMode`` (camelCase aliases) and forwards both
+ * to upstream Paperclip's createIssueSchema, so the composer can preset the
+ * starting status + execution mode without a follow-up PATCH. Both are
+ * optional: omit them and the server defaults to backlog/standard.
  */
 export interface IssueCreateInput {
   title: string;
@@ -118,6 +123,8 @@ export interface IssueCreateInput {
   priority?: IssuePriority;
   projectId?: string;
   assigneeAgentId?: string;
+  status?: IssueStatus;
+  workMode?: IssueWorkMode;
 }
 
 /** Body for PATCH /teams/issues/{id}. */

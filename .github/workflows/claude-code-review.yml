@@ -6,7 +6,7 @@ on:
 
 jobs:
   claude-review:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, isol8-wsl]
     permissions:
       contents: read
       # write (was read) so the review can actually post inline comments +
